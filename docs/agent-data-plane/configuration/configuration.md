@@ -729,55 +729,70 @@ ways that are not yet fully characterized.
 
 The following settings are specific to ADP and have no equivalent in the core agent.
 
-| Config Key                                                      | Description                                                | Default               |
-| --------------------------------------------------------------- | ---------------------------------------------------------- | --------------------- |
-| `aggregate_context_limit`                                       | Max contexts per aggregation window                        |                       |
-| `aggregate_flush_interval`                                      | Aggregator flush period                                    |                       |
-| `aggregate_passthrough_idle_flush_timeout`                      | Passthrough buffer flush delay                             |                       |
-| `aggregate_window_duration_seconds`                             | Aggregation window size                                    |                       |
-| `apm_config.obfuscation.sql.dbms`                               | SQL obfuscation DBMS dialect                               |                       |
-| `apm_config.obfuscation.sql.dollar_quoted_func`                 | Preserve dollar-quoted SQL functions                       |                       |
-| `apm_config.obfuscation.sql.keep_sql_alias`                     | Preserve SQL aliases in obfuscation                        |                       |
-| `apm_config.obfuscation.sql.replace_digits`                     | Replace digits in SQL obfuscation                          |                       |
-| `apm_config.obfuscation.sql.table_names`                        | Collect table names during obfuscation                     |                       |
-| `data_plane.experimental.apm.enabled`                           | Run the experimental APM proxy in front of the trace-agent | false                 |
-| `data_plane.experimental.apm.proxy_destination`                 | HTTP or Unix socket URL of the relocated trace-agent       | http://127.0.0.1:8127 |
-| `data_plane.experimental.stateful_metrics.endpoint`             | Experimental stateful series gRPC intake endpoint          | unset (disabled)      |
-| `data_plane.experimental.stateful_metrics.workers`              | Number of independent stateful metrics sender workers      | 3                     |
-| `data_plane.otlp.receiver_grpc_endpoint_temporary`              | ADP OTLP gRPC listen endpoint                              | localhost:6317        |
-| `data_plane.otlp.receiver_http_endpoint_temporary`              | ADP OTLP HTTP listen endpoint                              | localhost:6318        |
-| `dogstatsd_allow_context_heap_allocs`                           | Allow heap allocations for contexts                        | true                  |
-| `dogstatsd_autoscale_udp_listeners`                             | Bind multiple UDP sockets via SO_REUSEPORT                 | false                 |
-| `dogstatsd_buffer_count_max`                                    | Maximum receive buffer count                               | 32768                 |
-| `dogstatsd_buffer_count`                                        | Baseline receive buffers                                   | 128                   |
-| `dogstatsd_cached_contexts_limit`                               | Max cached metric contexts                                 | 500000                |
-| `dogstatsd_cached_tagsets_limit`                                | Max cached tagsets                                         | 500000                |
-| `dogstatsd_mapper_string_interner_size`                         | Mapper string interner byte capacity                       | 64KiB                 |
-| `dogstatsd_minimum_sample_rate`                                 | Floor for metric sample rates                              | 0.000000003845        |
-| `dogstatsd_permissive_decoding`                                 | Relaxes decoder strictness                                 | true                  |
-| `dogstatsd_string_interner_size_bytes`                          | Explicit byte budget for context interner                  |                       |
-| `dogstatsd_tcp_port`                                            | DogStatsD TCP listen port; 0 disables TCP                  | 0                     |
-| `enable_global_limiter`                                         | Global memory limiter toggle                               | true                  |
-| `experimental.metrics_endpoint_routing.metric_allowlist`        | Per-endpoint metric allow lists                            | {}                    |
-| `experimental.metrics_endpoint_routing.metric_prefix_allowlist` | Per-endpoint literal metric-prefix allow lists             | {}                    |
-| `flush_timeout_secs`                                            | Encoder flush timeout (secs)                               |                       |
-| `memory_limit`                                                  | Process memory limit                                       |                       |
-| `memory_mode`                                                   | Memory bounds validation mode                              | disabled              |
-| `memory_slop_factor`                                            | Memory accounting slop fraction                            | 0.25                  |
-| `metric_tag_value_allowlist`                                    | Per-metric tag value allow-list                            | []                    |
-| `otlp_allow_context_heap_allocs`                                | Allow heap allocations for OTLP contexts                   |                       |
-| `otlp_cached_contexts_limit`                                    | Max cached OTLP metric contexts                            |                       |
-| `otlp_cached_tagsets_limit`                                     | Max cached OTLP tagsets                                    |                       |
-| `otlp_config.receiver.protocols.http.transport`                 | OTLP HTTP receiver transport                               |                       |
-| `otlp_config.traces.enable_otlp_compute_top_level_by_span_kind` | Enable OTLP top-level-by-span-kind                         |                       |
-| `otlp_config.traces.ignore_missing_datadog_fields`              | Ignore missing Datadog fields in OTLP                      |                       |
-| `otlp_config.traces.string_interner_size`                       | OTLP trace string interner capacity                        |                       |
-| `otlp_string_interner_size`                                     | OTLP context interner capacity                             |                       |
-| `serializer_max_metrics_per_payload`                            | Max metrics per payload                                    |                       |
+| Config Key                                                        | Description                                                | Default               |
+| ----------------------------------------------------------------- | ---------------------------------------------------------- | --------------------- |
+| `aggregate_context_limit`                                         | Max contexts per aggregation window                        |                       |
+| `aggregate_flush_interval`                                        | Aggregator flush period                                    |                       |
+| `aggregate_passthrough_idle_flush_timeout`                        | Passthrough buffer flush delay                             |                       |
+| `aggregate_window_duration_seconds`                               | Aggregation window size                                    |                       |
+| `apm_config.obfuscation.sql.dbms`                                 | SQL obfuscation DBMS dialect                               |                       |
+| `apm_config.obfuscation.sql.dollar_quoted_func`                   | Preserve dollar-quoted SQL functions                       |                       |
+| `apm_config.obfuscation.sql.keep_sql_alias`                       | Preserve SQL aliases in obfuscation                        |                       |
+| `apm_config.obfuscation.sql.replace_digits`                       | Replace digits in SQL obfuscation                          |                       |
+| `apm_config.obfuscation.sql.table_names`                          | Collect table names during obfuscation                     |                       |
+| `data_plane.experimental.apm.enabled`                             | Run the experimental APM proxy in front of the trace-agent | false                 |
+| `data_plane.experimental.apm.proxy_destination`                   | HTTP or Unix socket URL of the relocated trace-agent       | http://127.0.0.1:8127 |
+| `data_plane.experimental.stateful_metrics.additional_endpoints`   | Further stateful series gRPC intake endpoints              | []                    |
+| `data_plane.experimental.stateful_metrics.dictionary_max_bytes`   | Stateful metrics dictionary byte cap per sender worker     | 256MiB                |
+| `data_plane.experimental.stateful_metrics.dictionary_max_entries` | Stateful metrics dictionary entry cap per sender worker    | 60000                 |
+| `data_plane.experimental.stateful_metrics.endpoint`               | Experimental stateful series gRPC intake endpoint          | unset (disabled)      |
+| `data_plane.experimental.stateful_metrics.workers`                | Number of independent stateful metrics sender workers      | 3                     |
+| `data_plane.otlp.receiver_grpc_endpoint_temporary`                | ADP OTLP gRPC listen endpoint                              | localhost:6317        |
+| `data_plane.otlp.receiver_http_endpoint_temporary`                | ADP OTLP HTTP listen endpoint                              | localhost:6318        |
+| `dogstatsd_allow_context_heap_allocs`                             | Allow heap allocations for contexts                        | true                  |
+| `dogstatsd_autoscale_udp_listeners`                               | Bind multiple UDP sockets via SO_REUSEPORT                 | false                 |
+| `dogstatsd_buffer_count_max`                                      | Maximum receive buffer count                               | 32768                 |
+| `dogstatsd_buffer_count`                                          | Baseline receive buffers                                   | 128                   |
+| `dogstatsd_cached_contexts_limit`                                 | Max cached metric contexts                                 | 500000                |
+| `dogstatsd_cached_tagsets_limit`                                  | Max cached tagsets                                         | 500000                |
+| `dogstatsd_mapper_string_interner_size`                           | Mapper string interner byte capacity                       | 64KiB                 |
+| `dogstatsd_minimum_sample_rate`                                   | Floor for metric sample rates                              | 0.000000003845        |
+| `dogstatsd_permissive_decoding`                                   | Relaxes decoder strictness                                 | true                  |
+| `dogstatsd_string_interner_size_bytes`                            | Explicit byte budget for context interner                  |                       |
+| `dogstatsd_tcp_port`                                              | DogStatsD TCP listen port; 0 disables TCP                  | 0                     |
+| `enable_global_limiter`                                           | Global memory limiter toggle                               | true                  |
+| `experimental.metrics_endpoint_routing.metric_allowlist`          | Per-endpoint metric allow lists                            | {}                    |
+| `experimental.metrics_endpoint_routing.metric_prefix_allowlist`   | Per-endpoint literal metric-prefix allow lists             | {}                    |
+| `flush_timeout_secs`                                              | Encoder flush timeout (secs)                               |                       |
+| `memory_limit`                                                    | Process memory limit                                       |                       |
+| `memory_mode`                                                     | Memory bounds validation mode                              | disabled              |
+| `memory_slop_factor`                                              | Memory accounting slop fraction                            | 0.25                  |
+| `metric_tag_value_allowlist`                                      | Per-metric tag value allow-list                            | []                    |
+| `otlp_allow_context_heap_allocs`                                  | Allow heap allocations for OTLP contexts                   |                       |
+| `otlp_cached_contexts_limit`                                      | Max cached OTLP metric contexts                            |                       |
+| `otlp_cached_tagsets_limit`                                       | Max cached OTLP tagsets                                    |                       |
+| `otlp_config.receiver.protocols.http.transport`                   | OTLP HTTP receiver transport                               |                       |
+| `otlp_config.traces.enable_otlp_compute_top_level_by_span_kind`   | Enable OTLP top-level-by-span-kind                         |                       |
+| `otlp_config.traces.ignore_missing_datadog_fields`                | Ignore missing Datadog fields in OTLP                      |                       |
+| `otlp_config.traces.string_interner_size`                         | OTLP trace string interner capacity                        |                       |
+| `otlp_string_interner_size`                                       | OTLP context interner capacity                             |                       |
+| `serializer_max_metrics_per_payload`                              | Max metrics per payload                                    |                       |
+
+### `data_plane.experimental.stateful_metrics.dictionary_max_entries`
+
+Positive entry cap for each stateful metrics sender worker's dictionary, default 60000; the process total is this value times data_plane.experimental.stateful_metrics.workers. Eviction starts near the cap, but entries younger than the 30-second grace period are protected. A cap below the live series working set re-sends many definitions on every flush. Dictionary memory grows with the series each worker sees, not with the cap. Requires a restart.
+
+### `data_plane.experimental.stateful_metrics.dictionary_max_bytes`
+
+Positive estimated-byte cap for each stateful metrics sender worker's dictionary, default 256MiB (268435456); the process total is this value times data_plane.experimental.stateful_metrics.workers. Accepts a bare byte count or a byte-size string such as 128MiB. The estimate excludes allocator slack and buffered or inflight metrics, so actual memory use is higher. Requires a restart.
+
+### `data_plane.experimental.stateful_metrics.additional_endpoints`
+
+List of distinct http://host:port endpoints that also receive every stateful metrics payload, using the primary API key. Requires data_plane.experimental.stateful_metrics.endpoint and a restart. Retry memory and disk budgets are split between a shared queue and one retry lane per endpoint. Removing an additional endpoint discards its persisted retries at startup with a warning.
 
 ### `data_plane.experimental.stateful_metrics.workers`
 
-Positive worker count, default 3. Requires a restart. Each worker owns its queues, dictionaries, and inflight state, increasing memory and disk budgets. Drain persisted retries at the previous count before changing this setting.
+Positive worker count, default 3. Requires a restart. Each worker owns its queues, dictionaries, and inflight state, increasing memory and disk budgets. At startup, persisted logical retries are redistributed across the new worker count, preserving their age and endpoint lane. Migration requires temporary additional disk space.
 
 ### `data_plane.experimental.stateful_metrics.endpoint`
 

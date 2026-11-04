@@ -11,10 +11,28 @@ pub struct SalukiKey {
 
 pub static SALUKI_KEYS: &[SalukiKey] = &[
     SalukiKey {
+        yaml_path: "data_plane.experimental.stateful_metrics.dictionary_max_entries",
+        description: "Stateful metrics dictionary entry cap per sender worker",
+        default: "60000",
+        documentation: Some("Positive entry cap for each stateful metrics sender worker's dictionary, default 60000; the process total is this value times data_plane.experimental.stateful_metrics.workers. Eviction starts near the cap, but entries younger than the 30-second grace period are protected. A cap below the live series working set re-sends many definitions on every flush. Dictionary memory grows with the series each worker sees, not with the cap. Requires a restart."),
+    },
+    SalukiKey {
+        yaml_path: "data_plane.experimental.stateful_metrics.dictionary_max_bytes",
+        description: "Stateful metrics dictionary byte cap per sender worker",
+        default: "256MiB",
+        documentation: Some("Positive estimated-byte cap for each stateful metrics sender worker's dictionary, default 256MiB (268435456); the process total is this value times data_plane.experimental.stateful_metrics.workers. Accepts a bare byte count or a byte-size string such as 128MiB. The estimate excludes allocator slack and buffered or inflight metrics, so actual memory use is higher. Requires a restart."),
+    },
+    SalukiKey {
+        yaml_path: "data_plane.experimental.stateful_metrics.additional_endpoints",
+        description: "Further stateful series gRPC intake endpoints",
+        default: "[]",
+        documentation: Some("List of distinct http://host:port endpoints that also receive every stateful metrics payload, using the primary API key. Requires data_plane.experimental.stateful_metrics.endpoint and a restart. Retry memory and disk budgets are split between a shared queue and one retry lane per endpoint. Removing an additional endpoint discards its persisted retries at startup with a warning."),
+    },
+    SalukiKey {
         yaml_path: "data_plane.experimental.stateful_metrics.workers",
         description: "Number of independent stateful metrics sender workers",
         default: "3",
-        documentation: Some("Positive worker count, default 3. Requires a restart. Each worker owns its queues, dictionaries, and inflight state, increasing memory and disk budgets. Drain persisted retries at the previous count before changing this setting."),
+        documentation: Some("Positive worker count, default 3. Requires a restart. Each worker owns its queues, dictionaries, and inflight state, increasing memory and disk budgets. At startup, persisted logical retries are redistributed across the new worker count, preserving their age and endpoint lane. Migration requires temporary additional disk space."),
     },
     SalukiKey {
         yaml_path: "data_plane.experimental.stateful_metrics.endpoint",

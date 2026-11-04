@@ -28,7 +28,7 @@ impl PersistedEntry {
     ///
     /// If the given path isn't recognized as the path to a valid persisted entry, `None` is returned.
     fn try_from_path(path: PathBuf, size_bytes: u64) -> Option<Self> {
-        let timestamp = decode_timestamped_filename(&path)?;
+        let timestamp = persisted_retry_file_timestamp(&path)?;
         Some(Self {
             path,
             timestamp,
@@ -478,7 +478,10 @@ fn generate_timestamped_filename() -> (PathBuf, u128) {
     (filename, now_ts)
 }
 
-fn decode_timestamped_filename(path: &Path) -> Option<u128> {
+/// Returns the creation time of a recognized retry filename, in nanoseconds since the Unix epoch.
+///
+/// This inspects only the filename, allowing migrations to retain retry age without consuming an entry.
+pub fn persisted_retry_file_timestamp(path: &Path) -> Option<u128> {
     let filename = path.file_stem()?.to_str()?;
     let mut filename_parts = filename.split('-');
 
@@ -557,7 +560,7 @@ async fn remove_outdated_retry_files(queue_path: &Path, max_age_days: u32) -> Re
                 return Err(e).with_error_context(|| "Error reading retry queue directory during age-based cleanup.");
             }
         };
-        let file_ts = match decode_timestamped_filename(&entry.path()) {
+        let file_ts = match persisted_retry_file_timestamp(&entry.path()) {
             Some(ts) => ts,
             None => continue,
         };

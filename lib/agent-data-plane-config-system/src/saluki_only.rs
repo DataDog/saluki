@@ -69,7 +69,9 @@ use std::{
 use agent_data_plane_config::control::MemoryMode;
 use agent_data_plane_config::defaults::{
     DEFAULT_ENABLE_GLOBAL_LIMITER, DEFAULT_MAX_RESOURCE_LEN, DEFAULT_MEMORY_SLOP_FACTOR, DEFAULT_METRICS_LEVEL,
-    DEFAULT_STATEFUL_METRICS_WORKERS, DEFAULT_STRING_INTERNER_SIZE_BYTES, MAX_STRING_INTERNER_SIZE_BYTES,
+    DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_BYTES, DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_ENTRIES,
+    DEFAULT_STATEFUL_METRICS_WORKERS, DEFAULT_STRING_INTERNER_SIZE_BYTES, MAX_STATEFUL_METRICS_DICTIONARY_MAX_BYTES,
+    MAX_STRING_INTERNER_SIZE_BYTES,
 };
 use agent_data_plane_config::domains::dogstatsd::{validate_metric_tag_value_allowlists, MetricTagValueAllowlistEntry};
 use agent_data_plane_config::domains::traces::{OttlErrorMode, OttlFilter, OttlTransform};
@@ -297,18 +299,31 @@ pub struct StatefulMetrics {
     /// Set an `http://host:port` endpoint only for integration testing. Empty values, paths, queries,
     /// and credentials are invalid. Changing this setting requires a restart.
     pub endpoint: Option<String>,
+    /// Further distinct plaintext gRPC origins that receive every payload; defaults to none.
+    /// Requires the primary endpoint and a restart. Use for sending to multiple experimental intakes.
+    pub additional_endpoints: Vec<String>,
     /// Independent sender workers; defaults to three and rejects zero.
     ///
     /// Increase this for high-throughput workloads at the cost of per-worker queues and dictionary memory.
     /// Requires a restart.
     pub workers: NonZeroUsize,
+    /// Per-worker dictionary entry cap; defaults to 60000 and rejects zero.
+    /// Lower it for memory-constrained hosts at the cost of resending more definitions.
+    pub dictionary_max_entries: NonZeroUsize,
+    /// Per-worker estimated dictionary byte cap; defaults to 256 MiB and rejects zero.
+    /// Accepts a byte count or byte-size string. Lower it to reduce retained dictionary memory.
+    #[serde(deserialize_with = "deserialize_stateful_metrics_dictionary_max_bytes")]
+    pub dictionary_max_bytes: NonZeroU64,
 }
 
 impl Default for StatefulMetrics {
     fn default() -> Self {
         Self {
             endpoint: None,
+            additional_endpoints: Vec::new(),
             workers: DEFAULT_STATEFUL_METRICS_WORKERS,
+            dictionary_max_entries: DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_ENTRIES,
+            dictionary_max_bytes: DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_BYTES,
         }
     }
 }
@@ -475,6 +490,20 @@ where
         .transpose()
 }
 
+fn deserialize_stateful_metrics_dictionary_max_bytes<'de, D>(deserializer: D) -> Result<NonZeroU64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let bytes = NonZeroU64::new(ByteSize::deserialize(deserializer)?.as_u64())
+        .ok_or_else(|| serde::de::Error::custom("value of bytes must be greater than zero"))?;
+    if bytes.get() > MAX_STATEFUL_METRICS_DICTIONARY_MAX_BYTES {
+        return Err(serde::de::Error::custom(format!(
+            "value of bytes must not exceed {MAX_STATEFUL_METRICS_DICTIONARY_MAX_BYTES} bytes"
+        )));
+    }
+    Ok(bytes)
+}
+
 fn deserialize_string_interner_size<'de, D>(deserializer: D) -> Result<NonZeroUsize, D::Error>
 where
     D: Deserializer<'de>,
@@ -595,8 +624,12 @@ impl SalukiOnly {
     /// Absent values leave the field at its model default. The Datadog `drive` writes a disjoint set
     /// of fields, so it does not matter whether `seed` runs before or after the drive.
     pub(crate) fn seed(&self, config: &mut SalukiConfiguration) {
-        config.domains.stateful_metrics.endpoint = self.data_plane.experimental.stateful_metrics.endpoint.clone();
-        config.domains.stateful_metrics.workers = self.data_plane.experimental.stateful_metrics.workers;
+        let stateful_metrics = &self.data_plane.experimental.stateful_metrics;
+        config.domains.stateful_metrics.endpoint = stateful_metrics.endpoint.clone();
+        config.domains.stateful_metrics.workers = stateful_metrics.workers;
+        config.domains.stateful_metrics.additional_endpoints = stateful_metrics.additional_endpoints.clone();
+        config.domains.stateful_metrics.dictionary_max_entries = stateful_metrics.dictionary_max_entries;
+        config.domains.stateful_metrics.dictionary_max_bytes = stateful_metrics.dictionary_max_bytes;
         // control
         if let Some(v) = self.data_plane.standalone_mode {
             config.control.standalone_mode = v;
