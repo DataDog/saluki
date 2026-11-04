@@ -2458,8 +2458,9 @@ mod tests {
     use tokio::{
         io::AsyncWriteExt as _,
         net::{UnixDatagram, UnixStream},
+        sync::mpsc,
     };
-    use tokio::{sync::mpsc, task::yield_now, time::timeout};
+    use tokio::{task::yield_now, time::timeout};
 
     use super::{
         build_io_buffer_pool, capture_named_pipe_frame, default_decoder_worker_count, filters::EnablePayloadsFilter,
