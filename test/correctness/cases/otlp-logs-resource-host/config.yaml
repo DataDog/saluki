@@ -100,10 +100,9 @@ logs:
       reason: ADP's logs host resolution doesn't know `k8s.node.name` or `host.id`.
     - gap: gap/missing-headers
       paths:
-        - headers.dd-message-timestamp
         - headers.dd-current-timestamp
       kinds: [missing]
-      reason: ADP doesn't send the `dd-message-timestamp` and `dd-current-timestamp` headers on logs requests.
+      reason: ADP doesn't send the `dd-current-timestamp` header on logs requests.
 baseline:
   image: saluki-images/datadog-agent:testing-release
   files:
