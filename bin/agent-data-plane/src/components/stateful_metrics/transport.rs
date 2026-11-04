@@ -55,7 +55,9 @@ impl Transport {
     pub fn open(
         endpoint_id: MetricEndpointId, stream_id: StreamId, endpoint: Endpoint, api_key: MetadataValue<Ascii>,
     ) -> Self {
-        let (sender, receiver) = mpsc::channel(MAX_INFLIGHT_BATCHES + 1);
+        // A replayed payload can be preceded by a definitions-only batch, so a full window can be
+        // twice as many batches as payloads.
+        let (sender, receiver) = mpsc::channel(2 * MAX_INFLIGHT_BATCHES + 1);
         let mut request = Request::new(ReceiverStream::new(receiver));
         request.metadata_mut().insert("dd-api-key", api_key);
         request

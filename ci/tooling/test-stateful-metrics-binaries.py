@@ -419,7 +419,9 @@ def lost_ack(fixture):
              "unacknowledged point to be replayed")
     fixture.expect("ack.retry", 17, timestamp)
     fixture.wait_metric("stateful_metrics_batches_acked_total", 2)
-    fixture.wait_metric("stateful_metrics_batches_retried_total")
+    fixture.wait_metric("stateful_metrics_internal_retry_replays_total")
+    require(fixture.telemetry("stateful_metrics_batches_retried_total") == 0,
+            "Lost ACK replay entered the ADP retry queue")
     fixture.stop_adp()
     require(len(fixture.rows()) == 3, fixture.rows())
     fixture.no_http_series()
