@@ -1,0 +1,10 @@
+# Sets log_level to warn in YAML and its bound environment variable to empty.
+# Shows that an empty bound variable is skipped, leaving the YAML value in effect.
+name: env-empty-value-yaml-wins
+group: behavior
+why: [env-empty-value-treated-as-unset]
+env:
+  DD_LOG_LEVEL: ""
+yaml: |
+  log_level: warn
+keys: [log_level]

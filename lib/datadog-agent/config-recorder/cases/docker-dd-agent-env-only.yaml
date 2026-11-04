@@ -1,0 +1,8 @@
+# Sets DOCKER_DD_AGENT and reads container-related paths.
+# Shows that container detection lives outside configuration, not in a streamed feature key.
+name: docker-dd-agent-env-only
+group: behavior
+why: [env-detection-outside-config]
+env:
+  DOCKER_DD_AGENT: "true"
+keys: [procfs_path, container_proc_root, container_cgroup_root]

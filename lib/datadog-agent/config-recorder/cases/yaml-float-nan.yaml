@@ -1,0 +1,8 @@
+# Sets forwarder_backoff_factor to NaN in YAML.
+# Shows that values the stream cannot encode are logged and omitted from its snapshot.
+name: yaml-float-nan
+group: behavior
+why: [stream-sanitize-error-drops-key]
+yaml: |
+  forwarder_backoff_factor: .nan
+keys: [forwarder_backoff_factor]

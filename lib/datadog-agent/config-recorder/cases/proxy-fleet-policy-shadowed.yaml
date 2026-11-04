@@ -1,0 +1,9 @@
+# Sets proxy.https through a fleet policy and reads all three proxy fields.
+# Shows that load-time proxy writes take priority, so the fleet value does not stream.
+name: proxy-fleet-policy-shadowed
+group: behavior
+why: [proxy-source-config-post-init, load-fixup-source-outranks-fleet]
+fleet_policy: |
+  proxy:
+    https: http://fleet.test:3128
+keys: [proxy.https, proxy.http, proxy.no_proxy]

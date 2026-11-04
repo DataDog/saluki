@@ -1,0 +1,15 @@
+# Enables the local FIPS proxy and HTTPS in YAML, with TLS verification off.
+# Shows that load-time setup rewrites intake URLs and sets skip_ssl_validation.
+name: fips-proxy-endpoints
+group: behavior
+why: [fips-proxy-rewrites-endpoints]
+yaml: |
+  fips:
+    enabled: true
+    local_address: 127.0.0.1
+    https: true
+    tls_verify: false
+keys:
+  - fips.enabled
+  - dd_url
+  - skip_ssl_validation

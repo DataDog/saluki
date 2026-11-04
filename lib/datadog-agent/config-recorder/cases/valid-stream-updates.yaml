@@ -1,0 +1,17 @@
+# Updates dogstatsd_tag_cardinality over the runtime stream: the default value under a new
+# source, a different valid choice, a value outside the setting's choices (low, orchestrator,
+# high), then a valid choice again — all with a real-shaped API key loaded from YAML. Records
+# what an out-of-choices update does to the stored value and what the next valid update streams.
+name: valid-stream-updates
+group: behavior
+why: [set-same-value-new-source-not-notified, set-notifies-only-on-resolved-change]
+yaml: |
+  api_key: "00000000000000000000000000000000"
+updates:
+  - {key: dogstatsd_tag_cardinality, value: low, source: remote-config}
+  - {key: dogstatsd_tag_cardinality, value: high, source: remote-config}
+  - {key: dogstatsd_tag_cardinality, value: bogus, source: remote-config}
+  - {key: dogstatsd_tag_cardinality, value: orchestrator, source: remote-config}
+keys:
+  - {key: dogstatsd_tag_cardinality, getters: [GetString, Get]}
+  - api_key

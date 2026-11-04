@@ -1,0 +1,8 @@
+# Supplies malformed YAML for logs_enabled.
+# Shows that parsing fails startup with a misleading "file not found" wrapper; nothing streams.
+name: startup-error
+group: behavior
+why: [yaml-malformed-file-startup-error]
+yaml: |
+  logs_enabled: [
+keys: [logs_enabled]
