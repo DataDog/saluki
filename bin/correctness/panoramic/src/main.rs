@@ -314,14 +314,16 @@ mod tests {
         write_case(
             dir.path(),
             "participant",
-            &PARTICIPANT_FIELDS.replace("subject: true", "subject: true, realization: {kind: linux-container}"),
+            &PARTICIPANT_FIELDS
+                .replace("[linux]", "[windows]")
+                .replace("subject: true", "subject: true, realization: {kind: windows-container}"),
         );
         write_case(
             dir.path(),
             "good",
-            "type: integration\nname: good\ntimeout: 1s\nruntimes: [linux]\nprocedure: []\n",
+            "type: integration\nname: good\ntimeout: 1s\nruntimes: [windows]\nprocedure: []\n",
         );
-        let cases = discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], Os::Linux)
+        let cases = discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], Os::Windows)
             .unwrap()
             .plans;
         assert_eq!(
@@ -335,7 +337,7 @@ mod tests {
                 "-d",
                 dir.path().to_str().unwrap(),
                 "--runtime",
-                "linux",
+                "windows",
             ];
             if json {
                 args.push("--json");
@@ -359,7 +361,7 @@ mod tests {
                 "-d",
                 dir.path().to_str().unwrap(),
                 "--runtime",
-                "linux",
+                "windows",
                 "--no-tui",
                 "-l",
                 logs.to_str().unwrap(),

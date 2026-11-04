@@ -3,18 +3,20 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use panoramic_core::case::{CaseDuration, StepTemplate};
 use panoramic_core::record::{AssertionStatus, StepReport};
-use panoramic_core::step::{decode_fields, Need, Step, StepContext, StepFactory, StepFields};
+use panoramic_core::step::{decode_fields, HandleError, Need, Step, StepContext, StepFactory, StepFields};
+use panoramic_core::{
+    case::{CaseDuration, StepTemplate},
+    probe::POLL_INTERVAL,
+};
 use serde::Deserialize;
-use tokio::time::Instant;
+use tokio::time::{sleep_until, timeout_at, Instant};
 
-use super::check_pattern;
+use super::Matcher;
 
 /// Waits until a file inside a participant contains a pattern.
 ///
-/// Callers can decode the public fields with [`decode_fields`]. The factory's only additional validation checks
-/// that regex patterns compile.
+/// Callers can decode the public fields with [`decode_fields`]. The factory compiles the pattern once at build time.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FileContains {
@@ -36,26 +38,77 @@ impl FileContains {
     pub const NAME: &'static str = "file_contains";
 }
 
-#[async_trait]
-impl Step for FileContains {
-    fn name(&self) -> &'static str {
-        Self::NAME
-    }
-    fn budget(&self) -> Duration {
-        self.timeout.into()
-    }
-    async fn run(&self, _cx: &StepContext<'_>) -> StepReport {
-        StepReport::new(
-            Instant::now(),
-            AssertionStatus::Errored,
-            format!("step '{}' cannot run on natively executed participants yet", Self::NAME),
-        )
-    }
+/// A built file step: the decoded fields with the pattern compiled once at build time.
+#[derive(Debug)]
+struct FileStep {
+    on: String,
+    path: StepTemplate,
+    matcher: Matcher,
+    budget: Duration,
+}
 
+#[async_trait]
+impl Step for FileStep {
+    fn name(&self) -> &'static str {
+        FileContains::NAME
+    }
     fn needs(&self) -> Vec<Need> {
         std::iter::once(Need::Handle(self.on.clone()))
             .chain(self.path.needs())
             .collect()
+    }
+    fn budget(&self) -> Duration {
+        self.budget
+    }
+    async fn run(&self, cx: &StepContext<'_>) -> StepReport {
+        let started = Instant::now();
+        let deadline = started + self.budget;
+        let path = match cx.resolve(&self.path) {
+            Ok(path) => path,
+            Err(reason) => return StepReport::new(started, AssertionStatus::Errored, reason),
+        };
+        let Some(handle) = cx.handle(&self.on) else {
+            return StepReport::new(
+                started,
+                AssertionStatus::Errored,
+                format!("participant '{}' has not started", self.on),
+            );
+        };
+        let mut last = "read has not completed".to_string();
+        loop {
+            match timeout_at(deadline, handle.read_file(&path)).await {
+                Ok(Ok(Some(bytes))) => {
+                    let text = String::from_utf8_lossy(&bytes);
+                    if self.matcher.is_match(&text) {
+                        return StepReport::new(
+                            started,
+                            AssertionStatus::Passed,
+                            format!("file '{path}' contains pattern '{}'", self.matcher.pattern()),
+                        );
+                    }
+                    last = format!("present with {} bytes and no match", bytes.len());
+                }
+                Ok(Ok(None)) => last = "missing".into(),
+                Ok(Err(HandleError::Harness { message })) => {
+                    return StepReport::new(started, AssertionStatus::Errored, message)
+                }
+                Ok(Err(HandleError::Product { message })) => last = message,
+                Err(_) => break,
+            }
+            if Instant::now() >= deadline {
+                break;
+            }
+            sleep_until(deadline.min(Instant::now() + POLL_INTERVAL)).await;
+        }
+        StepReport::new(
+            started,
+            AssertionStatus::Failed,
+            format!(
+                "file '{path}' did not contain pattern '{}' within {:?}; last observed: {last}",
+                self.matcher.pattern(),
+                self.budget
+            ),
+        )
     }
 }
 
@@ -73,8 +126,13 @@ impl StepFactory for FileContainsFactory {
 
     fn build(&self, fields: &StepFields) -> Result<Box<dyn Step>, String> {
         let step: FileContains = decode_fields(fields)?;
-        check_pattern(&step.pattern, step.regex)?;
-        Ok(Box::new(step))
+        let matcher = Matcher::build(&step.pattern, step.regex)?;
+        Ok(Box::new(FileStep {
+            on: step.on,
+            path: step.path,
+            matcher,
+            budget: step.timeout.into(),
+        }))
     }
 }
 
@@ -83,10 +141,72 @@ mod tests {
     use std::time::Duration;
 
     use panoramic_core::backend::LateFact;
+    use panoramic_core::step::test_support::{run_step_with, FakeParticipant};
     use serde_json::Value;
 
     use super::*;
     use crate::test_support::valid_fields;
+
+    #[tokio::test(start_paused = true)]
+    async fn file_contains_retries_and_matches_the_resolved_file_lossily() {
+        let fake = FakeParticipant::default();
+        let mut fields = valid_fields("file_contains");
+        fields.insert("path".into(), Value::String("{{ subject.facts.file }}".into()));
+        fields.insert("pattern".into(), Value::String("r.ady".into()));
+        fields.insert("regex".into(), Value::Bool(true));
+        let (report, ()) = tokio::join!(run_step_with(&FileContainsFactory, &fields, Some(&fake)), async {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            fake.set_file("/logs/output.log", Ok(Some(b"not yet".to_vec())));
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            fake.set_file("/logs/output.log", Ok(Some(b"ready\xff".to_vec())));
+        });
+        assert_eq!(report.status, AssertionStatus::Passed);
+        assert!(report.message.contains("/logs/output.log"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn file_contains_reports_its_last_observation_at_timeout() {
+        for (answer, expected) in [
+            (Ok(None), "missing"),
+            (Ok(Some(b"not yet".to_vec())), "present with 7 bytes and no match"),
+            (
+                Err(HandleError::Product {
+                    message: "read refused".into(),
+                }),
+                "read refused",
+            ),
+        ] {
+            let fake = FakeParticipant::default();
+            fake.set_file("/logs/output.log", answer);
+            let started = Instant::now();
+            let report = run_step_with(&FileContainsFactory, &valid_fields("file_contains"), Some(&fake)).await;
+            assert_eq!(report.status, AssertionStatus::Failed);
+            assert_eq!(started.elapsed(), Duration::from_secs(30));
+            assert!(report.message.contains(expected), "{}", report.message);
+            assert!(report.message.contains("/logs/output.log"));
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn file_contains_errors_on_harness_failure_or_an_unresolved_path() {
+        let fake = FakeParticipant::default();
+        fake.set_file(
+            "/logs/output.log",
+            Err(HandleError::Harness {
+                message: "read connection lost".into(),
+            }),
+        );
+        let mut fields = valid_fields("file_contains");
+        let started = Instant::now();
+        let report = run_step_with(&FileContainsFactory, &fields, Some(&fake)).await;
+        assert_eq!(report.status, AssertionStatus::Errored);
+        assert_eq!(report.message, "read connection lost");
+        assert_eq!(started.elapsed(), Duration::ZERO);
+        fields.insert("path".into(), Value::String("{{ subject.late.ip }}".into()));
+        let report = run_step_with(&FileContainsFactory, &fields, Some(&fake)).await;
+        assert_eq!(report.status, AssertionStatus::Errored);
+        assert_eq!(report.message, "participant 'subject' has no late fact 'ip'");
+    }
 
     #[test]
     fn file_contains_rejects_process_and_stream_fields() {

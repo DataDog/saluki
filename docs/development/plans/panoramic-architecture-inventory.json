@@ -1717,14 +1717,16 @@
       "name": "adp-logging-default-path",
       "suite": "integration",
       "subject_os": "linux",
-      "runtime": "linux",
+      "runtime": "linux-container",
       "source": "test/integration/cases/adp-logging-default-path/config.yaml",
       "schema": "participants",
-      "execution": "old",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/datadog-agent:testing-devel"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest"
       },
       "ci_jobs": [
         "test-integration"
@@ -1736,14 +1738,16 @@
       "name": "adp-logging-ignores-core-agent-log-file",
       "suite": "integration",
       "subject_os": "linux",
-      "runtime": "linux",
+      "runtime": "linux-container",
       "source": "test/integration/cases/adp-logging-ignores-core-agent-log-file/config.yaml",
       "schema": "participants",
-      "execution": "old",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/datadog-agent:testing-devel"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest"
       },
       "ci_jobs": [
         "test-integration"
@@ -1773,14 +1777,16 @@
       "name": "adp-logging-respects-data-plane-log-file",
       "suite": "integration",
       "subject_os": "linux",
-      "runtime": "linux",
+      "runtime": "linux-container",
       "source": "test/integration/cases/adp-logging-respects-data-plane-log-file/config.yaml",
       "schema": "participants",
-      "execution": "old",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/datadog-agent:testing-devel"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest"
       },
       "ci_jobs": [
         "test-integration"
@@ -6806,45 +6812,37 @@
     },
     "integration/adp-logging-default-path": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [],
-          "exposed_ports": [],
-          "files": [],
-          "host_cgroup_namespace": false
-        },
-        "description": "Verifies ADP writes to the platform-default Linux log file path (/var/log/datadog/agent-data-plane.log) when no override is provided",
-        "env": {
-          "DD_API_KEY": "00000000000000000000000000000000",
-          "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT": "true",
-          "DD_HOSTNAME": "integration-test-default-log"
-        },
-        "intake": {
-          "enabled": false
-        },
-        "name": "adp-logging-default-path",
-        "procedure": [
-          {
-            "assertion": "log_contains",
-            "pattern": "Initial configuration received.",
-            "regex": false,
-            "stream": "both",
-            "timeout": "30s"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT": "true",
+                "DD_HOSTNAME": "integration-test-default-log"
+              },
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
           },
-          {
-            "assertion": "file_contains",
-            "path": "/var/log/datadog/agent-data-plane.log",
-            "pattern": "DATAPLANE",
-            "regex": false,
-            "timeout": "30s"
-          }
-        ],
-        "runtimes": [
-          "linux"
-        ],
-        "timeout": "120s"
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "Initial configuration received.",
+              "step": "log_contains",
+              "timeout": "30s"
+            },
+            {
+              "on": "adp",
+              "path": "{{ adp.facts.default_log_file }}",
+              "pattern": "DATAPLANE",
+              "step": "file_contains",
+              "timeout": "30s"
+            }
+          ]
+        }
       },
       "steps": {
         "single_assertions": 2,
@@ -6860,53 +6858,45 @@
     },
     "integration/adp-logging-ignores-core-agent-log-file": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [],
-          "exposed_ports": [],
-          "files": [],
-          "host_cgroup_namespace": false
-        },
-        "description": "Verifies ADP ignores the Core Agent's `log_file` setting and continues to use its own per-subagent log file path",
-        "env": {
-          "DD_API_KEY": "00000000000000000000000000000000",
-          "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT": "true",
-          "DD_HOSTNAME": "integration-test-ignore-core-log-file",
-          "DD_LOG_FILE": "/tmp/coreagent-only.log"
-        },
-        "intake": {
-          "enabled": false
-        },
-        "name": "adp-logging-ignores-core-agent-log-file",
-        "procedure": [
-          {
-            "assertion": "log_contains",
-            "pattern": "Initial configuration received.",
-            "regex": false,
-            "stream": "both",
-            "timeout": "30s"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT": "true",
+                "DD_HOSTNAME": "integration-test-ignore-core-log-file",
+                "DD_LOG_FILE": "/tmp/coreagent-only.log"
+              },
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
           },
-          {
-            "assertion": "file_contains",
-            "path": "/tmp/coreagent-only.log",
-            "pattern": "CORE",
-            "regex": false,
-            "timeout": "30s"
-          },
-          {
-            "assertion": "file_contains",
-            "path": "/var/log/datadog/agent-data-plane.log",
-            "pattern": "DATAPLANE",
-            "regex": false,
-            "timeout": "30s"
-          }
-        ],
-        "runtimes": [
-          "linux"
-        ],
-        "timeout": "120s"
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "Initial configuration received.",
+              "step": "log_contains",
+              "timeout": "30s"
+            },
+            {
+              "on": "adp",
+              "path": "/tmp/coreagent-only.log",
+              "pattern": "CORE",
+              "step": "file_contains",
+              "timeout": "30s"
+            },
+            {
+              "on": "adp",
+              "path": "{{ adp.facts.default_log_file }}",
+              "pattern": "DATAPLANE",
+              "step": "file_contains",
+              "timeout": "30s"
+            }
+          ]
+        }
       },
       "steps": {
         "single_assertions": 3,
@@ -6922,54 +6912,46 @@
     },
     "integration/adp-logging-mac-ignores-core-agent-log-file": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [],
-          "exposed_ports": [],
-          "files": [],
-          "host_cgroup_namespace": false
-        },
-        "description": "Verifies ADP ignores the Core Agent's `log_file` setting on the macOS host-process runtime",
-        "env": {
-          "DD_API_KEY": "00000000000000000000000000000000",
-          "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_LOG_FILE": "/tmp/adp-mac-ignores-core-agent-log-file.log",
-          "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT": "true",
-          "DD_HOSTNAME": "integration-test-mac-ignore-core-log-file",
-          "DD_LOG_FILE": "/tmp/coreagent-only-mac.log"
-        },
-        "intake": {
-          "enabled": false
-        },
-        "name": "adp-logging-mac-ignores-core-agent-log-file",
-        "procedure": [
-          {
-            "assertion": "log_contains",
-            "pattern": "Initial configuration received.",
-            "regex": false,
-            "stream": "both",
-            "timeout": "30s"
+        "macos": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_LOG_FILE": "/tmp/adp-mac-ignores-core-agent-log-file.log",
+                "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT": "true",
+                "DD_HOSTNAME": "integration-test-mac-ignore-core-log-file",
+                "DD_LOG_FILE": "/tmp/coreagent-only-mac.log"
+              },
+              "realization": "host-process-group",
+              "subject": true,
+              "type": "agent-adp"
+            }
           },
-          {
-            "assertion": "file_contains",
-            "path": "/tmp/coreagent-only-mac.log",
-            "pattern": "CORE",
-            "regex": false,
-            "timeout": "30s"
-          },
-          {
-            "assertion": "file_contains",
-            "path": "/tmp/adp-mac-ignores-core-agent-log-file.log",
-            "pattern": "DATAPLANE",
-            "regex": false,
-            "timeout": "30s"
-          }
-        ],
-        "runtimes": [
-          "mac"
-        ],
-        "timeout": "120s"
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "Initial configuration received.",
+              "step": "log_contains",
+              "timeout": "30s"
+            },
+            {
+              "on": "adp",
+              "path": "/tmp/coreagent-only-mac.log",
+              "pattern": "CORE",
+              "step": "file_contains",
+              "timeout": "30s"
+            },
+            {
+              "on": "adp",
+              "path": "/tmp/adp-mac-ignores-core-agent-log-file.log",
+              "pattern": "DATAPLANE",
+              "step": "file_contains",
+              "timeout": "30s"
+            }
+          ]
+        }
       },
       "steps": {
         "single_assertions": 3,
@@ -6985,47 +6967,70 @@
     },
     "integration/adp-logging-respects-data-plane-log-file": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [],
-          "exposed_ports": [],
-          "files": [],
-          "host_cgroup_namespace": false
-        },
-        "description": "Verifies ADP honors the per-subagent `data_plane.log_file` setting when explicitly configured",
-        "env": {
-          "DD_API_KEY": "00000000000000000000000000000000",
-          "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_LOG_FILE": "/tmp/adp-custom.log",
-          "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT": "true",
-          "DD_HOSTNAME": "integration-test-data-plane-log-override"
-        },
-        "intake": {
-          "enabled": false
-        },
-        "name": "adp-logging-respects-data-plane-log-file",
-        "procedure": [
-          {
-            "assertion": "log_contains",
-            "pattern": "Initial configuration received.",
-            "regex": false,
-            "stream": "both",
-            "timeout": "30s"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_LOG_FILE": "/tmp/adp-custom.log",
+                "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT": "true",
+                "DD_HOSTNAME": "integration-test-data-plane-log-override"
+              },
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
           },
-          {
-            "assertion": "file_contains",
-            "path": "/tmp/adp-custom.log",
-            "pattern": "DATAPLANE",
-            "regex": false,
-            "timeout": "30s"
-          }
-        ],
-        "runtimes": [
-          "linux",
-          "mac"
-        ],
-        "timeout": "120s"
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "Initial configuration received.",
+              "step": "log_contains",
+              "timeout": "30s"
+            },
+            {
+              "on": "adp",
+              "path": "/tmp/adp-custom.log",
+              "pattern": "DATAPLANE",
+              "step": "file_contains",
+              "timeout": "30s"
+            }
+          ]
+        },
+        "macos": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_LOG_FILE": "/tmp/adp-custom.log",
+                "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT": "true",
+                "DD_HOSTNAME": "integration-test-data-plane-log-override"
+              },
+              "realization": "host-process-group",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "Initial configuration received.",
+              "step": "log_contains",
+              "timeout": "30s"
+            },
+            {
+              "on": "adp",
+              "path": "/tmp/adp-custom.log",
+              "pattern": "DATAPLANE",
+              "step": "file_contains",
+              "timeout": "30s"
+            }
+          ]
+        }
       },
       "steps": {
         "single_assertions": 2,
@@ -7041,45 +7046,37 @@
     },
     "integration/adp-logging-windows-default-path": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [],
-          "exposed_ports": [],
-          "files": [],
-          "host_cgroup_namespace": false
-        },
-        "description": "Verifies ADP writes to the platform-default Windows log file path when no override is provided",
-        "env": {
-          "DD_API_KEY": "test-api-key",
-          "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT": "true",
-          "DD_HOSTNAME": "integration-test-windows-default-log"
-        },
-        "intake": {
-          "enabled": false
-        },
-        "name": "adp-logging-windows-default-path",
-        "procedure": [
-          {
-            "assertion": "log_contains",
-            "pattern": "Initial configuration received.",
-            "regex": false,
-            "stream": "both",
-            "timeout": "60s"
+        "windows": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "test-api-key",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT": "true",
+                "DD_HOSTNAME": "integration-test-windows-default-log"
+              },
+              "realization": "windows-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
           },
-          {
-            "assertion": "file_contains",
-            "path": "C:\\ProgramData\\Datadog\\logs\\agent-data-plane.log",
-            "pattern": "DATAPLANE",
-            "regex": false,
-            "timeout": "60s"
-          }
-        ],
-        "runtimes": [
-          "windows"
-        ],
-        "timeout": "120s"
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "Initial configuration received.",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "on": "adp",
+              "path": "{{ adp.facts.default_log_file }}",
+              "pattern": "DATAPLANE",
+              "step": "file_contains",
+              "timeout": "60s"
+            }
+          ]
+        }
       },
       "steps": {
         "single_assertions": 2,
@@ -7095,54 +7092,46 @@
     },
     "integration/adp-logging-windows-ignores-core-agent-log-file": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [],
-          "exposed_ports": [],
-          "files": [],
-          "host_cgroup_namespace": false
-        },
-        "description": "Verifies ADP ignores the Core Agent's Windows log_file setting and uses its own per-subagent log file",
-        "env": {
-          "DD_API_KEY": "test-api-key",
-          "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_LOG_FILE": "C:\\adp\\adp-ignores-core-agent-log-file.log",
-          "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT": "true",
-          "DD_HOSTNAME": "integration-test-windows-ignore-core-log",
-          "DD_LOG_FILE": "C:\\adp\\coreagent-only.log"
-        },
-        "intake": {
-          "enabled": false
-        },
-        "name": "adp-logging-windows-ignores-core-agent-log-file",
-        "procedure": [
-          {
-            "assertion": "log_contains",
-            "pattern": "Initial configuration received.",
-            "regex": false,
-            "stream": "both",
-            "timeout": "60s"
+        "windows": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "test-api-key",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_LOG_FILE": "C:\\adp\\adp-ignores-core-agent-log-file.log",
+                "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT": "true",
+                "DD_HOSTNAME": "integration-test-windows-ignore-core-log",
+                "DD_LOG_FILE": "C:\\adp\\coreagent-only.log"
+              },
+              "realization": "windows-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
           },
-          {
-            "assertion": "file_contains",
-            "path": "C:\\adp\\adp-ignores-core-agent-log-file.log",
-            "pattern": "DATAPLANE",
-            "regex": false,
-            "timeout": "60s"
-          },
-          {
-            "assertion": "file_contains",
-            "path": "C:\\adp\\coreagent-only.log",
-            "pattern": "CORE",
-            "regex": false,
-            "timeout": "60s"
-          }
-        ],
-        "runtimes": [
-          "windows"
-        ],
-        "timeout": "120s"
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "Initial configuration received.",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "on": "adp",
+              "path": "C:\\adp\\adp-ignores-core-agent-log-file.log",
+              "pattern": "DATAPLANE",
+              "step": "file_contains",
+              "timeout": "60s"
+            },
+            {
+              "on": "adp",
+              "path": "C:\\adp\\coreagent-only.log",
+              "pattern": "CORE",
+              "step": "file_contains",
+              "timeout": "60s"
+            }
+          ]
+        }
       },
       "steps": {
         "single_assertions": 3,
@@ -7158,46 +7147,38 @@
     },
     "integration/adp-logging-windows-respects-data-plane-log-file": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [],
-          "exposed_ports": [],
-          "files": [],
-          "host_cgroup_namespace": false
-        },
-        "description": "Verifies ADP honors the Windows per-subagent data_plane.log_file setting when explicitly configured",
-        "env": {
-          "DD_API_KEY": "test-api-key",
-          "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_LOG_FILE": "C:\\adp\\adp-custom.log",
-          "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT": "true",
-          "DD_HOSTNAME": "integration-test-windows-custom-log"
-        },
-        "intake": {
-          "enabled": false
-        },
-        "name": "adp-logging-windows-respects-data-plane-log-file",
-        "procedure": [
-          {
-            "assertion": "log_contains",
-            "pattern": "Initial configuration received.",
-            "regex": false,
-            "stream": "both",
-            "timeout": "60s"
+        "windows": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "test-api-key",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_LOG_FILE": "C:\\adp\\adp-custom.log",
+                "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT": "true",
+                "DD_HOSTNAME": "integration-test-windows-custom-log"
+              },
+              "realization": "windows-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
           },
-          {
-            "assertion": "file_contains",
-            "path": "C:\\adp\\adp-custom.log",
-            "pattern": "DATAPLANE",
-            "regex": false,
-            "timeout": "60s"
-          }
-        ],
-        "runtimes": [
-          "windows"
-        ],
-        "timeout": "120s"
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "Initial configuration received.",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "on": "adp",
+              "path": "C:\\adp\\adp-custom.log",
+              "pattern": "DATAPLANE",
+              "step": "file_contains",
+              "timeout": "60s"
+            }
+          ]
+        }
       },
       "steps": {
         "single_assertions": 2,

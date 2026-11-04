@@ -1,22 +1,23 @@
-//! Checks logging-case translation and inventory entries against a frozen integration-schema baseline.
+//! Compares logging-case translations on every subject OS with the frozen integration configuration.
 //!
-//! Participant-schema twins of the seven logging cases use `logging_baseline.json`, copied while the cases used the
-//! integration schema. All seven use the participant schema. Both the translated twins and checked-in inventory
-//! must match this copy, except `schema` and `container.exposed_ports`.
-//!
-//! Never regenerate the copy from the inventory. If the inventory format changes intentionally (such as a new column
-//! or `execution` value), edit the copy by hand so reviewers can see the change.
+//! Only exposed ports change in the translation. Inventory rows also change schema, and Linux rows use
+//! native execution, the subject's realization and role-keyed artifacts. Never regenerate the frozen baseline.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::Path,
 };
 
-use panoramic_core::{layout::Realization, participant::ParticipantType};
+use panoramic_core::{
+    layout::{Os, Realization},
+    participant::ParticipantType,
+};
 use panoramic_participants::AgentAdp;
 use serde_json::{json, Value};
 
-use super::{create_case_dirs, read_text, repository_root, Inventory, INTEGRATION, JSON_PATH, OLD, PARTICIPANTS};
+use super::{
+    create_case_dirs, read_text, repository_root, Inventory, INTEGRATION, JSON_PATH, NATIVE, OLD, PARTICIPANTS,
+};
 use crate::config::{
     os_for_runtime,
     tests::{planner, write_case},
@@ -271,55 +272,80 @@ fn logging_baseline() -> BTreeMap<String, RecordedCase> {
     recorded
 }
 
-fn migrated(baseline: &RecordedCase) -> (Vec<Value>, Value) {
+fn migrated(baseline: &RecordedCase) -> Vec<Value> {
     let mut rows = baseline.rows.clone();
     for row in &mut rows {
         row["schema"] = json!(PARTICIPANTS);
+        if row["subject_os"] == "linux" {
+            row["execution"] = json!(NATIVE);
+            row["runtime"] = json!("linux-container");
+            row["images"] = json!({
+                "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+                "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+                "fixup-image": "alpine:latest",
+            });
+        }
     }
-    let mut case = baseline.case.clone();
-    case["config"]["container"]["exposed_ports"] = json!([]);
-    (rows, case)
+    rows
+}
+
+fn assert_logging_translation(content: &str, name: &str, baseline: &RecordedCase) {
+    let mut expected = baseline.case["config"].clone();
+    expected["container"]["exposed_ports"] = json!([]);
+    for row in &baseline.rows {
+        let os = match row["subject_os"].as_str().unwrap() {
+            "linux" => Os::Linux,
+            "macos" => Os::MacOs,
+            "windows" => Os::Windows,
+            other => panic!("unknown subject OS {other}"),
+        };
+        let case = crate::CASE_LOADER
+            .load_content(content, name, Path::new("config.yaml"))
+            .unwrap()
+            .remove(0);
+        let plan = planner().compile(case, os).unwrap().into_plan().unwrap();
+        assert_eq!(
+            serde_json::to_value(plan.integration_config().unwrap()).unwrap(),
+            expected,
+            "{name} on {os:?}"
+        );
+    }
 }
 
 #[test]
-fn logging_case_twins_reproduce_the_frozen_baseline_except_schema_and_exposed_ports() {
+fn logging_case_twins_reproduce_the_frozen_translation_and_migrated_rows() {
     let baseline = logging_baseline();
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
     create_case_dirs(&root);
     let mut expected_rows = Vec::new();
-    let mut expected_cases = serde_json::Map::new();
     for name in LOGGING_CASES {
         let baseline = &baseline[name];
         let (twin, _) = participant_twin(&baseline.case["config"]).unwrap_or_else(|reason| panic!("{name}: {reason}"));
+        assert_logging_translation(&twin, name, baseline);
         write_case(&root.join("test/integration/cases"), name, &twin);
-        let (rows, case) = migrated(baseline);
-        expected_rows.extend(rows);
-        expected_cases.insert(format!("integration/{name}"), case);
+        expected_rows.extend(migrated(baseline));
     }
     let actual = serde_json::to_value(Inventory::generate(&root)).unwrap();
     assert_eq!(actual["rows"], json!(expected_rows));
-    assert_eq!(actual["cases"], Value::Object(expected_cases));
 }
 
 #[test]
-fn checked_in_logging_cases_use_the_participant_schema_and_otherwise_match_the_frozen_baseline() {
+fn checked_in_logging_cases_translate_to_the_frozen_baseline_on_every_subject_os() {
     let baseline = logging_baseline();
     let recorded = recorded_integration_cases();
+    let root = repository_root();
     for name in LOGGING_CASES {
         let recorded = &recorded[name];
         assert!(!recorded.old_schema, "{name}: must use the participant schema");
-        let (rows, case) = migrated(&baseline[name]);
-        assert_eq!(
-            json!({"rows": recorded.rows, "case": recorded.case}),
-            json!({"rows": rows, "case": case}),
-            "{name}: expected the participant schema with only schema and exposed_ports changed, \
-             but its inventory entry differs from the frozen baseline"
-        );
+        assert_eq!(recorded.rows, migrated(&baseline[name]), "{name}");
+        assert_eq!(recorded.case["steps"], baseline[name].case["steps"], "{name}");
+        let content = read_text(&root.join(format!("test/integration/cases/{name}/config.yaml")));
+        assert_logging_translation(&content, name, &baseline[name]);
     }
 }
 
-/// Extracts logging participants' names and config, plus unresolved step paths omitted by integration translation.
+/// Extracts participant settings and unresolved paths for comparison with the frozen configuration.
 fn unrecorded_logging_case_fields(case: &Value) -> Value {
     let step_paths: Vec<_> = case["procedure"]
         .as_array()

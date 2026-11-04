@@ -83,7 +83,7 @@ impl Step for Probe {
                     .resolve(path)
                     .map_err(|message| (AssertionStatus::Errored, message))?;
                 match cx
-                    .primitives(&self.on)
+                    .handle(&self.on)
                     .expect("probe needs its participant")
                     .read_file(&path)
                     .await
@@ -234,7 +234,7 @@ impl Step for Reach {
             .expect("reach needs a planned route");
         let result = probe_from_runner_host(
             route,
-            cx.primitives(server).expect("reach needs its server"),
+            cx.handle(server).expect("reach needs its server").primitives,
             &AttemptLimits::new(self.budget()),
         )
         .await;

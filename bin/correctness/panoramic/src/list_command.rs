@@ -210,18 +210,20 @@ mod tests {
             "type: integration\nname: case\ntimeout: 1s\nruntimes: [linux]\nprocedure: []\n",
             Os::Linux,
         );
-        for (plan, expected_layout) in [
+        for (plan, expected_layout, expected_keys) in [
             (
                 participant,
                 serde_json::json!([{
                     "participant": "adp", "type": "agent-adp", "os": "linux", "realization": "linux-container",
                 }]),
+                vec!["layout", "roles", "status", "timeout", "type"],
             ),
             (
                 typed,
                 serde_json::json!([{
                     "participant": null, "type": null, "os": "linux", "realization": "linux-container",
                 }]),
+                vec!["images", "layout", "roles", "runtime", "status", "timeout", "type"],
             ),
         ] {
             let built = build_runners([&plan], Os::Linux, &RunnerArtifacts::Overrides(&[])).unwrap();
@@ -236,7 +238,7 @@ mod tests {
                     .keys()
                     .map(String::as_str)
                     .collect::<Vec<_>>(),
-                ["images", "layout", "roles", "runtime", "status", "timeout", "type"]
+                expected_keys
             );
             assert_eq!(
                 entry["roles"],
@@ -280,8 +282,8 @@ mod tests {
         ];
         let entries = json_listing(&plans, &[], Os::Linux).unwrap();
         assert_eq!(entries.len(), 2);
-        assert_eq!(entries["case"]["runtime"], "linux");
-        assert!(entries["case"]["images"].get("container").is_some());
+        assert!(entries["case"].get("runtime").is_none());
+        assert!(entries["case"].get("images").is_none());
         let native = &entries["native"];
         assert_eq!(
             native
@@ -767,18 +769,22 @@ mod tests {
             "saluki-images/agent-data-plane:testing-windows"
         );
 
-        let path = write_case(dir.path(), "participant", &PARTICIPANT_FIELDS.replace("1s", "9s"));
+        let path = write_case(
+            dir.path(),
+            "participant",
+            &PARTICIPANT_FIELDS.replace("1s", "9s").replace("[linux]", "[windows]"),
+        );
         let cases = crate::CASE_LOADER.load_file(&path).unwrap();
-        let runners = build_case_runners(cases, Os::Linux, &[]).unwrap();
-        let entries = listing(&runners, &[], Os::Linux);
+        let runners = build_case_runners(cases, Os::Windows, &[]).unwrap();
+        let entries = listing(&runners, &[], Os::Windows);
         assert_eq!(entries.len(), 1);
         let entry = &entries["participant"];
         assert_eq!(entry["type"], "integration");
-        assert_eq!(entry["runtime"], "linux");
+        assert_eq!(entry["runtime"], "windows");
         assert_eq!(entry["timeout"], serde_json::json!({"secs": 9, "nanos": 0}));
         assert_eq!(
             entry["images"]["container"],
-            "saluki-images/datadog-agent:testing-devel"
+            "saluki-images/agent-data-plane:testing-windows"
         );
     }
 }

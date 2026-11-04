@@ -14,11 +14,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use panoramic_core::case::CaseSchema;
+use panoramic_core::case::{CaseFile, CaseSchema, ProcedureNode, StepNode};
 use panoramic_core::layout::Os;
 use panoramic_core::plan::Compiled;
 use panoramic_participants::AgentAdp;
-use saluki_error::{generic_error, GenericError};
+use saluki_error::GenericError;
 use serde::Serialize;
 use serde_json::{json, Value};
 
@@ -26,14 +26,11 @@ use super::{
     build_runners,
     route::{route, Route},
     runner_artifacts::RunnerArtifacts,
-    tests::{planner, write_case, LOGGING_INTEGRATION, LOGGING_PARTICIPANT, PARTICIPANT_FIELDS},
-    typed_case::{LoadedCase, RunnableCase, TypedConfig},
-    AssertionStep, IntegrationConfig,
+    tests::{planner, write_case, LOGGING_PARTICIPANT, PARTICIPANT_FIELDS},
+    typed_case::{LoadedCase, LoadedPlan, TypedConfig},
+    AssertionStep, BuiltCase, IntegrationConfig,
 };
-use crate::{
-    correctness::analysis::AnalysisMode,
-    test::{Test, TestSuite},
-};
+use crate::{correctness::analysis::AnalysisMode, test::TestSuite};
 
 const JSON_PATH: &str = "docs/development/plans/panoramic-architecture-inventory.json";
 const MARKDOWN_PATH: &str = "docs/development/plans/panoramic-architecture.md";
@@ -51,6 +48,7 @@ const PARTICIPANTS: &str = "participants";
 const SELECTED: &str = "selected";
 const DISABLED: &str = "disabled";
 const OLD: &str = "old";
+const NATIVE: &str = "native";
 
 /// Case directories relative to the repository root, with the suite and status their cases must have.
 const CASE_DIRS: [(&str, &str, &str); 3] = [
@@ -144,9 +142,41 @@ impl Steps {
 
 impl Row {
     fn from_case(
-        root: &Path, case: &LoadedCase, runner: &dyn Test, subject_os: &str, status: &'static str,
-        schemas: &BTreeMap<String, String>, listed: &Value,
+        root: &Path, built: &BuiltCase, subject_os: &str, status: &'static str, schemas: &BTreeMap<String, String>,
+        listed: &Value,
     ) -> Self {
+        let case = built.plan.case();
+        let (runtime, images, execution) = if let Some(runner) = built.runner() {
+            (
+                runner.runtime(),
+                runner.images().into_iter().map(|(k, v)| (k.to_string(), v)).collect(),
+                OLD,
+            )
+        } else {
+            assert_eq!(route(&built.plan), Route::Native);
+            let CaseSchema::Participants { file, .. } = case.schema() else {
+                panic!("native cases declare participants")
+            };
+            let subject = file.participants.iter().find(|(_, entry)| entry.subject).unwrap().0;
+            let realization = built
+                .plan
+                .layout()
+                .unwrap()
+                .iter()
+                .find(|(name, _)| name == subject)
+                .unwrap()
+                .1;
+            (
+                realization.kind.name().into(),
+                built
+                    .plan
+                    .artifacts()
+                    .iter()
+                    .map(|binding| (binding.role.name.into(), binding.reference.clone()))
+                    .collect(),
+                NATIVE,
+            )
+        };
         let source = relative_path(root, case.source());
         let schema = match case.schema() {
             CaseSchema::Participants { .. } => PARTICIPANTS.to_string(),
@@ -158,13 +188,13 @@ impl Row {
             name: case.name().to_string(),
             suite: suite.to_string(),
             subject_os: subject_os.to_string(),
-            runtime: runner.runtime(),
+            runtime,
             source,
             schema,
-            execution: OLD,
+            execution,
             status,
             timeout: format!("{:?}", case.timeout()),
-            images: runner.images().into_iter().map(|(k, v)| (k.to_string(), v)).collect(),
+            images,
             ci_jobs: Vec::new(),
             ci_mixins: Vec::new(),
         };
@@ -260,8 +290,7 @@ impl Inventory {
                 let status = if case.is_disabled() { DISABLED } else { SELECTED };
                 rows.push(Row::from_case(
                     root,
-                    case,
-                    built.runner().unwrap(),
+                    &built,
                     os.name(),
                     status,
                     &schemas,
@@ -270,6 +299,14 @@ impl Inventory {
             }
         }
 
+        // Keep the snapshot stable when generated on either supported host architecture.
+        for row in &mut rows {
+            if let Some(reference) = row.images.get_mut("courier-linux-binary") {
+                if reference == "target/aarch64-unknown-linux-musl/release/panoramic-courier" {
+                    *reference = "target/x86_64-unknown-linux-musl/release/panoramic-courier".into();
+                }
+            }
+        }
         rows.sort_by(|a, b| (&a.suite, &a.name, &a.subject_os).cmp(&(&b.suite, &b.name, &b.subject_os)));
         let mut keys = BTreeSet::new();
         for row in &rows {
@@ -454,34 +491,46 @@ fn record_cases(cases: &[LoadedCase], content: &str, directory: &str) -> Result<
                 }),
                 ignored_fields: Vec::new(),
             },
-            CaseSchema::Participants { .. } => {
-                let translate = |os| -> Result<IntegrationConfig, GenericError> {
+            CaseSchema::Participants { file, .. } => {
+                let mut steps = Steps::default();
+                let mut step_value = |step: &StepNode| {
+                    *steps.by_kind.entry(step.name.clone()).or_default() += 1;
+                    let mut fields = step.fields.clone();
+                    fields.insert("step".into(), json!(step.name));
+                    json!(fields)
+                };
+                let procedure = file
+                    .procedure
+                    .iter()
+                    .map(|node| match node {
+                        ProcedureNode::Step(step) => {
+                            steps.single_assertions += 1;
+                            step_value(step)
+                        }
+                        ProcedureNode::Parallel(parallel) => {
+                            steps.parallel_blocks += 1;
+                            steps.parallel_assertions += parallel.len();
+                            json!({"parallel": parallel.iter().map(&mut step_value).collect::<Vec<_>>()})
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                let mut config = BTreeMap::new();
+                for os in case.subject_os() {
                     let loaded = crate::CASE_LOADER
                         .load_content(content, directory, case.source())?
                         .into_iter()
                         .find(|loaded| loaded.name() == case.name())
                         .expect("reloading yields the same case");
                     let plan = planner()
-                        .compile(loaded, os)?
+                        .compile(loaded, *os)?
                         .into_plan()
                         .expect("the case declares this subject OS");
-                    plan.integration_config()
-                };
-                let mut subject_os = case.subject_os().iter();
-                let first_os = *subject_os.next().expect("loaded cases declare at least one subject OS");
-                let translated = translate(first_os)?;
-                let config = serde_json::to_value(&translated)?;
-                for os in subject_os {
-                    if serde_json::to_value(translate(*os)?)? != config {
-                        return Err(generic_error!(
-                            "case '{}' translates to different integration configurations on {} and {}; the coverage inventory records one configuration per case",
-                            case.name(), first_os.name(), os.name()
-                        ));
-                    }
+                    let participants = participant_records(&plan, file);
+                    config.insert(os.name(), json!({"participants": participants, "procedure": procedure}));
                 }
                 Case {
-                    config,
-                    steps: Some(Steps::from_config(&translated)),
+                    config: json!(config),
+                    steps: Some(steps),
                     comparison: None,
                     ignored_fields: Vec::new(),
                 }
@@ -491,6 +540,23 @@ fn record_cases(cases: &[LoadedCase], content: &str, directory: &str) -> Result<
         recorded.push((format!("{suite}/{}", case.name()), effective));
     }
     Ok(recorded)
+}
+
+fn participant_records<'a>(plan: &'a LoadedPlan, file: &CaseFile) -> BTreeMap<&'a str, Value> {
+    plan.layout()
+        .unwrap()
+        .iter()
+        .map(|(name, realization)| {
+            let entry = &file.participants[name];
+            (
+                name,
+                json!({
+                    "type": entry.participant_type, "subject": entry.subject,
+                    "realization": realization.kind.name(), "env": plan.case_values(name).unwrap().env,
+                }),
+            )
+        })
+        .collect()
 }
 
 /// Loads `doc` as the file at `source` and returns each case's recorded configuration.
@@ -701,63 +767,71 @@ fn coverage_inventory_matches_the_case_files() {
 }
 
 #[test]
-fn a_participant_case_and_its_integration_twin_produce_the_same_inventory_apart_from_the_schema_column() {
-    for (participant_yaml, integration_yaml, oses) in [
-        (
-            LOGGING_PARTICIPANT.to_string(),
-            LOGGING_INTEGRATION.to_string(),
-            vec!["linux", "macos", "windows"],
-        ),
-        (
-            LOGGING_PARTICIPANT
-                .replace("linux, macos, windows", "linux")
-                .replace(r"C:\adp\adp.log", "{{ adp.facts.default_log_file }}"),
-            LOGGING_INTEGRATION
-                .replace("linux, mac, windows", "linux")
-                .replace(r"C:\adp\adp.log", "/var/log/datadog/agent-data-plane.log"),
-            vec!["linux"],
-        ),
-    ] {
-        let participant_root = tempfile::tempdir().unwrap();
-        let integration_root = tempfile::tempdir().unwrap();
-        for (root, yaml) in [
-            (participant_root.path(), &participant_yaml),
-            (integration_root.path(), &integration_yaml),
-        ] {
-            create_case_dirs(root);
-            write_case(&root.join("test/integration/cases"), "alpha", yaml);
-        }
-        let mut participant =
-            serde_json::to_value(Inventory::generate(&participant_root.path().canonicalize().unwrap())).unwrap();
-        let integration =
-            serde_json::to_value(Inventory::generate(&integration_root.path().canonicalize().unwrap())).unwrap();
-        let participant_rows = participant["rows"].as_array_mut().unwrap();
-        let integration_rows = integration["rows"].as_array().unwrap();
-        assert_eq!(participant_rows.len(), oses.len());
-        assert_eq!(integration_rows.len(), oses.len());
-        for ((participant, integration), os) in participant_rows.iter_mut().zip(integration_rows).zip(oses) {
-            assert_eq!(participant["subject_os"], os);
-            assert_eq!(participant["schema"], PARTICIPANTS);
-            assert_eq!(participant["execution"], OLD);
-            assert_eq!(integration["schema"], INTEGRATION);
-            participant["schema"] = integration["schema"].clone();
-        }
-        assert_eq!(participant, integration);
-    }
-}
-
-#[test]
-#[should_panic(
-    expected = "case 'alpha' translates to different integration configurations on linux and windows; the coverage inventory records one configuration per case"
-)]
-fn inventory_rejects_participant_cases_whose_configuration_differs_by_os() {
+fn participant_inventory_records_native_rows_and_per_os_configuration_as_written() {
     let root = tempfile::tempdir().unwrap();
     create_case_dirs(root.path());
     let yaml = LOGGING_PARTICIPANT
         .replace("linux, macos, windows", "linux, windows")
-        .replace(r"C:\adp\adp.log", "{{ adp.facts.default_log_file }}");
+        .replace(r"C:\adp\adp.log", "{{ adp.facts.default_log_file }}")
+        .replace(
+            "    config:\n",
+            "    config:\n      os: {windows: {env: {DD_API_KEY: windows-key}}}\n",
+        );
     write_case(&root.path().join("test/integration/cases"), "alpha", &yaml);
-    Inventory::generate(&root.path().canonicalize().unwrap());
+    let inventory = Inventory::generate(&root.path().canonicalize().unwrap());
+    assert_eq!(inventory.rows.len(), 2);
+    let linux = &inventory.rows[0];
+    assert_eq!(linux.subject_os, "linux");
+    assert_eq!(linux.execution, NATIVE);
+    assert_eq!(linux.runtime, "linux-container");
+    assert_eq!(
+        linux.images.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["agent-adp-linux-image", "courier-linux-binary", "fixup-image"]
+    );
+    assert_eq!(
+        linux.images["agent-adp-linux-image"],
+        "saluki-images/datadog-agent:testing-devel"
+    );
+    assert_eq!(
+        linux.images["courier-linux-binary"],
+        "target/x86_64-unknown-linux-musl/release/panoramic-courier"
+    );
+    assert_eq!(inventory.rows[1].execution, OLD);
+    assert_eq!(inventory.rows[1].runtime, "windows");
+    let case = &inventory.cases["integration/alpha"];
+    let written: Value = serde_saphyr::from_str(&yaml).unwrap();
+    for (os, realization) in [("linux", "linux-container"), ("windows", "windows-container")] {
+        assert_eq!(case.config[os]["procedure"], written["procedure"]);
+        assert_eq!(case.config[os]["participants"]["adp"]["type"], "agent-adp");
+        assert_eq!(case.config[os]["participants"]["adp"]["subject"], true);
+        assert_eq!(case.config[os]["participants"]["adp"]["realization"], realization);
+    }
+    assert_eq!(
+        case.config["windows"]["participants"]["adp"]["env"]["DD_API_KEY"],
+        "windows-key"
+    );
+    assert_eq!(
+        case.config["linux"]["participants"]["adp"]["env"],
+        written["participants"]["adp"]["config"]["env"]
+    );
+    let steps = case.steps.as_ref().unwrap();
+    assert_eq!(
+        (
+            steps.single_assertions,
+            steps.parallel_blocks,
+            steps.parallel_assertions,
+            steps.actions
+        ),
+        (2, 1, 2, 0)
+    );
+    assert_eq!(
+        steps.by_kind,
+        BTreeMap::from([
+            ("file_contains".into(), 2),
+            ("log_contains".into(), 1),
+            ("log_not_contains".into(), 1)
+        ])
+    );
 }
 
 #[test]
@@ -1000,7 +1074,7 @@ fn correctness_ci_mixins_reject_a_skipped_row() {
 }
 
 #[test]
-fn every_participant_case_in_the_repository_routes_to_the_bridge_on_each_declared_subject_os() {
+fn linux_participant_cases_run_natively_and_macos_and_windows_use_the_bridge() {
     let root = repository_root();
     for os in [Os::Linux, Os::MacOs, Os::Windows] {
         let cases = crate::CASE_LOADER
@@ -1012,7 +1086,13 @@ fn every_participant_case_in_the_repository_routes_to_the_bridge_on_each_declare
                 continue;
             }
             let plan = planner().compile(case, os).unwrap().into_plan().unwrap();
-            assert_eq!(route(&plan), Route::Bridge, "{} on {}", plan.case().name(), os.name());
+            assert_eq!(
+                route(&plan),
+                if os == Os::Linux { Route::Native } else { Route::Bridge },
+                "{} on {}",
+                plan.case().name(),
+                os.name()
+            );
             participants += 1;
         }
         assert!(participants > 0, "no participant cases checked on {}", os.name());
@@ -1439,20 +1519,19 @@ comparison: {image: comparison}
     participant["participants"]["adp"]["config"]["env"]["DD_API_KEY"] = json!("x");
     let changed = loaded_view(&participant, "alpha", Path::new("alpha/config.yaml")).unwrap();
     assert_ne!(changed, baseline);
-    assert_eq!(changed[0][1]["env"]["DD_API_KEY"], "x");
+    assert_eq!(changed[0][1]["linux"]["participants"]["adp"]["env"]["DD_API_KEY"], "x");
 }
 
 #[test]
-fn loaded_view_fails_for_a_participant_case_the_translation_cannot_run() {
+fn loaded_view_records_participant_cases_independently_of_bridge_support() {
     let doc: Value = serde_saphyr::from_str(
         &PARTICIPANT_FIELDS.replace("subject: true", "subject: true, realization: {kind: linux-container}"),
     )
     .unwrap();
-    let error = loaded_view(&doc, "alpha", Path::new("alpha/config.yaml")).unwrap_err();
+    let view = loaded_view(&doc, "alpha", Path::new("alpha/config.yaml")).unwrap();
     assert_eq!(
-        error.to_string(),
-        "Cannot run case 'alpha' from alpha/config.yaml: \
-         participant 'adp' sets 'realization', which the integration runner does not support"
+        view[0][1]["linux"]["participants"]["adp"]["realization"],
+        "linux-container"
     );
 }
 
@@ -1462,9 +1541,13 @@ fn migration_proofs_name_inventoried_rows_and_their_ci_evidence() {
     let inventory = Inventory::generate(&root);
     let markdown = read_text(&root.join(MARKDOWN_PATH));
     let (_, proofs, _) = marked_region(&markdown, PROOFS_BEGIN, PROOFS_END);
+    check_migration_proofs(&inventory, proofs);
+}
+
+fn check_migration_proofs(inventory: &Inventory, proofs: &str) {
     let mut lines = proofs.lines().filter(|line| !line.trim().is_empty());
-    assert_eq!(lines.next(), Some("| Case | Subject OS | Proof |"));
-    assert_eq!(lines.next(), Some("| --- | --- | --- |"));
+    assert_eq!(lines.next(), Some("| Case | Subject OS | Execution | Proof |"));
+    assert_eq!(lines.next(), Some("| --- | --- | --- | --- |"));
     let mut proven_rows = BTreeSet::new();
     for line in lines {
         assert!(
@@ -1475,25 +1558,32 @@ fn migration_proofs_name_inventoried_rows_and_their_ci_evidence() {
             .split('|')
             .map(|s| s.trim().trim_matches('`'))
             .collect();
-        assert_eq!(columns.len(), 3, "Invalid proof row: {line}");
-        assert!(!columns[2].is_empty(), "Missing migration proof: {line}");
+        assert_eq!(columns.len(), 4, "Invalid proof row: {line}");
+        let proof = columns[3];
+        if proof.starts_with("Pending CI.") {
+            assert_eq!(columns[2], NATIVE, "Only native rows may have a pending proof: {line}");
+        } else {
+            assert!(
+                proof.contains(PROOF_PIPELINE_URL),
+                "Migration proof must link its pipeline: {line}"
+            );
+            assert!(
+                proof.contains(PROOF_JOB_URL),
+                "Migration proof must link a passing job: {line}"
+            );
+            assert!(
+                proof.contains(PROOF_COMPARISON),
+                "Migration proof must name its comparison commit: {line}"
+            );
+        }
         assert!(
-            columns[2].contains(PROOF_PIPELINE_URL),
-            "Migration proof must link its pipeline: {line}"
+            proven_rows.insert((columns[0], columns[1], columns[2])),
+            "Duplicate migration proof: {line}"
         );
-        assert!(
-            columns[2].contains(PROOF_JOB_URL),
-            "Migration proof must link a passing job: {line}"
-        );
-        assert!(
-            columns[2].contains(PROOF_COMPARISON),
-            "Migration proof must name its comparison commit: {line}"
-        );
-        proven_rows.insert((columns[0], columns[1]));
         let matches = inventory
             .rows
             .iter()
-            .filter(|row| row.name == columns[0] && row.subject_os == columns[1])
+            .filter(|row| row.name == columns[0] && row.subject_os == columns[1] && row.execution == columns[2])
             .count();
         assert_eq!(
             matches, 1,
@@ -1503,11 +1593,41 @@ fn migration_proofs_name_inventoried_rows_and_their_ci_evidence() {
     }
     for row in inventory.rows.iter().filter(|row| row.schema == PARTICIPANTS) {
         assert!(
-            proven_rows.contains(&(row.name.as_str(), row.subject_os.as_str())),
+            proven_rows.contains(&(row.name.as_str(), row.subject_os.as_str(), row.execution)),
             "Participant-schema row must have a migration proof: {} / {}",
             row.name,
             row.subject_os,
         );
+    }
+}
+
+#[test]
+fn migration_proofs_reject_wrong_execution_pending_old_rows_and_missing_participant_rows() {
+    let root = repository_root();
+    let inventory = Inventory::generate(&root);
+    let markdown = read_text(&root.join(MARKDOWN_PATH));
+    let (_, proofs, _) = marked_region(&markdown, PROOFS_BEGIN, PROOFS_END);
+    for (invalid, expected) in [
+        (
+            proofs.replacen("| native | Pending CI.", "| old | Pending CI.", 1),
+            "Only native rows may have a pending proof",
+        ),
+        (
+            proofs.replacen("| old | Tested", "| native | Tested", 1),
+            "Migration proof must name exactly one inventory row",
+        ),
+        (
+            proofs
+                .lines()
+                .filter(|line| !line.starts_with("| adp-logging-default-path |"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            "Participant-schema row must have a migration proof",
+        ),
+    ] {
+        let panic = std::panic::catch_unwind(|| check_migration_proofs(&inventory, &invalid)).unwrap_err();
+        let message = panic.downcast::<String>().unwrap();
+        assert!(message.contains(expected), "{message}");
     }
 }
 

@@ -478,3 +478,33 @@ async fn the_images_shipped_services_match_the_definition_sources_and_listener_d
         );
     }
 }
+
+#[tokio::test]
+#[ignore = "needs product images; run with make test-panoramic-products"]
+async fn linux_logging_default_path_case_passes_natively() {
+    let _ = crate::default_crypto_provider().install_default();
+    let mut case: serde_json::Value = serde_saphyr::from_str(include_str!(
+        "../../../../../test/integration/cases/adp-logging-default-path/config.yaml"
+    ))
+    .unwrap();
+    case.as_object_mut().unwrap().remove("name");
+    let (_logs, report) = run_native_case(
+        panoramic_participants::REGISTERED_TYPES,
+        panoramic_steps::REGISTERED_STEPS,
+        case,
+        product_bindings(),
+        CancellationToken::new(),
+    )
+    .await;
+    assert_eq!(report["outcome"], "passed", "{report:#}");
+    let assertions = report["assertions"].as_array().unwrap();
+    assert_eq!(assertions.len(), 2);
+    assert!(
+        assertions.iter().all(|assertion| assertion["status"] == "passed"),
+        "{report:#}"
+    );
+    let participant = &report["participants"][0];
+    assert_eq!(participant["name"], "adp");
+    assert_eq!(participant["processes"][0]["name"], "adp");
+    assert_eq!(participant["processes"][1]["name"], "agent");
+}

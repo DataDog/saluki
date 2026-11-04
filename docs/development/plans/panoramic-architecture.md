@@ -12,25 +12,27 @@ configuration. Use it to check coverage when changing case schemas or runners.
 - **Subject OS:** Linux, macOS or Windows; independent of the host running the inventory test. A file with
   `type: integration` must declare `runtimes` explicitly because the loader's default depends on the host OS.
   A participant case must declare `subject_os`.
-- **Runtime:** the loader's runtime identifier (`mac` means macOS; correctness uses `docker` or `kubernetes_in_docker`).
+- **Runtime:** the typed runner's identifier (`mac` means macOS; correctness uses `docker` or `kubernetes_in_docker`),
+  or the native subject participant's realization kind.
 - **Status:** selected by CI discovery, or disabled: the file sets `disabled: true` and lives in
   `test/correctness/disabled/`, which CI does not list. The inventory requires each case's directory to match
   its suite and status.
 - **CI job:** the job that selects this row. Correctness jobs belong to the `run-correctness-tests` child pipeline.
   Disabled rows have no job. macOS rows list both architectures.
 - **Schema:** the file's `type` value, or `participants` for a file that declares participants.
-- **Execution:** `old` identifies the integration and correctness runners. A participant case is translated to an
-  integration case and runs on the integration runner, so it is `old` too.
+- **Execution:** `old` identifies typed and bridge runners; `native` identifies the participant lifecycle.
 - **Steps:** assertions and actions, including assertions inside parallel blocks, or the correctness comparison mode.
 - **Ignored:** number of key paths the loader drops without error. The probe loads each modified file through the
-  case loader and, for a participant case, the translation. Replacing each value with either a map or a string must
+  case loader and planner. Replacing each value with either a map or a string must
   leave the recorded configuration unchanged. Paths are listed in the JSON.
 
 The [JSON inventory](./panoramic-architecture-inventory.json) also records source paths, timeouts, images before CLI
 image overrides, correctness CI mixins, and a `cases` map keyed by `<suite>/<name>`. Each case contains the effective
 configuration, integration step counts by kind or correctness comparison options, and ignored key paths. Integration
-OS rows share one case entry; matrix variants have separate entries. Totals count files once and steps per selected
-OS row; disabled rows are separate from selected totals.
+OS rows share one case entry; participant configurations are keyed by subject OS, and matrix variants have separate
+entries. Native rows record artifact references by role name using local defaults, with the courier path normalized
+to `x86_64` for a host-independent snapshot. Totals count files once and steps per selected OS row; disabled rows are
+separate from selected totals.
 
 ## Regenerating
 
@@ -83,10 +85,9 @@ equivalence, and migration proofs: their rows, CI links and comparison commit.
 ## Effective configuration scope
 
 The JSON records the loader's configuration with defaults and matrix environments applied, before CLI image
-overrides. For a participant case, the generator translates the integration configuration for each subject OS,
-requires the translations to be identical, and records one. Fact references in step paths are resolved; other paths
-and template values remain as configured. Use product `config_dump` output from CI runs to compare effective product
-configurations.
+overrides. For each subject OS, participant cases record participants' names, types, subject flags, realization kinds,
+and planned case environment after OS overlays. Procedures retain their fields as written, including unresolved paths.
+Use product `config_dump` output from CI runs to compare effective product configurations.
 
 <!-- coverage-inventory:begin -->
 
@@ -94,7 +95,7 @@ configurations.
 
 | Suite | Files | Selected rows (subject OS / runtime) | Disabled rows | Assertions (subject OS) | Actions (subject OS) |
 | --- | --- | --- | --- | --- | --- |
-| integration | 52 | linux / linux: 45; macos / mac: 31; windows / windows: 34 | 0 | linux: 191; macos: 130; windows: 144 | linux: 20; macos: 14; windows: 16 |
+| integration | 52 | linux / linux: 42; linux / linux-container: 3; macos / mac: 31; windows / windows: 34 | 0 | linux: 191; macos: 130; windows: 144 | linux: 20; macos: 14; windows: 16 |
 | correctness | 42 | linux / docker: 39; linux / kubernetes_in_docker: 7 | 2 | — | — |
 
 Total: 158 rows.
@@ -179,10 +180,10 @@ Total: 158 rows.
 | adp-disabled-exit | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 1, actions: 0 | 0 |
 | adp-disabled-exit | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 1, actions: 0 | 0 |
 | adp-ipc-no-dns | integration | linux | linux | selected | test-integration | integration | old | assertions: 4, actions: 0 | 0 |
-| adp-logging-default-path | integration | linux | linux | selected | test-integration | participants | old | assertions: 2, actions: 0 | 0 |
-| adp-logging-ignores-core-agent-log-file | integration | linux | linux | selected | test-integration | participants | old | assertions: 3, actions: 0 | 0 |
+| adp-logging-default-path | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 2, actions: 0 | 0 |
+| adp-logging-ignores-core-agent-log-file | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 3, actions: 0 | 0 |
 | adp-logging-mac-ignores-core-agent-log-file | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | old | assertions: 3, actions: 0 | 0 |
-| adp-logging-respects-data-plane-log-file | integration | linux | linux | selected | test-integration | participants | old | assertions: 2, actions: 0 | 0 |
+| adp-logging-respects-data-plane-log-file | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 2, actions: 0 | 0 |
 | adp-logging-respects-data-plane-log-file | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | old | assertions: 2, actions: 0 | 0 |
 | adp-logging-windows-default-path | integration | windows | windows | selected | test-integration-windows-amd64 | participants | old | assertions: 2, actions: 0 | 0 |
 | adp-logging-windows-ignores-core-agent-log-file | integration | windows | windows | selected | test-integration-windows-amd64 | participants | old | assertions: 3, actions: 0 | 0 |
@@ -266,44 +267,38 @@ Total: 158 rows.
 
 ## Integration runner translation
 
-A participant case runs on the integration runner only if it has one `agent-adp` participant configured by
-`config.env`, with `log_contains` and `log_not_contains` (`process` omitted), translated to `stream: both`, and
-`file_contains`. File paths may reference the participant's facts, resolved per subject OS. Log steps search captured
-output: the container's log stream (Agent and ADP under s6) on Linux, stdout and stderr of the spawned Agent and ADP
-processes on macOS, and the container's console output only on Windows.
+The bridge runs `agent-adp` participant cases on macOS and Windows. It accepts one participant configured through
+`config.env`, `log_contains` and `log_not_contains` with `process` omitted, and `file_contains`. Linux participant cases
+run natively. File paths may reference participant facts. The bridge translates log steps to `stream: both`.
 
-Participant-schema twins of the seven logging cases are built from a frozen copy of their inventory entries taken
-before their schema changed (`bin/correctness/panoramic/src/config/coverage_inventory/logging_baseline.json`). All
-seven logging cases use the participant schema. Both the twins and this inventory's entries must match that copy,
-apart from `schema` and `container.exposed_ports: []`. Edit the copy by hand when the inventory format changes;
-never regenerate it. In the integration schema the logging files declare `58125/udp`, which their participant-schema
-versions drop; only `port_listening` reads a published port's mapping. On Linux an empty list also stops Docker
-publishing the image's exposed ports; macOS host processes have no container, so there the list only feeds
-`port_listening`. Windows containers never publish exposed ports, so there an empty list only stops the container
-declaring the port. The translation uses default container settings, so changing these files' schema changes only
-the inventory's `schema` column and `container.exposed_ports: []`. List `subject_os` in `runtimes` order to preserve
-runtime order.
+The seven logging cases retain a frozen integration-schema baseline in
+`bin/correctness/panoramic/src/config/coverage_inventory/logging_baseline.json`. Tests compare each case's translation
+on every declared subject OS against its baseline configuration, except `container.exposed_ports: []`. This comparison
+also runs on Linux, independently of the selected execution route. Row comparisons allow the participant schema and,
+on Linux, native execution, `linux-container` runtime and role-keyed artifacts. Never regenerate the frozen baseline.
+The logging cases drop the legacy `58125/udp` exposed port, which only `port_listening` used.
 
 `adp-disabled-exit` and `adp-no-pipelines-exit` also fit the supported subset, but their log line stands in for a
 process exit. They keep the old schema until exits are observed directly.
 
 ## Migration proofs
 
-When changing a case's schema or runner, add CI evidence per (case, subject OS). Each proof names the tested commit and
-links its pipeline, links the passing CI jobs, identifies the runner and execution value, and names the commit whose
-inventory the case was compared with. Link CI runs; don't copy their logs into the repository.
+When changing a case's schema or runner, add CI evidence per (case, subject OS, execution). Native rows may say
+`Pending CI.` until CI runs. Each completed proof names the tested commit and links its pipeline, links the passing CI
+jobs, identifies the runner and execution value, and names the commit whose inventory the case was compared with.
+Link CI runs; don't copy their logs into the repository.
 
 <!-- migration-proofs:begin -->
-| Case | Subject OS | Proof |
-| --- | --- | --- |
-| adp-logging-default-path | linux | Tested `33e3e697c5` in [pipeline 149203111](https://gitlab.ddbuild.io/DataDog/saluki/-/pipelines/149203111): [test-integration](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351927) passed on the integration runner (execution `old`). Compared with the inventory at `b975a993e0`. |
-| adp-logging-ignores-core-agent-log-file | linux | Tested `33e3e697c5` in [pipeline 149203111](https://gitlab.ddbuild.io/DataDog/saluki/-/pipelines/149203111): [test-integration](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351927) passed on the integration runner (execution `old`). Compared with the inventory at `b975a993e0`. |
-| adp-logging-respects-data-plane-log-file | linux | Tested `33e3e697c5` in [pipeline 149203111](https://gitlab.ddbuild.io/DataDog/saluki/-/pipelines/149203111): [test-integration](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351927) passed on the integration runner (execution `old`). Compared with the inventory at `b975a993e0`. |
-| adp-logging-respects-data-plane-log-file | macos | Tested `33e3e697c5` in [pipeline 149203111](https://gitlab.ddbuild.io/DataDog/saluki/-/pipelines/149203111): [test-integration-macos-arm64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351928) and [test-integration-macos-amd64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351929) passed on the macOS host-process runner (execution `old`). Compared with the inventory at `b975a993e0`. Caveat: the case writes to a fixed `/tmp` path that nothing deletes, so `file_contains` could match a file left by an earlier run on the same host. |
-| adp-logging-mac-ignores-core-agent-log-file | macos | Tested `33e3e697c5` in [pipeline 149203111](https://gitlab.ddbuild.io/DataDog/saluki/-/pipelines/149203111): [test-integration-macos-arm64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351928) and [test-integration-macos-amd64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351929) passed on the macOS host-process runner (execution `old`). Compared with the inventory at `b975a993e0`. Caveat: the case writes to fixed `/tmp` paths that nothing deletes, so `file_contains` could match a file left by an earlier run on the same host. |
-| adp-logging-windows-default-path | windows | Tested `33e3e697c5` in [pipeline 149203111](https://gitlab.ddbuild.io/DataDog/saluki/-/pipelines/149203111): [test-integration-windows-amd64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351930) passed on the integration runner (execution `old`). Compared with the inventory at `b975a993e0`. |
-| adp-logging-windows-ignores-core-agent-log-file | windows | Tested `33e3e697c5` in [pipeline 149203111](https://gitlab.ddbuild.io/DataDog/saluki/-/pipelines/149203111): [test-integration-windows-amd64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351930) passed on the integration runner (execution `old`). Compared with the inventory at `b975a993e0`. |
-| adp-logging-windows-respects-data-plane-log-file | windows | Tested `33e3e697c5` in [pipeline 149203111](https://gitlab.ddbuild.io/DataDog/saluki/-/pipelines/149203111): [test-integration-windows-amd64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351930) passed on the integration runner (execution `old`). Compared with the inventory at `b975a993e0`. |
+| Case | Subject OS | Execution | Proof |
+| --- | --- | --- | --- |
+| adp-logging-default-path | linux | native | Pending CI. Before: Tested `33e3e697c5` in [pipeline 149203111](https://gitlab.ddbuild.io/DataDog/saluki/-/pipelines/149203111): [test-integration](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351927) passed on the integration runner (execution `old`). Compared with the inventory at `b975a993e0`. |
+| adp-logging-ignores-core-agent-log-file | linux | native | Pending CI. Before: Tested `33e3e697c5` in [pipeline 149203111](https://gitlab.ddbuild.io/DataDog/saluki/-/pipelines/149203111): [test-integration](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351927) passed on the integration runner (execution `old`). Compared with the inventory at `b975a993e0`. |
+| adp-logging-respects-data-plane-log-file | linux | native | Pending CI. Before: Tested `33e3e697c5` in [pipeline 149203111](https://gitlab.ddbuild.io/DataDog/saluki/-/pipelines/149203111): [test-integration](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351927) passed on the integration runner (execution `old`). Compared with the inventory at `b975a993e0`. |
+| adp-logging-respects-data-plane-log-file | macos | old | Tested `33e3e697c5` in [pipeline 149203111](https://gitlab.ddbuild.io/DataDog/saluki/-/pipelines/149203111): [test-integration-macos-arm64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351928) and [test-integration-macos-amd64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351929) passed on the macOS host-process runner (execution `old`). Compared with the inventory at `b975a993e0`. Caveat: the case writes to a fixed `/tmp` path that nothing deletes, so `file_contains` could match a file left by an earlier run on the same host. |
+| adp-logging-mac-ignores-core-agent-log-file | macos | old | Tested `33e3e697c5` in [pipeline 149203111](https://gitlab.ddbuild.io/DataDog/saluki/-/pipelines/149203111): [test-integration-macos-arm64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351928) and [test-integration-macos-amd64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351929) passed on the macOS host-process runner (execution `old`). Compared with the inventory at `b975a993e0`. Caveat: the case writes to fixed `/tmp` paths that nothing deletes, so `file_contains` could match a file left by an earlier run on the same host. |
+| adp-logging-windows-default-path | windows | old | Tested `33e3e697c5` in [pipeline 149203111](https://gitlab.ddbuild.io/DataDog/saluki/-/pipelines/149203111): [test-integration-windows-amd64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351930) passed on the integration runner (execution `old`). Compared with the inventory at `b975a993e0`. |
+| adp-logging-windows-ignores-core-agent-log-file | windows | old | Tested `33e3e697c5` in [pipeline 149203111](https://gitlab.ddbuild.io/DataDog/saluki/-/pipelines/149203111): [test-integration-windows-amd64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351930) passed on the integration runner (execution `old`). Compared with the inventory at `b975a993e0`. |
+| adp-logging-windows-respects-data-plane-log-file | windows | old | Tested `33e3e697c5` in [pipeline 149203111](https://gitlab.ddbuild.io/DataDog/saluki/-/pipelines/149203111): [test-integration-windows-amd64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351930) passed on the integration runner (execution `old`). Compared with the inventory at `b975a993e0`. |
 <!-- migration-proofs:end -->
 
 The macOS proofs carry a caveat: the integration runner's macOS host processes share the host's `/tmp`, and nothing

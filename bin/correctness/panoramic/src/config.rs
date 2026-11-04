@@ -1486,7 +1486,7 @@ timeout: 30s
         for (name, yaml, reason) in [
             (
                 "second",
-                PARTICIPANT_FIELDS.replace("subject: true", "subject: true, realization: {kind: linux-container}"),
+                PARTICIPANT_FIELDS.replace("subject: true", "subject: true, realization: {kind: host-process-group}"),
                 Some("sets 'realization', which the integration runner does not support"),
             ),
             (
@@ -1500,6 +1500,7 @@ timeout: 30s
                 Some("sets config.env 'PANORAMIC_DYNAMIC_IP'; names starting with PANORAMIC_DYNAMIC_ are reserved for cases with 'type: integration'"),
             ),
         ] {
+            let yaml = yaml.replace("[linux]", "[macos]").replace("runtimes: [macos]", "runtimes: [mac]");
             let path = write_case(dir.path(), name, &yaml);
             cases.extend(crate::CASE_LOADER.load_file(&path).unwrap());
             if let Some(reason) = reason {
@@ -1510,7 +1511,7 @@ timeout: 30s
             }
         }
         let overrides = ["unmatched=image:override".parse().unwrap()];
-        let error = build_case_runners(cases, Os::Linux, &overrides)
+        let error = build_case_runners(cases, Os::MacOs, &overrides)
             .err()
             .expect("unsupported participant settings must fail runner construction");
         assert_eq!(

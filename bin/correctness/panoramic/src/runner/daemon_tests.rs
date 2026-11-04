@@ -371,3 +371,36 @@ fn assert_interrupted_step(report: &Value) {
         }
     }
 }
+
+#[tokio::test]
+#[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
+async fn native_log_and_file_steps_observe_a_real_participant() {
+    let image = std::env::var("PANORAMIC_TEST_IMAGE").unwrap_or_else(|_| "alpine:latest".into());
+    let case = json!({
+        "timeout": "90s", "subject_os": ["linux"],
+        "participants": {"first": {"type": "fixture", "subject": true, "config": {"env": {
+            "SCRIPT": "printf 'ready\\n'; printf 'worker ready\\n' > \"$PANORAMIC_LOG_DIR/worker\"; sleep 60",
+        }}}},
+        "procedure": [
+            {"step": "log_contains", "on": "first", "process": "main", "pattern": "ready", "timeout": "20s"},
+            {"step": "log_contains", "on": "first", "process": "worker", "pattern": "worker ready", "timeout": "20s"},
+            {"step": "file_contains", "on": "first", "path": "/airlock/first/log/worker", "pattern": "worker ready", "timeout": "20s"},
+            {"step": "log_not_contains", "on": "first", "pattern": "panic", "during": "1s"},
+        ],
+    });
+    let (_logs, report) = super::test_support::run_native_case(
+        &[&Fixture],
+        panoramic_steps::REGISTERED_STEPS,
+        case,
+        BTreeMap::from([(IMAGE.name.into(), image)]),
+        CancellationToken::new(),
+    )
+    .await;
+    assert_eq!(report["outcome"], "passed", "{report:#}");
+    let assertions = report["assertions"].as_array().unwrap();
+    assert_eq!(assertions.len(), 4);
+    assert!(
+        assertions.iter().all(|assertion| assertion["status"] == "passed"),
+        "{report:#}"
+    );
+}

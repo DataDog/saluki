@@ -28,13 +28,13 @@ pub(crate) struct ExecCommand {
 }
 
 /// Operations on one participant, implemented by its backend.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "Handles reach participants through their backend's primitives.")
-)]
 #[async_trait]
 pub(crate) trait Primitives: Send + Sync {
     /// Runs a command, abandoning it after `limit`. Any exit code is data.
+    #[cfg_attr(
+        not(any(test, feature = "test-util")),
+        expect(dead_code, reason = "Command steps use the backend execution primitive.")
+    )]
     async fn exec(&self, command: ExecCommand, limit: Duration) -> Result<ExecOutput, HandleError>;
     /// Reads a regular file; `None` when the path is missing.
     async fn read_file(&self, path: &str) -> Result<Option<Vec<u8>>, HandleError>;
@@ -93,14 +93,20 @@ pub(crate) async fn send_from_runner_host(
 }
 
 /// Why an operation on a participant failed.
-#[derive(Debug, PartialEq, Eq, Snafu)]
-pub(crate) enum HandleError {
+#[derive(Clone, Debug, PartialEq, Eq, Snafu)]
+pub enum HandleError {
     /// The execution mechanism failed.
     #[snafu(display("{message}"))]
-    Harness { message: String },
+    Harness {
+        /// Why the mechanism failed.
+        message: String,
+    },
     /// The mechanism worked and the endpoint answered badly.
     #[snafu(display("{message}"))]
-    Product { message: String },
+    Product {
+        /// The unsuccessful answer.
+        message: String,
+    },
 }
 
 #[cfg(test)]

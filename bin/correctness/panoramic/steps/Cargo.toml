@@ -24,4 +24,4 @@ tokio = { workspace = true, features = ["time"] }
 panoramic-core = { workspace = true, features = ["test-util"] }
 serde-saphyr = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["macros", "rt", "test-util"] }

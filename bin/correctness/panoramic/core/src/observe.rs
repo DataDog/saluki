@@ -301,10 +301,6 @@ impl ParticipantObservation {
         }
     }
 
-    #[cfg_attr(
-        not(any(test, feature = "test-util")),
-        expect(dead_code, reason = "Log steps fail on a participant capture error.")
-    )]
     /// Returns capture progress, reporting a closed, unfinished channel as failed.
     pub(crate) fn capture(&self) -> Capture {
         capture_state(&self.capture_rx)

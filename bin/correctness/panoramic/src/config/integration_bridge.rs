@@ -27,11 +27,7 @@ use super::{
 use crate::dynamic_vars::ENV_PREFIX;
 
 /// Participant types the integration runner runs, by subject OS.
-pub(super) const BRIDGED_TYPES: &[(&str, Os)] = &[
-    (AgentAdp::NAME, Os::Linux),
-    (AgentAdp::NAME, Os::MacOs),
-    (AgentAdp::NAME, Os::Windows),
-];
+pub(super) const BRIDGED_TYPES: &[(&str, Os)] = &[(AgentAdp::NAME, Os::MacOs), (AgentAdp::NAME, Os::Windows)];
 
 /// Translates the case file's step fields, preserving step order and time budgets.
 ///
@@ -292,7 +288,7 @@ mod tests {
                 LOGGING_PARTICIPANT, PARTICIPANT_FIELDS,
             },
             typed_case::{RunnableCase, TypedConfig, TypedConfigLoader},
-            LINUX_RUNTIME, MAC_RUNTIME, WINDOWS_RUNTIME,
+            MAC_RUNTIME, WINDOWS_RUNTIME,
         },
         test::TestSuite,
     };
@@ -310,7 +306,7 @@ mod tests {
     }
 
     #[test]
-    fn bridged_cases_receive_case_environment_without_type_defaults() {
+    fn translation_uses_case_environment_without_type_defaults() {
         let yaml = PARTICIPANT_FIELDS.replace("subject: true", "subject: true, config: {env: {DD_CMD_PORT: '55123', CASE_ONLY: base}, os: {linux: {env: {CASE_ONLY: linux}}}}");
         let plan = plan(&yaml, Os::Linux);
         assert_eq!(plan.effective_config("adp").unwrap().env["DD_DOGSTATSD_PORT"], "58125");
@@ -367,11 +363,11 @@ mod tests {
     }
 
     #[test]
-    fn participant_case_runners_match_their_integration_twins_on_every_subject_os() {
+    fn bridged_case_runners_match_their_integration_twins_on_macos_and_windows() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("alpha/config.yaml");
         let overrides = ["container=target:custom".parse().unwrap()];
-        for runtime in [LINUX_RUNTIME, MAC_RUNTIME, WINDOWS_RUNTIME] {
+        for runtime in [MAC_RUNTIME, WINDOWS_RUNTIME] {
             let os = crate::config::os_for_runtime(runtime).unwrap();
             let [participant_plans, integration_plans] = [LOGGING_PARTICIPANT, LOGGING_INTEGRATION].map(|yaml| {
                 write_case(dir.path(), "alpha", yaml);
@@ -841,7 +837,7 @@ mod tests {
             ),
             (
                 "subject: true",
-                "subject: true, realization: {kind: linux-container}",
+                "subject: true, realization: {kind: host-process-group}",
                 "participant 'adp' sets 'realization', which the integration runner does not support",
             ),
             (
@@ -861,9 +857,9 @@ mod tests {
             ),
         ] {
             let dir = tempfile::tempdir().unwrap();
-            let path = write_case(dir.path(), "alpha", &PARTICIPANT_FIELDS.replace(old, new));
+            let path = write_case(dir.path(), "alpha", &PARTICIPANT_FIELDS.replace(old, new).replace("[linux]", "[macos]"));
             let cases = crate::CASE_LOADER.load_file(&path).unwrap();
-            let error = build_case_runners(cases, Os::Linux, &[])
+            let error = build_case_runners(cases, Os::MacOs, &[])
                 .err()
                 .expect("unsupported participant cases must fail runner construction");
             assert_eq!(

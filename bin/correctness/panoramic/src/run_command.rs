@@ -818,7 +818,11 @@ mod tests {
         let plans = [
             plan_with_plain(&native, "native", Os::Linux),
             plan_with_plain(&unavailable, "unavailable", Os::Linux),
-            plan_with_plain(PARTICIPANT_FIELDS, "bridge", Os::Linux),
+            plan_with_plain(
+                "type: integration\nname: typed\ntimeout: 1s\nruntimes: [linux]\nprocedure: []\n",
+                "typed",
+                Os::Linux,
+            ),
             plan_with_plain(
                 &format!("type: correctness\n{CORRECTNESS_FIELDS}"),
                 "unselected",
@@ -826,7 +830,7 @@ mod tests {
             ),
         ];
         let mut built = build_runners(plans, Os::Linux, &RunnerArtifacts::Overrides(&[])).unwrap();
-        let selected = ["native".into(), "unavailable".into(), "bridge".into()];
+        let selected = ["native".into(), "unavailable".into(), "typed".into()];
         retain_selected(&mut built, Some(&selected), |built| built.plan.case().name());
         let unprovidable = BTreeMap::from([(
             Realization {

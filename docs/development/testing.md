@@ -223,9 +223,9 @@ procedure:   # Required; at least one step.
 ```
 
 Panoramic routes a participant case to the integration runner when every participant's type has an integration bridge
-route on the selected subject OS. `agent-adp` has one on Linux, macOS and Windows. The integration runner translates
-the case and runs it in a Linux or Windows container with default settings, or as host processes on macOS.
-Other participant cases use native execution. Panoramic prepares each case's scope, creates participants in create order
+route on the selected subject OS. `agent-adp` uses the bridge on macOS and Windows, running as host processes on macOS
+or in a Windows container with default settings. Its Linux participant cases use native execution, as do other
+participant types without a bridge route. Panoramic prepares each case's scope, creates participants in create order
 from verified image IDs, and starts each level once the readiness evidence of the servers it connects to is observed. A
 readiness wait fails as soon as its server's container exit is observed. Each started container's exit and output are
 watched in case-owned tasks. Output reaches `<log_dir>/<participant>/container.stdout.log` and `container.stderr.log` as
@@ -239,8 +239,23 @@ error naming the bound and the output files. Empty lines count as one byte; unte
 Capture still writes every byte to disk, so the files remain the full output source.
 After the start levels, native Linux container cases run their procedure in the `steps` phase, using the same step
 budgets, case deadline, parallel blocks and fail-fast behavior as the integration runner. Steps receive the started
-participants' primitives, exit and output observations, planned routes, and early and late facts; late facts in step
-fields resolve when the step runs. Registered log and file assertions require the integration runner.
+participants through borrowed handles. File paths resolve early and late facts when the step runs.
+
+The native log and file steps accept `on`, `pattern` and an optional `regex` flag (default false):
+
+- `log_contains` searches output from the participant's start, optionally narrowed by `process`, until `timeout`.
+  A match passes; completed output without a match or a timeout fails.
+- `log_not_contains` searches the same output for `during`, optionally narrowed by `process`. A match fails and quotes
+  the matching line. Completed output keeps the wall-clock window; an exit alone does not fail this assertion.
+- `file_contains` resolves `path` once, then reads until the contents match or `timeout` expires. Invalid UTF-8 bytes
+  become replacement characters. Missing files and contents without a match are retried. Timeout reports the last
+  observed file state.
+
+Capture failures and failed read mechanisms are errors, not assertion failures. Output steps scan available lines
+before reporting a capture failure. A failure in any capture of the participant errors the step, even when `process`
+restricts the lines it searches. The integration bridge translates these three steps; log steps on the bridge must
+omit `process`.
+
 The `observe` phase gives exited participants up to five seconds to finish
 capturing output; it also runs after a setup failure if any participant started. Running participants are skipped, and
 case cancellation ends the wait. The runner snapshots observations, stops observation tasks, then reclaims resources.

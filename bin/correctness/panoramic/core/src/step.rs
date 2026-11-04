@@ -6,12 +6,13 @@ use async_trait::async_trait;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
+pub use crate::handle::HandleError;
 use crate::{
     backend::LateFact,
     case::{template::Reference, StepTemplate},
-    endpoint::{EndpointOperation, RunnerHostRoute},
+    endpoint::EndpointOperation,
     handle::Primitives,
-    observe::ParticipantObservation,
+    observe::{Capture, ParticipantExit, ParticipantObservation},
     plan::ParticipantPlan,
     record::StepReport,
 };
@@ -71,20 +72,12 @@ impl<'a> StepContext<'a> {
         Self { plan, participants }
     }
 
-    #[cfg_attr(
-        not(any(test, feature = "test-util")),
-        expect(dead_code, reason = "Participant I/O for native steps.")
-    )]
-    pub(crate) fn primitives(&self, name: &str) -> Option<&dyn Primitives> {
-        self.participants.get(name).map(|participant| participant.primitives)
-    }
-
-    #[cfg_attr(
-        not(any(test, feature = "test-util")),
-        expect(dead_code, reason = "Exit and output observations for native steps.")
-    )]
-    pub(crate) fn observation(&self, name: &str) -> Option<&ParticipantObservation> {
-        self.participants.get(name).map(|participant| participant.observation)
+    /// Returns a borrowed handle, or `None` if the participant did not start.
+    pub fn handle(&self, name: &str) -> Option<Handle<'_>> {
+        self.participants.get(name).map(|participant| Handle {
+            primitives: participant.primitives,
+            observation: participant.observation,
+        })
     }
 
     pub(crate) fn late_fact(&self, name: &str, fact: LateFact) -> Option<&str> {
@@ -93,19 +86,20 @@ impl<'a> StepContext<'a> {
 
     #[cfg_attr(
         not(any(test, feature = "test-util")),
-        expect(dead_code, reason = "Runner-host routes for native steps.")
+        expect(dead_code, reason = "Runner-host routes for endpoint steps.")
     )]
     pub(crate) fn runner_host_route(
         &self, server: &str, endpoint: &str, operation: EndpointOperation,
-    ) -> Option<&RunnerHostRoute> {
+    ) -> Option<&crate::endpoint::RunnerHostRoute> {
         self.plan.runner_host_route(server, endpoint, operation)
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "Execution-time template resolution for native steps.")
-    )]
-    pub(crate) fn resolve(&self, template: &StepTemplate) -> Result<String, String> {
+    /// Resolves a step template using planned facts and the started participants' late facts.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a missing fact or a substitution that introduces a template reference.
+    pub fn resolve(&self, template: &StepTemplate) -> Result<String, String> {
         template.0.substitute(|written, reference| {
             let value = match reference {
                 Reference::Fact { participant, fact } => self
@@ -119,6 +113,98 @@ impl<'a> StepContext<'a> {
             };
             Ok(Some(value.to_owned()))
         })
+    }
+}
+
+/// A started participant's files and captured output, borrowed for a step.
+pub struct Handle<'a> {
+    pub(crate) primitives: &'a dyn Primitives,
+    observation: &'a ParticipantObservation,
+}
+
+impl Handle<'_> {
+    /// Reads output from its beginning, optionally restricted to a named process.
+    pub fn output<'a>(&'a self, process: Option<&'a str>) -> OutputCursor<'a> {
+        OutputCursor {
+            observation: self.observation,
+            process,
+            cursor: 0,
+        }
+    }
+
+    /// Reads a regular file, returning `None` if it is missing.
+    ///
+    /// # Errors
+    ///
+    /// Distinguishes a failed read mechanism from an unsuccessful product answer.
+    pub async fn read_file(&self, path: &str) -> Result<Option<Vec<u8>>, HandleError> {
+        self.primitives.read_file(path).await
+    }
+}
+
+/// An independent position in a participant's captured output.
+pub struct OutputCursor<'a> {
+    observation: &'a ParticipantObservation,
+    process: Option<&'a str>,
+    cursor: usize,
+}
+
+/// Lines read since the previous batch and the capture state observed before reading them.
+pub struct OutputBatch {
+    /// Captured lines, with the optional process filter applied.
+    pub lines: Vec<String>,
+    /// Whether output can still arrive or capture failed.
+    pub end: OutputEnd,
+}
+
+/// The state of a participant's output capture.
+#[derive(Debug, PartialEq, Eq)]
+pub enum OutputEnd {
+    /// More output may arrive.
+    Open,
+    /// The participant exited and every output capture finished.
+    Complete,
+    /// Any capture of the participant failed or the retained line buffer overflowed,
+    /// even when the cursor filters lines to one process.
+    Failed(String),
+}
+
+impl OutputCursor<'_> {
+    /// Reads available lines before reporting completion or capture failure.
+    pub fn read(&mut self) -> OutputBatch {
+        // Snapshot captures first so a final batch cannot be skipped on completion.
+        let captures = std::iter::once(self.observation.capture())
+            .chain(self.observation.outputs.values().map(|output| output.current()))
+            .collect::<Vec<_>>();
+        let end = if let Some(Capture::Failed { reason }) = captures
+            .iter()
+            .find(|capture| matches!(capture, Capture::Failed { .. }))
+        {
+            OutputEnd::Failed(reason.clone())
+        } else if captures.iter().all(|capture| *capture == Capture::Complete)
+            && matches!(self.observation.exit(), ParticipantExit::Exited { .. })
+        {
+            OutputEnd::Complete
+        } else {
+            OutputEnd::Open
+        };
+        match self.observation.lines_since(self.cursor) {
+            Ok((lines, next)) => {
+                self.cursor = next;
+                OutputBatch {
+                    lines: lines
+                        .into_iter()
+                        .filter(|line| self.process.is_none() || line.process == self.process)
+                        .map(|line| line.text)
+                        .collect(),
+                    end,
+                }
+            }
+            Err(reason) => OutputBatch {
+                lines: Vec::new(),
+                end: OutputEnd::Failed(reason),
+            },
+        }
     }
 }
 
@@ -252,8 +338,7 @@ mod tests {
             let report = step.run(&cx).await;
             assert_eq!(report.status, status);
             assert_eq!(report.message, message);
-            assert!(cx.primitives("missing").is_none());
-            assert!(cx.observation("missing").is_none());
+            assert!(cx.handle("missing").is_none());
             assert_eq!(cx.late_fact("missing", LateFact::Ip), None);
         }
     }

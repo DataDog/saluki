@@ -118,13 +118,16 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_participant_case_routes_to_the_bridge_when_every_participant_type_has_a_bridge_route_on_the_subject_os() {
+    fn linux_participant_cases_run_natively_while_macos_and_windows_use_the_bridge() {
         for os in [Os::Linux, Os::MacOs, Os::Windows] {
             for extra in ["", "  other: {type: agent-adp}\n"] {
                 let yaml = PARTICIPANT_FIELDS
                     .replace("[linux]", "[linux, macos, windows]")
                     .replace("participants:\n", &format!("participants:\n{extra}"));
-                assert_eq!(route(&plan(&yaml, os)), Route::Bridge);
+                assert_eq!(
+                    route(&plan(&yaml, os)),
+                    if os == Os::Linux { Route::Native } else { Route::Bridge }
+                );
             }
         }
     }
@@ -152,11 +155,10 @@ pub(crate) mod tests {
         ];
         let built = build_runners(&plans, Os::Linux, &RunnerArtifacts::Overrides(&[])).unwrap();
         assert_eq!(built.len(), 3);
-        for (built, name) in built[..2].iter().zip(["single", "mixed"]) {
+        for (built, name) in built.iter().zip(["single", "mixed", "case"]) {
             assert_eq!(built.plan.case().name(), name);
             assert!(matches!(built.execution, Execution::Native));
             assert!(built.runner().is_none());
         }
-        assert!(matches!(built[2].execution, Execution::Runner(_)));
     }
 }
