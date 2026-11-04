@@ -1,3 +1,10 @@
+[registries]
+datadog-rust-testing = { index = "sparse+https://depot-read-api-rust.us1.ddbuild.io/datadog/rust-testing/" }
+crates-io-public = { index = "https://github.com/rust-lang/crates.io-index" }
+
+[net]
+git-fetch-with-cli = true
+
 [build]
 rustflags = ["--cfg", "tokio_unstable"]
 

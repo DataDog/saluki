@@ -306,3 +306,6 @@ vendoring
 agentic
 getter(s?)
 protojson
+
+Foldspace
+sharding

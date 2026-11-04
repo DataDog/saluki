@@ -742,6 +742,7 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `apm_config.obfuscation.sql.table_names`                        | Collect table names during obfuscation                     |                       |
 | `data_plane.experimental.apm.enabled`                           | Run the experimental APM proxy in front of the trace-agent | false                 |
 | `data_plane.experimental.apm.proxy_destination`                 | HTTP or Unix socket URL of the relocated trace-agent       | http://127.0.0.1:8127 |
+| `data_plane.experimental.stateful_metrics.endpoint`             | Experimental stateful series gRPC intake endpoint          | unset (disabled)      |
 | `data_plane.otlp.receiver_grpc_endpoint_temporary`              | ADP OTLP gRPC listen endpoint                              | localhost:6317        |
 | `data_plane.otlp.receiver_http_endpoint_temporary`              | ADP OTLP HTTP listen endpoint                              | localhost:6318        |
 | `dogstatsd_allow_context_heap_allocs`                           | Allow heap allocations for contexts                        | true                  |
@@ -772,6 +773,10 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `otlp_config.traces.string_interner_size`                       | OTLP trace string interner capacity                        |                       |
 | `otlp_string_interner_size`                                     | OTLP context interner capacity                             |                       |
 | `serializer_max_metrics_per_payload`                            | Max metrics per payload                                    |                       |
+
+### `data_plane.experimental.stateful_metrics.endpoint`
+
+Set an http://host:port endpoint for stateful metrics integration testing. Sketches continue over HTTP. Requires a restart; unset preserves existing delivery.
 
 ### `experimental.metrics_endpoint_routing.metric_allowlist`
 

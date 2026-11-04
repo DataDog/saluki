@@ -9,6 +9,7 @@ repository = { workspace = true }
 agent-data-plane-config = { workspace = true }
 bytesize = { workspace = true }
 datadog-agent-config = { workspace = true }
+http = { workspace = true, features = ["std"] }
 saluki-antithesis = { workspace = true }
 saluki-common = { workspace = true }
 saluki-config = { workspace = true }

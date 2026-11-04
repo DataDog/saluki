@@ -11,12 +11,14 @@ pub mod metrics_endpoint_routing;
 pub mod multi_region_failover;
 pub mod otlp;
 pub mod remote_configuration;
+pub mod stateful_metrics;
 pub mod traces;
 
 /// Per-domain resolved configuration.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct DomainConfiguration {
     pub apm: apm::Domain,
+    pub stateful_metrics: stateful_metrics::Domain,
     pub dogstatsd: dogstatsd::Domain,
     pub otlp: otlp::Domain,
     pub traces: traces::Domain,

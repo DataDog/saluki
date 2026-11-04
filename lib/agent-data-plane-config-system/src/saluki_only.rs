@@ -282,8 +282,21 @@ pub struct DataPlane {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct DataPlaneExperimental {
+    /// Stateful metrics settings, disabled until an endpoint is configured.
+    pub stateful_metrics: StatefulMetrics,
     /// Experimental APM proxy settings (`data_plane.experimental.apm.*`).
     pub apm: DataPlaneExperimentalApm,
+}
+
+/// Experimental stateful metrics settings (`data_plane.experimental.stateful_metrics.*`).
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct StatefulMetrics {
+    /// Plaintext gRPC intake origin for integration testing; unset by default, preserving HTTP delivery.
+    ///
+    /// Set an `http://host:port` endpoint only for integration testing. Empty values, paths, queries,
+    /// and credentials are invalid. Changing this setting requires a restart.
+    pub endpoint: Option<String>,
 }
 
 /// `data_plane.experimental.apm.*`: the APM proxy in front of the trace-agent.
@@ -568,6 +581,7 @@ impl SalukiOnly {
     /// Absent values leave the field at its model default. The Datadog `drive` writes a disjoint set
     /// of fields, so it does not matter whether `seed` runs before or after the drive.
     pub(crate) fn seed(&self, config: &mut SalukiConfiguration) {
+        config.domains.stateful_metrics.endpoint = self.data_plane.experimental.stateful_metrics.endpoint.clone();
         // control
         if let Some(v) = self.data_plane.standalone_mode {
             config.control.standalone_mode = v;
