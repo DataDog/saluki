@@ -6,10 +6,6 @@ logs:
   # Every difference ADP shows today, tagged with its gap from the OTLP logs parity plan (DataDog/saluki#2966). Remove
   # an entry in the change that fixes its gap.
   known_differences:
-    - gap: gap/default-hostname
-      paths: ["envelope.hostname"]
-      kinds: [value]
-      reason: ADP sends an empty hostname instead of falling back to the Agent's hostname when the log has none.
     - gap: gap/attribute-key-case
       paths: ["content.*"]
       kinds: [missing]

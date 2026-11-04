@@ -98,12 +98,6 @@ logs:
       when:
         fixture_id: [host-k8s-node-and-cluster, host-id-only]
       reason: ADP's logs host resolution doesn't know `k8s.node.name` or `host.id`.
-    - gap: gap/default-hostname
-      paths: ["envelope.hostname"]
-      kinds: [value]
-      when:
-        fixture_id: [no-host]
-      reason: ADP sends an empty hostname instead of falling back to the Agent's hostname when the log has none.
     - gap: gap/missing-headers
       paths:
         - headers.dd-protocol

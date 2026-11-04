@@ -225,7 +225,7 @@ async fn create_topology(
     }
 
     if dp.logs_pipeline_required() {
-        add_baseline_logs_pipeline_to_blueprint(&mut blueprint, &shared)?;
+        add_baseline_logs_pipeline_to_blueprint(&mut blueprint, &shared, env_provider).await?;
     }
 
     if dp.events_pipeline_required() {
@@ -484,14 +484,22 @@ fn add_autoscaling_failover_metrics_pipeline_to_blueprint(
     Ok(())
 }
 
-fn add_baseline_logs_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, shared: &SharedConfiguration,
+async fn add_baseline_logs_pipeline_to_blueprint(
+    blueprint: &mut TopologyBlueprint, shared: &SharedConfiguration, env_provider: &RemoteAgentEnvironmentProvider,
 ) -> Result<(), GenericError> {
     // Create the back half of the logs processing pipeline.
+    //
+    // Like the Agent's logs processor, the encoder sends a log without a hostname with the Agent's hostname.
+    let default_hostname = env_provider
+        .host()
+        .get_hostname()
+        .await
+        .error_context("Failed to get default hostname for logs.")?;
     let compression = &shared.endpoints.compression;
     // TODO(#3001): pass `shared.metrics_encoding.flush_timeout`; the default preserves existing behavior.
     let dd_logs_config = BufferedIncrementalConfiguration::new(
-        DatadogLogsConfiguration::new(&compression.compressor_kind, compression.effective_zstd_level()),
+        DatadogLogsConfiguration::new(&compression.compressor_kind, compression.effective_zstd_level())
+            .with_default_hostname(default_hostname),
         DEFAULT_ENCODER_FLUSH_TIMEOUT,
     );
 
