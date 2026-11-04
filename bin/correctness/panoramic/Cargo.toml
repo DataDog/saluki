@@ -55,5 +55,6 @@ rustls = { workspace = true, features = ["aws_lc_rs"] }
 rustls-cng-crypto = { workspace = true }
 
 [dev-dependencies]
+socket2 = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
