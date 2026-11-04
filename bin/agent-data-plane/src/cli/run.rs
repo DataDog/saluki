@@ -47,7 +47,7 @@ use saluki_components::{
     transforms::{
         aggregate_context_snapshot_channel, AggregateConfiguration, AutoscalingFailoverGatewayConfiguration,
         ChainedConfiguration, DogStatsDMapperConfiguration, DogStatsDMapperProfile, DogStatsDMetricMapping,
-        HistogramConfiguration, HostEnrichmentConfiguration, ReplaceRule, TraceObfuscationConfiguration,
+        HistogramConfiguration, HostEnrichmentConfiguration, OtlpLogsRenderConfiguration, ReplaceRule, TraceObfuscationConfiguration,
         TraceTagReplacerConfiguration,
     },
 };
@@ -1087,16 +1087,20 @@ async fn add_otlp_pipeline_to_blueprint(
             workload_provider: Arc::new(env_provider.workload().clone()),
         }
         .with_static_metric_tags(static_tags);
+        let otlp_logs_render_config =
+            ChainedConfiguration::default().with_transform_builder("render", OtlpLogsRenderConfiguration);
 
         blueprint
             // Components.
             .add_source("otlp_in", otlp_config)?
+            .add_transform("otlp_logs_render", otlp_logs_render_config)?
             // Metrics, logs, and traces.
             //
             // We send OTLP metrics directly to the enrichment stage of the metrics pipeline, skipping aggregation,
             // to avoid transforming counters into rates.
             .connect_components("otlp_in.metrics", "metrics_enrich")?
-            .connect_components("otlp_in.logs", "dd_logs_encode")?
+            // Logs are rendered into their content before encoding, since the logs encoder only writes the envelope.
+            .connect_components_in_order(["otlp_in.logs", "otlp_logs_render", "dd_logs_encode"])?
             .connect_components("otlp_in.traces", "traces_enrich")?;
     }
     Ok(())

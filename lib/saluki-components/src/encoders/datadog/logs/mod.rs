@@ -1,5 +1,7 @@
+use std::convert::Infallible;
+
 use async_trait::async_trait;
-use chrono::{DateTime, SecondsFormat, Utc};
+use chrono::{DateTime, Utc};
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use saluki_common::iter::ReusableDeduplicator;
 use saluki_core::{
@@ -16,7 +18,6 @@ use saluki_core::{
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_io::compression::CompressionScheme;
 use saluki_metrics::MetricsBuilder;
-use serde_json::{Map as JsonMap, Value as JsonValue};
 use tracing::{error, warn};
 
 use crate::common::datadog::{
@@ -44,7 +45,7 @@ pub struct DatadogLogsConfiguration {
     /// Ignored for algorithms other than `zstd`.
     zstd_level: i32,
 
-    /// Source of the current time, for the default `@timestamp`.
+    /// Source of the current time, for the envelope `timestamp`.
     clock: fn() -> DateTime<Utc>,
 }
 
@@ -58,7 +59,7 @@ impl DatadogLogsConfiguration {
         }
     }
 
-    /// Sets the source of the current time, so tests can pin the default `@timestamp`.
+    /// Sets the source of the current time, so tests can pin the envelope `timestamp`.
     #[cfg(test)]
     pub(crate) fn with_clock(mut self, clock: fn() -> DateTime<Utc>) -> Self {
         self.clock = clock;
@@ -171,6 +172,7 @@ impl IncrementalEncoder for DatadogLogs {
 #[derive(Debug)]
 struct LogsEndpointEncoder {
     tags_deduplicator: ReusableDeduplicator<Tag>,
+    tags_buffer: String,
     clock: fn() -> DateTime<Utc>,
 }
 
@@ -178,68 +180,57 @@ impl LogsEndpointEncoder {
     fn new(clock: fn() -> DateTime<Utc>) -> Self {
         Self {
             tags_deduplicator: ReusableDeduplicator::new(),
+            tags_buffer: String::new(),
             clock,
         }
     }
 
-    fn build_agent_json(&mut self, log: &Log) -> JsonValue {
-        let mut obj = JsonMap::new();
-
-        // Encode a structured message object as a JSON string in the `message` field.
-        let mut message_inner = JsonMap::new();
-        message_inner.insert("message".to_string(), JsonValue::String(log.message().to_string()));
-        if !log.service().is_empty() {
-            message_inner.insert("service".to_string(), JsonValue::String(log.service().to_string()));
-        }
-        let message_str =
-            serde_json::to_string(&JsonValue::Object(message_inner)).unwrap_or_else(|_| log.message().to_string());
-        obj.insert("message".to_string(), JsonValue::String(message_str));
-
+    /// Writes the envelope of a log.
+    ///
+    /// The envelope has the same fields, in the same order, as the logs intake's JSON envelope: the message, the
+    /// status, the time the log was encoded in milliseconds, the hostname, the service, the source, and the tags. Every
+    /// field is present, empty when the log has no value for it. The message is written as it is: a log's producer
+    /// renders whatever content the message should carry, such as a JSON object holding the log's properties, so the
+    /// log's additional properties aren't written.
+    fn write_envelope(&mut self, log: &Log, buffer: &mut Vec<u8>) {
         // A log without a status is sent as `info`.
         let status = if log.status().is_empty() {
             DEFAULT_STATUS
         } else {
             log.status()
         };
-        obj.insert("status".to_string(), JsonValue::String(status.to_string()));
-        if !log.hostname().is_empty() {
-            obj.insert("hostname".to_string(), JsonValue::String(log.hostname().to_string()));
-        }
-        if !log.service().is_empty() {
-            obj.insert("service".to_string(), JsonValue::String(log.service().to_string()));
-        }
+        let source = log.source().as_deref().unwrap_or_default();
 
-        if let Some(ddsource) = log.source().clone() {
-            obj.insert("ddsource".to_string(), JsonValue::String(ddsource.to_string()));
-        }
+        buffer.extend_from_slice(b"{\"message\":");
+        go_json::write_string(buffer, log.message());
+        buffer.extend_from_slice(b",\"status\":");
+        go_json::write_string(buffer, status);
+        buffer.extend_from_slice(b",\"timestamp\":");
+        buffer.extend_from_slice(itoa::Buffer::new().format((self.clock)().timestamp_millis()).as_bytes());
+        buffer.extend_from_slice(b",\"hostname\":");
+        go_json::write_string(buffer, log.hostname());
+        buffer.extend_from_slice(b",\"service\":");
+        go_json::write_string(buffer, log.service());
+        buffer.extend_from_slice(b",\"ddsource\":");
+        go_json::write_string(buffer, source);
 
         // ddtags: comma-separated, deduplicated
-        let tags_iter = self.tags_deduplicator.deduplicated(log.tags().into_iter());
-        let tags_vec: Vec<&str> = tags_iter.map(|t| t.as_str()).collect();
-        if !tags_vec.is_empty() {
-            obj.insert("ddtags".to_string(), JsonValue::String(tags_vec.join(",")));
+        buffer.extend_from_slice(b",\"ddtags\":");
+        self.tags_buffer.clear();
+        for (index, tag) in self.tags_deduplicator.deduplicated(log.tags().into_iter()).enumerate() {
+            if index > 0 {
+                self.tags_buffer.push(',');
+            }
+            self.tags_buffer.push_str(tag.as_str());
         }
-
-        // Default timestamp (RFC3339 with milliseconds, Z) unless user provided `timestamp` or `@timestamp`.
-        let user_provided_timestamp = log.additional_properties().contains_key("timestamp")
-            || log.additional_properties().contains_key("@timestamp");
-        if !user_provided_timestamp {
-            let now_rfc3339 = (self.clock)().to_rfc3339_opts(SecondsFormat::Millis, true);
-            obj.insert("@timestamp".to_string(), JsonValue::String(now_rfc3339));
-        }
-
-        // Last-write-wins: merge AdditionalProperties last
-        for (k, v) in log.additional_properties() {
-            obj.insert(k.to_string(), v.clone());
-        }
-
-        JsonValue::Object(obj)
+        go_json::write_string(buffer, &self.tags_buffer);
+        buffer.push(b'}');
     }
 }
 
 impl EndpointEncoder for LogsEndpointEncoder {
     type Input = Log;
-    type EncodeError = serde_json::Error;
+    type EncodeError = Infallible;
 
     fn encoder_name() -> &'static str {
         "logs"
@@ -266,8 +257,8 @@ impl EndpointEncoder for LogsEndpointEncoder {
     }
 
     fn encode(&mut self, input: &Self::Input, buffer: &mut Vec<u8>) -> Result<(), Self::EncodeError> {
-        let json = self.build_agent_json(input);
-        serde_json::to_writer(buffer, &json)
+        self.write_envelope(input, buffer);
+        Ok(())
     }
 
     fn endpoint_uri(&self) -> Uri {
@@ -288,8 +279,9 @@ mod characterization;
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeSet, HashMap};
+    use std::collections::HashMap;
 
+    use chrono::{DateTime, Utc};
     use saluki_core::data_model::{
         event::log::Log,
         tags::{Tag, TagSet},
@@ -297,108 +289,90 @@ mod tests {
     use serde_json::json;
     use stringtheory::MetaString;
 
-    use super::{JsonValue, LogsEndpointEncoder, Utc};
+    use super::LogsEndpointEncoder;
+
+    /// The encoder's clock in these tests, and the envelope `timestamp` it gives.
+    const NOW: &str = "2026-01-02T03:04:05.678Z";
+    const NOW_MS: i64 = 1_767_323_045_678;
+
+    fn fixed_clock() -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(NOW)
+            .expect("NOW should be RFC3339")
+            .with_timezone(&Utc)
+    }
+
+    fn envelope(log: &Log) -> String {
+        let mut encoder = LogsEndpointEncoder::new(fixed_clock);
+        let mut buffer = Vec::new();
+        encoder.write_envelope(log, &mut buffer);
+        String::from_utf8(buffer).expect("envelope should be UTF-8")
+    }
 
     fn tag_set<const N: usize>(tags: [&'static str; N]) -> TagSet {
         tags.into_iter().map(Tag::from_static).collect()
     }
 
     #[test]
-    fn build_agent_json_enriches_documented_fields() {
-        let mut encoder = LogsEndpointEncoder::new(Utc::now);
+    fn writes_every_envelope_field_in_order() {
+        assert_eq!(fixed_clock().timestamp_millis(), NOW_MS);
         let log = Log::new("hello world")
             .with_status("Err")
             .with_source(MetaString::from_static("nginx"))
             .with_hostname(MetaString::from_static("host-a"))
             .with_service(MetaString::from_static("web"))
-            .with_tags(tag_set(["env:prod", "team:core"]));
+            .with_tags(tag_set(["env:prod", "team:core", "env:prod"]));
 
-        let json = encoder.build_agent_json(&log);
-        let obj = json.as_object().expect("agent JSON should be an object");
-
-        // `message` is itself a JSON string carrying a `{message, service}` object.
-        let message = obj["message"].as_str().expect("message field should be a string");
-        let message_inner: JsonValue = serde_json::from_str(message).expect("message field should itself be JSON");
-        assert_eq!(json!("hello world"), message_inner["message"]);
-        assert_eq!(json!("web"), message_inner["service"]);
-
-        // The status is sent as it is, and hostname/service/ddsource are lifted out.
-        assert_eq!(json!("Err"), obj["status"]);
-        assert_eq!(json!("host-a"), obj["hostname"]);
-        assert_eq!(json!("web"), obj["service"]);
-        assert_eq!(json!("nginx"), obj["ddsource"]);
-
-        // `ddtags` is the comma-joined tag set.
-        let ddtags = obj["ddtags"].as_str().expect("ddtags should be a string");
-        let ddtags = ddtags.split(',').collect::<BTreeSet<_>>();
-        assert_eq!(BTreeSet::from(["env:prod", "team:core"]), ddtags);
-    }
-
-    #[test]
-    fn build_agent_json_omits_empty_optional_fields() {
-        // A bare log has no hostname/service/ddsource/ddtags keys, its status is the default `info`, and its `message`
-        // object carries only the message (no `service`).
-        let mut encoder = LogsEndpointEncoder::new(Utc::now);
-        let json = encoder.build_agent_json(&Log::new("bare"));
-        let obj = json.as_object().expect("agent JSON should be an object");
-
-        assert_eq!(json!("info"), obj["status"]);
-        assert!(!obj.contains_key("hostname"));
-        assert!(!obj.contains_key("service"));
-        assert!(!obj.contains_key("ddsource"));
-        assert!(!obj.contains_key("ddtags"));
-
-        let message = obj["message"].as_str().expect("message field should be a string");
-        let message_inner: JsonValue = serde_json::from_str(message).expect("message field should itself be JSON");
-        assert_eq!(json!("bare"), message_inner["message"]);
-        assert!(message_inner.get("service").is_none());
-    }
-
-    #[test]
-    fn build_agent_json_adds_default_timestamp_unless_user_supplied() {
-        let mut encoder = LogsEndpointEncoder::new(Utc::now);
-
-        // With no user timestamp, the encoder injects an RFC3339 `@timestamp` (milliseconds, UTC `Z`).
-        let json = encoder.build_agent_json(&Log::new("no ts"));
-        let ts = json["@timestamp"]
-            .as_str()
-            .expect("default @timestamp should be present");
-        assert!(ts.ends_with('Z'), "default timestamp should be UTC-suffixed: {ts}");
-        assert!(
-            chrono::DateTime::parse_from_rfc3339(ts).is_ok(),
-            "default timestamp should be RFC3339: {ts}"
+        assert_eq!(
+            envelope(&log),
+            format!(
+                r#"{{"message":"hello world","status":"Err","timestamp":{},"hostname":"host-a","service":"web","ddsource":"nginx","ddtags":"env:prod,team:core"}}"#,
+                NOW_MS
+            )
         );
-
-        // A user-provided `timestamp` suppresses the default `@timestamp`.
-        let mut props = HashMap::new();
-        props.insert(MetaString::from_static("timestamp"), json!(1_234_567));
-        let json = encoder.build_agent_json(&Log::new("user ts").with_additional_properties(props));
-        assert!(
-            !json.as_object().unwrap().contains_key("@timestamp"),
-            "a user-provided `timestamp` should suppress the default `@timestamp`"
-        );
-        assert_eq!(json!(1_234_567), json["timestamp"]);
-
-        // A user-provided `@timestamp` is preserved as-is instead of being overwritten.
-        let mut props = HashMap::new();
-        props.insert(MetaString::from_static("@timestamp"), json!("2020-01-01T00:00:00Z"));
-        let json = encoder.build_agent_json(&Log::new("user @ts").with_additional_properties(props));
-        assert_eq!(json!("2020-01-01T00:00:00Z"), json["@timestamp"]);
     }
 
     #[test]
-    fn build_agent_json_additional_properties_win_over_encoder_fields() {
-        // AdditionalProperties are merged last, so they override the encoder-populated fields (last-write-wins).
-        let mut encoder = LogsEndpointEncoder::new(Utc::now);
-        let mut props = HashMap::new();
-        props.insert(MetaString::from_static("hostname"), json!("override-host"));
-        props.insert(MetaString::from_static("custom"), json!(42));
-        let log = Log::new("msg")
-            .with_hostname(MetaString::from_static("original-host"))
-            .with_additional_properties(props);
+    fn writes_empty_fields_and_the_default_status() {
+        assert_eq!(
+            envelope(&Log::new("bare")),
+            format!(
+                r#"{{"message":"bare","status":"info","timestamp":{},"hostname":"","service":"","ddsource":"","ddtags":""}}"#,
+                NOW_MS
+            )
+        );
+    }
 
-        let json = encoder.build_agent_json(&log);
-        assert_eq!(json!("override-host"), json["hostname"]);
-        assert_eq!(json!(42), json["custom"]);
+    #[test]
+    fn writes_the_message_as_it_is_without_properties() {
+        // The producer renders the content; the encoder neither wraps it nor adds the properties or an `@timestamp`.
+        let mut properties = HashMap::new();
+        properties.insert(MetaString::from_static("custom"), json!(42));
+        let log = Log::new("ignored")
+            .with_additional_properties(properties)
+            .with_rendered_content(r#"{"custom":42,"message":"hi"}"#)
+            .with_status("debug");
+
+        assert_eq!(
+            envelope(&log),
+            format!(
+                r#"{{"message":"{{\"custom\":42,\"message\":\"hi\"}}","status":"debug","timestamp":{},"hostname":"","service":"","ddsource":"","ddtags":""}}"#,
+                NOW_MS
+            )
+        );
+    }
+
+    #[test]
+    fn escapes_strings_as_go_does() {
+        let log = Log::new("<a href=\"x\">&amp;</a> \u{2028} \t")
+            .with_service(MetaString::from_static("s<v>c"))
+            .with_tags(tag_set(["a&b"]));
+
+        assert_eq!(
+            envelope(&log),
+            format!(
+                r#"{{"message":"\u003ca href=\"x\"\u003e\u0026amp;\u003c/a\u003e \u2028 \t","status":"info","timestamp":{},"hostname":"","service":"s\u003cv\u003ec","ddsource":"","ddtags":"a\u0026b"}}"#,
+                NOW_MS
+            )
+        );
     }
 }
