@@ -1,6 +1,6 @@
 //! Retained sender counters, including idle periods between metric batches.
 
-use foldspace_core::{MetricDictionaryStats, MetricStreamFailureKind};
+use foldspace_core::{MetricDictionaryStats, MetricRetryStats, MetricStreamFailureKind};
 use saluki_common::collections::FastHashMap;
 use saluki_io::net::util::retry::PushResult;
 use saluki_metrics::{Counter, Gauge, MetricsBuilder};
@@ -21,6 +21,22 @@ pub(super) struct Telemetry {
     /// Current size of the admission frequency sketch, which grows with the dictionary up to a
     /// ceiling set by the caps; outside the byte cap.
     dictionary_frequency_sketch_bytes: Gauge,
+    /// Evicted definitions kept only for payloads the core retains to retry.
+    dictionary_retired_entries: Gauge,
+    dictionary_retired_bytes: Gauge,
+    /// Payloads the core retains, compressed, until every endpoint acknowledges or gives them up.
+    retry_retained_payloads: Gauge,
+    retry_retained_bytes: Gauge,
+    /// Endpoint copies of retained payloads waiting for their endpoint.
+    retry_pending_copies: Gauge,
+    /// Copies the core resent from retained bytes rather than encoding them again.
+    retry_replays: Counter,
+    retry_definition_batches: Counter,
+    retry_rewrites: Counter,
+    retry_unreadable: Counter,
+    /// Copies the core moved to the retry queue, by reason.
+    retry_returned: [Counter; 6],
+    last_retry: MetricRetryStats,
     builder: MetricsBuilder,
     stream_failures: FastHashMap<&'static str, Counter>,
 }
@@ -38,6 +54,21 @@ impl Telemetry {
             dictionary_transient_bytes: builder.register_gauge("stateful_metrics_dictionary_transient_bytes"),
             dictionary_frequency_sketch_bytes: builder
                 .register_gauge("stateful_metrics_dictionary_frequency_sketch_bytes"),
+            dictionary_retired_entries: builder.register_gauge("stateful_metrics_dictionary_retired_entries"),
+            dictionary_retired_bytes: builder.register_gauge("stateful_metrics_dictionary_retired_bytes"),
+            retry_retained_payloads: builder.register_gauge("stateful_metrics_internal_retry_retained_payloads"),
+            retry_retained_bytes: builder.register_gauge("stateful_metrics_internal_retry_retained_bytes"),
+            retry_pending_copies: builder.register_gauge("stateful_metrics_internal_retry_pending_copies"),
+            retry_replays: builder.register_counter("stateful_metrics_internal_retry_replays_total"),
+            retry_definition_batches: builder
+                .register_counter("stateful_metrics_internal_retry_definition_batches_total"),
+            retry_rewrites: builder.register_counter("stateful_metrics_internal_retry_rewrites_total"),
+            retry_unreadable: builder.register_counter("stateful_metrics_internal_retry_unreadable_total"),
+            retry_returned: ["budget", "age", "attempts", "encode", "suspension", "shutdown"].map(|reason| {
+                builder
+                    .register_counter_with_tags("stateful_metrics_internal_retry_returned_total", [("reason", reason)])
+            }),
+            last_retry: MetricRetryStats::default(),
             builder,
             stream_failures: FastHashMap::default(),
         }
@@ -50,6 +81,36 @@ impl Telemetry {
         self.dictionary_transient_bytes.set(stats.transient_bytes as f64);
         self.dictionary_frequency_sketch_bytes
             .set(stats.frequency_sketch_bytes as f64);
+        self.dictionary_retired_entries.set(stats.retired_entries as f64);
+        self.dictionary_retired_bytes.set(stats.retired_bytes as f64);
+    }
+
+    /// Sets the retry gauges and adds what the core's cumulative counts gained since the last call.
+    pub fn record_retries(&mut self, stats: MetricRetryStats) {
+        self.retry_retained_payloads.set(stats.retained_payloads as f64);
+        self.retry_retained_bytes.set(stats.retained_bytes as f64);
+        self.retry_pending_copies.set(stats.pending_copies as f64);
+        let last = self.last_retry;
+        self.retry_replays
+            .increment(stats.replayed_payloads - last.replayed_payloads);
+        self.retry_definition_batches
+            .increment(stats.definition_batches - last.definition_batches);
+        self.retry_rewrites
+            .increment(stats.rewritten_payloads - last.rewritten_payloads);
+        self.retry_unreadable
+            .increment(stats.unreadable_payloads - last.unreadable_payloads);
+        let returned = [
+            (stats.returned_over_budget, last.returned_over_budget),
+            (stats.returned_over_age, last.returned_over_age),
+            (stats.returned_over_attempts, last.returned_over_attempts),
+            (stats.returned_unencodable, last.returned_unencodable),
+            (stats.returned_on_suspension, last.returned_on_suspension),
+            (stats.returned_on_shutdown, last.returned_on_shutdown),
+        ];
+        for (counter, (now, before)) in self.retry_returned.iter().zip(returned) {
+            counter.increment(now - before);
+        }
+        self.last_retry = stats;
     }
 
     pub fn stream_failed(&mut self, kind: MetricStreamFailureKind) {

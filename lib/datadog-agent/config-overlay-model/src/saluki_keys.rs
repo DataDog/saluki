@@ -11,6 +11,24 @@ pub struct SalukiKey {
 
 pub static SALUKI_KEYS: &[SalukiKey] = &[
     SalukiKey {
+        yaml_path: "data_plane.experimental.stateful_metrics.retry_max_bytes",
+        description: "Stateful metrics retry byte budget per sender worker",
+        default: "8MiB",
+        documentation: Some("Byte budget for unacknowledged payloads Foldspace keeps, compressed, to retry itself, per stateful metrics sender worker, default 8MiB (8388608); the process total is this value times data_plane.experimental.stateful_metrics.workers. Covers the compressed payloads plus dictionary definitions kept only for them. Past it, the oldest payloads still waiting for an endpoint move to the retry queue as logical batches. Accepts a bare byte count or a byte-size string such as 4MiB; 0 moves every waiting payload to the retry queue at once. Requires a restart."),
+    },
+    SalukiKey {
+        yaml_path: "data_plane.experimental.stateful_metrics.retry_max_age",
+        description: "Longest a stateful payload waits in Foldspace",
+        default: "2m",
+        documentation: Some("Duration such as 2m, default 2m. A payload still waiting for an endpoint this long after it was encoded moves to the retry queue as a logical batch, where it can spill to disk. 0 disables the limit; a bare number is nanoseconds. Requires a restart."),
+    },
+    SalukiKey {
+        yaml_path: "data_plane.experimental.stateful_metrics.retry_max_attempts",
+        description: "Stateful payload sends before the retry queue",
+        default: "8",
+        documentation: Some("Non-negative integer, default 8. A payload sent this many times on streams that ended without acknowledging it moves to the retry queue instead of being replayed again; 0 is treated as 1. Requires a restart."),
+    },
+    SalukiKey {
         yaml_path: "data_plane.experimental.stateful_metrics.dictionary_max_entries",
         description: "Stateful metrics dictionary entry cap per sender worker",
         default: "60000",
