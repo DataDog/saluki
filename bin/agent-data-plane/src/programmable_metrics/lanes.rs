@@ -90,11 +90,6 @@ pub const CPU_TIME_SAMPLING: NonZeroU32 = NonZeroU32::new(16).unwrap();
 /// The environment variable that sets the rate of CPU-time sampling, a positive integer, whatever the lanes.
 pub const CPU_TIME_SAMPLING_ENV: &str = "SALUKI_CPU_TIME_SAMPLING";
 
-/// The environment variable that, set to `1`, lays the frame out without R1's pipelining while lanes stay off: fusion is
-/// maximal between fences, without the lane runtime. An experiment for N3 of `docs/design/programmable-metrics-next.md`
-/// (hypothesis H2), to measure fusion apart from the lane runtime's cost; not a supported setting.
-pub const EXPERIMENT_FUSE_ENV: &str = "SALUKI_EXPERIMENT_FUSE_ALL";
-
 /// The configuration key of the state lanes.
 const STATE_KEY: &str = "experimental.programmable_metrics.lanes.state";
 
@@ -127,12 +122,10 @@ impl LaneCounts {
         }
     }
 
-    /// Returns the options the frame is laid out with: without R1's pipelining on lanes, or when
-    /// [`EXPERIMENT_FUSE_ENV`] is `1`.
+    /// Returns the options the frame is laid out with.
     pub fn frame_options(&self) -> FrameOptions {
-        let fuse = std::env::var(EXPERIMENT_FUSE_ENV).is_ok_and(|value| value == "1");
         FrameOptions {
-            pipelining: self.pipelining && !fuse,
+            pipelining: self.pipelining,
         }
     }
 
@@ -532,7 +525,7 @@ pub fn log_booted_lanes(config: &SalukiConfiguration, counts: &LaneCounts, worke
     info!(
         lanes = %counts.describe(),
         mode,
-        pipelining = counts.frame_options().pipelining,
+        pipelining = counts.pipelining,
         workers,
         decoders,
         cpu_time_sampling = sampling.get(),

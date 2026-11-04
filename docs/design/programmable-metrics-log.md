@@ -932,7 +932,8 @@ up to two cores gives two workers and two decoders, and the plan runs without la
 - **No drop counter.** A Unix datagram socket blocks the sender rather than drop, so falling behind shows as lading
   sending less than its rate. "Keeps up" is lading at 97% of the rate or more.
 - **Stalls shorter than the sampling.** The first stall measure, lading's slowest second, missed flush stalls under a
-  second. Lading catches up after each, so its fastest second (1.25 to 1.44 times the rate where both keep up at the
+  second (corrected later: lading's own one-second pacing confounds every per-second measure; see "What stalls
+  admission at a flush" below). Lading catches up after each, so its fastest second (1.25 to 1.44 times the rate where both keep up at the
   heavy tiers) was added as the signal. At the low tier, lading's block size makes per-second rates too lumpy for
   either measure to mean much.
 - **The first smoke run died silently**: ADP logs JSON here (`"git_hash":"..."`), the grep expected the text format,
@@ -985,7 +986,8 @@ independent of the plan in [ADP efficiency findings](adp-efficiency-findings.md)
 (`SCALING_PARALLEL`), `perf stat` counts in ADP's cgroup (`SCALING_PERF`), and instruction-sampled profiles with call
 stacks (`SCALING_RECORD`); `summarize_limits.py` reports instructions, IPC, refills, and back-end stalls per metric and
 ratios against a reference variant. The agent-data-plane binary gained an experimental switch,
-`SALUKI_EXPERIMENT_FUSE_ALL=1`, which lays the frame out without R1's pipelining while lanes stay off, so that fusion
+`SALUKI_EXPERIMENT_FUSE_ALL=1` (removed after the iterations, once H2 was answered; it is in `7c7631a4bb`), which lays
+the frame out without R1's pipelining while lanes stay off, so that fusion
 can be measured apart from the lane runtime (`lanes.rs`; documented as an experiment, not a setting); the boot log
 now reports the pipelining the frame actually uses.
 
@@ -1020,3 +1022,52 @@ now reports the pipelining the frame actually uses.
   before H3 and H4.
 - N3's effect on stalls and CPU time, in sequential runs.
 - The independent findings G1 to G8, for whoever takes them up.
+
+## What stalls admission at a flush
+
+On 2026-10-15 the metrics path was instrumented to find out what happens at a flush, before designing N2; results are
+in [what stalls admission at a flush](programmable-metrics-next.md#what-stalls-admission-at-a-flush) and G9 of the
+[ADP findings](adp-efficiency-findings.md), and the tables in `test/scaling/baselines/stalls-2026-10-15/`.
+
+### What was built, and what was kept
+
+A `flow_trace` module in `saluki-core`, off unless `SALUKI_EXPERIMENT_TRACE` names a file: every dispatcher output
+counts its time waiting to send (an `Instant` pair per send), every region host publishes its input queue's depth and
+records each drain (start, duration, steps, time waiting on its sends, events out), and a thread writes it all every
+100 ms with Unix-millisecond stamps. `run-limits.sh` gained `SCALING_FLOW=1`, which turns it on and samples, from the
+host about every 100 ms, ADP's CPU time and throttling, lading's bytes, and the socket; and `SCALING_RECORD` gained
+monotonic timestamps with the wall clock's offset beside them, so that instruction samples line up with the trace.
+
+The trace answered its question and was **not kept**: it is ad hoc instrumentation in core library code with a check
+on every send, and N2's gates should rest on telemetry designed for them, such as the time admission pauses per flush.
+It is kept as `flow-trace.patch` beside the results (it applies to `7c7631a4bb`); the profile timestamps were kept.
+
+### Findings
+
+The drain pauses admission for 28 to 76 ms at 0.6 and 1.2 cores (100 to 290 ms at 0.3), about 3% of a flush's
+instructions; the encoder's burst after it, two to three seconds of encoding and compression, is about 85%, and starves
+admission under the quota: admission halves for about two seconds at 0.6 cores. No component is blocked sending; it is
+CPU starvation. `main` and the plan are the same in all of it. A non-blocking drain alone removes the smaller part, so
+N2 became the foundation of four layers: the non-blocking drain, pacing, priority for admission, and shedding.
+
+### What went wrong, and what was learned
+
+- **The earlier stall measures were confounded.** lading sends each second's bytes in about half a second and then
+  idles, so the fastest and slowest seconds of N1 mixed its pacing with ADP's stalls; the N2 gates that rested on them
+  were replaced by admission per 100 ms after each flush.
+- **The flush interval is 15 seconds,** not the 10 several notes had assumed.
+- **The socket "queue" was not a depth:** for a Unix datagram socket `ss` reports the first datagram's size, and the
+  socket's memory is invisible from both ends; an attempt to read lading's send buffer instead showed nothing.
+- **This kernel's perf does not take the wall clock;** `-k mono` with a recorded offset does the job.
+- **Two apparent differences between the plan and `main` were artifacts:** a one-flush profile made the plan's encoder
+  look 2.5 times as costly, and anchoring `main`'s flushes on CPU peaks made the plan's throttling look five times as
+  high. Four flushes per profile, and the same anchor (the encoder's onset) for both, erased both.
+- **A parsing slip** read a drain's send-wait field as its event count, briefly suggesting drains of 132 metrics.
+- **The analysis scripts lived in `/tmp`,** which was cleared before they were committed; they were rewritten from the
+  session into the results directory and reproduced the reported figures exactly.
+
+### Left open
+
+- Lower thread priority for the encoder, in the quick loop: the cheapest test of the priority layer.
+- The design of the non-blocking drain and of pacing, and the telemetry N2's gates need.
+- The instrumentation's own overhead was not measured.

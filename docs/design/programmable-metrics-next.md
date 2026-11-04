@@ -12,6 +12,7 @@ the next chunk of work should look like. Read the [index](programmable-metrics-i
 - [How we iterate](#how-we-iterate)
 - [Hypotheses](#hypotheses)
 - [What the first iterations showed](#what-the-first-iterations-showed)
+- [What stalls admission at a flush](#what-stalls-admission-at-a-flush)
 - [Lower priority](#lower-priority)
 - [Open questions](#open-questions)
 
@@ -123,10 +124,11 @@ cell where only large effects count.
    per metric, about the size of the noise there.
 2. **Idle and fixed costs are small.** An idle ADP costs 2.3 to 2.8 millicores on either image; the low tier costs
    about 15. (The first run's "fixed cost dominates" finding was the health check.)
-3. **The flush stall is visible in steady state, even with headroom.** Where both keep up at heavy and ultraheavy,
-   lading's fastest second is 1.2 to 1.37 times the rate on both images, catching up after the socket blocks during a
-   flush, and its slowest second falls to 0.56 to 0.83 of the rate. At the low and medium tiers lading's own pacing is
-   too lumpy for these measures to mean anything.
+3. **A flush disturbs admission even with headroom.** Where both keep up at heavy and ultraheavy, lading's fastest
+   second reaches 1.2 to 1.37 times the rate on both images and its slowest falls to 0.56 to 0.83. *Corrected
+   (2026-10-15):* lading sends each second's bytes in about half a second and then idles, so per-second rates mix its
+   own pacing with ADP's stalls, and these figures do not measure the stall; it is measured at 100 ms in
+   [what stalls admission at a flush](#what-stalls-admission-at-a-flush).
 4. **Under a crunch, the plan holds memory and main does not.** Where ADP cannot keep up, main keeps reading datagrams
    into its buffer pool (hundreds to 20,000 buffers in use, peak memory up to 243 to 259 MiB at 0.05), while the plan's
    backpressure keeps the pool at a few dozen buffers and memory 32 to 45% lower, inside every SMP bound (main exceeds
@@ -138,10 +140,11 @@ cell where only large effects count.
 
 **Gate thresholds for N2 to N4** (against these baselines, the same harness and host; "noise" is the A/A spread above):
 
-- **N2:** in the cells that keep up with stalls (heavy at 0.6 and 1.2, ultraheavy at 1.2), lading's fastest second at
-  most 1.1 of the rate and its worst at least 0.9; in the cells that cannot keep up (heavy at 0.3, ultraheavy at 0.3
-  and 0.6), a higher share of the rate than today's plan; at 0.05, memory inside the SMP bounds; CPU per metric no
-  worse than today's plan beyond the noise (2% from 0.3, 3% at heavy 1.2). Stalls are judged in sequential runs.
+- **N2:** *revised (2026-10-15), replacing gates on lading's fastest and slowest seconds:* see
+  [what stalls admission at a flush](#what-stalls-admission-at-a-flush). In the cells that cannot keep up (heavy at
+  0.3, ultraheavy at 0.3 and 0.6), a higher share of the rate than today's plan; at 0.05, memory inside the SMP bounds;
+  CPU per metric no worse than today's plan beyond the noise (2% from 0.3, 3% at heavy 1.2). Stalls are judged in
+  sequential runs.
 - **N3 and N4:** instructions per metric in the quick loop (noise 0.3 to 0.6%), confirmed in sequential runs for CPU
   time and memory.
 
@@ -162,6 +165,10 @@ stayed on the measuring host. Rerun a cell with `SCALING_TIERS=<tier> SCALING_LI
 - **Exit:** semantics unchanged (the interpreter, the compatibility matrix, transition traces 1 to 15); admission never
   stalls on a flush; and at 0.05 and 0.3 CPUs, fewer drops and lower p99 than native during a flush, with CPU per metric
   no worse.
+- **Revised (2026-10-15):** measured at 100 ms, the drain pauses admission for only 30 to 75 ms at 0.6 to 1.2 cores
+  (100 to 290 ms at 0.3); most of the stall is the encoder's burst after it, which a non-blocking drain alone does not
+  change. N2 becomes the foundation of a layered approach: see
+  [what stalls admission at a flush](#what-stalls-admission-at-a-flush).
 
 ### N3: settle the layout for small CPU budgets
 
@@ -213,7 +220,8 @@ against trusted measurements before it is kept. Three tiers:
 
 The quick loop's shortcuts are kept only if, run against the N1 baseline as an A/A and as `main` against the plan, it
 reproduces the full matrix's ratios within the A/A noise. On the first N1 data, 30-second windows reproduced the
-55-second ratios within 1 to 2% at every cell from 0.3; 10-second windows, one flush, are too noisy. Instruction counts
+55-second ratios within 1 to 2% at every cell from 0.3; 10-second windows, shorter than one 15-second flush interval,
+are too noisy. Instruction counts
 are close to deterministic and unaffected by throttling or neighbors, so they decide hypotheses about CPU per metric in
 one round; stalls, capacity, and memory still need the wall-clock measures.
 
@@ -297,7 +305,7 @@ plan's operators can be judged (below).
 | | medium 0.3 | heavy 0.6 | heavy 1.2 | ultraheavy 1.2 | low 0.3 | medium 1.2 | heavy 0.3 | ultraheavy 0.6 |
 |---|---|---|---|---|---|---|---|---|
 | H1: CPU-time sampling one in 16 | -0.5% | +0.4% | -0.2% | -0.3% | | | | |
-| H2: maximal fusion without lanes (`SALUKI_EXPERIMENT_FUSE_ALL=1`) | 0.0% | +1.2% | -0.2% | -0.4% | +0.3% | 0.0% | +1.2% | +1.2% |
+| H2: maximal fusion without lanes (`SALUKI_EXPERIMENT_FUSE_ALL=1`, a switch in `7c7631a4bb`, since removed) | 0.0% | +1.2% | -0.2% | -0.4% | +0.3% | 0.0% | +1.2% | +1.2% |
 | H9: jemalloc's thread cache (`MALLOC_CONF=tcache:true`) | **-7.5%** | **-3.9%** | **-4.2%** | **-3.1%** | | | | |
 | H1, H2, and H9 together | -7.7% | -3.8% | -4.4% | -4.2% | | | | |
 
@@ -312,7 +320,7 @@ plan's operators can be judged (below).
 
 | Item | Impact | Confidence | Complexity |
 |---|---|---|---|
-| **N2, non-blocking flush** | **high for behavior**: stalls with catch-up at 1.2 to 1.37 times the rate even at 1.2 cores, the team's stated top problem; little effect on instructions | high that the problem is real | high (design) |
+| **N2, non-blocking flush** | **high for behavior**, the team's stated top problem; little effect on instructions. Revised: the drain is only part of the stall, see [below](#what-stalls-admission-at-a-flush) | high that the problem is real | high (design) |
 | H7, fixed cost per batch | small; may explain the plan's 1 to 3% at the low tier | medium | low |
 | H3 and H4, dense context IDs and predicate tables | unmeasurable on the default profile, which runs almost no policy | low until a policy-heavy profile is measured | medium |
 | H5, aggregation state by dense ID | low for instructions (aggregation is 2 to 3%); medium for flush cost, which feeds N2 | medium | high |
@@ -323,6 +331,64 @@ plan's operators can be judged (below).
 The plan work focuses on what the plan can improve structurally and native ADP cannot: **behavior under load, starting
 with flush stalls (N2)**, built on the generations, cuts, and yielding kernels already in place. Before H3 and H4, the
 `mapper` and `gateways` profiles should be profiled, to see what programmability actually costs when policy runs.
+
+## What stalls admission at a flush
+
+On 2026-10-15 ADP was instrumented to see what happens at a flush (the flow trace, kept as a patch beside the results
+in `test/scaling/baselines/stalls-2026-10-15/`, not in the tree): every 100 ms, each component's time blocked sending
+downstream and each region's input queue; each drain's duration, steps, and time waiting on its sends; and, from the
+host, ADP's CPU time and throttling, lading's bytes, and whether datagrams waited at the socket, lined up on one clock
+with wall-clock-aligned instruction profiles. The aggregation flush interval is **15 seconds** (earlier notes said 10).
+
+**What happens at each flush**, the same on the plan and on `main`:
+
+| Phase | Duration | Share of the flush's instructions | Admission |
+|---|---|---|---|
+| **Drain**: aggregation emits the closed buckets (29,048 series at heavy, about 47,000 at ultraheavy) | 28 to 76 ms at 0.6 and 1.2 cores; 100 to 290 ms at 0.3 | about 3% | paused: the host reads no input while a drain is pending |
+| **Encode and compress** the emitted series | the encoder is busy 2.3 s after a flush at 1.2 cores, 3.0 s at 0.6, and idle between flushes | **about 85%**: about 820 million instructions per flush at heavy, of which zstd (level 3) is about 360 million | competes with decoding for the CPU quota |
+| Runtime, kernel, forwarder | the same window | about 12% | |
+
+- **A flush costs about 33,000 instructions per emitted series** (about 960 million per flush at heavy), five to six
+  times the cost of decoding an input metric, and all of it lands in the two to three seconds after the flush.
+- **It is CPU starvation, not backpressure:** no component waits more than 0.3 ms a second to send, input queues stay
+  at a few batches, and a drain's sends wait 0.1 to 0.2 ms in all. In the three seconds after a flush at heavy 1.2, ADP
+  uses about 2.3 times its CPU of the three seconds before, and the share of throttled CFS periods rises from 36 to 44%
+  to 54 to 61%.
+- **The effect on admission:** at 0.6 cores admission halves for about two seconds after a flush, with datagrams waiting
+  at the socket throughout; at 0.3, admission falls about 43% over the three seconds after.
+- **The plan and `main` are the same:** the same series flushed and encoded per flush, the same instructions per flush,
+  and the same throttling when both are anchored the same way.
+
+**What it means for N2.** A non-blocking drain removes the drain's pause, 30 to 75 ms at 0.6 to 1.2 cores and 100 to
+290 ms at 0.3, but not the encoder's burst, which is most of the stall. The drain is already a resumable, budgeted
+kernel call; what the layers below add is what decides when work runs:
+
+1. **Non-blocking drain** (N2 as written): the host admits input between drain steps, which needs a kernel contract for
+   consuming while a drain is suspended, with open and closed buckets kept apart. The semantic foundation.
+2. **Pacing**: a policy that releases drain steps over time (so many series per 100 ms, or within the headroom) rather
+   than back to back, so the encoder's work, which follows its input batch by batch, spreads with them. It needs the
+   non-blocking drain, or admission would stop for the whole paced drain. It removes the spike where average demand,
+   flush work included, fits under the quota.
+3. **Priority for admission**: where demand exceeds the quota, something must wait, and output can wait seconds where
+   admission cannot. Tokio has no task priorities and throttling stops the whole cgroup, so this needs the encoder on
+   threads of lower CPU weight (a `nice` value or `SCHED_IDLE` within the cgroup) or a per-period budget for output
+   work. It acts on the encoder directly, and applies to native ADP too (G9 of the
+   [ADP findings](adp-efficiency-findings.md)).
+4. **Shedding** (N5): when even delayed output cannot keep up.
+
+Each layer works without the ones after it. The cheapest experiment is the third: running the encoder at a lower
+thread priority, in the quick loop, before any design work.
+
+**Gates for stalls**, replacing those on lading's fastest and slowest seconds: admission per 100 ms after each flush
+against before it (the flow trace's count of metrics the source admits), the drain's duration, and the share of
+throttled periods in the three seconds after a flush; in sequential runs, against these baselines.
+
+**Measurement lessons.** lading sends each second's bytes in about half a second, so per-second rates and any window
+compared with another mix its pacing with ADP's behavior; for a Unix datagram socket, `ss` reports the size of the
+first datagram waiting, not a queue depth, and the socket's memory is not visible; throttled time in `cpu.stat` is
+summed over CPUs; profiles of one flush, and flushes anchored on CPU peaks, both misled here (the plan's encoder first
+looked 2.5 times as costly, and its throttling five times as high); four flushes per profile and the same anchor for
+both images settled it.
 
 ## Lower priority
 

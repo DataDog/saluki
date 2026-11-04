@@ -156,8 +156,10 @@ periods and time); every second, lading's bytes and ADP's `cpu.stat` and anonymo
 and charge its quota.
 
 A Unix datagram socket blocks the sender rather than drop, so a run in which ADP falls behind shows as lading sending
-less than the tier's rate: `send` below 0.97 means ADP did not keep up, and a worst second far below the target is an
-admission stall, such as during an aggregation flush.
+less than the tier's rate: `send` below 0.97 means ADP did not keep up. The worst and peak seconds do not measure
+stalls: lading sends each second's bytes in about half a second and then idles, so per-second rates mix its pacing with
+ADP's; stalls at a flush are measured inside ADP (see "What stalls admission at a flush" in
+`docs/design/programmable-metrics-next.md`).
 
 ## Running it
 
@@ -201,7 +203,7 @@ runs before they are trusted: see "How we iterate" in `docs/design/programmable-
 | `SCALING_VARIANTS` | main and plan | the images to compare, each `label=image` with an optional environment, `label=image;KEY=VALUE;...`; the first is the reference the summary's ratios are against |
 | `SCALING_PARALLEL` | 1 | cells run at once; each slot takes `SCALING_ADP_CORES` (2 when parallel) cores for ADP, two for lading, and one for the blackhole |
 | `SCALING_PERF` | 0 | 1 counts instructions and cycles (pinned, exact) and L1D and L2 refills, back-end stalls, and TLB walks (sharing one counter, scaled estimates) in ADP's cgroup over each window; needs `perf` and `sudo -n` |
-| `SCALING_RECORD`, `SCALING_RECORD_SECONDS` | 0, 10 | 1 samples ADP's instructions with call stacks for the first seconds of each window, into `perf-<run>.data` |
+| `SCALING_RECORD`, `SCALING_RECORD_SECONDS` | 0, 10 | 1 samples ADP's instructions with call stacks for the first seconds of each window, into `perf-<run>.data`, timestamped with the monotonic clock; `perf-<run>.offset` holds the wall clock's offset from it |
 | `SCALING_MAIN_IMAGE`, `SCALING_PLAN_IMAGE` | the tags `make limits-images` creates | the images compared |
 | `SCALING_OUT` | `test/scaling/results/limits-<time>` | where `runs.csv`, each run's `series-*.csv` and ADP log, and `summary.md` go |
 | `SCALING_DRY_RUN` | 0 | 1 renders the lading configurations and prints the docker commands without running them |

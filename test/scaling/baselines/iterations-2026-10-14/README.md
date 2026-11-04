@@ -3,7 +3,7 @@
 The runs behind "What the first iterations showed" in `docs/design/programmable-metrics-next.md` and the findings in
 `docs/design/adp-efficiency-findings.md`. Quick-loop runs: the focus cells, three slots in parallel (two cores for ADP
 each), 30-second windows, and `perf stat` counts (`SCALING_PERF=1`). `plan-x` is the plan (`eb1c4ee134`) with the
-experimental `SALUKI_EXPERIMENT_FUSE_ALL` switch; every hypothesis variant runs the same `plan-x` binary, differing only
+experimental `SALUKI_EXPERIMENT_FUSE_ALL` switch (in `7c7631a4bb`, since removed); every hypothesis variant runs the same `plan-x` binary, differing only
 in environment (`env-<label>.env`).
 
 | Directory | What |

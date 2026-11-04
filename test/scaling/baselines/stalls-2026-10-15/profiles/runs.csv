@@ -1,0 +1,3 @@
+tier,limit,round,label,image,git_hash,mode,target_bytes_per_second,contexts,memory_bound_mib,seconds,decoded,lading_bytes,cpu_usec,periods,throttled,throttled_usec,agg_dropped,unresolved,memory_peak_bytes,series,slot,reference,instructions,cycles,l1d_refills,l2d_refills,stall_backend,dtlb_walks
+heavy,1.2,1,main,saluki-images/agent-data-plane:main,a52c25dd52,paced,52428800,99000,250,65.049,3926945,3407726325,32375751,466,224,19514828,0,0,151773184,series-heavy-1.2-1-main.csv,0,main,-,-,-,-,-,-
+heavy,1.2,1,plan,saluki-images/agent-data-plane:plan-flow,7c7631a4bb,paced,52428800,99000,250,65.047,3926945,3407726325,31961639,533,220,19372380,0,0,135966720,series-heavy-1.2-1-plan.csv,0,main,-,-,-,-,-,-

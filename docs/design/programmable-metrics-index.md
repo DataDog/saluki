@@ -103,8 +103,12 @@ the plan uses 4 to 6% less CPU per metric and less memory than `main`, and susta
 shows in steady state on both. **The first iterations** ([results](programmable-metrics-next.md#what-the-first-iterations-showed))
 found that more than 85% of ADP's instructions are in code the plan shares with `main`, that maximal fusion saves no
 instructions, and that the plan's own runtime costs less than the Tokio overhead its fusion removes; so the plan work
-now focuses on behavior under load, starting with flush stalls (N2). Findings that could land in ADP on their own are
-in [ADP efficiency findings](adp-efficiency-findings.md).
+now focuses on behavior under load, starting with flush stalls (N2). **Instrumenting a flush**
+([results](programmable-metrics-next.md#what-stalls-admission-at-a-flush)) showed that the drain pauses admission for
+only 30 to 75 ms, and that most of the stall is the encoder's burst of two to three seconds after it, CPU starvation
+under the quota, the same on `main`; N2 became the first of four layers: non-blocking drain, pacing, priority for
+admission, and shedding. Findings that could land in ADP on their own are in
+[ADP efficiency findings](adp-efficiency-findings.md).
 
 ## Main open questions
 

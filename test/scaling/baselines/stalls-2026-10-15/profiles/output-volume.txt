@@ -1,0 +1,6 @@
+scrapes-heavy-0.6-1-main              37s  flushed series 58,096  flushes 2  encoder in 58,704  decoded 2,175,549  series/flush 29,048
+scrapes-heavy-0.6-1-plan              37s  flushed series 58,096  flushes 2  encoder in 60,407  decoded 2,170,001  series/flush 29,048
+scrapes-heavy-1.2-1-main              37s  flushed series 58,096  flushes 2  encoder in 58,704  decoded 2,235,364  series/flush 29,048
+scrapes-heavy-1.2-1-plan              37s  flushed series 58,096  flushes 2  encoder in 58,704  decoded 2,235,364  series/flush 29,048
+scrapes-heavy-1.2-1-main              63s  flushed series 116,192  flushes 4  encoder in 117,408  decoded 3,805,926  series/flush 29,048
+scrapes-heavy-1.2-1-plan              63s  flushed series 116,192  flushes 4  encoder in 117,408  decoded 3,805,926  series/flush 29,048

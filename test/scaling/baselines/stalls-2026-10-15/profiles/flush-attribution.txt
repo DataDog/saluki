@@ -1,0 +1,27 @@
+== heavy-1.2-1-plan (anchored at drains)
+4 flushes; encoder active from +0.04s to +2.37s after the anchor
+owner                            after Minst/s steady Minst/s  extra Minst/flush  share
+encoder (incl. compression)                272              0                815    84%
+forwarder / HTTP                             2              0                  7     1%
+aggregation                                 17              8                 28     3%
+post-aggregation transforms                  0              0                  0     0%
+plan regions (other)                        36             30                 19     2%
+DogStatsD source                           216            216                  1     0%
+internal telemetry                           1              1                 -0    -0%
+tokio / kernel / other                     121             88                 98    10%
+total                                      666            344                966
+  compression (leaf frames, inside the encoder) after the flush: 362 Minst/flush
+
+== heavy-1.2-1-main (anchored at the encoder's first sample after a quiet gap)
+4 flushes; encoder active from +0.00s to +2.34s after the anchor
+owner                            after Minst/s steady Minst/s  extra Minst/flush  share
+encoder (incl. compression)                273              0                820    86%
+forwarder / HTTP                             2              0                  6     1%
+aggregation                                 11             10                  0     0%
+post-aggregation transforms                  3              0                  9     1%
+plan regions (other)                         0              0                  0     0%
+DogStatsD source                           203            197                 19     2%
+internal telemetry                           2              1                  0     0%
+tokio / kernel / other                     131             97                102    11%
+total                                      625            306                956
+  compression (leaf frames, inside the encoder) after the flush: 360 Minst/flush

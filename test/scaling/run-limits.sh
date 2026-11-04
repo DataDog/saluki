@@ -295,7 +295,10 @@ measure() {
   fi
   local recorder=""
   if [[ "$record" == 1 ]]; then
-    sudo -n perf record -q -o "$out/perf-$name.data" -a -C "$ADP_CPUSET" -e inst_retired -c 100000 \
+    # Monotonic timestamps, and beside them the wall clock's offset from the monotonic clock, so that samples can be
+    # lined up with measurements taken outside the process (this kernel's perf does not take the wall clock).
+    python3 -I -c 'import time; print(time.time() - time.monotonic())' >"$out/perf-$name.offset"
+    sudo -n perf record -q -o "$out/perf-$name.data" -k mono -a -C "$ADP_CPUSET" -e inst_retired -c 100000 \
       --cgroup "docker/$adp_id" --call-graph dwarf,8192 -- sleep "$record_seconds" 2>/dev/null &
     recorder=$!
   fi

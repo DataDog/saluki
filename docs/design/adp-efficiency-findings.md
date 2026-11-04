@@ -38,6 +38,7 @@ which matters for G1. Absolute figures may differ on x86.
 | G6 | The resource-tracking allocator wraps every allocation | small: part of the allocator's 3 to 6% | medium | low to medium |
 | G7 | When CPU-starved, native ADP keeps reading datagrams into its buffer pool, up to about 20,000 buffers, past the SMP memory bounds | memory safety under a crunch | high | medium |
 | G8 | At 0.05 cores with 100,000 contexts or more, ADP collapses erratically: decoded rates vary several-fold from run to run | behavior under a crunch | high that it happens; the cause is unknown | unknown |
+| G9 | Each 15-second flush is encoded and compressed in one burst of two to three seconds, which takes about 85% of the flush's cost and starves admission under a CPU quota | admission halves for about 2 s per flush at 0.6 cores; more at 0.3 | high: measured with instrumentation and profiles, the same on `main` and the plan | low (priority) to medium (pacing, cheaper encoding) |
 
 ## Findings
 
@@ -152,6 +153,36 @@ about 18,000 contexts are ever active, so the aggregation flush is cheap; the ca
 **Next.** Profile a run in each mode, and compare context resolution, the interner, and aggregation between a fast
 run and a slow one.
 
+### G9: the encoder's burst after each flush
+
+**What.** Every 15 seconds aggregation emits its closed buckets (29,048 series at the heavy tier), and the metrics
+encoder then encodes and compresses all of them at once: it is busy for 2.3 seconds after a flush at 1.2 cores and 3.0
+at 0.6, and idle in between. A flush costs about 960 million instructions at heavy, about 33,000 per emitted series,
+five to six times the cost of decoding an input metric; the encoder is about 85% of it, zstd (level 3) about 38% of
+the total, and aggregation's own emission about 3%.
+
+**Evidence.** Instrumentation of the metrics path and wall-clock-aligned instruction profiles at heavy 0.6 and 1.2, four
+flushes per image (`test/scaling/baselines/stalls-2026-10-15/`). `main` and the plan flush and encode the same series
+per flush, at the same cost. There is no backpressure: no component waits more than 0.3 ms a second to send. It is CPU
+starvation: in the three seconds after a flush at heavy 1.2, ADP uses about 2.3 times its CPU of the three seconds
+before, and throttled CFS periods rise from 36 to 44% to 54 to 61%; at 0.6 cores the metrics admitted per 100 ms
+halve for about two seconds; at 0.3 they fall about 43% over three seconds.
+
+**Approaches**, each independent of the plan:
+
+- **Run the encoder at a lower priority than admission.** Output can wait seconds; admission cannot. Inside a cgroup,
+  threads of lower CPU weight (`nice`, or `SCHED_IDLE`) yield to the others before the quota runs out, which needs the
+  encoder on threads of its own (Tokio has no task priorities). The cheapest experiment.
+- **Spread the encoding.** Release the flush's output to the encoder over time instead of at once; the encoder follows
+  its input batch by batch, so its work spreads with it. Natively this is a change to the aggregation transform's flush;
+  in the plan, a pacing policy on its resumable drain (the plan's N2).
+- **Make encoding cheaper:** the compression level, and the cost of encoding per series. This shrinks the burst without
+  changing its shape.
+
+**Validation.** Admission per 100 ms after a flush against before it, and throttled periods after a flush, in sequential
+runs; the measurement needs instrumentation like the flow trace (kept as a patch with the results), since lading's
+one-second pacing confounds anything measured from the sender.
+
 ## Non-findings
 
 - **Idle cost is small:** 2.3 to 2.8 millicores on either image with no traffic. A first measurement of 17 to 22
@@ -177,6 +208,15 @@ Lessons from building the harness (`test/scaling/run-limits.sh`; see its [README
   `abort_conf:true` with an invalid option confirms the variable is read.
 - **At 0.05 cores with many contexts, results need many runs:** a single series' medians can mislead by tens of percent
   (G8).
+- **lading sends each second's bytes in about half a second, then idles,** so the generator's per-second rate mixes its
+  pacing with ADP's stalls; measure admission inside ADP instead.
+- **For a Unix datagram socket, `ss` reports the size of the first datagram waiting,** not a queue depth, and the
+  socket's memory is not visible from either end.
+- **Throttled time in `cpu.stat` is summed over CPUs** (up to the CPU count times wall time).
+- **This kernel's `perf record` does not take the wall clock** (`-k realtime`); record with `-k mono` and keep the wall
+  clock's offset from the monotonic clock beside the data to line samples up with other measurements.
+- **Profile several flushes, and anchor every image the same way:** one-flush profiles and flushes anchored on CPU peaks
+  produced differences between `main` and the plan of 2.5 and 5 times that four-flush profiles anchored alike erased.
 
 To reproduce, build the images (`make limits-images`) and run a cell, for example
 `SCALING_TIERS=heavy SCALING_LIMITS=0.3 make limits-runs`; for instruction counts, add `SCALING_PERF=1`, and to compare
