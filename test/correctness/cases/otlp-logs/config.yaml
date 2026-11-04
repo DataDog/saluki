@@ -14,7 +14,7 @@ logs:
       paths: ["content.status"]
       kinds: [missing]
       reason: ADP's content holds only `message` and `service`, so it has no `status`.
-    - gap: gap/content-in-message
+    - gap: gap/empty-service
       paths: ["envelope.service"]
       kinds: [missing]
       reason: The Agent's envelope always has `service`, empty when unset; ADP omits an empty service.
