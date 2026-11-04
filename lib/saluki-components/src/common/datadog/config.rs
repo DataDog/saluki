@@ -1,13 +1,12 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
-use agent_data_plane_config::shared::{self, Endpoints, SharedConfiguration, V3SeriesMode};
 use saluki_error::GenericError;
 use saluki_io::net::client::http::{HttpProtocol, TlsMinimumVersion};
 use tracing::warn;
 
 use super::{
     endpoints::{EndpointConfiguration, EndpointRoute, RoutableEndpoint, SingleDestination},
-    protocol::{UseV3ApiConfig, UseV3ApiSeriesConfig, V3ApiConfig},
+    protocol::{UseV3ApiConfig, UseV3ApiSeriesConfig, V3ApiConfig, V3SeriesMode},
     proxy::ProxyConfiguration,
     retry::RetryConfiguration,
     routing::RoutingTargetCatalog,
@@ -71,15 +70,6 @@ pub enum ForwarderHttpProtocol {
     Http1,
 }
 
-impl From<shared::ForwarderHttpProtocol> for ForwarderHttpProtocol {
-    fn from(protocol: shared::ForwarderHttpProtocol) -> Self {
-        match protocol {
-            shared::ForwarderHttpProtocol::Auto => Self::Auto,
-            shared::ForwarderHttpProtocol::Http1 => Self::Http1,
-        }
-    }
-}
-
 impl From<ForwarderHttpProtocol> for HttpProtocol {
     fn from(protocol: ForwarderHttpProtocol) -> Self {
         match protocol {
@@ -93,47 +83,29 @@ impl From<ForwarderHttpProtocol> for HttpProtocol {
 ///
 /// Two alternate intakes exist, the Observability Pipelines Worker and its deprecated Vector
 /// predecessor, and the Worker takes precedence when both are enabled.
-#[derive(Clone, Default)]
-#[cfg_attr(test, derive(Debug, PartialEq))]
-pub(crate) struct OpwMetricsConfiguration {
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct OpwMetricsConfiguration {
     /// Observability Pipelines Worker routing settings.
-    observability_pipelines_worker: OpwMetricsSettings,
+    pub observability_pipelines_worker: OpwMetricsSettings,
 
     /// Vector routing settings, deprecated in favor of the Observability Pipelines Worker.
-    vector: OpwMetricsSettings,
+    pub vector: OpwMetricsSettings,
 }
 
 /// One alternate intake's routing settings.
-#[derive(Clone, Default)]
-#[cfg_attr(test, derive(Debug, PartialEq))]
-pub(crate) struct OpwMetricsSettings {
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct OpwMetricsSettings {
     /// Whether all metrics route to this intake.
-    enabled: bool,
+    pub enabled: bool,
 
     /// Endpoint of the instance to route metrics to.
-    url: String,
+    pub url: String,
 
     /// Whether series metrics routed to this intake use the V3 protocol.
-    use_v3_series: bool,
+    pub use_v3_series: bool,
 }
 
 impl OpwMetricsConfiguration {
-    /// Creates a new `OpwMetricsConfiguration` from the resolved endpoint configuration.
-    pub(crate) fn from_configuration(endpoints: &Endpoints) -> Self {
-        Self {
-            observability_pipelines_worker: OpwMetricsSettings {
-                enabled: endpoints.opw_intake.enabled,
-                url: endpoints.opw_intake.url.clone(),
-                use_v3_series: endpoints.opw_intake.use_v3_series,
-            },
-            vector: OpwMetricsSettings {
-                enabled: endpoints.vector_intake.enabled,
-                url: endpoints.vector_intake.url.clone(),
-                use_v3_series: endpoints.vector_intake.use_v3_series,
-            },
-        }
-    }
-
     /// Disables routing to both alternate intakes.
     pub(crate) fn disable(&mut self) {
         self.observability_pipelines_worker.enabled = false;
@@ -178,78 +150,76 @@ impl OpwMetricsConfiguration {
     }
 }
 
-/// Forwarder configuration based on the Datadog Agent's forwarder configuration.
+/// Forwarder settings, such as retries and concurrency, mirroring those of the Datadog Agent's forwarder.
 ///
-/// This adapter provides a simple way to utilize the existing configuration values that are passed to the Datadog
-/// Agent, which are used to control the behavior of its forwarder, such as retries and concurrency, in conjunction
-/// with existing primitives, as such retry policies in [`saluki_io::util::retry`].
+/// They are used with existing primitives, such as the retry policies in [`saluki_io::net::util::retry`].
 #[derive(Clone)]
 #[cfg_attr(test, derive(Debug, PartialEq))]
 pub struct ForwarderConfiguration {
     /// Maximum number of concurrent requests for an individual endpoint.
     ///
     /// If set to 0, request concurrency is clamped to 1.
-    endpoint_concurrency: usize,
+    pub endpoint_concurrency: usize,
 
     /// Multiplier for endpoint request concurrency.
     ///
     /// This value also sizes the HTTP idle connection pool. If set to 0, idle connection retention is
     /// disabled and the concurrency multiplier is treated as 1. This setting does not create worker tasks.
-    endpoint_concurrency_multiplier: usize,
+    pub endpoint_concurrency_multiplier: usize,
 
     /// Request timeout, in seconds.
-    request_timeout_secs: u64,
+    pub request_timeout_secs: u64,
 
     /// Maximum number of pending requests for an individual endpoint.
-    endpoint_buffer_size: usize,
+    pub endpoint_buffer_size: usize,
 
     /// Endpoints payloads are sent to.
-    endpoint: EndpointConfiguration,
+    pub endpoint: EndpointConfiguration,
 
     /// Retry configuration.
-    retry: RetryConfiguration,
+    pub retry: RetryConfiguration,
 
     /// Proxy configuration.
-    proxy: ProxyConfiguration,
+    pub proxy: ProxyConfiguration,
 
     /// Metrics routing to an alternate intake.
-    opw_metrics: OpwMetricsConfiguration,
+    pub opw_metrics: OpwMetricsConfiguration,
 
     /// HTTP protocol selection for outgoing forwarder requests.
     ///
     /// `auto` negotiates HTTP/2 with HTTP/1.1 fallback; `http1` forces HTTP/1.1 only.
-    http_protocol: ForwarderHttpProtocol,
+    pub http_protocol: ForwarderHttpProtocol,
 
     /// Connection reset interval, in seconds.
-    connection_reset_interval_secs: u64,
+    pub connection_reset_interval_secs: u64,
 
     /// Whether in-flight requests are allowed to finish when the forwarder shuts down.
     ///
     /// When `false`, in-flight requests are aborted when shutdown begins and their transactions are requeued, so that
     /// they are persisted along with the other pending transactions.
-    stop_wait_for_inflight: bool,
+    pub stop_wait_for_inflight: bool,
 
     /// V3 API configuration for per-endpoint V3 support.
     ///
     /// This is shared with the metrics encoder and used by the I/O layer to filter payloads based on
     /// endpoint URL matching.
-    v3_api: V3ApiConfig,
+    pub v3_api: V3ApiConfig,
 
     /// Agent-compatible V3 API configuration.
-    use_v3_api: UseV3ApiConfig,
+    pub use_v3_api: UseV3ApiConfig,
 
     /// Payload compressor kind used by the metrics serializer.
     ///
     /// V3 metrics intake is incompatible with zlib/deflate, so the forwarder needs this setting to keep endpoint
     /// filtering aligned with the encoder when zlib forces metrics back to V2.
-    serializer_compressor_kind: String,
+    pub serializer_compressor_kind: String,
 
     /// Whether to disable TLS certificate validation for Datadog intake forwarding.
     ///
     /// When set, HTTPS clients built for the shared Datadog forwarder accept invalid server certificates. Only
     /// deployments that intentionally route Datadog intake traffic through endpoints with invalid or self-signed
     /// certificates should enable this.
-    skip_ssl_validation: bool,
+    pub skip_ssl_validation: bool,
 
     /// File path to write TLS key material to for all HTTPS connections to the
     /// Datadog backend.
@@ -259,138 +229,64 @@ pub struct ForwarderConfiguration {
     /// issues, as well as decrypting captured TLS traffic in tools such as Wireshark.
     ///
     /// [nss_key_log]: https://nss-crypto.org/reference/security/nss/legacy/key_log_format/index.html
-    sslkeylogfile: String,
+    pub sslkeylogfile: String,
 
-    /// Minimum TLS protocol version for Datadog intake forwarding.
+    /// Minimum TLS protocol version for Datadog intake forwarding, such as `tlsv1.2`.
     ///
     /// TLS 1.0 and TLS 1.1 are accepted for compatibility with core Agent configuration, but Saluki clamps them to
-    /// TLS 1.2 because rustls does not support older protocol versions.
-    min_tls_version: TlsMinimumVersion,
+    /// TLS 1.2 because rustls does not support older protocol versions. An empty value means TLS 1.2, and an invalid
+    /// value falls back to it with a warning.
+    pub min_tls_version: String,
 
     /// Timeout for completing the TLS handshake after a connection is established, for Datadog intake forwarding.
     ///
     /// This bounds only the TLS handshake step, distinct from `forwarder_timeout`, which bounds the entire request. A
     /// value of `0` disables the handshake deadline entirely, matching the core Agent convention for this setting.
-    tls_handshake_timeout: Duration,
+    pub tls_handshake_timeout: Duration,
 
     /// Whether to signal that the backend should allow arbitrary tag values.
     ///
     /// When set, the Datadog forwarder adds `Allow-Arbitrary-Tag-Value: true` to every outbound intake request. The
     /// data plane does not perform local tag validation based on this setting.
-    allow_arbitrary_tags: bool,
+    pub allow_arbitrary_tags: bool,
 
-    /// How often API keys are checked for validity against the intake.
-    api_key_validation_interval: Duration,
+    /// How often API keys are checked for validity against the intake, in minutes.
+    ///
+    /// A non-positive value falls back to the default with a warning.
+    pub api_key_validation_interval_mins: i64,
 
     /// Routing targets that metrics payloads may be addressed to.
     ///
     /// When set, each endpoint is labeled with its routing target so that a payload addressed to specific targets
     /// reaches only those. When unset, no endpoint is a target, and a payload addressed to specific targets reaches
     /// none of them.
-    routing_targets: Option<Arc<RoutingTargetCatalog>>,
-}
-
-/// The endpoint and V3 routing settings that depend on a forwarder's destination.
-///
-/// Every other forwarder setting is the same regardless of destination, so grouping these together
-/// makes each constructor set all of them, and only these, explicitly.
-struct ForwarderRouting {
-    /// Endpoints payloads are sent to.
-    endpoint: EndpointConfiguration,
-
-    /// Metrics routing to an alternate intake.
-    opw_metrics: OpwMetricsConfiguration,
-
-    /// Per-endpoint V3 settings from the metrics serializer.
-    v3_api: V3ApiConfig,
-
-    /// Agent-compatible V3 series routing.
-    use_v3_api: UseV3ApiConfig,
-}
-
-impl ForwarderConfiguration {
-    /// Creates a new `ForwarderConfiguration` from the resolved shared configuration.
-    pub fn from_configuration(shared: &SharedConfiguration) -> Self {
-        let endpoints = &shared.endpoints;
-        let routing = ForwarderRouting {
-            endpoint: EndpointConfiguration::from_configuration(endpoints),
-            opw_metrics: OpwMetricsConfiguration::from_configuration(endpoints),
-            v3_api: (&shared.metrics_encoding.v3_api).into(),
-            use_v3_api: UseV3ApiConfig {
-                series: (&shared.metrics_encoding).into(),
-            },
-        };
-
-        Self::from_routing(shared, routing)
-    }
-
-    /// Creates a new `ForwarderConfiguration` that forwards only to a single destination.
-    ///
-    /// The destination replaces the configured primary endpoint, and neither dual shipping nor the
-    /// alternate metrics intakes apply to it. Because the destination is part of construction, no
-    /// later step can overwrite it.
-    pub(crate) fn for_single_destination(shared: &SharedConfiguration, destination: &SingleDestination) -> Self {
-        let series_mode = if destination.accepts_v3_series {
-            (&shared.metrics_encoding).into()
-        } else {
-            UseV3ApiSeriesConfig {
-                enabled: V3SeriesMode::Disabled,
-                endpoints: HashMap::new(),
-            }
-        };
-
-        let routing = ForwarderRouting {
-            endpoint: EndpointConfiguration::for_single_destination(destination),
-            opw_metrics: OpwMetricsConfiguration::default(),
-            v3_api: (&shared.metrics_encoding.v3_api).into(),
-            use_v3_api: UseV3ApiConfig { series: series_mode },
-        };
-
-        Self::from_routing(shared, routing)
-    }
-
-    /// Builds the forwarder configuration from its destination-specific routing plus the settings
-    /// every forwarder reads the same way.
-    fn from_routing(shared: &SharedConfiguration, routing: ForwarderRouting) -> Self {
-        let endpoints = &shared.endpoints;
-        let forwarder = &endpoints.forwarder;
-
-        Self {
-            endpoint_concurrency: forwarder.max_concurrent_requests,
-            endpoint_concurrency_multiplier: forwarder.num_workers,
-            request_timeout_secs: forwarder.timeout,
-            endpoint_buffer_size: forwarder.high_prio_buffer_size,
-            endpoint: routing.endpoint,
-            retry: RetryConfiguration::from_configuration(forwarder, shared.run_path.as_deref()),
-            proxy: ProxyConfiguration::from_configuration(&endpoints.proxy),
-            opw_metrics: routing.opw_metrics,
-            http_protocol: forwarder.http_protocol.into(),
-            connection_reset_interval_secs: forwarder.connection_reset_interval,
-            stop_wait_for_inflight: forwarder.stop_wait_for_inflight,
-            v3_api: routing.v3_api,
-            use_v3_api: routing.use_v3_api,
-            serializer_compressor_kind: endpoints.compression.compressor_kind.clone(),
-            skip_ssl_validation: endpoints.tls.skip_ssl_validation,
-            sslkeylogfile: endpoints.tls.sslkeylogfile.clone(),
-            min_tls_version: min_tls_version_from_config_value(&endpoints.tls.min_tls_version),
-            tls_handshake_timeout: endpoints.tls.handshake_timeout,
-            allow_arbitrary_tags: endpoints.allow_arbitrary_tags,
-            api_key_validation_interval: api_key_validation_interval(forwarder.apikey_validation_interval),
-            routing_targets: None,
-        }
-    }
-
-    /// Sets the routing targets that metrics payloads may be addressed to.
     ///
     /// The catalog must be the one shared with every encoder that addresses payloads to this forwarder, and it must
     /// have been built from the same endpoint configuration as this forwarder.
-    pub(crate) fn with_routing_targets(mut self, routing_targets: Arc<RoutingTargetCatalog>) -> Self {
-        self.routing_targets = Some(routing_targets);
+    pub routing_targets: Option<Arc<RoutingTargetCatalog>>,
+}
+
+impl ForwarderConfiguration {
+    /// Replaces every configured endpoint with a single destination.
+    ///
+    /// Neither dual shipping, the alternate metrics intakes, nor routing targets apply to the destination, and a
+    /// destination that does not accept V3 series payloads gets none of the configured V3 series routing.
+    pub(crate) fn for_single_destination(mut self, destination: &SingleDestination) -> Self {
+        self.endpoint = EndpointConfiguration::for_single_destination(destination);
+        self.opw_metrics = OpwMetricsConfiguration::default();
+        self.routing_targets = None;
+        if !destination.accepts_v3_series {
+            self.use_v3_api.series = UseV3ApiSeriesConfig {
+                enabled: V3SeriesMode::Disabled,
+                endpoints: HashMap::new(),
+            };
+        }
+
         self
     }
 
-    /// Returns the maximum number of concurrent requests for an individual endpoint.
-    pub const fn endpoint_concurrency(&self) -> usize {
+    /// Returns the maximum number of concurrent requests for an individual endpoint, after clamping each factor.
+    pub(crate) const fn effective_endpoint_concurrency(&self) -> usize {
         let endpoint_concurrency = if self.endpoint_concurrency == 0 {
             1
         } else {
@@ -405,29 +301,9 @@ impl ForwarderConfiguration {
         endpoint_concurrency.saturating_mul(endpoint_concurrency_multiplier)
     }
 
-    /// Returns the maximum number of idle HTTP connections per host.
-    pub const fn max_idle_connections_per_host(&self) -> usize {
-        self.endpoint_concurrency_multiplier
-    }
-
     /// Returns the request timeout.
-    pub const fn request_timeout(&self) -> Duration {
+    pub(crate) const fn request_timeout(&self) -> Duration {
         Duration::from_secs(self.request_timeout_secs)
-    }
-
-    /// Returns the TLS handshake timeout.
-    pub const fn tls_handshake_timeout(&self) -> Duration {
-        self.tls_handshake_timeout
-    }
-
-    /// Returns the maximum number of pending requests for an individual endpoint.
-    pub const fn endpoint_buffer_size(&self) -> usize {
-        self.endpoint_buffer_size
-    }
-
-    /// Returns the HTTP protocol selection for outgoing forwarder requests.
-    pub fn http_protocol(&self) -> HttpProtocol {
-        self.http_protocol.into()
     }
 
     /// Builds resolved endpoints with routing metadata.
@@ -503,37 +379,9 @@ impl ForwarderConfiguration {
         Ok(endpoints)
     }
 
-    /// Returns a reference to the retry configuration.
-    pub const fn retry(&self) -> &RetryConfiguration {
-        &self.retry
-    }
-
-    /// Returns a reference to the proxy configuration.
-    pub const fn proxy(&self) -> &ProxyConfiguration {
-        &self.proxy
-    }
-
     /// Returns the connection reset interval.
-    pub const fn connection_reset_interval(&self) -> Duration {
+    pub(crate) const fn connection_reset_interval(&self) -> Duration {
         Duration::from_secs(self.connection_reset_interval_secs)
-    }
-
-    /// Returns whether in-flight requests are allowed to finish when the forwarder shuts down.
-    ///
-    /// When `false`, in-flight requests are aborted when shutdown begins, and their transactions are requeued with the
-    /// other pending transactions before those are flushed to the retry queue.
-    pub const fn stop_wait_for_inflight(&self) -> bool {
-        self.stop_wait_for_inflight
-    }
-
-    /// Returns a reference to the V3 API configuration.
-    pub fn v3_api(&self) -> &V3ApiConfig {
-        &self.v3_api
-    }
-
-    /// Returns the Agent-compatible V3 series configuration.
-    pub(crate) const fn use_v3_api_series(&self) -> &UseV3ApiSeriesConfig {
-        &self.use_v3_api.series
     }
 
     /// Returns the OPW/Vector V3 series override for metrics-primary routing, if configured.
@@ -548,36 +396,20 @@ impl ForwarderConfiguration {
         self.serializer_compressor_kind.trim().eq_ignore_ascii_case("zlib")
     }
 
-    /// Returns whether TLS certificate validation is disabled for Datadog intake forwarding.
-    pub const fn skip_ssl_validation(&self) -> bool {
-        self.skip_ssl_validation
-    }
-
     /// Returns the TLS key log file path, if configured.
-    pub fn ssl_key_log_file_path(&self) -> Option<&str> {
+    pub(crate) fn ssl_key_log_file_path(&self) -> Option<&str> {
         let trimmed = self.sslkeylogfile.trim();
         (!trimmed.is_empty()).then_some(trimmed)
     }
 
-    /// Returns the minimum TLS protocol version for Datadog intake forwarding.
-    pub const fn min_tls_version(&self) -> TlsMinimumVersion {
-        self.min_tls_version
+    /// Returns the minimum TLS protocol version for Datadog intake forwarding, warning if it is unsupported.
+    pub(crate) fn effective_min_tls_version(&self) -> TlsMinimumVersion {
+        min_tls_version_from_config_value(&self.min_tls_version)
     }
 
-    /// Returns whether outbound intake requests should allow arbitrary tag values.
-    pub const fn allow_arbitrary_tags(&self) -> bool {
-        self.allow_arbitrary_tags
-    }
-
-    /// Overrides whether outbound requests should signal support for arbitrary tag values.
-    pub fn with_allow_arbitrary_tags(mut self, allow_arbitrary_tags: bool) -> Self {
-        self.allow_arbitrary_tags = allow_arbitrary_tags;
-        self
-    }
-
-    /// Returns the API key validation interval.
-    pub const fn api_key_validation_interval(&self) -> Duration {
-        self.api_key_validation_interval
+    /// Returns the API key validation interval, warning if the configured interval is not positive.
+    pub(crate) fn effective_api_key_validation_interval(&self) -> Duration {
+        api_key_validation_interval(self.api_key_validation_interval_mins)
     }
 }
 
@@ -585,16 +417,12 @@ impl ForwarderConfiguration {
 mod tests {
     use std::collections::HashMap;
 
-    use agent_data_plane_config::{
-        shared::{AltMetricsIntake, Proxy, Tls, V3ApiEncoding, V3SeriesMode},
-        ConfigValue,
+    use super::*;
+    use crate::common::datadog::{
+        config::OpwMetricsSettings,
+        test_util::{forwarder_configuration, TEST_API_KEY},
     };
 
-    use super::*;
-    use crate::common::datadog::test_util::shared_configuration;
-
-    const PROXY_URL: &str = "http://proxy.example.com:3128";
-    const PROXY_URI: &str = "http://proxy.example.com:3128/";
     const DATADOG_URL: &str = "http://datadog.example.com";
     const DATADOG_URI: &str = "http://datadog.example.com/";
     const OPW_URL: &str = "http://opw.example.com:8080";
@@ -605,8 +433,26 @@ mod tests {
     const ADDITIONAL_URI: &str = "http://additional.example.com/";
     const SSL_KEY_LOG_FILE_PATH: &str = "/tmp/saluki-sslkeylogfile";
 
-    async fn forwarder_config_from(shared: SharedConfiguration) -> ForwarderConfiguration {
-        ForwarderConfiguration::from_configuration(&shared)
+    /// Returns a forwarder configuration whose primary endpoint is `primary_endpoint`.
+    fn forwarder_config_for(
+        primary_endpoint: &str, additional_endpoints: HashMap<String, Vec<String>>,
+    ) -> ForwarderConfiguration {
+        ForwarderConfiguration {
+            endpoint: EndpointConfiguration::new(
+                TEST_API_KEY.to_string(),
+                primary_endpoint.to_string(),
+                additional_endpoints,
+            ),
+            ..forwarder_configuration()
+        }
+    }
+
+    fn alternate_intake(enabled: bool, url: &str, use_v3_series: bool) -> OpwMetricsSettings {
+        OpwMetricsSettings {
+            enabled,
+            url: url.to_string(),
+            use_v3_series,
+        }
     }
 
     fn endpoint_urls_by_route(config: &ForwarderConfiguration, route: EndpointRoute) -> Vec<String> {
@@ -621,38 +467,14 @@ mod tests {
             .collect()
     }
 
-    #[tokio::test]
-    async fn proxy_settings_come_from_resolved_configuration() {
-        let mut shared = shared_configuration();
-        shared.endpoints.proxy = Proxy {
-            http: PROXY_URL.to_string(),
-            ..Default::default()
-        };
-        let config = forwarder_config_from(shared).await;
-
-        let proxies = config.proxy().build().expect("proxies should build");
-        assert_eq!(1, proxies.len());
-        assert_eq!(PROXY_URI, proxies[0].uri().to_string());
+    #[test]
+    fn forwarder_http_protocol_maps_to_the_client_protocol() {
+        assert_eq!(HttpProtocol::Auto, ForwarderHttpProtocol::Auto.into());
+        assert_eq!(HttpProtocol::Http1, ForwarderHttpProtocol::Http1.into());
     }
 
-    #[tokio::test]
-    async fn forwarder_http_protocol_maps_from_resolved_configuration() {
-        let cases = [
-            (shared::ForwarderHttpProtocol::Auto, HttpProtocol::Auto),
-            (shared::ForwarderHttpProtocol::Http1, HttpProtocol::Http1),
-        ];
-
-        for (configured, expected) in cases {
-            let mut shared = shared_configuration();
-            shared.endpoints.forwarder.http_protocol = configured;
-            let config = forwarder_config_from(shared).await;
-
-            assert_eq!(expected, config.http_protocol(), "{configured:?}");
-        }
-    }
-
-    #[tokio::test]
-    async fn endpoint_concurrency_multiplies_and_clamps_zero_values_to_one() {
+    #[test]
+    fn endpoint_concurrency_multiplies_and_clamps_zero_values_to_one() {
         // `endpoint_concurrency` multiplies the base concurrency by the multiplier, but a documented zero
         // for either field is clamped to 1 first (a zero multiplier "is treated as 1", a zero base
         // concurrency "is clamped to 1").
@@ -664,17 +486,18 @@ mod tests {
         ];
 
         for (name, concurrency, multiplier, expected) in cases {
-            let mut shared = shared_configuration();
-            shared.endpoints.forwarder.max_concurrent_requests = concurrency;
-            shared.endpoints.forwarder.num_workers = multiplier;
-            let config = forwarder_config_from(shared).await;
+            let config = ForwarderConfiguration {
+                endpoint_concurrency: concurrency,
+                endpoint_concurrency_multiplier: multiplier,
+                ..forwarder_configuration()
+            };
 
-            assert_eq!(expected, config.endpoint_concurrency(), "{name}");
+            assert_eq!(expected, config.effective_endpoint_concurrency(), "{name}");
         }
     }
 
-    #[tokio::test]
-    async fn api_key_validation_interval_falls_back_for_non_positive_values() {
+    #[test]
+    fn api_key_validation_interval_falls_back_for_non_positive_values() {
         let cases = [
             ("positive", 5i64, Duration::from_mins(5)),
             ("zero", 0, Duration::from_mins(60)),
@@ -682,33 +505,17 @@ mod tests {
         ];
 
         for (name, configured, expected) in cases {
-            let mut shared = shared_configuration();
-            shared.endpoints.forwarder.apikey_validation_interval = configured;
-            let config = forwarder_config_from(shared).await;
+            let config = ForwarderConfiguration {
+                api_key_validation_interval_mins: configured,
+                ..forwarder_configuration()
+            };
 
-            assert_eq!(expected, config.api_key_validation_interval(), "{name}");
+            assert_eq!(expected, config.effective_api_key_validation_interval(), "{name}");
         }
     }
 
-    #[tokio::test]
-    async fn tls_settings_come_from_resolved_configuration() {
-        let mut shared = shared_configuration();
-        shared.endpoints.tls = Tls {
-            skip_ssl_validation: true,
-            min_tls_version: "tlsv1.3".to_string(),
-            sslkeylogfile: SSL_KEY_LOG_FILE_PATH.to_string(),
-            handshake_timeout: Duration::from_secs(3),
-        };
-        let config = forwarder_config_from(shared).await;
-
-        assert!(config.skip_ssl_validation());
-        assert_eq!(TlsMinimumVersion::Tls13, config.min_tls_version());
-        assert_eq!(Some(SSL_KEY_LOG_FILE_PATH), config.ssl_key_log_file_path());
-        assert_eq!(Duration::from_secs(3), config.tls_handshake_timeout());
-    }
-
-    #[tokio::test]
-    async fn min_tls_version_maps_configured_value() {
+    #[test]
+    fn min_tls_version_maps_configured_value() {
         // Documented mapping (see `min_tls_version_from_config_value`): an explicit tlsv1.2 maps to
         // TLS 1.2; tlsv1.3 maps to TLS 1.3 (case-insensitively); tlsv1.0/tlsv1.1 clamp up to TLS 1.2
         // because rustls has no older support; and an empty string or any unrecognized value falls
@@ -724,73 +531,35 @@ mod tests {
         ];
 
         for (name, value, expected) in cases {
-            let mut shared = shared_configuration();
-            shared.endpoints.tls.min_tls_version = value.to_string();
-            let config = forwarder_config_from(shared).await;
+            let config = ForwarderConfiguration {
+                min_tls_version: value.to_string(),
+                ..forwarder_configuration()
+            };
 
-            assert_eq!(expected, config.min_tls_version(), "{name}");
+            assert_eq!(expected, config.effective_min_tls_version(), "{name}");
         }
     }
 
-    #[tokio::test]
-    async fn sslkeylogfile_whitespace_only_is_treated_as_unset() {
+    #[test]
+    fn sslkeylogfile_is_trimmed_and_whitespace_only_is_treated_as_unset() {
         // `ssl_key_log_file_path` trims the configured value, so a whitespace-only path is reported as unset.
-        let mut shared = shared_configuration();
-        shared.endpoints.tls.sslkeylogfile = "   ".to_string();
-        let config = forwarder_config_from(shared).await;
+        let config = ForwarderConfiguration {
+            sslkeylogfile: format!(" {SSL_KEY_LOG_FILE_PATH} "),
+            ..forwarder_configuration()
+        };
+        assert_eq!(Some(SSL_KEY_LOG_FILE_PATH), config.ssl_key_log_file_path());
 
+        let config = ForwarderConfiguration {
+            sslkeylogfile: "   ".to_string(),
+            ..forwarder_configuration()
+        };
         assert_eq!(None, config.ssl_key_log_file_path());
     }
 
-    #[tokio::test]
-    async fn allow_arbitrary_tags_comes_from_resolved_configuration() {
-        let mut shared = shared_configuration();
-        shared.endpoints.allow_arbitrary_tags = true;
-        let config = forwarder_config_from(shared).await;
-
-        assert!(config.allow_arbitrary_tags());
-        assert!(!config.with_allow_arbitrary_tags(false).allow_arbitrary_tags());
-    }
-
-    #[tokio::test]
-    async fn an_explicit_dd_url_overrides_the_site_derived_endpoint() {
-        let mut shared = shared_configuration();
-        shared.endpoints.site = ConfigValue::explicit("datadoghq.eu".to_string());
-        shared.endpoints.dd_url = ConfigValue::explicit(DATADOG_URL.to_string());
-        let config = forwarder_config_from(shared).await;
-
-        assert_eq!(
-            vec![DATADOG_URI],
-            endpoint_urls_by_route(&config, EndpointRoute::Primary)
-        );
-    }
-
-    #[tokio::test]
-    async fn a_defaulted_dd_url_leaves_the_endpoint_to_the_site() {
-        // The Agent supplies `dd_url` at its schema default even when only `site` is configured.
-        let mut shared = shared_configuration();
-        shared.endpoints.site = ConfigValue::explicit("datadoghq.eu".to_string());
-        let config = forwarder_config_from(shared).await;
-
-        let primary = config
-            .build_routable_endpoints()
-            .expect("endpoint should resolve")
-            .into_iter()
-            .find(|endpoint| endpoint.route() == EndpointRoute::Primary)
-            .expect("primary endpoint exists");
-        assert_eq!("https://app.datadoghq.eu", primary.endpoint().configured_endpoint());
-    }
-
-    #[tokio::test]
-    async fn opw_metrics_endpoint_overrides_metric_primary() {
-        let mut shared = shared_configuration();
-        shared.endpoints.dd_url = ConfigValue::explicit(DATADOG_URL.to_string());
-        shared.endpoints.opw_intake = AltMetricsIntake {
-            enabled: true,
-            url: OPW_URL.to_string(),
-            use_v3_series: false,
-        };
-        let config = forwarder_config_from(shared).await;
+    #[test]
+    fn opw_metrics_endpoint_overrides_metric_primary() {
+        let mut config = forwarder_config_for(DATADOG_URL, HashMap::new());
+        config.opw_metrics.observability_pipelines_worker = alternate_intake(true, OPW_URL, false);
 
         assert_eq!(
             vec![DATADOG_URI],
@@ -802,21 +571,13 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn a_disabled_alternate_intake_does_not_override_metric_primary() {
-        let mut shared = shared_configuration();
-        shared.endpoints.dd_url = ConfigValue::explicit(DATADOG_URL.to_string());
-        shared.endpoints.opw_intake = AltMetricsIntake {
-            enabled: false,
-            url: OPW_URL.to_string(),
-            use_v3_series: false,
+    #[test]
+    fn a_disabled_alternate_intake_does_not_override_metric_primary() {
+        let mut config = forwarder_config_for(DATADOG_URL, HashMap::new());
+        config.opw_metrics = OpwMetricsConfiguration {
+            observability_pipelines_worker: alternate_intake(false, OPW_URL, false),
+            vector: alternate_intake(false, VECTOR_URL, false),
         };
-        shared.endpoints.vector_intake = AltMetricsIntake {
-            enabled: false,
-            url: VECTOR_URL.to_string(),
-            use_v3_series: false,
-        };
-        let config = forwarder_config_from(shared).await;
 
         assert_eq!(
             vec![DATADOG_URI],
@@ -825,15 +586,10 @@ mod tests {
         assert!(endpoint_urls_by_route(&config, EndpointRoute::MetricsPrimary).is_empty());
     }
 
-    #[tokio::test]
-    async fn the_vector_intake_is_a_legacy_fallback() {
-        let mut shared = shared_configuration();
-        shared.endpoints.vector_intake = AltMetricsIntake {
-            enabled: true,
-            url: VECTOR_URL.to_string(),
-            use_v3_series: false,
-        };
-        let config = forwarder_config_from(shared.clone()).await;
+    #[test]
+    fn the_vector_intake_is_a_legacy_fallback() {
+        let mut config = forwarder_configuration();
+        config.opw_metrics.vector = alternate_intake(true, VECTOR_URL, false);
 
         assert_eq!(
             vec![VECTOR_URI],
@@ -841,12 +597,7 @@ mod tests {
         );
 
         // The Observability Pipelines Worker takes precedence when both are enabled.
-        shared.endpoints.opw_intake = AltMetricsIntake {
-            enabled: true,
-            url: OPW_URL.to_string(),
-            use_v3_series: false,
-        };
-        let config = forwarder_config_from(shared).await;
+        config.opw_metrics.observability_pipelines_worker = alternate_intake(true, OPW_URL, false);
 
         assert_eq!(
             vec![OPW_URI],
@@ -854,24 +605,17 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn an_alternate_intake_without_a_usable_url_is_disabled() {
+    #[test]
+    fn an_alternate_intake_without_a_usable_url_is_disabled() {
         let cases = [("empty url", ""), ("invalid url", "http://[::1")];
 
         for (name, url) in cases {
-            let mut shared = shared_configuration();
-            shared.endpoints.opw_intake = AltMetricsIntake {
-                enabled: true,
-                url: url.to_string(),
-                use_v3_series: false,
+            let mut config = forwarder_configuration();
+            config.opw_metrics = OpwMetricsConfiguration {
+                observability_pipelines_worker: alternate_intake(true, url, false),
+                // The Vector intake is not a fallback for an unusable Worker URL.
+                vector: alternate_intake(true, VECTOR_URL, false),
             };
-            // The Vector intake is not a fallback for an unusable Worker URL.
-            shared.endpoints.vector_intake = AltMetricsIntake {
-                enabled: true,
-                url: VECTOR_URL.to_string(),
-                use_v3_series: false,
-            };
-            let config = forwarder_config_from(shared).await;
 
             assert!(
                 endpoint_urls_by_route(&config, EndpointRoute::MetricsPrimary).is_empty(),
@@ -880,50 +624,36 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn metrics_routing_comes_from_resolved_configuration() {
-        let mut shared = shared_configuration();
-        shared.endpoints.compression.compressor_kind = "zstd".to_string();
-        shared.endpoints.opw_intake = AltMetricsIntake {
-            enabled: true,
-            url: OPW_URL.to_string(),
-            use_v3_series: true,
-        };
-        shared.metrics_encoding.v3_api = V3ApiEncoding {
-            compression_level: 7,
-            ..Default::default()
-        };
-        shared.metrics_encoding.v3_series_mode = V3SeriesMode::Disabled;
-        shared.metrics_encoding.v3_series_endpoint_modes =
-            HashMap::from([(DATADOG_URL.to_string(), V3SeriesMode::Enabled)]);
-        let config = forwarder_config_from(shared).await;
+    #[test]
+    fn the_selected_alternate_intake_supplies_the_v3_series_override() {
+        let mut config = forwarder_configuration();
+        assert_eq!(None, config.opw_metrics_v3_series_override());
 
-        assert_eq!(7, config.v3_api().compression_level);
-        assert_eq!(V3SeriesMode::Disabled, config.use_v3_api_series().enabled);
-        assert_eq!(
-            Some(&V3SeriesMode::Enabled),
-            config.use_v3_api_series().endpoints.get(DATADOG_URL)
-        );
+        config.opw_metrics.vector = alternate_intake(true, VECTOR_URL, false);
+        assert_eq!(Some(false), config.opw_metrics_v3_series_override());
+
+        config.opw_metrics.observability_pipelines_worker = alternate_intake(true, OPW_URL, true);
         assert_eq!(Some(true), config.opw_metrics_v3_series_override());
-        assert!(!config.compressor_disables_metrics_v3());
     }
 
-    #[tokio::test]
-    async fn serializer_compressor_kind_zlib_disables_metrics_v3() {
-        let mut shared = shared_configuration();
-        shared.endpoints.compression.compressor_kind = "zlib".to_string();
-        let config = forwarder_config_from(shared).await;
+    #[test]
+    fn serializer_compressor_kind_zlib_disables_metrics_v3() {
+        for (kind, expected) in [("zstd", false), ("zlib", true), (" ZLIB ", true)] {
+            let config = ForwarderConfiguration {
+                serializer_compressor_kind: kind.to_string(),
+                ..forwarder_configuration()
+            };
 
-        assert!(config.compressor_disables_metrics_v3());
+            assert_eq!(expected, config.compressor_disables_metrics_v3(), "{kind}");
+        }
     }
 
-    #[tokio::test]
-    async fn additional_endpoints_are_dual_shipped_alongside_the_primary() {
-        let mut shared = shared_configuration();
-        shared.endpoints.dd_url = ConfigValue::explicit(DATADOG_URL.to_string());
-        shared.endpoints.additional_endpoints =
-            HashMap::from([(ADDITIONAL_URL.to_string(), vec!["extra-api-key".to_string()])]);
-        let config = forwarder_config_from(shared).await;
+    #[test]
+    fn additional_endpoints_are_dual_shipped_alongside_the_primary() {
+        let config = forwarder_config_for(
+            DATADOG_URL,
+            HashMap::from([(ADDITIONAL_URL.to_string(), vec!["extra-api-key".to_string()])]),
+        );
 
         assert_eq!(
             vec![ADDITIONAL_URI],
@@ -931,52 +661,50 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn a_single_destination_replaces_every_configured_endpoint() {
+    #[test]
+    fn a_single_destination_replaces_every_configured_endpoint() {
         // A destination override must survive construction: the configured primary endpoint, the
         // additional endpoints, and the alternate metrics intake all conflict with it here.
-        let mut shared = shared_configuration();
-        shared.endpoints.dd_url = ConfigValue::explicit(DATADOG_URL.to_string());
-        shared.endpoints.additional_endpoints =
-            HashMap::from([(ADDITIONAL_URL.to_string(), vec!["extra-api-key".to_string()])]);
-        shared.endpoints.opw_intake = AltMetricsIntake {
-            enabled: true,
-            url: OPW_URL.to_string(),
-            use_v3_series: true,
+        let mut config = forwarder_config_for(
+            DATADOG_URL,
+            HashMap::from([(ADDITIONAL_URL.to_string(), vec!["extra-api-key".to_string()])]),
+        );
+        config.opw_metrics.observability_pipelines_worker = alternate_intake(true, OPW_URL, true);
+        config.use_v3_api.series = UseV3ApiSeriesConfig {
+            enabled: V3SeriesMode::Enabled,
+            endpoints: HashMap::from([(DATADOG_URL.to_string(), V3SeriesMode::Enabled)]),
         };
-        shared.metrics_encoding.v3_series_mode = V3SeriesMode::Enabled;
-        shared.metrics_encoding.v3_series_endpoint_modes =
-            HashMap::from([(DATADOG_URL.to_string(), V3SeriesMode::Enabled)]);
 
         let destination = SingleDestination {
             url: "https://only.example.com".to_string(),
             api_key: "destination-api-key".to_string(),
             accepts_v3_series: false,
         };
-        let config = ForwarderConfiguration::for_single_destination(&shared, &destination);
+        let config = config.for_single_destination(&destination);
 
         let endpoints = config.build_routable_endpoints().expect("endpoint should resolve");
         assert_eq!(1, endpoints.len());
         assert_eq!(EndpointRoute::Primary, endpoints[0].route());
         assert_eq!("https://only.example.com/", endpoints[0].endpoint().endpoint().as_str());
         assert_eq!("destination-api-key", &*endpoints[0].endpoint().api_key());
+        assert_eq!(None, config.opw_metrics_v3_series_override());
 
         // A destination that does not accept V3 series payloads gets none of the configured V3 routing.
-        assert_eq!(V3SeriesMode::Disabled, config.use_v3_api_series().enabled);
-        assert!(config.use_v3_api_series().endpoints.is_empty());
+        assert_eq!(V3SeriesMode::Disabled, config.use_v3_api.series.enabled);
+        assert!(config.use_v3_api.series.endpoints.is_empty());
     }
 
-    #[tokio::test]
-    async fn a_single_destination_keeps_configured_v3_series_routing_when_it_accepts_v3() {
-        let mut shared = shared_configuration();
-        shared.metrics_encoding.v3_series_mode = V3SeriesMode::Enabled;
+    #[test]
+    fn a_single_destination_keeps_configured_v3_series_routing_when_it_accepts_v3() {
+        let mut config = forwarder_configuration();
+        config.use_v3_api.series.enabled = V3SeriesMode::Enabled;
         let destination = SingleDestination {
             url: "https://mrf.example.com".to_string(),
             api_key: "mrf-api-key".to_string(),
             accepts_v3_series: true,
         };
-        let config = ForwarderConfiguration::for_single_destination(&shared, &destination);
+        let config = config.for_single_destination(&destination);
 
-        assert_eq!(V3SeriesMode::Enabled, config.use_v3_api_series().enabled);
+        assert_eq!(V3SeriesMode::Enabled, config.use_v3_api.series.enabled);
     }
 }

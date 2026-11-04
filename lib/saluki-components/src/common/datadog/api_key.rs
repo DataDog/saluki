@@ -358,25 +358,20 @@ mod tests {
     use std::collections::HashMap;
     use std::time::Duration;
 
-    use agent_data_plane_config::SalukiConfiguration;
     use saluki_core::runtime::test_util::TestSupervisor;
 
     use super::*;
     use crate::common::datadog::{
         config::ForwarderConfiguration,
-        endpoints::{ResolvedEndpoint, SingleDestination},
-        test_util::{shared_configuration, LiveConfiguration},
+        endpoints::{EndpointConfiguration, ResolvedEndpoint, SingleDestination},
+        test_util::{forwarder_configuration, LiveConfiguration, LiveRoot},
     };
 
     const PRIMARY_URL: &str = "http://primary.example.com";
     const ADDITIONAL_URL: &str = "http://additional.example.com";
 
-    /// Returns a configuration whose primary key is `api_key` and whose additional endpoints are
-    /// `additional`.
-    fn config(api_key: &str, additional: &[(&str, &[&str])]) -> SalukiConfiguration {
-        let mut config = SalukiConfiguration::default();
-        config.shared.endpoints.api_key = api_key.to_string();
-        config.shared.endpoints.additional_endpoints = additional
+    fn additional_endpoints(additional: &[(&str, &[&str])]) -> HashMap<String, Vec<String>> {
+        additional
             .iter()
             .map(|(url, api_keys)| {
                 (
@@ -384,9 +379,28 @@ mod tests {
                     api_keys.iter().map(|api_key| (*api_key).to_string()).collect(),
                 )
             })
-            .collect();
+            .collect()
+    }
 
-        config
+    /// Returns live values whose primary key is `api_key` and whose additional endpoints are `additional`.
+    fn config(api_key: &str, additional: &[(&str, &[&str])]) -> LiveRoot {
+        LiveRoot {
+            api_key: api_key.to_string(),
+            additional_endpoints: additional_endpoints(additional),
+            ..LiveRoot::default()
+        }
+    }
+
+    /// Returns a forwarder configuration whose primary key is `start-key`.
+    fn forwarder_config(additional: &[(&str, &[&str])]) -> ForwarderConfiguration {
+        ForwarderConfiguration {
+            endpoint: EndpointConfiguration::new(
+                "start-key".to_string(),
+                PRIMARY_URL.to_string(),
+                additional_endpoints(additional),
+            ),
+            ..forwarder_configuration()
+        }
     }
 
     /// Spawns `refresher` under a running component supervisor, the way a forwarder component does.
@@ -418,20 +432,7 @@ mod tests {
 
     /// Returns the endpoints the Datadog forwarder builds for `additional`.
     fn datadog_endpoints(additional: &[(&str, &[&str])]) -> Vec<RoutableEndpoint> {
-        let mut shared = shared_configuration();
-        shared.endpoints.api_key = "start-key".to_string();
-        shared.endpoints.dd_url = agent_data_plane_config::ConfigValue::explicit(PRIMARY_URL.to_string());
-        shared.endpoints.additional_endpoints = additional
-            .iter()
-            .map(|(url, api_keys)| {
-                (
-                    (*url).to_string(),
-                    api_keys.iter().map(|api_key| (*api_key).to_string()).collect(),
-                )
-            })
-            .collect();
-
-        ForwarderConfiguration::from_configuration(&shared)
+        forwarder_config(additional)
             .build_routable_endpoints()
             .expect("endpoints should resolve")
     }
@@ -505,14 +506,13 @@ mod tests {
     #[test]
     fn nothing_refreshes_an_endpoint_whose_forwarder_supplied_no_views() {
         // The Cluster Agent's shape: a bearer token that configuration does not own.
-        let mut shared = shared_configuration();
-        shared.endpoints.api_key = "bearer-token".to_string();
         let destination = SingleDestination {
             url: "http://cluster-agent.example.com".to_string(),
             api_key: "bearer-token".to_string(),
             accepts_v3_series: false,
         };
-        let endpoints = ForwarderConfiguration::for_single_destination(&shared, &destination)
+        let endpoints = forwarder_configuration()
+            .for_single_destination(&destination)
             .build_routable_endpoints()
             .expect("endpoint should resolve");
 
@@ -524,9 +524,7 @@ mod tests {
         // A forwarder that supplies both views but configures no additional endpoints leaves the
         // additional view unbound, so no task re-reads it.
         let live = LiveConfiguration::new(config("start-key", &[]));
-        let mut shared = shared_configuration();
-        shared.endpoints.dd_url = agent_data_plane_config::ConfigValue::explicit(PRIMARY_URL.to_string());
-        let endpoints = ForwarderConfiguration::from_configuration(&shared)
+        let endpoints = forwarder_config(&[])
             .build_routable_endpoints()
             .expect("endpoints should resolve");
 
@@ -622,14 +620,11 @@ mod tests {
     #[tokio::test]
     async fn primary_and_metrics_primary_endpoints_follow_the_same_primary_key() {
         let mut live = LiveConfiguration::new(config("start-key", &[]));
-        let mut shared = shared_configuration();
-        shared.endpoints.api_key = "start-key".to_string();
-        shared.endpoints.opw_intake.enabled = true;
-        shared.endpoints.opw_intake.url = "http://opw.example.com".to_string();
+        let mut forwarder = forwarder_config(&[]);
+        forwarder.opw_metrics.observability_pipelines_worker.enabled = true;
+        forwarder.opw_metrics.observability_pipelines_worker.url = "http://opw.example.com".to_string();
 
-        let endpoints = ForwarderConfiguration::from_configuration(&shared)
-            .build_routable_endpoints()
-            .expect("endpoints should resolve");
+        let endpoints = forwarder.build_routable_endpoints().expect("endpoints should resolve");
         let refresher =
             ApiKeyRefresher::new(&endpoints, &live.api_keys()).expect("both primary endpoints should follow the view");
         let _supervisor = spawn_refresher(refresher).await;
@@ -689,31 +684,31 @@ mod tests {
 
     #[tokio::test]
     async fn a_rotated_failover_key_reaches_the_endpoint() {
-        let mut config = SalukiConfiguration::default();
-        config.domains.multi_region_failover.api_key = Some("failover-key".to_string());
-        let mut live = LiveConfiguration::new(config);
+        let mut live = LiveConfiguration::new(LiveRoot {
+            override_api_key: Some("failover-key".to_string()),
+            ..LiveRoot::default()
+        });
 
-        let shared = shared_configuration();
         let destination = SingleDestination {
             url: "http://failover.example.com".to_string(),
             api_key: "failover-key".to_string(),
             accepts_v3_series: true,
         };
-        let endpoints = ForwarderConfiguration::for_single_destination(&shared, &destination)
+        let endpoints = forwarder_configuration()
+            .for_single_destination(&destination)
             .build_routable_endpoints()
             .expect("endpoint should resolve");
         let api_keys = LiveApiKeys {
-            primary: Some(ApiKeyView::Optional(
-                live.source.live(|config| &config.domains.multi_region_failover.api_key),
-            )),
+            primary: Some(ApiKeyView::Optional(live.source.live(|root| &root.override_api_key))),
             additional: None,
         };
         let refresher = ApiKeyRefresher::new(&endpoints, &api_keys).expect("the destination should follow the view");
         let _supervisor = spawn_refresher(refresher).await;
 
-        let mut rotated = SalukiConfiguration::default();
-        rotated.domains.multi_region_failover.api_key = Some("rotated-failover-key".to_string());
-        live.publisher.publish(rotated);
+        live.publisher.publish(LiveRoot {
+            override_api_key: Some("rotated-failover-key".to_string()),
+            ..LiveRoot::default()
+        });
 
         // The optional view must carry configured values even though it can also report absence.
         await_api_key(endpoints[0].endpoint(), "rotated-failover-key").await;

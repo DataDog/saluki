@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-use agent_data_plane_config::domains;
 use async_trait::async_trait;
 use otlp_protos::opentelemetry::proto::collector::logs::v1::logs_service_client::LogsServiceClient;
 use otlp_protos::opentelemetry::proto::collector::logs::v1::ExportLogsServiceRequest;
@@ -36,11 +35,14 @@ pub struct OtlpForwarderConfiguration {
 }
 
 impl OtlpForwarderConfiguration {
-    /// Creates a new `OtlpForwarderConfiguration` from the resolved OTLP trace configuration.
-    pub fn from_configuration(traces: &domains::otlp::Traces, core_agent_otlp_grpc_endpoint: String) -> Self {
+    /// Creates a new `OtlpForwarderConfiguration`.
+    ///
+    /// Traces go to the Trace Agent's OTLP port, `internal_port`, on localhost. Metrics and logs go to
+    /// `core_agent_otlp_grpc_endpoint`.
+    pub fn new(internal_port: u16, core_agent_otlp_grpc_endpoint: String) -> Self {
         Self {
             core_agent_otlp_grpc_endpoint,
-            core_agent_traces_internal_port: traces.internal_port,
+            core_agent_traces_internal_port: internal_port,
         }
     }
 }

@@ -1,7 +1,6 @@
 //! DogStatsD post-aggregate metric filter transform.
 //!
 //! Drops post-aggregation scalar metrics whose generated histogram aggregate names match the metric filterlist.
-use agent_data_plane_config::domains::dogstatsd::MetricFilter;
 use async_trait::async_trait;
 use saluki_common::sync::live::Live;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
@@ -23,7 +22,8 @@ use stringtheory::MetaString;
 use tokio::select;
 use tracing::{debug, error};
 
-use crate::components::dogstatsd_filterlist::{compile_metric_filter, Blocklist};
+use crate::components::dogstatsd_filterlist::{compile_metric_filter, Blocklist, MetricNameFilter};
+
 mod telemetry;
 
 use self::telemetry::Telemetry;
@@ -33,7 +33,7 @@ use self::telemetry::Telemetry;
 /// This transform mirrors the Agent time-sampler metric filter for DogStatsD histogram aggregate series after the
 /// aggregate transform has expanded histograms into scalar metrics.
 pub struct DogStatsDPostAggregateFilterConfiguration {
-    metric_filter: Live<MetricFilter>,
+    metric_filter: Live<MetricNameFilter>,
     histogram_suffixes: HistogramSuffixes,
 }
 
@@ -44,7 +44,7 @@ impl DogStatsDPostAggregateFilterConfiguration {
     ///
     /// Returns an error when a percentile is not a number from `0.0` through `1.0`.
     pub fn new(
-        metric_filter: Live<MetricFilter>, histogram_aggregates: &[String], histogram_percentiles: &[String],
+        metric_filter: Live<MetricNameFilter>, histogram_aggregates: &[String], histogram_percentiles: &[String],
     ) -> Result<Self, GenericError> {
         Ok(Self {
             metric_filter,
@@ -140,7 +140,7 @@ fn is_scalar_series_metric(metric: &Metric) -> bool {
 
 struct DogStatsDPostAggregateFilter {
     matcher: Blocklist,
-    metric_filter: Live<MetricFilter>,
+    metric_filter: Live<MetricNameFilter>,
     histogram_suffixes: HistogramSuffixes,
     telemetry: Telemetry,
 }
@@ -236,7 +236,7 @@ mod tests {
             .map(ToString::to_string)
             .collect::<Vec<_>>();
         let histogram_suffixes = HistogramSuffixes::try_new(&histogram_aggregates, &histogram_percentiles).unwrap();
-        let metric_filter = MetricFilter {
+        let metric_filter = MetricNameFilter {
             values: values.into_iter().map(ToString::to_string).collect(),
             match_prefix,
             prefix_rules: Vec::new(),
@@ -319,10 +319,10 @@ mod tests {
     #[test]
     fn prefix_rules_apply_to_histogram_outputs_with_global_exceptions() {
         let histogram_suffixes = HistogramSuffixes::try_new(&["avg".to_string()], &[]).unwrap();
-        let metric_filter = MetricFilter {
+        let metric_filter = MetricNameFilter {
             values: Vec::new(),
             match_prefix: false,
-            prefix_rules: vec![agent_data_plane_config::domains::dogstatsd::MetricPrefixRule {
+            prefix_rules: vec![crate::components::dogstatsd_filterlist::MetricPrefixRule {
                 prefix: "requests.".to_string(),
                 except_prefix: vec!["requests.keep.".to_string()],
                 except_exact: vec!["requests.exact.keep.avg".to_string()],
@@ -487,10 +487,12 @@ mod tests {
             kept
         }
 
-        let mut initial = agent_data_plane_config::SalukiConfiguration::default();
-        initial.domains.dogstatsd.metric_filter.values = vec!["request.duration.max".to_string()];
-        let (mut publisher, source) = saluki_common::sync::live::channel(initial);
-        let metric_filter = source.live(|config| &config.domains.dogstatsd.metric_filter);
+        let (mut publisher, source) = saluki_common::sync::live::channel(MetricNameFilter {
+            values: vec!["request.duration.max".to_string()],
+            match_prefix: false,
+            prefix_rules: Vec::new(),
+        });
+        let metric_filter = source.live(|filter| filter);
         let aggregates = ["max", "median", "avg", "count"].map(String::from);
         let builder = DogStatsDPostAggregateFilterConfiguration::new(metric_filter, &aggregates, &["0.95".to_string()])
             .expect("filter configuration should be valid");
@@ -501,9 +503,11 @@ mod tests {
 
         assert_eq!(kept_probes(&control, output).await, ["request.duration.avg"]);
 
-        let mut updated = (*source.load()).clone();
-        updated.domains.dogstatsd.metric_filter.values = vec!["request.duration.avg".to_string()];
-        publisher.publish(updated);
+        publisher.publish(MetricNameFilter {
+            values: vec!["request.duration.avg".to_string()],
+            match_prefix: false,
+            prefix_rules: Vec::new(),
+        });
 
         // Nothing counts updates, so keep probing until the transform has applied this one.
         tokio::time::timeout(Duration::from_secs(5), async {
