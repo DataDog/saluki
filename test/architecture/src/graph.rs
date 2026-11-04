@@ -64,8 +64,14 @@ pub struct Dependencies<'g> {
 
 impl<'g> Dependencies<'g> {
     /// Computes the packages `root` depends on through `links`.
+    ///
+    /// For [`Links::Built`], a package reachable without a root dev-dependency is reported through such a route,
+    /// so a failing guard names the dependency that has to change.
     pub fn new(root: PackageMetadata<'g>, links: Links) -> Self {
-        let mut via = HashMap::new();
+        let mut via = match links {
+            Links::Built => Self::new(root, Links::AsDependency).via,
+            Links::AsDependency | Links::Normal => HashMap::new(),
+        };
         let root_id = root.id();
         let query = root.to_package_query(DependencyDirection::Forward);
         query.resolve_with_fn(|cx, link| {
@@ -163,7 +169,8 @@ mod tests {
 
     use super::*;
 
-    /// Exercises renames, optional target-specific links, and root-only dev-dependency traversal.
+    /// Exercises renames, optional target-specific links, root-only dev-dependency traversal, and a package reached
+    /// both through a root dev-dependency and through a build chain.
     struct Fixture {
         dir: tempfile::TempDir,
     }
@@ -189,6 +196,9 @@ mod tests {
         (
             "c",
             r#"
+            [dependencies]
+            g = { path = "../g" }
+
             [dev-dependencies]
             f = { path = "../f" }
             "#,
@@ -304,11 +314,12 @@ mod tests {
             .collect();
         assert_eq!(to_b, [("renamed", "b")]);
 
-        let to_g: Vec<_> = direct_links_to_target_or_its_dependents(&a, &workspace.member("g").unwrap())
+        let mut to_g: Vec<_> = direct_links_to_target_or_its_dependents(&a, &workspace.member("g").unwrap())
             .iter()
             .map(|link| (link.resolved_name(), LinkKinds(link).to_string()))
             .collect();
-        assert_eq!(to_g, [("d", "build".to_string())]);
+        to_g.sort();
+        assert_eq!(to_g, [("c", "dev".to_string()), ("d", "build".to_string())]);
 
         assert!(direct_links_to_target_or_its_dependents(&a, &workspace.member("f").unwrap()).is_empty());
     }
