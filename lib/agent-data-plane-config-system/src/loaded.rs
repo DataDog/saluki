@@ -69,36 +69,12 @@ impl LoadedConfiguration {
         let text = std::fs::read_to_string(path).map_err(|e| Error::Base {
             message: format!("read `{}`: {e}", path.display()),
         })?;
-        // Every value the local sources supply was set explicitly: the file set it or an environment
-        // variable supplied it.
-        let (error, base) = match build_base(path, &text, env, KeyReading::Datadog).map(SourceTree::all_explicit) {
-            Ok(base) => match translate_strict(&base) {
-                Ok(local) => {
-                    return Ok(Self {
-                        base,
-                        local,
-                        yaml_fallback_error: None,
-                    })
-                }
-                Err(error) => (error, Some(base)),
-            },
-            Err(error) => (error, None),
-        };
-
-        let Ok(plain) = build_base(path, &text, env, KeyReading::AsWritten).map(SourceTree::all_explicit) else {
-            return Err(error);
-        };
-        if base.as_ref() == Some(&plain) {
-            return Err(error);
-        }
-        match translate_strict(&plain) {
-            Ok(local) => Ok(Self {
-                base: plain,
-                local,
-                yaml_fallback_error: Some(error),
-            }),
-            Err(_) => Err(error),
-        }
+        let reading = read_local(&text, path, &env_vars(env), env)?;
+        Ok(Self {
+            local: reading.local?,
+            base: reading.base,
+            yaml_fallback_error: reading.yaml_fallback_error,
+        })
     }
 
     /// Returns the typed snapshot of the local file and environment.
@@ -139,9 +115,71 @@ impl LoadedConfiguration {
     }
 }
 
-/// How [`build_base`] reads the configuration file's keys.
+/// The local sources as [`LoadedConfiguration::load`] reads them.
+pub(crate) struct LocalReading {
+    /// The base of the selected key reading.
+    pub(crate) base: SourceTree,
+    /// The strict translation of `base`, or the Agent-style reading's error when neither reading
+    /// translates.
+    pub(crate) local: Result<SalukiConfiguration, Error>,
+    /// The error that caused every key to be read as written; `None` when the Agent-style reading
+    /// is used.
+    pub(crate) yaml_fallback_error: Option<Error>,
+}
+
+/// Reads the file's text and explicit environment variables, selecting the key reading
+/// [`LoadedConfiguration::load`] uses.
+///
+/// The Agent-style reading is used unless only the keys-as-written reading translates. When neither
+/// translates, the Agent-style base is kept with its translation error, so a caller that only needs
+/// the base can still use it.
+///
+/// # Errors
+///
+/// Returns the Agent-style reading's error when its base cannot be built and the keys-as-written
+/// reading does not translate.
+pub(crate) fn read_local(
+    text: &str, origin: &Path, vars: &[(String, String)], env: EnvPrecedence,
+) -> Result<LocalReading, Error> {
+    // Every value the local sources supply was set explicitly: the file set it or an environment
+    // variable supplied it.
+    let build = |reading| build_base_from(text, origin, vars, env, reading).map(SourceTree::all_explicit);
+    let (error, base) = match build(KeyReading::Datadog) {
+        Ok(base) => match translate_strict(&base) {
+            Ok(local) => {
+                return Ok(LocalReading {
+                    base,
+                    local: Ok(local),
+                    yaml_fallback_error: None,
+                })
+            }
+            Err(error) => (error, Some(base)),
+        },
+        Err(error) => (error, None),
+    };
+
+    let fallback = build(KeyReading::AsWritten)
+        .ok()
+        .filter(|plain| base.as_ref() != Some(plain))
+        .and_then(|plain| translate_strict(&plain).ok().map(|local| (plain, local)));
+    match (fallback, base) {
+        (Some((plain, local)), _) => Ok(LocalReading {
+            base: plain,
+            local: Ok(local),
+            yaml_fallback_error: Some(error),
+        }),
+        (None, Some(base)) => Ok(LocalReading {
+            base,
+            local: Err(error),
+            yaml_fallback_error: None,
+        }),
+        (None, None) => Err(error),
+    }
+}
+
+/// How [`build_base_from`] reads the configuration file's keys.
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum KeyReading {
+enum KeyReading {
     /// Datadog keys are resolved as the Datadog Agent resolves them: dotted and differently cased
     /// spellings land at their canonical paths, and the map keys of a Datadog setting are rendered as
     /// the Agent renders them.
@@ -150,34 +188,30 @@ pub(crate) enum KeyReading {
     AsWritten,
 }
 
-/// Builds the typed base from captured file contents and environment variables.
+/// Captures the process environment variables `env` reads.
+fn env_vars(env: EnvPrecedence) -> Vec<(String, String)> {
+    // `Disabled` never reads the process environment, so it is not captured either.
+    match env {
+        EnvPrecedence::Disabled => Vec::new(),
+        EnvPrecedence::AfterFile | EnvPrecedence::BeforeFile => std::env::vars().collect(),
+    }
+}
+
+/// Builds the typed base from the configuration file's text and explicit environment variables.
 ///
-/// `path` identifies the file in parse errors; this function does not read it.
+/// `text` is the file's content, `origin` is the path named in a parse error, and `vars` are the
+/// environment variable name/value pairs. `vars` is ignored when `env` is `Disabled`.
 ///
 /// `reading` sets how the file's keys are read. A null-valued key is dropped and an empty file is an
 /// empty object. The environment is then overlaid via the generated Datadog reader, the Saluki-only
 /// reader, and the canonical proxy variables. `env` sets whether the environment overwrites the file
 /// (`AfterFile`) or only fills absent keys (`BeforeFile`); `Disabled` skips the environment entirely.
-fn build_base(path: &Path, text: &str, env: EnvPrecedence, reading: KeyReading) -> Result<Value, Error> {
-    // `Disabled` never reads the process environment, so it is not captured either.
-    let vars: Vec<(String, String)> = match env {
-        EnvPrecedence::Disabled => Vec::new(),
-        EnvPrecedence::AfterFile | EnvPrecedence::BeforeFile => std::env::vars().collect(),
-    };
-    build_base_from(text, path, &vars, env, reading)
-}
-
-/// Builds the typed base from the configuration file's text and explicit environment variables.
-///
-/// The same composition as [`build_base`], without reading the process environment: `text` is the
-/// file's content, `origin` is the path named in a parse error, and `vars` are the environment
-/// variable name/value pairs. `vars` is ignored when `env` is `Disabled`.
 ///
 /// # Errors
 ///
 /// Returns [`Error::Base`] when `text` is not valid YAML or an environment value is malformed for
 /// its key's shape.
-pub(crate) fn build_base_from(
+fn build_base_from(
     text: &str, origin: &Path, vars: &[(String, String)], env: EnvPrecedence, reading: KeyReading,
 ) -> Result<Value, Error> {
     let parsed = match reading {
@@ -223,6 +257,11 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    /// Builds the typed base from `text` and the process environment.
+    fn build_base(path: &Path, text: &str, env: EnvPrecedence, reading: KeyReading) -> Result<Value, Error> {
+        build_base_from(text, path, &env_vars(env), env, reading)
+    }
 
     #[test]
     fn build_base_composes_file_and_environment_by_precedence() {
