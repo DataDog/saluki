@@ -18,7 +18,8 @@ pub(super) struct Telemetry {
     /// Definitions sent only for the payloads that reference them, outside the caps.
     dictionary_transient_entries: Gauge,
     dictionary_transient_bytes: Gauge,
-    /// Fixed size of the admission frequency sketch, sized from the caps; outside the byte cap.
+    /// Current size of the admission frequency sketch, which grows with the dictionary up to a
+    /// ceiling set by the caps; outside the byte cap.
     dictionary_frequency_sketch_bytes: Gauge,
     builder: MetricsBuilder,
     stream_failures: FastHashMap<&'static str, Counter>,
