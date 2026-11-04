@@ -1,7 +1,11 @@
 use std::{mem::replace, pin::Pin, sync::Arc};
 
 use agent_data_plane_config::{
-    defaults::{DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_BYTES, DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_ENTRIES},
+    defaults::{
+        DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_BYTES, DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_ENTRIES,
+        DEFAULT_STATEFUL_METRICS_RETRY_MAX_AGE, DEFAULT_STATEFUL_METRICS_RETRY_MAX_ATTEMPTS,
+        DEFAULT_STATEFUL_METRICS_RETRY_MAX_BYTES,
+    },
     shared::SharedConfiguration,
     ConfigValue,
 };
@@ -11,7 +15,8 @@ use foldspace_core::{
         stateful_intake_server::{StatefulIntake, StatefulIntakeServer},
         BatchStatus, MetricDatumSequence, StatefulBatch, StatelessRequest, StatelessResponse,
     },
-    LogicalMetricSeries, MetricOrigin as FoldspaceOrigin, MetricPoint, MetricResource, MetricSeriesType,
+    LogicalMetricSeries, MetricOrigin as FoldspaceOrigin, MetricPoint, MetricResource, MetricRetryStats,
+    MetricSeriesType,
 };
 use futures::Stream;
 use prost::Message as _;
@@ -90,6 +95,9 @@ fn configuration(endpoints: usize, batch_capacity: usize) -> StatefulMetricsConf
         batch_capacity,
         dictionary_max_entries: DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_ENTRIES,
         dictionary_max_bytes: DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_BYTES,
+        retry_max_bytes: DEFAULT_STATEFUL_METRICS_RETRY_MAX_BYTES,
+        retry_max_age: DEFAULT_STATEFUL_METRICS_RETRY_MAX_AGE,
+        retry_max_attempts: DEFAULT_STATEFUL_METRICS_RETRY_MAX_ATTEMPTS,
         queue: queue_configuration(&shared()),
         stop_timeout: TEST_TIMEOUT,
     }
@@ -100,14 +108,18 @@ fn core_config(endpoints: usize, batch_capacity: usize) -> CoreConfig {
 }
 
 async fn worker_with(endpoints: usize, batch_capacity: usize) -> StatefulMetricsWorker {
-    let addresses = test_endpoints(endpoints);
+    worker_for(configuration(endpoints, batch_capacity)).await
+}
+
+async fn worker_for(configuration: StatefulMetricsConfiguration) -> StatefulMetricsWorker {
+    let addresses = configuration.endpoints.clone();
     StatefulMetricsWorker::new(
         addresses
             .iter()
             .map(|endpoint| Endpoint::from_shared(endpoint.to_string()).unwrap())
             .collect(),
         parse_api_key("test-key").unwrap(),
-        core_config(endpoints, batch_capacity),
+        configuration.core_config(),
         3,
         Duration::from_secs(2),
         queue_for(&shared(), &addresses).await,
@@ -115,17 +127,22 @@ async fn worker_with(endpoints: usize, batch_capacity: usize) -> StatefulMetrics
     )
 }
 
+/// A worker whose core hands every payload waiting for an endpoint straight to the retry queue.
+async fn worker_without_internal_retries(endpoints: usize) -> StatefulMetricsWorker {
+    let mut configuration = configuration(endpoints, 512);
+    configuration.retry_max_bytes = 0;
+    worker_for(configuration).await
+}
+
 async fn worker() -> StatefulMetricsWorker {
     worker_with(1, 512).await
 }
 
-/// Marks a stream open and replaces its transport with an in-memory wire.
+/// Replaces a stream's transport with an in-memory wire and marks the stream open, which sends it any replays.
 async fn attach(
     worker: &mut StatefulMetricsWorker, endpoint: MetricEndpointId, stream_id: StreamId,
 ) -> mpsc::Receiver<StatefulBatch> {
-    let effects = worker.core.handle_stream_opened(stream_id);
-    worker.apply(effects).await.unwrap();
-    let (sender, receiver) = mpsc::channel(MAX_INFLIGHT_BATCHES + 1);
+    let (sender, receiver) = mpsc::channel(2 * MAX_INFLIGHT_BATCHES + 1);
     worker.transports[endpoint.get()] = Some(Transport {
         endpoint,
         stream_id,
@@ -133,6 +150,8 @@ async fn attach(
         state: TransportState::Connecting(pending().boxed()),
         pending: VecDeque::new(),
     });
+    let effects = worker.core.handle_stream_opened(stream_id);
+    worker.apply(effects).await.unwrap();
     receiver
 }
 
@@ -459,7 +478,7 @@ async fn grpc_sends_compressed_metrics_and_reuses_acknowledged_dictionary() {
 }
 
 #[tokio::test]
-async fn grpc_disconnect_reconnects_and_reencodes_unacknowledged_batch() {
+async fn grpc_disconnect_replays_the_unacknowledged_payload_without_reencoding() {
     let mut harness = Harness::new().await;
     submit(&mut harness.worker, "confirmed").await;
     let first = harness.receive().await;
@@ -473,25 +492,27 @@ async fn grpc_disconnect_reconnects_and_reencodes_unacknowledged_batch() {
         .await
         .unwrap();
     harness.progress().await;
-    assert!(!harness.worker.queue.is_empty());
+    assert!(harness.worker.queue.is_empty());
+    assert_eq!(harness.worker.core.inflight_len(), 1);
     let (id, kind) = timeout(TEST_TIMEOUT, next_timer(&mut harness.worker.endpoints))
         .await
         .unwrap();
     let effects = harness.worker.core.handle_timer(id, kind);
     harness.worker.apply(effects).await.unwrap();
     harness.progress().await;
-    harness.worker.pump().await.unwrap();
-    harness.worker.flush().await.unwrap();
-    // The replacement stream holds no definitions, so the retry defines its name again.
+    // The replacement stream is sent the same compressed bytes; they define the name they introduced.
     let replay = harness.receive().await;
     assert_eq!(replay.batch_id, 1);
+    assert_eq!(replay.data, second.data);
     assert!(has_name(&sequence(&replay)));
+    assert_eq!(harness.worker.core.encoding_count(), 2);
+    assert_eq!(harness.worker.core.retry_stats().replayed_payloads, 1);
     harness.ack(1).await;
     assert!(harness.worker.is_drained());
 }
 
 #[tokio::test]
-async fn failure_requeues_inflight_behind_fresh_work() {
+async fn failure_keeps_inflight_in_the_core_and_fresh_work_queued() {
     let (mut worker, _wire, _) = open_worker().await;
     submit(&mut worker, "inflight").await;
     buffer(&mut worker, "partial").await;
@@ -500,20 +521,21 @@ async fn failure_requeues_inflight_behind_fresh_work() {
         .fail(E0, MetricStreamFailureKind::Unavailable, "disconnect")
         .await
         .unwrap();
-    assert_eq!(worker.core.inflight_len(), 0);
-    // A retryable failure leaves the unsent partial batch in the core for the next flush.
+    // A retryable failure keeps the sent payload, compressed, and the unsent partial batch in the core.
+    assert_eq!(worker.core.inflight_len(), 1);
     assert_eq!(worker.core.buffered_series_len(), 1);
-    assert_eq!(queued_names(&mut worker).await, ["fresh", "inflight"]);
+    assert_eq!(queued_names(&mut worker).await, ["fresh"]);
     assert_eq!(worker.endpoints[0].timers.len(), 1);
 }
 
 #[tokio::test]
 async fn failure_policy_never_switches_to_http() {
-    // Suspending the only endpoint also returns the unsent partial batch.
+    // Retryable failures keep the sent payload in the core for replay. Suspending the only endpoint returns it, and
+    // the unsent partial batch, to the retry queue.
     for (kind, suspended, queued) in [
-        (MetricStreamFailureKind::Unavailable, false, &["sent"][..]),
-        (MetricStreamFailureKind::DeadlineExceeded, false, &["sent"]),
-        (MetricStreamFailureKind::ResourceExhausted, false, &["sent"]),
+        (MetricStreamFailureKind::Unavailable, false, &[][..]),
+        (MetricStreamFailureKind::DeadlineExceeded, false, &[]),
+        (MetricStreamFailureKind::ResourceExhausted, false, &[]),
         (MetricStreamFailureKind::Unauthenticated, true, &["sent", "partial"]),
         (MetricStreamFailureKind::InvalidArgument, true, &["partial"]),
         (MetricStreamFailureKind::FailedPrecondition, true, &["sent", "partial"]),
@@ -525,6 +547,7 @@ async fn failure_policy_never_switches_to_http() {
         assert_eq!(worker.endpoints[0].suspended, suspended);
         assert!(worker.transports[0].is_none());
         assert_eq!(worker.endpoints[0].timers.len(), usize::from(!suspended));
+        assert_eq!(worker.core.inflight_len(), usize::from(!suspended));
         assert_eq!(queued_names(&mut worker).await, queued);
     }
 }
@@ -550,17 +573,25 @@ async fn acknowledged_batches_are_not_retried() {
         .fail(E0, MetricStreamFailureKind::Unavailable, "disconnect")
         .await
         .unwrap();
+    assert_eq!(
+        worker.core.inflight_len(),
+        1,
+        "only the unacknowledged payload is retained"
+    );
+    assert!(queued_names(&mut worker).await.is_empty());
+    worker.shutdown_into_queue().await;
     assert_eq!(queued_names(&mut worker).await, ["unacked"]);
 }
 
 #[tokio::test]
-async fn closed_transport_recovers_logical_work() {
+async fn closed_transport_keeps_the_payload_for_replay() {
     let (mut worker, wire, _) = open_worker().await;
     drop(wire);
     submit(&mut worker, "sent").await;
     assert!(worker.transports[0].is_none());
-    assert_eq!(worker.core.inflight_len(), 0);
-    assert_eq!(queued_names(&mut worker).await, ["sent"]);
+    assert_eq!(worker.core.inflight_len(), 1);
+    assert!(queued_names(&mut worker).await.is_empty());
+    assert_eq!(worker.endpoints[0].timers.len(), 1);
 }
 
 #[tokio::test]
@@ -616,7 +647,7 @@ async fn inflight_window_keeps_remaining_work_in_queue() {
 }
 
 #[tokio::test]
-async fn rotation_and_credentials_return_logical_batches() {
+async fn rotation_and_credentials_keep_payloads_for_replay() {
     for reset in [false, true] {
         let (mut worker, _wire, id) = open_worker().await;
         submit(&mut worker, "sent").await;
@@ -629,10 +660,15 @@ async fn rotation_and_credentials_return_logical_batches() {
             let effects = worker.core.handle_timer(id, TimerKind::DrainExpired);
             worker.apply(effects).await.unwrap();
         }
-        assert_eq!(worker.core.inflight_len(), 0);
+        assert_eq!(worker.core.inflight_len(), 1);
         assert_eq!(worker.core.buffered_series_len(), 1);
-        assert_eq!(queued_names(&mut worker).await, ["sent"]);
-        assert_ne!(worker.core.current_stream_id(E0), Some(id));
+        assert!(queued_names(&mut worker).await.is_empty());
+        let replacement = worker.core.current_stream_id(E0).unwrap();
+        assert_ne!(replacement, id);
+        let mut wire = attach(&mut worker, E0, replacement).await;
+        let replay = wire.try_recv().unwrap();
+        assert_eq!(replay.batch_id, 1);
+        assert!(has_name(&sequence(&replay)));
     }
 }
 
@@ -843,6 +879,9 @@ async fn start_destination(
         batch_capacity: 512,
         dictionary_max_entries: DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_ENTRIES,
         dictionary_max_bytes: DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_BYTES,
+        retry_max_bytes: DEFAULT_STATEFUL_METRICS_RETRY_MAX_BYTES,
+        retry_max_age: DEFAULT_STATEFUL_METRICS_RETRY_MAX_AGE,
+        retry_max_attempts: DEFAULT_STATEFUL_METRICS_RETRY_MAX_ATTEMPTS,
         queue: queue_configuration(settings),
         stop_timeout: TEST_TIMEOUT,
     };
@@ -1009,7 +1048,8 @@ async fn threshold_flush_and_rejected_partial_remain_recoverable() {
 async fn oversized_retry_does_not_stop_remaining_recovery() {
     let dir = TempDir::new().unwrap();
     let settings = persisted_settings(&dir, entry_bytes(&logical("tiny")));
-    let (mut worker, _wire, _) = open_worker().await;
+    let mut worker = worker_without_internal_retries(1).await;
+    let (_wire, _) = start_all(&mut worker).await.pop().unwrap();
     worker.queue = persisted_queue(&settings).await;
     submit(&mut worker, "too-large-to-retry").await;
     submit(&mut worker, "tiny").await;
@@ -1044,6 +1084,14 @@ async fn destination_shutdown_timeout_persists_missing_ack() {
     };
     assert_eq!(batch.0.series()[0].name(), "unacknowledged");
     assert!(queue.is_empty());
+}
+
+impl StatefulMetricsWorker {
+    /// Returns retained work to the retry queue while keeping the queue open for inspection.
+    async fn shutdown_into_queue(&mut self) {
+        let effects = self.core.shutdown();
+        self.apply(effects).await.unwrap();
+    }
 }
 
 struct TestSession {
@@ -1153,6 +1201,9 @@ impl EndpointHarness {
             batch_capacity: 512,
             dictionary_max_entries: DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_ENTRIES,
             dictionary_max_bytes: DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_BYTES,
+            retry_max_bytes: DEFAULT_STATEFUL_METRICS_RETRY_MAX_BYTES,
+            retry_max_age: DEFAULT_STATEFUL_METRICS_RETRY_MAX_AGE,
+            retry_max_attempts: DEFAULT_STATEFUL_METRICS_RETRY_MAX_ATTEMPTS,
             queue: queue_configuration(settings),
             stop_timeout: Duration::from_millis(200),
         })
@@ -1167,7 +1218,7 @@ impl Drop for EndpointHarness {
 }
 
 #[tokio::test]
-async fn down_endpoint_retries_wait_in_its_lane_without_blocking_others() {
+async fn down_endpoint_payloads_wait_in_the_core_without_blocking_others() {
     let mut worker = worker_with(2, 512).await;
     let mut opened = start_all(&mut worker).await;
     let (_down_wire, down_stream) = opened.pop().unwrap();
@@ -1177,16 +1228,15 @@ async fn down_endpoint_retries_wait_in_its_lane_without_blocking_others() {
         .fail(E1, MetricStreamFailureKind::Unavailable, "disconnect")
         .await
         .unwrap();
-    // The down endpoint's copy of later payloads comes straight back to its lane.
+    // The down endpoint's copy of later payloads waits in the core, compressed, not in its lane.
     submit(&mut worker, "second").await;
     assert_eq!(healthy_wire.try_recv().unwrap().batch_id, 1);
     assert_eq!(healthy_wire.try_recv().unwrap().batch_id, 2);
-    assert!(worker.queue.shared_is_empty());
-    assert!(worker.queue.lane_is_empty(E0));
-    assert!(!worker.queue.lane_is_empty(E1));
+    assert!(worker.queue.is_empty());
     worker.on_transport(ack_on(E0, healthy_stream, 1)).await.unwrap();
     worker.on_transport(ack_on(E0, healthy_stream, 2)).await.unwrap();
-    assert_eq!(worker.core.inflight_len(), 0);
+    assert_eq!(worker.core.inflight_len(), 2);
+    assert_eq!(worker.core.retry_stats().pending_copies, 2);
     assert!(!worker.can_pump());
     submit(&mut worker, "third").await;
     assert_eq!(healthy_wire.try_recv().unwrap().batch_id, 3);
@@ -1195,7 +1245,6 @@ async fn down_endpoint_retries_wait_in_its_lane_without_blocking_others() {
     worker.apply(effects).await.unwrap();
     let reconnected = worker.core.current_stream_id(E1).unwrap();
     let mut replay_wire = attach(&mut worker, E1, reconnected).await;
-    worker.pump().await.unwrap();
     let mut replayed = Vec::new();
     while let Ok(batch) = replay_wire.try_recv() {
         assert!(has_name(&sequence(&batch)));
@@ -1204,6 +1253,44 @@ async fn down_endpoint_retries_wait_in_its_lane_without_blocking_others() {
     assert_eq!(replayed, [1, 2, 3]);
     assert!(healthy_wire.try_recv().is_err());
     assert!(worker.queue.is_empty());
+    assert_eq!(worker.core.encoding_count(), 3);
+}
+
+/// Past the core's retry budget, a down endpoint's copies move to its lane, and are encoded again once it returns.
+#[tokio::test]
+async fn down_endpoint_payloads_over_the_budget_wait_in_its_lane() {
+    let mut worker = worker_without_internal_retries(2).await;
+    let mut opened = start_all(&mut worker).await;
+    let (_down_wire, down_stream) = opened.pop().unwrap();
+    let (mut healthy_wire, healthy_stream) = opened.pop().unwrap();
+    submit(&mut worker, "first").await;
+    worker
+        .fail(E1, MetricStreamFailureKind::Unavailable, "disconnect")
+        .await
+        .unwrap();
+    submit(&mut worker, "second").await;
+    assert_eq!(healthy_wire.try_recv().unwrap().batch_id, 1);
+    assert_eq!(healthy_wire.try_recv().unwrap().batch_id, 2);
+    assert!(worker.queue.lane_is_empty(E0));
+    assert!(!worker.queue.lane_is_empty(E1));
+    worker.on_transport(ack_on(E0, healthy_stream, 1)).await.unwrap();
+    worker.on_transport(ack_on(E0, healthy_stream, 2)).await.unwrap();
+    assert_eq!(worker.core.inflight_len(), 0);
+    assert_eq!(worker.core.retry_stats().returned_over_budget, 2);
+
+    let effects = worker.core.handle_timer(down_stream, TimerKind::Reconnect);
+    worker.apply(effects).await.unwrap();
+    let reconnected = worker.core.current_stream_id(E1).unwrap();
+    let mut replay_wire = attach(&mut worker, E1, reconnected).await;
+    worker.pump().await.unwrap();
+    let mut resent = Vec::new();
+    while let Ok(batch) = replay_wire.try_recv() {
+        assert!(has_name(&sequence(&batch)));
+        resent.push(batch.batch_id);
+    }
+    assert_eq!(resent, [1, 2]);
+    assert!(worker.queue.is_empty());
+    assert_eq!(worker.core.encoding_count(), 4, "lane batches are encoded again");
 }
 
 #[tokio::test]
@@ -1355,7 +1442,7 @@ async fn returned_batch_larger_than_a_lane_share_is_queued_as_ordered_chunks() {
     let bytes = entry_bytes(&batch_of(&names));
     // The former even split gave each of the three queues a third of this budget, less than the batch.
     let budget = 2 * bytes;
-    let mut worker = worker_with(2, 512).await;
+    let mut worker = worker_without_internal_retries(2).await;
     worker.queue = queue_for(&settings_with_budget(budget), &test_endpoints(2)).await;
     let mut opened = start_all(&mut worker).await;
     let (_down_wire, _) = opened.pop().unwrap();
@@ -1529,6 +1616,9 @@ async fn destination_sends_every_payload_to_every_endpoint_and_replays_only_to_t
         batch_capacity: 512,
         dictionary_max_entries: DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_ENTRIES,
         dictionary_max_bytes: DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_BYTES,
+        retry_max_bytes: DEFAULT_STATEFUL_METRICS_RETRY_MAX_BYTES,
+        retry_max_age: DEFAULT_STATEFUL_METRICS_RETRY_MAX_AGE,
+        retry_max_attempts: DEFAULT_STATEFUL_METRICS_RETRY_MAX_ATTEMPTS,
         queue: queue_configuration(&shared()),
         stop_timeout: TEST_TIMEOUT,
     })
@@ -1631,9 +1721,15 @@ mod memory_accounting {
     fn startup_memory_verification_includes_shared_budgets() {
         // Struct-only accounting admitted grants smaller than the configured dictionary and logical retry budgets.
         for endpoints in [1, 3] {
-            for (retry_bytes, budget_bytes) in [(8192, 73_728), (0, 65_536)] {
+            for (retry_bytes, core_retry_bytes, budget_bytes) in [
+                (8192, 4096, 77_824),
+                (8192, 0, 73_728),
+                (0, 4096, 69_632),
+                (0, 0, 65_536),
+            ] {
                 let mut config = configuration(endpoints, 512);
                 config.dictionary_max_bytes = NonZeroU64::new(65_536).unwrap();
+                config.retry_max_bytes = core_retry_bytes;
                 let mut shared = shared();
                 shared.endpoints.forwarder.retry_queue_payloads_max_size = ConfigValue::explicit(retry_bytes);
                 config.queue = queue_configuration(&shared);
@@ -1710,4 +1806,110 @@ async fn destination_refreshes_credentials_and_resumes_delivery() {
     updated.acknowledge(&batch).await;
     drop(input);
     timeout(TEST_TIMEOUT, task).await.unwrap().unwrap().unwrap();
+}
+
+#[test]
+fn core_config_applies_internal_retry_limits() {
+    let config = core_config(2, 512);
+    assert_eq!(
+        config.metrics_retry,
+        MetricRetryConfig {
+            max_retained_bytes: 8 * 1024 * 1024,
+            max_retry_age: Duration::from_secs(120),
+            max_send_attempts: 8,
+        }
+    );
+    let mut configuration = configuration(1, 512);
+    configuration.retry_max_bytes = 1024;
+    configuration.retry_max_age = Duration::ZERO;
+    configuration.retry_max_attempts = 2;
+    assert_eq!(
+        configuration.core_config().metrics_retry,
+        MetricRetryConfig {
+            max_retained_bytes: 1024,
+            max_retry_age: Duration::ZERO,
+            max_send_attempts: 2,
+        }
+    );
+}
+
+#[tokio::test]
+async fn retry_telemetry_tags_each_return_reason() {
+    let recorder = TestRecorder::default();
+    let _local = metrics::set_default_local_recorder(&recorder);
+    let (mut worker, _wire, _) = open_worker().await;
+    worker.telemetry.record_retries(MetricRetryStats {
+        returned_over_budget: 1,
+        returned_over_age: 2,
+        returned_over_attempts: 3,
+        returned_unencodable: 4,
+        returned_on_suspension: 5,
+        returned_on_shutdown: 6,
+        ..MetricRetryStats::default()
+    });
+    for (reason, count) in [
+        ("budget", 1),
+        ("age", 2),
+        ("attempts", 3),
+        ("encode", 4),
+        ("suspension", 5),
+        ("shutdown", 6),
+    ] {
+        let key = metrics::Key::from_parts(
+            "stateful_metrics_internal_retry_returned_total",
+            vec![metrics::Label::new("reason", reason)],
+        );
+        assert_eq!(recorder.counter(key), Some(count), "{reason}");
+    }
+}
+
+#[tokio::test]
+async fn retry_telemetry_reports_retention_replays_and_returns() {
+    let recorder = TestRecorder::default();
+    let _local = metrics::set_default_local_recorder(&recorder);
+    let mut configuration = configuration(1, 512);
+    configuration.retry_max_attempts = 2;
+    let mut worker = worker_for(configuration).await;
+    let (_wire, stream) = start_all(&mut worker).await.pop().unwrap();
+    submit(&mut worker, "requests").await;
+    worker.telemetry.record_retries(worker.core.retry_stats());
+    let retained = worker.core.retry_stats().retained_bytes;
+    assert!(retained > 0);
+    assert_eq!(
+        recorder.gauge("stateful_metrics_internal_retry_retained_bytes"),
+        Some(retained as f64)
+    );
+    assert_eq!(
+        recorder.gauge("stateful_metrics_internal_retry_retained_payloads"),
+        Some(1.0)
+    );
+
+    worker
+        .fail(E0, MetricStreamFailureKind::Unavailable, "disconnect")
+        .await
+        .unwrap();
+    let effects = worker.core.handle_timer(stream, TimerKind::Reconnect);
+    worker.apply(effects).await.unwrap();
+    let replacement = worker.core.current_stream_id(E0).unwrap();
+    let _replay_wire = attach(&mut worker, E0, replacement).await;
+    worker
+        .fail(E0, MetricStreamFailureKind::Unavailable, "disconnect")
+        .await
+        .unwrap();
+    worker.telemetry.record_retries(worker.core.retry_stats());
+    worker.telemetry.record_retries(worker.core.retry_stats());
+    assert_eq!(
+        recorder.counter("stateful_metrics_internal_retry_replays_total"),
+        Some(1)
+    );
+    let attempts = metrics::Key::from_parts(
+        "stateful_metrics_internal_retry_returned_total",
+        vec![metrics::Label::new("reason", "attempts")],
+    );
+    assert_eq!(recorder.counter(attempts), Some(1));
+    assert_eq!(
+        recorder.gauge("stateful_metrics_internal_retry_retained_payloads"),
+        Some(0.0)
+    );
+    assert_eq!(queued_names(&mut worker).await, ["requests"]);
 }

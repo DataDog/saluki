@@ -746,6 +746,9 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `data_plane.experimental.stateful_metrics.dictionary_max_bytes`   | Stateful metrics dictionary byte cap for the sender        | 256MiB                |
 | `data_plane.experimental.stateful_metrics.dictionary_max_entries` | Stateful metrics dictionary entry cap for the sender       | 60000                 |
 | `data_plane.experimental.stateful_metrics.endpoint`               | Experimental stateful series gRPC intake endpoint          | unset (disabled)      |
+| `data_plane.experimental.stateful_metrics.retry_max_age`          | Longest a stateful payload waits in Foldspace              | 2m                    |
+| `data_plane.experimental.stateful_metrics.retry_max_attempts`     | Stateful payload sends before the retry queue              | 8                     |
+| `data_plane.experimental.stateful_metrics.retry_max_bytes`        | Stateful metrics retry byte budget for the sender          | 8MiB                  |
 | `data_plane.otlp.receiver_grpc_endpoint_temporary`                | ADP OTLP gRPC listen endpoint                              | localhost:6317        |
 | `data_plane.otlp.receiver_http_endpoint_temporary`                | ADP OTLP HTTP listen endpoint                              | localhost:6318        |
 | `dogstatsd_allow_context_heap_allocs`                             | Allow heap allocations for contexts                        | true                  |
@@ -776,6 +779,18 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `otlp_config.traces.string_interner_size`                         | OTLP trace string interner capacity                        |                       |
 | `otlp_string_interner_size`                                       | OTLP context interner capacity                             |                       |
 | `serializer_max_metrics_per_payload`                              | Max metrics per payload                                    |                       |
+
+### `data_plane.experimental.stateful_metrics.retry_max_bytes`
+
+Byte budget for unacknowledged payloads Foldspace keeps, compressed, to retry itself, for the stateful metrics sender, default 8MiB (8388608). Covers the compressed payloads plus dictionary definitions kept only for them. Past it, the oldest payloads still waiting for an endpoint move to the retry queue as logical batches. Accepts a bare byte count or a byte-size string such as 4MiB; 0 moves every waiting payload to the retry queue at once. Requires a restart.
+
+### `data_plane.experimental.stateful_metrics.retry_max_age`
+
+Duration such as 2m, default 2m. A payload still waiting for an endpoint this long after it was encoded moves to the retry queue as a logical batch, where it can spill to disk. 0 disables the limit; a bare number is nanoseconds. Requires a restart.
+
+### `data_plane.experimental.stateful_metrics.retry_max_attempts`
+
+Non-negative integer, default 8. A payload sent this many times on streams that ended without acknowledging it moves to the retry queue instead of being replayed again; 0 is treated as 1. Requires a restart.
 
 ### `data_plane.experimental.stateful_metrics.dictionary_max_entries`
 

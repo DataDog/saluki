@@ -70,7 +70,9 @@ use agent_data_plane_config::control::MemoryMode;
 use agent_data_plane_config::defaults::{
     DEFAULT_ENABLE_GLOBAL_LIMITER, DEFAULT_MAX_RESOURCE_LEN, DEFAULT_MEMORY_SLOP_FACTOR, DEFAULT_METRICS_LEVEL,
     DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_BYTES, DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_ENTRIES,
-    DEFAULT_STRING_INTERNER_SIZE_BYTES, MAX_STATEFUL_METRICS_DICTIONARY_MAX_BYTES, MAX_STRING_INTERNER_SIZE_BYTES,
+    DEFAULT_STATEFUL_METRICS_RETRY_MAX_AGE, DEFAULT_STATEFUL_METRICS_RETRY_MAX_ATTEMPTS,
+    DEFAULT_STATEFUL_METRICS_RETRY_MAX_BYTES, DEFAULT_STRING_INTERNER_SIZE_BYTES,
+    MAX_STATEFUL_METRICS_DICTIONARY_MAX_BYTES, MAX_STRING_INTERNER_SIZE_BYTES,
 };
 use agent_data_plane_config::domains::dogstatsd::{validate_metric_tag_value_allowlists, MetricTagValueAllowlistEntry};
 use agent_data_plane_config::domains::traces::{OttlErrorMode, OttlFilter, OttlTransform};
@@ -308,6 +310,17 @@ pub struct StatefulMetrics {
     /// Accepts a byte count or byte-size string. Lower it to reduce retained dictionary memory.
     #[serde(deserialize_with = "deserialize_stateful_metrics_dictionary_max_bytes")]
     pub dictionary_max_bytes: NonZeroU64,
+    /// Sender byte budget for retained compressed payloads and their dictionary definitions; defaults to 8 MiB.
+    /// Accepts a byte count or byte-size string. Zero moves every waiting payload to the retry queue.
+    /// Lower it to spill outstanding work to the retry queue sooner. Requires a restart.
+    #[serde(deserialize_with = "deserialize_byte_size_u64")]
+    pub retry_max_bytes: u64,
+    /// How long a payload may wait for an endpoint inside Foldspace; defaults to two minutes.
+    /// Zero disables the limit. Lower it to move outages to disk-backed retries sooner. Requires a restart.
+    pub retry_max_age: DurationString,
+    /// Sends per payload before moving it to the retry queue; defaults to eight, with zero treated as one.
+    /// Lower it to stop repeated internal replays sooner. Requires a restart.
+    pub retry_max_attempts: u32,
 }
 
 impl Default for StatefulMetrics {
@@ -317,6 +330,9 @@ impl Default for StatefulMetrics {
             additional_endpoints: Vec::new(),
             dictionary_max_entries: DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_ENTRIES,
             dictionary_max_bytes: DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_BYTES,
+            retry_max_bytes: DEFAULT_STATEFUL_METRICS_RETRY_MAX_BYTES,
+            retry_max_age: DurationString::new(DEFAULT_STATEFUL_METRICS_RETRY_MAX_AGE),
+            retry_max_attempts: DEFAULT_STATEFUL_METRICS_RETRY_MAX_ATTEMPTS,
         }
     }
 }
@@ -497,6 +513,13 @@ where
     Ok(bytes)
 }
 
+fn deserialize_byte_size_u64<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(ByteSize::deserialize(deserializer)?.as_u64())
+}
+
 fn deserialize_string_interner_size<'de, D>(deserializer: D) -> Result<NonZeroUsize, D::Error>
 where
     D: Deserializer<'de>,
@@ -622,6 +645,9 @@ impl SalukiOnly {
         config.domains.stateful_metrics.additional_endpoints = stateful_metrics.additional_endpoints.clone();
         config.domains.stateful_metrics.dictionary_max_entries = stateful_metrics.dictionary_max_entries;
         config.domains.stateful_metrics.dictionary_max_bytes = stateful_metrics.dictionary_max_bytes;
+        config.domains.stateful_metrics.retry_max_bytes = stateful_metrics.retry_max_bytes;
+        config.domains.stateful_metrics.retry_max_age = stateful_metrics.retry_max_age.as_duration();
+        config.domains.stateful_metrics.retry_max_attempts = stateful_metrics.retry_max_attempts;
         // control
         if let Some(v) = self.data_plane.standalone_mode {
             config.control.standalone_mode = v;
@@ -879,6 +905,15 @@ mod tests {
                     "receiver_http_endpoint_temporary": "0.0.0.0:19318"
                 },
                 "experimental": {
+                    "stateful_metrics": {
+                        "endpoint": "http://127.0.0.1:9000",
+                        "additional_endpoints": ["http://127.0.0.1:9001"],
+                        "dictionary_max_entries": 12345,
+                        "dictionary_max_bytes": "128MiB",
+                        "retry_max_bytes": "2MiB",
+                        "retry_max_age": "45s",
+                        "retry_max_attempts": 3
+                    },
                     "apm": {
                         "enabled": true,
                         "proxy_destination": "unix:///var/run/datadog/trace-agent.socket"
@@ -1017,6 +1052,16 @@ mod tests {
 
         // domains.checks
         assert_eq!(config.domains.checks.ipc_endpoint, "localhost:5006");
+
+        // domains.stateful_metrics
+        let stateful = &config.domains.stateful_metrics;
+        assert_eq!(stateful.endpoint.as_deref(), Some("http://127.0.0.1:9000"));
+        assert_eq!(stateful.additional_endpoints, ["http://127.0.0.1:9001"]);
+        assert_eq!(stateful.dictionary_max_entries.get(), 12345);
+        assert_eq!(stateful.dictionary_max_bytes.get(), 128 * 1024 * 1024);
+        assert_eq!(stateful.retry_max_bytes, 2 * 1024 * 1024);
+        assert_eq!(stateful.retry_max_age, Duration::from_secs(45));
+        assert_eq!(stateful.retry_max_attempts, 3);
     }
 
     /// `memory_limit` is a byte size the source may express as a bare integer (bytes) or a suffixed

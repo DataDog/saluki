@@ -25,10 +25,10 @@ flowchart TB
             Core[Sender-owned StatefulMetricsClient]
         end
         Worker -->|Logical batches, flush signals, acknowledgements| Core
-        Core -->|Encoded payloads| Transport[Sender-owned gRPC transport per endpoint]
+        Core -->|Encoded payloads and replays| Transport[Sender-owned gRPC transport per endpoint]
         Transport -->|acknowledgements and failures| Worker
         Core -->|Unsent and rejected logical batches| Low
-        Core -->|Batches returned by one endpoint| Lanes
+        Core -->|Batches one endpoint's copy was given up for| Lanes
     end
     Transport <-->|One stateful gRPC stream per endpoint| Intake[Separate metrics intake binaries]
     Out -->|HTTP| HTTP[HTTP intake]
@@ -114,15 +114,17 @@ The destination reuses the HTTP forwarder's `PendingTransactions<T>` scheduling 
 storage machinery with a distinct logical-batch entry type:
 
 - Fresh batches enter the high-priority queue. Overflow enters the low-priority queue.
-- Recovery transfers unacknowledged and unsent partial logical batches into the low-priority queue.
-  With several endpoints, batches one endpoint gives back go to that endpoint's lane instead (see
+- Foldspace retries stream failures itself (see [Internal retries](#internal-retries)). Batches it
+  gives up on, and unsent partial batches, enter the low-priority queue. With several endpoints,
+  batches given up for one endpoint go to that endpoint's lane instead (see
   [Multiple endpoints](#multiple-endpoints)).
 - High-priority work is selected first. Low-priority memory entries are read before disk entries,
   following the existing queue's preference for recent data.
 - Batches removed from the queue enter the sender's current core and are encoded again with the stateful protocol. Neither the
   retry entry nor its disk representation contains stream-specific IDs or encoded wire payloads.
-- Foldspace retains inflight logical work until ACK or recovery. A successful channel enqueue is
-  not a delivery acknowledgement. Lost acknowledgements can cause duplicates on retry.
+- Foldspace retains each sent payload, compressed, until every endpoint acknowledges it or it gives
+  that endpoint's copy up. A successful channel enqueue is not a delivery acknowledgement. Lost
+  acknowledgements can cause duplicates on replay or retry.
 
 Queue capacity, memory limits, disk location, disk limits, spill ratio, and file age use the existing
 forwarder settings, including `forwarder_high_prio_buffer_size`,
@@ -141,36 +143,74 @@ and spill failures are reported through drop accounting; a rejected entry does n
 Shutdown persistence errors are returned to the component supervisor.
 
 Transient failures reconnect with exponential backoff from 250 milliseconds to 30 seconds, tracked per
-endpoint. The new stream assumes the intake holds no dictionary state and re-encodes work taken from
-the queue. The core allows up to 8 payloads inflight per endpoint. A full transport channel retains the payload and waits for capacity while
-continuing to receive acknowledgements. A closed channel fails the stream and recovers logical work.
+endpoint. The new stream assumes the intake holds no dictionary state: the core replays its retained
+payloads first, then work taken from the queue is encoded against it. The core allows up to 8 payloads
+inflight per endpoint, not counting definitions-only batches sent ahead of replays. A full transport
+channel retains the payload and waits for capacity while continuing to receive acknowledgements. A
+closed channel fails the stream, and the core keeps its payloads for replay.
 
 Failures apply to the endpoint whose stream failed. `UNAUTHENTICATED` suspends that endpoint until the
 API key changes. Credential changes replace every endpoint's stream and resume suspended endpoints.
 `FAILED_PRECONDITION` and `UNIMPLEMENTED` also suspend the endpoint while retaining logical retries:
 configuration does not permit automatic HTTP fallback. Correct the endpoint and restart, or reset via
-a credential change. `INVALID_ARGUMENT` abandons the speculative payloads returned under
-`DoNotRetry`, counts their points, and suspends the endpoint; unsent partial and queued work remains
-recoverable. Invalid ACK order retains returned work and suspends the endpoint. Unsent partial work
-returns to the shared queue only once every endpoint is suspended.
+a credential change. `INVALID_ARGUMENT` abandons the endpoint's outstanding and waiting payloads, which
+come back under `DoNotRetry`, counts their points, and suspends the endpoint; unsent partial and queued
+work remains recoverable. Invalid ACK order retains returned work and suspends the endpoint. Unsent
+partial work returns to the shared queue only once every endpoint is suspended.
 
 Opening a stream times out after 10 seconds; waiting for ACK progress times out after 30 seconds.
 Streams rotate after 15 minutes and drain for up to 5 seconds. When input closes, the destination
 flushes partial work and uses at most half the configured ADP stop budget (capped at 30 seconds)
-waiting for delivery, leaving time for retry persistence. It stops waiting once everything
+waiting for delivery. This window starts when input closes, so the process-wide shutdown deadline
+can still interrupt persistence; persistence is best-effort. It stops waiting once everything
 deliverable is acknowledged; a suspended endpoint's lane is persisted rather than awaited. On timeout
-or when every endpoint is suspended, it recovers remaining core-owned logical work and flushes the
-queues through their persistence path.
+or when every endpoint is suspended, the core gives back every payload it still retains, decoded into
+logical batches, and the sender flushes the queues through their persistence path.
+
+### Internal retries
+
+The core keeps each payload it sends in its compressed wire form, once, with the keys of the
+dictionary definitions it references, instead of the logical batch. After a retryable failure, a
+drain timeout, or a credential change, it queues the endpoint's unacknowledged payloads and replays
+them on the next stream ahead of newer ones, resending the same compressed bytes under new batch IDs.
+Definitions a replay needs that its bytes do not carry are sent first as a definitions-only batch.
+Dictionary eviction retires, rather than drops, definitions a retained payload references, so a
+replay never meets a missing definition. Replays are not encoded again, and the logical batches never
+pass through the retry queue.
+
+The core gives an endpoint's copy back to the sender, decoded into the logical batch it encodes, when:
+
+- the sender's retained compressed bytes plus retired definitions exceed
+  `data_plane.experimental.stateful_metrics.retry_max_bytes` (default 8 MiB for the sender): the oldest copies still
+  waiting for an endpoint, until the total fits. Copies a stream is carrying are not given up for this.
+- a copy has waited for its endpoint longer than `data_plane.experimental.stateful_metrics.retry_max_age`
+  (default two minutes) since its payload was encoded. The core checks age when ADP calls it,
+  rather than through a dedicated expiry timer; an idle outage can delay this handoff.
+- a stream ends without acknowledging a copy that was already sent
+  `data_plane.experimental.stateful_metrics.retry_max_attempts` times (default 8), so a payload that keeps breaking
+  streams does not loop inside the core.
+- a permanent failure suspends the endpoint, or the destination shuts down.
+
+Given-up copies take the normal path: the shared low-priority queue with one endpoint, or the
+endpoint's lane with several, then `send_batch_to`, which encodes them again. Setting
+`data_plane.experimental.stateful_metrics.retry_max_bytes: 0` gives every waiting copy back at once, which approximates the
+previous behavior of retrying only through the queue.
+
+With a single endpoint the core only retains what that endpoint has outstanding, at most 8 payloads,
+because fresh input stays in the queue while no stream can take it. With several endpoints, a down
+endpoint's copies of payloads the others carry wait in the core within these limits.
 
 ### Multiple endpoints
 
-Foldspace sends each flushed payload to every endpoint with an open stream and holds the logical
-batch until each of those endpoints acknowledges it or gives it back. An endpoint that is down,
-draining, or suspended gets its copy back immediately, tagged with that endpoint. The sender keeps
-these copies in a retry lane for that endpoint and resubmits them only to that endpoint, with
-`send_batch_to`, once it has inflight capacity again. Each resubmission is re-encoded for that
-endpoint alone, so it can interleave with newer payloads there. Lanes are independent: an endpoint
-that cannot send never blocks retries or fresh input for the others.
+Foldspace sends each flushed payload to every endpoint with an open stream and room, and retains it,
+compressed, until each endpoint acknowledges it or Foldspace gives that endpoint's copy up. An
+endpoint that is down, draining, or full queues its copy inside the core and replays it once it can
+(see [Internal retries](#internal-retries)); a suspended endpoint gets its copy back immediately.
+Copies the core gives up go to a retry lane for that endpoint, and the sender resubmits them only to
+that endpoint, with `send_batch_to`, once it has inflight capacity and nothing left to replay. Each
+resubmission is encoded again for that endpoint alone, so it can interleave with newer payloads
+there. Lanes are independent: an endpoint that cannot send never blocks retries or fresh input for
+the others.
 
 Fresh input, overflow, rejected `push_batch` submissions, and unsent partial batches stay in the shared queue,
 which feeds every endpoint through `push_batch`. With one endpoint there are no lanes, and returned
@@ -197,7 +237,16 @@ split entry counts separately in `stateful_metrics_batches_retried_total` and
 
 Telemetry includes `stateful_metrics_batches_acked_total`, `stateful_metrics_batches_retried_total`,
 `stateful_metrics_stream_failures_total`, `stateful_metrics_batches_abandoned_total`, and
-`stateful_metrics_points_dropped_total`, alongside the shared priority-queue telemetry.
+`stateful_metrics_points_dropped_total`, alongside the shared priority-queue telemetry. Internal
+retries report `stateful_metrics_internal_retry_retained_payloads`,
+`stateful_metrics_internal_retry_retained_bytes`, and `stateful_metrics_internal_retry_pending_copies`
+gauges, and `stateful_metrics_internal_retry_replays_total`,
+`stateful_metrics_internal_retry_definition_batches_total`,
+`stateful_metrics_internal_retry_rewrites_total`,
+`stateful_metrics_internal_retry_returned_total` (tagged `reason`: `budget`, `age`, `attempts`,
+`encode`, `suspension`, or `shutdown`; `encode` counts replays whose batch could not be compressed),
+and `stateful_metrics_internal_retry_unreadable_total` counters. Replays
+are payloads that did not have to be encoded again.
 
 ## Storage and memory
 
@@ -206,6 +255,7 @@ preserving the original single-sender namespace. With multiple endpoints, each r
 `-endpoint-<endpoint-hash>`. Reordering additional endpoints keeps their saved retries. Removing an
 endpoint discards only its saved retries with a warning. Returning to one endpoint moves that
 endpoint's lane into the shared queue. Changing the primary endpoint selects a different namespace.
+The namespace excludes credentials, so refreshing the API key preserves retries.
 Use a separate storage root for each ADP process.
 
 Fresh batches take priority over retries. The high-priority queue is FIFO; retries can be overtaken by
@@ -232,7 +282,7 @@ removes definitions for series that stopped reporting, such as departed pods. Ra
 costs memory only on nodes that actually have that many contexts; nodes whose working set exceeds
 the caps fall back to admission control, described below. The frequency sketch starts with a
 64-byte counter table and doubles as the dictionary grows, up to a size derived from both caps:
-about 512 KiB in the dictionary at the defaults, plus bookkeeping. It does not shrink after entries leave.
+about 512 KiB at the defaults, plus bookkeeping. It does not shrink after entries leave.
 Growth preserves the frequency estimates; periodic counter halving ages them with recent use.
 
 A cap below the live working set causes more definition traffic and can slow draining under load.
@@ -285,7 +335,7 @@ Foldspace itself reads no clock and creates no runtime task.
 
 This is an opt-in plaintext integration experiment with one or more stateful endpoints sharing the
 primary API key. HTTP `additional_endpoints` or experimental metric endpoint-routing policies select the HTTP pipeline with a warning instead of stateful delivery. Existing MRF and autoscaling-failover branches remain separate
-from this primary path. TLS, proxy support, and byte limits on core inflight data remain future work.
+from this primary path. TLS and proxy support remain future work.
 
 Run focused tests with:
 
@@ -296,7 +346,7 @@ cargo nextest run -p agent-data-plane -p agent-data-plane-config-system -E 'test
 Tests cover routing, conversion, priority scheduling, disk spill/reload, shutdown recovery, credential
 refresh, timer flushing, inflight limits, failure policies, per-endpoint retry lanes and
 acknowledgement deadlines, lane persistence across endpoint changes, and local gRPC exchanges. The gRPC tests
-verify compression, acknowledgements, dictionary reuse, and re-encoding after reconnect. For decoded-output
+verify compression, acknowledgements, dictionary reuse, and replay of retained payloads after reconnect. For decoded-output
 validation, run the separate intake process and inspect its JSONL journal.
 
 Keep decoder tests in the separate intake process: linking `foldspace-server` into ADP's test graph

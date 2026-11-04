@@ -367,7 +367,9 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
                     queue: DeliveryQueueConfiguration::new(forwarder.endpoint_buffer_size, forwarder.retry),
                     dictionary_max_entries: config.domains.stateful_metrics.dictionary_max_entries,
                     dictionary_max_bytes: config.domains.stateful_metrics.dictionary_max_bytes,
-
+                    retry_max_bytes: config.domains.stateful_metrics.retry_max_bytes,
+                    retry_max_age: config.domains.stateful_metrics.retry_max_age,
+                    retry_max_attempts: config.domains.stateful_metrics.retry_max_attempts,
                     stop_timeout: dp.stop_timeout(),
                 },
             )?

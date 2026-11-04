@@ -778,6 +778,107 @@ data_plane:
         }
     }
 
+    #[test]
+    fn stateful_metrics_retry_limits_load_from_yaml_and_environment() {
+        let default = standalone_system(json!({})).unwrap();
+        let config = default.config();
+        let stateful = &config.domains.stateful_metrics;
+        assert_eq!(stateful.retry_max_bytes, 8 * 1024 * 1024);
+        assert_eq!(stateful.retry_max_age, Duration::from_secs(120));
+        assert_eq!(stateful.retry_max_attempts, 8);
+
+        for (max_bytes, expected) in [("0", 0), ("4194304", 4 * 1024 * 1024), ("4MiB", 4 * 1024 * 1024)] {
+            let yaml = format!(
+                r#"
+data_plane:
+  experimental:
+    stateful_metrics:
+      retry_max_bytes: {max_bytes}
+      retry_max_age: 30s
+      retry_max_attempts: 3
+"#
+            );
+            let from_file = read_local(&yaml, Path::new("stateful.yaml"), &[], EnvPrecedence::Disabled)
+                .unwrap()
+                .local
+                .unwrap();
+            let stateful = &from_file.domains.stateful_metrics;
+            assert_eq!(stateful.retry_max_bytes, expected);
+            assert_eq!(stateful.retry_max_age, Duration::from_secs(30));
+            assert_eq!(stateful.retry_max_attempts, 3);
+            let vars = [
+                (
+                    "DD_DATA_PLANE_EXPERIMENTAL_STATEFUL_METRICS_RETRY_MAX_BYTES".to_string(),
+                    max_bytes.to_string(),
+                ),
+                (
+                    "DD_DATA_PLANE_EXPERIMENTAL_STATEFUL_METRICS_RETRY_MAX_AGE".to_string(),
+                    "0".to_string(),
+                ),
+                (
+                    "DD_DATA_PLANE_EXPERIMENTAL_STATEFUL_METRICS_RETRY_MAX_ATTEMPTS".to_string(),
+                    "0".to_string(),
+                ),
+            ];
+            let from_env = read_local("{}", Path::new("stateful.yaml"), &vars, EnvPrecedence::AfterFile)
+                .unwrap()
+                .local
+                .unwrap();
+            let stateful = &from_env.domains.stateful_metrics;
+            assert_eq!(stateful.retry_max_bytes, expected);
+            assert_eq!(stateful.retry_max_age, Duration::ZERO);
+            assert_eq!(stateful.retry_max_attempts, 0);
+        }
+    }
+
+    #[test]
+    fn stateful_metrics_rejects_invalid_retry_limits() {
+        for (key, value) in [
+            ("retry_max_bytes", json!(-1)),
+            ("retry_max_bytes", json!("invalid")),
+            ("retry_max_age", json!("invalid")),
+            ("retry_max_attempts", json!(-1)),
+            ("retry_max_attempts", json!("invalid")),
+        ] {
+            assert!(
+                standalone_system(json!({
+                    "data_plane": { "experimental": { "stateful_metrics": { key: value.clone() } } },
+                }))
+                .is_err(),
+                "{key}: {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn stateful_metrics_unshipped_flat_retry_keys_are_not_aliases() {
+        let yaml = r#"
+data_plane:
+  stateful_metrics_retry_max_bytes: 1MiB
+  stateful_metrics_retry_max_age: 10s
+  stateful_metrics_retry_max_attempts: 2
+"#;
+        let vars = [
+            (
+                "DD_DATA_PLANE_STATEFUL_METRICS_RETRY_MAX_BYTES".to_string(),
+                "2MiB".to_string(),
+            ),
+            (
+                "DD_DATA_PLANE_STATEFUL_METRICS_RETRY_MAX_AGE".to_string(),
+                "15s".to_string(),
+            ),
+            (
+                "DD_DATA_PLANE_STATEFUL_METRICS_RETRY_MAX_ATTEMPTS".to_string(),
+                "3".to_string(),
+            ),
+        ];
+        let config = read_local(yaml, Path::new("stateful.yaml"), &vars, EnvPrecedence::AfterFile)
+            .unwrap()
+            .local
+            .unwrap();
+        assert_eq!(config.domains.stateful_metrics, Default::default());
+    }
+
     /// Builds a standalone system whose authority is the local sources.
     ///
     /// Translates without validating so a test can state only the setting it is exercising. The
