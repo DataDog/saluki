@@ -743,6 +743,7 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `data_plane.experimental.apm.enabled`                           | Run the experimental APM proxy in front of the trace-agent | false                 |
 | `data_plane.experimental.apm.proxy_destination`                 | HTTP or Unix socket URL of the relocated trace-agent       | http://127.0.0.1:8127 |
 | `data_plane.experimental.stateful_metrics.endpoint`             | Experimental stateful series gRPC intake endpoint          | unset (disabled)      |
+| `data_plane.experimental.stateful_metrics.workers`              | Number of independent stateful metrics sender workers      | 3                     |
 | `data_plane.otlp.receiver_grpc_endpoint_temporary`              | ADP OTLP gRPC listen endpoint                              | localhost:6317        |
 | `data_plane.otlp.receiver_http_endpoint_temporary`              | ADP OTLP HTTP listen endpoint                              | localhost:6318        |
 | `dogstatsd_allow_context_heap_allocs`                           | Allow heap allocations for contexts                        | true                  |
@@ -773,6 +774,10 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `otlp_config.traces.string_interner_size`                       | OTLP trace string interner capacity                        |                       |
 | `otlp_string_interner_size`                                     | OTLP context interner capacity                             |                       |
 | `serializer_max_metrics_per_payload`                            | Max metrics per payload                                    |                       |
+
+### `data_plane.experimental.stateful_metrics.workers`
+
+Positive worker count, default 3. Requires a restart. Each worker owns its queues, dictionaries, and inflight state, increasing memory and disk budgets. Drain persisted retries at the previous count before changing this setting.
 
 ### `data_plane.experimental.stateful_metrics.endpoint`
 

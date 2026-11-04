@@ -11,6 +11,12 @@ pub struct SalukiKey {
 
 pub static SALUKI_KEYS: &[SalukiKey] = &[
     SalukiKey {
+        yaml_path: "data_plane.experimental.stateful_metrics.workers",
+        description: "Number of independent stateful metrics sender workers",
+        default: "3",
+        documentation: Some("Positive worker count, default 3. Requires a restart. Each worker owns its queues, dictionaries, and inflight state, increasing memory and disk budgets. Drain persisted retries at the previous count before changing this setting."),
+    },
+    SalukiKey {
         yaml_path: "data_plane.experimental.stateful_metrics.endpoint",
         description: "Experimental stateful series gRPC intake endpoint",
         default: "unset (disabled)",

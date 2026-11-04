@@ -1,6 +1,6 @@
 //! Shared priority scheduling and persistent retry storage for delivery components.
 
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 
 use saluki_error::GenericError;
 use saluki_io::net::util::retry::{DiskUsageRetrieverImpl, PersistedQueueArgs, RetryQueue, Retryable};
@@ -21,7 +21,8 @@ pub struct DeliveryQueueConfiguration {
 
 impl DeliveryQueueConfiguration {
     /// Creates delivery storage from priority capacity and retry settings.
-    pub fn new(high_priority_capacity: usize, retry: RetryConfiguration) -> Self {
+    pub fn new(high_priority_capacity: usize, mut retry: RetryConfiguration) -> Self {
+        retry.storage_path = retry.resolved_storage_path();
         Self {
             high_priority_capacity,
             retry,
@@ -31,6 +32,11 @@ impl DeliveryQueueConfiguration {
     /// Returns the configured logical retry-memory budget in bytes.
     pub const fn retry_memory_bytes(&self) -> u64 {
         self.retry.queue_max_size_bytes
+    }
+
+    /// Returns the storage root when disk persistence is enabled.
+    pub fn storage_path(&self) -> Option<&Path> {
+        (self.retry.storage_max_size_bytes > 0).then_some(self.retry.storage_path.as_path())
     }
 
     /// Builds a queue with a distinct storage namespace and endpoint telemetry.

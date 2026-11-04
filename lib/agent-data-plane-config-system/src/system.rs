@@ -523,6 +523,7 @@ mod tests {
     fn stateful_metrics_is_opt_in_and_reachable_from_yaml_and_environment() {
         let default = standalone_system(json!({})).unwrap();
         assert!(default.config().domains.stateful_metrics.endpoint.is_none());
+        assert_eq!(default.config().domains.stateful_metrics.workers.get(), 3);
 
         let endpoint = "http://127.0.0.1:8080";
         let yaml = r#"
@@ -552,6 +553,52 @@ data_plane:
             .unwrap();
         assert_eq!(from_env.domains.stateful_metrics.endpoint.as_deref(), Some(endpoint));
         super::validate(&from_env).unwrap();
+    }
+
+    #[test]
+    fn stateful_metrics_workers_load_from_yaml_and_environment() {
+        for workers in [1, 2, 3, 4, 8] {
+            let yaml = format!("data_plane:\n  experimental:\n    stateful_metrics:\n      workers: {workers}\n");
+            let from_file = read_local(&yaml, Path::new("stateful.yaml"), &[], EnvPrecedence::Disabled)
+                .unwrap()
+                .local
+                .unwrap();
+            assert_eq!(from_file.domains.stateful_metrics.workers.get(), workers);
+
+            let vars = [(
+                "DD_DATA_PLANE_EXPERIMENTAL_STATEFUL_METRICS_WORKERS".to_string(),
+                workers.to_string(),
+            )];
+            let from_env = read_local("{}", Path::new("stateful.yaml"), &vars, EnvPrecedence::AfterFile)
+                .unwrap()
+                .local
+                .unwrap();
+            assert_eq!(from_env.domains.stateful_metrics.workers.get(), workers);
+        }
+    }
+
+    #[test]
+    fn stateful_metrics_rejects_invalid_worker_counts() {
+        for count in [json!(0), json!(-1), json!(1.5), json!("invalid")] {
+            assert!(
+                standalone_system(json!({
+                    "data_plane": { "experimental": { "stateful_metrics": { "workers": count } } },
+                }))
+                .is_err(),
+                "{count}"
+            );
+        }
+    }
+
+    #[test]
+    fn stateful_metrics_unshipped_flat_workers_is_not_an_alias() {
+        let vars = [("DD_DATA_PLANE_STATEFUL_METRICS_WORKERS".to_string(), "5".to_string())];
+        let yaml = "data_plane:\n  stateful_metrics_workers: 4\n";
+        let config = read_local(yaml, Path::new("stateful.yaml"), &vars, EnvPrecedence::AfterFile)
+            .unwrap()
+            .local
+            .unwrap();
+        assert_eq!(config.domains.stateful_metrics.workers.get(), 3);
     }
 
     #[test]

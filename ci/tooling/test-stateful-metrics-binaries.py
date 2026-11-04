@@ -258,6 +258,8 @@ def timer_and_metadata(fixture):
 
 
 def threshold(fixture):
+    # The series threshold applies per worker; keep both series in the same batch.
+    fixture.config["data_plane"]["experimental"]["stateful_metrics"]["workers"] = 1
     fixture.start_intake()
     fixture.start_adp()
     timestamp = fixture.send(["threshold.a:1|g|#env:binary-test", "threshold.b:2|g|#env:binary-test"])
