@@ -8,9 +8,9 @@
 set -euo pipefail
 set -x
 
-readonly VERSION="3.14.2"
-readonly VALE_SHA256_AMD64="469cf88ec58a374dca14b2564c4391d2c9a1c632210aa0b642758b794082e05f"
-readonly VALE_SHA256_ARM64="b11fa9955b93814f993442568b9b922604cc4b574643037b84900e9514860802"
+readonly VERSION="3.24.0"
+readonly VALE_SHA256_AMD64="867534ddb678abca7f214bc4706ead0922bd5252ffe8035fc227013f66c8b214"
+readonly VALE_SHA256_ARM64="104cbd349279e50c4cb40adb70adf345d93cc4a3a0191f9e68bdccb97086b582"
 
 # shellcheck disable=SC2155
 readonly TMP_DIR="$(mktemp -d -t "vale_XXXX")"
