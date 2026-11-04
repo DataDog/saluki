@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use stele::{ClientStatisticsAggregator, Event, Metric, ServiceCheck, Span};
+use stele::{ClientStatisticsAggregator, Event, LogsRequest, Metric, ServiceCheck, Span};
 use tracing::{debug, error};
 
 /// Maximum wait for response headers or between body reads.
@@ -75,6 +75,27 @@ impl IntakeClient {
         debug!("Metrics dumped successfully.");
 
         Ok(metrics)
+    }
+
+    /// Fetches the captured logs requests.
+    ///
+    /// # Errors
+    ///
+    /// If the endpoint can't be called, or its response can't be decoded, an error is returned.
+    pub async fn logs(&self) -> Result<Vec<LogsRequest>, GenericError> {
+        let requests = self
+            .client
+            .get(format!("{}/logs/dump", self.base_url))
+            .send()
+            .await
+            .error_context("Failed to call logs dump endpoint on datadog-intake server.")?
+            .json::<Vec<LogsRequest>>()
+            .await
+            .error_context("Failed to decode dumped logs from datadog-intake response.")?;
+
+        debug!("Logs dumped successfully.");
+
+        Ok(requests)
     }
 
     /// Fetches the captured service checks.
