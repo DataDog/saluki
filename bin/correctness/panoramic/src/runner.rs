@@ -1719,10 +1719,23 @@ mod tests {
             assert_eq!(error.kind, ErrorKind::Setup);
             assert_eq!(
                 error.message,
-                "panoramic cannot create host-process-group participants natively: 'adp' on macos"
+                if Os::host() == Os::MacOs {
+                    "participant 'adp': participant type 'plain' has no recipe for host-process-group on macos"
+                } else {
+                    "panoramic cannot create host-process-group participants natively: 'adp' on macos"
+                }
             );
-            assert_eq!(phase_names(&result), ["prepare"]);
-            assert!(result.reclaim.is_empty());
+            if Os::host() == Os::MacOs {
+                assert_eq!(phase_names(&result), ["prepare", "create:adp", "reclaim"]);
+                assert_eq!(result.reclaim.len(), 1);
+                let scope = &result.reclaim[0];
+                assert_eq!(scope.result, ReclaimResult::Reclaimed);
+                assert!(scope.participant.is_none());
+                assert!(!Path::new(scope.resource.strip_prefix("directory:").unwrap()).exists());
+            } else {
+                assert_eq!(phase_names(&result), ["prepare"]);
+                assert!(result.reclaim.is_empty());
+            }
             assert!(result.issues.is_empty());
             assert_eq!(result.layout, Some(layout.clone()));
             assert_eq!(log_dir, logs.path().join("integration/native"));
@@ -1732,7 +1745,7 @@ mod tests {
             assert_eq!(report["error"]["kind"], "setup");
             assert_eq!(report["error"]["message"], error.message);
             assert_eq!(report["phase_timings"][0]["phase"], "prepare");
-            assert_eq!(report["reclaim"], serde_json::json!([]));
+            assert_eq!(report["reclaim"], serde_json::to_value(&result.reclaim).unwrap());
             assert_eq!(report["layout"], serde_json::to_value(layout).unwrap());
             assert!(rx.try_recv().is_err());
         }

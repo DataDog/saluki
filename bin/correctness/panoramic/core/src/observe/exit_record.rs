@@ -62,7 +62,7 @@ pub(crate) async fn watch_record<F>(
             }
         }
         match exit {
-            ParticipantExit::Exited { .. } => {
+            ParticipantExit::Exited { .. } | ParticipantExit::Ended => {
                 break ExitObservation::Undetermined(format!(
                     "participant '{participant}' stopped without an exit record for process '{process}'"
                 ))

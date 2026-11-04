@@ -27,7 +27,7 @@ pub enum Os {
 
 impl Os {
     /// Returns the runner host's OS: macOS, Windows, or Linux on other hosts.
-    pub fn host() -> Self {
+    pub const fn host() -> Self {
         if cfg!(target_os = "macos") {
             Self::MacOs
         } else if cfg!(target_os = "windows") {

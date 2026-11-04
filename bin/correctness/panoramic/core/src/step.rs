@@ -344,7 +344,10 @@ impl OutputCursor<'_> {
         {
             OutputEnd::Failed(reason.clone())
         } else if captures.iter().all(|capture| *capture == Capture::Complete)
-            && matches!(self.observation.exit(), ParticipantExit::Exited { .. })
+            && matches!(
+                self.observation.exit(),
+                ParticipantExit::Exited { .. } | ParticipantExit::Ended
+            )
         {
             OutputEnd::Complete
         } else {
@@ -803,6 +806,72 @@ mod tests {
             assert_eq!(report.message, message);
             assert!(cx.handle("missing").is_none());
             assert_eq!(cx.late_fact("missing", LateFact::Ip), None);
+        }
+    }
+
+    #[test]
+    fn an_ended_host_completes_output_only_after_the_selected_pipes_finish() {
+        use crate::observe::ProcessOutput;
+
+        let (exit, exit_rx) = watch::channel(ParticipantExit::Running);
+        let mut observation = ParticipantObservation::host(exit_rx);
+        let (main, main_rx) = watch::channel(Capture::Following);
+        let (worker, worker_rx) = watch::channel(Capture::Following);
+        for (name, capture) in [("main", main_rx), ("worker", worker_rx)] {
+            observation
+                .outputs
+                .insert(name, ProcessOutput { capture, paths: vec![] });
+        }
+        for (status, main_capture, worker_capture, expected_main, expected_all) in [
+            (
+                ParticipantExit::Running,
+                Capture::Complete,
+                Capture::Complete,
+                OutputEnd::Open,
+                OutputEnd::Open,
+            ),
+            (
+                ParticipantExit::Ended,
+                Capture::Following,
+                Capture::Complete,
+                OutputEnd::Open,
+                OutputEnd::Open,
+            ),
+            (
+                ParticipantExit::Ended,
+                Capture::Complete,
+                Capture::Following,
+                OutputEnd::Complete,
+                OutputEnd::Open,
+            ),
+            (
+                ParticipantExit::Ended,
+                Capture::Complete,
+                Capture::Complete,
+                OutputEnd::Complete,
+                OutputEnd::Complete,
+            ),
+            (
+                ParticipantExit::Ended,
+                Capture::Complete,
+                Capture::Failed {
+                    reason: "worker pipe failed".into(),
+                },
+                OutputEnd::Complete,
+                OutputEnd::Failed("worker pipe failed".into()),
+            ),
+        ] {
+            exit.send_replace(status);
+            main.send_replace(main_capture);
+            worker.send_replace(worker_capture);
+            for (process, expected) in [(Some("main"), expected_main), (None, expected_all)] {
+                let mut cursor = OutputCursor {
+                    observation: &observation,
+                    process,
+                    cursor: 0,
+                };
+                assert_eq!(cursor.read().end, expected);
+            }
         }
     }
 

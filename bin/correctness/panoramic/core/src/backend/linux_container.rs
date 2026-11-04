@@ -87,9 +87,16 @@ impl ScopeRuntime for LinuxScope {
             runner_host_ports,
             inputs,
             options,
+            specs,
         } = request;
         debug_assert_eq!(realization.kind, RealizationKind::LinuxContainer);
-        let Recipe::Container(recipe) = recipe;
+        let Recipe::Container(recipe) = recipe else {
+            return Err(format!(
+                "recipe of participant '{name}' is not a container recipe for {} on {}",
+                realization.kind.name(),
+                realization.os.name(),
+            ));
+        };
         if !matches!(recipe.image.kind, ArtifactKind::Image { os: Os::Linux }) {
             return Err(format!(
                 "recipe of participant '{name}' names role '{}', which is not a Linux image",
@@ -97,7 +104,7 @@ impl ScopeRuntime for LinuxScope {
             ));
         }
         let image = inputs.image(recipe.image)?;
-        self.container(name, image, &recipe, &runner_host_ports, options)
+        self.container(name, image, &recipe, &runner_host_ports, options, specs)
             .map(|participant| Arc::new(participant) as Arc<dyn RuntimeParticipant>)
             .map_err(|error| format!("participant '{name}': {error:#}"))
     }
@@ -107,7 +114,7 @@ impl LinuxScope {
     /// Builds a participant from its image and recipe, publishing each runner-host port on `127.0.0.1`.
     fn container(
         &self, name: &str, image: &str, recipe: &ContainerRecipe, ports: &[RunnerHostPort],
-        options: &BTreeMap<String, Value>,
+        options: &BTreeMap<String, Value>, specs: &'static [ProcessSpec],
     ) -> Result<LinuxParticipant, GenericError> {
         let mut config = DriverConfig::from_image(name, image.to_owned());
         if let Some(entrypoint) = &recipe.entrypoint {
@@ -143,6 +150,7 @@ impl LinuxScope {
             driver,
             files,
             ports: ports.to_vec(),
+            specs,
             #[cfg(any(test, feature = "test-util"))]
             output_line_bytes: recipe.output_line_bytes,
         })
@@ -171,6 +179,7 @@ pub(crate) struct LinuxParticipant {
     driver: Driver,
     files: Vec<ContainerFile>,
     ports: Vec<RunnerHostPort>,
+    specs: &'static [ProcessSpec],
     #[cfg(any(test, feature = "test-util"))]
     output_line_bytes: Option<usize>,
 }
@@ -217,9 +226,7 @@ impl RuntimeParticipant for LinuxParticipant {
             .collect())
     }
 
-    async fn observe(
-        self: Arc<Self>, specs: &'static [ProcessSpec], tasks: &CaseTasks, output_dir: &Path,
-    ) -> ParticipantObservation {
+    async fn observe(self: Arc<Self>, tasks: &CaseTasks, output_dir: &Path) -> ParticipantObservation {
         let (exit_tx, exit_rx) = watch::channel(ParticipantExit::Running);
         let (capture_tx, capture_rx) = watch::channel(Capture::Following);
         let mut observation = ParticipantObservation::new(
@@ -234,8 +241,9 @@ impl RuntimeParticipant for LinuxParticipant {
         }
         tasks.spawn(watch_exit(self.driver.wait_exit(), exit_tx));
         let mut container_output = None;
-        for spec in specs {
+        for spec in self.specs {
             let process = match spec.exit {
+                ExitChannel::Wait => unreachable!("host process exit channels are rejected during preparation"),
                 ExitChannel::Container => ProcessObservation::Container(exit_rx.clone()),
                 ExitChannel::Record { file } => {
                     let path = format!("{SHARED_ROOT}/{}/exit/{file}", self.name);
@@ -265,11 +273,15 @@ impl RuntimeParticipant for LinuxParticipant {
             };
             observation.processes.insert(spec.name, process);
             let output = match spec.output {
+                OutputChannel::Pipes => unreachable!("host process output channels are rejected during preparation"),
                 OutputChannel::Container => {
                     container_output = Some(spec.name);
                     ProcessOutput {
                         capture: capture_rx.clone(),
-                        paths: vec![observation.stdout_path.clone(), observation.stderr_path.clone()],
+                        paths: vec![
+                            observation.stdout_path.clone().expect("container stdout path"),
+                            observation.stderr_path.clone().expect("container stderr path"),
+                        ],
                     }
                 }
                 OutputChannel::File { file, stream } => {
@@ -316,8 +328,8 @@ impl RuntimeParticipant for LinuxParticipant {
             Ok(stream) => {
                 tasks.spawn(follow_output(
                     stream,
-                    observation.stdout_path.clone(),
-                    observation.stderr_path.clone(),
+                    observation.stdout_path.clone().expect("container stdout path"),
+                    observation.stderr_path.clone().expect("container stderr path"),
                     capture_tx,
                     observation.lines.clone(),
                     self.name.clone().into(),

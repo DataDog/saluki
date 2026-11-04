@@ -1,6 +1,5 @@
 //! Waits for the readiness evidence required by a start level.
 
-use airlock::observe::ContainerExit;
 use futures::future::join_all;
 use tokio::time::{sleep, Instant};
 use tokio_util::sync::CancellationToken;
@@ -101,14 +100,11 @@ impl Waiting<'_> {
             }
         };
         match result {
-            Err(ContainerExit { code, error }) => {
-                let docker = error.map(|error| format!(" (Docker: {error})")).unwrap_or_default();
-                Err(format!(
-                    "{consumers} cannot start: participant '{}' exited with code {code}{docker} \
-                     before {description} was ready; last check: {reason}",
-                    self.gate.server,
-                ))
-            }
+            Err(exit) => Err(format!(
+                "{consumers} cannot start: participant '{}' {exit} \
+                 before {description} was ready; last check: {reason}",
+                self.gate.server,
+            )),
             Ok(Ok(Ok(()))) => Ok(()),
             Ok(Ok(Err(message))) => Err(format!("{consumers} cannot start: checking {what} failed: {message}")),
             Ok(Err(ProbeError::TimedOut { .. })) => Err(format!(
@@ -368,8 +364,8 @@ mod tests {
     async fn an_output_gate_fails_when_capture_overflows_before_a_match() {
         let mut server = Server::new([]);
         server.observation.lines = crate::observe::output::OutputLines::new(5);
-        server.observation.stdout_path = "server/container.stdout.log".into();
-        server.observation.stderr_path = "server/container.stderr.log".into();
+        server.observation.stdout_path = Some("server/container.stdout.log".into());
+        server.observation.stderr_path = Some("server/container.stderr.log".into());
         server.observation.outputs.get_mut("main").unwrap().paths = vec!["server/main.log".into()];
         push_line(&server, Some("main"), "noise");
         push_line(&server, Some("main"), "ready");
@@ -501,6 +497,33 @@ mod tests {
             ),
         );
         assert_eq!(started.elapsed(), Duration::ZERO);
+        assert!(server.calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_ended_host_server_fails_readiness_with_each_named_process_status() {
+        use crate::observe::{ExitObservation, ExitStatus, ProcessObservation};
+        let mut server = Server::new([]);
+        server.observation = ParticipantObservation::host(server.exit_tx.subscribe());
+        for (name, code, signal) in [("main", Some(3), None), ("worker", None, Some(9))] {
+            let (_, rx) = watch::channel(ExitObservation::Exited(ExitStatus {
+                code,
+                signal,
+                reason: None,
+                recorded_at: None,
+            }));
+            server.observation.processes.insert(name, ProcessObservation::Wait(rx));
+        }
+        server.exit_tx.send_replace(ParticipantExit::Ended);
+        let error = wait_for_gates(
+            [("consumer", &tcp_gate())],
+            |_| (&server as &dyn Primitives, &server.observation),
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error,
+            "participant 'consumer' cannot start: participant 'server' ended: process 'main' exited with code 3, process 'worker' was killed by signal 9 before tcp-accepts on 'api' was ready; last check: no check completed");
         assert!(server.calls.lock().unwrap().is_empty());
     }
 

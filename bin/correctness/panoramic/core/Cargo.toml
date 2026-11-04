@@ -34,7 +34,7 @@ serde_json = { workspace = true }
 serde_path_to_error = { workspace = true }
 sha2 = { workspace = true }
 snafu = { workspace = true }
-tokio = { workspace = true, features = ["fs", "io-util", "net", "rt", "signal", "sync", "time"] }
+tokio = { workspace = true, features = ["fs", "io-util", "net", "process", "rt", "signal", "sync", "time"] }
 tokio-rustls = { workspace = true }
 tokio-util = { workspace = true, features = ["rt"] }
 toml = { workspace = true, features = ["display"] }
@@ -54,3 +54,6 @@ rustls = { workspace = true, features = ["aws_lc_rs"] }
 [target.'cfg(windows)'.dev-dependencies]
 rcgen = { workspace = true, features = ["ring"] }
 rustls-cng-crypto = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }

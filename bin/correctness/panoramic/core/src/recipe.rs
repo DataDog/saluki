@@ -8,12 +8,66 @@ use crate::artifact::ArtifactRole;
 pub enum Recipe {
     /// A container created from a declared image role.
     Container(ContainerRecipe),
+    /// Processes sharing a host directory and environment.
+    HostProcessGroup(HostRecipe),
 }
 
 impl Recipe {
     pub(crate) fn roles(&self) -> Vec<ArtifactRole> {
         match self {
             Self::Container(recipe) => vec![recipe.image],
+            Self::HostProcessGroup(recipe) => recipe.processes.iter().map(|process| process.program).collect(),
+        }
+    }
+}
+
+/// Environment, relative files and processes for one host participant.
+#[cfg_attr(
+    not(unix),
+    expect(dead_code, reason = "Unix host runtimes consume recipe environments and files.")
+)]
+pub struct HostRecipe {
+    pub(crate) env: BTreeMap<String, String>,
+    pub(crate) files: Vec<RecipeFile>,
+    pub(crate) processes: Vec<HostProcess>,
+}
+
+impl HostRecipe {
+    #[cfg_attr(
+        not(all(test, unix)),
+        expect(dead_code, reason = "Host participant type recipes construct process groups.")
+    )]
+    pub(crate) fn new(processes: Vec<HostProcess>) -> Self {
+        Self {
+            env: BTreeMap::new(),
+            files: Vec::new(),
+            processes,
+        }
+    }
+}
+
+#[cfg_attr(
+    not(unix),
+    expect(dead_code, reason = "Unix host runtimes spawn the declared processes.")
+)]
+pub(crate) struct HostProcess {
+    pub(crate) name: String,
+    pub(crate) program: ArtifactRole,
+    pub(crate) args: Vec<String>,
+    pub(crate) env: BTreeMap<String, String>,
+}
+
+impl HostProcess {
+    #[cfg_attr(
+        not(all(test, unix)),
+        expect(dead_code, reason = "Host participant type recipes declare their programs.")
+    )]
+    pub(crate) fn new(name: impl Into<String>, program: ArtifactRole, args: Vec<String>) -> Self {
+        Self {
+            name: name.into(),
+            program,
+            args,
+            env: BTreeMap::new(),
         }
     }
 }
@@ -74,7 +128,7 @@ impl ContainerRecipe {
     }
 }
 
-/// A file to place at an absolute container path.
+/// A file to place at an absolute container path or a path relative to a host participant directory.
 pub(crate) struct RecipeFile {
     pub(crate) path: String,
     /// Permission bits applied when the file is placed.
@@ -102,7 +156,9 @@ pub mod test_support {
     /// Panics if the recipe differs from the expected declarations or adds files, mounts or a command.
     #[track_caller]
     pub fn assert_container(recipe: &Recipe, image: ArtifactRole, entrypoint: &[&str], env: &BTreeMap<String, String>) {
-        let Recipe::Container(recipe) = recipe;
+        let Recipe::Container(recipe) = recipe else {
+            panic!("expected a container recipe")
+        };
         assert_eq!(recipe.image, image);
         assert_eq!(recipe.entrypoint.as_deref().unwrap(), entrypoint);
         assert_eq!(&recipe.env, env);
@@ -118,7 +174,9 @@ pub mod test_support {
     /// Panics if the image, environment or image defaults differ.
     #[track_caller]
     pub fn assert_image_recipe(recipe: &Recipe, image: ArtifactRole, env: &BTreeMap<String, String>) {
-        let Recipe::Container(recipe) = recipe;
+        let Recipe::Container(recipe) = recipe else {
+            panic!("expected a container recipe")
+        };
         assert_eq!(recipe.image, image);
         assert_eq!(&recipe.env, env);
         assert!(recipe.entrypoint.is_none());
@@ -128,7 +186,9 @@ pub mod test_support {
 
     /// Returns each placed file's path, permission bits and contents.
     pub fn files(recipe: &Recipe) -> Vec<(&str, u32, &[u8])> {
-        let Recipe::Container(recipe) = recipe;
+        let Recipe::Container(recipe) = recipe else {
+            panic!("expected a container recipe")
+        };
         recipe
             .files
             .iter()
@@ -161,7 +221,9 @@ pub mod test_support {
 
     /// Sets a test participant's in-memory output bound while its files retain the complete output.
     pub fn with_output_line_bytes(mut recipe: Recipe, limit: usize) -> Recipe {
-        let Recipe::Container(container) = &mut recipe;
+        let Recipe::Container(container) = &mut recipe else {
+            panic!("expected a container recipe")
+        };
         container.output_line_bytes = Some(limit);
         recipe
     }
@@ -169,7 +231,9 @@ pub mod test_support {
     /// Builds a shell fixture from `SCRIPT`, with optional `ENTRYPOINT` and `HOST_MOUNT` fault injection.
     pub fn shell(image: ArtifactRole, config: &crate::participant::RenderedConfig) -> Recipe {
         let script = config.env.get("SCRIPT").map_or("exec sleep 60", String::as_str);
-        let Recipe::Container(mut recipe) = container(image, &["sh", "-c"], &[script]);
+        let Recipe::Container(mut recipe) = container(image, &["sh", "-c"], &[script]) else {
+            unreachable!("container builds a container recipe")
+        };
         recipe.env = config.env.clone();
         if let Some(entrypoint) = config.env.get("ENTRYPOINT") {
             recipe.entrypoint = Some(vec![entrypoint.clone()]);

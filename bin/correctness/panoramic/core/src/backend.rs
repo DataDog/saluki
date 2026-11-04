@@ -5,6 +5,8 @@
 
 pub(crate) mod courier;
 pub(crate) mod docker;
+#[cfg(unix)]
+pub(crate) mod host_process;
 pub(crate) mod http;
 pub(crate) mod linux_container;
 mod run;

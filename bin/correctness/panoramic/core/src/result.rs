@@ -395,6 +395,8 @@ pub struct ProcessReport {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExitSource {
+    /// A spawned host process's wait result.
+    Process,
     /// The container runtime's wait result.
     Container,
     /// A supervisor-written exit record.

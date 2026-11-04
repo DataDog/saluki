@@ -28,6 +28,8 @@ use crate::{
 
 #[cfg(test)]
 mod daemon_tests;
+#[cfg(all(test, unix))]
+mod host_tests;
 mod readiness;
 mod render;
 mod steps;
@@ -99,11 +101,12 @@ impl Observations {
     }
 }
 
-/// Verified image IDs and container-binary bytes shared by every native case in a run.
+/// Verified image IDs, executable paths and container-binary bytes shared by native cases in a run.
 pub struct NativeInputs {
     pub(crate) backends: Arc<RunBackends>,
     images: BTreeMap<&'static str, String>,
     binaries: BTreeMap<&'static str, Bytes>,
+    programs: BTreeMap<&'static str, PathBuf>,
 }
 
 impl NativeInputs {
@@ -117,6 +120,7 @@ impl NativeInputs {
             backends,
             images: BTreeMap::new(),
             binaries: BTreeMap::new(),
+            programs: BTreeMap::new(),
         };
         for artifact in verified {
             match artifact.kind {
@@ -134,7 +138,9 @@ impl NativeInputs {
                     }
                     inputs.binaries.insert(artifact.role, bytes.into());
                 }
-                ArtifactKind::Binary | ArtifactKind::Install { .. } => {}
+                ArtifactKind::Binary | ArtifactKind::Install { .. } => {
+                    inputs.programs.insert(artifact.role, base.join(&artifact.reference));
+                }
             }
         }
         Ok(inputs)
@@ -153,13 +159,28 @@ impl NativeInputs {
             .ok_or_else(|| format!("native inputs lack verified binary role '{}'", role.name))
     }
 
+    #[cfg(unix)]
+    pub(crate) fn program(&self, role: ArtifactRole) -> Result<PathBuf, String> {
+        let main_binary = match role.kind {
+            ArtifactKind::Binary => None,
+            ArtifactKind::Install { main_binary } => Some(main_binary),
+            _ => return Err(format!("role '{}' is not a host binary or install", role.name)),
+        };
+        let root = self
+            .programs
+            .get(role.name)
+            .ok_or_else(|| format!("native inputs lack verified {} role '{}'", role.kind.name(), role.name))?;
+        let path = main_binary.map_or_else(|| root.clone(), |main| root.join(main));
+        std::path::absolute(&path).map_err(|error| format!("cannot resolve program '{}': {error}", path.display()))
+    }
+
     fn require_backends(&self, kinds: impl IntoIterator<Item = RealizationKind>) -> Result<(), String> {
         for kind in kinds {
             for role in backend::artifacts(kind) {
                 let present = match role.kind {
                     ArtifactKind::Image { .. } => self.images.contains_key(role.name),
                     ArtifactKind::ContainerBinary { .. } => self.binaries.contains_key(role.name),
-                    ArtifactKind::Binary | ArtifactKind::Install { .. } => false,
+                    ArtifactKind::Binary | ArtifactKind::Install { .. } => self.programs.contains_key(role.name),
                 };
                 if !present {
                     return Err(format!(
@@ -268,7 +289,7 @@ pub async fn run(
                 &control.cancel,
             )
             .await?;
-            start_level(level, &mut participants, &mut running, &prepared.process_specs, control).await
+            start_level(level, &mut participants, &mut running, control).await
         }
         .await;
         phase.finish();
@@ -387,6 +408,7 @@ async fn create(
         name,
         realization,
         recipe,
+        specs: prepared.process_specs[name],
         runner_host_ports: plan.runner_host_ports(name),
         options: options.unwrap_or(&BTreeMap::new()),
         inputs,
@@ -411,7 +433,7 @@ async fn create(
 
 async fn start_level(
     level: &[String], participants: &mut BTreeMap<String, Created>, running: &mut BTreeMap<String, Started>,
-    process_specs: &BTreeMap<String, &'static [ProcessSpec]>, control: &CaseControl,
+    control: &CaseControl,
 ) -> Result<(), String> {
     let results = join_all(level.iter().map(|name| {
         let Created { participant, mut late } = participants
@@ -429,7 +451,7 @@ async fn start_level(
                     late.extend(facts);
                     let observation = participant
                         .clone()
-                        .observe(process_specs[name], &control.tasks, &control.log_dir.join(name))
+                        .observe(&control.tasks, &control.log_dir.join(name))
                         .await;
                     let observation = Arc::new(observation);
                     control.observations.started(name, observation.clone());
@@ -670,14 +692,14 @@ mod tests {
         let inputs = NativeInputs::new(Arc::new(RunBackends::with_docker(api.daemon())), &[], Path::new(".")).unwrap();
         let case = fixtures::LOADER
             .load_content(
-                &fixtures::PARTICIPANT_FIELDS.replace("[linux]", "[macos]"),
+                &fixtures::PARTICIPANT_FIELDS.replace("[linux]", "[windows]"),
                 "case",
                 Path::new("/cases/case/config.yaml"),
             )
             .unwrap()
             .remove(0);
         let plan = Planner::with_run(fixtures::REGISTRIES, "testcase")
-            .compile(case, Os::MacOs)
+            .compile(case, Os::Windows)
             .unwrap()
             .into_plan()
             .unwrap();
@@ -698,7 +720,7 @@ mod tests {
         assert_eq!(error.kind, ErrorKind::Setup);
         assert_eq!(
             error.message,
-            "panoramic cannot create host-process-group participants natively: 'subject' on macos"
+            "panoramic cannot create windows-container participants natively: 'subject' on windows"
         );
         assert!(api.calls.lock().unwrap().is_empty());
         assert!(control.ledger.labels().is_empty());
@@ -714,11 +736,6 @@ mod tests {
         let loader = crate::case::CaseLoader::new(registries, fixtures::FixtureTypes, "fixture-participants");
         for (os, participants, expected) in [
             (
-                Os::MacOs,
-                "  subject: {type: server, subject: true}",
-                "panoramic cannot create host-process-group participants natively: 'subject' on macos",
-            ),
-            (
                 Os::Windows,
                 "  subject: {type: server, subject: true}",
                 "panoramic cannot create windows-container participants natively: 'subject' on windows",
@@ -729,10 +746,10 @@ mod tests {
                 "panoramic cannot create kubernetes-pod participants natively: 'subject' on linux",
             ),
             (
-                Os::MacOs,
-                "  subject: {type: server, subject: true}\n  other: {type: server, os: windows}",
-                "panoramic cannot create windows-container participants natively: 'other' on windows; \
-                 panoramic cannot create host-process-group participants natively: 'subject' on macos",
+                Os::Windows,
+                "  subject: {type: server, subject: true}\n  other: {type: pod-server, os: linux, realization: {kind: kubernetes-pod}}",
+                "panoramic cannot create kubernetes-pod participants natively: 'other' on linux; \
+                 panoramic cannot create windows-container participants natively: 'subject' on windows",
             ),
             (
                 Os::Linux,

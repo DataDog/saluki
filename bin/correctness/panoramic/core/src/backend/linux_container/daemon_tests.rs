@@ -7,10 +7,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use airlock::{
-    docker::{image_id, Docker},
-    observe::ContainerExit,
-};
+use airlock::docker::{image_id, Docker};
 use bollard::{
     errors::Error,
     models::PortBinding,
@@ -68,9 +65,9 @@ struct TestScope {
 impl TestScope {
     fn participant(
         &self, name: &str, image: &str, recipe: &ContainerRecipe, ports: &[RunnerHostPort],
-        options: &BTreeMap<String, Value>,
+        specs: &'static [ProcessSpec], options: &BTreeMap<String, Value>,
     ) -> Result<LinuxParticipant, GenericError> {
-        let participant = self.scope.container(name, image, recipe, ports, options)?;
+        let participant = self.scope.container(name, image, recipe, ports, options, specs)?;
         self.ledger
             .participant(name, participant.removal(), Duration::from_secs(1));
         Ok(participant)
@@ -238,9 +235,11 @@ fn recipe(script: &str) -> ContainerRecipe {
     }
 }
 
-async fn start_participant(scope: &TestScope, name: &str, recipe: &ContainerRecipe) -> LinuxParticipant {
+async fn start_participant(
+    scope: &TestScope, name: &str, recipe: &ContainerRecipe, specs: &'static [ProcessSpec],
+) -> LinuxParticipant {
     let participant = scope
-        .participant(name, &test_image(), recipe, &[], &BTreeMap::new())
+        .participant(name, &test_image(), recipe, &[], specs, &BTreeMap::new())
         .unwrap();
     participant.create().await.unwrap();
     participant.start().await.unwrap();
@@ -300,7 +299,7 @@ async fn a_participant_is_created_from_its_recipe_and_shares_the_host_pid_namesp
             contents: b"placed".to_vec(),
         });
         let participant = scope
-            .participant("p", &test_image(), &recipe, &[], &BTreeMap::new())
+            .participant("p", &test_image(), &recipe, &[], &[], &BTreeMap::new())
             .unwrap();
         let facts: BTreeMap<_, _> = participant.create().await.unwrap().into_iter().collect();
         let id = &facts[&LateFact::ContainerId];
@@ -372,7 +371,7 @@ async fn a_participant_with_host_cgroup_namespace_sees_its_container_id_in_its_c
                 BTreeMap::new()
             };
             let participant = scope
-                .participant(name, &test_image(), &recipe("exec sleep 60"), &[], &options)
+                .participant(name, &test_image(), &recipe("exec sleep 60"), &[], &[], &options)
                 .unwrap();
             let facts: BTreeMap<_, _> = participant.create().await.unwrap().into_iter().collect();
             let id = &facts[&LateFact::ContainerId];
@@ -413,7 +412,7 @@ async fn recipe_host_mounts_are_bound_read_only_or_read_write() {
                 read_only: false,
             },
         ];
-        let participant = start_participant(&scope, "p", &recipe).await;
+        let participant = start_participant(&scope, "p", &recipe, &[]).await;
         let primitives: &dyn Primitives = &participant;
         let output = primitives
             .exec(
@@ -440,7 +439,7 @@ async fn recipe_host_mounts_are_bound_read_only_or_read_write() {
 #[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
 async fn exec_passes_env_and_stdin_and_returns_both_streams_and_a_nonzero_exit_as_data() {
     in_scope(&["p"], courier_bytes(), |scope, _tasks| async move {
-        let participant = start_participant(&scope, "p", &recipe("exec sleep 60")).await;
+        let participant = start_participant(&scope, "p", &recipe("exec sleep 60"), &[]).await;
         let primitives: &dyn Primitives = &participant;
         let mut command = command(&["sh", "-c", "cat; printf %s \"$KEY\" >&2; exit 3"]);
         command.env.push(("KEY".into(), "value".into()));
@@ -461,7 +460,7 @@ async fn exec_passes_env_and_stdin_and_returns_both_streams_and_a_nonzero_exit_a
 #[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
 async fn an_exec_that_outlasts_its_limit_is_abandoned_as_a_harness_error() {
     in_scope(&["p"], courier_bytes(), |scope, _tasks| async move {
-        let participant = start_participant(&scope, "p", &recipe("exec sleep 60")).await;
+        let participant = start_participant(&scope, "p", &recipe("exec sleep 60"), &[]).await;
         let primitives: &dyn Primitives = &participant;
         let started = Instant::now();
         let error = primitives
@@ -485,7 +484,7 @@ async fn an_exec_that_outlasts_its_limit_is_abandoned_as_a_harness_error() {
 #[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
 async fn an_exec_that_closes_its_output_still_returns_its_exit_code() {
     in_scope(&["p"], courier_bytes(), |scope, _tasks| async move {
-        let participant = start_participant(&scope, "p", &recipe("exec sleep 60")).await;
+        let participant = start_participant(&scope, "p", &recipe("exec sleep 60"), &[]).await;
         let primitives: &dyn Primitives = &participant;
         // Docker keeps the attached output stream open until the exec exits.
         let output = primitives
@@ -511,8 +510,13 @@ async fn an_exec_that_closes_its_output_still_returns_its_exit_code() {
 #[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
 async fn files_are_read_and_stated_after_the_participant_exits_and_exec_then_fails() {
     in_scope(&["p"], courier_bytes(), |scope, _tasks| async move {
-        let participant =
-            start_participant(&scope, "p", &recipe("echo 3 > \"$PANORAMIC_EXIT_DIR/done\"; exit 3")).await;
+        let participant = start_participant(
+            &scope,
+            "p",
+            &recipe("echo 3 > \"$PANORAMIC_EXIT_DIR/done\"; exit 3"),
+            &[],
+        )
+        .await;
         let primitives: &dyn Primitives = &participant;
         timeout(Duration::from_secs(10), async {
             loop {
@@ -557,6 +561,7 @@ async fn the_courier_probes_and_sends_to_a_unix_datagram_socket_inside_its_parti
             &scope,
             "srv",
             &recipe("exec syslogd -n -O \"$PANORAMIC_LOG_DIR/messages\""),
+            &[],
         )
         .await;
         let primitives: &dyn Primitives = &participant;
@@ -595,7 +600,7 @@ async fn the_courier_probes_and_sends_to_a_unix_datagram_socket_inside_its_parti
 #[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
 async fn a_courier_that_cannot_run_is_a_harness_error_saying_it_never_ran() {
     in_scope(&["p"], courier_bytes(), |scope, _tasks| async move {
-        let participant = start_participant(&scope, "p", &recipe("exec sleep 60")).await;
+        let participant = start_participant(&scope, "p", &recipe("exec sleep 60"), &[]).await;
         let primitives: &dyn Primitives = &participant;
         // Removing execute permission makes the courier fail Docker's launch checks.
         let chmod = primitives
@@ -627,7 +632,7 @@ async fn a_courier_that_cannot_run_is_a_harness_error_saying_it_never_ran() {
 async fn a_container_reference_removes_its_participant_after_the_participant_is_dropped() {
     in_scope(&["p"], courier_bytes(), |scope, _tasks| async move {
         let participant = scope
-            .participant("p", &test_image(), &recipe("exec sleep 60"), &[], &BTreeMap::new())
+            .participant("p", &test_image(), &recipe("exec sleep 60"), &[], &[], &BTreeMap::new())
             .unwrap();
         let reference = participant.driver.container_ref();
         let facts: BTreeMap<_, _> = participant.create().await.unwrap().into_iter().collect();
@@ -657,7 +662,14 @@ async fn a_container_reference_removes_its_participant_after_the_participant_is_
 async fn a_participant_outside_the_prepared_scope_is_rejected_before_docker() {
     in_scope(&["p"], courier_bytes(), |scope, _tasks| async move {
         let error = scope
-            .participant("other", &test_image(), &recipe("exec sleep 60"), &[], &BTreeMap::new())
+            .participant(
+                "other",
+                &test_image(),
+                &recipe("exec sleep 60"),
+                &[],
+                &[],
+                &BTreeMap::new(),
+            )
             .err()
             .unwrap();
         assert!(error.to_string().contains("other"), "{error:#}");
@@ -700,7 +712,7 @@ echo ready > /airlock/srv/shared/ready
 wait"#,
         );
         let participant = scope
-            .participant("srv", &test_image(), &recipe, &ports, &BTreeMap::new())
+            .participant("srv", &test_image(), &recipe, &ports, &[], &BTreeMap::new())
             .unwrap();
         assert_eq!(participant.ports, ports);
         let facts: BTreeMap<_, _> = participant.create().await.unwrap().into_iter().collect();
@@ -764,8 +776,8 @@ async fn a_participant_whose_runner_host_port_is_held_fails_to_start_naming_its_
             RunnerHostPort { transport: Transport::Udp, container_port: 9001, host_port: ports[1] },
         ];
         let recipe = recipe("exec sleep 60");
-        let first = scope.participant("first", &test_image(), &recipe, &ports, &BTreeMap::new()).unwrap();
-        let second = scope.participant("second", &test_image(), &recipe, &ports, &BTreeMap::new()).unwrap();
+        let first = scope.participant("first", &test_image(), &recipe, &ports, &[], &BTreeMap::new()).unwrap();
+        let second = scope.participant("second", &test_image(), &recipe, &ports, &[], &BTreeMap::new()).unwrap();
         first.create().await.unwrap();
         second.create().await.unwrap();
         first.start().await.unwrap();
@@ -779,7 +791,7 @@ async fn a_participant_whose_runner_host_port_is_held_fails_to_start_naming_its_
 #[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
 async fn the_courier_route_to_a_socket_of_an_exited_participant_is_a_harness_error() {
     in_scope(&["p"], courier_bytes(), |scope, _tasks| async move {
-        let participant = start_participant(&scope, "p", &recipe("exit 0")).await;
+        let participant = start_participant(&scope, "p", &recipe("exit 0"), &[]).await;
         timeout(Duration::from_secs(10), participant.driver.wait_exit())
             .await
             .unwrap()
@@ -828,7 +840,7 @@ async fn a_probe_of_an_unlistened_published_port_is_not_listening() {
             host_port: host_ports(1)[0],
         };
         let participant = scope
-            .participant("subject", &test_image(), &recipe("exec sleep 60"), &[port], &BTreeMap::new())
+            .participant("subject", &test_image(), &recipe("exec sleep 60"), &[port], &[], &BTreeMap::new())
             .unwrap();
         participant.create().await.unwrap();
         participant.start().await.unwrap();
@@ -857,15 +869,16 @@ async fn a_probe_of_an_unlistened_published_port_is_not_listening() {
 #[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
 async fn a_stopped_containers_exit_and_output_are_observed() {
     in_scope(&["p"], courier_bytes(), |scope, tasks| async move {
-        let participant = Arc::new(start_participant(&scope, "p", &recipe("echo out; echo err >&2; exit 3")).await);
+        let participant =
+            Arc::new(start_participant(&scope, "p", &recipe("echo out; echo err >&2; exit 3"), &[]).await);
         timeout(Duration::from_secs(10), participant.driver.wait_exit())
             .await
             .unwrap()
             .unwrap();
         let dir = tempfile::tempdir().unwrap();
-        let observation = participant.clone().observe(&[], &tasks, dir.path()).await;
+        let observation = participant.clone().observe(&tasks, dir.path()).await;
         let exit = timeout(Duration::from_secs(5), observation.stopped()).await.unwrap();
-        assert_eq!(exit, ContainerExit { code: 3, error: None });
+        assert_eq!(exit, "exited with code 3");
         timeout(Duration::from_secs(5), async {
             while observation.capture() == Capture::Following {
                 sleep(Duration::from_millis(25)).await;
@@ -874,8 +887,14 @@ async fn a_stopped_containers_exit_and_output_are_observed() {
         .await
         .unwrap();
         assert_eq!(observation.capture(), Capture::Complete);
-        assert_eq!(std::fs::read(&observation.stdout_path).unwrap(), b"out\n");
-        assert_eq!(std::fs::read(&observation.stderr_path).unwrap(), b"err\n");
+        assert_eq!(
+            std::fs::read(observation.stdout_path.as_ref().unwrap()).unwrap(),
+            b"out\n"
+        );
+        assert_eq!(
+            std::fs::read(observation.stderr_path.as_ref().unwrap()).unwrap(),
+            b"err\n"
+        );
     })
     .await;
 }
@@ -884,7 +903,7 @@ async fn a_stopped_containers_exit_and_output_are_observed() {
 #[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
 async fn a_removed_container_leaves_exit_and_capture_errors() {
     in_scope(&["p"], courier_bytes(), |scope, tasks| async move {
-        let participant = Arc::new(start_participant(&scope, "p", &recipe("exec sleep 60")).await);
+        let participant = Arc::new(start_participant(&scope, "p", &recipe("exec sleep 60"), &[]).await);
         let deadline = Instant::now() + Duration::from_secs(10);
         let container = participant.driver.container_ref();
         tokio::time::timeout_at(deadline, container.stop_and_remove(Duration::ZERO, deadline))
@@ -892,7 +911,7 @@ async fn a_removed_container_leaves_exit_and_capture_errors() {
             .unwrap()
             .unwrap();
         let dir = tempfile::tempdir().unwrap();
-        let observation = participant.clone().observe(&[], &tasks, dir.path()).await;
+        let observation = participant.clone().observe(&tasks, dir.path()).await;
         timeout(Duration::from_secs(5), async {
             while observation.exit() == ParticipantExit::Running {
                 sleep(Duration::from_millis(25)).await;
@@ -929,9 +948,9 @@ async fn a_restarted_process_keeps_its_first_recorded_exit() {
     in_scope(&["p"], courier_bytes(), |scope, tasks| async move {
         let script =
             "for c in 3 4; do echo \"$c 0 1700000000.00000000$c\" >> $PANORAMIC_EXIT_DIR/svc; sleep 1; done; exec sleep 60";
-        let participant = Arc::new(start_participant(&scope, "p", &recipe(script)).await);
+        let participant = Arc::new(start_participant(&scope, "p", &recipe(script), EXIT_SPECS).await);
         let dir = tempfile::tempdir().unwrap();
-        let observation = participant.clone().observe(EXIT_SPECS, &tasks, dir.path()).await;
+        let observation = participant.clone().observe(&tasks, dir.path()).await;
         let svc = observation.process("svc").unwrap();
         let first = timeout(Duration::from_secs(5), svc.settled()).await.unwrap();
         assert_eq!(
@@ -965,6 +984,7 @@ async fn a_record_written_as_the_container_stops_is_read_after_it_stops() {
                 &scope,
                 "p",
                 &recipe("printf '256 15 1700000000.000000001' >> $PANORAMIC_EXIT_DIR/svc; exit 0"),
+                EXIT_SPECS,
             )
             .await,
         );
@@ -973,7 +993,7 @@ async fn a_record_written_as_the_container_stops_is_read_after_it_stops() {
             .unwrap()
             .unwrap();
         let dir = tempfile::tempdir().unwrap();
-        let observation = participant.clone().observe(EXIT_SPECS, &tasks, dir.path()).await;
+        let observation = participant.clone().observe(&tasks, dir.path()).await;
         let main = timeout(Duration::from_secs(5), observation.process("main").unwrap().settled())
             .await
             .unwrap();
@@ -1006,9 +1026,9 @@ async fn a_record_written_as_the_container_stops_is_read_after_it_stops() {
 #[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
 async fn a_container_that_stops_without_a_record_leaves_its_process_undetermined() {
     in_scope(&["p"], courier_bytes(), |scope, tasks| async move {
-        let participant = Arc::new(start_participant(&scope, "p", &recipe("exit 0")).await);
+        let participant = Arc::new(start_participant(&scope, "p", &recipe("exit 0"), EXIT_SPECS).await);
         let dir = tempfile::tempdir().unwrap();
-        let observation = participant.clone().observe(EXIT_SPECS, &tasks, dir.path()).await;
+        let observation = participant.clone().observe(&tasks, dir.path()).await;
         let main = timeout(Duration::from_secs(5), observation.process("main").unwrap().settled())
             .await
             .unwrap();
@@ -1063,9 +1083,9 @@ async fn wait_for_output_lines(observation: &ParticipantObservation, process: &s
 async fn a_processs_output_file_is_followed_while_it_runs_and_completed_after_it_exits() {
     in_scope(&["p"], courier_bytes(), |scope, tasks| async move {
         let script = "echo before > $PANORAMIC_LOG_DIR/output; while [ ! -f /airlock/p/shared/continue ]; do sleep 0.1; done; echo during >> $PANORAMIC_LOG_DIR/output; while [ ! -f /airlock/p/shared/finish ]; do sleep 0.1; done; printf last >> $PANORAMIC_LOG_DIR/output";
-        let participant = Arc::new(start_participant(&scope, "p", &recipe(script)).await);
+        let participant = Arc::new(start_participant(&scope, "p", &recipe(script), EXIT_SPECS).await);
         let dir = tempfile::tempdir().unwrap();
-        let observation = participant.clone().observe(EXIT_SPECS, &tasks, dir.path()).await;
+        let observation = participant.clone().observe(&tasks, dir.path()).await;
         wait_for_output_lines(&observation, "svc", 1).await;
         participant.exec(command(&["touch", "/airlock/p/shared/continue"]), Duration::from_secs(5)).await.unwrap();
         wait_for_output_lines(&observation, "svc", 2).await;
@@ -1085,9 +1105,9 @@ async fn a_processs_output_file_is_followed_while_it_runs_and_completed_after_it
 #[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
 async fn a_log_file_created_after_following_starts_is_followed_from_its_first_byte() {
     in_scope(&["p"], courier_bytes(), |scope, tasks| async move {
-        let participant = Arc::new(start_participant(&scope, "p", &recipe("exec sleep 60")).await);
+        let participant = Arc::new(start_participant(&scope, "p", &recipe("exec sleep 60"), EXIT_SPECS).await);
         let dir = tempfile::tempdir().unwrap();
-        let observation = participant.clone().observe(EXIT_SPECS, &tasks, dir.path()).await;
+        let observation = participant.clone().observe(&tasks, dir.path()).await;
         // Inspect the exec's command line before creating the file, so this exercises the missing-file retry.
         let script = "for p in /proc/[0-9]*/cmdline; do tr '\\000' ' ' < \"$p\" 2>/dev/null; echo; done";
         timeout(Duration::from_secs(10), async {
@@ -1139,6 +1159,7 @@ async fn the_output_of_a_process_that_exits_before_its_follower_starts_is_read_a
                 &scope,
                 "p",
                 &recipe("printf 'early\\nlast' > $PANORAMIC_LOG_DIR/output"),
+                EXIT_SPECS,
             )
             .await,
         );
@@ -1147,7 +1168,7 @@ async fn the_output_of_a_process_that_exits_before_its_follower_starts_is_read_a
             .unwrap()
             .unwrap();
         let dir = tempfile::tempdir().unwrap();
-        let observation = participant.clone().observe(EXIT_SPECS, &tasks, dir.path()).await;
+        let observation = participant.clone().observe(&tasks, dir.path()).await;
         wait_for_capture(&observation.outputs["svc"]).await;
         assert_eq!(
             std::fs::read(&observation.outputs["svc"].paths[0]).unwrap(),
@@ -1177,18 +1198,22 @@ async fn container_output_lines_are_tagged_with_their_process_and_stream() {
                     &scope,
                     "p",
                     &recipe(&format!("echo out; printf err >&2; sleep {delay}")),
+                    EXIT_SPECS,
                 )
                 .await,
             );
             let dir = tempfile::tempdir().unwrap();
-            let observation = participant.clone().observe(EXIT_SPECS, &tasks, dir.path()).await;
+            let observation = participant.clone().observe(&tasks, dir.path()).await;
             let output = &observation.outputs["main"];
             wait_for_capture(output).await;
             wait_for_capture(&observation.outputs["svc"]).await;
             assert_eq!(std::fs::read(&observation.outputs["svc"].paths[0]).unwrap(), b"");
             assert_eq!(
                 output.paths,
-                [observation.stdout_path.clone(), observation.stderr_path.clone()]
+                [
+                    observation.stdout_path.clone().unwrap(),
+                    observation.stderr_path.clone().unwrap()
+                ]
             );
             assert!(!dir.path().join("main.stdout.log").exists());
             assert_eq!(std::fs::read(&output.paths[0]).unwrap(), b"out\n");
@@ -1219,7 +1244,7 @@ async fn participants_ignoring_sigterm_are_stopped_concurrently_within_one_grace
         |scope, _tasks| async move {
             for name in ["a", "b", "c", "d", "e", "f"] {
                 let script = format!("trap '' TERM; echo ready > /airlock/{name}/shared/ready; exec sleep 60");
-                let participant = start_participant(&scope, name, &recipe(&script)).await;
+                let participant = start_participant(&scope, name, &recipe(&script), &[]).await;
                 wait_for_file(&participant, &format!("/airlock/{name}/shared/ready"), b"ready").await;
             }
             let started = Instant::now();
@@ -1257,7 +1282,7 @@ async fn interrupted_participant_creation_leaves_both_the_participant_and_scope_
         ReclaimResult::Unsettled,
         |scope, _tasks| async move {
             let participant = scope
-                .participant("p", &test_image(), &recipe("exec sleep 60"), &[], &BTreeMap::new())
+                .participant("p", &test_image(), &recipe("exec sleep 60"), &[], &[], &BTreeMap::new())
                 .unwrap();
             let cancel = CancellationToken::new();
             let created = tokio::sync::Notify::new();

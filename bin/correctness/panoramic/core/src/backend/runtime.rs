@@ -30,6 +30,7 @@ pub(crate) struct ParticipantRequest<'a> {
     pub(crate) name: &'a str,
     pub(crate) realization: Realization,
     pub(crate) recipe: Recipe,
+    pub(crate) specs: &'static [ProcessSpec],
     pub(crate) runner_host_ports: Vec<RunnerHostPort>,
     pub(crate) inputs: &'a NativeInputs,
     pub(crate) options: &'a BTreeMap<String, Value>,
@@ -44,16 +45,18 @@ pub(crate) trait RuntimeParticipant: Primitives {
     /// Starts the participant and returns the late facts known after start.
     async fn start(&self) -> Result<Vec<(LateFact, String)>, GenericError>;
     /// Follows the started participant's exits and output under the case's tasks.
-    async fn observe(
-        self: Arc<Self>, specs: &'static [ProcessSpec], tasks: &CaseTasks, output_dir: &Path,
-    ) -> ParticipantObservation;
+    async fn observe(self: Arc<Self>, tasks: &CaseTasks, output_dir: &Path) -> ParticipantObservation;
 }
 
 /// Operating systems supported by an implemented runtime.
 pub(crate) fn implemented(kind: RealizationKind) -> Option<&'static [Os]> {
     match kind {
         RealizationKind::LinuxContainer => Some(&[Os::Linux]),
-        RealizationKind::HostProcessGroup | RealizationKind::WindowsContainer | RealizationKind::KubernetesPod => None,
+        #[cfg(unix)]
+        RealizationKind::HostProcessGroup => Some(const { &[Os::host()] }),
+        #[cfg(not(unix))]
+        RealizationKind::HostProcessGroup => None,
+        RealizationKind::WindowsContainer | RealizationKind::KubernetesPod => None,
     }
 }
 
@@ -80,8 +83,36 @@ pub(crate) async fn prepare(
                 .map_err(|error| format!("failed to prepare isolation scope '{id}': {error:#}"))?;
             Ok(Box::new(scope))
         }
-        RealizationKind::HostProcessGroup | RealizationKind::WindowsContainer | RealizationKind::KubernetesPod => {
+        RealizationKind::HostProcessGroup => {
+            #[cfg(unix)]
+            {
+                Ok(Box::new(super::host_process::prepare(
+                    scope,
+                    participants,
+                    &control.ledger,
+                )?))
+            }
+            #[cfg(not(unix))]
+            {
+                Err("host process groups need a Unix runner host".into())
+            }
+        }
+        RealizationKind::WindowsContainer | RealizationKind::KubernetesPod => {
             Err(format!("panoramic cannot prepare {} scopes natively", kind.name()))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_runtime_support_matches_the_runner_platform() {
+        let host = [Os::host()];
+        assert_eq!(
+            implemented(RealizationKind::HostProcessGroup),
+            if cfg!(unix) { Some(host.as_slice()) } else { None }
+        );
     }
 }

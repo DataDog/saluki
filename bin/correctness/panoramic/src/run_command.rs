@@ -1031,7 +1031,7 @@ mod tests {
             verified,
             native,
         };
-        // Host-process execution fails at lifecycle prepare, after the verified bindings reach the report.
+        // The fixture type is registered only for planning, so runtime preparation fails after the bindings are reported.
         assert_eq!(
             report_run(prepared, &cmd, &console).await,
             ExitCode::from(EXIT_HARNESS_ERROR)
@@ -1066,10 +1066,14 @@ mod tests {
         assert_eq!(report["tests"][0]["error"]["kind"], "setup");
         assert_eq!(
             report["tests"][0]["error"]["message"],
-            format!(
-                "panoramic cannot create host-process-group participants natively: 'adp' on {}",
-                Os::host().name()
-            )
+            if cfg!(unix) {
+                "participant 'adp' has unregistered type 'local-files'".to_string()
+            } else {
+                format!(
+                    "panoramic cannot create host-process-group participants natively: 'adp' on {}",
+                    Os::host().name()
+                )
+            }
         );
     }
 

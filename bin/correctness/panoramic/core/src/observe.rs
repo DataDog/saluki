@@ -22,11 +22,11 @@ use crate::{
 pub struct ExitStatus {
     /// The exit code. Docker represents signal deaths as 128 plus the signal number.
     pub code: Option<i32>,
-    /// The signal from an exit record, set for a signal death instead of `code`.
+    /// The terminating signal, set for a signal death instead of `code`.
     pub signal: Option<i32>,
     /// Runtime error accompanying a container exit.
     pub reason: Option<String>,
-    /// Timestamp on the container's clock, or `None` for container waits. Never compare it with host time.
+    /// Timestamp on the container's clock, or `None` for waits. Never compare it with host time.
     pub recorded_at: Option<SystemTime>,
 }
 
@@ -57,7 +57,7 @@ pub enum ExitObservation {
     Undetermined(String),
 }
 
-/// A process's view of its container wait or supervisor-written exit record.
+/// A process's view of its declared exit channel.
 #[derive(Clone)]
 pub(crate) enum ProcessObservation {
     /// Shares the participant's container exit observation.
@@ -67,6 +67,12 @@ pub(crate) enum ProcessObservation {
         status: watch::Receiver<ExitObservation>,
         refresh: Option<Arc<exit_record::RecordRefresh>>,
     },
+    /// Receives the spawned process's wait result from its reaper.
+    #[cfg_attr(
+        not(any(unix, test)),
+        expect(dead_code, reason = "Host process reapers run on Unix.")
+    )]
+    Wait(watch::Receiver<ExitObservation>),
 }
 
 impl ProcessObservation {
@@ -89,11 +95,14 @@ impl ProcessObservation {
                             "container exit code {code} is outside the i32 range"
                         )),
                     },
+                    ParticipantExit::Ended => {
+                        ExitObservation::Undetermined("participant ended without a container exit status".into())
+                    }
                     ParticipantExit::Undetermined { reason } => ExitObservation::Undetermined(reason.clone()),
                 };
                 (observation, receiver.has_changed().is_err())
             }
-            Self::Record { status: receiver, .. } => {
+            Self::Record { status: receiver, .. } | Self::Wait(receiver) => {
                 let current = receiver.borrow();
                 (current.clone(), receiver.has_changed().is_err())
             }
@@ -142,6 +151,7 @@ impl ProcessObservation {
         let source = match self {
             Self::Container(_) => ExitSource::Container,
             Self::Record { .. } => ExitSource::Record,
+            Self::Wait(_) => ExitSource::Process,
         };
         match self.current() {
             ExitObservation::Running => ProcessExitReport::Running { source },
@@ -167,7 +177,7 @@ impl ProcessObservation {
                 Self::Container(receiver) => {
                     let _ = receiver.changed().await;
                 }
-                Self::Record { status: receiver, .. } => {
+                Self::Record { status: receiver, .. } | Self::Wait(receiver) => {
                     let _ = receiver.changed().await;
                 }
             }
@@ -182,6 +192,9 @@ pub(crate) enum ParticipantExit {
     Running,
     /// The participant stopped with the reported code and optional Docker error.
     Exited { code: i64, error: Option<String> },
+    /// Every process in the participant has an observed exit.
+    #[cfg_attr(not(any(unix, test)), expect(dead_code, reason = "Host process groups run on Unix."))]
+    Ended,
     /// The wait failed, leaving the participant's running state unknown.
     Undetermined { reason: String },
 }
@@ -201,8 +214,8 @@ pub(crate) enum Capture {
 pub(crate) struct ParticipantObservation {
     exit_rx: watch::Receiver<ParticipantExit>,
     capture_rx: watch::Receiver<Capture>,
-    pub stdout_path: PathBuf,
-    pub stderr_path: PathBuf,
+    pub stdout_path: Option<PathBuf>,
+    pub stderr_path: Option<PathBuf>,
     pub outputs: BTreeMap<&'static str, ProcessOutput>,
     pub lines: OutputLines,
     pub processes: BTreeMap<&'static str, ProcessObservation>,
@@ -251,8 +264,22 @@ impl ParticipantObservation {
         Self {
             exit_rx,
             capture_rx,
-            stdout_path,
-            stderr_path,
+            stdout_path: Some(stdout_path),
+            stderr_path: Some(stderr_path),
+            processes: BTreeMap::new(),
+            outputs: BTreeMap::new(),
+            lines: OutputLines::default(),
+        }
+    }
+
+    /// Combines host process observations with per-process output captures.
+    #[cfg_attr(not(any(unix, test)), expect(dead_code, reason = "Host process groups run on Unix."))]
+    pub(crate) fn host(exit_rx: watch::Receiver<ParticipantExit>) -> Self {
+        Self {
+            exit_rx,
+            capture_rx: watch::channel(Capture::Complete).1,
+            stdout_path: None,
+            stderr_path: None,
             processes: BTreeMap::new(),
             outputs: BTreeMap::new(),
             lines: OutputLines::default(),
@@ -262,8 +289,10 @@ impl ParticipantObservation {
     /// Reads the retained output prefix; overflow errors name the files that still receive the full output.
     pub(crate) fn lines_since(&self, cursor: usize) -> Result<(Vec<output::OutputLine>, usize), String> {
         self.lines.since(cursor).map_err(|reason| {
-            let paths = [&self.stdout_path, &self.stderr_path]
-                .into_iter()
+            let paths = self
+                .stdout_path
+                .iter()
+                .chain(self.stderr_path.iter())
                 .chain(self.outputs.values().flat_map(|output| &output.paths))
                 .collect::<std::collections::BTreeSet<_>>()
                 .into_iter()
@@ -284,8 +313,13 @@ impl ParticipantObservation {
                 let first = output.paths.first().cloned();
                 let output = match spec.output {
                     OutputChannel::Container => ProcessOutputReport {
-                        stdout: Some(self.stdout_path.clone()),
-                        stderr: Some(self.stderr_path.clone()),
+                        stdout: self.stdout_path.clone(),
+                        stderr: self.stderr_path.clone(),
+                        merged: None,
+                    },
+                    OutputChannel::Pipes => ProcessOutputReport {
+                        stdout: first,
+                        stderr: output.paths.get(1).cloned(),
                         merged: None,
                     },
                     OutputChannel::File { stream, .. } => match stream {
@@ -312,13 +346,19 @@ impl ParticipantObservation {
             .collect()
     }
 
-    /// Waits for final output reads only when the participant's exit has already been observed.
+    /// Finishes output for an exited participant or each exited host process.
     pub(crate) async fn finish_output(&self) {
-        if !matches!(self.exit(), ParticipantExit::Exited { .. }) {
-            return;
-        }
-        let captures =
-            std::iter::once(self.capture_rx.clone()).chain(self.outputs.values().map(|output| output.capture.clone()));
+        let participant_exited = matches!(self.exit(), ParticipantExit::Exited { .. } | ParticipantExit::Ended);
+        let captures = std::iter::once(self.capture_rx.clone())
+            .filter(|_| participant_exited)
+            .chain(self.outputs.iter().filter_map(|(name, output)| {
+                // Drain exited host processes independently; their siblings may still be running.
+                let host_exited = self.processes.get(name).is_some_and(|process| {
+                    matches!(process, ProcessObservation::Wait(_))
+                        && matches!(process.current(), ExitObservation::Exited(_))
+                });
+                (participant_exited || host_exited).then(|| output.capture.clone())
+            }));
         futures::future::join_all(captures.map(|mut capture| async move {
             while capture_state(&capture) == Capture::Following {
                 if capture.changed().await.is_err() {
@@ -335,12 +375,38 @@ impl ParticipantObservation {
     }
 
     /// Resolves only when the participant is known to have exited.
-    pub(crate) async fn stopped(&self) -> ContainerExit {
+    pub(crate) async fn stopped(&self) -> String {
         let mut receiver = self.exit_rx.clone();
         loop {
-            let current = self.exit();
-            if let ParticipantExit::Exited { code, error } = current {
-                return ContainerExit { code, error };
+            match self.exit() {
+                ParticipantExit::Exited { code, error } => {
+                    let docker = error.map(|error| format!(" (Docker: {error})")).unwrap_or_default();
+                    return format!("exited with code {code}{docker}");
+                }
+                ParticipantExit::Ended => {
+                    let statuses = self
+                        .processes
+                        .iter()
+                        .map(|(name, process)| {
+                            let status = match process.current() {
+                                ExitObservation::Exited(ExitStatus { code: Some(code), .. }) => {
+                                    format!("exited with code {code}")
+                                }
+                                ExitObservation::Exited(ExitStatus {
+                                    signal: Some(signal), ..
+                                }) => {
+                                    format!("was killed by signal {signal}")
+                                }
+                                ExitObservation::Exited(_) => "exited without a code or signal".into(),
+                                ExitObservation::Undetermined(reason) => format!("has an undetermined exit ({reason})"),
+                                ExitObservation::Running => "is still running".into(),
+                            };
+                            format!("process '{name}' {status}")
+                        })
+                        .collect::<Vec<_>>();
+                    return format!("ended: {}", statuses.join(", "));
+                }
+                ParticipantExit::Running | ParticipantExit::Undetermined { .. } => {}
             }
             if receiver.changed().await.is_err() {
                 // Channel closure leaves the participant's stop unconfirmed.
@@ -456,8 +522,8 @@ mod tests {
         async fn follow(&self, stream: impl Stream<Item = Result<OutputChunk, GenericError>>) {
             follow_output(
                 stream,
-                self.observation.stdout_path.clone(),
-                self.observation.stderr_path.clone(),
+                self.observation.stdout_path.clone().unwrap(),
+                self.observation.stderr_path.clone().unwrap(),
                 self.capture_tx.clone(),
                 self.observation.lines.clone(),
                 "p".into(),
@@ -465,6 +531,110 @@ mod tests {
             )
             .await;
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn host_output_finishes_when_process_waits_settle_before_the_group_end_task_runs() {
+        let (_exit_tx, exit_rx) = watch::channel(ParticipantExit::Running);
+        let mut observation = ParticipantObservation::host(exit_rx);
+        let (_process_tx, process_rx) = watch::channel(ExitObservation::Exited(ExitStatus {
+            code: Some(0),
+            signal: None,
+            reason: None,
+            recorded_at: None,
+        }));
+        let (capture_tx, capture_rx) = watch::channel(Capture::Following);
+        observation
+            .processes
+            .insert("main", ProcessObservation::Wait(process_rx));
+        observation.outputs.insert(
+            "main",
+            ProcessOutput {
+                capture: capture_rx,
+                paths: vec![],
+            },
+        );
+        let start = Instant::now();
+        let (finished, ()) = tokio::join!(
+            async {
+                observation.finish_output().await;
+                start.elapsed()
+            },
+            async {
+                sleep(Duration::from_secs(1)).await;
+                capture_tx.send_replace(Capture::Complete);
+            }
+        );
+        assert_eq!(finished, Duration::from_secs(1));
+        assert_eq!(observation.outputs["main"].current(), Capture::Complete);
+    }
+
+    #[tokio::test]
+    async fn an_exited_host_process_drains_both_pipes_while_its_sibling_runs() {
+        // Requiring every host process to exit let task shutdown discard an exited process's pending output.
+        let (_exit_tx, exit_rx) = watch::channel(ParticipantExit::Running);
+        let mut observation = ParticipantObservation::host(exit_rx);
+        let (_, exited_rx) = watch::channel(ExitObservation::Exited(ExitStatus {
+            code: Some(0),
+            signal: None,
+            reason: None,
+            recorded_at: None,
+        }));
+        let (_running_tx, running_rx) = watch::channel(ExitObservation::Running);
+        observation
+            .processes
+            .insert("main", ProcessObservation::Wait(exited_rx));
+        observation
+            .processes
+            .insert("worker", ProcessObservation::Wait(running_rx));
+        let dir = tempfile::tempdir().unwrap();
+        let stdout = dir.path().join("main.stdout.log");
+        let stderr = dir.path().join("main.stderr.log");
+        let (capture_tx, capture_rx) = watch::channel(Capture::Following);
+        let (_worker_tx, worker_rx) = watch::channel(Capture::Following);
+        observation.outputs.insert(
+            "main",
+            ProcessOutput {
+                capture: capture_rx,
+                paths: vec![stdout.clone(), stderr.clone()],
+            },
+        );
+        observation.outputs.insert(
+            "worker",
+            ProcessOutput {
+                capture: worker_rx,
+                paths: vec![],
+            },
+        );
+        let tasks = CaseTasks::new(&CancellationToken::new());
+        let (tx, rx) = mpsc::unbounded();
+        tasks.spawn(follow_output(
+            rx,
+            stdout.clone(),
+            stderr.clone(),
+            capture_tx,
+            observation.lines.clone(),
+            "p".into(),
+            Some("main"),
+        ));
+        let mut finishing = std::pin::pin!(observation.finish_output());
+        std::future::poll_fn(|cx| {
+            assert!(finishing.as_mut().poll(cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        tx.unbounded_send(Ok(OutputChunk::Stdout(b"last stdout\n".as_slice().into())))
+            .unwrap();
+        tx.unbounded_send(Ok(OutputChunk::Stderr(b"last stderr\n".as_slice().into())))
+            .unwrap();
+        drop(tx);
+        timeout(Duration::from_secs(5), finishing).await.unwrap();
+        assert_eq!(tasks.stop_all(Instant::now() + TASK_STOP_TIME).await, 0);
+        assert_eq!(observation.outputs["main"].current(), Capture::Complete);
+        assert_eq!(observation.outputs["worker"].current(), Capture::Following);
+        assert_eq!(observation.processes["worker"].current(), ExitObservation::Running);
+        assert_eq!(std::fs::read(stdout).unwrap(), b"last stdout\n");
+        assert_eq!(std::fs::read(stderr).unwrap(), b"last stderr\n");
     }
 
     #[test]
@@ -528,23 +698,204 @@ mod tests {
                 json!({"state": "exited", "source": "record", "signal": 9}),
             ),
             (
+                ExitObservation::Exited(ExitStatus {
+                    code: Some(3),
+                    signal: None,
+                    recorded_at: None,
+                    reason: None,
+                }),
+                json!({"state": "exited", "source": "record", "code": 3}),
+            ),
+            (
                 ExitObservation::Undetermined("record missing".into()),
                 json!({"state": "undetermined", "source": "record", "reason": "record missing"}),
             ),
         ] {
-            let (_tx, rx) = watch::channel(exit);
-            assert_eq!(
-                serde_json::to_value(
+            for source in ["record", "process"] {
+                let (_tx, rx) = watch::channel(exit.clone());
+                let observation = if source == "record" {
                     ProcessObservation::Record {
                         status: rx,
-                        refresh: None
+                        refresh: None,
                     }
-                    .snapshot()
-                )
-                .unwrap(),
-                expected
+                } else {
+                    ProcessObservation::Wait(rx)
+                };
+                let mut expected = expected.clone();
+                expected["source"] = json!(source);
+                assert_eq!(serde_json::to_value(observation.snapshot()).unwrap(), expected);
+            }
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn process_waits_settle_with_the_reapers_status_and_preserve_it_after_closure() {
+        for exit in [
+            ExitObservation::Exited(ExitStatus {
+                code: Some(3),
+                signal: None,
+                reason: None,
+                recorded_at: None,
+            }),
+            ExitObservation::Exited(ExitStatus {
+                code: None,
+                signal: Some(9),
+                reason: None,
+                recorded_at: None,
+            }),
+            ExitObservation::Undetermined("waiting for process 'main' failed: wait error".into()),
+        ] {
+            let (tx, rx) = watch::channel(ExitObservation::Running);
+            let process = ProcessObservation::Wait(rx);
+            assert_eq!(process.current(), ExitObservation::Running);
+            let started = Instant::now();
+            let (_, observed) = tokio::join!(
+                async {
+                    sleep(Duration::from_secs(1)).await;
+                    tx.send_replace(exit.clone());
+                    drop(tx);
+                },
+                process.settled(),
+            );
+            assert_eq!(observed, exit);
+            assert_eq!(process.current(), exit);
+            assert_eq!(started.elapsed(), Duration::from_secs(1));
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_host_stop_description_waits_for_the_group_end_and_names_every_process_status() {
+        let (tx, rx) = watch::channel(ParticipantExit::Running);
+        let mut observation = ParticipantObservation::host(rx);
+        for (name, code, signal) in [("y", None, Some(9)), ("x", Some(3), None)] {
+            let (_, rx) = watch::channel(ExitObservation::Exited(ExitStatus {
+                code,
+                signal,
+                reason: None,
+                recorded_at: None,
+            }));
+            observation.processes.insert(name, ProcessObservation::Wait(rx));
+        }
+        assert!(timeout(Duration::from_secs(1), observation.stopped()).await.is_err());
+        tx.send_replace(ParticipantExit::Ended);
+        drop(tx);
+        assert_eq!(
+            observation.stopped().await,
+            "ended: process 'x' exited with code 3, process 'y' was killed by signal 9"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_ended_host_waits_for_every_process_output_to_flush() {
+        let (_, rx) = watch::channel(ParticipantExit::Ended);
+        let mut observation = ParticipantObservation::host(rx);
+        let (first_tx, first_rx) = watch::channel(Capture::Following);
+        let (last_tx, last_rx) = watch::channel(Capture::Following);
+        for (name, capture) in [("first", first_rx), ("last", last_rx)] {
+            observation
+                .outputs
+                .insert(name, ProcessOutput { capture, paths: vec![] });
+        }
+        assert_eq!(observation.capture(), Capture::Complete);
+        let started = Instant::now();
+        let (finished_after, ()) = tokio::join!(
+            async {
+                observation.finish_output().await;
+                started.elapsed()
+            },
+            async {
+                sleep(Duration::from_secs(1)).await;
+                first_tx.send_replace(Capture::Complete);
+                sleep(Duration::from_secs(1)).await;
+                last_tx.send_replace(Capture::Complete);
+            },
+        );
+        assert_eq!(finished_after, Duration::from_secs(2));
+        assert!(observation
+            .outputs
+            .values()
+            .all(|output| output.current() == Capture::Complete));
+    }
+
+    #[test]
+    fn host_reports_use_each_processs_two_pipe_paths_and_process_exit_source() {
+        use crate::participant::ExitChannel;
+        let (_, rx) = watch::channel(ParticipantExit::Ended);
+        let mut observation = ParticipantObservation::host(rx);
+        let specs = ["first", "last"].map(|name| ProcessSpec {
+            name,
+            exit: ExitChannel::Wait,
+            output: OutputChannel::Pipes,
+        });
+        for spec in specs {
+            let (_, rx) = watch::channel(ExitObservation::Exited(ExitStatus {
+                code: Some(3),
+                signal: None,
+                reason: None,
+                recorded_at: None,
+            }));
+            observation.processes.insert(spec.name, ProcessObservation::Wait(rx));
+            observation.outputs.insert(
+                spec.name,
+                ProcessOutput {
+                    capture: watch::channel(Capture::Complete).1,
+                    paths: vec![
+                        format!("p/{}.stdout.log", spec.name).into(),
+                        format!("p/{}.stderr.log", spec.name).into(),
+                    ],
+                },
             );
         }
+        assert!(observation.stdout_path.is_none());
+        assert!(observation.stderr_path.is_none());
+        assert_eq!(observation.capture(), Capture::Complete);
+        let reports = observation.snapshot(&specs);
+        assert_eq!(
+            reports.iter().map(|report| report.name.as_str()).collect::<Vec<_>>(),
+            ["first", "last"]
+        );
+        for report in reports {
+            assert_eq!(
+                report.exit,
+                ProcessExitReport::Exited {
+                    source: ExitSource::Process,
+                    code: Some(3),
+                    signal: None,
+                    reason: None,
+                }
+            );
+            assert_eq!(
+                report.output,
+                ProcessOutputReport {
+                    stdout: Some(format!("p/{}.stdout.log", report.name).into()),
+                    stderr: Some(format!("p/{}.stderr.log", report.name).into()),
+                    merged: None,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn host_overflow_diagnostics_name_only_the_existing_process_capture_paths() {
+        let (_, rx) = watch::channel(ParticipantExit::Ended);
+        let mut observation = ParticipantObservation::host(rx);
+        observation.lines = OutputLines::new(1);
+        observation.outputs.insert(
+            "main",
+            ProcessOutput {
+                capture: watch::channel(Capture::Complete).1,
+                paths: vec!["p/main.stdout.log".into(), "p/main.stderr.log".into()],
+            },
+        );
+        observation.lines.push(output::OutputLine {
+            participant: "p".into(),
+            process: Some("main"),
+            stream: OutputStream::Stdout,
+            received: SystemTime::now(),
+            text: "too long".into(),
+        });
+        assert_eq!(observation.lines_since(0).unwrap_err(),
+            "output capture failed: in-memory output exceeded the 1-byte line-text bound; see output files: p/main.stderr.log, p/main.stdout.log");
     }
 
     #[test]
@@ -651,6 +1002,10 @@ mod tests {
                 ExitObservation::Undetermined("wait failed".into()),
             ),
             (
+                ParticipantExit::Ended,
+                ExitObservation::Undetermined("participant ended without a container exit status".into()),
+            ),
+            (
                 ParticipantExit::Exited {
                     code: i64::MAX,
                     error: None,
@@ -686,13 +1041,15 @@ mod tests {
     async fn a_closed_process_channel_without_a_status_is_undetermined() {
         let (container_tx, container_rx) = watch::channel(ParticipantExit::Running);
         let (record_tx, record_rx) = watch::channel(ExitObservation::Running);
-        drop((container_tx, record_tx));
+        let (wait_tx, wait_rx) = watch::channel(ExitObservation::Running);
+        drop((container_tx, record_tx, wait_tx));
         for observation in [
             ProcessObservation::Container(container_rx),
             ProcessObservation::Record {
                 status: record_rx,
                 refresh: None,
             },
+            ProcessObservation::Wait(wait_rx),
         ] {
             let expected = ExitObservation::Undetermined("exit observation ended without a status".into());
             assert_eq!(observation.current(), expected);
@@ -717,8 +1074,8 @@ mod tests {
             fixture.exit_tx.send_replace(exit.clone());
             drop(fixture.exit_tx);
             match fixture.observation.exit() {
-                ParticipantExit::Exited { code, error } => {
-                    assert_eq!(fixture.observation.stopped().await, ContainerExit { code, error });
+                ParticipantExit::Exited { .. } => {
+                    assert_eq!(fixture.observation.stopped().await, "exited with code 3");
                     assert_eq!(
                         process.current(),
                         ExitObservation::Exited(ExitStatus {
@@ -733,7 +1090,9 @@ mod tests {
                     let expected = match exit {
                         ParticipantExit::Running => "exit observation ended without a status",
                         ParticipantExit::Undetermined { .. } => "wait failed",
-                        ParticipantExit::Exited { .. } => panic!("a reported exit must stay settled"),
+                        ParticipantExit::Exited { .. } | ParticipantExit::Ended => {
+                            panic!("a reported exit must stay settled")
+                        }
                     };
                     assert_eq!(reason, expected);
                     assert_eq!(process.current(), ExitObservation::Undetermined(reason));
@@ -742,6 +1101,7 @@ mod tests {
                         .is_err());
                 }
                 ParticipantExit::Running => panic!("a closed channel must settle"),
+                ParticipantExit::Ended => panic!("a container must report its own exit"),
             }
         }
     }
@@ -790,7 +1150,11 @@ mod tests {
                     error: error.clone()
                 }
             );
-            assert_eq!(fixture.observation.stopped().await, ContainerExit { code, error });
+            let docker = error.map(|error| format!(" (Docker: {error})")).unwrap_or_default();
+            assert_eq!(
+                fixture.observation.stopped().await,
+                format!("exited with code {code}{docker}")
+            );
         }
     }
 
@@ -816,8 +1180,8 @@ mod tests {
         let tasks = CaseTasks::new(&CancellationToken::new());
         let following = tasks.spawn(follow_output(
             rx,
-            fixture.observation.stdout_path.clone(),
-            fixture.observation.stderr_path.clone(),
+            fixture.observation.stdout_path.clone().unwrap(),
+            fixture.observation.stderr_path.clone().unwrap(),
             fixture.capture_tx.clone(),
             fixture.observation.lines.clone(),
             "p".into(),
@@ -829,7 +1193,11 @@ mod tests {
             .unwrap();
         timeout(Duration::from_secs(5), async {
             loop {
-                if std::fs::read(&fixture.observation.stdout_path).ok().as_deref() == Some(stdout) {
+                if std::fs::read(fixture.observation.stdout_path.as_ref().unwrap())
+                    .ok()
+                    .as_deref()
+                    == Some(stdout)
+                {
                     break;
                 }
                 sleep(Duration::from_millis(10)).await;
@@ -845,8 +1213,14 @@ mod tests {
             timeout(Duration::from_secs(5), following).await.unwrap().unwrap(),
             Some(())
         );
-        assert_eq!(std::fs::read(&fixture.observation.stdout_path).unwrap(), stdout);
-        assert_eq!(std::fs::read(&fixture.observation.stderr_path).unwrap(), stderr);
+        assert_eq!(
+            std::fs::read(fixture.observation.stdout_path.as_ref().unwrap()).unwrap(),
+            stdout
+        );
+        assert_eq!(
+            std::fs::read(fixture.observation.stderr_path.as_ref().unwrap()).unwrap(),
+            stderr
+        );
         assert_eq!(fixture.observation.capture(), Capture::Complete);
         assert_eq!(tasks.stop_all(Instant::now() + TASK_STOP_TIME).await, 0);
     }
@@ -860,8 +1234,8 @@ mod tests {
                     Ok(OutputChunk::Stdout(b"out\n".as_slice().into())),
                     Ok(OutputChunk::Stderr(b"err".as_slice().into())),
                 ]),
-                fixture.observation.stdout_path.clone(),
-                fixture.observation.stderr_path.clone(),
+                fixture.observation.stdout_path.clone().unwrap(),
+                fixture.observation.stderr_path.clone().unwrap(),
                 fixture.capture_tx.clone(),
                 fixture.observation.lines.clone(),
                 "p".into(),
@@ -887,8 +1261,14 @@ mod tests {
     async fn both_output_files_exist_when_the_container_prints_nothing() {
         let fixture = Fixture::new();
         fixture.follow(stream::empty()).await;
-        assert_eq!(std::fs::read(&fixture.observation.stdout_path).unwrap(), b"");
-        assert_eq!(std::fs::read(&fixture.observation.stderr_path).unwrap(), b"");
+        assert_eq!(
+            std::fs::read(fixture.observation.stdout_path.as_ref().unwrap()).unwrap(),
+            b""
+        );
+        assert_eq!(
+            std::fs::read(fixture.observation.stderr_path.as_ref().unwrap()).unwrap(),
+            b""
+        );
         assert_eq!(fixture.observation.capture(), Capture::Complete);
     }
 
@@ -908,14 +1288,23 @@ mod tests {
                 reason: "log connection lost".into()
             }
         );
-        assert_eq!(std::fs::read(&fixture.observation.stdout_path).unwrap(), b"before\n");
-        assert_eq!(std::fs::read(&fixture.observation.stderr_path).unwrap(), b"");
+        assert_eq!(
+            std::fs::read(fixture.observation.stdout_path.as_ref().unwrap()).unwrap(),
+            b"before\n"
+        );
+        assert_eq!(
+            std::fs::read(fixture.observation.stderr_path.as_ref().unwrap()).unwrap(),
+            b""
+        );
     }
 
     #[tokio::test]
     async fn a_log_stream_that_ends_completes_capture() {
         let fixture = Fixture::new();
-        for path in [&fixture.observation.stdout_path, &fixture.observation.stderr_path] {
+        for path in [
+            fixture.observation.stdout_path.as_ref().unwrap(),
+            fixture.observation.stderr_path.as_ref().unwrap(),
+        ] {
             std::fs::write(path, b"old output").unwrap();
         }
         fixture
@@ -925,8 +1314,14 @@ mod tests {
             ]))
             .await;
         assert_eq!(fixture.observation.capture(), Capture::Complete);
-        assert_eq!(std::fs::read(&fixture.observation.stdout_path).unwrap(), b"new\n");
-        assert_eq!(std::fs::read(&fixture.observation.stderr_path).unwrap(), b"error\n");
+        assert_eq!(
+            std::fs::read(fixture.observation.stdout_path.as_ref().unwrap()).unwrap(),
+            b"new\n"
+        );
+        assert_eq!(
+            std::fs::read(fixture.observation.stderr_path.as_ref().unwrap()).unwrap(),
+            b"error\n"
+        );
     }
 
     #[tokio::test]
@@ -934,9 +1329,9 @@ mod tests {
         for stderr in [false, true] {
             let fixture = Fixture::new();
             let path = if stderr {
-                &fixture.observation.stderr_path
+                fixture.observation.stderr_path.as_ref().unwrap()
             } else {
-                &fixture.observation.stdout_path
+                fixture.observation.stdout_path.as_ref().unwrap()
             };
             std::fs::create_dir(path).unwrap();
             fixture

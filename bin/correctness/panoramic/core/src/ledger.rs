@@ -73,17 +73,26 @@ enum Resource {
     Namespace { name: String, client: Client },
     /// A host directory whose removal depends on earlier results in the reclaim walk.
     Directory(PathBuf),
+    #[cfg_attr(
+        not(unix),
+        expect(dead_code, reason = "Unix host scopes register their state directories.")
+    )]
+    HostScope(PathBuf),
 }
 
 /// Backend-owned resources needed to stop and remove a participant.
 pub(crate) enum ParticipantRemoval {
     Container(ContainerRef),
+    #[cfg(unix)]
+    ProcessGroup(crate::backend::host_process::ProcessGroup),
 }
 
 impl ParticipantRemoval {
     async fn stop(self, grace: Duration, deadline: Instant) -> Result<(), GenericError> {
         match self {
             Self::Container(container) => container.stop_and_remove(grace, deadline).await,
+            #[cfg(unix)]
+            Self::ProcessGroup(group) => group.stop(grace, deadline).await,
         }
     }
 }
@@ -121,6 +130,31 @@ impl Resource {
                     Err(e) => Err(generic_error!("Failed to delete namespace '{}': {}", name, e)),
                 }
             }
+            Self::HostScope(path) => {
+                match std::fs::remove_dir_all(&path) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        return Err(generic_error!(error).context(format!("Failed to remove '{}'", path.display())))
+                    }
+                }
+                if let Some(parent) = path.parent() {
+                    match std::fs::remove_dir(parent) {
+                        Ok(()) => {}
+                        Err(error)
+                            if matches!(
+                                error.kind(),
+                                std::io::ErrorKind::NotFound | std::io::ErrorKind::DirectoryNotEmpty
+                            ) => {}
+                        Err(error) => {
+                            return Err(
+                                generic_error!(error).context(format!("Failed to remove '{}'", parent.display()))
+                            )
+                        }
+                    }
+                }
+                Ok(None)
+            }
             Self::Directory(path) => match std::fs::remove_dir_all(&path) {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
                 removed => removed
@@ -141,6 +175,7 @@ impl fmt::Debug for Resource {
             Self::Process(process) => f.debug_tuple("Process").field(process).finish(),
             Self::Namespace { name, .. } => f.debug_struct("Namespace").field("name", name).finish_non_exhaustive(),
             Self::Directory(path) => f.debug_tuple("Directory").field(path).finish(),
+            Self::HostScope(path) => f.debug_tuple("HostScope").field(path).finish(),
         }
     }
 }
@@ -154,7 +189,7 @@ impl fmt::Display for Resource {
             Self::IsolationGroup(id) => write!(f, "isolation_group:{}", id),
             Self::Process(process) => write!(f, "process:{}", process.name()),
             Self::Namespace { name, .. } => write!(f, "namespace:{}", name),
-            Self::Directory(path) => write!(f, "directory:{}", path.display()),
+            Self::Directory(path) | Self::HostScope(path) => write!(f, "directory:{}", path.display()),
         }
     }
 }
@@ -200,7 +235,7 @@ async fn remove_entry(
         _ => None,
     };
     let removal = match (&resource, kept_by) {
-        (Resource::Directory(_), Some(kept_by)) => Removal::Settled((
+        (Resource::Directory(_) | Resource::HostScope(_), Some(kept_by)) => Removal::Settled((
             ReclaimResult::Leaked,
             Some(format!("kept because {} was not reclaimed", kept_by)),
         )),
@@ -243,6 +278,11 @@ impl ResourceLedger {
     /// Registers the native scope before preparation.
     pub(crate) fn linux_scope(&self, backends: Arc<RunBackends>, scope: ScopeLayout) {
         self.register(Resource::LinuxScope { backends, scope });
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn host_scope(&self, path: PathBuf) {
+        self.register(Resource::HostScope(path));
     }
 
     /// Registers a participant before its creation request.
@@ -298,7 +338,7 @@ impl ResourceLedger {
                 Resource::LinuxScope { scope, .. } => scope.id() == name,
                 Resource::Participant { name: participant, .. } => format!("participant:{participant}") == name,
                 Resource::Namespace { name: namespace, .. } => namespace == name,
-                Resource::Process(_) | Resource::Directory(_) => false,
+                Resource::Process(_) | Resource::Directory(_) | Resource::HostScope(_) => false,
             };
             if named {
                 entry.unsettled = true;

@@ -15,10 +15,10 @@ use tokio::{fs::File, io::AsyncWriteExt as _, sync::watch, time::timeout};
 use super::{exit_state, Capture, ParticipantExit};
 use crate::participant::{OutputChannel, OutputStream};
 
-/// Names the host file for a file output channel; container output uses the participant's shared files.
+/// Names the host file for a single-file output channel.
 pub(crate) fn host_output_file(process: &str, output: OutputChannel) -> Option<String> {
     match output {
-        OutputChannel::Container => None,
+        OutputChannel::Container | OutputChannel::Pipes => None,
         OutputChannel::File { stream, .. } => Some(match stream {
             OutputStream::Stdout => format!("{process}.stdout.log"),
             OutputStream::Stderr => format!("{process}.stderr.log"),
@@ -309,7 +309,7 @@ impl FileOutput {
 async fn wait_for_exit(exit: &mut watch::Receiver<ParticipantExit>, accept_unknown: bool) {
     loop {
         match exit_state(exit) {
-            ParticipantExit::Exited { .. } => return,
+            ParticipantExit::Exited { .. } | ParticipantExit::Ended => return,
             ParticipantExit::Undetermined { .. } if accept_unknown => return,
             _ => {}
         }

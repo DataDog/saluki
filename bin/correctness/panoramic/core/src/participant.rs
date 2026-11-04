@@ -147,6 +147,8 @@ pub struct ProcessSpec {
 /// The source of a process's exit status.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExitChannel {
+    /// The wait result for a process spawned in a host process group.
+    Wait,
     /// The container's exit, owned by at most one process per participant.
     Container,
     /// A supervisor appends one line per exit to a file in the participant's exit directory.
@@ -165,6 +167,8 @@ pub enum ExitChannel {
 /// The source of a process's output.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OutputChannel {
+    /// Separate stdout and stderr pipes of a process spawned in a host process group.
+    Pipes,
     /// The container's log, owned by at most one process per participant.
     Container,
     /// A file the process writes in the participant's log directory.
@@ -423,10 +427,15 @@ pub(crate) fn check_process_specs(
     let mut container_owner = None;
     let mut output_owner = None;
     let mut output_files: Vec<(&str, &str)> = Vec::new();
-    let mut host_files: BTreeMap<String, Option<&str>> = BTreeMap::from([
-        ("container.stdout.log".into(), None),
-        ("container.stderr.log".into(), None),
-    ]);
+    let host = realization.kind == RealizationKind::HostProcessGroup;
+    let mut host_files: BTreeMap<String, Option<&str>> = if host {
+        BTreeMap::new()
+    } else {
+        BTreeMap::from([
+            ("container.stdout.log".into(), None),
+            ("container.stderr.log".into(), None),
+        ])
+    };
     let mut record_files: Vec<(&str, &str)> = Vec::new();
     for &process in processes {
         let mut channels = specs.iter().filter(|spec| spec.name == process);
@@ -436,7 +445,34 @@ pub(crate) fn check_process_specs(
         if channels.next().is_some() {
             return Err(format!("{prefix} declares two exit channels for process '{process}'"));
         }
+        let invalid_exit = match spec.exit {
+            ExitChannel::Wait if !host => Some("Wait"),
+            ExitChannel::Container if host => Some("Container"),
+            ExitChannel::Record { .. } if host => Some("Record"),
+            _ => None,
+        };
+        if let Some(channel) = invalid_exit {
+            return Err(format!(
+                "{prefix} declares exit channel {channel} for process '{process}'; \
+                this channel is not supported on {}",
+                realization.kind.name()
+            ));
+        }
+        let invalid_output = match spec.output {
+            OutputChannel::Pipes if !host => Some("Pipes"),
+            OutputChannel::Container if host => Some("Container"),
+            OutputChannel::File { .. } if host => Some("File"),
+            _ => None,
+        };
+        if let Some(channel) = invalid_output {
+            return Err(format!(
+                "{prefix} declares output channel {channel} for process '{process}'; \
+                this channel is not supported on {}",
+                realization.kind.name()
+            ));
+        }
         match spec.exit {
+            ExitChannel::Wait => {}
             ExitChannel::Container => {
                 if let Some(owner) = container_owner {
                     return Err(format!(
@@ -462,7 +498,8 @@ pub(crate) fn check_process_specs(
                 record_files.push((file, process));
             }
         }
-        match spec.output {
+        let host_paths = match spec.output {
+            OutputChannel::Pipes => Vec::new(),
             OutputChannel::Container => {
                 if let Some(owner) = output_owner {
                     return Err(format!(
@@ -471,8 +508,9 @@ pub(crate) fn check_process_specs(
                     ));
                 }
                 output_owner = Some(process);
+                Vec::new()
             }
-            OutputChannel::File { file, stream } => {
+            OutputChannel::File { file, .. } => {
                 if matches!(file, "" | "." | "..") || file.contains(['/', '\\']) {
                     return Err(format!(
                         "{prefix} declares output file '{file}' for process '{process}'; \
@@ -485,20 +523,25 @@ pub(crate) fn check_process_specs(
                          each process needs its own output file"
                     ));
                 }
-                let host_file = host_output_file(process, spec.output).expect("file output has a host file name");
-                if let Some(owner) = host_files.get(&host_file) {
-                    let owner = match owner {
-                        Some(owner) => format!("output of process '{owner}'"),
-                        None => "the container's own output".into(),
-                    };
-                    return Err(format!(
-                        "{prefix} declares file output for process '{process}' with stream {stream:?}; \
-                         its host file would replace {owner} at '{host_file}'"
-                    ));
-                }
-                host_files.insert(host_file, Some(process));
                 output_files.push((file, process));
+                vec![host_output_file(process, spec.output).expect("file output has a host file name")]
             }
+        };
+        for host_file in host_paths {
+            if let Some(owner) = host_files.get(&host_file) {
+                let owner = match owner {
+                    Some(owner) => format!("output of process '{owner}'"),
+                    None => "the container's own output".into(),
+                };
+                let OutputChannel::File { stream, .. } = spec.output else {
+                    unreachable!("only file output needs a host-file collision check");
+                };
+                let channel = format!("file output for process '{process}' with stream {stream:?}");
+                return Err(format!(
+                    "{prefix} declares {channel}; its host file would replace {owner} at '{host_file}'"
+                ));
+            }
+            host_files.insert(host_file, Some(process));
         }
     }
     if let Some(spec) = specs.iter().find(|spec| !processes.contains(&spec.name)) {
@@ -601,6 +644,179 @@ mod tests {
                 .unwrap()
                 .unwrap(),
             0
+        );
+    }
+
+    struct Channels {
+        names: &'static [&'static str],
+        specs: &'static [ProcessSpec],
+    }
+
+    impl ParticipantType for Channels {
+        fn name(&self) -> &'static str {
+            "channels"
+        }
+
+        fn artifacts(&self, _: Realization) -> &'static [ArtifactRole] {
+            &[]
+        }
+
+        fn processes(&self) -> &'static [&'static str] {
+            self.names
+        }
+
+        fn process_specs(&self, _: Realization) -> &'static [ProcessSpec] {
+            self.specs
+        }
+    }
+
+    const HOST_PROCESS: ProcessSpec = ProcessSpec {
+        name: "main",
+        exit: ExitChannel::Wait,
+        output: OutputChannel::Pipes,
+    };
+
+    #[test]
+    fn host_process_groups_accept_waits_and_separate_pipes_for_each_named_process() {
+        let participant_type = Channels {
+            names: &["main", "worker"],
+            specs: &[
+                HOST_PROCESS,
+                ProcessSpec {
+                    name: "worker",
+                    ..HOST_PROCESS
+                },
+            ],
+        };
+        for os in [Os::Linux, Os::MacOs, Os::Windows] {
+            assert_eq!(
+                check_process_specs(
+                    "p",
+                    &participant_type,
+                    Realization {
+                        os,
+                        kind: RealizationKind::HostProcessGroup,
+                    }
+                )
+                .unwrap(),
+                participant_type.specs,
+            );
+        }
+    }
+
+    #[test]
+    fn host_channels_are_rejected_on_every_other_realization_with_the_channel_and_realization() {
+        for (os, kind) in [
+            (Os::Linux, RealizationKind::LinuxContainer),
+            (Os::Windows, RealizationKind::WindowsContainer),
+            (Os::Linux, RealizationKind::KubernetesPod),
+        ] {
+            for (specs, channel, name) in [
+                (&[HOST_PROCESS][..], "exit", "Wait"),
+                (
+                    &[ProcessSpec {
+                        exit: ExitChannel::Container,
+                        ..HOST_PROCESS
+                    }][..],
+                    "output",
+                    "Pipes",
+                ),
+            ] {
+                let error = check_process_specs(
+                    "p",
+                    &Channels {
+                        names: &["main"],
+                        specs,
+                    },
+                    Realization { os, kind },
+                )
+                .unwrap_err();
+                assert_eq!(error, format!(
+                    "participant 'p' of type 'channels' as {} on {} declares {channel} channel {name} for process 'main'; \
+                     this channel is not supported on {}", kind.name(), os.name(), kind.name(),
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn host_process_groups_reject_container_record_and_file_channels() {
+        for (specs, channel, name) in [
+            (
+                &[ProcessSpec {
+                    exit: ExitChannel::Container,
+                    ..HOST_PROCESS
+                }][..],
+                "exit",
+                "Container",
+            ),
+            (
+                &[ProcessSpec {
+                    exit: ExitChannel::Record { file: "main" },
+                    ..HOST_PROCESS
+                }][..],
+                "exit",
+                "Record",
+            ),
+            (
+                &[ProcessSpec {
+                    output: OutputChannel::Container,
+                    ..HOST_PROCESS
+                }][..],
+                "output",
+                "Container",
+            ),
+            (
+                &[ProcessSpec {
+                    output: OutputChannel::File {
+                        file: "main",
+                        stream: OutputStream::Merged,
+                    },
+                    ..HOST_PROCESS
+                }][..],
+                "output",
+                "File",
+            ),
+        ] {
+            let error = check_process_specs(
+                "p",
+                &Channels {
+                    names: &["main"],
+                    specs,
+                },
+                Realization {
+                    os: Os::MacOs,
+                    kind: RealizationKind::HostProcessGroup,
+                },
+            )
+            .unwrap_err();
+            assert_eq!(error, format!(
+                "participant 'p' of type 'channels' as host-process-group on macos declares {channel} channel {name} for process 'main'; \
+                 this channel is not supported on host-process-group",
+            ));
+        }
+    }
+
+    #[test]
+    fn a_host_process_may_use_the_name_container_for_its_own_pipe_files() {
+        let participant_type = Channels {
+            names: &["container"],
+            specs: &[ProcessSpec {
+                name: "container",
+                ..HOST_PROCESS
+            }],
+        };
+        assert_eq!(
+            check_process_specs(
+                "p",
+                &participant_type,
+                Realization {
+                    os: Os::MacOs,
+                    kind: RealizationKind::HostProcessGroup
+                }
+            )
+            .unwrap(),
+            participant_type.specs
         );
     }
 

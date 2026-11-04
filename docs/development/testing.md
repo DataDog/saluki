@@ -65,6 +65,20 @@ The target runs the ignored backend, lifecycle, runner failure and report tests 
 CI: the `test-container-daemon` job in `.gitlab/e2e.yml` runs them after airlock's daemon tests, with
 `PANORAMIC_TEST_IMAGE` set to the same local Alpine image.
 
+### Panoramic host process tests
+
+The `panoramic-core` unit tests run host process groups through the native lifecycle on Unix hosts, using `/bin/sh`.
+They cover per-process exit and output observation, readiness, clean environments, file and command primitives,
+and bounded process-group cleanup. Run them with `cargo nextest run -p panoramic-core`.
+
+Host participants run in a planned per-case state directory under `/tmp`, which must not already exist. Each process
+inherits only `PATH`, `HOME` and `TMPDIR` from the runner when set, then receives the participant's environment and its
+own overrides. Each leads its own process group. Its stdout and stderr reach separate files at
+`<log_dir>/<participant>/<process>.stdout.log` and `<process>.stderr.log`, with process and stream tags on captured
+lines. The participant ends after every process has an observed exit; a failed wait leaves the exit undetermined.
+Host exec commands own their process groups: returning or cancelling an exec kills its remaining descendants,
+including background processes started by a successful command.
+
 ### Panoramic product tests
 
 Run `make test-panoramic-products` to exercise real product images through the native runner. These ignored tests
@@ -967,10 +981,10 @@ started, including native cases' roles on runs without `--artifacts`, or `null` 
 
 Native cases also report `participants[]`, with each participant's `name`, `type`, `os`, `realization`, and `processes`.
 A participant appears once its creation is attempted; its process list stays empty until startup. Each process has an
-`exit` with `state: running | exited | undetermined` and `source: container | record`. Exit codes, signals and failure
-reasons appear only when observed. A container runtime error accompanies its exit as `reason`. Process `output` lists
-host paths under `stdout`, `stderr` or `merged`. The runner snapshots observations before cancelling an interrupted case,
-or after the case body returns normally, then stops background tasks. The snapshot survives a dropped case body.
+`exit` with `state: running | exited | undetermined` and `source: container | record | process`. Exit codes, signals and
+failure reasons appear only when observed. A container runtime error accompanies its exit as `reason`. Process `output`
+lists host paths under `stdout`, `stderr` or `merged`. The runner snapshots observations before cancelling an interrupted
+case, or after the case body returns normally, then stops background tasks. The snapshot survives a dropped case body.
 Legacy cases report an empty participant list.
 
 For native cases, `diagnostic_lines` reads declared process outputs and container output that no process owns.
@@ -988,10 +1002,13 @@ On Unix, send SIGINT or SIGTERM to stop a run with cleanup. A second signal may 
 
 After every test, the runner attempts cleanup and records each resource as `reclaimed`, `leaked`, or `unsettled` under
 `reclaim` in `result.json`. Native participants have separate `participant:<name>` entries with a `participant` field.
-Each stops with its type's grace, ten seconds by default, before removal. Consecutive participant entries stop
-concurrently; the scope's shared volume and network follow through the run's Docker connection. An interrupted creation
-marks both its participant and scope `unsettled`, because creation might finish after removal. The `details` and
-`traffic` artifact directories are reserved participant names.
+Each stops with its type's grace, ten seconds by default, before removal. Host participants receive SIGTERM in each
+process group, then SIGKILL after the grace for groups still running, including descendants of an exited leader.
+Child reapers remain active after case tasks stop. The host scope has a `directory:<path>` entry, removed after
+participants; it also removes an empty parent run directory. A failed participant removal keeps the state directory
+for diagnosis. Consecutive participant entries stop concurrently; a container scope's shared volume and network follow
+through the run's Docker connection. An interrupted creation marks both its participant and scope `unsettled`, because
+creation might finish after removal. The `details` and `traffic` artifact directories are reserved participant names.
 
 Legacy Docker containers, their shared volume, and network share one isolation-group entry; host processes and the
 state directory have separate entries. Correctness tests have one isolation-group entry per container
