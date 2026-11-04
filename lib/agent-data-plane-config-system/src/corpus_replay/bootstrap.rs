@@ -19,7 +19,7 @@ use datadog_agent_config_corpus::{Corpus, Inputs, Outcome};
 
 use super::guard;
 use super::leaf_replay::{checkpoint_rows, reads_at, Checkpoint, Fault, Isolator, Row};
-use crate::loaded::{build_base_from, EnvPrecedence};
+use crate::loaded::{read_local, EnvPrecedence};
 
 /// The path a YAML parse error names: the file the Agent would have read.
 const YAML_ORIGIN: &str = "datadog.yaml";
@@ -45,7 +45,8 @@ fn in_scope(inputs: &Inputs) -> bool {
 
 /// Builds the bootstrap base from a case's YAML and environment, applying the environment after the file.
 ///
-/// Missing YAML becomes an empty object; missing environment variables contribute nothing.
+/// The base is the key reading `LoadedConfiguration::load` selects; its translation is not checked
+/// here. Missing YAML becomes an empty object; missing environment variables contribute nothing.
 fn case_base(inputs: &Inputs) -> Result<serde_json::Value, Fault> {
     let yaml = inputs.yaml.as_deref().unwrap_or("{}");
     let vars: Vec<(String, String)> = inputs
@@ -55,9 +56,11 @@ fn case_base(inputs: &Inputs) -> Result<serde_json::Value, Fault> {
         .map(|(name, value)| (name.clone(), value.clone()))
         .collect();
     match guard("build bootstrap base", || {
-        build_base_from(yaml, Path::new(YAML_ORIGIN), &vars, EnvPrecedence::AfterFile)
+        read_local(yaml, Path::new(YAML_ORIGIN), &vars, EnvPrecedence::AfterFile)
     }) {
-        Ok(result) => result.map_err(|e| Fault::Error(e.to_string())),
+        Ok(result) => result
+            .map(|reading| reading.base.to_value())
+            .map_err(|e| Fault::Error(e.to_string())),
         Err(panicked) => Err(Fault::Panic(panicked)),
     }
 }
@@ -110,10 +113,26 @@ pub(crate) fn corpus_bootstrap(corpus: &Corpus, surface: &BTreeSet<&str>) -> Boo
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
     use crate::corpus_replay::compare::Verdict;
     use crate::corpus_replay::corpus;
     use crate::corpus_replay::leaf_replay::RowResult;
+
+    /// A case's base is the key reading `LoadedConfiguration::load` selects: the Agent-style
+    /// reading, or every key as written when only that translates.
+    #[test]
+    fn a_case_base_follows_the_loaders_key_reading() {
+        let mut inputs = corpus().cases[0].inputs.clone();
+        inputs.env = None;
+
+        inputs.yaml = Some("Log_Level: debug\n".to_string());
+        assert_eq!(case_base(&inputs).expect("base builds"), json!({"log_level": "debug"}));
+
+        inputs.yaml = Some("Log_Level: [a]\n".to_string());
+        assert_eq!(case_base(&inputs).expect("base builds"), json!({"Log_Level": ["a"]}));
+    }
 
     /// A key removed from the surface gets one not-modeled row in each case that records it, and every
     /// other row, abort and count stays as it was.

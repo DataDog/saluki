@@ -2225,15 +2225,6 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             cause: TRANSLATOR_REJECTS_VALUE,
         }),
         known_bug(Entry {
-            origin: "yaml-dotted-keys",
-            tier: Bootstrap,
-            at: "snapshot",
-            getter: "GetString",
-            key: "data_plane.api_listen_address",
-            adp: Adp::value("\"tcp://0.0.0.0:5100\""),
-            cause: BOOTSTRAP_YAML_LOADING,
-        }),
-        known_bug(Entry {
             origin: "yaml-duplicate-key",
             tier: Bootstrap,
             at: "snapshot",
@@ -2309,15 +2300,6 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             ),
             cause: SCALAR_GIVEN_COLLECTION,
         }),
-        known_bug(Entry {
-            origin: "yaml-noncanonical-map-keys",
-            tier: Bootstrap,
-            at: "snapshot",
-            getter: "GetStringMapStringSlice",
-            key: "additional_endpoints",
-            adp: Adp::value("{\"010\": [\"j\"], \"true\": [\"k\"]}"),
-            cause: BOOTSTRAP_YAML_LOADING,
-        }),
     ]
 }
 const AGENT_LOAD_WRITE: Cause = Cause {
@@ -2328,7 +2310,7 @@ const AGENT_LOAD_WRITE: Cause = Cause {
 
 const BOOTSTRAP_YAML_LOADING: Cause = Cause {
     name: "bootstrap-yaml-loading",
-    why: "ADP's own datadog.yaml reader rejects duplicate keys and NaN, does not split dotted keys, and resolves non-string map keys differently",
+    why: "ADP's own datadog.yaml reader rejects duplicate keys and NaN",
     issue: Some(2754),
 };
 
