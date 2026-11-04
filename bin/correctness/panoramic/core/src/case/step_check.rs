@@ -73,12 +73,14 @@ fn build_step(
         let participant = match &need {
             Need::Handle(participant)
             | Need::Process(participant, _)
+            | Need::Operation(participant, _)
             | Need::Fact(participant, _)
             | Need::Late(participant, _)
             | Need::Endpoint(participant, _, _) => participant,
         };
         let Some(entry) = file.participants.get(participant) else {
             let usage = match &need {
+                Need::Operation(_, operation) => format!("calls operation '{operation}' of"),
                 Need::Fact(_, fact) => format!("references fact '{fact}' of"),
                 Need::Late(_, fact) => format!("references late fact '{}' of", fact.name()),
                 Need::Endpoint(_, endpoint, _) => format!("reaches endpoint '{endpoint}' of"),
@@ -225,6 +227,22 @@ mod tests {
                 crate::endpoint::EndpointOperation::Probe
             )]
         );
+    }
+
+    #[test]
+    fn a_step_calling_an_operation_of_an_unknown_participant_fails_loading() {
+        use crate::case::fixtures::CallFactory;
+        let file = case("- {step: call, on: missing, operation: config_dump}");
+        let error = build_steps(
+            &file,
+            &[&CallFactory],
+            TYPES,
+            "alpha",
+            Path::new("cases/alpha/config.yaml"),
+        )
+        .unwrap_err()
+        .to_string();
+        assert_eq!(error, "case 'alpha' in cases/alpha/config.yaml: step 1 'call' calls operation 'config_dump' of unknown participant 'missing'; participants: other, subject");
     }
 
     #[test]

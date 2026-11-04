@@ -2284,14 +2284,16 @@
       "name": "adp-rc-core-disabled",
       "suite": "integration",
       "subject_os": "linux",
-      "runtime": "linux",
+      "runtime": "linux-container",
       "source": "test/integration/cases/adp-rc-core-disabled/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "180s",
       "images": {
-        "container": "saluki-images/datadog-agent:testing-devel"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest"
       },
       "ci_jobs": [
         "test-integration"
@@ -2303,14 +2305,16 @@
       "name": "adp-rc-no-products",
       "suite": "integration",
       "subject_os": "linux",
-      "runtime": "linux",
+      "runtime": "linux-container",
       "source": "test/integration/cases/adp-rc-no-products/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "180s",
       "images": {
-        "container": "saluki-images/datadog-agent:testing-devel"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest"
       },
       "ci_jobs": [
         "test-integration"
@@ -7699,76 +7703,66 @@
     },
     "integration/adp-rc-core-disabled": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [],
-          "exposed_ports": [
-            "55101/tcp",
-            "56317/tcp",
-            "56318/tcp"
-          ],
-          "files": [],
-          "host_cgroup_namespace": false
-        },
-        "description": "Verifies ADP keeps running, and classifies the answer as Remote Configuration being disabled, when the Core Agent has Remote Configuration off",
-        "env": {
-          "DD_API_KEY": "00000000000000000000000000000000",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_OTLP_ENABLED": "true",
-          "DD_DATA_PLANE_OTLP_PROXY_ENABLED": "false",
-          "DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY": "0.0.0.0:56317",
-          "DD_DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY": "0.0.0.0:56318",
-          "DD_DATA_PLANE_STANDALONE_MODE": "false",
-          "DD_HOSTNAME": "integration-test-rc-core-disabled",
-          "DD_LOG_LEVEL": "debug",
-          "DD_SITE": "ddog-gov.com"
-        },
-        "intake": {
-          "enabled": false
-        },
-        "name": "adp-rc-core-disabled",
-        "procedure": [
-          {
-            "assertion": "adp_config_key_equals",
-            "endpoint": "https://localhost:55101/config/runtime",
-            "key": "domains.remote_configuration.enabled",
-            "timeout": "60s",
-            "value": true
-          },
-          {
-            "assertion": "log_contains",
-            "pattern": "name: \"adp.remote_config_polls_total\".*outcome:unimplemented",
-            "regex": true,
-            "stream": "both",
-            "timeout": "60s"
-          },
-          {
-            "assertion": "log_contains",
-            "pattern": "Remote Configuration is not enabled on the Agent; checking again periodically.",
-            "regex": false,
-            "stream": "both",
-            "timeout": "60s"
-          },
-          {
-            "parallel": [
-              {
-                "assertion": "process_stable_for",
-                "duration": "10s"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_OTLP_ENABLED": "true",
+                "DD_DATA_PLANE_OTLP_PROXY_ENABLED": "false",
+                "DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY": "0.0.0.0:56317",
+                "DD_DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY": "0.0.0.0:56318",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_HOSTNAME": "integration-test-rc-core-disabled",
+                "DD_LOG_LEVEL": "debug",
+                "DD_SITE": "ddog-gov.com"
               },
-              {
-                "assertion": "log_not_contains",
-                "during": "10s",
-                "pattern": "adp.remote_config_polls_total.*outcome:(ok|rpc_error|invalid_response)|Failed to poll the Agent|panic|PANIC",
-                "regex": true,
-                "stream": "both"
-              }
-            ]
-          }
-        ],
-        "runtimes": [
-          "linux"
-        ],
-        "timeout": "180s"
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "key": "domains.remote_configuration.enabled",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": true,
+              "view": "runtime"
+            },
+            {
+              "on": "adp",
+              "pattern": "name: \"adp.remote_config_polls_total\".*outcome:unimplemented",
+              "regex": true,
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "on": "adp",
+              "pattern": "Remote Configuration is not enabled on the Agent; checking again periodically.",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "adp.remote_config_polls_total.*outcome:(ok|rpc_error|invalid_response)|Failed to poll the Agent|panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        }
       },
       "steps": {
         "single_assertions": 3,
@@ -7776,7 +7770,7 @@
         "parallel_assertions": 2,
         "actions": 0,
         "by_kind": {
-          "adp_config_key_equals": 1,
+          "config_key_equals": 1,
           "log_contains": 2,
           "log_not_contains": 1,
           "process_stable_for": 1
@@ -7786,68 +7780,59 @@
     },
     "integration/adp-rc-no-products": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [],
-          "exposed_ports": [
-            "55101/tcp",
-            "56317/tcp",
-            "56318/tcp"
-          ],
-          "files": [],
-          "host_cgroup_namespace": false
-        },
-        "description": "Verifies ADP starts no Remote Configuration worker, and emits no remote_config metrics when Remote Configuration is disabled",
-        "env": {
-          "DD_API_KEY": "00000000000000000000000000000000",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_OTLP_ENABLED": "true",
-          "DD_DATA_PLANE_OTLP_PROXY_ENABLED": "false",
-          "DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY": "0.0.0.0:56317",
-          "DD_DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY": "0.0.0.0:56318",
-          "DD_DATA_PLANE_STANDALONE_MODE": "false",
-          "DD_HOSTNAME": "integration-test-rc-no-products",
-          "DD_LOG_LEVEL": "debug",
-          "DD_REMOTE_CONFIGURATION_ENABLED": "false"
-        },
-        "intake": {
-          "enabled": false
-        },
-        "name": "adp-rc-no-products",
-        "procedure": [
-          {
-            "assertion": "adp_config_key_equals",
-            "endpoint": "https://localhost:55101/config/runtime",
-            "key": "domains.remote_configuration.enabled",
-            "timeout": "60s",
-            "value": false
-          },
-          {
-            "assertion": "port_listening",
-            "port": 56318,
-            "protocol": "tcp",
-            "timeout": "60s"
-          },
-          {
-            "parallel": [
-              {
-                "assertion": "process_stable_for",
-                "duration": "10s"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_OTLP_ENABLED": "true",
+                "DD_DATA_PLANE_OTLP_PROXY_ENABLED": "false",
+                "DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY": "0.0.0.0:56317",
+                "DD_DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY": "0.0.0.0:56318",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_HOSTNAME": "integration-test-rc-no-products",
+                "DD_LOG_LEVEL": "debug",
+                "DD_REMOTE_CONFIGURATION_ENABLED": "false"
               },
-              {
-                "assertion": "log_not_contains",
-                "during": "20s",
-                "pattern": "DATAPLANE.*(remote_config|remote-config|Remote Configuration)",
-                "regex": true,
-                "stream": "both"
-              }
-            ]
-          }
-        ],
-        "runtimes": [
-          "linux"
-        ],
-        "timeout": "180s"
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "key": "domains.remote_configuration.enabled",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": false,
+              "view": "runtime"
+            },
+            {
+              "endpoint": "otlp_http",
+              "on": "adp",
+              "step": "port_listening",
+              "timeout": "60s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "20s",
+                  "on": "adp",
+                  "pattern": "DATAPLANE.*(remote_config|remote-config|Remote Configuration)",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        }
       },
       "steps": {
         "single_assertions": 2,
@@ -7855,7 +7840,7 @@
         "parallel_assertions": 2,
         "actions": 0,
         "by_kind": {
-          "adp_config_key_equals": 1,
+          "config_key_equals": 1,
           "log_not_contains": 1,
           "port_listening": 1,
           "process_stable_for": 1

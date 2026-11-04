@@ -276,6 +276,20 @@ An undetermined process exit errors stability and exit assertions. A process's f
 across supervised restarts. The integration bridge translates only `log_contains`, `log_not_contains` and
 `file_contains`; log steps on the bridge must omit `process`.
 
+Participant types offer named **operations** per realization. An operation takes JSON arguments and returns JSON,
+keeping product-specific commands inside the participant definition. Steps declare the operations they call;
+plan compilation rejects an operation the participant's type does not offer for its realization, so `panoramic list`
+reports the error before anything starts. Operations run commands through the participant's exec primitive.
+Argument and mechanism problems are harness errors; a product answer that does not satisfy the operation is a
+product error.
+
+The native `config_key_equals` step requires `on`, `key` (a dotted path), `value` (any JSON value), `view` (`source`
+or `runtime`) and `timeout`. It calls the participant's `config_dump` operation with the requested view until the key's
+JSON value equals `value`. Each call receives the whole remaining step budget. Mismatches, missing keys and product
+or harness errors are retried; at timeout, any product observation makes the step fail, while only harness errors
+make it error. A participant exit does not end the retry window early. The timeout message includes the last
+observed value, or `<missing>` for an absent key.
+
 The `observe` phase gives exited participants up to five seconds to finish
 capturing output; it also runs after a setup failure if any participant started. Running participants are skipped, and
 case cancellation ends the wait. The runner snapshots observations, stops observation tasks, then reclaims resources.
@@ -310,6 +324,8 @@ The definition derives these endpoints from the effective environment:
 | `dogstatsd_uds_stream` | Unix stream | `DD_DOGSTATSD_STREAM_SOCKET` | Nonempty enables it; waits for the socket |
 | `api` | HTTP | `DD_DATA_PLANE_API_LISTEN_ADDRESS` | Requires ADP and a non-loopback host; waits for TCP acceptance |
 | `secure_api` | TCP | `DD_DATA_PLANE_SECURE_API_LISTEN_ADDRESS` | Requires ADP and a non-loopback host; waits for TCP acceptance; the listener uses TLS |
+| `otlp_grpc` | gRPC | `DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY` | Requires ADP and its OTLP pipeline, a nonzero port and a non-loopback host; waits for TCP acceptance |
+| `otlp_http` | HTTP | `DD_DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY` | Requires ADP and its OTLP pipeline, a nonzero port and a non-loopback host; waits for TCP acceptance |
 | `agent_cmd` | TCP | `DD_CMD_PORT` | Nonzero enables it; waits for TCP acceptance |
 | `agent_ipc` | TCP | `DD_AGENT_IPC_PORT` | Positive enables it; waits for TCP acceptance |
 
@@ -322,6 +338,14 @@ host. These keys follow the same owner precedence. With both unset, DogStatsD bi
 omitted. ADP API addresses use `tcp://host:port`; a loopback host is a configuration error, and port 0 disables the
 endpoint. Invalid listener values name the configuration key in their errors.
 
+ADP's OTLP endpoints require `DD_DATA_PLANE_ENABLED=true` and an enabled OTLP pipeline. The OTLP switch defaults
+to false; `ADP_DD_DATA_PLANE_OTLP_ENABLED` takes precedence over `DD_DATA_PLANE_OTLP_ENABLED`. The receiver
+address keys use the same `ADP_DD_` over `DD_` precedence. Proxy mode does not change endpoint availability.
+Addresses use `host:port` without a scheme. A loopback host omits the endpoint, including the defaults
+`localhost:6317` and `localhost:6318`; set a non-loopback address to reach the receiver. Port 0 also omits the endpoint.
+Malformed addresses fail configuration with an error naming the key. The HTTP endpoint uses HTTP even when TLS is
+enabled.
+
 An optional `connect: {intake: <participant>.api}` connection accepts HTTP and delivers its URL as both `DD_DD_URL`
 and `DD_APM_DD_URL`. It gates Agent startup on the intake's ready route. The native recipe uses the image's command
 and overlays the `data-plane` and `agent` s6 services. Each finish script records the exit before running the shipped
@@ -329,6 +353,17 @@ body, preserving ADP's two-second restart after failure and disablement after a 
 stderr into stdout, and its logger appends to `adp.log` or `agent.log` while retaining the lines on container stdout.
 These merged process logs include the run and finish scripts' own messages. Container stdout and stderr are also
 captured separately. The default ten-second stop grace covers the measured roughly 2.6-second supervisor shutdown.
+
+Only the `agent-adp` Linux container realization offers the `config_dump` operation. Its arguments are exactly
+`{"view": "source"}` or `{"view": "runtime"}`. It runs
+`/opt/datadog-agent/embedded/bin/agent-data-plane config --json`, adding `--runtime` for the runtime view.
+Unknown views or extra arguments are harness errors. Exit codes 126 and 127 mean the CLI could not run and are
+harness errors; other nonzero exits and non-JSON stdout are product errors. Error messages omit stdout and stderr
+because configuration can contain secrets.
+
+The `PANORAMIC_` environment-variable prefix is reserved. Plan compilation rejects keys with this prefix in the
+case's effective environment after OS overlays, in type defaults, and in connection deliveries. Errors identify
+whether the case, type default or connection set the key.
 
 Every native Linux container receives three reserved variables: `PANORAMIC_PARTICIPANT` names the participant,
 `PANORAMIC_EXIT_DIR` names its exit-record directory, and `PANORAMIC_LOG_DIR` names its process-log directory.
@@ -396,6 +431,12 @@ Parent-directory components must stay within the case directory; symlink targets
 `subject_os` fails discovery for `list` and `run`, whatever runtime is selected.
 Plan compilation checks fact availability for both steps and configuration on every OS in `subject_os`.
 A referenced fact missing for a participant's realization fails planning and therefore discovery.
+It also checks every declared process name: it must be a plain file name, not empty, `.` or `..`, and contain no
+`/` or `\`. When a type declares process specifications for a realization, planning validates its exit and output
+channels too: specifications must name declared processes, every process needs exactly one specification, record
+and output file names must be plain and unique, and only one process may own each container channel. Output files
+must not collide with host capture paths.
+A realization with no specifications can still plan, but native preparation requires them.
 
 `panoramic list` also prints each artifact role a case needs on the selected subject OS, with the
 reference it resolves to and whether it comes from a manifest or the role's local default. Roles are stable names
@@ -664,8 +705,9 @@ budget of `4 × timeout + capture_duration + 50ms`. The driver allows 10 seconds
 report its result, then stops it as `errored`. This makes the test a harness error (exit code 2), unless a parallel
 member failed. Case timeout or run cancellation interrupts unfinished steps and preserves completed results.
 
-Each polling attempt (an HTTP request, Docker exec, or intake poll) is limited to the shorter of 10 seconds or the
-step's remaining time. Timed-out probes are retried while the step has time left. A step is `errored` if harness failures
+Polling HTTP requests, endpoint probes and intake polls are limited to the shorter of 10 seconds or the step's
+remaining time. The native `config_key_equals` step gives each `config_dump` call the whole remaining budget for
+its exec. Timed-out probes are retried while the step has time left. A step is `errored` if harness failures
 (such as Docker API or intake sidecar errors) prevent evaluation, or its configuration is invalid. An unmet expectation
 remains `failed` after any product observation, even if later probes encounter harness errors.
 

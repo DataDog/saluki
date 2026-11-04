@@ -24,7 +24,6 @@ use serde::de::DeserializeOwned;
 use super::{
     runtime_for_os, AssertionConfig, AssertionStep, ContainerConfig, IntakeConfig, IntegrationConfig, LogStream,
 };
-use crate::dynamic_vars::ENV_PREFIX;
 
 /// Participant types the integration runner runs, by subject OS.
 pub(super) const BRIDGED_TYPES: &[(&str, Os)] = &[(AgentAdp::NAME, Os::MacOs), (AgentAdp::NAME, Os::Windows)];
@@ -127,12 +126,6 @@ pub(super) fn integration_config<'a>(
                 return Err(format!(
                     "participant '{participant}' sets {field} '{key}' with a template reference ('{{{{'); \
                      the integration runner does not support references in environment variables"
-                ));
-            }
-            if key.starts_with(ENV_PREFIX) {
-                return Err(format!(
-                    "participant '{participant}' sets {field} '{key}'; names starting with {ENV_PREFIX} \
-                     are reserved for cases with 'type: integration'"
                 ));
             }
         }
@@ -447,31 +440,15 @@ mod tests {
     }
 
     #[test]
-    fn overlay_env_values_with_template_references_or_reserved_names_are_rejected_on_every_subject_os() {
-        for (env, reason) in [
-            ("{KEY: '{{ adp.facts.default_log_file }}'}", "'KEY' with a template reference ('{{'); the integration runner does not support references in environment variables"),
-            ("{PANORAMIC_DYNAMIC_IP: value}", "'PANORAMIC_DYNAMIC_IP'; names starting with PANORAMIC_DYNAMIC_ are reserved for cases with 'type: integration'"),
-        ] {
-            for overlay_os in ["linux", "windows"] {
-                let yaml = PARTICIPANT_FIELDS.replace("[linux]", "[windows, linux]").replace(
-                    "subject: true",
-                    &format!("subject: true, config: {{os: {{{overlay_os}: {{env: {env}}}}}}}"),
-                );
-                for os in [Os::Linux, Os::Windows] {
-                    let plan = plan(&yaml, os);
-                    assert_eq!(plan.integration_config().unwrap_err().to_string(), format!(
-                        "Cannot run case 'case' from /cases/case/config.yaml: participant 'adp' sets config.os.{overlay_os}.env {reason}"
-                    ));
-                }
-            }
-        }
-        let yaml = PARTICIPANT_FIELDS.replace("[linux]", "[windows, linux]").replace(
-            "subject: true",
-            "subject: true, config: {os: {windows: {env: {PANORAMIC_DYNAMIC_IP: windows}}, linux: {env: {PANORAMIC_DYNAMIC_IP: linux}}}}",
-        );
-        for os in [Os::Linux, Os::Windows] {
-            let message = plan(&yaml, os).integration_config().unwrap_err().to_string();
-            assert!(message.contains("config.os.linux.env"), "{message}");
+    fn translation_rejects_template_references_in_every_overlay() {
+        let env = "{KEY: '{{ adp.facts.default_log_file }}'}";
+        for overlay_os in ["linux", "windows"] {
+            let yaml = PARTICIPANT_FIELDS.replace("[linux]", "[windows, linux]").replace(
+                "subject: true",
+                &format!("subject: true, config: {{os: {{{overlay_os}: {{env: {env}}}}}}}"),
+            );
+            let error = plan(&yaml, Os::Windows).integration_config().unwrap_err().to_string();
+            assert_eq!(error, format!("Cannot run case 'case' from /cases/case/config.yaml: participant 'adp' sets config.os.{overlay_os}.env 'KEY' with a template reference ('{{{{'); the integration runner does not support references in environment variables"));
         }
     }
 
@@ -854,11 +831,6 @@ mod tests {
                 "subject: true",
                 "subject: true, realization: {kind: host-process-group}",
                 "participant 'adp' sets 'realization', which the integration runner does not support",
-            ),
-            (
-                "subject: true",
-                "subject: true, config: {env: {PANORAMIC_DYNAMIC_IP: \"hostname -i\"}}",
-                "participant 'adp' sets config.env 'PANORAMIC_DYNAMIC_IP'; names starting with PANORAMIC_DYNAMIC_ are reserved for cases with 'type: integration'",
             ),
             (
                 minimal_procedure!(),

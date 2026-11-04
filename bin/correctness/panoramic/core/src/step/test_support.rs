@@ -20,7 +20,7 @@ use crate::{
     observe::{
         exit_record::RecordRefresh, output::OutputLine, Capture, ParticipantExit, ProcessObservation, ProcessOutput,
     },
-    participant::{EffectiveConfig, FactDeclaration, OutputStream, ParticipantType},
+    participant::{EffectiveConfig, FactDeclaration, OpContext, Operation, OutputStream, ParticipantType},
     plan::Planner,
     probe::{AttemptLimits, ProbeAnswer},
 };
@@ -37,6 +37,9 @@ impl ParticipantType for Fixture {
     fn artifacts(&self, _: Realization) -> &'static [ArtifactRole] {
         &[]
     }
+    fn operations(&self, _: Realization) -> &'static [&'static dyn Operation] {
+        &[&ConfigDump]
+    }
     fn processes(&self) -> &'static [&'static str] {
         self.0
     }
@@ -51,6 +54,28 @@ impl ParticipantType for Fixture {
             name: "file",
             value: "/logs/output.log",
         }]
+    }
+}
+
+pub(crate) struct ConfigDump;
+
+#[async_trait]
+impl Operation for ConfigDump {
+    fn name(&self) -> &'static str {
+        "config_dump"
+    }
+
+    async fn run(&self, cx: &OpContext<'_>, args: Value) -> Result<Value, HandleError> {
+        let view = args
+            .get("view")
+            .and_then(Value::as_str)
+            .ok_or_else(|| HandleError::Harness {
+                message: "config_dump requires a view".into(),
+            })?;
+        let output = cx.exec(vec!["dump".into(), view.into()]).await?;
+        serde_json::from_slice(&output.stdout).map_err(|_| HandleError::Product {
+            message: "configuration output is not JSON".into(),
+        })
     }
 }
 
@@ -154,7 +179,7 @@ struct FakeProcess {
     reveal: Arc<Mutex<Option<ExitObservation>>>,
 }
 
-/// A participant with scripted output, exits, file reads and probe answers.
+/// A participant with scripted output, exits, file reads, command output and probe answers.
 pub struct FakeParticipant {
     observation: ParticipantObservation,
     exit: watch::Sender<ParticipantExit>,
@@ -164,6 +189,7 @@ pub struct FakeParticipant {
     process_names: &'static [&'static str],
     processes: BTreeMap<&'static str, FakeProcess>,
     probes: Mutex<VecDeque<Result<ProbeAnswer, HandleError>>>,
+    execs: Mutex<VecDeque<Result<ExecOutput, HandleError>>>,
 }
 
 impl Default for FakeParticipant {
@@ -229,6 +255,7 @@ impl FakeParticipant {
             process_names,
             processes,
             probes: Mutex::new(VecDeque::new()),
+            execs: Mutex::new(VecDeque::new()),
         }
     }
 
@@ -262,6 +289,11 @@ impl FakeParticipant {
     /// Queues a probe result; the last queued answer repeats.
     pub fn push_probe(&self, answer: Result<ProbeAnswer, HandleError>) {
         self.probes.lock().unwrap().push_back(answer);
+    }
+
+    /// Queues command output; the last queued answer repeats.
+    pub fn push_exec(&self, answer: Result<ExecOutput, HandleError>) {
+        self.execs.lock().unwrap().push_back(answer);
     }
 
     /// Appends a line tagged with its process, or participant-wide output for `None`.
@@ -298,7 +330,12 @@ impl FakeParticipant {
 #[async_trait]
 impl Primitives for FakeParticipant {
     async fn exec(&self, _: ExecCommand, _: Duration) -> Result<ExecOutput, HandleError> {
-        panic!("file and output steps do not execute commands");
+        let mut execs = self.execs.lock().unwrap();
+        if execs.len() > 1 {
+            execs.pop_front().unwrap()
+        } else {
+            execs.front().expect("the step must script its command output").clone()
+        }
     }
     async fn read_file(&self, path: &str) -> Result<Option<Vec<u8>>, HandleError> {
         self.files.lock().unwrap().get(path).cloned().unwrap_or(Ok(None))

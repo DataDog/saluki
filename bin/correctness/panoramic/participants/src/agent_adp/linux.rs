@@ -5,13 +5,57 @@
 
 use std::{collections::BTreeMap, net::IpAddr};
 
+use async_trait::async_trait;
 use panoramic_core::{
     endpoint::{ConsumedEndpoint, Delivery, Endpoint, EndpointKind, Evidence, Port},
-    participant::{ExitChannel, OutputChannel, OutputStream, ProcessSpec, RenderedConfig},
+    participant::{ExitChannel, OpContext, Operation, OutputChannel, OutputStream, ProcessSpec, RenderedConfig},
     recipe::{ContainerRecipe, Recipe},
+    step::HandleError,
 };
+use serde_json::Value;
 
 use super::AgentAdp;
+
+const ADP_CLI_BINARY_PATH: &str = "/opt/datadog-agent/embedded/bin/agent-data-plane";
+
+pub(super) const OPERATIONS: &[&dyn Operation] = &[&ConfigDump];
+
+struct ConfigDump;
+
+#[async_trait]
+impl Operation for ConfigDump {
+    fn name(&self) -> &'static str {
+        "config_dump"
+    }
+
+    async fn run(&self, cx: &OpContext<'_>, args: Value) -> Result<Value, HandleError> {
+        let view = args
+            .as_object()
+            .filter(|args| args.len() == 1)
+            .and_then(|args| args.get("view"))
+            .and_then(Value::as_str)
+            .filter(|view| matches!(*view, "source" | "runtime"))
+            .ok_or_else(|| HandleError::Harness {
+                message: "config_dump requires exactly {\"view\": \"source\"|\"runtime\"}".into(),
+            })?;
+        let mut argv = vec![ADP_CLI_BINARY_PATH.into(), "config".into(), "--json".into()];
+        if view == "runtime" {
+            argv.push("--runtime".into());
+        }
+        let output = cx.exec(argv).await?;
+        match output.exit_code {
+            0 => serde_json::from_slice(&output.stdout).map_err(|_| HandleError::Product {
+                message: "ADP configuration CLI returned invalid JSON".into(),
+            }),
+            126 | 127 => Err(HandleError::Harness {
+                message: format!("ADP configuration CLI could not run (exit {})", output.exit_code),
+            }),
+            code => Err(HandleError::Product {
+                message: format!("ADP configuration CLI exited with {code}"),
+            }),
+        }
+    }
+}
 
 pub(super) fn default_env() -> BTreeMap<String, String> {
     BTreeMap::from([
@@ -54,6 +98,7 @@ pub(super) fn default_env() -> BTreeMap<String, String> {
 enum Owner {
     Agent,
     Adp,
+    AdpOtlp,
     DogStatsD,
 }
 
@@ -62,6 +107,7 @@ enum ValueKind {
     Port,
     PositivePort,
     Address,
+    HostPort,
     Path,
 }
 
@@ -74,7 +120,7 @@ struct Listener {
     owner: Owner,
 }
 
-// Owner also selects the enabling keys: DATA_PLANE_ENABLED for ADP, USE_DOGSTATSD for DogStatsD.
+// Owner also selects the enabling keys: DATA_PLANE_ENABLED, DATA_PLANE_OTLP_ENABLED, and USE_DOGSTATSD.
 const LISTENERS: &[Listener] = &[
     Listener {
         name: "dogstatsd_udp",
@@ -115,6 +161,22 @@ const LISTENERS: &[Listener] = &[
         default: "tcp://0.0.0.0:5101",
         value: ValueKind::Address,
         owner: Owner::Adp,
+    },
+    Listener {
+        name: "otlp_grpc",
+        kind: EndpointKind::Grpc,
+        key: "DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY",
+        default: "localhost:6317",
+        value: ValueKind::HostPort,
+        owner: Owner::AdpOtlp,
+    },
+    Listener {
+        name: "otlp_http",
+        kind: EndpointKind::Http,
+        key: "DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY",
+        default: "localhost:6318",
+        value: ValueKind::HostPort,
+        owner: Owner::AdpOtlp,
     },
     Listener {
         name: "agent_cmd",
@@ -162,10 +224,13 @@ pub(super) fn endpoints(env: &BTreeMap<String, String>) -> Result<BTreeMap<Strin
     let adp = env.enabled(Owner::Agent, "DATA_PLANE_ENABLED", "false")?;
     let dogstatsd = env.enabled(Owner::Agent, "USE_DOGSTATSD", "true")?;
     let adp_dogstatsd = adp && env.enabled(Owner::Agent, "DATA_PLANE_DOGSTATSD_ENABLED", "true")?;
+    let adp_otlp = adp && env.enabled(Owner::Adp, "DATA_PLANE_OTLP_ENABLED", "false")?;
     let mut endpoints = BTreeMap::new();
     for listener in LISTENERS {
         let owner = match listener.owner {
             Owner::Adp if !adp => continue,
+            Owner::AdpOtlp if !adp_otlp => continue,
+            Owner::AdpOtlp => Owner::Adp,
             Owner::DogStatsD if !dogstatsd => continue,
             Owner::DogStatsD => {
                 if adp_dogstatsd {
@@ -193,8 +258,30 @@ pub(super) fn endpoints(env: &BTreeMap<String, String>) -> Result<BTreeMap<Strin
                 }
                 .with_ready(Evidence::socket_exists(listener.name))
             }
-            ValueKind::Port | ValueKind::PositivePort | ValueKind::Address => {
+            ValueKind::Port | ValueKind::PositivePort | ValueKind::Address | ValueKind::HostPort => {
                 let port = match listener.value {
+                    ValueKind::HostPort => {
+                        let address = url::Url::parse(&format!("tcp://{value}"))
+                            .map_err(|_| invalid("must be host:port with no scheme"))?;
+                        if address.host_str().is_none()
+                            || !address.username().is_empty()
+                            || address.password().is_some()
+                            || !address.path().is_empty()
+                            || address.query().is_some()
+                            || address.fragment().is_some()
+                            || value.contains('@')
+                            || value.chars().any(char::is_whitespace)
+                        {
+                            return Err(invalid("must be host:port with no scheme"));
+                        }
+                        let port = address.port().ok_or_else(|| invalid("must specify a port"))?;
+                        let host = url::Host::parse(address.host_str().unwrap())
+                            .map_err(|_| invalid("must be host:port with no scheme"))?;
+                        if loopback_host(&host.to_string()) {
+                            continue;
+                        }
+                        port
+                    }
                     ValueKind::Address => {
                         let address = url::Url::parse(value)
                             .map_err(|error| invalid(&format!("must be tcp://host:port: {error}")))?;
@@ -237,6 +324,9 @@ pub(super) fn endpoints(env: &BTreeMap<String, String>) -> Result<BTreeMap<Strin
                     }
                     EndpointKind::Http => {
                         Endpoint::http(Port::Fixed(port)).with_ready(Evidence::tcp_accepts(listener.name))
+                    }
+                    EndpointKind::Grpc => {
+                        Endpoint::grpc(Port::Fixed(port)).with_ready(Evidence::tcp_accepts(listener.name))
                     }
                     EndpointKind::Udp => {
                         if !env.enabled(owner, "DOGSTATSD_NON_LOCAL_TRAFFIC", "false")? {
@@ -395,8 +485,9 @@ mod tests {
     use panoramic_core::{
         endpoint::test_support::{assert_network_endpoint, assert_socket_endpoint, http_address},
         layout::{Os, Realization, RealizationKind},
-        participant::{CaseValues, EffectiveConfig, ParticipantType},
+        participant::{test_support::run_operation, CaseValues, EffectiveConfig, ParticipantType},
         recipe::test_support::{assert_image_recipe, files, rendered},
+        step::ExecOutput,
     };
 
     use super::*;
@@ -412,6 +503,137 @@ mod tests {
         EffectiveConfig {
             env,
             ..Default::default()
+        }
+    }
+
+    fn otlp_config(overrides: &[(&str, &str)]) -> EffectiveConfig {
+        let mut config = config(&[
+            ("DD_DATA_PLANE_ENABLED", "true"),
+            ("DD_DATA_PLANE_OTLP_ENABLED", "true"),
+            ("DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY", "0.0.0.0:56317"),
+            ("DD_DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY", "0.0.0.0:56318"),
+        ]);
+        config
+            .env
+            .extend(overrides.iter().map(|(key, value)| ((*key).into(), (*value).into())));
+        config
+    }
+
+    fn cli_output(exit_code: i64, stdout: &[u8]) -> ExecOutput {
+        ExecOutput {
+            stdout: stdout.into(),
+            stderr: b"stderr-secret".to_vec(),
+            exit_code,
+        }
+    }
+
+    #[tokio::test]
+    async fn config_dump_runs_the_cli_for_the_requested_view_and_returns_parsed_json() {
+        let expected = serde_json::json!({"domains": {"remote_configuration": {"enabled": true}}});
+        for view in ["source", "runtime"] {
+            let value = run_operation(&ConfigDump, serde_json::json!({"view": view}), |command| {
+                let mut argv = vec!["/opt/datadog-agent/embedded/bin/agent-data-plane", "config", "--json"];
+                if view == "runtime" {
+                    argv.push("--runtime");
+                }
+                assert_eq!(command.argv, argv);
+                assert!(command.env.is_empty());
+                assert!(command.stdin.is_none());
+                Ok(cli_output(0, &serde_json::to_vec(&expected).unwrap()))
+            })
+            .await
+            .unwrap();
+            assert_eq!(value, expected, "{view}");
+        }
+    }
+
+    #[tokio::test]
+    async fn config_dump_rejects_every_argument_shape_except_one_known_view_before_exec() {
+        for args in [
+            Value::Null,
+            serde_json::json!("source"),
+            serde_json::json!(["source"]),
+            serde_json::json!({}),
+            serde_json::json!({"view": "unknown-view-secret"}),
+            serde_json::json!({"view": null}),
+            serde_json::json!({"view": true}),
+            serde_json::json!({"view": 1}),
+            serde_json::json!({"view": ["source"]}),
+            serde_json::json!({"view": {"source": true}}),
+            serde_json::json!({"view": "source", "extra": "argument-secret"}),
+            serde_json::json!({"view": "runtime", "extra": "argument-secret"}),
+            serde_json::json!({"extra": "argument-secret"}),
+        ] {
+            let error = run_operation(&ConfigDump, args.clone(), |_| panic!("invalid arguments must not exec"))
+                .await
+                .unwrap_err();
+            assert!(matches!(error, HandleError::Harness { .. }), "{args}: {error}");
+            assert!(error.to_string().contains("view"));
+            assert!(!error.to_string().contains("secret"), "{error}");
+        }
+    }
+
+    #[tokio::test]
+    async fn config_dump_classifies_cli_exits_without_disclosing_output() {
+        for code in [1, 3, 10, 125, 126, 127, 128, 255] {
+            let error = run_operation(&ConfigDump, serde_json::json!({"view": "runtime"}), |_| {
+                Ok(cli_output(code, b"stdout-secret"))
+            })
+            .await
+            .unwrap_err();
+            let expected = match code {
+                126 | 127 => HandleError::Harness {
+                    message: format!("ADP configuration CLI could not run (exit {code})"),
+                },
+                _ => HandleError::Product {
+                    message: format!("ADP configuration CLI exited with {code}"),
+                },
+            };
+            assert_eq!(error, expected);
+            assert!(!error.to_string().contains("secret"), "{error}");
+        }
+    }
+
+    #[tokio::test]
+    async fn config_dump_reports_invalid_json_as_a_product_error_without_disclosing_output() {
+        for stdout in [
+            b"stdout-secret".as_slice(),
+            b"{\"stdout-secret\":}".as_slice(),
+            b"{\"api_key\":\"stdout-secret\"} trailing".as_slice(),
+            b"\xffstdout-secret".as_slice(),
+            b"".as_slice(),
+        ] {
+            let error = run_operation(&ConfigDump, serde_json::json!({"view": "source"}), |_| {
+                Ok(cli_output(0, stdout))
+            })
+            .await
+            .unwrap_err();
+            assert_eq!(
+                error,
+                HandleError::Product {
+                    message: "ADP configuration CLI returned invalid JSON".into(),
+                }
+            );
+            assert!(!error.to_string().contains("secret"), "{error}");
+        }
+    }
+
+    #[tokio::test]
+    async fn config_dump_preserves_exec_failure_classification() {
+        for error in [
+            HandleError::Harness {
+                message: "exec unavailable".into(),
+            },
+            HandleError::Product {
+                message: "exec timed out".into(),
+            },
+        ] {
+            let actual = run_operation(&ConfigDump, serde_json::json!({"view": "source"}), |_| {
+                Err(error.clone())
+            })
+            .await
+            .unwrap_err();
+            assert_eq!(actual, error);
         }
     }
 
@@ -698,6 +920,202 @@ mod tests {
             8081,
             Some(Evidence::tcp_accepts("api")),
         );
+    }
+
+    #[test]
+    fn otlp_endpoints_use_non_loopback_addresses_and_tcp_readiness_including_in_proxy_mode() {
+        for host in ["0.0.0.0", "192.0.2.1", "listener.example", "[::]", "[2001:db8::1]"] {
+            for proxy in ["true", "false"] {
+                let grpc = format!("{host}:56317");
+                let http = format!("{host}:56318");
+                let config = otlp_config(&[
+                    ("DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY", &grpc),
+                    ("DD_DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY", &http),
+                    ("DD_DATA_PLANE_OTLP_PROXY_ENABLED", proxy),
+                ]);
+                AgentAdp
+                    .validate_config(
+                        LINUX,
+                        &CaseValues {
+                            env: config.env.clone(),
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap();
+                let endpoints = AgentAdp.endpoints(LINUX, &config).unwrap();
+                for (name, kind, port) in [
+                    ("otlp_grpc", EndpointKind::Grpc, 56317),
+                    ("otlp_http", EndpointKind::Http, 56318),
+                ] {
+                    assert_network_endpoint(&endpoints[name], kind, port, Some(Evidence::tcp_accepts(name)));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn otlp_addresses_and_enablement_prefer_adp_overrides() {
+        let config = otlp_config(&[
+            ("DD_DATA_PLANE_OTLP_ENABLED", "invalid"),
+            ("ADP_DD_DATA_PLANE_OTLP_ENABLED", "true"),
+            ("DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY", "invalid"),
+            ("DD_DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY", "invalid"),
+            (
+                "ADP_DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY",
+                "0.0.0.0:57317",
+            ),
+            ("ADP_DD_DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY", "[::]:57318"),
+        ]);
+        let endpoints = AgentAdp.endpoints(LINUX, &config).unwrap();
+        for (name, kind, port) in [
+            ("otlp_grpc", EndpointKind::Grpc, 57317),
+            ("otlp_http", EndpointKind::Http, 57318),
+        ] {
+            assert_network_endpoint(&endpoints[name], kind, port, Some(Evidence::tcp_accepts(name)));
+        }
+        let endpoints = AgentAdp
+            .endpoints(
+                LINUX,
+                &otlp_config(&[
+                    ("DD_DATA_PLANE_OTLP_ENABLED", "false"),
+                    ("ADP_DD_DATA_PLANE_OTLP_ENABLED", "true"),
+                ]),
+            )
+            .unwrap();
+        assert!(endpoints.contains_key("otlp_grpc") && endpoints.contains_key("otlp_http"));
+    }
+
+    #[test]
+    fn otlp_endpoints_require_both_adp_and_its_otlp_pipeline_to_be_enabled() {
+        for overrides in [
+            vec![("DD_DATA_PLANE_ENABLED", "false")],
+            vec![
+                ("DD_DATA_PLANE_ENABLED", "false"),
+                ("ADP_DD_DATA_PLANE_ENABLED", "true"),
+                ("DD_DATA_PLANE_OTLP_ENABLED", "invalid"),
+            ],
+            vec![("DD_DATA_PLANE_OTLP_ENABLED", "false")],
+            vec![("ADP_DD_DATA_PLANE_OTLP_ENABLED", "false")],
+        ] {
+            let mut config = otlp_config(&overrides);
+            for key in [
+                "DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY",
+                "ADP_DD_DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY",
+            ] {
+                config.env.insert(key.into(), "invalid".into());
+            }
+            let endpoints = AgentAdp.endpoints(LINUX, &config).unwrap();
+            assert!(
+                !endpoints.contains_key("otlp_grpc") && !endpoints.contains_key("otlp_http"),
+                "{overrides:?}"
+            );
+        }
+        for missing in ["DD_DATA_PLANE_ENABLED", "DD_DATA_PLANE_OTLP_ENABLED"] {
+            let mut config = otlp_config(&[]);
+            config.env.remove(missing);
+            let endpoints = AgentAdp.endpoints(LINUX, &config).unwrap();
+            assert!(!endpoints.contains_key("otlp_grpc") && !endpoints.contains_key("otlp_http"));
+        }
+        for key in ["DD_DATA_PLANE_OTLP_ENABLED", "ADP_DD_DATA_PLANE_OTLP_ENABLED"] {
+            let error = AgentAdp
+                .endpoints(LINUX, &otlp_config(&[(key, "invalid")]))
+                .unwrap_err();
+            assert!(error.contains(key) && error.contains("true or false"), "{error}");
+        }
+    }
+
+    #[test]
+    fn otlp_defaults_and_explicit_loopback_addresses_omit_endpoints() {
+        let defaults = AgentAdp
+            .endpoints(
+                LINUX,
+                &config(&[
+                    ("DD_DATA_PLANE_ENABLED", "true"),
+                    ("DD_DATA_PLANE_OTLP_ENABLED", "true"),
+                ]),
+            )
+            .unwrap();
+        assert!(!defaults.contains_key("otlp_grpc") && !defaults.contains_key("otlp_http"));
+        for host in [
+            "localhost",
+            "LOCALHOST.",
+            "receiver.localhost",
+            "127.0.0.1",
+            "127.9.8.7",
+            "127.1",
+            "2130706433",
+            "[::1]",
+            "[::ffff:127.0.0.1]",
+        ] {
+            for prefix in ["DD_", "ADP_DD_"] {
+                let grpc_key = format!("{prefix}DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY");
+                let http_key = format!("{prefix}DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY");
+                let address = format!("{host}:56317");
+                let endpoints = AgentAdp
+                    .endpoints(LINUX, &otlp_config(&[(&grpc_key, &address), (&http_key, &address)]))
+                    .unwrap();
+                assert!(
+                    !endpoints.contains_key("otlp_grpc") && !endpoints.contains_key("otlp_http"),
+                    "{prefix} {host}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_zero_otlp_port_disables_only_that_endpoint_including_with_adp_overrides() {
+        for prefix in ["DD_", "ADP_DD_"] {
+            for (name, suffix, other) in [("otlp_grpc", "GRPC", "otlp_http"), ("otlp_http", "HTTP", "otlp_grpc")] {
+                let key = format!("{prefix}DATA_PLANE_OTLP_RECEIVER_{suffix}_ENDPOINT_TEMPORARY");
+                let endpoints = AgentAdp.endpoints(LINUX, &otlp_config(&[(&key, "0.0.0.0:0")])).unwrap();
+                assert!(!endpoints.contains_key(name), "{key}");
+                assert!(endpoints.contains_key(other), "{key}");
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_otlp_addresses_are_configuration_errors_naming_the_effective_key() {
+        for prefix in ["DD_", "ADP_DD_"] {
+            for protocol in ["GRPC", "HTTP"] {
+                let key = format!("{prefix}DATA_PLANE_OTLP_RECEIVER_{protocol}_ENDPOINT_TEMPORARY");
+                for value in [
+                    "",
+                    "listener.example",
+                    "0.0.0.0",
+                    ":56317",
+                    "0.0.0.0:",
+                    "0.0.0.0:-1",
+                    "0.0.0.0:65536",
+                    "0.0.0.0:garbage",
+                    "::1:56317",
+                    "tcp://0.0.0.0:56317",
+                    "http://0.0.0.0:56317",
+                    "https://0.0.0.0:56317",
+                    "0.0.0.0:56317/",
+                    "0.0.0.0:56317/path",
+                    "0.0.0.0:56317?query",
+                    "0.0.0.0:56317#fragment",
+                    "user@0.0.0.0:56317",
+                    "@0.0.0.0:56317",
+                    " 0.0.0.0:56317",
+                    "0.0.0.0:56317\n",
+                ] {
+                    let config = otlp_config(&[(&key, value)]);
+                    let error = AgentAdp
+                        .validate_config(
+                            LINUX,
+                            &CaseValues {
+                                env: config.env.clone(),
+                                ..Default::default()
+                            },
+                        )
+                        .unwrap_err();
+                    assert!(error.contains(&key), "{key}={value:?}: {error}");
+                    assert_eq!(AgentAdp.endpoints(LINUX, &config).unwrap_err(), error);
+                }
+            }
+        }
     }
 
     #[test]

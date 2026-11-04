@@ -22,8 +22,8 @@ use crate::{
     handle::HandleError,
     layout::{Os, Realization, RealizationKind},
     participant::{
-        CaseValues, EffectiveConfig, ExitChannel, FactDeclaration, OutputChannel, OutputStream, ParticipantType,
-        ProcessSpec,
+        CaseValues, EffectiveConfig, ExitChannel, FactDeclaration, Operation, OutputChannel, OutputStream,
+        ParticipantType, ProcessSpec,
     },
     probe::{AttemptLimits, ProbeAnswer, POLL_INTERVAL},
     record::{AssertionStatus, StepReport},
@@ -270,6 +270,73 @@ impl StepFactory for ReachFactory {
 
     fn build(&self, fields: &StepFields) -> Result<Box<dyn Step>, String> {
         Ok(Box::new(decode_fields::<Reach>(fields)?))
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Call {
+    on: String,
+    operation: String,
+    #[serde(default)]
+    args: Value,
+    #[serde(default = "step_timeout")]
+    timeout: CaseDuration,
+}
+
+#[async_trait]
+impl Step for Call {
+    fn name(&self) -> &'static str {
+        "call"
+    }
+    fn needs(&self) -> Vec<Need> {
+        vec![Need::Operation(self.on.clone(), self.operation.clone())]
+    }
+    fn budget(&self) -> Duration {
+        self.timeout.into()
+    }
+    async fn run(&self, cx: &StepContext<'_>) -> StepReport {
+        let started = Instant::now();
+        let handle = cx.handle(&self.on).expect("call needs its participant");
+        let (status, message) = match handle.op(&self.operation, self.args.clone(), self.budget()).await {
+            Ok(value) => (AssertionStatus::Passed, value.to_string()),
+            Err(error) => handle_failure(error),
+        };
+        StepReport::new(started, status, message)
+    }
+}
+
+pub(crate) struct CallFactory;
+
+impl StepFactory for CallFactory {
+    fn name(&self) -> &'static str {
+        "call"
+    }
+    fn build(&self, fields: &StepFields) -> Result<Box<dyn Step>, String> {
+        Ok(Box::new(decode_fields::<Call>(fields)?))
+    }
+}
+
+pub(crate) struct OperationServer;
+
+impl ParticipantType for OperationServer {
+    fn name(&self) -> &'static str {
+        "server"
+    }
+    fn supports(&self) -> &'static [(Os, RealizationKind)] {
+        Server.supports()
+    }
+    fn artifacts(&self, _: Realization) -> &'static [ArtifactRole] {
+        &[]
+    }
+    fn operations(&self, realization: Realization) -> &'static [&'static dyn Operation] {
+        match realization.kind {
+            RealizationKind::LinuxContainer => &[&crate::step::test_support::ConfigDump],
+            _ => &[],
+        }
+    }
+    fn processes(&self) -> &'static [&'static str] {
+        Server.processes()
     }
 }
 

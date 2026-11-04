@@ -10,7 +10,7 @@ use super::{
     PlannedParticipant,
 };
 use crate::{
-    case::{CaseFile, ProcedureNode},
+    case::{declared_names, CaseFile, ProcedureNode},
     endpoint::{EndpointOperation, RunnerHostRoute},
     layout::Layout,
     participant::{find_type, ParticipantType},
@@ -18,13 +18,13 @@ use crate::{
     step::{Need, Step},
 };
 
-/// Checks fact, late-fact and endpoint needs, returning the runner-host routes steps use.
+/// Checks fact, late-fact, operation and endpoint needs, returning the runner-host routes steps use.
 ///
 /// Participant and process needs were checked at load and are independent of the layout.
 ///
 /// # Errors
 ///
-/// Rejects the first unavailable fact, late fact or endpoint, unreachable endpoint or exhausted port allocation.
+/// Rejects the first unavailable fact, late fact, operation or endpoint, unreachable endpoint or exhausted port allocation.
 pub(super) fn check_step_references(
     file: &CaseFile, procedure: &[ProcedureNode<Box<dyn Step>>], layout: &Layout, types: &[&dyn ParticipantType],
     participants: &BTreeMap<String, PlannedParticipant>, endpoints: &BTreeMap<String, ParticipantEndpoints>,
@@ -55,6 +55,20 @@ pub(super) fn check_step_references(
                     Need::Late(participant, fact) => {
                         let realization = layout.get(&participant).expect("step needs name laid-out participants");
                         late_fact_timing(&participant, realization.kind, fact).map(|_| ())
+                    }
+                    Need::Operation(participant, operation) => {
+                        let offered = participants[&participant].operations;
+                        if offered.iter().any(|offered| offered.name() == operation) {
+                            Ok(())
+                        } else {
+                            let realization = layout.get(&participant).expect("step needs name laid-out participants");
+                            Err(format!(
+                                "calls operation '{operation}' of participant '{participant}', which type '{}' doesn't offer as {} on {}; it offers: {}",
+                                file.participants[&participant].participant_type,
+                                realization.kind.name(), realization.os.name(),
+                                declared_names(&offered.iter().map(|operation| operation.name()).collect::<Vec<_>>()),
+                            ))
+                        }
                     }
                     Need::Endpoint(participant, endpoint, operation) => plan_runner_host_route(
                         &format!("reaches endpoint '{endpoint}' of participant '{participant}'"),
@@ -113,6 +127,35 @@ mod tests {
                 minimal_procedure!(),
                 &format!("procedure: [{{step: reach, endpoint: subject.{endpoint}}}]"),
             )
+    }
+
+    #[test]
+    fn operation_needs_are_checked_against_the_planned_realization() {
+        use crate::case::fixtures::{CallFactory, OperationServer};
+        let registries = Registries {
+            participant_types: &[&OperationServer],
+            steps: &[&CallFactory],
+            typed_case_roles: &[],
+        };
+        let loader = CaseLoader::new(registries, FixtureTypes, "fixture");
+        for (os, operation, expected) in [
+            (Os::Linux, "config_dump", None),
+            (Os::Linux, "missing", Some("calls operation 'missing' of participant 'subject', which type 'server' doesn't offer as linux-container on linux; it offers: config_dump")),
+            (Os::MacOs, "config_dump", Some("calls operation 'config_dump' of participant 'subject', which type 'server' doesn't offer as host-process-group on macos; it offers: none")),
+        ] {
+            let yaml = format!("timeout: 1s\nsubject_os: [{}]\nparticipants:\n  subject: {{type: server, subject: true}}\nprocedure: [{{step: call, on: subject, operation: {operation}}}]", os.name());
+            let case = loader.load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml")).unwrap().remove(0);
+            let result = Planner::new(registries, Default::default()).unwrap().compile(case, os);
+            if let Some(expected) = expected {
+                let error = result.err().unwrap().to_string();
+                assert_eq!(error, format!("case 'alpha' in cases/alpha/config.yaml: on subject OS '{}', step 1 'call' {expected}", os.name()));
+            } else {
+                let plan = result.unwrap().into_plan().unwrap();
+                let plan = plan.participants().unwrap();
+                assert_eq!(plan.operations("subject").iter().map(|operation| operation.name()).collect::<Vec<_>>(), ["config_dump"]);
+                assert!(plan.operations("missing").is_empty());
+            }
+        }
     }
 
     #[test]

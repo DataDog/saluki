@@ -2,11 +2,15 @@
 
 use std::{collections::BTreeMap, time::Duration};
 
+use async_trait::async_trait;
+use serde_json::Value;
+
 use crate::{
     artifact::ArtifactRole,
     backend::LateFact,
     case::{EndpointOverride, FileSource, ParticipantConfig},
     endpoint::{ConsumedEndpoint, Endpoint, Evidence},
+    handle::{ExecCommand, ExecOutput, HandleError, Primitives},
     layout::{Os, Realization, RealizationKind},
     observe::output::host_output_file,
     recipe::Recipe,
@@ -175,6 +179,46 @@ pub enum OutputStream {
     Merged,
 }
 
+/// A named operation implemented by a participant type for one realization.
+#[async_trait]
+pub trait Operation: Send + Sync {
+    /// Name steps call, unique within the type's operations for a realization.
+    fn name(&self) -> &'static str;
+
+    /// Runs with the participant's primitives and the caller's time limit.
+    ///
+    /// # Errors
+    ///
+    /// Argument and mechanism problems are harness errors; unsuccessful product answers are product errors.
+    async fn run(&self, cx: &OpContext<'_>, args: Value) -> Result<Value, HandleError>;
+}
+
+/// The participant's execution primitive and a step-supplied limit.
+pub struct OpContext<'a> {
+    pub(crate) primitives: &'a dyn Primitives,
+    pub(crate) limit: Duration,
+}
+
+impl OpContext<'_> {
+    /// Runs a command with the operation's limit, inheriting the participant's environment.
+    ///
+    /// # Errors
+    ///
+    /// Returns a harness error if execution fails or exceeds its limit.
+    pub async fn exec(&self, argv: Vec<String>) -> Result<ExecOutput, HandleError> {
+        self.primitives
+            .exec(
+                ExecCommand {
+                    argv,
+                    env: Vec::new(),
+                    stdin: None,
+                },
+                self.limit,
+            )
+            .await
+    }
+}
+
 /// Default graceful-stop allowance, matching the ten-second Docker stop timeout.
 const DEFAULT_STOP_GRACE: Duration = Duration::from_secs(10);
 
@@ -299,6 +343,11 @@ pub trait ParticipantType: Send + Sync {
         &[]
     }
 
+    /// Named operations available on this realization. Defaults to none.
+    fn operations(&self, _realization: Realization) -> &'static [&'static dyn Operation] {
+        &[]
+    }
+
     /// Named processes steps may address with `process`, in sorted order.
     fn processes(&self) -> &'static [&'static str];
 
@@ -307,6 +356,18 @@ pub trait ParticipantType: Send + Sync {
     fn process_specs(&self, _realization: Realization) -> &'static [ProcessSpec] {
         &[]
     }
+}
+
+/// Checks that process names can be used as output file names.
+pub(crate) fn check_process_names(prefix: &str, processes: &[&str]) -> Result<(), String> {
+    for &process in processes {
+        if matches!(process, "" | "." | "..") || process.contains(['/', '\\']) {
+            return Err(format!(
+                "{prefix} declares process '{process}'; process names must be plain file names"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Checks exit and output channels in process declaration order, returning the validated specifications.
@@ -320,6 +381,7 @@ pub(crate) fn check_process_specs(
         realization.os.name(),
     );
     let processes = participant_type.processes();
+    check_process_names(&prefix, processes)?;
     let specs = participant_type.process_specs(realization);
     let mut container_owner = None;
     let mut output_owner = None;
@@ -330,11 +392,6 @@ pub(crate) fn check_process_specs(
     ]);
     let mut record_files: Vec<(&str, &str)> = Vec::new();
     for &process in processes {
-        if matches!(process, "" | "." | "..") || process.contains(['/', '\\']) {
-            return Err(format!(
-                "{prefix} declares process '{process}'; process names must be plain file names"
-            ));
-        }
         let mut channels = specs.iter().filter(|spec| spec.name == process);
         let Some(spec) = channels.next() else {
             return Err(format!("{prefix} declares no exit channel for process '{process}'"));
@@ -435,6 +492,9 @@ pub(crate) fn unknown_type_message(participant: &str, type_name: &str, types: &[
             .join(", ")
     )
 }
+
+#[cfg(any(test, feature = "test-util"))]
+pub mod test_support;
 
 #[cfg(test)]
 mod tests {

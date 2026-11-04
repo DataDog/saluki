@@ -8,7 +8,7 @@ use panoramic_core::artifact::{ArtifactKind, ArtifactRole};
 use panoramic_core::endpoint::{ConsumedEndpoint, Endpoint};
 use panoramic_core::layout::{Os, Realization, RealizationKind};
 use panoramic_core::participant::{
-    CaseValues, EffectiveConfig, FactDeclaration, ParticipantType, ProcessSpec, RenderedConfig,
+    CaseValues, EffectiveConfig, FactDeclaration, Operation, ParticipantType, ProcessSpec, RenderedConfig,
 };
 use panoramic_core::recipe::Recipe;
 
@@ -142,6 +142,13 @@ impl ParticipantType for AgentAdp {
         &["adp", "agent"]
     }
 
+    fn operations(&self, realization: Realization) -> &'static [&'static dyn Operation] {
+        match (realization.os, realization.kind) {
+            (Os::Linux, RealizationKind::LinuxContainer) => linux::OPERATIONS,
+            _ => &[],
+        }
+    }
+
     fn process_specs(&self, realization: Realization) -> &'static [ProcessSpec] {
         match (realization.os, realization.kind) {
             (Os::Linux, RealizationKind::LinuxContainer) => &linux::PROCESS_SPECS,
@@ -217,6 +224,30 @@ mod tests {
             table.iter().map(|(os, kind, _)| (*os, *kind)).collect::<Vec<_>>(),
             AgentAdp.supports()
         );
+    }
+
+    #[test]
+    fn config_dump_is_offered_only_for_linux_containers() {
+        for os in [Os::Linux, Os::MacOs, Os::Windows] {
+            for kind in [
+                RealizationKind::LinuxContainer,
+                RealizationKind::HostProcessGroup,
+                RealizationKind::WindowsContainer,
+                RealizationKind::KubernetesPod,
+            ] {
+                let names = AgentAdp
+                    .operations(Realization { os, kind })
+                    .iter()
+                    .map(|operation| operation.name())
+                    .collect::<Vec<_>>();
+                let expected = if (os, kind) == (Os::Linux, RealizationKind::LinuxContainer) {
+                    vec!["config_dump"]
+                } else {
+                    vec![]
+                };
+                assert_eq!(names, expected, "{os:?} {kind:?}");
+            }
+        }
     }
 
     #[test]

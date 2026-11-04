@@ -71,6 +71,9 @@ pub(super) fn check_connections(
             })?;
             let Delivery::Env { keys, value } = &endpoint.delivery;
             for key in keys {
+                if key.starts_with("PANORAMIC_") {
+                    return Err(format!("{holder} delivers reserved env '{key}' through connection '{connection}'; PANORAMIC_ is reserved for the harness"));
+                }
                 if consumer_endpoints.values.env.contains_key(key) {
                     return Err(format!(
                         "{holder} sets env '{key}', which its connection '{connection}' delivers; remove one of them"

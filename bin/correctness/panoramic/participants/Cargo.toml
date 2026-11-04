@@ -9,9 +9,12 @@ repository = { workspace = true }
 workspace = true
 
 [dependencies]
+async-trait = { workspace = true }
 panoramic-core = { workspace = true }
+serde_json = { workspace = true }
 url = { workspace = true }
 
 [dev-dependencies]
 panoramic-core = { workspace = true, features = ["test-util"] }
 regex = { workspace = true, features = ["std"] }
+tokio = { workspace = true, features = ["macros", "rt"] }

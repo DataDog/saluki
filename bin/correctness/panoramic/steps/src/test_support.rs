@@ -3,8 +3,8 @@
 use panoramic_core::step::StepFields;
 
 use crate::{
-    exits_with::ExitsWith, port_listening::PortListening, process_stable_for::ProcessStableFor, FileContains,
-    LogContains, LogNotContains,
+    config_key_equals::ConfigKeyEquals, exits_with::ExitsWith, port_listening::PortListening,
+    process_stable_for::ProcessStableFor, FileContains, LogContains, LogNotContains,
 };
 
 /// Returns fields that build the registered step `name`, on participant `subject`.
@@ -14,6 +14,7 @@ use crate::{
 /// Panics if `name` is not a registered step.
 pub fn valid_fields(name: &str) -> StepFields {
     let yaml = match name {
+        ConfigKeyEquals::NAME => "on: subject\nkey: domains.enabled\nvalue: true\nview: runtime\ntimeout: 30s",
         ExitsWith::NAME => "on: subject\nprocess: main\ncode: 1\ntimeout: 30s",
         FileContains::NAME => "on: subject\npath: /logs/output.log\npattern: ready\ntimeout: 30s",
         LogContains::NAME => "on: subject\npattern: ready\ntimeout: 30s",

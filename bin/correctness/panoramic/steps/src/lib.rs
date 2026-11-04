@@ -9,6 +9,7 @@
 use panoramic_core::step::StepFactory;
 
 mod attempts;
+mod config_key_equals;
 mod exits_with;
 mod file_contains;
 mod log_contains;
@@ -22,6 +23,7 @@ pub use self::{
 
 /// Steps available to case files, sorted by name.
 pub const REGISTERED_STEPS: &[&dyn StepFactory] = &[
+    &config_key_equals::ConfigKeyEqualsFactory,
     &exits_with::ExitsWithFactory,
     &file_contains::FileContainsFactory,
     &log_contains::LogContainsFactory,
@@ -82,8 +84,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        exits_with::ExitsWith, port_listening::PortListening, process_stable_for::ProcessStableFor,
-        test_support::valid_fields,
+        config_key_equals::ConfigKeyEquals, exits_with::ExitsWith, port_listening::PortListening,
+        process_stable_for::ProcessStableFor, test_support::valid_fields,
     };
 
     const PATTERN_STEPS: &[&dyn StepFactory] = &[
@@ -126,6 +128,7 @@ mod tests {
         assert_eq!(
             names,
             [
+                "config_key_equals",
                 "exits_with",
                 "file_contains",
                 "log_contains",
@@ -145,6 +148,7 @@ mod tests {
                 .map(|factory| factory.name())
                 .collect::<Vec<_>>(),
             [
+                ConfigKeyEquals::NAME,
                 ExitsWith::NAME,
                 FileContains::NAME,
                 LogContains::NAME,
@@ -161,6 +165,7 @@ mod tests {
             let mut fields = valid_fields(factory.name());
             let step = factory.build(&fields).unwrap();
             let needs = match factory.name() {
+                ConfigKeyEquals::NAME => vec![Need::Operation("subject".into(), "config_dump".into())],
                 ExitsWith::NAME => vec![Need::Process("subject".into(), "main".into())],
                 PortListening::NAME => vec![Need::Endpoint("subject".into(), "tcp".into(), EndpointOperation::Probe)],
                 _ => vec![Need::Handle("subject".into())],
@@ -180,6 +185,7 @@ mod tests {
     fn string_fields_reject_yaml_booleans_and_numbers() {
         for factory in REGISTERED_STEPS {
             let string_fields: &[&str] = match factory.name() {
+                ConfigKeyEquals::NAME => &["on", "key"],
                 FileContains::NAME => &["on", "pattern", "path"],
                 LogContains::NAME | LogNotContains::NAME => &["on", "pattern", "process"],
                 ExitsWith::NAME | ProcessStableFor::NAME => &["on", "process"],

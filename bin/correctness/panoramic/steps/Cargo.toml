@@ -19,10 +19,10 @@ panoramic-core = { workspace = true }
 regex = { workspace = true, features = ["std"] }
 serde = { workspace = true }
 serde-saphyr = { workspace = true, optional = true }
+serde_json = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]
 panoramic-core = { workspace = true, features = ["test-util"] }
 serde-saphyr = { workspace = true }
-serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "test-util"] }

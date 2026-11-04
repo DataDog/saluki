@@ -2879,15 +2879,15 @@ mod tests {
 
     /// A process script that runs `setup` with `$dir` set to the state directory, then runs until SIGTERM.
     ///
-    /// On SIGTERM, appends `role` to `$MARKER`, plus ` dir` if the state directory exists. The trap uses built-in shell
-    /// commands to finish within the grace period before SIGKILL.
+    /// On SIGTERM, appends `role` to `$MARKER`, plus ` dir` if the state directory exists. Waiting through the shell's
+    /// built-in `wait` lets SIGTERM run the trap before the cleanup grace expires.
     #[cfg(unix)]
     fn marking_script(role: &str, setup: &str) -> String {
         format!(
             r#"dir=${{DD_AUTH_TOKEN_FILE_PATH%/*}}
 trap 'if [ -d "$dir" ]; then echo "{role} dir" >> "$MARKER"; else echo {role} >> "$MARKER"; fi; exit 0' TERM
 {setup}
-while :; do sleep 1; done"#
+while :; do sleep 1 & wait $!; done"#
         )
     }
 

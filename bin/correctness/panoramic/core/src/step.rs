@@ -14,6 +14,7 @@ use crate::{
     endpoint::{EndpointOperation, RunnerHostRoute},
     handle::{probe_from_runner_host, send_from_runner_host, Primitives},
     observe::{Capture, ParticipantExit, ParticipantObservation},
+    participant::OpContext,
     plan::ParticipantPlan,
     probe::{AttemptLimits, ProbeAnswer},
     record::StepReport,
@@ -26,7 +27,7 @@ pub type StepFields = BTreeMap<String, Value>;
 
 /// A dependency of a built step.
 ///
-/// Loading checks participant and process names. Planning checks facts, late facts and endpoint reachability
+/// Loading checks participant and process names. Planning checks operations, facts, late facts and endpoint reachability
 /// on each subject OS.
 #[derive(Debug, PartialEq)]
 pub enum Need {
@@ -34,6 +35,8 @@ pub enum Need {
     Handle(String),
     /// One named process of a participant: (participant, process).
     Process(String, String),
+    /// A named operation: (participant, operation).
+    Operation(String, String),
     /// An early fact of a participant: (participant, fact).
     Fact(String, String),
     /// A late fact of a participant: (participant, fact). Known only once the participant exists or runs.
@@ -48,7 +51,7 @@ pub trait Step: fmt::Debug + Send + Sync {
     /// Registry name, as written in the case procedure.
     fn name(&self) -> &'static str;
 
-    /// Participants, processes, facts, late facts and endpoints the step uses.
+    /// Participants, processes, operations, facts, late facts and endpoints the step uses.
     fn needs(&self) -> Vec<Need>;
 
     /// The step's own time budget.
@@ -165,6 +168,31 @@ impl Handle<'_> {
     /// Returns a harness error if execution fails or exceeds the limit.
     pub async fn exec(&self, command: ExecCommand, limit: Duration) -> Result<ExecOutput, HandleError> {
         self.primitives.exec(command, limit).await
+    }
+
+    /// Runs a named operation offered by this participant's planned realization.
+    ///
+    /// # Errors
+    ///
+    /// Returns a harness error for an unknown operation or failed mechanism, or a product error for a bad answer.
+    pub async fn op(&self, name: &str, args: Value, limit: Duration) -> Result<Value, HandleError> {
+        let operation = self
+            .plan
+            .operations(self.name)
+            .iter()
+            .find(|operation| operation.name() == name)
+            .ok_or_else(|| HandleError::Harness {
+                message: format!("participant '{}' has no operation '{name}'", self.name),
+            })?;
+        operation
+            .run(
+                &OpContext {
+                    primitives: self.primitives,
+                    limit,
+                },
+                args,
+            )
+            .await
     }
 
     /// The process's current exit observation, or an error for an undeclared process.
@@ -307,8 +335,8 @@ impl OutputCursor<'_> {
 
 /// Builds a named step from its case-file fields at load time.
 ///
-/// The step crate registers factories for log and file assertions. The loader builds steps and checks
-/// participant and process names; planning checks facts, late facts and endpoints through [`Step::needs`].
+/// The loader builds steps and checks participant and process names; planning checks operations, facts,
+/// late facts and endpoints through [`Step::needs`].
 pub trait StepFactory: Send + Sync {
     /// Registry name, as written in a node's `step`.
     fn name(&self) -> &'static str;
@@ -380,6 +408,16 @@ mod tests {
             Ok((path == "/logs/output.log/created-id/192.0.2.7").then(Vec::new))
         }
         async fn exec(&self, command: ExecCommand, limit: Duration) -> Result<ExecOutput, HandleError> {
+            if command.argv == ["dump", "runtime"] {
+                assert!(command.env.is_empty());
+                assert!(command.stdin.is_none());
+                assert_eq!(limit, Duration::from_secs(2));
+                return Ok(ExecOutput {
+                    stdout: br#"{"enabled":true}"#.to_vec(),
+                    stderr: Vec::new(),
+                    exit_code: 0,
+                });
+            }
             assert_eq!(command.argv, ["tool", "argument"]);
             assert_eq!(command.env, [("KEY".into(), "value".into())]);
             assert_eq!(command.stdin, Some(vec![0, 255]));
@@ -462,6 +500,59 @@ mod tests {
                 stderr: vec![254],
                 exit_code: 17
             }
+        );
+    }
+
+    #[tokio::test]
+    async fn a_handle_runs_a_planned_operation_with_its_arguments_and_limit() {
+        use crate::case::{
+            fixtures::{CallFactory, FixtureTypes, OperationServer},
+            CaseLoader, Registries,
+        };
+        let registries = Registries {
+            participant_types: &[&OperationServer],
+            steps: &[&CallFactory],
+            typed_case_roles: &[],
+        };
+        let case = CaseLoader::new(registries, FixtureTypes, "fixture").load_content(
+            "timeout: 30s\nsubject_os: [linux]\nparticipants:\n  subject: {type: server, subject: true}\nprocedure: [{step: call, on: subject, operation: config_dump}]", "case", std::path::Path::new("case/config.yaml"),
+        ).unwrap().remove(0);
+        let plan = Planner::new(registries, Default::default())
+            .unwrap()
+            .compile(case, Os::Linux)
+            .unwrap()
+            .into_plan()
+            .unwrap();
+        let (_exit, exit_rx) = watch::channel(ParticipantExit::Running);
+        let (_capture, capture_rx) = watch::channel(Capture::Following);
+        let observation = ParticipantObservation::new(exit_rx, capture_rx, Default::default(), Default::default());
+        let cx = StepContext::new(
+            plan.participants().unwrap(),
+            BTreeMap::from([(
+                "subject",
+                StepParticipant {
+                    primitives: &Backend,
+                    observation: &observation,
+                    late: BTreeMap::new(),
+                },
+            )]),
+        );
+        let handle = cx.handle("subject").unwrap();
+        assert_eq!(
+            handle
+                .op(
+                    "config_dump",
+                    serde_json::json!({"view": "runtime"}),
+                    Duration::from_secs(2)
+                )
+                .await,
+            Ok(serde_json::json!({"enabled": true}))
+        );
+        assert_eq!(
+            handle.op("missing", Value::Null, Duration::from_secs(2)).await,
+            Err(HandleError::Harness {
+                message: "participant 'subject' has no operation 'missing'".into()
+            })
         );
     }
 

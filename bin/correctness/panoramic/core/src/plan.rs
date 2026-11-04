@@ -10,7 +10,10 @@ use crate::{
     case::{config_references::FileTemplates, CaseConfig, CaseFile, CaseSchema, ProcedureNode, Registries},
     endpoint::{Endpoint, EndpointOperation, Listener, Port, ResolvedAddress, RunnerHostPort, RunnerHostRoute},
     layout::{describe_participant, lay_out, Layout, LayoutEntry, Os},
-    participant::{find_type, CaseValues, EffectiveConfig, ParticipantType, SHARED_DIR_FACT},
+    participant::{
+        check_process_names, check_process_specs, find_type, CaseValues, EffectiveConfig, Operation, ParticipantType,
+        SHARED_DIR_FACT,
+    },
     step::Step,
 };
 
@@ -101,6 +104,7 @@ struct PlannedCase {
 }
 
 struct PlannedParticipant {
+    operations: &'static [&'static dyn Operation],
     case_values: CaseValues,
     facts: BTreeMap<String, String>,
     config: EffectiveConfig,
@@ -162,14 +166,15 @@ impl<'a> Planner<'a> {
     /// 2. On each declared subject OS in the order the case lists them, even when the selected OS is excluded:
     ///    1. Layout.
     ///    2. Participant facts: no type may declare `shared_dir`.
-    ///    3. Per participant in name order: fact and late-fact references in `env`, `params`, then template files;
+    ///    3. Per participant in name order: process names and any declared process specifications;
+    ///       fact and late-fact references in `env`, `params`, then template files;
     ///       configuration; endpoint derivation; port assignment and re-derivation; endpoint overrides; then
     ///       listener ports and socket paths in endpoint name order, then readiness evidence (endpoint evidence
-    ///       in endpoint name order, then participant evidence).
+    ///       in endpoint name order, then participant evidence); then reserved environment variables.
     ///    4. Runner-host listener range and transport uniqueness, per participant and endpoint in name order.
     ///    5. Connections per consumer in name order. For each `connect` key in name order: consumed endpoint,
-    ///       served endpoint, accepted kind, route, socket location and length, delivered env keys, then address
-    ///       allocation and delivered values. Then required endpoints in name order.
+    ///       served endpoint, accepted kind, route, socket location and length, delivered env keys (including reserved
+    ///       names), then address allocation and delivered values. Then required endpoints in name order.
     ///    6. Endpoint and connection references in configuration, per participant in name order (`env`, `params`,
     ///       then template files): served endpoint, route, socket location and length, address part, then
     ///       runner-host port allocation and address rendering.
@@ -178,8 +183,9 @@ impl<'a> Planner<'a> {
     ///       distinct servers in name order and their participant evidence in declaration order. Each resolves
     ///       its operation's route and draws any runner-host port. Self-connections add no gates; equal gates
     ///       within a consumer are kept once.
-    ///    9. Step fact, late-fact and endpoint needs in procedure order, naming the step. Endpoint needs check
-    ///       the served endpoint and operation-specific route, then allocate any port it needs and render its address.
+    ///    9. Step fact, late-fact, operation and endpoint needs in procedure order, naming the step. Endpoint needs
+    ///       check the served endpoint and operation-specific route, then allocate any port it needs and render its address.
+    ///       Operation needs check the names the type offers on the participant's realization.
     pub fn compile<C>(&mut self, case: CaseConfig<C>, subject_os: Os) -> Result<Compiled<C>, GenericError> {
         let selected = case.subject_os().contains(&subject_os);
         let mut artifacts = Vec::new();
@@ -460,6 +466,16 @@ impl<'a> ParticipantPlan<'a> {
             .get(&(server.into(), endpoint.into()))
     }
 
+    /// Returns the operations offered by the planned realization, or an empty slice for an unknown participant.
+    pub(crate) fn operations(self, participant: &str) -> &'static [&'static dyn Operation] {
+        self.data
+            .planned
+            .participants
+            .get(participant)
+            .map(|participant| participant.operations)
+            .unwrap_or(&[])
+    }
+
     /// Returns the runner-host route for a step-needed endpoint operation.
     pub(crate) fn runner_host_route(
         self, server: &str, endpoint: &str, operation: EndpointOperation,
@@ -544,6 +560,10 @@ fn plan_participants(
         let participant_type =
             find_type(types, &entry.participant_type).expect("laid-out participants have registered types");
         let holder = describe_participant(name, &entry.participant_type, realization);
+        check_process_names(&holder, participant_type.processes())?;
+        if !participant_type.process_specs(realization).is_empty() {
+            check_process_specs(name, participant_type, realization)?;
+        }
         let mut values = CaseValues::for_os(&entry.config, realization.os);
         references::resolve_config_references(file, layout, types, &facts, name, &mut values)?;
         references::check_file_references(file, templates, layout, types, &facts, name, &values)?;
@@ -555,17 +575,31 @@ fn plan_participants(
             facts[name][SHARED_DIR_FACT].clone(),
             ports,
         )?;
+        if let Some(key) = config.env.keys().find(|key| key.starts_with("PANORAMIC_")) {
+            let source = if values.env.contains_key(key) {
+                "case configuration"
+            } else {
+                "type default"
+            };
+            return Err(format!(
+                "{holder} sets reserved env '{key}' through its {source}; PANORAMIC_ is reserved for the harness"
+            ));
+        }
         participant_endpoints.insert(name.to_string(), endpoints);
-        configs.insert(name.to_string(), (values, config));
+        configs.insert(
+            name.to_string(),
+            (values, config, participant_type.operations(realization)),
+        );
     }
     let mut participants: BTreeMap<_, _> = facts
         .into_iter()
         .zip(configs.into_values())
-        .map(|((name, facts), (case_values, config))| {
+        .map(|((name, facts), (case_values, config, operations))| {
             let served = participant_endpoints[&name].served.clone();
             (
                 name,
                 PlannedParticipant {
+                    operations,
                     case_values,
                     facts,
                     config,
@@ -615,6 +649,9 @@ fn plan_participants(
 
 #[cfg(test)]
 pub(crate) mod fixtures;
+
+#[cfg(test)]
+mod validation_tests;
 
 /// Plan identities used by daemon tests to find their resources after a failure.
 #[cfg(any(test, feature = "test-util"))]

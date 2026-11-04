@@ -1496,8 +1496,8 @@ timeout: 30s
             ),
             (
                 "first",
-                PARTICIPANT_FIELDS.replace("subject: true", "subject: true, config: {env: {PANORAMIC_DYNAMIC_IP: value}}"),
-                Some("sets config.env 'PANORAMIC_DYNAMIC_IP'; names starting with PANORAMIC_DYNAMIC_ are reserved for cases with 'type: integration'"),
+                PARTICIPANT_FIELDS.replace("subject: true", "subject: true, config: {env: {KEY: '{{ self.late.ip }}'}}"),
+                Some("sets config.env 'KEY' with a template reference ('{{'); the integration runner does not support references in environment variables"),
             ),
         ] {
             let yaml = yaml.replace("[linux]", "[macos]").replace("runtimes: [macos]", "runtimes: [mac]");

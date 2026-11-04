@@ -4561,8 +4561,11 @@ dependencies = [
 name = "panoramic-participants"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "panoramic-core",
  "regex",
+ "serde_json",
+ "tokio",
  "url",
 ]
 

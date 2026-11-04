@@ -95,7 +95,7 @@ Use product `config_dump` output from CI runs to compare effective product confi
 
 | Suite | Files | Selected rows (subject OS / runtime) | Disabled rows | Assertions (subject OS) | Actions (subject OS) |
 | --- | --- | --- | --- | --- | --- |
-| integration | 52 | linux / linux: 42; linux / linux-container: 3; macos / mac: 31; windows / windows: 34 | 0 | linux: 191; macos: 130; windows: 144 | linux: 20; macos: 14; windows: 16 |
+| integration | 52 | linux / linux: 40; linux / linux-container: 5; macos / mac: 31; windows / windows: 34 | 0 | linux: 191; macos: 130; windows: 144 | linux: 20; macos: 14; windows: 16 |
 | correctness | 42 | linux / docker: 39; linux / kubernetes_in_docker: 7 | 2 | — | — |
 
 Total: 158 rows.
@@ -210,8 +210,8 @@ Total: 158 rows.
 | adp-rar-registration | integration | linux | linux | selected | test-integration | integration | old | assertions: 3, actions: 1 | 0 |
 | adp-rar-registration | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 3, actions: 1 | 0 |
 | adp-rar-registration | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 3, actions: 1 | 0 |
-| adp-rc-core-disabled | integration | linux | linux | selected | test-integration | integration | old | assertions: 5, actions: 0 | 0 |
-| adp-rc-no-products | integration | linux | linux | selected | test-integration | integration | old | assertions: 4, actions: 0 | 0 |
+| adp-rc-core-disabled | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 5, actions: 0 | 0 |
+| adp-rc-no-products | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 4, actions: 0 | 0 |
 | apm-bind-custom-hostname | integration | linux | linux | selected | test-integration | integration | old | assertions: 3, actions: 0 | 0 |
 | apm-bind-custom-hostname | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 3, actions: 0 | 0 |
 | basic-startup | integration | linux | linux | selected | test-integration | integration | old | assertions: 3, actions: 0 | 0 |
@@ -281,6 +281,18 @@ The logging cases drop the legacy `58125/udp` exposed port, which only `port_lis
 `adp-disabled-exit` and `adp-no-pipelines-exit` also fit the supported subset, but their log line stands in for a
 process exit. They keep the old schema until exits are observed directly.
 
+## Native Remote Configuration cases
+
+`adp-rc-core-disabled` and `adp-rc-no-products` use the participant schema and native Linux execution.
+
+- Stability catches supervised ADP restarts by watching ADP's own exit record.
+- Stability also covers the Agent: omitting `process` watches every declared process.
+- `adp-rc-no-products` probes its `otlp_http` endpoint with `port_listening`.
+
+Log steps omit `process` to search every process's output plus the container log.
+
+`adp-rar-disabled` uses legacy execution and observes container liveness.
+
 ## Migration proofs
 
 When changing a case's schema or runner, add CI evidence per (case, subject OS, execution). Native rows may say
@@ -299,6 +311,8 @@ Link CI runs; don't copy their logs into the repository.
 | adp-logging-windows-default-path | windows | old | Tested `33e3e697c5` in [pipeline 149203111](https://gitlab.ddbuild.io/DataDog/saluki/-/pipelines/149203111): [test-integration-windows-amd64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351930) passed on the integration runner (execution `old`). Compared with the inventory at `b975a993e0`. |
 | adp-logging-windows-ignores-core-agent-log-file | windows | old | Tested `33e3e697c5` in [pipeline 149203111](https://gitlab.ddbuild.io/DataDog/saluki/-/pipelines/149203111): [test-integration-windows-amd64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351930) passed on the integration runner (execution `old`). Compared with the inventory at `b975a993e0`. |
 | adp-logging-windows-respects-data-plane-log-file | windows | old | Tested `33e3e697c5` in [pipeline 149203111](https://gitlab.ddbuild.io/DataDog/saluki/-/pipelines/149203111): [test-integration-windows-amd64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351930) passed on the integration runner (execution `old`). Compared with the inventory at `b975a993e0`. |
+| adp-rc-core-disabled | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `18554ba44c`. |
+| adp-rc-no-products | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `18554ba44c`. |
 <!-- migration-proofs:end -->
 
 The macOS proofs carry a caveat: the integration runner's macOS host processes share the host's `/tmp`, and nothing

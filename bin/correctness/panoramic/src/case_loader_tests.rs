@@ -213,20 +213,36 @@ fn registered_template_fields_match_step_types_and_other_fields_reject_reference
         {
             let mut referenced = fields.clone();
             referenced.insert(field.clone(), Value::String("{{ adp.facts.default_log_file }}".into()));
-            let step = factory.build(&referenced).unwrap();
             let declared = factory.template_fields().contains(&field.as_str());
-            assert_eq!(
-                step.needs()
-                    .contains(&Need::Fact("adp".into(), "default_log_file".into())),
-                declared,
-                "{}: {field}",
-                factory.name()
-            );
+            let decode_error = if factory.name() == "config_key_equals" && field == "view" {
+                let message = factory.build(&referenced).unwrap_err();
+                assert_eq!(
+                    message,
+                    "view: unknown variant `{{ adp.facts.default_log_file }}`, expected `source` or `runtime`"
+                );
+                assert!(!declared);
+                Some(message)
+            } else {
+                let step = factory.build(&referenced).unwrap();
+                assert_eq!(
+                    step.needs()
+                        .contains(&Need::Fact("adp".into(), "default_log_file".into())),
+                    declared,
+                    "{}: {field}",
+                    factory.name()
+                );
+                None
+            };
             referenced.insert("step".into(), Value::String(factory.name().into()));
             let mut file: Value = serde_saphyr::from_str(PARTICIPANT_FIELDS).unwrap();
             file["procedure"] = serde_json::json!([referenced]);
             let result = crate::CASE_LOADER.load_content(&file.to_string(), "alpha", Path::new("config.yaml"));
-            if declared {
+            if let Some(message) = decode_error {
+                assert_eq!(
+                    result.err().expect("invalid view must fail").to_string(),
+                    format!("case 'alpha' in config.yaml: step 1 '{}': {message}", factory.name())
+                );
+            } else if declared {
                 let cases = result.unwrap_or_else(|error| panic!("{}: {field}: {error}", factory.name()));
                 let CaseSchema::Participants { procedure, .. } = cases[0].schema() else {
                     panic!("expected participant data");
@@ -258,15 +274,35 @@ fn participant_step_errors_name_the_canonical_file_and_step() {
     for (fields, expected) in [
         (
             "step: wait_ready",
-            "names unknown step 'wait_ready'; registered steps: exits_with, file_contains, log_contains, log_not_contains, port_listening, process_stable_for",
+            "names unknown step 'wait_ready'; registered steps: config_key_equals, exits_with, file_contains, log_contains, log_not_contains, port_listening, process_stable_for",
         ),
         (
             "step: adp_cli, on: adp, args: [status]",
-            "names unknown step 'adp_cli'; registered steps: exits_with, file_contains, log_contains, log_not_contains, port_listening, process_stable_for",
+            "names unknown step 'adp_cli'; registered steps: config_key_equals, exits_with, file_contains, log_contains, log_not_contains, port_listening, process_stable_for",
         ),
         (
             "step: port_listening, on: adp, timeout: 1s",
             "missing field `endpoint`",
+        ),
+        (
+            "step: config_key_equals, on: adp, key: domains.enabled, view: runtime, timeout: 1s",
+            "missing field `value`",
+        ),
+        (
+            "step: config_key_equals, on: adp, key: domains.enabled, value: null, timeout: 1s",
+            "missing field `view`",
+        ),
+        (
+            "step: config_key_equals, on: adp, key: domains.enabled, value: null, view: combined, timeout: 1s",
+            "'config_key_equals': view: unknown variant `combined`, expected `source` or `runtime`",
+        ),
+        (
+            "step: config_key_equals, on: missing, key: domains.enabled, value: null, view: source, timeout: 1s",
+            "'config_key_equals' calls operation 'config_dump' of unknown participant 'missing'; participants: adp",
+        ),
+        (
+            "step: config_key_equals, on: adp, key: domains.enabled, value: {nested: ['{{ adp.facts.default_log_file }}']}, view: source, timeout: 1s",
+            "'config_key_equals': field 'value' contains a template reference",
         ),
         (
             "step: file_contains, on: adp, path: /logs/output.log, pattern: null, timeout: 1s",
