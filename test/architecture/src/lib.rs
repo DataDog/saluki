@@ -51,6 +51,7 @@ mod tests {
     const CONFIG_SYSTEM: &str = "agent-data-plane-config-system";
     const DATADOG_CONFIG: &str = "datadog-agent-config";
     const OVERLAY_MODEL: &str = "datadog-agent-config-overlay-model";
+    const CORPUS: &str = "datadog-agent-config-corpus";
     const BIN: &str = "agent-data-plane";
 
     fn workspace() -> Workspace {
@@ -158,22 +159,24 @@ mod tests {
         );
     }
 
-    /// Overlay metadata belongs to code generation and configuration-system validation, not runtime code.
+    /// Overlay metadata belongs to code generation and configuration validation, not runtime code.
+    /// The corpus tests check recordings against the support inventory.
     #[test]
-    fn overlay_model_has_no_normal_dependents_and_only_configuration_system_tests_use_it() {
+    fn overlay_model_has_no_normal_dependents_and_only_configuration_tests_use_it() {
+        let dev_dependents = [CONFIG_SYSTEM, CORPUS];
         let workspace = workspace();
         let links: Vec<String> = workspace
             .member(OVERLAY_MODEL)
             .unwrap()
             .reverse_direct_links()
             .filter(|link| {
-                link.normal().is_present() || (link.dev().is_present() && link.from().name() != CONFIG_SYSTEM)
+                link.normal().is_present() || (link.dev().is_present() && !dev_dependents.contains(&link.from().name()))
             })
             .map(|link| format!("{} -[{}]-> {OVERLAY_MODEL}", link.from().name(), LinkKinds(&link)))
             .collect();
         assert!(
             links.is_empty(),
-            "`{OVERLAY_MODEL}` allows build links, and a dev link from `{CONFIG_SYSTEM}`, only:\n{}",
+            "`{OVERLAY_MODEL}` allows build links, and dev links from {dev_dependents:?}, only:\n{}",
             links.join("\n")
         );
     }
