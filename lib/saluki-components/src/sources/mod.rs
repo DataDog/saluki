@@ -20,6 +20,6 @@ pub use self::otlp::{
 };
 pub use crate::common::otlp::{
     receiver::{GrpcTransport, OtlpGrpcReceiver, OtlpHttpReceiver, OtlpKeepalive, OtlpReceiver, OtlpReceiverTls},
-    traces::translator::OtlpTracesSettings,
+    traces::translator::{ContainerTagPromotion, OtlpTracesSettings},
     CorsConfiguration,
 };

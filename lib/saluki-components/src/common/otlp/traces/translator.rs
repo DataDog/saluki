@@ -10,15 +10,17 @@ use saluki_common::collections::FastHashMap;
 use saluki_common::strings::StringBuilder;
 use saluki_core::data_model::event::trace::{AttributeValue, Span as DdSpan, Trace, TraceIngestInfo};
 use saluki_core::data_model::event::Event;
+use saluki_core::data_model::origin::OriginTagCardinality;
 use stringtheory::interning::GenericMapInterner;
 use stringtheory::MetaString;
 
 use crate::common::datadog::SAMPLING_PRIORITY_METRIC_KEY;
+use crate::common::otlp::origin::OtlpOriginTagResolver;
 use crate::common::otlp::traces::transform::{
     bytes_to_hex_lowercase, get_otel_container_id, get_otel_env, get_otel_version, normalize_peer_service_tags,
     otel_span_to_dd_span, otlp_value_to_string,
 };
-use crate::common::otlp::util::get_string_attribute;
+use crate::common::otlp::util::{get_string_attribute, set_resource_attributes, write_infra_tag_attributes};
 use crate::common::otlp::Metrics;
 
 const DATADOG_HOSTNAME_ATTR: &str = "datadog.host.name";
@@ -68,6 +70,8 @@ struct OtlpResourceMeta {
     tracer_version: MetaString,
     /// All resource attributes as a typed map (for `Trace::attributes`).
     attributes: Arc<FastHashMap<MetaString, AttributeValue>>,
+    /// Enriched tags that span conversion must see as resource attributes, so they reach every span's meta.
+    span_attributes: Vec<otlp_common::KeyValue>,
 }
 
 /// Extracts unified trace-level fields from OTLP resource attributes.
@@ -84,7 +88,8 @@ struct OtlpResourceMeta {
 /// cloud-provider and K8s steps are not yet implemented.
 /// TODO: implement full hostnameFromAttributes parity.
 fn extract_resource_meta(
-    attributes: &[otlp_common::KeyValue], ignore_missing_fields: bool, interner: &GenericMapInterner,
+    attributes: &[otlp_common::KeyValue], ignore_missing_fields: bool,
+    infra_attributes: Option<(&OtlpOriginTagResolver, ContainerTagPromotion)>, interner: &GenericMapInterner,
     string_builder: &mut StringBuilder<GenericMapInterner>,
 ) -> OtlpResourceMeta {
     // Reuse the existing normalizing helpers (span_attrs = empty, resource_attrs = full).
@@ -145,6 +150,14 @@ fn extract_resource_meta(
         attr_map.insert(key, attr_value);
     }
 
+    // Entity and global tags resolve at low cardinality: higher tiers multiply the tags on every
+    // span's stats buckets, and no setting raises the tier yet.
+    let mut span_attributes = Vec::new();
+    if let Some((resolver, promotion)) = infra_attributes {
+        let infra_tags = resolver.resolve_resource_tags(attributes, OriginTagCardinality::Low);
+        span_attributes = write_infra_tag_attributes(infra_tags, promotion, interner, &mut attr_map);
+    }
+
     OtlpResourceMeta {
         env,
         hostname,
@@ -153,6 +166,7 @@ fn extract_resource_meta(
         language_name,
         tracer_version,
         attributes: Arc::new(attr_map),
+        span_attributes,
     }
 }
 
@@ -184,6 +198,26 @@ pub struct OtlpTracesSettings {
 
     /// Whether spans missing intake-required fields are translated rather than rejected.
     pub ignore_missing_datadog_fields: bool,
+
+    /// Whether entity and global tags from the workload metadata store are enriched onto traces.
+    pub infra_attributes_enabled: bool,
+
+    /// How custom infrastructure tags are promoted into container tags.
+    pub container_tag_promotion: ContainerTagPromotion,
+}
+
+/// How custom infrastructure tags are promoted into container tags on OTLP traces.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ContainerTagPromotion {
+    /// Writes tags as-is. Only convention keys reach container tags; custom keys remain plain resource attributes.
+    #[default]
+    Off,
+
+    /// Writes both the original key and a `datadog.container.tag.` prefixed copy.
+    Duplicate,
+
+    /// Writes only the `datadog.container.tag.` form.
+    Rename,
 }
 
 /// Returns trace translation settings carrying the configuration defaults.
@@ -194,6 +228,8 @@ pub(crate) fn traces_settings() -> OtlpTracesSettings {
         probabilistic_sampler_sampling_percentage: 0.0,
         enable_compute_top_level_by_span_kind: true,
         ignore_missing_datadog_fields: false,
+        infra_attributes_enabled: true,
+        container_tag_promotion: ContainerTagPromotion::Off,
     }
 }
 
@@ -203,6 +239,8 @@ pub struct OtlpTracesTranslator {
     receiver_sampling_rate: f64,
     /// Maximum length of a span's resource name, in bytes.
     max_resource_len: usize,
+    /// Resolves entity and global tags for a resource's container.
+    origin_tag_resolver: OtlpOriginTagResolver,
     interner: GenericMapInterner,
     string_builder: StringBuilder<GenericMapInterner>,
     /// Supplies one registry snapshot per `ResourceSpans` batch, so mappings cannot change midway through a batch.
@@ -217,7 +255,10 @@ impl OtlpTracesTranslator {
     /// The configured sampling percentage becomes the receiver sampling rate stamped on every trace. Rates outside
     /// `(0, 1)` and NaN normalize to `1.0`. This matches `OTLPReceiver.samplingRate` in the Go trace agent, except
     /// that the Go trace agent propagates NaN.
-    pub fn new(config: OtlpTracesSettings, max_resource_len: usize, registry: SemanticRegistryProvider) -> Self {
+    pub fn new(
+        config: OtlpTracesSettings, max_resource_len: usize, registry: SemanticRegistryProvider,
+        origin_tag_resolver: OtlpOriginTagResolver,
+    ) -> Self {
         let interner = GenericMapInterner::new(config.string_interner_size);
         let string_builder = StringBuilder::new().with_interner(interner.clone());
         let rate = config.probabilistic_sampler_sampling_percentage / 100.0;
@@ -226,6 +267,7 @@ impl OtlpTracesTranslator {
             config,
             receiver_sampling_rate,
             max_resource_len,
+            origin_tag_resolver,
             interner,
             string_builder,
             registry,
@@ -233,7 +275,7 @@ impl OtlpTracesTranslator {
     }
 
     pub fn translate_spans(&mut self, resource_spans: ResourceSpans, metrics: &Metrics) -> impl Iterator<Item = Event> {
-        let resource: OtlpResource = resource_spans.resource.unwrap_or_default();
+        let mut resource: OtlpResource = resource_spans.resource.unwrap_or_default();
         let ignore_missing_fields = self.config.ignore_missing_datadog_fields;
         let compute_top_level = self.config.enable_compute_top_level_by_span_kind;
         let interner = &self.interner;
@@ -242,8 +284,23 @@ impl OtlpTracesTranslator {
         let registry: &Registry = &registry;
 
         // Build unified resource metadata for the new Trace fields.
-        let resource_meta =
-            extract_resource_meta(&resource.attributes, ignore_missing_fields, interner, string_builder);
+        let infra_attributes = self
+            .config
+            .infra_attributes_enabled
+            .then_some((&self.origin_tag_resolver, self.config.container_tag_promotion));
+        let mut resource_meta = extract_resource_meta(
+            &resource.attributes,
+            ignore_missing_fields,
+            infra_attributes,
+            interner,
+            string_builder,
+        );
+
+        // Span conversion maps resource attributes onto every span, so it must see the enriched custom tags too.
+        set_resource_attributes(
+            &mut resource.attributes,
+            std::mem::take(&mut resource_meta.span_attributes),
+        );
 
         let mut traces_by_id: FastHashMap<u64, TraceEntry> = FastHashMap::default();
         let trace_count_hint = resource_spans.scope_spans.len();
@@ -468,15 +525,19 @@ pub(crate) fn custom_status_code_registry() -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use datadog_agent_apm::semantics::test_util::{registry_json, TestRegistryPublisher};
     use otlp_protos::opentelemetry::proto::common::v1::any_value::Value;
     use otlp_protos::opentelemetry::proto::common::v1::{AnyValue, KeyValue};
     use otlp_protos::opentelemetry::proto::resource::v1::Resource;
     use otlp_protos::opentelemetry::proto::trace::v1::{ResourceSpans, ScopeSpans, Span as OtlpSpan};
     use saluki_core::components::ComponentContext;
+    use saluki_env::workload::{providers::TestWorkloadProvider, EntityId};
     use saluki_metrics::test::TestRecorder;
 
     use super::*;
+    use crate::common::otlp::origin::OtlpOriginTagResolver;
     use crate::common::otlp::{build_metrics, Metrics};
 
     /// Default maximum resource name length, in bytes.
@@ -551,6 +612,14 @@ mod tests {
         }
     }
 
+    fn translator_config() -> OtlpTracesSettings {
+        OtlpTracesSettings {
+            string_interner_size: std::num::NonZeroUsize::new(64 * 1024).unwrap(),
+            enable_compute_top_level_by_span_kind: true,
+            ..traces_settings()
+        }
+    }
+
     fn translate(resource_spans: ResourceSpans) -> Vec<Trace> {
         let mut translator = OtlpTracesTranslator::new(
             OtlpTracesSettings {
@@ -560,12 +629,43 @@ mod tests {
             },
             MAX_RESOURCE_LEN,
             SemanticRegistryProvider::default(),
+            OtlpOriginTagResolver::new(Arc::new(TestWorkloadProvider::new())),
         );
         let metrics = Metrics::for_tests();
         translator
             .translate_spans(resource_spans, &metrics)
             .filter_map(Event::try_into_trace)
             .collect()
+    }
+
+    fn translate_with_enrichment(
+        provider: TestWorkloadProvider, promotion: ContainerTagPromotion, enabled: bool, resource_spans: ResourceSpans,
+    ) -> Vec<Trace> {
+        let config = OtlpTracesSettings {
+            infra_attributes_enabled: enabled,
+            container_tag_promotion: promotion,
+            ..translator_config()
+        };
+        let mut translator = OtlpTracesTranslator::new(
+            config,
+            MAX_RESOURCE_LEN,
+            SemanticRegistryProvider::default(),
+            OtlpOriginTagResolver::new(Arc::new(provider)),
+        );
+        let metrics = Metrics::for_tests();
+        translator
+            .translate_spans(resource_spans, &metrics)
+            .filter_map(Event::try_into_trace)
+            .collect()
+    }
+
+    /// Returns the string value of a trace attribute, or `None` when the key is absent or non-string.
+    fn attr(trace: &Trace, key: &str) -> Option<String> {
+        trace
+            .attributes
+            .get(key)
+            .and_then(|value| value.as_string())
+            .map(|value| value.as_ref().to_string())
     }
 
     #[test]
@@ -578,6 +678,7 @@ mod tests {
             },
             MAX_RESOURCE_LEN,
             provider,
+            OtlpOriginTagResolver::new(Arc::new(TestWorkloadProvider::new())),
         );
         let metrics = Metrics::for_tests();
         let mut http_status_code = || {
@@ -630,6 +731,7 @@ mod tests {
             },
             MAX_RESOURCE_LEN,
             provider,
+            OtlpOriginTagResolver::new(Arc::new(TestWorkloadProvider::new())),
         );
         let metrics = Metrics::for_tests();
         let mut peer_service = || {
@@ -690,6 +792,7 @@ mod tests {
                 },
                 MAX_RESOURCE_LEN,
                 SemanticRegistryProvider::default(),
+                OtlpOriginTagResolver::new(Arc::new(TestWorkloadProvider::new())),
             );
             let rs = build_resource_spans(
                 vec![],
@@ -804,6 +907,121 @@ mod tests {
         assert_eq!(payload.tracer_version.as_ref(), "1.0");
     }
 
+    /// Returns a provider holding one convention tag and one custom tag for the given container.
+    fn provider_for_container() -> TestWorkloadProvider {
+        TestWorkloadProvider::with_entity(
+            EntityId::Container(MetaString::from("abc123")),
+            &["kube_namespace:payments", "team:checkout"],
+        )
+    }
+
+    /// Returns the string value of the first span's attribute, or `None` when the key is absent or non-string.
+    fn span_attr(trace: &Trace, key: &str) -> Option<String> {
+        trace.spans()[0]
+            .attributes
+            .get(key)
+            .and_then(|value| value.as_string())
+            .map(|value| value.as_ref().to_string())
+    }
+
+    #[test]
+    fn translate_spans_enriches_resource_attributes_with_workload_tags() {
+        let rs = build_resource_spans(
+            vec![string_kv("container.id", "abc123")],
+            vec![span([1u8; 16], [1u8; 8], vec![])],
+        );
+
+        let traces = translate_with_enrichment(provider_for_container(), ContainerTagPromotion::Off, true, rs);
+        assert_eq!(traces.len(), 1);
+        assert_eq!(attr(&traces[0], "kube_namespace").as_deref(), Some("payments"));
+        assert_eq!(attr(&traces[0], "team").as_deref(), Some("checkout"));
+
+        // The custom tag stays a plain resource attribute, so span conversion maps it onto the span. The recognized
+        // convention key is consumed as a container tag and must not be duplicated onto spans.
+        assert_eq!(span_attr(&traces[0], "team").as_deref(), Some("checkout"));
+        assert_eq!(span_attr(&traces[0], "kube_namespace"), None);
+    }
+
+    #[test]
+    fn translate_spans_applies_duplicate_promotion_to_custom_tags() {
+        let rs = build_resource_spans(
+            vec![string_kv("container.id", "abc123")],
+            vec![span([1u8; 16], [1u8; 8], vec![])],
+        );
+
+        let traces = translate_with_enrichment(provider_for_container(), ContainerTagPromotion::Duplicate, true, rs);
+        assert_eq!(traces.len(), 1);
+
+        assert_eq!(attr(&traces[0], "kube_namespace").as_deref(), Some("payments"));
+        assert!(traces[0]
+            .attributes
+            .get("datadog.container.tag.kube_namespace")
+            .is_none());
+
+        assert_eq!(attr(&traces[0], "team").as_deref(), Some("checkout"));
+        assert_eq!(
+            attr(&traces[0], "datadog.container.tag.team").as_deref(),
+            Some("checkout")
+        );
+
+        // The unprefixed form reaches span meta; the prefixed copy is consumed as a container tag.
+        assert_eq!(span_attr(&traces[0], "team").as_deref(), Some("checkout"));
+        assert_eq!(span_attr(&traces[0], "datadog.container.tag.team"), None);
+    }
+
+    #[test]
+    fn translate_spans_applies_rename_promotion_to_custom_tags() {
+        let rs = build_resource_spans(
+            vec![string_kv("container.id", "abc123")],
+            vec![span([1u8; 16], [1u8; 8], vec![])],
+        );
+
+        let traces = translate_with_enrichment(provider_for_container(), ContainerTagPromotion::Rename, true, rs);
+        assert_eq!(traces.len(), 1);
+
+        assert_eq!(attr(&traces[0], "kube_namespace").as_deref(), Some("payments"));
+        assert_eq!(
+            attr(&traces[0], "datadog.container.tag.team").as_deref(),
+            Some("checkout")
+        );
+        assert!(traces[0].attributes.get("team").is_none());
+
+        // Only the prefixed form exists, and it is consumed as a container tag, so nothing reaches span meta.
+        assert_eq!(span_attr(&traces[0], "team"), None);
+        assert_eq!(span_attr(&traces[0], "datadog.container.tag.team"), None);
+    }
+
+    #[test]
+    fn translate_spans_preserves_sender_provided_prefixed_attributes() {
+        let rs = build_resource_spans(
+            vec![
+                string_kv("container.id", "abc123"),
+                string_kv("datadog.container.tag.env", "prod"),
+            ],
+            vec![span([1u8; 16], [1u8; 8], vec![])],
+        );
+
+        let traces = translate_with_enrichment(provider_for_container(), ContainerTagPromotion::Duplicate, true, rs);
+        assert_eq!(traces.len(), 1);
+
+        assert_eq!(attr(&traces[0], "datadog.container.tag.env").as_deref(), Some("prod"));
+    }
+
+    #[test]
+    fn translate_spans_skips_enrichment_when_disabled() {
+        let rs = build_resource_spans(
+            vec![string_kv("container.id", "abc123")],
+            vec![span([1u8; 16], [1u8; 8], vec![])],
+        );
+
+        let traces = translate_with_enrichment(provider_for_container(), ContainerTagPromotion::Duplicate, false, rs);
+        assert_eq!(traces.len(), 1);
+
+        assert!(traces[0].attributes.get("kube_namespace").is_none());
+        assert!(traces[0].attributes.get("team").is_none());
+        assert!(traces[0].attributes.get("datadog.container.tag.team").is_none());
+    }
+
     /// A span whose span ID converts to zero is dropped along with the trace containing it, mirroring
     /// `normalizeV1` (`pkg/trace/agent/normalizer.go`). https://github.com/DataDog/saluki/issues/2382
     #[test]
@@ -818,6 +1036,7 @@ mod tests {
             },
             5000,
             SemanticRegistryProvider::default(),
+            OtlpOriginTagResolver::new(Arc::new(TestWorkloadProvider::new())),
         );
         let metrics = build_metrics(&ComponentContext::test_source("otlp_test"));
 

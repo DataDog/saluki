@@ -10,6 +10,7 @@
 //! no OTLP receiver rate on the wire.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use base64::{engine::general_purpose, Engine as _};
@@ -25,9 +26,11 @@ use protobuf::Message as _;
 use saluki_core::components::test_util::TestComponentDriver;
 use saluki_core::data_model::event::trace::{AttributeValue, Trace};
 use saluki_core::data_model::event::Event;
+use saluki_env::workload::providers::TestWorkloadProvider;
 use stringtheory::MetaString;
 
 use super::{trace_configuration, DatadogTraceConfiguration};
+use crate::common::otlp::origin::OtlpOriginTagResolver;
 use crate::common::otlp::traces::translator::{traces_settings, OtlpTracesSettings, OtlpTracesTranslator};
 use crate::common::otlp::Metrics;
 use crate::config::AgentEnv;
@@ -127,6 +130,7 @@ fn otlp_trace(receiver_sampling_percentage: f64, trace_id_low: u64, error: bool)
         },
         MAX_RESOURCE_LEN,
         SemanticRegistryProvider::default(),
+        OtlpOriginTagResolver::new(Arc::new(TestWorkloadProvider::new())),
     );
     let mut traces: Vec<Trace> = translator
         .translate_spans(resource_spans, &Metrics::for_tests())

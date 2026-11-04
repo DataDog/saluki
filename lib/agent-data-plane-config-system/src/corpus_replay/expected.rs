@@ -2214,6 +2214,28 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             cause: AGENT_LOAD_WRITE,
         }),
         intentional(Entry {
+            origin: "unsupported-env",
+            tier: Translate,
+            at: "snapshot",
+            getter: "-",
+            key: "otlp_config.traces.infra_attributes.container_tag_promotion",
+            adp: Adp::error(
+                "error translating config key `otlp_config.traces.infra_attributes.container_tag_promotion`: unknown container tag promotion mode `cr-a`; expected `off`, `duplicate`, or `rename`",
+            ),
+            cause: TRANSLATOR_REJECTS_VALUE,
+        }),
+        intentional(Entry {
+            origin: "unsupported-yaml",
+            tier: Translate,
+            at: "snapshot",
+            getter: "-",
+            key: "otlp_config.traces.infra_attributes.container_tag_promotion",
+            adp: Adp::error(
+                "error translating config key `otlp_config.traces.infra_attributes.container_tag_promotion`: unknown container tag promotion mode `cr-a`; expected `off`, `duplicate`, or `rename`",
+            ),
+            cause: TRANSLATOR_REJECTS_VALUE,
+        }),
+        intentional(Entry {
             origin: "valid-stream-updates",
             tier: Translate,
             at: "update dogstatsd_tag_cardinality #2",

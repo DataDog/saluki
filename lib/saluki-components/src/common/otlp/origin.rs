@@ -21,11 +21,13 @@ const K8S_POD_UID: &str = "k8s.pod.uid";
 const PROCESS_PID: &str = "process.pid";
 const CGROUP_INODE: &str = "datadog.container.cgroup_inode";
 const INIT_CONTAINER: &str = "datadog.container.is_init";
+const DATADOG_CONTAINER_ID: &str = "datadog.container_id";
 
 /// Recognized OTLP resource attributes used for entity tag resolution.
 #[derive(Default)]
 struct OtlpResourceAttributes<'a> {
     container_id: Option<&'a str>,
+    datadog_container_id: Option<&'a str>,
     oci_manifest_digest: Option<&'a str>,
     ecs_task_arn: Option<&'a str>,
     k8s_container_name: Option<&'a str>,
@@ -49,6 +51,7 @@ impl<'a> OtlpResourceAttributes<'a> {
 
             match (attribute.key.as_str(), value) {
                 (CONTAINER_ID, Value::StringValue(value)) => extracted.container_id = Some(value),
+                (DATADOG_CONTAINER_ID, Value::StringValue(value)) => extracted.datadog_container_id = Some(value),
                 (OCI_MANIFEST_DIGEST, Value::StringValue(value)) => extracted.oci_manifest_digest = Some(value),
                 (ECS_TASK_ARN, Value::StringValue(value)) => extracted.ecs_task_arn = Some(value),
                 (K8S_CONTAINER_NAME, Value::StringValue(value)) => extracted.k8s_container_name = Some(value),
@@ -61,6 +64,12 @@ impl<'a> OtlpResourceAttributes<'a> {
                 (INIT_CONTAINER, Value::BoolValue(value)) => extracted.init_container = Some(*value),
                 _ => {}
             }
+        }
+
+        // A non-empty Datadog alias wins over the semantic convention, matching the container ID resolution
+        // the trace translator already uses. An empty alias must not shadow a valid `container.id`.
+        if let Some(alias) = extracted.datadog_container_id.filter(|value| !value.is_empty()) {
+            extracted.container_id = Some(alias);
         }
 
         extracted
@@ -293,6 +302,55 @@ mod tests {
                     )),
                 )
             })
+        }
+    }
+
+    #[test]
+    fn resolves_the_datadog_container_id_alias_for_resource_tags() {
+        // The alias wins over the semantic convention regardless of attribute order.
+        for resource in [
+            vec![
+                attribute(DATADOG_CONTAINER_ID, Value::StringValue("alias-id".into())),
+                attribute(CONTAINER_ID, Value::StringValue("semconv-id".into())),
+            ],
+            vec![
+                attribute(CONTAINER_ID, Value::StringValue("semconv-id".into())),
+                attribute(DATADOG_CONTAINER_ID, Value::StringValue("alias-id".into())),
+            ],
+        ] {
+            let mut provider = TestWorkloadProvider::new();
+            provider
+                .add_entity(EntityId::Container("alias-id".into()), &["container:alias"])
+                .add_entity(EntityId::Container("semconv-id".into()), &["container:semconv"]);
+            let resolver = OtlpOriginTagResolver::new(Arc::new(provider));
+
+            assert_eq!(
+                tags(resolver.resolve_resource_tags(&resource, OriginTagCardinality::Low)),
+                vec!["container:alias"]
+            );
+        }
+    }
+
+    #[test]
+    fn an_empty_datadog_container_id_alias_does_not_shadow_the_semantic_convention() {
+        for resource in [
+            vec![
+                attribute(DATADOG_CONTAINER_ID, Value::StringValue(String::new())),
+                attribute(CONTAINER_ID, Value::StringValue("semconv-id".into())),
+            ],
+            vec![
+                attribute(CONTAINER_ID, Value::StringValue("semconv-id".into())),
+                attribute(DATADOG_CONTAINER_ID, Value::StringValue(String::new())),
+            ],
+        ] {
+            let mut provider = TestWorkloadProvider::new();
+            provider.add_entity(EntityId::Container("semconv-id".into()), &["container:semconv"]);
+            let resolver = OtlpOriginTagResolver::new(Arc::new(provider));
+
+            assert_eq!(
+                tags(resolver.resolve_resource_tags(&resource, OriginTagCardinality::Low)),
+                vec!["container:semconv"]
+            );
         }
     }
 
