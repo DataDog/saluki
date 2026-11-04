@@ -4502,6 +4502,7 @@ dependencies = [
  "serde-saphyr 2.0.0",
  "serde_json",
  "snafu",
+ "socket2",
  "stele",
  "tempfile",
  "tokio",
