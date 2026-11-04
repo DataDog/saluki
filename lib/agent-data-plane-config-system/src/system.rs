@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use agent_data_plane_config::SalukiConfiguration;
 use datadog_agent_config::{DatadogConfiguration, TranslateErrors};
+use http::Uri;
 use saluki_common::sync::live::{self, Live, LivePublisher, LiveSource};
 use saluki_config::dynamic::ConfigUpdate;
 use serde::Deserialize;
@@ -71,6 +72,12 @@ pub enum Error {
          be submitted without one"
     ))]
     MissingApiKey,
+
+    /// The experimental stateful metrics intake is not a plaintext HTTP origin.
+    #[snafu(display(
+        "data_plane.experimental.stateful_metrics.endpoint requires an http://host:port intake origin for testing"
+    ))]
+    InvalidStatefulMetricsEndpoint,
 }
 
 type Result<T> = std::result::Result<T, Error>;
@@ -417,6 +424,19 @@ pub(crate) fn translate_authoritative(merged: &SourceTree) -> Result<SalukiConfi
 /// forwarder then retries. Failing here names the cause once instead of leaving an operator to infer
 /// it from a stream of authentication failures.
 pub(crate) fn validate(config: &SalukiConfiguration) -> Result<()> {
+    if let Some(endpoint) = &config.domains.stateful_metrics.endpoint {
+        let uri: Uri = endpoint.parse().map_err(|_| Error::InvalidStatefulMetricsEndpoint)?;
+        if uri.scheme_str() != Some("http")
+            || uri.host().is_none()
+            || uri
+                .authority()
+                .is_some_and(|authority| authority.as_str().contains('@'))
+            || uri.path() != "/"
+            || uri.query().is_some()
+        {
+            return Err(Error::InvalidStatefulMetricsEndpoint);
+        }
+    }
     // A blank key is as unusable as an absent one, and a padded key is a typo we should name rather
     // than send.
     if config.shared.endpoints.api_key.trim().is_empty() {
@@ -473,6 +493,7 @@ fn translate(
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
+    use std::path::Path;
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -489,6 +510,7 @@ mod tests {
     use super::{
         translate, translate_authoritative, translate_strict, ConfigurationSystem, Error, SalukiOnly, SourceTree,
     };
+    use crate::loaded::{read_local, EnvPrecedence};
 
     /// API key the connected-system fixture puts in the local base.
     ///
@@ -496,6 +518,80 @@ mod tests {
     /// the base rather than in a streamed snapshot keeps it in place across the snapshot replacements
     /// these tests exercise.
     const TEST_API_KEY: &str = "test-api-key";
+
+    #[test]
+    fn stateful_metrics_is_opt_in_and_reachable_from_yaml_and_environment() {
+        let default = standalone_system(json!({})).unwrap();
+        assert!(default.config().domains.stateful_metrics.endpoint.is_none());
+
+        let endpoint = "http://127.0.0.1:8080";
+        let yaml = r#"
+api_key: test-api-key
+data_plane:
+  experimental:
+    stateful_metrics:
+      endpoint: http://127.0.0.1:8080
+"#;
+        let from_file = read_local(yaml, Path::new("stateful.yaml"), &[], EnvPrecedence::Disabled)
+            .unwrap()
+            .local
+            .unwrap();
+        assert_eq!(from_file.domains.stateful_metrics.endpoint.as_deref(), Some(endpoint));
+        super::validate(&from_file).unwrap();
+
+        let vars = [
+            ("DD_API_KEY".to_string(), TEST_API_KEY.to_string()),
+            (
+                "DD_DATA_PLANE_EXPERIMENTAL_STATEFUL_METRICS_ENDPOINT".to_string(),
+                endpoint.to_string(),
+            ),
+        ];
+        let from_env = read_local("{}", Path::new("stateful.yaml"), &vars, EnvPrecedence::AfterFile)
+            .unwrap()
+            .local
+            .unwrap();
+        assert_eq!(from_env.domains.stateful_metrics.endpoint.as_deref(), Some(endpoint));
+        super::validate(&from_env).unwrap();
+    }
+
+    #[test]
+    fn stateful_metrics_unshipped_flat_endpoint_is_not_an_alias() {
+        let vars = [(
+            "DD_DATA_PLANE_STATEFUL_METRICS_ENDPOINT".to_string(),
+            "http://127.0.0.1:9001".to_string(),
+        )];
+        let yaml = "data_plane:\n  stateful_metrics_endpoint: http://127.0.0.1:9000\n";
+        let config = read_local(yaml, Path::new("stateful.yaml"), &vars, EnvPrecedence::AfterFile)
+            .unwrap()
+            .local
+            .unwrap();
+        assert!(config.domains.stateful_metrics.endpoint.is_none());
+    }
+
+    #[test]
+    fn stateful_metrics_rejects_unsupported_endpoint_forms() {
+        for endpoint in [
+            "",
+            "localhost:8080",
+            "https://localhost:8080",
+            "http://key@localhost:8080",
+            "http://localhost:8080/path",
+            "http://localhost:8080/?key=value",
+        ] {
+            let system = standalone_system(json!({
+                "api_key": TEST_API_KEY,
+                "data_plane": { "experimental": { "stateful_metrics": { "endpoint": endpoint } } },
+            }))
+            .unwrap();
+            assert!(
+                matches!(
+                    super::validate(&system.config()),
+                    Err(Error::InvalidStatefulMetricsEndpoint)
+                ),
+                "{endpoint}"
+            );
+        }
+    }
 
     /// Builds a standalone system whose authority is the local sources.
     ///

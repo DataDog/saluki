@@ -7,6 +7,8 @@
 
 mod common;
 
+pub use self::common::datadog::queue;
+
 pub mod config;
 pub mod decoders;
 pub mod destinations;

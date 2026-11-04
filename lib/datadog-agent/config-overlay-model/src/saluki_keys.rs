@@ -11,6 +11,12 @@ pub struct SalukiKey {
 
 pub static SALUKI_KEYS: &[SalukiKey] = &[
     SalukiKey {
+        yaml_path: "data_plane.experimental.stateful_metrics.endpoint",
+        description: "Experimental stateful series gRPC intake endpoint",
+        default: "unset (disabled)",
+        documentation: Some("Set an http://host:port endpoint for stateful metrics integration testing. Sketches continue over HTTP. Requires a restart; unset preserves existing delivery."),
+    },
+    SalukiKey {
         yaml_path: "experimental.metrics_endpoint_routing.metric_allowlist",
         description: "Per-endpoint metric allow lists",
         default: "{}",

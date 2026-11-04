@@ -14,3 +14,5 @@ pub mod tag_filterlist;
 
 #[cfg(test)]
 mod test_support;
+
+pub mod stateful_metrics;

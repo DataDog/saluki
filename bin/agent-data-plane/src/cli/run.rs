@@ -36,6 +36,7 @@ use saluki_components::{
         ClusterAgentForwarderConfiguration, DatadogForwarderConfiguration, OtlpForwarderConfiguration,
         RoutingTargetCatalog,
     },
+    queue::DeliveryQueueConfiguration,
     relays::otlp::OtlpRelayConfiguration,
     sources::{
         ChecksIPCConfiguration, DogStatsDCaptureAPIHandler, DogStatsDCaptureControl, DogStatsDConfiguration,
@@ -64,11 +65,16 @@ use crate::{
         resolve_static_tags, tag_filter_entries, tag_value_allowlist, trace_configuration, trace_sampler_configuration,
     },
     components::{
-        apm_onboarding::ApmOnboardingConfiguration, dogstatsd_no_agg_split::DogStatsDNoAggSplitConfiguration,
+        apm_onboarding::ApmOnboardingConfiguration,
+        dogstatsd_no_agg_split::DogStatsDNoAggSplitConfiguration,
         dogstatsd_post_aggregate_filter::DogStatsDPostAggregateFilterConfiguration,
-        dogstatsd_prefix_filter::DogStatsDPrefixFilterConfiguration, host_tags::HostTagsConfiguration,
-        liveness::LivenessConfiguration, metric_filter::MetricFilterConfiguration,
-        ottl_filter_processor::OttlFilterConfiguration, ottl_transform_processor::OttlTransformConfiguration,
+        dogstatsd_prefix_filter::DogStatsDPrefixFilterConfiguration,
+        host_tags::HostTagsConfiguration,
+        liveness::LivenessConfiguration,
+        metric_filter::MetricFilterConfiguration,
+        ottl_filter_processor::OttlFilterConfiguration,
+        ottl_transform_processor::OttlTransformConfiguration,
+        stateful_metrics::{StatefulMetricsConfiguration, StatefulMetricsRouterConfiguration},
         tag_filterlist::TagFilterlistConfiguration,
     },
     config::DataPlaneConfiguration,
@@ -329,7 +335,42 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
     )?;
     blueprint.add_transform("metrics_enrich", metrics_enrich_config)?;
 
-    add_metrics_output_pipelines_to_blueprint(blueprint, shared, routing_targets, &endpoint_routing)?;
+    let stateful_endpoint = config.domains.stateful_metrics.endpoint.as_ref().filter(|_| {
+        if !shared.endpoints.additional_endpoints.is_empty() || !endpoint_routing.selected_endpoints().is_empty() {
+            warn!(
+                "Skipping experimental stateful metrics delivery because HTTP additional_endpoints or \
+                 experimental.metrics_endpoint_routing policies are configured. Metrics will use the HTTP \
+                 pipeline with the configured destinations and filtering policies."
+            );
+            false
+        } else {
+            true
+        }
+    });
+    if let Some(endpoint) = stateful_endpoint {
+        let forwarder = forwarder_configuration(shared);
+        blueprint
+            .add_encoder("dd_metrics_encode", datadog_metrics_configuration(shared))?
+            .connect_components("dd_metrics_encode", "dd_out")?
+            .add_transform("dd_stateful_metrics_router", StatefulMetricsRouterConfiguration)?
+            .add_destination(
+                "dd_stateful_metrics_out",
+                StatefulMetricsConfiguration {
+                    endpoint: endpoint.clone().into(),
+                    api_key: config_system.live(|config| &config.shared.endpoints.api_key),
+                    compression_level: shared.endpoints.compression.effective_zstd_level(),
+                    flush_timeout: shared.metrics_encoding.flush_timeout,
+                    batch_capacity: shared.metrics_encoding.max_metrics_per_payload,
+                    queue: DeliveryQueueConfiguration::new(forwarder.endpoint_buffer_size, forwarder.retry),
+                    stop_timeout: dp.stop_timeout(),
+                },
+            )?
+            .connect_components("metrics_enrich", "dd_stateful_metrics_router")?
+            .connect_components("dd_stateful_metrics_router.stateful", "dd_stateful_metrics_out")?
+            .connect_components("dd_stateful_metrics_router.http", "dd_metrics_encode")?;
+    } else {
+        add_metrics_output_pipelines_to_blueprint(blueprint, shared, routing_targets, &endpoint_routing)?;
+    }
     add_mrf_metrics_pipeline_to_blueprint(blueprint, config_system, shared, &config.domains.multi_region_failover)?;
     add_autoscaling_failover_metrics_pipeline_to_blueprint(blueprint, shared)?;
 
@@ -1077,23 +1118,190 @@ async fn add_otlp_pipeline_to_blueprint(
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
+    use std::{
+        path::{Path, PathBuf},
+        sync::Arc,
+    };
 
+    use agent_data_plane_config::shared::Secrets;
+    use agent_data_plane_config_system::{EnvPrecedence, LoadedConfiguration};
+    use datadog_agent_runtime::{env::RemoteAgentEnvironmentProvider, facade::LocalConfiguration as _};
     use http::{Request, StatusCode};
     use http_body_util::{BodyExt as _, Empty};
     use hyper::body::Bytes;
     use saluki_api::{response::Response, APIHandler as _};
-    use saluki_components::transforms::{
-        aggregate_context_snapshot_channel_for_test, AggregateContextSnapshotEntry, AggregateMetricType,
+    use saluki_components::{
+        config::MetricsEndpointRoutingConfiguration,
+        forwarders::{DatadogForwarderConfiguration, RoutingTargetCatalog},
+        transforms::{aggregate_context_snapshot_channel_for_test, AggregateContextSnapshotEntry, AggregateMetricType},
     };
-    use saluki_core::data_model::event::metric::context::Context;
+    use saluki_core::{
+        accounting::{ComponentBounds, ComponentRegistry},
+        data_model::event::metric::context::Context,
+        health::HealthRegistry,
+        topology::TopologyBlueprint,
+    };
     use stringtheory::MetaString;
     use tower::ServiceExt as _;
 
-    use crate::dogstatsd_contexts::DogStatsDContextDumpAPIHandler;
+    use crate::{
+        component_inputs::forwarder_configuration, dogstatsd_contexts::DogStatsDContextDumpAPIHandler,
+        internal::AdpLocalConfig,
+    };
 
     const CONTEXT_DUMP_FILENAME: &str = "dogstatsd_contexts.json.zstd";
     const CONTEXT_DUMP_ROUTE: &str = crate::dogstatsd_contexts::CONTEXT_DUMP_ROUTE;
+    const METRICS_DELIVERY_CONFIG: &str = r#"
+api_key: primary-key
+hostname: test-host
+dd_url: https://primary.example.com
+data_plane:
+  standalone_mode: true
+  experimental:
+    stateful_metrics:
+      endpoint: http://localhost:4317
+"#;
+    const HTTP_ADDITIONAL_ENDPOINTS_CONFIG: &str = r#"
+additional_endpoints:
+  https://secondary.example.com: [secondary-key]
+"#;
+    const PRIMARY_ENDPOINT_POLICY_CONFIG: &str = r#"
+experimental:
+  metrics_endpoint_routing:
+    metric_allowlist:
+      https://primary.example.com: [allowed.metric]
+"#;
+
+    #[tokio::test]
+    async fn stateful_metrics_with_http_additional_endpoints_uses_http_pipeline() {
+        assert_metrics_delivery_topology(true, false).await;
+    }
+
+    #[tokio::test]
+    async fn stateful_metrics_with_primary_endpoint_policy_preserves_filtered_http_pipeline() {
+        assert_metrics_delivery_topology(false, true).await;
+    }
+
+    #[tokio::test]
+    async fn stateful_metrics_with_http_additional_endpoints_and_policy_preserves_both_http_routes() {
+        assert_metrics_delivery_topology(true, true).await;
+    }
+
+    #[tokio::test]
+    async fn stateful_metrics_without_http_additional_endpoints_or_policies_uses_stateful_pipeline() {
+        assert_metrics_delivery_topology(false, false).await;
+    }
+
+    async fn assert_metrics_delivery_topology(http_additional_endpoints: bool, primary_endpoint_policy: bool) {
+        let config_dir = tempfile::tempdir().expect("temporary configuration directory");
+        let config_path = config_dir.path().join("datadog.yaml");
+        let mut yaml = METRICS_DELIVERY_CONFIG.to_owned();
+        if http_additional_endpoints {
+            yaml.push_str(HTTP_ADDITIONAL_ENDPOINTS_CONFIG);
+        }
+        if primary_endpoint_policy {
+            yaml.push_str(PRIMARY_ENDPOINT_POLICY_CONFIG);
+        }
+        std::fs::write(&config_path, yaml).expect("write configuration");
+        let loaded = LoadedConfiguration::load(&config_path, EnvPrecedence::Disabled)
+            .await
+            .expect("load configuration");
+        let authoritative = AdpLocalConfig::new(loaded)
+            .into_standalone()
+            .await
+            .expect("validate standalone configuration");
+        let config_system = authoritative.system();
+        let config = config_system.config();
+        let shared = &config.shared;
+        let registry = ComponentRegistry::default();
+        let (env_provider, _) =
+            RemoteAgentEnvironmentProvider::from_authoritative(&authoritative, &registry, &HealthRegistry::new())
+                .await
+                .expect("create fixed environment provider");
+        let catalog = Arc::new(
+            RoutingTargetCatalog::new(
+                &shared.endpoints.primary_endpoint(),
+                &shared.endpoints.additional_endpoints,
+            )
+            .expect("resolve HTTP routing targets"),
+        );
+        let forwarder = DatadogForwarderConfiguration::new(
+            forwarder_configuration(shared),
+            config_system.live(|config| &config.shared.endpoints.api_key),
+            config_system.live(|config| &config.shared.endpoints.additional_endpoints),
+            config_system.live(|config| &config.shared.secrets).map(Secrets::in_use),
+        )
+        .with_routing_targets(Arc::clone(&catalog));
+        let mut blueprint = TopologyBlueprint::new("metrics_delivery", &registry);
+        blueprint
+            .add_forwarder("dd_out", forwarder)
+            .expect("add HTTP forwarder");
+        super::add_baseline_metrics_pipeline_to_blueprint(
+            &mut blueprint,
+            config_system,
+            None,
+            shared,
+            &catalog,
+            &env_provider,
+        )
+        .await
+        .expect("metrics topology should accept HTTP and stateful configuration together");
+
+        let expect_stateful = !http_additional_endpoints && !primary_endpoint_policy;
+        let bounds = registry.as_bounds();
+        assert!(has_component(&bounds, "dd_out"));
+        assert!(has_component(&bounds, "dd_metrics_encode"));
+        assert_eq!(has_component(&bounds, "dd_stateful_metrics_router"), expect_stateful);
+        assert_eq!(has_component(&bounds, "dd_stateful_metrics_out"), expect_stateful);
+        assert_eq!(
+            has_component(&bounds, "metrics_routing_filter_0"),
+            primary_endpoint_policy
+        );
+        assert_eq!(
+            has_component(&bounds, "metrics_routing_encode_0"),
+            primary_endpoint_policy
+        );
+        assert!(!has_component(&bounds, "metrics_routing_filter_1"));
+        if http_additional_endpoints {
+            assert_eq!(
+                config_system.config().shared.endpoints.additional_endpoints["https://secondary.example.com"],
+                ["secondary-key"]
+            );
+        }
+
+        let routing = MetricsEndpointRoutingConfiguration::new(
+            &config.domains.metrics_endpoint_routing.metric_allowlists,
+            &config.domains.metrics_endpoint_routing.metric_prefix_allowlists,
+            &shared.endpoints.primary_endpoint(),
+            &shared.endpoints.additional_endpoints,
+        )
+        .expect("resolve metric policies");
+        let unfiltered = routing.unfiltered_targets(&catalog);
+        let filtered = routing.policy_groups();
+        assert_eq!(filtered.len(), usize::from(primary_endpoint_policy));
+        if primary_endpoint_policy {
+            assert_eq!(filtered[0].metric_allowlist, ["allowed.metric"]);
+        }
+        // Selected endpoints must leave the ordinary branch and appear in exactly one filtered branch.
+        for target in catalog.targets() {
+            let filtered_routes = filtered
+                .iter()
+                .filter(|policy| policy.targets(&catalog).contains(target.id()))
+                .count();
+            assert_eq!(usize::from(unfiltered.contains(target.id())) + filtered_routes, 1);
+            assert_eq!(
+                unfiltered.contains(target.id()),
+                !primary_endpoint_policy || target.configured_endpoint() != "https://primary.example.com"
+            );
+        }
+    }
+
+    fn has_component(bounds: &ComponentBounds, component: &str) -> bool {
+        bounds
+            .subcomponents()
+            .into_iter()
+            .any(|(name, child)| name == component || has_component(child, component))
+    }
 
     #[test]
     fn dogstatsd_capture_path_falls_back_to_run_path() {

@@ -28,6 +28,7 @@ datadog-agent-commons = { workspace = true }
 datadog-agent-config = { workspace = true }
 datadog-agent-runtime = { workspace = true, features = ["taskdump"] }
 datadog-protos = { workspace = true }
+foldspace-core = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
@@ -60,7 +61,9 @@ tokio = { workspace = true, features = [
   "signal",
   "time",
 ] }
+tokio-stream = { workspace = true }
 tokio-util = { workspace = true }
+tonic = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
 zstd = { workspace = true }
@@ -78,6 +81,7 @@ tikv-jemallocator = { workspace = true, features = [
 tikv-jemallocator = { workspace = true, features = ["background_threads", "stats"] }
 
 [dev-dependencies]
+async-stream = { workspace = true }
 # Build-script-only dependency: regenerates the configuration documentation during test builds.
 datadog-agent-config-docs = { workspace = true }
 derive-where = { workspace = true }
@@ -88,6 +92,7 @@ saluki-core = { workspace = true, features = ["test-util"] }
 saluki-metrics = { workspace = true, features = ["test"] }
 saluki-tls = { workspace = true }
 tokio = { workspace = true, features = ["process", "test-util"] }
+tokio-stream = { workspace = true, features = ["net"] }
 tower = { workspace = true, features = ["util"] }
 
 [target.'cfg(not(windows))'.dev-dependencies]
