@@ -1,3 +1,4 @@
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::vec::IntoIter;
 
 use opentelemetry_semantic_conventions::resource::{HOST_NAME, SERVICE_NAME};
@@ -121,7 +122,8 @@ impl ResourceLogsIter {
                         record_host,
                         record_service,
                         self.attribute_tags.clone(),
-                    );
+                    )
+                    .with_ingestion_timestamp(unix_nanos_now());
 
                     return Some(log);
                 }
@@ -131,6 +133,14 @@ impl ResourceLogsIter {
             }
         }
     }
+}
+
+/// Returns the current time, in nanoseconds since the Unix epoch.
+fn unix_nanos_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos() as u64)
+        .unwrap_or_default()
 }
 
 impl Iterator for ResourceLogsIter {
@@ -500,6 +510,24 @@ mod tests {
             props.get("otel.severity_number"),
             Some(&JsonValue::String("5".to_string()))
         );
+    }
+
+    #[test]
+    fn test_translated_logs_get_an_ingestion_timestamp() {
+        let before = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+        let log = translate_log(otlp_logs_v1::LogRecord::default(), empty_resource(), None);
+        let after = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+
+        let ingestion_timestamp = log
+            .ingestion_timestamp()
+            .expect("translated logs should have an ingestion time");
+        assert!((before..=after).contains(&ingestion_timestamp));
     }
 
     #[test]

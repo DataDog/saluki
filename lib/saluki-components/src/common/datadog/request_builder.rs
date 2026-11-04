@@ -86,6 +86,14 @@ pub trait EndpointEncoder: std::fmt::Debug {
     fn additional_headers(&self) -> &[(HeaderName, HeaderValue)] {
         &[]
     }
+
+    /// Returns HTTP headers that depend on the inputs of a request, given the inputs in the order they were encoded.
+    ///
+    /// Called once for every request, including each request that a split produces, with exactly the inputs that the
+    /// request holds. Defaults to no headers.
+    fn input_headers(&self, _inputs: &[Self::Input]) -> Vec<(HeaderName, HeaderValue)> {
+        Vec::new()
+    }
 }
 
 // Request builder errors.
@@ -551,12 +559,11 @@ where
         }
 
         let data_points_written = self.encoded_data_point_count(&self.encoded_inputs);
+        let request = self.create_request(compressed_buf, &self.encoded_inputs);
         let inputs_written = self.clear_encoded_inputs();
         debug!(encoder = E::encoder_name(), endpoint = ?self.encoder.endpoint_uri(), uncompressed_len, compressed_len, inputs_written, data_points_written, "Flushing request.");
 
-        vec![self
-            .create_request(compressed_buf)
-            .map(|req| (inputs_written, data_points_written, req))]
+        vec![request.map(|req| (inputs_written, data_points_written, req))]
     }
 
     /// Internal implementation of `flush`.
@@ -751,13 +758,13 @@ where
         let data_points_written = self.encoded_data_point_count(inputs);
 
         Some(
-            self.create_request(compressed_buf)
+            self.create_request(compressed_buf, inputs)
                 .map(|request| (inputs.len(), data_points_written, request)),
         )
     }
 
     fn create_request(
-        &self, buffer: FrozenChunkedBytesBuffer,
+        &self, buffer: FrozenChunkedBytesBuffer, inputs: &[E::Input],
     ) -> Result<Request<FrozenChunkedBytesBuffer>, RequestBuilderError<E>> {
         let mut builder = Request::builder()
             .method(self.encoder.endpoint_method())
@@ -769,6 +776,10 @@ where
         }
 
         for (name, value) in self.encoder.additional_headers() {
+            builder = builder.header(name, value);
+        }
+
+        for (name, value) in self.encoder.input_headers(inputs) {
             builder = builder.header(name, value);
         }
 

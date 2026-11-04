@@ -44,6 +44,7 @@ static CONTENT_TYPE_JSON: HeaderValue = HeaderValue::from_static("application/js
 static DD_PROTOCOL_HEADER: HeaderName = HeaderName::from_static("dd-protocol");
 static DD_EVP_ORIGIN_HEADER: HeaderName = HeaderName::from_static("dd-evp-origin");
 static DD_EVP_ORIGIN_VERSION_HEADER: HeaderName = HeaderName::from_static("dd-evp-origin-version");
+static DD_MESSAGE_TIMESTAMP_HEADER: HeaderName = HeaderName::from_static("dd-message-timestamp");
 
 /// The `DD-PROTOCOL` value of the JSON envelope, under which the intake reads only the envelope fields.
 static AGENT_JSON_PROTOCOL: HeaderValue = HeaderValue::from_static("agent-json");
@@ -352,6 +353,19 @@ impl EndpointEncoder for LogsEndpointEncoder {
 
     fn additional_headers(&self) -> &[(HeaderName, HeaderValue)] {
         &self.headers
+    }
+
+    fn input_headers(&self, inputs: &[Self::Input]) -> Vec<(HeaderName, HeaderValue)> {
+        // `dd-message-timestamp` is when the last log of the request entered the pipeline, in milliseconds. It's left
+        // out when that log's source didn't record it.
+        inputs
+            .last()
+            .and_then(Log::ingestion_timestamp)
+            .map(|timestamp_ns| {
+                let timestamp_ms = timestamp_ns / 1_000_000;
+                vec![(DD_MESSAGE_TIMESTAMP_HEADER.clone(), HeaderValue::from(timestamp_ms))]
+            })
+            .unwrap_or_default()
     }
 }
 
