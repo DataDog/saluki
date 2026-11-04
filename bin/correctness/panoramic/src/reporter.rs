@@ -132,7 +132,7 @@ impl Drop for ActivePhase {
 ///
 /// `Failed` means an assertion decided against the code under test; `Errored` means the harness
 /// never got far enough to decide. Consumers use this to tell "read the diff" from "fix the
-/// environment".
+/// environment."
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TestOutcome {
