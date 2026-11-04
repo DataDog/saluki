@@ -17,10 +17,24 @@ The saved collection of cases is the **corpus**, [`corpus.jsonl`](corpus.jsonl).
 header line, then a case line and per-setting lines for each case. It is generated; do not edit
 it by hand.
 
-The [Rust reader](../config-corpus/README.md), `datadog-agent-config-corpus`, loads these records
-for compatibility tests. Its unit tests validate the recordings' format, size, coverage, and
-consistency with the current schema and recorder inputs. These checks run in CI without Go or
-Docker; they do not compare ADP's behavior with the Agent's.
+Two sets of Rust unit tests read the corpus, and `make test` runs both. Neither needs Go or
+Docker.
+
+- The [Rust reader](../config-corpus/README.md), `datadog-agent-config-corpus`, validates the
+  recordings' format, size, coverage, and consistency with the current schema and recorder inputs.
+  These checks do not compare ADP's behavior with the Agent's.
+- The replay tests in `agent-data-plane-config-system` (`src/corpus_replay/`) run every recorded
+  case through agent-data-plane's own config system as ordinary unit tests:
+  `cargo nextest run --lib -p agent-data-plane-config-system corpus_replay`. Typed, hand-written
+  expectations sit beside the replay code and default to the recorded Agent result; a check whose
+  result intentionally differs, as a known bug or deliberate agent-data-plane behavior, states its
+  exact expected value, the desired value, and the reason. Failures are collected, not cut off at
+  the first: each names the case and its input file, the checkpoint and key, the actual, expected,
+  and recorded Agent results, and the expectation to edit. A production panic fails that case and
+  the remaining cases still run. Fixing agent-data-plane changes production code and the matching
+  expectation, never the recorded corpus.
+
+[`docs/comparison.md`](docs/comparison.md) fixes how agent-data-plane's typed values are compared with recorded getter results.
 
 ## Section reads
 
@@ -84,6 +98,9 @@ it splits the batch, its *root*, by the rules of case.md §3.1:
   fails alone, every key becomes a part.
 
 `baseline` and `behavior` cases, and single-key cases, are never split.
+
+A split renames cases; it changes no check origin, so replay expectations survive splits and
+batch renames.
 
 The drive work directory, `target/config-recorder/work/`, keeps what each process used and saw:
 

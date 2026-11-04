@@ -32,3 +32,6 @@ mod translators;
 
 pub use loaded::{EnvPrecedence, LoadedConfiguration};
 pub use system::{ConfigurationSystem, ConfigurationUpdates, Error};
+
+#[cfg(test)]
+mod corpus_replay;
