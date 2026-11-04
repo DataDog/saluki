@@ -814,14 +814,15 @@ mod tests {
 
     #[tokio::test]
     async fn polling_steps_cancelled_between_polls_report_their_last_attempt() {
-        use crate::intake::test_server::{closed_port, install_crypto_provider};
+        use crate::intake::test_server::install_crypto_provider;
 
         install_crypto_provider();
         let dir = tempfile::tempdir().expect("temp dir should be creatable");
         let auth_token = dir.path().join("auth_token");
         std::fs::write(&auth_token, "token").expect("the auth token should be writable");
         let missing = dir.path().join("missing");
-        let closed = closed_port();
+        // Port zero keeps every probe unsuccessful, independent of other tests' listeners.
+        let closed = 0;
         let cancel = CancellationToken::new();
         let mut ctx = context(&cancel, None);
         ctx.port_mappings.insert("1234/tcp".to_string(), closed);
@@ -867,13 +868,14 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn each_step_kind_separates_harness_failures_from_product_failures() {
-        use crate::intake::test_server::{closed_port, install_crypto_provider};
+        use crate::intake::test_server::install_crypto_provider;
 
         install_crypto_provider();
         let dir = tempfile::tempdir().expect("temp dir should be creatable");
         let directory = dir.path().display().to_string();
         let missing = dir.path().join("missing");
-        let closed = closed_port();
+        // Port zero never accepts, so another test's listener can't make these probes succeed.
+        let closed = 0;
         let context_with = |configure: &dyn Fn(&mut AssertionContext)| {
             let mut ctx = context(&CancellationToken::new(), None);
             configure(&mut ctx);
