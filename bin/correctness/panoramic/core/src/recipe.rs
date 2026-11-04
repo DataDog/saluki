@@ -132,11 +132,14 @@ pub mod test_support {
     pub fn rendered(
         env: BTreeMap<String, String>, files: BTreeMap<String, Vec<u8>>,
     ) -> crate::participant::RenderedConfig {
-        crate::participant::RenderedConfig {
-            env,
-            params: BTreeMap::new(),
-            files,
-        }
+        rendered_with_params(env, BTreeMap::new(), files)
+    }
+
+    /// Builds rendered configuration with the supplied environment, parameters and files.
+    pub fn rendered_with_params(
+        env: BTreeMap<String, String>, params: BTreeMap<String, serde_json::Value>, files: BTreeMap<String, Vec<u8>>,
+    ) -> crate::participant::RenderedConfig {
+        crate::participant::RenderedConfig { env, params, files }
     }
 
     /// Builds a container recipe with the supplied image, entrypoint and command.

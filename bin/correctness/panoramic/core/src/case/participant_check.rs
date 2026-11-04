@@ -12,6 +12,7 @@ use super::{
     file::{CaseFile, FileSource, ParticipantEntry},
 };
 use crate::{
+    backend::backend,
     layout::Os,
     participant::{find_type, unknown_type_message, ParticipantType},
 };
@@ -80,13 +81,22 @@ pub(super) fn check_participants(
         let holder = format!("participant '{participant}'");
         let type_name = participant_type.name();
         if let Some(realization) = &entry.realization {
-            check_keys(realization.options.keys(), &[], "accepts", |key| {
-                format!(
-                    "{holder} sets realization option '{key}', which {} does not accept",
-                    realization.kind.name()
-                )
-            })
-            .map_err(&error)?;
+            let kind = realization.kind.name();
+            let options = backend(realization.kind).options();
+            for (key, value) in &realization.options {
+                if !options.iter().any(|option| option.name == key) {
+                    let declared = options.iter().map(|option| option.name).collect::<Vec<_>>();
+                    return Err(error(format!(
+                        "{holder} sets realization option '{key}', which {kind} does not accept; it accepts {}",
+                        declared_names(&declared),
+                    )));
+                }
+                if !value.is_boolean() {
+                    return Err(error(format!(
+                        "{holder} sets realization option '{key}' for {kind} to {value}; expected a boolean"
+                    )));
+                }
+            }
         }
         check_keys(
             entry.config.files.keys(),
@@ -272,7 +282,7 @@ mod tests {
         artifact::ArtifactRole,
         case::{
             fixtures::{minimal_procedure, write_case, FixtureTypes, STEPS},
-            CaseLoader, Registries,
+            CaseLoader, CaseSchema, Registries,
         },
         layout::Realization,
     };
@@ -448,21 +458,76 @@ mod tests {
     }
 
     #[test]
-    fn any_realization_option_is_a_load_error_naming_the_participant_kind_and_option() {
-        for kind in [
-            "linux-container",
-            "windows-container",
-            "host-process-group",
-            "kubernetes-pod",
-        ] {
+    fn a_declared_realization_option_with_a_boolean_loads() {
+        for value in [false, true] {
             let yaml = case_yaml(
-                &format!("  subject: {{type: server, subject: true, realization: {{kind: {kind}, options: {{z_option: false, host_pid: true}}}}}}"),
+                &format!("  subject: {{type: server, subject: true, realization: {{kind: linux-container, options: {{host_cgroup_namespace: {value}}}}}}}"),
                 "linux",
             );
-            let message = check_error(&yaml);
-            assert!(message.ends_with(&format!(
-                "participant 'subject' sets realization option 'host_pid', which {kind} does not accept; it accepts none"
-            )), "{message}");
+            let cases = loader().load_content(&yaml, "alpha", Path::new("config.yaml")).unwrap();
+            assert_eq!(cases.len(), 1);
+            let CaseSchema::Participants { file, .. } = cases[0].schema() else {
+                panic!("expected participants");
+            };
+            let realization = file.participants["subject"].realization.as_ref().unwrap();
+            assert_eq!(
+                realization.options,
+                BTreeMap::from([("host_cgroup_namespace".into(), serde_json::Value::Bool(value))])
+            );
+        }
+    }
+
+    #[test]
+    fn an_undeclared_realization_option_fails_to_load_naming_the_kind() {
+        for (kind, key, declared) in [
+            ("linux-container", "unknown", "host_cgroup_namespace"),
+            ("linux-container", "host_pid", "host_cgroup_namespace"),
+            ("windows-container", "host_cgroup_namespace", "none"),
+            ("host-process-group", "host_cgroup_namespace", "none"),
+            ("kubernetes-pod", "host_cgroup_namespace", "none"),
+        ] {
+            let yaml = case_yaml(
+                &format!("  subject: {{type: server, subject: true, realization: {{kind: {kind}, options: {{{key}: true}}}}}}"),
+                "linux",
+            );
+            let message = loader()
+                .load_content(&yaml, "alpha", Path::new("config.yaml"))
+                .err()
+                .unwrap()
+                .to_string();
+            assert_eq!(message, format!(
+                "case 'alpha' in config.yaml: participant 'subject' sets realization option '{key}', which {kind} does not accept; it accepts {declared}"
+            ));
+        }
+    }
+
+    #[test]
+    fn a_non_boolean_realization_option_fails_to_load() {
+        for value in [
+            "'true'",
+            "'false'",
+            "1",
+            "0",
+            "1.5",
+            "null",
+            "[]",
+            "[true]",
+            "{}",
+            "{enabled: true}",
+        ] {
+            let yaml = case_yaml(
+                &format!("  subject: {{type: server, subject: true, realization: {{kind: linux-container, options: {{host_cgroup_namespace: {value}}}}}}}"),
+                "linux",
+            );
+            let message = loader()
+                .load_content(&yaml, "alpha", Path::new("config.yaml"))
+                .err()
+                .unwrap()
+                .to_string();
+            assert!(message.starts_with(
+                "case 'alpha' in config.yaml: participant 'subject' sets realization option 'host_cgroup_namespace' for linux-container to "
+            ), "{value}: {message}");
+            assert!(message.ends_with("; expected a boolean"), "{value}: {message}");
         }
     }
 
@@ -862,7 +927,7 @@ mod tests {
     type: unknown
     subject: true
     os: linux
-    realization: {kind: linux-container, options: {z-option: true, a-option: true}}
+    realization: {kind: linux-container, options: {z-option: true, a-option: true, host_cgroup_namespace: []}}
     config:
       files: {z-file: z, a-file: a, settings.yaml: missing-base.yaml}
       params: {z-param: true, a-param: true}
@@ -889,6 +954,7 @@ mod tests {
                 "participant 'a' has unknown type",
             ),
             (", a-option: true", "", "sets realization option 'a-option'"),
+            (", host_cgroup_namespace: []", "", "expected a boolean"),
             ("z-option: true", "", "sets realization option 'z-option'"),
             (", a-file: a", "", "configuration file 'a-file'"),
             ("z-file: z, ", "", "configuration file 'z-file'"),

@@ -9,11 +9,15 @@ use panoramic_core::participant::ParticipantType;
 
 mod agent_adp;
 mod datadog_intake;
+mod fixture;
 mod tools;
-pub use self::{agent_adp::AgentAdp, datadog_intake::DatadogIntake, tools::TOOLS_LINUX_IMAGE};
+pub use self::{agent_adp::AgentAdp, datadog_intake::DatadogIntake, fixture::Fixture, tools::TOOLS_LINUX_IMAGE};
+
+/// Directory for case-supplied files in Linux containers.
+pub(crate) const CASE_FILES_DIR: &str = "/var/lib/panoramic/files";
 
 /// Participant types available to case files.
-pub const REGISTERED_TYPES: &[&dyn ParticipantType] = &[&AgentAdp, &DatadogIntake];
+pub const REGISTERED_TYPES: &[&dyn ParticipantType] = &[&AgentAdp, &DatadogIntake, &Fixture];
 
 #[cfg(test)]
 mod tests {
@@ -28,16 +32,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn registered_types_are_agent_adp_and_datadog_intake_under_their_names() {
+    fn registered_types_have_their_case_names_in_sorted_order() {
         assert_eq!(
             REGISTERED_TYPES
                 .iter()
                 .map(|participant_type| participant_type.name())
                 .collect::<Vec<_>>(),
-            [AgentAdp::NAME, DatadogIntake::NAME]
+            [AgentAdp::NAME, DatadogIntake::NAME, Fixture::NAME]
         );
         assert_eq!(AgentAdp::NAME, "agent-adp");
         assert_eq!(DatadogIntake::NAME, "datadog-intake");
+        assert_eq!(Fixture::NAME, "fixture");
     }
 
     #[test]

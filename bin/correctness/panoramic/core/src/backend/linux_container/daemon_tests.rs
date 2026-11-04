@@ -68,8 +68,9 @@ struct TestScope {
 impl TestScope {
     fn participant(
         &self, name: &str, image: &str, recipe: &ContainerRecipe, ports: &[RunnerHostPort],
+        options: &BTreeMap<String, Value>,
     ) -> Result<LinuxParticipant, GenericError> {
-        let participant = self.scope.participant(name, image, recipe, ports)?;
+        let participant = self.scope.participant(name, image, recipe, ports, options)?;
         self.ledger
             .participant(name, participant.container_ref(), Duration::from_secs(1));
         Ok(participant)
@@ -238,7 +239,9 @@ fn recipe(script: &str) -> ContainerRecipe {
 }
 
 async fn start_participant(scope: &TestScope, name: &str, recipe: &ContainerRecipe) -> LinuxParticipant {
-    let participant = scope.participant(name, &test_image(), recipe, &[]).unwrap();
+    let participant = scope
+        .participant(name, &test_image(), recipe, &[], &BTreeMap::new())
+        .unwrap();
     participant.create().await.unwrap();
     participant.start().await.unwrap();
     participant
@@ -296,7 +299,9 @@ async fn a_participant_is_created_from_its_recipe_and_shares_the_host_pid_namesp
             mode: 0o600,
             contents: b"placed".to_vec(),
         });
-        let participant = scope.participant("p", &test_image(), &recipe, &[]).unwrap();
+        let participant = scope
+            .participant("p", &test_image(), &recipe, &[], &BTreeMap::new())
+            .unwrap();
         let id = participant.create().await.unwrap();
         assert_eq!(id.len(), 64);
         assert!(id
@@ -356,6 +361,40 @@ async fn a_participant_is_created_from_its_recipe_and_shares_the_host_pid_namesp
         assert_eq!(output.stdout, b"p\n/airlock/p/exit\n/airlock/p/log\n");
         let pid = wait_for_file(primitives, "/airlock/p/shared/pid", b"\n").await;
         assert!(String::from_utf8(pid).unwrap().trim().parse::<u32>().unwrap() > 1);
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
+async fn a_participant_with_host_cgroup_namespace_sees_its_container_id_in_its_cgroup() {
+    in_scope(&["private", "host"], courier_bytes(), |scope, _tasks| async move {
+        for (name, host_cgroup_namespace) in [("private", false), ("host", true)] {
+            let options = if host_cgroup_namespace {
+                BTreeMap::from([(HOST_CGROUP_NAMESPACE.into(), true.into())])
+            } else {
+                BTreeMap::new()
+            };
+            let participant = scope
+                .participant(name, &test_image(), &recipe("exec sleep 60"), &[], &options)
+                .unwrap();
+            let id = participant.create().await.unwrap();
+            assert_eq!(id.len(), 64);
+            participant.start().await.unwrap();
+            let output = participant
+                .exec(command(&["cat", "/proc/self/cgroup"]), Duration::from_secs(5))
+                .await
+                .unwrap();
+            assert_eq!(output.exit_code, 0);
+            assert!(output.stderr.is_empty(), "{output:?}");
+            let cgroup = String::from_utf8(output.stdout).unwrap();
+            assert!(!cgroup.trim().is_empty());
+            assert_eq!(
+                cgroup.contains(&id),
+                host_cgroup_namespace,
+                "host_cgroup_namespace={host_cgroup_namespace}, container={id}, cgroup={cgroup:?}"
+            );
+        }
     })
     .await;
 }
@@ -591,7 +630,7 @@ async fn a_courier_that_cannot_run_is_a_harness_error_saying_it_never_ran() {
 async fn a_container_reference_removes_its_participant_after_the_participant_is_dropped() {
     in_scope(&["p"], courier_bytes(), |scope, _tasks| async move {
         let participant = scope
-            .participant("p", &test_image(), &recipe("exec sleep 60"), &[])
+            .participant("p", &test_image(), &recipe("exec sleep 60"), &[], &BTreeMap::new())
             .unwrap();
         let reference = participant.container_ref();
         let id = participant.create().await.unwrap();
@@ -620,7 +659,7 @@ async fn a_container_reference_removes_its_participant_after_the_participant_is_
 async fn a_participant_outside_the_prepared_scope_is_rejected_before_docker() {
     in_scope(&["p"], courier_bytes(), |scope, _tasks| async move {
         let error = scope
-            .participant("other", &test_image(), &recipe("exec sleep 60"), &[])
+            .participant("other", &test_image(), &recipe("exec sleep 60"), &[], &BTreeMap::new())
             .err()
             .unwrap();
         assert!(error.to_string().contains("other"), "{error:#}");
@@ -662,7 +701,9 @@ while ! grep -q ':2328 ' /proc/net/tcp; do sleep 0.05; done
 echo ready > /airlock/srv/shared/ready
 wait"#,
         );
-        let participant = scope.participant("srv", &test_image(), &recipe, &ports).unwrap();
+        let participant = scope
+            .participant("srv", &test_image(), &recipe, &ports, &BTreeMap::new())
+            .unwrap();
         assert_eq!(participant.ports, ports);
         let id = participant.create().await.unwrap();
         participant.start().await.unwrap();
@@ -724,8 +765,8 @@ async fn a_participant_whose_runner_host_port_is_held_fails_to_start_naming_its_
             RunnerHostPort { transport: Transport::Udp, container_port: 9001, host_port: ports[1] },
         ];
         let recipe = recipe("exec sleep 60");
-        let first = scope.participant("first", &test_image(), &recipe, &ports).unwrap();
-        let second = scope.participant("second", &test_image(), &recipe, &ports).unwrap();
+        let first = scope.participant("first", &test_image(), &recipe, &ports, &BTreeMap::new()).unwrap();
+        let second = scope.participant("second", &test_image(), &recipe, &ports, &BTreeMap::new()).unwrap();
         first.create().await.unwrap();
         second.create().await.unwrap();
         first.start().await.unwrap();
@@ -788,7 +829,7 @@ async fn a_probe_of_an_unlistened_published_port_is_not_listening() {
             host_port: host_ports(1)[0],
         };
         let participant = scope
-            .participant("subject", &test_image(), &recipe("exec sleep 60"), &[port])
+            .participant("subject", &test_image(), &recipe("exec sleep 60"), &[port], &BTreeMap::new())
             .unwrap();
         participant.create().await.unwrap();
         participant.start().await.unwrap();
@@ -1217,7 +1258,7 @@ async fn interrupted_participant_creation_leaves_both_the_participant_and_scope_
         ReclaimResult::Unsettled,
         |scope, _tasks| async move {
             let participant = scope
-                .participant("p", &test_image(), &recipe("exec sleep 60"), &[])
+                .participant("p", &test_image(), &recipe("exec sleep 60"), &[], &BTreeMap::new())
                 .unwrap();
             let cancel = CancellationToken::new();
             let created = tokio::sync::Notify::new();

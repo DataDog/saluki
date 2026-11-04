@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use panoramic_core::{
     case::CaseDuration,
@@ -36,6 +36,11 @@ struct Fields {
     /// Expected tags, sorted and deduplicated before matching. Defaults to empty.
     #[serde(default)]
     tags: Vec<String>,
+    /// Regular expressions that must each match a context tag, including its host tag. Defaults to empty.
+    #[serde(default)]
+    tag_patterns: Vec<String>,
+    /// Maximum timestamp distance from check time for the latest point; omitted accepts any timestamp.
+    max_age: Option<CaseDuration>,
     /// Whether extra tags are allowed. Defaults to subset.
     #[serde(default)]
     tags_match: TagMatch,
@@ -69,6 +74,8 @@ pub(crate) struct IntakeHasMetric {
     /// Expected name and tags, normalized like an observed context.
     expected: NormalizedMetricContext,
     tags_match: TagMatch,
+    tag_patterns: Vec<regex::Regex>,
+    max_age: Option<Duration>,
     metric_type: Option<MetricType>,
     value: Option<f64>,
     timeout: Duration,
@@ -78,8 +85,10 @@ pub(crate) struct IntakeHasMetric {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Mismatch {
     Tags,
+    TagPattern(usize),
     Type,
     Value,
+    Age,
 }
 
 /// One successful poll of the intake's metrics, normalized.
@@ -107,38 +116,45 @@ impl IntakeHasMetric {
     /// Registry name used in case procedures.
     pub(crate) const NAME: &'static str = "intake_has_metric";
 
-    fn new(
-        on: String, name: String, metric_type: Option<MetricType>, value: Option<f64>, tags: Vec<String>,
-        tags_match: TagMatch, timeout: Duration,
-    ) -> Result<Self, String> {
-        if value.is_some() && metric_type == Some(MetricType::Sketch) {
+    fn new(fields: Fields) -> Result<Self, String> {
+        if fields.value.is_some() && fields.metric_type == Some(MetricType::Sketch) {
             return Err(format!(
                 "intake_has_metric `{}` can't combine `value` with `metric_type: sketch`: a sketch has no single \
                  value to compare",
-                name
+                fields.name
             ));
         }
+        let tag_patterns = fields
+            .tag_patterns
+            .iter()
+            .map(|pattern| {
+                regex::Regex::new(pattern)
+                    .map_err(|error| format!("tag pattern '{pattern}' is not a valid regex: {error}"))
+            })
+            .collect::<Result<_, _>>()?;
 
         Ok(Self {
-            on,
-            expected: NormalizedMetricContext::new(name, tags),
-            tags_match,
-            metric_type,
-            value,
-            timeout,
+            on: fields.on,
+            expected: NormalizedMetricContext::new(fields.name, fields.tags),
+            tags_match: fields.tags_match,
+            tag_patterns,
+            max_age: fields.max_age.map(Into::into),
+            metric_type: fields.metric_type,
+            value: fields.value,
+            timeout: fields.timeout.into(),
         })
     }
 
     /// Returns whether one context in `metrics` meets every criterion.
     fn is_met_by(&self, metrics: &NormalizedMetrics) -> bool {
-        metrics
-            .metrics()
-            .iter()
-            .any(|metric| metric.context().name() == self.expected.name() && self.mismatch(metric).is_none())
+        let checked_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+        metrics.metrics().iter().any(|metric| {
+            metric.context().name() == self.expected.name() && self.mismatch(metric, checked_at).is_none()
+        })
     }
 
-    /// Returns the first criterion `metric` fails, checking tags, then type, then value. The name isn't checked.
-    fn mismatch(&self, metric: &NormalizedMetric) -> Option<Mismatch> {
+    /// Returns the first failed criterion, checking tags, patterns, type, value and age. The name is not checked.
+    fn mismatch(&self, metric: &NormalizedMetric, checked_at: Duration) -> Option<Mismatch> {
         let observed_tags = metric.context().tags();
         let tags_hold = match self.tags_match {
             TagMatch::Subset => self.expected.tags().iter().all(|tag| observed_tags.contains(tag)),
@@ -146,6 +162,14 @@ impl IntakeHasMetric {
         };
         if !tags_hold {
             return Some(Mismatch::Tags);
+        }
+
+        if let Some(index) = self
+            .tag_patterns
+            .iter()
+            .position(|pattern| !observed_tags.iter().any(|tag| pattern.is_match(tag)))
+        {
+            return Some(Mismatch::TagPattern(index));
         }
 
         if self.metric_type.is_some_and(|expected| expected != metric.value_type()) {
@@ -157,6 +181,15 @@ impl IntakeHasMetric {
             .is_some_and(|expected| !value_matches(metric.normalized_value(), expected))
         {
             return Some(Mismatch::Value);
+        }
+
+        if let Some(max_age) = self.max_age {
+            let fresh = metric.raw_values().last().is_some_and(|(timestamp, _)| {
+                *timestamp > 0 && checked_at.abs_diff(Duration::from_secs(*timestamp)) <= max_age
+            });
+            if !fresh {
+                return Some(Mismatch::Age);
+            }
         }
 
         None
@@ -190,11 +223,19 @@ impl IntakeHasMetric {
                 }
                 format!("tags: {}", parts.join(", "))
             }
+            Mismatch::TagPattern(index) => {
+                format!("tag pattern: no tag matches '{}'", self.tag_patterns[index].as_str())
+            }
             Mismatch::Type => format!(
                 "type: expected {}",
                 self.metric_type.map(|t| t.to_string()).unwrap_or_default()
             ),
             Mismatch::Value => format!("value: expected {}", self.value.unwrap_or_default()),
+            Mismatch::Age => format!(
+                "max_age: latest point timestamp {} is not within {:?} of check time",
+                metric.raw_values().last().map_or(0, |(timestamp, _)| *timestamp),
+                self.max_age.unwrap_or_default()
+            ),
         }
     }
 
@@ -261,6 +302,7 @@ impl IntakeHasMetric {
     /// Lists the snapshot's contexts with the expected name, and why each failed, into `out`.
     fn describe_snapshot(&self, snapshot: &Snapshot, out: &mut String) {
         let name = self.expected.name();
+        let checked_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
 
         let mut candidates = snapshot
             .metrics
@@ -268,7 +310,7 @@ impl IntakeHasMetric {
             .iter()
             .filter(|metric| metric.context().name() == name)
             .map(|metric| {
-                let outcome = match self.mismatch(metric) {
+                let outcome = match self.mismatch(metric, checked_at) {
                     Some(mismatch) => format!("fails {}", self.describe_mismatch(mismatch, metric)),
                     None => "meets every criterion".to_string(),
                 };
@@ -351,6 +393,19 @@ impl IntakeHasMetric {
         // An empty exact set still constrains the context, so it is always shown.
         if !self.expected.tags().is_empty() || self.tags_match == TagMatch::Exact {
             parts.push(format!("tags=[{}]", self.expected.tags().join(", ")));
+        }
+        if !self.tag_patterns.is_empty() {
+            parts.push(format!(
+                "tag_patterns=[{}]",
+                self.tag_patterns
+                    .iter()
+                    .map(regex::Regex::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        if let Some(max_age) = self.max_age {
+            parts.push(format!("max_age={max_age:?}"));
         }
         parts.push(
             match self.tags_match {
@@ -464,16 +519,7 @@ impl StepFactory for IntakeHasMetricFactory {
     }
 
     fn build(&self, fields: &StepFields) -> Result<Box<dyn Step>, String> {
-        let fields = decode_fields::<Fields>(fields)?;
-        Ok(Box::new(IntakeHasMetric::new(
-            fields.on,
-            fields.name,
-            fields.metric_type,
-            fields.value,
-            fields.tags,
-            fields.tags_match,
-            fields.timeout.into(),
-        )?))
+        Ok(Box::new(IntakeHasMetric::new(decode_fields(fields)?)?))
     }
 }
 
@@ -530,15 +576,17 @@ mod tests {
     fn assertion(
         name: &str, metric_type: Option<MetricType>, value: Option<f64>, tags: &[&str], tags_match: TagMatch,
     ) -> IntakeHasMetric {
-        IntakeHasMetric::new(
-            "subject".to_string(),
-            name.to_string(),
+        IntakeHasMetric::new(Fields {
+            on: "subject".into(),
+            name: name.into(),
             metric_type,
             value,
-            tags.iter().map(|t| t.to_string()).collect(),
+            tags: tags.iter().map(|t| t.to_string()).collect(),
             tags_match,
-            Duration::from_secs(1),
-        )
+            tag_patterns: vec![],
+            max_age: None,
+            timeout: "1s".parse().unwrap(),
+        })
         .expect("assertion should build")
     }
 
@@ -811,6 +859,179 @@ mod tests {
         assert!(IntakeHasMetricFactory.template_fields().is_empty());
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn intake_has_metric_tag_patterns_require_a_matching_tag() {
+        for (tags, patterns, status, diagnostic) in [
+            (
+                vec!["host:custom", "version:1.0"],
+                vec!["^host:custom$", "^version:.+"],
+                AssertionStatus::Passed,
+                "",
+            ),
+            (
+                vec!["host:custom", "version:"],
+                vec!["^host:custom$", "^version:.+"],
+                AssertionStatus::Failed,
+                "no tag matches '^version:.+'",
+            ),
+            (
+                vec!["host:other", "version:1.0"],
+                vec!["^host:custom$", "^version:.+"],
+                AssertionStatus::Failed,
+                "no tag matches '^host:custom$'",
+            ),
+            (vec!["host:custom"], vec![], AssertionStatus::Passed, ""),
+        ] {
+            let fake = FakeParticipant::default();
+            fake.push_exec(Ok(dump(json!([metric_json("some.metric", &tags, &[gauge(1.0)])]))));
+            let mut fields = valid_fields(IntakeHasMetric::NAME);
+            fields.insert("tag_patterns".into(), json!(patterns));
+            let report = run_step_with(&IntakeHasMetricFactory, &fields, Some(&fake)).await;
+            assert_eq!(report.status, status, "{}", report.message);
+            assert!(report.message.contains(diagnostic), "{}", report.message);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn intake_has_metric_tag_patterns_do_not_combine_contexts() {
+        let fake = FakeParticipant::default();
+        fake.push_exec(Ok(dump(json!([
+            metric_json("some.metric", &["host:custom"], &[gauge(1.0)]),
+            metric_json("some.metric", &["version:1.0"], &[gauge(1.0)]),
+        ]))));
+        let mut fields = valid_fields(IntakeHasMetric::NAME);
+        fields.insert("tag_patterns".into(), json!(["^host:custom$", "^version:.+"]));
+        let report = run_step_with(&IntakeHasMetricFactory, &fields, Some(&fake)).await;
+        assert_eq!(report.status, AssertionStatus::Failed);
+        assert!(
+            report.message.contains("no tag matches '^version:.+'"),
+            "{}",
+            report.message
+        );
+    }
+
+    #[test]
+    fn intake_has_metric_rejects_an_invalid_tag_pattern() {
+        let mut fields = valid_fields(IntakeHasMetric::NAME);
+        fields.insert("tag_patterns".into(), json!(["valid", "("]));
+        assert!(IntakeHasMetricFactory
+            .build(&fields)
+            .unwrap_err()
+            .starts_with("tag pattern '(' is not a valid regex:"));
+        for value in [json!("version"), json!({}), json!([true]), json!([3])] {
+            fields.insert("tag_patterns".into(), value);
+            assert!(IntakeHasMetricFactory.build(&fields).is_err());
+        }
+    }
+
+    #[test]
+    fn intake_has_metric_max_age_includes_its_boundary_and_rejects_future_skew() {
+        let mut fields = valid_fields(IntakeHasMetric::NAME);
+        fields.insert("max_age".into(), json!("30s"));
+        let step = IntakeHasMetric::new(decode_fields(&fields).unwrap()).unwrap();
+        let checked_at = Duration::from_secs(100);
+        for (timestamp, expected) in [
+            (69, Some(Mismatch::Age)),
+            (70, None),
+            (100, None),
+            (130, None),
+            (131, Some(Mismatch::Age)),
+            (0, Some(Mismatch::Age)),
+            (u64::MAX, Some(Mismatch::Age)),
+        ] {
+            let observed = NormalizedMetric::try_from_values(
+                NormalizedMetricContext::new("some.metric".into(), vec![]),
+                vec![(timestamp, MetricValue::Gauge { value: 1.0 })],
+            )
+            .unwrap();
+            assert_eq!(step.mismatch(&observed, checked_at), expected, "timestamp {timestamp}");
+            if timestamp == 100 {
+                assert_eq!(step.mismatch(&observed, Duration::from_secs(131)), Some(Mismatch::Age));
+            }
+        }
+        fields.insert("max_age".into(), json!("500ms"));
+        let step = IntakeHasMetric::new(decode_fields(&fields).unwrap()).unwrap();
+        let observed = NormalizedMetric::try_from_values(
+            NormalizedMetricContext::new("some.metric".into(), vec![]),
+            vec![(100, MetricValue::Gauge { value: 1.0 })],
+        )
+        .unwrap();
+        assert_eq!(step.mismatch(&observed, Duration::from_millis(100500)), None);
+        assert_eq!(
+            step.mismatch(&observed, Duration::from_millis(100501)),
+            Some(Mismatch::Age)
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn intake_has_metric_max_age_requires_a_fresh_matching_gauge() {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        for (points, max_age, status) in [
+            (vec![(now, 1.0)], Some("30s"), AssertionStatus::Passed),
+            (vec![(now - 60, 1.0)], Some("30s"), AssertionStatus::Failed),
+            (vec![(now + 60, 1.0)], Some("30s"), AssertionStatus::Failed),
+            (vec![(0, 1.0)], Some("30s"), AssertionStatus::Failed),
+            (vec![(now - 60, 1.0), (now, 0.0)], Some("30s"), AssertionStatus::Failed),
+            (vec![(now - 60, 1.0)], None, AssertionStatus::Passed),
+        ] {
+            let fake = FakeParticipant::default();
+            let values: Vec<_> = points.iter().map(|(ts, value)| json!([ts, gauge(*value)])).collect();
+            fake.push_exec(Ok(dump(
+                json!([{"context": {"name": "some.metric", "tags": []}, "values": values}]),
+            )));
+            let mut fields = valid_fields(IntakeHasMetric::NAME);
+            fields.insert("metric_type".into(), json!("gauge"));
+            fields.insert("value".into(), json!(1));
+            if let Some(max_age) = max_age {
+                fields.insert("max_age".into(), json!(max_age));
+            }
+            let report = run_step_with(&IntakeHasMetricFactory, &fields, Some(&fake)).await;
+            assert_eq!(report.status, status, "{}", report.message);
+            if status == AssertionStatus::Failed {
+                assert!(
+                    report.message.contains("fails max_age:") || report.message.contains("fails value:"),
+                    "{}",
+                    report.message
+                );
+            }
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn intake_has_metric_retries_a_stale_snapshot_until_a_fresh_point_arrives() {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let fake = FakeParticipant::default();
+        for ts in [now - 60, now] {
+            fake.push_exec(Ok(dump(
+                json!([{"context": {"name": "some.metric", "tags": []}, "values": [[ts, gauge(1.0)]]}]),
+            )));
+        }
+        let mut fields = valid_fields(IntakeHasMetric::NAME);
+        fields.insert("max_age".into(), json!("30s"));
+        let report = run_step_with(&IntakeHasMetricFactory, &fields, Some(&fake)).await;
+        assert_eq!(report.status, AssertionStatus::Passed, "{}", report.message);
+        assert_eq!(report.duration, POLL_INTERVAL);
+    }
+
+    #[test]
+    fn intake_has_metric_max_age_requires_a_positive_duration() {
+        for value in [
+            json!(true),
+            json!(30),
+            json!({}),
+            json!("30"),
+            json!("0s"),
+            json!("-1s"),
+        ] {
+            let mut fields = valid_fields(IntakeHasMetric::NAME);
+            fields.insert("max_age".into(), value);
+            assert!(IntakeHasMetricFactory
+                .build(&fields)
+                .unwrap_err()
+                .starts_with("max_age:"));
+        }
+    }
+
     #[test]
     fn name_only_criteria_matches_on_name_alone() {
         let observed = snapshot(&[metric("some.counter", &["env:test"], &[count(3.0)])]);
@@ -891,15 +1112,17 @@ mod tests {
 
     #[test]
     fn a_value_combined_with_a_sketch_type_is_rejected() {
-        let result = IntakeHasMetric::new(
-            "subject".to_string(),
-            "some.sketch".to_string(),
-            Some(MetricType::Sketch),
-            Some(1.0),
-            Vec::new(),
-            TagMatch::Subset,
-            Duration::from_secs(1),
-        );
+        let result = IntakeHasMetric::new(Fields {
+            on: "subject".into(),
+            name: "some.sketch".into(),
+            metric_type: Some(MetricType::Sketch),
+            value: Some(1.0),
+            tags: vec![],
+            tags_match: TagMatch::Subset,
+            tag_patterns: vec![],
+            max_age: None,
+            timeout: "1s".parse().unwrap(),
+        });
         let error = result.expect_err("value with a sketch type should be rejected");
         assert!(
             error
@@ -910,25 +1133,29 @@ mod tests {
         );
 
         // Each one alone is valid.
-        assert!(IntakeHasMetric::new(
-            "subject".to_string(),
-            "some.sketch".to_string(),
-            Some(MetricType::Sketch),
-            None,
-            Vec::new(),
-            TagMatch::Subset,
-            Duration::from_secs(1),
-        )
+        assert!(IntakeHasMetric::new(Fields {
+            on: "subject".into(),
+            name: "some.sketch".into(),
+            metric_type: Some(MetricType::Sketch),
+            value: None,
+            tags: vec![],
+            tags_match: TagMatch::Subset,
+            tag_patterns: vec![],
+            max_age: None,
+            timeout: "1s".parse().unwrap(),
+        })
         .is_ok());
-        assert!(IntakeHasMetric::new(
-            "subject".to_string(),
-            "some.sketch".to_string(),
-            None,
-            Some(1.0),
-            Vec::new(),
-            TagMatch::Subset,
-            Duration::from_secs(1),
-        )
+        assert!(IntakeHasMetric::new(Fields {
+            on: "subject".into(),
+            name: "some.sketch".into(),
+            metric_type: None,
+            value: Some(1.0),
+            tags: vec![],
+            tags_match: TagMatch::Subset,
+            tag_patterns: vec![],
+            max_age: None,
+            timeout: "1s".parse().unwrap(),
+        })
         .is_ok());
     }
 

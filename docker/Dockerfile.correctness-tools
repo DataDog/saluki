@@ -43,5 +43,8 @@ RUN --mount=type=cache,target=/correctness-tools/target,id=correctness-tools-tar
 # Final stage: copy both binaries on top of the configured application base image.
 FROM ${APP_IMAGE}
 
+# Fixture participants run case scripts with Python.
+RUN apt-get update && apt-get install -y --no-install-recommends python3 && rm -rf /var/lib/apt/lists/*
+
 COPY --from=builder /out/datadog-intake /usr/local/bin/datadog-intake
 COPY --from=builder /out/millstone /usr/local/bin/millstone

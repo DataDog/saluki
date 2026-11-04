@@ -5,8 +5,8 @@ use panoramic_core::step::StepFields;
 use crate::{
     config_key_equals::ConfigKeyEquals, exec::Exec, exits_with::ExitsWith, http_check::HttpCheck,
     intake_has_forwarded_packets::IntakeHasForwardedPackets, intake_has_metric::IntakeHasMetric,
-    port_listening::PortListening, process_stable_for::ProcessStableFor, send::Send, FileContains, LogContains,
-    LogNotContains,
+    intake_has_service_check::IntakeHasServiceCheck, port_listening::PortListening,
+    process_stable_for::ProcessStableFor, send::Send, FileContains, LogContains, LogNotContains,
 };
 
 /// Returns fields that build the registered step `name`, on participant `subject`.
@@ -23,6 +23,7 @@ pub fn valid_fields(name: &str) -> StepFields {
         HttpCheck::NAME => "on: subject\nendpoint: http\npath: /metrics\nstatus: {equal: 200}\ntimeout: 30s",
         IntakeHasForwardedPackets::NAME => "on: subject\ncontains: ['packet']\ntimeout: 30s",
         IntakeHasMetric::NAME => "on: subject\nname: some.metric\ntimeout: 30s",
+        IntakeHasServiceCheck::NAME => "on: subject\nname: some.check\ntimeout: 30s",
         LogContains::NAME => "on: subject\npattern: ready\ntimeout: 30s",
         LogNotContains::NAME => "on: subject\npattern: panic\nduring: 10s",
         PortListening::NAME => "on: subject\nendpoint: tcp\ntimeout: 30s",

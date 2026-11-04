@@ -369,6 +369,17 @@ pub mod test_support {
         }
     }
 
+    /// Builds a Unix-stream address as seen by a consumer.
+    pub fn unix_stream_address(path: &str) -> ResolvedAddress {
+        ResolvedAddress {
+            kind: EndpointKind::UnixStream,
+            url: format!("unix://{path}"),
+            host: None,
+            port: None,
+            path: Some(path.into()),
+        }
+    }
+
     /// Checks whether a listener uses TLS.
     ///
     /// # Panics

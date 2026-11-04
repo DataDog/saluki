@@ -7,10 +7,10 @@ import unittest
 from pathlib import Path
 
 
-FIXTURE_PATH = Path(__file__).with_name("run_liveness_test.py")
+FIXTURE_PATH = Path(__file__).with_name("fake_docker.py")
 EXPECTED_CONTAINER_ID = "a" * 64
 UNKNOWN_CONTAINER_ID = "b" * 64
-spec = importlib.util.spec_from_file_location("run_liveness_test", FIXTURE_PATH)
+spec = importlib.util.spec_from_file_location("fake_docker", FIXTURE_PATH)
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 

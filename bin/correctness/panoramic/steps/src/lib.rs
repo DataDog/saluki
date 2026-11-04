@@ -16,6 +16,7 @@ mod file_contains;
 mod http_check;
 mod intake_has_forwarded_packets;
 mod intake_has_metric;
+mod intake_has_service_check;
 mod log_contains;
 mod message;
 pub mod metrics;
@@ -37,6 +38,7 @@ pub const REGISTERED_STEPS: &[&dyn StepFactory] = &[
     &http_check::HttpCheckFactory,
     &intake_has_forwarded_packets::IntakeHasForwardedPacketsFactory,
     &intake_has_metric::IntakeHasMetricFactory,
+    &intake_has_service_check::IntakeHasServiceCheckFactory,
     &log_contains::LogContainsFactory,
     &log_contains::LogNotContainsFactory,
     &port_listening::PortListeningFactory,
@@ -98,7 +100,8 @@ mod tests {
     use crate::{
         config_key_equals::ConfigKeyEquals, exec::Exec, exits_with::ExitsWith, http_check::HttpCheck,
         intake_has_forwarded_packets::IntakeHasForwardedPackets, intake_has_metric::IntakeHasMetric,
-        port_listening::PortListening, process_stable_for::ProcessStableFor, send::Send, test_support::valid_fields,
+        intake_has_service_check::IntakeHasServiceCheck, port_listening::PortListening,
+        process_stable_for::ProcessStableFor, send::Send, test_support::valid_fields,
     };
 
     const PATTERN_STEPS: &[&dyn StepFactory] = &[
@@ -149,6 +152,7 @@ mod tests {
                 "http_check",
                 "intake_has_forwarded_packets",
                 "intake_has_metric",
+                "intake_has_service_check",
                 "log_contains",
                 "log_not_contains",
                 "port_listening",
@@ -174,6 +178,7 @@ mod tests {
                 HttpCheck::NAME,
                 IntakeHasForwardedPackets::NAME,
                 IntakeHasMetric::NAME,
+                IntakeHasServiceCheck::NAME,
                 LogContains::NAME,
                 LogNotContains::NAME,
                 PortListening::NAME,
@@ -198,6 +203,7 @@ mod tests {
                 (HttpCheck::NAME, StepKind::Assertion),
                 (IntakeHasForwardedPackets::NAME, StepKind::Assertion),
                 (IntakeHasMetric::NAME, StepKind::Assertion),
+                (IntakeHasServiceCheck::NAME, StepKind::Assertion),
                 (LogContains::NAME, StepKind::Assertion),
                 (LogNotContains::NAME, StepKind::Assertion),
                 (PortListening::NAME, StepKind::Assertion),
@@ -214,7 +220,7 @@ mod tests {
             let step = factory.build(&fields).unwrap();
             let needs = match factory.name() {
                 ConfigKeyEquals::NAME => vec![Need::Operation("subject".into(), "config_dump".into())],
-                IntakeHasMetric::NAME | IntakeHasForwardedPackets::NAME => {
+                IntakeHasForwardedPackets::NAME | IntakeHasMetric::NAME | IntakeHasServiceCheck::NAME => {
                     vec![Need::Operation("subject".into(), "dump".into())]
                 }
                 HttpCheck::NAME => vec![Need::Endpoint(
@@ -244,6 +250,7 @@ mod tests {
             let string_fields: &[&str] = match factory.name() {
                 ConfigKeyEquals::NAME => &["on", "key"],
                 IntakeHasMetric::NAME => &["on", "name"],
+                IntakeHasServiceCheck::NAME => &["on", "name", "hostname"],
                 Exec::NAME | IntakeHasForwardedPackets::NAME => &["on"],
                 HttpCheck::NAME => &["on", "endpoint", "path", "pattern"],
                 Send::NAME => &["on", "endpoint", "payload"],

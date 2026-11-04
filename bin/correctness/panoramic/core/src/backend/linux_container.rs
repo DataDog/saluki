@@ -13,6 +13,7 @@ use airlock::{
 use async_trait::async_trait;
 use bytes::Bytes;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use serde_json::Value;
 use tokio::sync::watch;
 
 use super::{courier, RunBackends};
@@ -36,6 +37,8 @@ use crate::{
 
 /// A per-participant courier path in the container's own filesystem, separate from the shared volume.
 const COURIER_PATH: &str = "/panoramic/courier";
+
+pub(crate) const HOST_CGROUP_NAMESPACE: &str = "host_cgroup_namespace";
 
 /// A prepared isolation scope and the courier bytes placed in each participant.
 pub(crate) struct LinuxScope {
@@ -77,6 +80,7 @@ impl LinuxScope {
     /// Builds a participant from its image and recipe, publishing each runner-host port on `127.0.0.1`.
     pub(crate) fn participant(
         &self, name: &str, image: &str, recipe: &ContainerRecipe, ports: &[RunnerHostPort],
+        options: &BTreeMap<String, Value>,
     ) -> Result<LinuxParticipant, GenericError> {
         let mut config = DriverConfig::from_image(name, image.to_owned());
         if let Some(entrypoint) = &recipe.entrypoint {
@@ -98,8 +102,12 @@ impl LinuxScope {
         for port in ports {
             config = config.with_published_port(protocol(port.transport), port.container_port, port.host_port);
         }
-        // Linux container participants share the host PID namespace by default.
-        config = config.with_host_pid_namespace(true);
+        config = config.with_host_pid_namespace(true).with_host_cgroup_namespace(
+            options
+                .get(HOST_CGROUP_NAMESPACE)
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        );
         let driver = self.group.driver(config)?;
         let files = container_files(&recipe.files, &self.courier)
             .with_error_context(|| format!("Invalid files for participant '{name}'"))?;

@@ -21,9 +21,9 @@ use crate::TOOLS_LINUX_IMAGE;
 
 /// The mock Datadog intake, with independent telemetry storage per participant.
 ///
-/// The `dump` operation accepts exactly `{"kind": "metrics"}` or `{"kind": "dogstatsd_forwarded"}`.
-/// Metrics retain the intake's JSON array of serialized `stele::Metric` values. Forwarded packets are
-/// arrays of byte values, one array per packet, in receipt order.
+/// The `dump` operation accepts exactly `{"kind": "metrics"}`, `{"kind": "service_checks"}` or
+/// `{"kind": "dogstatsd_forwarded"}`. Metrics and service checks retain the intake's JSON arrays.
+/// Forwarded packets are arrays of byte values, one array per packet, in receipt order.
 pub struct DatadogIntake;
 
 impl DatadogIntake {
@@ -109,10 +109,12 @@ impl Operation for Dump {
             .and_then(Value::as_str);
         let path = match kind {
             Some("metrics") => "/metrics/dump",
+            Some("service_checks") => "/service_checks/dump",
             Some("dogstatsd_forwarded") => "/dogstatsd-forwarding/dump",
             _ => {
                 return Err(HandleError::Harness {
-                    message: "dump requires exactly {\"kind\": \"metrics\"|\"dogstatsd_forwarded\"}".into(),
+                    message: "dump requires exactly {\"kind\": \"metrics\"|\"service_checks\"|\"dogstatsd_forwarded\"}"
+                        .into(),
                 })
             }
         };
@@ -125,7 +127,7 @@ impl Operation for Dump {
         let values: Vec<Value> = serde_json::from_slice(&response.body).map_err(|_| HandleError::Product {
             message: format!("intake dump at '{path}' returned an invalid JSON array"),
         })?;
-        if kind == Some("metrics") {
+        if kind != Some("dogstatsd_forwarded") {
             return Ok(Value::Array(values));
         }
         let packets: Result<Vec<Vec<u8>>, HandleError> = values
@@ -266,6 +268,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn intake_dump_returns_service_checks() {
+        let checks = json!([
+            {
+                "name": "datadog.agent_data_plane.up",
+                "status": 0,
+                "hostname": "fixture-host",
+                "timestamp": 123,
+                "tags": ["z:last", "a:first", "a:first"],
+                "message": "healthy",
+                "extra": {"preserved": true}
+            },
+            {
+                "name": "another.check",
+                "status": 2,
+                "hostname": "another-host",
+                "message": "",
+                "tags": [],
+                "timestamp": null
+            }
+        ]);
+        let actual = dump_response(
+            "service_checks",
+            "/service_checks/dump",
+            200,
+            &serde_json::to_vec(&checks).unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(actual, checks);
+    }
+
+    #[tokio::test]
     async fn dump_decodes_forwarded_packets_preserving_bytes_order_and_duplicates() {
         let actual = dump_response(
             "dogstatsd_forwarded",
@@ -285,9 +319,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dump_returns_empty_snapshots_for_both_kinds() {
+    async fn dump_returns_empty_snapshots_for_every_kind() {
         for (kind, path) in [
             ("metrics", "/metrics/dump"),
+            ("service_checks", "/service_checks/dump"),
             ("dogstatsd_forwarded", "/dogstatsd-forwarding/dump"),
         ] {
             assert_eq!(dump_response(kind, path, 200, b"[]").await.unwrap(), json!([]));
@@ -305,7 +340,6 @@ mod tests {
             json!(["metrics"]),
             json!({}),
             json!({"kind": "unknown-kind-secret"}),
-            json!({"kind": "service_checks"}),
             json!({"kind": null}),
             json!({"kind": true}),
             json!({"kind": 1}),
@@ -313,13 +347,15 @@ mod tests {
             json!({"kind": {"metrics": true}}),
             json!({"kind": "metrics", "extra": "argument-secret"}),
             json!({"kind": "dogstatsd_forwarded", "extra": "argument-secret"}),
+            json!({"kind": "service_checks", "extra": "argument-secret"}),
             json!({"extra": "argument-secret"}),
         ] {
             let error = run_http_operation(&Dump, args.clone(), port).await.unwrap_err();
             assert_eq!(
                 error,
                 HandleError::Harness {
-                    message: "dump requires exactly {\"kind\": \"metrics\"|\"dogstatsd_forwarded\"}".into(),
+                    message: "dump requires exactly {\"kind\": \"metrics\"|\"service_checks\"|\"dogstatsd_forwarded\"}"
+                        .into(),
                 },
                 "{args}"
             );
@@ -331,6 +367,7 @@ mod tests {
     async fn dump_reports_unsuccessful_statuses_without_disclosing_the_body() {
         for (kind, path) in [
             ("metrics", "/metrics/dump"),
+            ("service_checks", "/service_checks/dump"),
             ("dogstatsd_forwarded", "/dogstatsd-forwarding/dump"),
         ] {
             for status in [300, 301, 400, 404, 500, 503] {
@@ -349,6 +386,7 @@ mod tests {
     async fn dump_reports_invalid_json_arrays_without_disclosing_the_body() {
         for (kind, path) in [
             ("metrics", "/metrics/dump"),
+            ("service_checks", "/service_checks/dump"),
             ("dogstatsd_forwarded", "/dogstatsd-forwarding/dump"),
         ] {
             for body in [

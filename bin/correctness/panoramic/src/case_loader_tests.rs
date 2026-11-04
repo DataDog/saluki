@@ -173,7 +173,7 @@ fn agent_adp_rejects_overriding_derived_ports_and_undeclared_connections() {
         ),
         (
             "connect: {upstream: other.api}",
-            "connects 'upstream', which it does not consume; it consumes dogstatsd_forward, intake",
+            "connects 'upstream', which it does not consume; it consumes docker_api, dogstatsd_forward, intake",
         ),
     ] {
         let yaml = PARTICIPANT_FIELDS
@@ -289,11 +289,11 @@ fn participant_step_errors_name_the_canonical_file_and_step() {
     for (fields, expected) in [
         (
             "step: wait_ready",
-            "names unknown step 'wait_ready'; registered steps: config_key_equals, exec, exits_with, file_contains, http_check, intake_has_forwarded_packets, intake_has_metric, log_contains, log_not_contains, port_listening, process_stable_for, send",
+            "names unknown step 'wait_ready'; registered steps: config_key_equals, exec, exits_with, file_contains, http_check, intake_has_forwarded_packets, intake_has_metric, intake_has_service_check, log_contains, log_not_contains, port_listening, process_stable_for, send",
         ),
         (
             "step: adp_cli, on: adp, args: [status]",
-            "names unknown step 'adp_cli'; registered steps: config_key_equals, exec, exits_with, file_contains, http_check, intake_has_forwarded_packets, intake_has_metric, log_contains, log_not_contains, port_listening, process_stable_for, send",
+            "names unknown step 'adp_cli'; registered steps: config_key_equals, exec, exits_with, file_contains, http_check, intake_has_forwarded_packets, intake_has_metric, intake_has_service_check, log_contains, log_not_contains, port_listening, process_stable_for, send",
         ),
         (
             "step: port_listening, on: adp, timeout: 1s",
@@ -566,6 +566,71 @@ fn dogstatsd_top_tls_and_dns_cases_place_their_case_files_under_the_definitions_
                 assert_eq!(env[key], "/var/lib/panoramic/files/server.pem");
             }
             assert_request_scheme(&plan, "adp", "otlp_http", "https");
+        }
+    }
+}
+
+#[test]
+fn liveness_case_creates_adp_before_its_fixture_and_starts_the_fixture_before_adp() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../test/integration/cases/liveness-container-tags/config.yaml");
+    let case = crate::CASE_LOADER.load_file(&path).unwrap().remove(0);
+    let plan = planner().compile(case, Os::Linux).unwrap().into_plan().unwrap();
+    assert_eq!(
+        plan.create_order().unwrap(),
+        [
+            vec!["adp".to_string(), "intake".to_string()],
+            vec!["docker-api".to_string()]
+        ]
+    );
+    assert_eq!(
+        plan.start_order().unwrap(),
+        [
+            vec!["docker-api".to_string(), "intake".to_string()],
+            vec!["adp".to_string()]
+        ]
+    );
+    let env = &plan.effective_config("adp").unwrap().env;
+    assert_eq!(env["DOCKER_HOST"], "unix:///airlock/docker-api/shared/docker.sock");
+    assert_eq!(env["DD_DD_URL"], "http://intake:2049");
+    assert_eq!(env["DD_USE_V2_API_SERIES"], "false");
+    assert_eq!(env["DD_SERIALIZER_COMPRESSOR_KIND"], "gzip");
+}
+
+#[test]
+fn realization_options_are_checked_against_the_backend() {
+    for (kind, options, error) in [
+        ("linux-container", "{host_cgroup_namespace: true}", None),
+        ("linux-container", "{host_cgroup_namespace: false}", None),
+        ("linux-container", "{unknown: true}", Some("unknown")),
+        (
+            "linux-container",
+            "{host_cgroup_namespace: 'true'}",
+            Some("host_cgroup_namespace"),
+        ),
+        (
+            "linux-container",
+            "{host_cgroup_namespace: {enabled: true}}",
+            Some("host_cgroup_namespace"),
+        ),
+        (
+            "host-process-group",
+            "{host_cgroup_namespace: true}",
+            Some("host_cgroup_namespace"),
+        ),
+    ] {
+        let yaml = PARTICIPANT_FIELDS.replace(
+            "subject: true",
+            &format!("subject: true, realization: {{kind: {kind}, options: {options}}}"),
+        );
+        let loaded = crate::CASE_LOADER.load_content(&yaml, "alpha", Path::new("config.yaml"));
+        if let Some(option) = error {
+            let message = loaded.err().expect("invalid option must fail at load").to_string();
+            assert!(message.contains("participant 'adp'"), "{message}");
+            assert!(message.contains(kind), "{message}");
+            assert!(message.contains(option), "{message}");
+        } else {
+            assert_eq!(loaded.unwrap().len(), 1);
         }
     }
 }

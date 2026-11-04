@@ -81,6 +81,11 @@ pub(crate) enum LateFactTiming {
     AfterStart,
 }
 
+/// A boolean option accepted by a realization backend.
+pub(crate) struct RealizationOption {
+    pub(crate) name: &'static str,
+}
+
 /// Planning requirements and facts for one realization kind.
 pub(crate) trait Backend: Send + Sync {
     /// The realization kind this backend creates.
@@ -88,6 +93,11 @@ pub(crate) trait Backend: Send + Sync {
 
     /// Artifact roles every participant of this realization kind needs, whatever its type.
     fn artifacts(&self) -> &'static [ArtifactRole];
+
+    /// Boolean options accepted by this realization kind.
+    fn options(&self) -> &'static [RealizationOption] {
+        &[]
+    }
 
     /// Root of the filesystem shared by participants in this scope.
     fn shared_root(&self, os: Os, scope: &ScopeLayout) -> String;
@@ -125,7 +135,7 @@ pub(crate) fn writes_late_files(kind: RealizationKind) -> bool {
     backend(kind).writes_late_files()
 }
 
-fn backend(kind: RealizationKind) -> &'static dyn Backend {
+pub(crate) fn backend(kind: RealizationKind) -> &'static dyn Backend {
     BACKENDS
         .iter()
         .copied()
@@ -145,6 +155,12 @@ impl Backend for LinuxContainers {
 
     fn artifacts(&self) -> &'static [ArtifactRole] {
         &[FIXUP_IMAGE, COURIER_LINUX_BINARY]
+    }
+
+    fn options(&self) -> &'static [RealizationOption] {
+        &[RealizationOption {
+            name: linux_container::HOST_CGROUP_NAMESPACE,
+        }]
     }
 
     fn shared_root(&self, _os: Os, _scope: &ScopeLayout) -> String {

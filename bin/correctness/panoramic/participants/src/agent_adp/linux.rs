@@ -15,9 +15,9 @@ use panoramic_core::{
 use serde_json::Value;
 
 use super::AgentAdp;
+use crate::CASE_FILES_DIR;
 
 const ADP_CLI_BINARY_PATH: &str = "/opt/datadog-agent/embedded/bin/agent-data-plane";
-pub(super) const FILES_DIR: &str = "/var/lib/panoramic/files";
 
 pub(super) const OPERATIONS: &[&dyn Operation] = &[&ConfigDump];
 
@@ -392,6 +392,17 @@ fn loopback_host(host: &str) -> bool {
 pub(super) fn consumes() -> BTreeMap<String, ConsumedEndpoint> {
     BTreeMap::from([
         (
+            "docker_api".into(),
+            ConsumedEndpoint {
+                accepts: vec![EndpointKind::UnixStream],
+                required: false,
+                delivery: Delivery::Env {
+                    keys: ["DOCKER_HOST".into()].into(),
+                    value: |address| BTreeMap::from([("DOCKER_HOST".into(), address.url().into())]),
+                },
+            },
+        ),
+        (
             "dogstatsd_forward".into(),
             ConsumedEndpoint {
                 accepts: vec![EndpointKind::Udp],
@@ -476,7 +487,7 @@ pub(super) fn recipe(config: &RenderedConfig) -> Result<Recipe, String> {
     let mut recipe = ContainerRecipe::new(AgentAdp::LINUX_IMAGE).with_env(config.env().clone());
     for (name, contents) in config.files() {
         let (path, mode) = if let Some(relative) = name.strip_prefix("files/") {
-            (format!("{FILES_DIR}/{relative}"), 0o644)
+            (format!("{CASE_FILES_DIR}/{relative}"), 0o644)
         } else if let Some(hook) = name.strip_prefix("cont-init.d/") {
             if hook.contains('/') {
                 return Err(format!("agent-adp cont-init.d hook '{name}' must not be nested"));
@@ -546,7 +557,9 @@ fn body(script: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use panoramic_core::{
-        endpoint::test_support::{assert_network_endpoint, assert_socket_endpoint, assert_tls_endpoint, http_address},
+        endpoint::test_support::{
+            assert_network_endpoint, assert_socket_endpoint, assert_tls_endpoint, http_address, unix_stream_address,
+        },
         layout::{Os, Realization, RealizationKind},
         participant::{test_support::run_operation, CaseValues, EffectiveConfig, ParticipantType},
         recipe::test_support::{assert_image_recipe, files, rendered},
@@ -1534,7 +1547,7 @@ mod tests {
         let consumes = AgentAdp.consumes(LINUX, &config(&[]));
         assert_eq!(
             consumes.keys().map(String::as_str).collect::<Vec<_>>(),
-            ["dogstatsd_forward", "intake"]
+            ["docker_api", "dogstatsd_forward", "intake"]
         );
         let intake = &consumes["intake"];
         assert_eq!(intake.accepts, [EndpointKind::Http]);
@@ -1549,6 +1562,26 @@ mod tests {
                 ("DD_DD_URL".into(), "http://intake:2049".into()),
                 ("DD_APM_DD_URL".into(), "http://intake:2049".into())
             ])
+        );
+    }
+
+    #[test]
+    fn docker_api_delivers_docker_host_as_a_unix_url() {
+        let config = config(&[]);
+        assert!(!config.env.contains_key("DOCKER_HOST"));
+        let consumes = AgentAdp.consumes(LINUX, &config);
+        let docker_api = &consumes["docker_api"];
+        assert_eq!(docker_api.accepts, [EndpointKind::UnixStream]);
+        assert!(!docker_api.required);
+        let Delivery::Env { keys, value } = &docker_api.delivery;
+        let delivered = value(&unix_stream_address("/airlock/docker-api/shared/docker.sock"));
+        assert_eq!(keys.iter().collect::<Vec<_>>(), delivered.keys().collect::<Vec<_>>());
+        assert_eq!(
+            delivered,
+            BTreeMap::from([(
+                "DOCKER_HOST".into(),
+                "unix:///airlock/docker-api/shared/docker.sock".into()
+            )])
         );
     }
 

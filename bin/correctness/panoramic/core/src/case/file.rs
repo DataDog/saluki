@@ -100,9 +100,9 @@ pub struct ParticipantEntry {
 pub struct RequestedRealization {
     /// Required execution mechanism; has no default.
     pub kind: RealizationKind,
-    /// Options for the realization kind; each kind defines which it accepts, and none defines any. Defaults to empty.
+    /// Boolean options declared by the realization's backend. Defaults to empty.
     #[serde(default)]
-    pub(super) options: BTreeMap<String, Value>,
+    pub(crate) options: BTreeMap<String, Value>,
 }
 
 /// Product configuration supplied to a participant.

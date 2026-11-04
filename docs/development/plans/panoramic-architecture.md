@@ -95,7 +95,7 @@ Use product `config_dump` output from CI runs to compare effective product confi
 
 | Suite | Files | Selected rows (subject OS / runtime) | Disabled rows | Assertions (subject OS) | Actions (subject OS) |
 | --- | --- | --- | --- | --- | --- |
-| integration | 52 | linux / linux: 34; linux / linux-container: 11; macos / mac: 31; windows / windows: 34 | 0 | linux: 192; macos: 130; windows: 144 | linux: 25; macos: 14; windows: 16 |
+| integration | 52 | linux / linux: 33; linux / linux-container: 12; macos / mac: 31; windows / windows: 34 | 0 | linux: 192; macos: 130; windows: 144 | linux: 25; macos: 14; windows: 16 |
 | correctness | 42 | linux / docker: 39; linux / kubernetes_in_docker: 7 | 2 | — | — |
 
 Total: 158 rows.
@@ -248,7 +248,7 @@ Total: 158 rows.
 | dogstatsd-skip-failed-listener | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 4, actions: 0 | 0 |
 | dogstatsd-top | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 5, actions: 1 | 0 |
 | dogstatsd-top-windows | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 5, actions: 1 | 0 |
-| liveness-container-tags | integration | linux | linux | selected | test-integration | integration | old | assertions: 4, actions: 1 | 0 |
+| liveness-container-tags | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 4, actions: 1 | 0 |
 | otlp-tls | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 3, actions: 1 | 0 |
 | otlp-traces-enabled | integration | linux | linux | selected | test-integration | integration | old | assertions: 4, actions: 0 | 0 |
 | otlp-traces-enabled | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 4, actions: 0 | 0 |
@@ -338,6 +338,17 @@ bind; non-local traffic remains disabled and the unused exposed UDP port is remo
 the same exit-code and timeout criteria; execution-mechanism failures now error instead of failing. Stability
 watches both ADP's and the Agent's exit records. Assertion/action counts and timeouts are unchanged.
 
+`liveness-container-tags` uses native Linux execution with three participants. A Linux `fixture` serves the fake
+Docker API instead of wrapping the Agent entrypoint. It receives ADP's container ID after ADP is created; ADP starts
+only after the fixture's Unix socket and the real mock intake are ready. The fake API's three Python tests run through
+`exec` on the fixture. Execution-mechanism failures now error instead of failing. The marker-file assertions become
+`intake_has_metric` and `intake_has_service_check`, preserving the hostname, value/status, image and label tags, and
+nonempty version-tag criteria. `max_age: 30s` preserves timestamp freshness, including rejecting excessive future
+skew; the gauge's latest point supplies both value and timestamp. ADP still sends v1-series payloads with gzip.
+Stability now observes both ADP and Agent exit records. The case timeout rises from 120 to 180 seconds for ordered
+participant startup. ADP shares the host cgroup namespace to discover its own container ID, with no host binds.
+Assertion and action counts remain four and one.
+
 ## Migration proofs
 
 When changing a case's schema or runner, add CI evidence per (case, subject OS, execution). Native rows may say
@@ -364,6 +375,7 @@ Link CI runs; don't copy their logs into the repository.
 | adp-ipc-no-dns | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `d1efbab740`. |
 | otlp-tls | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `d1efbab740`. |
 | dogstatsd-top | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `d1efbab740`. |
+| liveness-container-tags | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `d1efbab740`. |
 <!-- migration-proofs:end -->
 
 The macOS proofs carry a caveat: the integration runner's macOS host processes share the host's `/tmp`, and nothing

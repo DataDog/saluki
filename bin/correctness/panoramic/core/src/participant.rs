@@ -108,6 +108,11 @@ impl RenderedConfig {
         &self.env
     }
 
+    /// Parameters after resolving references for creation.
+    pub fn params(&self) -> &BTreeMap<String, Value> {
+        &self.params
+    }
+
     /// Case file contents in key order. A regular file uses its declared name as the key.
     /// A directory named `d/` contributes its regular files recursively as `d/<relative path>`,
     /// with `/` separators. Empty directories contribute nothing.

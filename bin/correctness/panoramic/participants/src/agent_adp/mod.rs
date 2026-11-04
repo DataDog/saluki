@@ -139,7 +139,7 @@ impl ParticipantType for AgentAdp {
                 },
                 FactDeclaration {
                     name: "files_dir",
-                    value: linux::FILES_DIR,
+                    value: crate::CASE_FILES_DIR,
                 },
             ],
             (Os::Windows, RealizationKind::WindowsContainer) => &[FactDeclaration {

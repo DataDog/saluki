@@ -325,14 +325,18 @@ can match an early poll before the rest arrives.
 
 `on`, `name` and `timeout` are required; `name` must match exactly. The other criteria are:
 
-- `metric_type`: `count`, `rate`, `gauge`, or `sketch`.
-- `value`: compared with the normalized value, using the same approximate float equality as correctness analysis. A
-  rate is compared at its own interval. `value` can't be combined with `metric_type: sketch`; the case fails to
-  load.
-- `tags`: compared as `tags_match` directs. Both sides are sorted and deduplicated first.
-- `tags_match`: `subset` (the default) requires every listed tag and allows extras, such as the environment-derived
-  ones the Agent adds. `exact` requires the context's tags to equal the list. The intake reports a metric's host as
-  a `host:<value>` tag, so under `exact`, `tags: []` means no tags and no host.
+| Field | Matching rule |
+| --- | --- |
+| `metric_type` | `count`, `rate`, `gauge`, or `sketch`; omitted accepts every type. |
+| `value` | Compares the normalized value using approximate float equality, as correctness analysis does. A rate uses its own interval. Combining `value` with `metric_type: sketch` fails loading. |
+| `tags` | Compares sorted, deduplicated tags as `tags_match` directs; defaults to empty. |
+| `tags_match` | `subset` (default) requires every listed tag and allows extras. `exact` requires the context's tags to equal the list. |
+| `tag_patterns` | A list of regular expressions, each requiring a match in at least one tag of the same context, including its host tag. Defaults to empty; invalid patterns fail loading. |
+| `max_age` | Optional positive duration. The context's latest point must have a positive timestamp within this duration of check time, including the boundary. Excessive future skew also fails. Omitted accepts any timestamp. |
+
+The intake reports a metric's host as a `host:<value>` tag, so under `exact`, `tags: []` means no tags and no host.
+For gauges, the value and freshness criteria apply to the same latest point. Other metric types retain their
+normalized totals; `max_age` checks the latest contributing point's timestamp.
 
 `exact` constrains the one matching context. It doesn't prove that no other contexts arrived.
 
@@ -369,6 +373,14 @@ assertion does not count packets. If any dump returned a valid snapshot, a timeo
 entries and up to ten observed packets as escaped, lossy UTF-8. Otherwise it errors with the last dump error.
 Diagnostics are capped at 4096 bytes, as for `intake_has_metric`.
 
+The native `intake_has_service_check` assertion requires `on`, an exact `name`, and a positive `timeout`.
+Optional `status` is an integer from 0 through 255, `hostname` matches exactly, and `tags` is a subset list that
+allows extra tags. Omitted criteria accept any value; `tags` defaults to empty. It polls `dump` with
+`{"kind": "service_checks"}` until one service check satisfies every criterion, without combining checks.
+At timeout, any decoded snapshot makes the assertion fail; otherwise it errors with the last dump error. Failure
+messages list up to ten checks with the expected name and each one's first failed criterion, or up to ten other
+observed names. Messages are capped at 4096 bytes. A subject exit does not end polling early.
+
 The `observe` phase gives exited participants up to five seconds to finish
 capturing output; it also runs after a setup failure if any participant started. Running participants are skipped, and
 case cancellation ends the wait. The runner snapshots observations, stops observation tasks, then reclaims resources.
@@ -388,13 +400,23 @@ HTTP 200 from `api` at `/ready`: the intake binds UDP before starting HTTP. Conn
 starting their consumer. Each intake stores its own telemetry. When the listen variables are unset, the intake binary
 uses the defaults listed above.
 
-The intake's `dump` operation accepts exactly `{"kind": "metrics"}` or `{"kind": "dogstatsd_forwarded"}`.
-`metrics` returns the JSON array of stele metrics unchanged. `dogstatsd_forwarded` returns a JSON array of packets,
-each a JSON array of byte values; the operation decodes the intake's base64 wire format. The operation declares only
-`api` and requests `/metrics/dump` or `/dogstatsd-forwarding/dump`, respectively. Unknown kinds and extra arguments
+The intake's `dump` operation accepts one `kind`: `metrics`, `dogstatsd_forwarded`, or `service_checks`.
+`metrics` and `service_checks` return the JSON arrays of stele metrics and service checks unchanged, from
+`/metrics/dump` and `/service_checks/dump`. `dogstatsd_forwarded` requests `/dogstatsd-forwarding/dump` and returns
+an array of packets, each an array of byte values decoded from the intake's base64 wire format.
+The operation declares only `api`. Unknown kinds and extra arguments
 are harness errors before any request. Non-success HTTP status, invalid JSON and invalid packet encoding are product
 errors; messages omit response bodies. The operation is offered independently of realization. HTTP requests through
 a courier route are harness errors.
+
+The `fixture` participant runs a case-supplied command in a Linux container from `tools-linux-image`, which includes
+Python 3. Its one process, `fixture`, uses the container's exit and output. It accepts the `files/` directory name;
+regular files land under `/var/lib/panoramic/files` with mode 0644, available through its `files_dir` fact.
+`config.params.command` is a required nonempty list of strings used as the entrypoint. Facts and other participants'
+container IDs are resolved before creation. Optional `config.params.endpoints` maps names to exactly
+`{unix: /absolute/path}`. Each declares a Unix-stream endpoint with socket-existence readiness. Consumed sockets
+must lie beneath the serving participant's `shared_dir`. Other parameters and endpoint fields are rejected.
+The `liveness-container-tags` case shows a fixture created after its subject but started before it.
 
 The `agent-adp` Linux container definition uses `agent-adp-linux-image`. Its environment defaults match the legacy
 runner's port isolation: command API 55001, expvar 55000, APM 58126, process command API 56062, Agent IPC 55004,
@@ -446,7 +468,9 @@ An optional `connect: {intake: <participant>.api}` connection accepts HTTP and d
 and `DD_APM_DD_URL`. It gates Agent startup on the intake's ready route.
 An optional `connect: {dogstatsd_forward: <participant>.dogstatsd_forward}` connection accepts UDP and delivers
 `DD_STATSD_FORWARD_HOST` and `DD_STATSD_FORWARD_PORT` from the target's host and port. It gates startup on the target's
-readiness too. The native recipe uses the image's command and overlays the `data-plane` and `agent` s6 services. Each
+readiness too. An optional `connect: {docker_api: <participant>.<endpoint>}` connection accepts a Unix stream,
+sets `DOCKER_HOST` to its Unix URL, and waits for the server's readiness.
+The native recipe uses the image's command and overlays the `data-plane` and `agent` s6 services. Each
 finish script records the exit before running the shipped body, preserving ADP's two-second restart after failure and
 disablement after a clean exit. Each run script merges stderr into stdout, and its logger appends to `adp.log` or
 `agent.log` while retaining the lines on container stdout.
@@ -467,7 +491,8 @@ whether the case, type default or connection set the key.
 Every native Linux container receives three reserved variables: `PANORAMIC_PARTICIPANT` names the participant,
 `PANORAMIC_EXIT_DIR` names its exit-record directory, and `PANORAMIC_LOG_DIR` names its process-log directory.
 Recipes that set any of these variables fail creation. The backend prepares the directories before start. The
-`agent-adp` recipe uses the default host PID namespace and the container's own cgroup view.
+Linux backend always shares the host PID namespace. Its cgroup namespace is private unless
+`realization.options.host_cgroup_namespace` is true.
 macOS and Windows use the integration bridge.
 
 The integration runner's translation supports this subset of the schema:
@@ -527,7 +552,9 @@ Durations in a participant case need a unit: write `30s`, not `30`.
 Every step names the participant it acts on with `on`. Step fields differ from the integration schema: steps use
 `step:` instead of `assertion:`, and `file_contains` requires `pattern`. The loader accepts other participant and
 configuration fields, but the integration runner rejects a case that sets them, with an error naming the field.
-The loader rejects keys in `realization.options` because no realization accepts options.
+Each backend declares its accepted `realization.options`. The loader rejects unknown options and non-boolean
+values, naming the participant, realization kind, and option. Linux containers accept `host_cgroup_namespace`
+(default false); true exposes the host's cgroup paths to the participant. Other realization kinds accept no options.
 A `config.files` source must be a nonempty path relative to the case directory that exists when the case loads.
 Parent-directory components must stay within the case directory; symlink targets may be outside it.
 

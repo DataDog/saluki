@@ -373,9 +373,19 @@ async fn create(
         ));
     }
     let image = inputs.image(recipe.image)?;
+    let options = file.participants[name]
+        .realization
+        .as_ref()
+        .map(|realization| &realization.options);
     let participant = prepared
         .scope
-        .participant(name, image, &recipe, &plan.runner_host_ports(name))
+        .participant(
+            name,
+            image,
+            &recipe,
+            &plan.runner_host_ports(name),
+            options.unwrap_or(&BTreeMap::new()),
+        )
         .map_err(|error| format!("participant '{name}': {error:#}"))?;
     control.ledger.participant(
         name,

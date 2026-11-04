@@ -1,47 +1,64 @@
-type: integration
 name: "liveness-container-tags"
 description: "Verifies connected ADP forwards container-tagged liveness telemetry to intake"
-timeout: 120s
-runtimes: [linux]
+timeout: 180s
+subject_os: [linux]
 
-env:
-  DD_API_KEY: "00000000000000000000000000000000"
-  DD_HOSTNAME: "integration-test-liveness-container-tags"
-  DD_DATA_PLANE_ENABLED: "true"
-  DD_DATA_PLANE_STANDALONE_MODE: "false"
-  DD_BASIC_TELEMETRY_ADD_CONTAINER_TAGS: "true"
-  DOCKER_HOST: "unix:///tmp/adp-liveness-docker.sock"
-  DD_DD_URL: "http://127.0.0.1:18080"
-  DD_USE_V2_API_SERIES: "false"
-  DD_SERIALIZER_COMPRESSOR_KIND: "gzip"
-
-container:
-  entrypoint:
-    - "/opt/datadog-agent/embedded/bin/python3"
-    - "/liveness-container-tags/run_liveness_test.py"
-  host_cgroup_namespace: true
-  files:
-    - "run_liveness_test.py:/liveness-container-tags/run_liveness_test.py"
-    - "test_run_liveness_test.py:/liveness-container-tags/test_run_liveness_test.py"
+# The fake Docker API supplies metadata only for ADP's container ID. Sharing the host cgroup
+# namespace lets ADP discover that ID from /proc/self/cgroup, while the Agent's remote tagger
+# supplies the container tags. The intake receives the real v1-series and gzip payloads.
+participants:
+  intake:
+    type: datadog-intake
+  docker-api:
+    type: fixture
+    config:
+      files: {files/: fixture}
+      params:
+        command: [python3, "{{ self.facts.files_dir }}/fake_docker.py",
+                  "{{ adp.late.container_id }}", "{{ self.facts.shared_dir }}/docker.sock"]
+        endpoints: {api: {unix: "{{ self.facts.shared_dir }}/docker.sock"}}
+  adp:
+    type: agent-adp
+    subject: true
+    realization: {kind: linux-container, options: {host_cgroup_namespace: true}}
+    connect: {intake: intake.api, docker_api: docker-api.api}
+    config:
+      env:
+        DD_API_KEY: "00000000000000000000000000000000"
+        DD_HOSTNAME: "integration-test-liveness-container-tags"
+        DD_DATA_PLANE_ENABLED: "true"
+        DD_DATA_PLANE_STANDALONE_MODE: "false"
+        DD_BASIC_TELEMETRY_ADD_CONTAINER_TAGS: "true"
+        DD_USE_V2_API_SERIES: "false"
+        DD_SERIALIZER_COMPRESSOR_KIND: "gzip"
 
 procedure:
-  - action: target_exec
-    command:
-      - "/opt/datadog-agent/embedded/bin/python3"
-      - "/liveness-container-tags/test_run_liveness_test.py"
+  - step: exec
+    on: docker-api
+    argv: [python3, "{{ docker-api.facts.files_dir }}/test_fake_docker.py"]
     timeout: 30s
-  - assertion: file_contains
-    path: "/tmp/adp-liveness-running-validated"
-    pattern: "validated"
+  - step: intake_has_metric
+    on: intake
+    name: datadog.agent_data_plane.running
+    metric_type: gauge
+    value: 1
+    tags: ["host:integration-test-liveness-container-tags", "docker_image:example/adp-liveness:1.0", "env:liveness-fake"]
+    tag_patterns: ["^version:.+"]
+    max_age: 30s
     timeout: 60s
-  - assertion: file_contains
-    path: "/tmp/adp-liveness-up-validated"
-    pattern: "validated"
+  - step: intake_has_service_check
+    on: intake
+    name: datadog.agent_data_plane.up
+    status: 0
+    hostname: integration-test-liveness-container-tags
+    tags: ["docker_image:example/adp-liveness:1.0", "env:liveness-fake"]
     timeout: 60s
   - parallel:
-      - assertion: process_stable_for
+      - step: process_stable_for
+        on: adp
         duration: 10s
-      - assertion: log_not_contains
+      - step: log_not_contains
+        on: adp
         pattern: "panic|PANIC"
         regex: true
         during: 10s

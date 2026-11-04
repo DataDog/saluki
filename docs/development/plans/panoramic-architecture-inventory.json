@@ -3014,14 +3014,17 @@
       "name": "liveness-container-tags",
       "suite": "integration",
       "subject_os": "linux",
-      "runtime": "linux",
+      "runtime": "linux-container",
       "source": "test/integration/cases/liveness-container-tags/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
-      "timeout": "120s",
+      "timeout": "180s",
       "images": {
-        "container": "saluki-images/datadog-agent:testing-devel"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest",
+        "tools-linux-image": "saluki-images/correctness-tools:latest"
       },
       "ci_jobs": [
         "test-integration"
@@ -9457,78 +9460,92 @@
     },
     "integration/liveness-container-tags": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [
-            "/opt/datadog-agent/embedded/bin/python3",
-            "/liveness-container-tags/run_liveness_test.py"
-          ],
-          "exposed_ports": [],
-          "files": [
-            "run_liveness_test.py:/liveness-container-tags/run_liveness_test.py",
-            "test_run_liveness_test.py:/liveness-container-tags/test_run_liveness_test.py"
-          ],
-          "host_cgroup_namespace": true
-        },
-        "description": "Verifies connected ADP forwards container-tagged liveness telemetry to intake",
-        "env": {
-          "DD_API_KEY": "00000000000000000000000000000000",
-          "DD_BASIC_TELEMETRY_ADD_CONTAINER_TAGS": "true",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_STANDALONE_MODE": "false",
-          "DD_DD_URL": "http://127.0.0.1:18080",
-          "DD_HOSTNAME": "integration-test-liveness-container-tags",
-          "DD_SERIALIZER_COMPRESSOR_KIND": "gzip",
-          "DD_USE_V2_API_SERIES": "false",
-          "DOCKER_HOST": "unix:///tmp/adp-liveness-docker.sock"
-        },
-        "intake": {
-          "enabled": false
-        },
-        "name": "liveness-container-tags",
-        "procedure": [
-          {
-            "action": "target_exec",
-            "command": [
-              "/opt/datadog-agent/embedded/bin/python3",
-              "/liveness-container-tags/test_run_liveness_test.py"
-            ],
-            "timeout": "30s"
-          },
-          {
-            "assertion": "file_contains",
-            "path": "/tmp/adp-liveness-running-validated",
-            "pattern": "validated",
-            "regex": false,
-            "timeout": "60s"
-          },
-          {
-            "assertion": "file_contains",
-            "path": "/tmp/adp-liveness-up-validated",
-            "pattern": "validated",
-            "regex": false,
-            "timeout": "60s"
-          },
-          {
-            "parallel": [
-              {
-                "assertion": "process_stable_for",
-                "duration": "10s"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_BASIC_TELEMETRY_ADD_CONTAINER_TAGS": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_HOSTNAME": "integration-test-liveness-container-tags",
+                "DD_SERIALIZER_COMPRESSOR_KIND": "gzip",
+                "DD_USE_V2_API_SERIES": "false"
               },
-              {
-                "assertion": "log_not_contains",
-                "during": "10s",
-                "pattern": "panic|PANIC",
-                "regex": true,
-                "stream": "both"
-              }
-            ]
-          }
-        ],
-        "runtimes": [
-          "linux"
-        ],
-        "timeout": "120s"
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            },
+            "docker-api": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "fixture"
+            },
+            "intake": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "datadog-intake"
+            }
+          },
+          "procedure": [
+            {
+              "argv": [
+                "python3",
+                "{{ docker-api.facts.files_dir }}/test_fake_docker.py"
+              ],
+              "on": "docker-api",
+              "step": "exec",
+              "timeout": "30s"
+            },
+            {
+              "max_age": "30s",
+              "metric_type": "gauge",
+              "name": "datadog.agent_data_plane.running",
+              "on": "intake",
+              "step": "intake_has_metric",
+              "tag_patterns": [
+                "^version:.+"
+              ],
+              "tags": [
+                "host:integration-test-liveness-container-tags",
+                "docker_image:example/adp-liveness:1.0",
+                "env:liveness-fake"
+              ],
+              "timeout": "60s",
+              "value": 1
+            },
+            {
+              "hostname": "integration-test-liveness-container-tags",
+              "name": "datadog.agent_data_plane.up",
+              "on": "intake",
+              "status": 0,
+              "step": "intake_has_service_check",
+              "tags": [
+                "docker_image:example/adp-liveness:1.0",
+                "env:liveness-fake"
+              ],
+              "timeout": "60s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        }
       },
       "steps": {
         "single_assertions": 2,
@@ -9536,10 +9553,11 @@
         "parallel_assertions": 2,
         "actions": 1,
         "by_kind": {
-          "file_contains": 2,
+          "exec": 1,
+          "intake_has_metric": 1,
+          "intake_has_service_check": 1,
           "log_not_contains": 1,
-          "process_stable_for": 1,
-          "target_exec": 1
+          "process_stable_for": 1
         }
       },
       "ignored_fields": []
