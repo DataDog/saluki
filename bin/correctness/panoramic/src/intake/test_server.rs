@@ -14,20 +14,32 @@ pub(crate) fn install_crypto_provider() {
     let _ = crate::default_crypto_provider().install_default();
 }
 
-/// Returns a local port with no listener, so every connection to it is refused.
+/// A local port with no listener, so every connection to it is refused.
 ///
-/// The port stays bound, without listening, until the test process exits. Releasing it at once would let a test
-/// running in parallel bind the same ephemeral port and start answering on it.
+/// The port stays bound, without listening, until this is dropped. Releasing it at once would let a test running in
+/// parallel bind the same ephemeral port and start answering on it.
 ///
 /// Windows retries a refused connection for about two seconds before failing.
-pub(crate) fn closed_port() -> u16 {
+pub(crate) struct ClosedPort {
+    port: u16,
+    _socket: TcpSocket,
+}
+
+impl ClosedPort {
+    /// Returns the port number.
+    pub(crate) fn port(&self) -> u16 {
+        self.port
+    }
+}
+
+/// Reserves a local port with no listener. See [`ClosedPort`].
+pub(crate) fn closed_port() -> ClosedPort {
     let socket = TcpSocket::new_v4().expect("should create a socket");
     socket
         .bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
         .expect("should bind an ephemeral port");
     let port = socket.local_addr().expect("should have a local address").port();
-    std::mem::forget(socket);
-    port
+    ClosedPort { port, _socket: socket }
 }
 
 /// A local HTTP server answering the `datadog-intake` dump endpoints. It stops when dropped.
