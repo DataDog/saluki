@@ -12,7 +12,7 @@ use crate::{
     backend::LateFact,
     case::{template::Reference, StepTemplate},
     endpoint::{EndpointOperation, RunnerHostRoute},
-    handle::{probe_from_runner_host, send_from_runner_host, Primitives},
+    handle::{http_get_from_runner_host, probe_from_runner_host, send_from_runner_host, Primitives},
     observe::{Capture, ParticipantExit, ParticipantObservation},
     participant::OpContext,
     plan::ParticipantPlan,
@@ -254,6 +254,19 @@ impl Handle<'_> {
     pub async fn send(&self, endpoint: &str, payload: &[u8], limits: &AttemptLimits) -> Result<(), HandleError> {
         let route = self.route(endpoint, EndpointOperation::Send)?;
         send_from_runner_host(route, self.primitives, payload, limits).await
+    }
+
+    /// Gets an HTTP response through an endpoint's planned request route, bounded through completion of its body.
+    ///
+    /// # Errors
+    ///
+    /// Missing request needs, invalid requests and unsupported routes are harness errors.
+    /// Connection failures, incomplete bodies and timeouts are product errors.
+    pub async fn http_get(
+        &self, endpoint: &str, path: &str, limits: &AttemptLimits,
+    ) -> Result<HttpResponse, HandleError> {
+        let route = self.route(endpoint, EndpointOperation::Request)?;
+        http_get_from_runner_host(route, path, limits).await
     }
 
     fn route(&self, endpoint: &str, operation: EndpointOperation) -> Result<&RunnerHostRoute, HandleError> {

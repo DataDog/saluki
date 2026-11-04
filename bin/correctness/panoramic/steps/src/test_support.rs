@@ -3,7 +3,8 @@
 use panoramic_core::step::StepFields;
 
 use crate::{
-    config_key_equals::ConfigKeyEquals, exits_with::ExitsWith, intake_has_metric::IntakeHasMetric,
+    config_key_equals::ConfigKeyEquals, exits_with::ExitsWith, http_check::HttpCheck,
+    intake_has_forwarded_packets::IntakeHasForwardedPackets, intake_has_metric::IntakeHasMetric,
     port_listening::PortListening, process_stable_for::ProcessStableFor, send::Send, FileContains, LogContains,
     LogNotContains,
 };
@@ -18,6 +19,8 @@ pub fn valid_fields(name: &str) -> StepFields {
         ConfigKeyEquals::NAME => "on: subject\nkey: domains.enabled\nvalue: true\nview: runtime\ntimeout: 30s",
         ExitsWith::NAME => "on: subject\nprocess: main\ncode: 1\ntimeout: 30s",
         FileContains::NAME => "on: subject\npath: /logs/output.log\npattern: ready\ntimeout: 30s",
+        HttpCheck::NAME => "on: subject\nendpoint: http\npath: /metrics\nstatus: {equal: 200}\ntimeout: 30s",
+        IntakeHasForwardedPackets::NAME => "on: subject\ncontains: ['packet']\ntimeout: 30s",
         IntakeHasMetric::NAME => "on: subject\nname: some.metric\ntimeout: 30s",
         LogContains::NAME => "on: subject\npattern: ready\ntimeout: 30s",
         LogNotContains::NAME => "on: subject\npattern: panic\nduring: 10s",

@@ -281,6 +281,16 @@ impl ResolvedAddress {
         &self.url
     }
 
+    /// The network endpoint's host as seen by its consumer, or `None` for sockets and pipes.
+    pub fn host(&self) -> Option<&str> {
+        self.host.as_deref()
+    }
+
+    /// The network endpoint's port as seen by its consumer, or `None` for sockets and pipes.
+    pub fn port(&self) -> Option<u16> {
+        self.port
+    }
+
     pub(crate) fn part(&self, part: AddressPart) -> Option<String> {
         match part {
             AddressPart::Url => Some(self.url.clone()),
@@ -373,6 +383,27 @@ pub mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolved_addresses_expose_network_hosts_and_ports() {
+        let network = test_support::http_address("receiver", 4321);
+        assert_eq!(network.host(), Some("receiver"));
+        assert_eq!(network.port(), Some(4321));
+        for (kind, url, path) in [
+            (EndpointKind::UnixStream, "unix:///run/stream.sock", "/run/stream.sock"),
+            (EndpointKind::NamedPipe, r"\\.\pipe\stream", r"\\.\pipe\stream"),
+        ] {
+            let address = ResolvedAddress {
+                kind,
+                url: url.into(),
+                host: None,
+                port: None,
+                path: Some(path.into()),
+            };
+            assert_eq!(address.host(), None);
+            assert_eq!(address.port(), None);
+        }
+    }
 
     #[test]
     fn readiness_evidence_has_a_default_bound_and_describes_its_check() {

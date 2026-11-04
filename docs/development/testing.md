@@ -274,6 +274,12 @@ Native process and endpoint steps also require `on`:
   it listens or the timeout expires. An addressable UDP endpoint also passes, because UDP cannot confirm a listener.
   A timeout fails after any product answer; it errors if only harness failures prevented observation. A participant
   exit does not end the retry window early.
+- `http_check` requires `endpoint`, `path`, `status` and `timeout`. The path must start with `/`; status is either
+  `{equal: N}` or `{not_equal: N}`. An optional `pattern` matches the response body, with `regex: true` for a regular
+  expression; `regex: true` requires `pattern`. Body bytes use lossy UTF-8 decoding. The step retries until both
+  status and body match. At timeout, any HTTP response or product error makes the step fail; only harness errors
+  make it error. The last diagnostic gives the status and says when the body did not match. It supports plain HTTP;
+  TLS fields are rejected.
 - `send` is an action requiring `endpoint`, `payload` and `timeout`. It sends the string's UTF-8 bytes verbatim,
   including any framing, through the endpoint's planned route. YAML escapes above `\x7f` encode as UTF-8, so
   frame-length bytes must be below 0x80. It retries failed sends until one is accepted or the timeout expires.
@@ -350,6 +356,13 @@ instead.
 A timeout fails if any poll returned a valid metrics snapshot; otherwise it errors with the last poll error.
 The step keeps polling until its timeout even if the subject exits.
 
+The native `intake_has_forwarded_packets` assertion requires `on`, a nonempty `contains` list of strings, and
+`timeout`. It polls `dump` with `{"kind": "dogstatsd_forwarded"}` until every string's UTF-8 bytes equal a whole
+forwarded packet. Partial packet contents do not match. One packet can satisfy repeated identical entries; this
+assertion does not count packets. If any dump returned a valid snapshot, a timeout fails and lists the missing
+entries and up to ten observed packets as escaped, lossy UTF-8. Otherwise it errors with the last dump error.
+Diagnostics are capped at 4096 bytes, as for `intake_has_metric`.
+
 The `observe` phase gives exited participants up to five seconds to finish
 capturing output; it also runs after a setup failure if any participant started. Running participants are skipped, and
 case cancellation ends the wait. The runner snapshots observations, stops observation tasks, then reclaims resources.
@@ -388,6 +401,7 @@ The definition derives these endpoints from the effective environment:
 | Endpoint | Kind | Environment key | Conditions and readiness |
 | --- | --- | --- | --- |
 | `dogstatsd_udp` | UDP | `DD_DOGSTATSD_PORT` | Requires nonzero port, enabled DogStatsD and a non-loopback bind; ADP's listener output supplies readiness |
+| `dogstatsd_tcp` | TCP | `DD_DOGSTATSD_TCP_PORT` | Requires ADP-owned DogStatsD, a nonzero port and a non-loopback bind; defaults to 0 (disabled); waits for TCP acceptance |
 | `dogstatsd_uds` | Unix datagram | `DD_DOGSTATSD_SOCKET` | Defaults to `/var/run/datadog/dsd.socket` on Linux; empty disables it; waits for the socket |
 | `dogstatsd_uds_stream` | Unix stream | `DD_DOGSTATSD_STREAM_SOCKET` | Nonempty enables it; waits for the socket |
 | `api` | HTTP | `DD_DATA_PLANE_API_LISTEN_ADDRESS` | Requires ADP and a non-loopback host; waits for TCP acceptance |
@@ -401,10 +415,10 @@ ADP owns DogStatsD when `DD_DATA_PLANE_ENABLED` and `DD_DATA_PLANE_DOGSTATSD_ENA
 Agent owns it. The master ADP switch defaults to false, its DogStatsD switch to true, and `DD_USE_DOGSTATSD` to true.
 Disabling DogStatsD removes its socket endpoints too. ADP-owned listener keys prefer the `ADP_DD_` spelling over
 `DD_`; Agent-owned listeners use only `DD_`. Agent-owned UDP readiness follows container startup.
-The UDP endpoint is declared when `DD_DOGSTATSD_NON_LOCAL_TRAFFIC=true`, or when `DD_BIND_HOST` names a non-loopback
-host. These keys follow the same owner precedence. With both unset, DogStatsD binds loopback and the endpoint is
-omitted. ADP API addresses use `tcp://host:port`; a loopback host is a configuration error, and port 0 disables the
-endpoint. Invalid listener values name the configuration key in their errors.
+The UDP and TCP endpoints require `DD_DOGSTATSD_NON_LOCAL_TRAFFIC=true` or a non-loopback `DD_BIND_HOST`. These keys
+follow the same owner precedence. With both unset, DogStatsD binds loopback and both endpoints are omitted.
+ADP API addresses use `tcp://host:port`; a loopback host is a configuration error, and port 0 disables the endpoint.
+Invalid listener values name the configuration key in their errors.
 
 ADP's OTLP endpoints require `DD_DATA_PLANE_ENABLED=true` and an enabled OTLP pipeline. The OTLP switch defaults
 to false; `ADP_DD_DATA_PLANE_OTLP_ENABLED` takes precedence over `DD_DATA_PLANE_OTLP_ENABLED`. The receiver
@@ -415,10 +429,13 @@ Malformed addresses fail configuration with an error naming the key. The HTTP en
 enabled.
 
 An optional `connect: {intake: <participant>.api}` connection accepts HTTP and delivers its URL as both `DD_DD_URL`
-and `DD_APM_DD_URL`. It gates Agent startup on the intake's ready route. The native recipe uses the image's command
-and overlays the `data-plane` and `agent` s6 services. Each finish script records the exit before running the shipped
-body, preserving ADP's two-second restart after failure and disablement after a clean exit. Each run script merges
-stderr into stdout, and its logger appends to `adp.log` or `agent.log` while retaining the lines on container stdout.
+and `DD_APM_DD_URL`. It gates Agent startup on the intake's ready route.
+An optional `connect: {dogstatsd_forward: <participant>.dogstatsd_forward}` connection accepts UDP and delivers
+`DD_STATSD_FORWARD_HOST` and `DD_STATSD_FORWARD_PORT` from the target's host and port. It gates startup on the target's
+readiness too. The native recipe uses the image's command and overlays the `data-plane` and `agent` s6 services. Each
+finish script records the exit before running the shipped body, preserving ADP's two-second restart after failure and
+disablement after a clean exit. Each run script merges stderr into stdout, and its logger appends to `adp.log` or
+`agent.log` while retaining the lines on container stdout.
 These merged process logs include the run and finish scripts' own messages. Container stdout and stderr are also
 captured separately. The default ten-second stop grace covers the measured roughly 2.6-second supervisor shutdown.
 

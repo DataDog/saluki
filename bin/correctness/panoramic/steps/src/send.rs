@@ -143,6 +143,7 @@ mod tests {
             report.message,
             "sent 12 bytes to endpoint 'udp' of participant 'subject'"
         );
+        fake.assert_sent(&["métric:1|c\n".as_bytes()]);
     }
 
     #[tokio::test(start_paused = true)]
@@ -212,6 +213,33 @@ mod tests {
             "{}",
             report.message
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn yaml_frame_prefixes_below_0x80_nuls_and_newlines_reach_send_unchanged() {
+        for (payload, expected) in [
+            (
+                r#""\x3c\0\0\0adp.forwarding.stream_one:1|c\nadp.forwarding.stream_two:2|c\n""#,
+                b"\x3c\0\0\0adp.forwarding.stream_one:1|c\nadp.forwarding.stream_two:2|c\n".as_slice(),
+            ),
+            (
+                r#""\x1e\0\0\0adp.forwarding.uds_stream:1|c\n""#,
+                b"\x1e\0\0\0adp.forwarding.uds_stream:1|c\n".as_slice(),
+            ),
+        ] {
+            let fields =
+                serde_saphyr::from_str(&format!("on: subject\nendpoint: tcp\npayload: {payload}\ntimeout: 30s"))
+                    .unwrap();
+            let fake = FakeParticipant::default();
+            fake.push_send(Ok(()));
+            let report = run_step_with(&SendFactory, &fields, Some(&fake)).await;
+            assert_eq!(report.status, AssertionStatus::Passed);
+            fake.assert_sent(&[expected]);
+            assert_eq!(
+                u32::from_le_bytes(expected[..4].try_into().unwrap()) as usize,
+                expected.len() - 4
+            );
+        }
     }
 
     #[test]

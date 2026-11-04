@@ -126,6 +126,23 @@ pub async fn run_step(factory: &dyn StepFactory, fields: &StepFields) -> StepRep
 pub async fn run_step_with(
     factory: &dyn StepFactory, fields: &StepFields, fake: Option<&FakeParticipant>,
 ) -> StepReport {
+    run_step_with_port(factory, fields, fake, None).await
+}
+
+/// Runs a step with a scripted participant and its HTTP request route reaching a loopback port.
+///
+/// # Panics
+///
+/// Panics if the fields cannot load or compile with the fixture participant and the single available port.
+pub async fn run_step_reaching(
+    factory: &dyn StepFactory, fields: &StepFields, fake: &FakeParticipant, port: u16,
+) -> StepReport {
+    run_step_with_port(factory, fields, Some(fake), Some(port)).await
+}
+
+async fn run_step_with_port(
+    factory: &dyn StepFactory, fields: &StepFields, fake: Option<&FakeParticipant>, port: Option<u16>,
+) -> StepReport {
     let fixture = Fixture(fake.map_or(&["main", "worker"][..], |fake| fake.process_names));
     let registries = Registries {
         participant_types: &[&fixture],
@@ -144,12 +161,11 @@ pub async fn run_step_with(
         .load_content(&content, "case", Path::new("cases/case/config.yaml"))
         .unwrap()
         .remove(0);
-    let plan = Planner::new(registries, Default::default())
-        .unwrap()
-        .compile(case, Os::Linux)
-        .unwrap()
-        .into_plan()
-        .unwrap();
+    let mut planner = Planner::new(registries, Default::default()).unwrap();
+    if let Some(port) = port {
+        planner = planner.with_port_range(port..=port);
+    }
+    let plan = planner.compile(case, Os::Linux).unwrap().into_plan().unwrap();
     let plan = plan.participants().unwrap();
     let crate::case::ProcedureNode::Step(step) = &plan.procedure()[0] else {
         panic!("step tests have one sequential step");
@@ -214,6 +230,7 @@ pub struct FakeParticipant {
     probes: Mutex<VecDeque<Result<ProbeAnswer, HandleError>>>,
     execs: Mutex<VecDeque<Result<ExecOutput, HandleError>>>,
     sends: Mutex<VecDeque<Result<(), HandleError>>>,
+    sent: Mutex<Vec<Vec<u8>>>,
 }
 
 impl Default for FakeParticipant {
@@ -281,6 +298,7 @@ impl FakeParticipant {
             probes: Mutex::new(VecDeque::new()),
             execs: Mutex::new(VecDeque::new()),
             sends: Mutex::new(VecDeque::new()),
+            sent: Mutex::new(Vec::new()),
         }
     }
 
@@ -324,6 +342,17 @@ impl FakeParticipant {
     /// Queues a send result; the last queued answer repeats.
     pub fn push_send(&self, answer: Result<(), HandleError>) {
         self.sends.lock().unwrap().push_back(answer);
+    }
+
+    /// Checks the payload of every send attempt, in invocation order, including failed attempts.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the recorded payloads differ from `payloads`.
+    #[track_caller]
+    pub fn assert_sent(&self, payloads: &[&[u8]]) {
+        let sent = self.sent.lock().unwrap();
+        assert_eq!(sent.iter().map(Vec::as_slice).collect::<Vec<_>>(), payloads);
     }
 
     /// Appends a line tagged with its process, or participant-wide output for `None`.
@@ -381,7 +410,8 @@ impl Primitives for FakeParticipant {
             probes.front().expect("the step must script its probe answers").clone()
         }
     }
-    async fn send(&self, _: &ResolvedAddress, _: &[u8], _: &AttemptLimits) -> Result<(), HandleError> {
+    async fn send(&self, _: &ResolvedAddress, payload: &[u8], _: &AttemptLimits) -> Result<(), HandleError> {
+        self.sent.lock().unwrap().push(payload.to_vec());
         let mut sends = self.sends.lock().unwrap();
         if sends.len() > 1 {
             sends.pop_front().unwrap()
@@ -394,6 +424,101 @@ impl Primitives for FakeParticipant {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::record::AssertionStatus;
+
+    struct RequestFactory(EndpointOperation);
+
+    impl StepFactory for RequestFactory {
+        fn name(&self) -> &'static str {
+            "request"
+        }
+        fn build(&self, _: &StepFields) -> Result<Box<dyn Step>, String> {
+            Ok(Box::new(RequestStep(self.0)))
+        }
+    }
+
+    #[derive(Debug)]
+    struct RequestStep(EndpointOperation);
+
+    #[async_trait]
+    impl Step for RequestStep {
+        fn name(&self) -> &'static str {
+            "request"
+        }
+        fn needs(&self) -> Vec<Need> {
+            vec![Need::Endpoint("subject".into(), "http".into(), self.0)]
+        }
+        fn budget(&self) -> Duration {
+            Duration::from_secs(2)
+        }
+        async fn run(&self, cx: &StepContext<'_>) -> StepReport {
+            let started = tokio::time::Instant::now();
+            let handle = cx.handle("subject").unwrap();
+            let (status, message) = match handle
+                .http_get("http", "/records?key=value", &AttemptLimits::new(self.budget()))
+                .await
+            {
+                Ok(response) => (
+                    AssertionStatus::Passed,
+                    json!({"status": response.status, "body": response.body}).to_string(),
+                ),
+                Err(HandleError::Harness { message }) => (AssertionStatus::Errored, message),
+                Err(HandleError::Product { message }) => (AssertionStatus::Failed, message),
+            };
+            StepReport::new(started, status, message)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_steps_http_get_uses_its_planned_request_route() {
+        use tokio::{
+            io::{AsyncReadExt, AsyncWriteExt},
+            net::TcpListener,
+        };
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let fake = FakeParticipant::default();
+        let fields = StepFields::new();
+        let responder = async {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                request.push(stream.read_u8().await.unwrap());
+            }
+            assert_eq!(
+                request,
+                format!("GET /records?key=value HTTP/1.1\r\nhost: 127.0.0.1:{port}\r\n\r\n").as_bytes()
+            );
+            stream
+                .write_all(b"HTTP/1.1 202 Accepted\r\nContent-Length: 3\r\n\r\n\x00\xff\n")
+                .await
+                .unwrap();
+        };
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let (_, report) = tokio::join!(
+                responder,
+                run_step_reaching(&RequestFactory(EndpointOperation::Request), &fields, &fake, port)
+            );
+            assert_eq!(report.status, AssertionStatus::Passed);
+            assert_eq!(report.message, json!({"status": 202, "body": [0, 255, 10]}).to_string());
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_steps_http_get_without_a_request_need_is_a_harness_error() {
+        let fake = FakeParticipant::default();
+        for operation in [EndpointOperation::Probe, EndpointOperation::Send] {
+            let report = run_step_with(&RequestFactory(operation), &StepFields::new(), Some(&fake)).await;
+            assert_eq!(report.status, AssertionStatus::Errored);
+            assert_eq!(
+                report.message,
+                "no Request route for 'subject.http'; the step must declare an endpoint need"
+            );
+        }
+    }
 
     #[test]
     fn output_cursors_filter_processes_and_advance_independently() {

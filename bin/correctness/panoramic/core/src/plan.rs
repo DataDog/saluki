@@ -132,7 +132,7 @@ impl<'a> Planner<'a> {
         })
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-util"))]
     pub(crate) fn with_port_range(mut self, ports: std::ops::RangeInclusive<u16>) -> Self {
         self.ports = PortRegistry::over(ports);
         self

@@ -2664,14 +2664,17 @@
       "name": "dogstatsd-forwarding",
       "suite": "integration",
       "subject_os": "linux",
-      "runtime": "linux",
+      "runtime": "linux-container",
       "source": "test/integration/cases/dogstatsd-forwarding/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
-      "timeout": "90s",
+      "timeout": "180s",
       "images": {
-        "container": "saluki-images/datadog-agent:testing-devel"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest",
+        "tools-linux-image": "saluki-images/correctness-tools:latest"
       },
       "ci_jobs": [
         "test-integration"
@@ -8330,140 +8333,184 @@
     },
     "integration/dogstatsd-forwarding": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [
-            "/opt/datadog-agent/embedded/bin/python3",
-            "/forwarding-test/run_forwarding_test.py"
-          ],
-          "exposed_ports": [
-            "58125/udp",
-            "9126/tcp"
-          ],
-          "files": [
-            "run_forwarding_test.py:/forwarding-test/run_forwarding_test.py"
-          ],
-          "host_cgroup_namespace": false
-        },
-        "description": "Verifies DogStatsD message forwarding mirrors framed payloads and preserves ingestion",
-        "env": {
-          "DD_API_KEY": "00000000000000000000000000000000",
-          "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_STANDALONE_MODE": "false",
-          "DD_DOGSTATSD_NON_LOCAL_TRAFFIC": "true",
-          "DD_DOGSTATSD_SOCKET": "/tmp/dsd-forwarding.sock",
-          "DD_DOGSTATSD_STREAM_SOCKET": "/tmp/dsd-forwarding-stream.sock",
-          "DD_DOGSTATSD_TCP_PORT": "9126",
-          "DD_HOSTNAME": "integration-test-dsd-forwarding",
-          "DD_STATSD_FORWARD_HOST": "127.0.0.1",
-          "DD_STATSD_FORWARD_PORT": "9125"
-        },
-        "intake": {
-          "enabled": false
-        },
-        "name": "dogstatsd-forwarding",
-        "procedure": [
-          {
-            "assertion": "log_contains",
-            "pattern": "DogStatsD packet forwarding enabled",
-            "regex": false,
-            "stream": "both",
-            "timeout": "15s"
-          },
-          {
-            "assertion": "file_contains",
-            "path": "/tmp/dsd-forwarded-udp-malformed",
-            "pattern": "this is not dogstatsd",
-            "regex": false,
-            "timeout": "30s"
-          },
-          {
-            "assertion": "file_contains",
-            "path": "/tmp/dsd-forwarded-udp-metric",
-            "pattern": "adp.forwarding.integration:1|c|#source:integration",
-            "regex": false,
-            "timeout": "30s"
-          },
-          {
-            "assertion": "file_contains",
-            "path": "/tmp/dsd-forwarded-stream-one",
-            "pattern": "adp.forwarding.stream_one:1|c",
-            "regex": false,
-            "timeout": "30s"
-          },
-          {
-            "assertion": "file_contains",
-            "path": "/tmp/dsd-forwarded-stream-two",
-            "pattern": "adp.forwarding.stream_two:2|c",
-            "regex": false,
-            "timeout": "30s"
-          },
-          {
-            "assertion": "file_contains",
-            "path": "/tmp/dsd-forwarded-uds-packet",
-            "pattern": "adp.forwarding.uds_datagram:1|c",
-            "regex": false,
-            "timeout": "30s"
-          },
-          {
-            "assertion": "file_contains",
-            "path": "/tmp/dsd-forwarded-uds-stream-packet",
-            "pattern": "adp.forwarding.uds_stream:1|c",
-            "regex": false,
-            "timeout": "30s"
-          },
-          {
-            "assertion": "file_contains",
-            "path": "/tmp/dsd-metric-parsed",
-            "pattern": "component_events_received_total",
-            "regex": false,
-            "timeout": "30s"
-          },
-          {
-            "parallel": [
-              {
-                "assertion": "process_stable_for",
-                "duration": "10s"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DOGSTATSD_NON_LOCAL_TRAFFIC": "true",
+                "DD_DOGSTATSD_SOCKET": "/tmp/dsd-forwarding.sock",
+                "DD_DOGSTATSD_STREAM_SOCKET": "/tmp/dsd-forwarding-stream.sock",
+                "DD_DOGSTATSD_TCP_PORT": "9126",
+                "DD_HOSTNAME": "integration-test-dsd-forwarding"
               },
-              {
-                "assertion": "port_listening",
-                "port": 58125,
-                "protocol": "udp",
-                "timeout": "10s"
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            },
+            "intake": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "datadog-intake"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "DogStatsD packet forwarding enabled",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "on": "adp",
+              "pattern": "listen_addr:\"udp://[^\"]+\" \\| DogStatsD listener started\\.",
+              "regex": true,
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "endpoint": "dogstatsd_udp",
+              "on": "adp",
+              "payload": "this is not dogstatsd",
+              "step": "send",
+              "timeout": "10s"
+            },
+            {
+              "endpoint": "dogstatsd_udp",
+              "on": "adp",
+              "payload": "adp.forwarding.integration:1|c|#source:integration",
+              "step": "send",
+              "timeout": "10s"
+            },
+            {
+              "endpoint": "dogstatsd_tcp",
+              "on": "adp",
+              "payload": "<\u0000\u0000\u0000adp.forwarding.stream_one:1|c\nadp.forwarding.stream_two:2|c\n",
+              "step": "send",
+              "timeout": "30s"
+            },
+            {
+              "endpoint": "dogstatsd_uds",
+              "on": "adp",
+              "payload": "adp.forwarding.uds_datagram:1|c",
+              "step": "send",
+              "timeout": "30s"
+            },
+            {
+              "endpoint": "dogstatsd_uds_stream",
+              "on": "adp",
+              "payload": "\u001e\u0000\u0000\u0000adp.forwarding.uds_stream:1|c\n",
+              "step": "send",
+              "timeout": "30s"
+            },
+            {
+              "contains": [
+                "this is not dogstatsd"
+              ],
+              "on": "intake",
+              "step": "intake_has_forwarded_packets",
+              "timeout": "30s"
+            },
+            {
+              "contains": [
+                "adp.forwarding.integration:1|c|#source:integration"
+              ],
+              "on": "intake",
+              "step": "intake_has_forwarded_packets",
+              "timeout": "30s"
+            },
+            {
+              "contains": [
+                "adp.forwarding.stream_one:1|c"
+              ],
+              "on": "intake",
+              "step": "intake_has_forwarded_packets",
+              "timeout": "30s"
+            },
+            {
+              "contains": [
+                "adp.forwarding.stream_two:2|c"
+              ],
+              "on": "intake",
+              "step": "intake_has_forwarded_packets",
+              "timeout": "30s"
+            },
+            {
+              "contains": [
+                "adp.forwarding.uds_datagram:1|c"
+              ],
+              "on": "intake",
+              "step": "intake_has_forwarded_packets",
+              "timeout": "30s"
+            },
+            {
+              "contains": [
+                "adp.forwarding.uds_stream:1|c"
+              ],
+              "on": "intake",
+              "step": "intake_has_forwarded_packets",
+              "timeout": "30s"
+            },
+            {
+              "endpoint": "api",
+              "on": "adp",
+              "path": "/metrics",
+              "pattern": "(?m)^adp__component_events_received_total\\{[^}\\n]*(listener_type=\"udp\"[^}\\n]*message_type=\"metrics\"|message_type=\"metrics\"[^}\\n]*listener_type=\"udp\")[^}\\n]*\\} [1-9]",
+              "regex": true,
+              "status": {
+                "equal": 200
               },
-              {
-                "assertion": "port_listening",
-                "port": 9126,
-                "protocol": "tcp",
-                "timeout": "10s"
-              },
-              {
-                "assertion": "log_not_contains",
-                "during": "10s",
-                "pattern": "Unsupported configuration key|panic|PANIC",
-                "regex": true,
-                "stream": "both"
-              }
-            ]
-          }
-        ],
-        "runtimes": [
-          "linux"
-        ],
-        "timeout": "90s"
+              "step": "http_check",
+              "timeout": "30s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "endpoint": "dogstatsd_udp",
+                  "on": "adp",
+                  "step": "port_listening",
+                  "timeout": "10s"
+                },
+                {
+                  "endpoint": "dogstatsd_tcp",
+                  "on": "adp",
+                  "step": "port_listening",
+                  "timeout": "10s"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "Unsupported configuration key|panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        }
       },
       "steps": {
-        "single_assertions": 8,
+        "single_assertions": 9,
         "parallel_blocks": 1,
         "parallel_assertions": 4,
-        "actions": 0,
+        "actions": 5,
         "by_kind": {
-          "file_contains": 7,
-          "log_contains": 1,
+          "http_check": 1,
+          "intake_has_forwarded_packets": 6,
+          "log_contains": 2,
           "log_not_contains": 1,
           "port_listening": 2,
-          "process_stable_for": 1
+          "process_stable_for": 1,
+          "send": 5
         }
       },
       "ignored_fields": []

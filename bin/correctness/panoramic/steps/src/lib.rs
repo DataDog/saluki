@@ -12,8 +12,11 @@ mod attempts;
 mod config_key_equals;
 mod exits_with;
 mod file_contains;
+mod http_check;
+mod intake_has_forwarded_packets;
 mod intake_has_metric;
 mod log_contains;
+mod message;
 pub mod metrics;
 mod port_listening;
 mod process_stable_for;
@@ -29,6 +32,8 @@ pub const REGISTERED_STEPS: &[&dyn StepFactory] = &[
     &config_key_equals::ConfigKeyEqualsFactory,
     &exits_with::ExitsWithFactory,
     &file_contains::FileContainsFactory,
+    &http_check::HttpCheckFactory,
+    &intake_has_forwarded_packets::IntakeHasForwardedPacketsFactory,
     &intake_has_metric::IntakeHasMetricFactory,
     &log_contains::LogContainsFactory,
     &log_contains::LogNotContainsFactory,
@@ -89,12 +94,14 @@ mod tests {
 
     use super::*;
     use crate::{
-        config_key_equals::ConfigKeyEquals, exits_with::ExitsWith, intake_has_metric::IntakeHasMetric,
+        config_key_equals::ConfigKeyEquals, exits_with::ExitsWith, http_check::HttpCheck,
+        intake_has_forwarded_packets::IntakeHasForwardedPackets, intake_has_metric::IntakeHasMetric,
         port_listening::PortListening, process_stable_for::ProcessStableFor, send::Send, test_support::valid_fields,
     };
 
     const PATTERN_STEPS: &[&dyn StepFactory] = &[
         &file_contains::FileContainsFactory,
+        &http_check::HttpCheckFactory,
         &log_contains::LogContainsFactory,
         &log_contains::LogNotContainsFactory,
     ];
@@ -136,6 +143,8 @@ mod tests {
                 "config_key_equals",
                 "exits_with",
                 "file_contains",
+                "http_check",
+                "intake_has_forwarded_packets",
                 "intake_has_metric",
                 "log_contains",
                 "log_not_contains",
@@ -158,6 +167,8 @@ mod tests {
                 ConfigKeyEquals::NAME,
                 ExitsWith::NAME,
                 FileContains::NAME,
+                HttpCheck::NAME,
+                IntakeHasForwardedPackets::NAME,
                 IntakeHasMetric::NAME,
                 LogContains::NAME,
                 LogNotContains::NAME,
@@ -179,6 +190,8 @@ mod tests {
                 (ConfigKeyEquals::NAME, StepKind::Assertion),
                 (ExitsWith::NAME, StepKind::Assertion),
                 (FileContains::NAME, StepKind::Assertion),
+                (HttpCheck::NAME, StepKind::Assertion),
+                (IntakeHasForwardedPackets::NAME, StepKind::Assertion),
                 (IntakeHasMetric::NAME, StepKind::Assertion),
                 (LogContains::NAME, StepKind::Assertion),
                 (LogNotContains::NAME, StepKind::Assertion),
@@ -196,7 +209,14 @@ mod tests {
             let step = factory.build(&fields).unwrap();
             let needs = match factory.name() {
                 ConfigKeyEquals::NAME => vec![Need::Operation("subject".into(), "config_dump".into())],
-                IntakeHasMetric::NAME => vec![Need::Operation("subject".into(), "dump".into())],
+                IntakeHasMetric::NAME | IntakeHasForwardedPackets::NAME => {
+                    vec![Need::Operation("subject".into(), "dump".into())]
+                }
+                HttpCheck::NAME => vec![Need::Endpoint(
+                    "subject".into(),
+                    "http".into(),
+                    EndpointOperation::Request,
+                )],
                 Send::NAME => vec![Need::Endpoint("subject".into(), "udp".into(), EndpointOperation::Send)],
                 ExitsWith::NAME => vec![Need::Process("subject".into(), "main".into())],
                 PortListening::NAME => vec![Need::Endpoint("subject".into(), "tcp".into(), EndpointOperation::Probe)],
@@ -219,6 +239,8 @@ mod tests {
             let string_fields: &[&str] = match factory.name() {
                 ConfigKeyEquals::NAME => &["on", "key"],
                 IntakeHasMetric::NAME => &["on", "name"],
+                IntakeHasForwardedPackets::NAME => &["on"],
+                HttpCheck::NAME => &["on", "endpoint", "path", "pattern"],
                 Send::NAME => &["on", "endpoint", "payload"],
                 FileContains::NAME => &["on", "pattern", "path"],
                 LogContains::NAME | LogNotContains::NAME => &["on", "pattern", "process"],
@@ -235,7 +257,12 @@ mod tests {
                     assert!(message.ends_with("expected a string"), "{message}");
                 }
                 let mut fields = valid_fields(factory.name());
-                fields.extend(serde_saphyr::from_str::<StepFields>(&format!("{field}: \"true\"")).unwrap());
+                let value = if factory.name() == HttpCheck::NAME && field == "path" {
+                    "/true"
+                } else {
+                    "true"
+                };
+                fields.extend(serde_saphyr::from_str::<StepFields>(&format!("{field}: \"{value}\"")).unwrap());
                 assert!(factory.build(&fields).is_ok(), "{}: {field}", factory.name());
             }
         }

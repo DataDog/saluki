@@ -72,8 +72,8 @@ equivalence, and migration proofs: their rows, CI links and comparison commit.
   runners use the files' images, subject to image overrides.
 - Integration uses `saluki-images/datadog-agent:testing-devel` on Linux and
   `saluki-images/agent-data-plane:testing-windows` on Windows (overridden in CI by `--image-override container=$ImageTag`).
-  macOS uses host processes. `dogstatsd-host-tag` and `dogstatsd-intake-metric` declare a `datadog-intake`
-  participant using `saluki-images/correctness-tools:latest`.
+  macOS uses host processes. `dogstatsd-forwarding`, `dogstatsd-host-tag` and `dogstatsd-intake-metric` declare a
+  `datadog-intake` participant using `saluki-images/correctness-tools:latest`.
 - Both `dsd-forwarding` and `dsd-forwarding-burst` require captured forwarded DogStatsD packets.
 - `privileged-api-endpoints` declares five `output_contains` keys on `adp_cli` actions that the loader ignores:
   `procedure[6].output_contains`, `procedure[7].output_contains`, `procedure[8].output_contains`,
@@ -95,7 +95,7 @@ Use product `config_dump` output from CI runs to compare effective product confi
 
 | Suite | Files | Selected rows (subject OS / runtime) | Disabled rows | Assertions (subject OS) | Actions (subject OS) |
 | --- | --- | --- | --- | --- | --- |
-| integration | 52 | linux / linux: 38; linux / linux-container: 7; macos / mac: 31; windows / windows: 34 | 0 | linux: 191; macos: 130; windows: 144 | linux: 20; macos: 14; windows: 16 |
+| integration | 52 | linux / linux: 37; linux / linux-container: 8; macos / mac: 31; windows / windows: 34 | 0 | linux: 192; macos: 130; windows: 144 | linux: 25; macos: 14; windows: 16 |
 | correctness | 42 | linux / docker: 39; linux / kubernetes_in_docker: 7 | 2 | — | — |
 
 Total: 158 rows.
@@ -230,7 +230,7 @@ Total: 158 rows.
 | dogstatsd-enabled | integration | linux | linux | selected | test-integration | integration | old | assertions: 3, actions: 0 | 0 |
 | dogstatsd-enabled | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 3, actions: 0 | 0 |
 | dogstatsd-enabled | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 3, actions: 0 | 0 |
-| dogstatsd-forwarding | integration | linux | linux | selected | test-integration | integration | old | assertions: 12, actions: 0 | 0 |
+| dogstatsd-forwarding | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 13, actions: 5 | 0 |
 | dogstatsd-host-tag | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 6, actions: 1 | 0 |
 | dogstatsd-intake-metric | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 4, actions: 2 | 0 |
 | dogstatsd-named-pipe-windows | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 9, actions: 1 | 0 |
@@ -307,6 +307,21 @@ Log steps omit `process` to search every process's output plus the container log
 - Assertion and action counts are unchanged: six assertions and one action for `dogstatsd-host-tag`, four assertions
   and two actions for `dogstatsd-intake-metric`.
 
+`dogstatsd-forwarding` also uses the participant schema and native Linux execution. Its procedure is rewritten,
+not translated:
+
+- The forward target moves from the Python receiver inside ADP's container to the intake participant, connected by
+  `dogstatsd_forward`. ADP runs under its shipped supervisor instead of the Python wrapper.
+- The seven script markers become six exact packet assertions and one HTTP assertion over parsed-metric telemetry.
+  The HTTP pattern uses the observed `adp__component_events_received_total` name and requires UDP, metrics and a
+  positive count on one line.
+- A new UDP-listener log gate precedes sends. Payloads include their stream framing; refused stream and Unix socket
+  sends retry until accepted.
+- Stability watches both the ADP and Agent exit records instead of the wrapper's liveness.
+- The case budget rises from 90 to 180 seconds, and the forwarding gate from 15 to 60 seconds, to allow for participant
+  startup ordering. Assertion criteria remain unchanged.
+- Counts change from 12 assertions and no actions to 13 assertions and five actions.
+
 ## Migration proofs
 
 When changing a case's schema or runner, add CI evidence per (case, subject OS, execution). Native rows may say
@@ -327,6 +342,7 @@ Link CI runs; don't copy their logs into the repository.
 | adp-logging-windows-respects-data-plane-log-file | windows | old | Tested `33e3e697c5` in [pipeline 149203111](https://gitlab.ddbuild.io/DataDog/saluki/-/pipelines/149203111): [test-integration-windows-amd64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351930) passed on the integration runner (execution `old`). Compared with the inventory at `b975a993e0`. |
 | adp-rc-core-disabled | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `18554ba44c`. |
 | adp-rc-no-products | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `18554ba44c`. |
+| dogstatsd-forwarding | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `0a52942c17`. |
 | dogstatsd-host-tag | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `0a52942c17`. |
 | dogstatsd-intake-metric | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `0a52942c17`. |
 <!-- migration-proofs:end -->

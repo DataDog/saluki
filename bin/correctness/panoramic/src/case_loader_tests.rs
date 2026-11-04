@@ -170,7 +170,7 @@ fn agent_adp_rejects_overriding_derived_ports_and_undeclared_connections() {
         ),
         (
             "connect: {upstream: other.api}",
-            "connects 'upstream', which it does not consume; it consumes intake",
+            "connects 'upstream', which it does not consume; it consumes dogstatsd_forward, intake",
         ),
     ] {
         let yaml = PARTICIPANT_FIELDS
@@ -212,7 +212,12 @@ fn registered_template_fields_match_step_types_and_other_fields_reject_reference
             .filter(|field| fields[*field].is_string() && !matches!(field.as_str(), "duration" | "during" | "timeout"))
         {
             let mut referenced = fields.clone();
-            referenced.insert(field.clone(), Value::String("{{ adp.facts.default_log_file }}".into()));
+            let reference = if field == "path" {
+                "/{{ adp.facts.default_log_file }}"
+            } else {
+                "{{ adp.facts.default_log_file }}"
+            };
+            referenced.insert(field.clone(), Value::String(reference.into()));
             let declared = factory.template_fields().contains(&field.as_str());
             let decode_error = if factory.name() == "config_key_equals" && field == "view" {
                 let message = factory.build(&referenced).unwrap_err();
@@ -274,11 +279,11 @@ fn participant_step_errors_name_the_canonical_file_and_step() {
     for (fields, expected) in [
         (
             "step: wait_ready",
-            "names unknown step 'wait_ready'; registered steps: config_key_equals, exits_with, file_contains, intake_has_metric, log_contains, log_not_contains, port_listening, process_stable_for, send",
+            "names unknown step 'wait_ready'; registered steps: config_key_equals, exits_with, file_contains, http_check, intake_has_forwarded_packets, intake_has_metric, log_contains, log_not_contains, port_listening, process_stable_for, send",
         ),
         (
             "step: adp_cli, on: adp, args: [status]",
-            "names unknown step 'adp_cli'; registered steps: config_key_equals, exits_with, file_contains, intake_has_metric, log_contains, log_not_contains, port_listening, process_stable_for, send",
+            "names unknown step 'adp_cli'; registered steps: config_key_equals, exits_with, file_contains, http_check, intake_has_forwarded_packets, intake_has_metric, log_contains, log_not_contains, port_listening, process_stable_for, send",
         ),
         (
             "step: port_listening, on: adp, timeout: 1s",
@@ -458,5 +463,71 @@ fn agent_adp_cannot_use_its_own_ip_in_env_in_containers() {
                 "case 'alpha' in alpha/config.yaml: on subject OS '{os}', participant 'adp' of type 'agent-adp' as {kind} on {os} environment variable 'IP' '{{{{{name}.late.ip}}}}' references its own late fact 'ip', which type 'agent-adp' does not substitute into its environment as {kind}"
             ));
         }
+    }
+}
+
+#[test]
+fn forwarding_case_frames_and_telemetry_match_their_wire_contracts() {
+    let case = crate::CASE_LOADER
+        .load_content(
+            include_str!("../../../../test/integration/cases/dogstatsd-forwarding/config.yaml"),
+            "dogstatsd-forwarding",
+            Path::new("test/integration/cases/dogstatsd-forwarding/config.yaml"),
+        )
+        .unwrap()
+        .remove(0);
+    let CaseSchema::Participants { file, .. } = case.schema() else {
+        panic!("forwarding declares participants");
+    };
+    let steps: Vec<_> = file
+        .procedure
+        .iter()
+        .filter_map(|node| match node {
+            ProcedureNode::Step(step) => Some(step),
+            ProcedureNode::Parallel(_) => None,
+        })
+        .collect();
+    for (endpoint, body) in [
+        (
+            "dogstatsd_tcp",
+            "adp.forwarding.stream_one:1|c\nadp.forwarding.stream_two:2|c\n",
+        ),
+        ("dogstatsd_uds_stream", "adp.forwarding.uds_stream:1|c\n"),
+    ] {
+        let step = steps
+            .iter()
+            .find(|step| step.name == "send" && step.fields["endpoint"] == endpoint)
+            .unwrap();
+        let payload = step.fields["payload"].as_str().unwrap().as_bytes();
+        assert_eq!(&payload[4..], body.as_bytes());
+        assert_eq!(
+            u32::from_le_bytes(payload[..4].try_into().unwrap()) as usize,
+            body.len()
+        );
+    }
+
+    let telemetry = steps.iter().find(|step| step.name == "http_check").unwrap();
+    assert_eq!(telemetry.fields["endpoint"], "api");
+    assert_eq!(telemetry.fields["path"], "/metrics");
+    assert_eq!(telemetry.fields["status"], serde_json::json!({"equal": 200}));
+    assert_eq!(telemetry.fields["regex"], true);
+    let pattern = regex::Regex::new(telemetry.fields["pattern"].as_str().unwrap()).unwrap();
+    // ADP's /metrics response prefixes the received-event counter with `adp__`.
+    let observed = r#"adp__component_events_received_total{component_id="dsd_in",component_type="source",listener_type="udp",message_type="metrics"} 200"#;
+    assert!(pattern.is_match(observed));
+    assert!(pattern.is_match(&observed.replace(
+        r#"listener_type="udp",message_type="metrics""#,
+        r#"message_type="metrics",listener_type="udp""#,
+    )));
+    for mismatched in [
+        observed.replace("} 200", "} 0"),
+        observed.replace("} 200", "} -1"),
+        observed.replace(r#"listener_type="udp""#, r#"listener_type="tcp""#),
+        observed.replace(r#"message_type="metrics""#, r#"message_type="events""#),
+        observed.replace(r#"listener_type="udp","#, ""),
+        observed.replace(r#",message_type="metrics""#, ""),
+        observed.replace(",message_type", ",\nmessage_type"),
+    ] {
+        assert!(!pattern.is_match(&mismatched), "{mismatched}");
     }
 }

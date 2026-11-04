@@ -99,6 +99,7 @@ enum Owner {
     Agent,
     Adp,
     AdpOtlp,
+    AdpDogStatsD,
     DogStatsD,
 }
 
@@ -120,7 +121,7 @@ struct Listener {
     owner: Owner,
 }
 
-// Owner also selects the enabling keys: DATA_PLANE_ENABLED, DATA_PLANE_OTLP_ENABLED, and USE_DOGSTATSD.
+// Owner selects each listener's pipeline gates and environment-variable precedence.
 const LISTENERS: &[Listener] = &[
     Listener {
         name: "dogstatsd_udp",
@@ -129,6 +130,14 @@ const LISTENERS: &[Listener] = &[
         default: "8125",
         value: ValueKind::Port,
         owner: Owner::DogStatsD,
+    },
+    Listener {
+        name: "dogstatsd_tcp",
+        kind: EndpointKind::Tcp,
+        key: "DOGSTATSD_TCP_PORT",
+        default: "0",
+        value: ValueKind::Port,
+        owner: Owner::AdpDogStatsD,
     },
     Listener {
         name: "dogstatsd_uds",
@@ -230,7 +239,8 @@ pub(super) fn endpoints(env: &BTreeMap<String, String>) -> Result<BTreeMap<Strin
         let owner = match listener.owner {
             Owner::Adp if !adp => continue,
             Owner::AdpOtlp if !adp_otlp => continue,
-            Owner::AdpOtlp => Owner::Adp,
+            Owner::AdpDogStatsD if !(adp && dogstatsd && adp_dogstatsd) => continue,
+            Owner::AdpOtlp | Owner::AdpDogStatsD => Owner::Adp,
             Owner::DogStatsD if !dogstatsd => continue,
             Owner::DogStatsD => {
                 if adp_dogstatsd {
@@ -318,6 +328,15 @@ pub(super) fn endpoints(env: &BTreeMap<String, String>) -> Result<BTreeMap<Strin
                 if port == 0 {
                     continue;
                 }
+                if listener.name.starts_with("dogstatsd_")
+                    && matches!(listener.kind, EndpointKind::Udp | EndpointKind::Tcp)
+                    && !env.enabled(owner, "DOGSTATSD_NON_LOCAL_TRAFFIC", "false")?
+                {
+                    let (_, host) = env.value(owner, "BIND_HOST", "");
+                    if host.is_empty() || loopback_host(host) {
+                        continue;
+                    }
+                }
                 match listener.kind {
                     EndpointKind::Tcp => {
                         Endpoint::tcp(Port::Fixed(port)).with_ready(Evidence::tcp_accepts(listener.name))
@@ -329,12 +348,6 @@ pub(super) fn endpoints(env: &BTreeMap<String, String>) -> Result<BTreeMap<Strin
                         Endpoint::grpc(Port::Fixed(port)).with_ready(Evidence::tcp_accepts(listener.name))
                     }
                     EndpointKind::Udp => {
-                        if !env.enabled(owner, "DOGSTATSD_NON_LOCAL_TRAFFIC", "false")? {
-                            let (_, host) = env.value(owner, "BIND_HOST", "");
-                            if host.is_empty() || loopback_host(host) {
-                                continue;
-                            }
-                        }
                         let endpoint = Endpoint::udp(Port::Fixed(port));
                         if matches!(owner, Owner::Adp) {
                             endpoint.with_ready(Evidence::output_matches(
@@ -363,22 +376,46 @@ fn loopback_host(host: &str) -> bool {
 }
 
 pub(super) fn consumes() -> BTreeMap<String, ConsumedEndpoint> {
-    BTreeMap::from([(
-        "intake".into(),
-        ConsumedEndpoint {
-            accepts: vec![EndpointKind::Http],
-            required: false,
-            delivery: Delivery::Env {
-                keys: ["DD_DD_URL".into(), "DD_APM_DD_URL".into()].into(),
-                value: |address| {
-                    BTreeMap::from([
-                        ("DD_DD_URL".into(), address.url().into()),
-                        ("DD_APM_DD_URL".into(), address.url().into()),
-                    ])
+    BTreeMap::from([
+        (
+            "dogstatsd_forward".into(),
+            ConsumedEndpoint {
+                accepts: vec![EndpointKind::Udp],
+                required: false,
+                delivery: Delivery::Env {
+                    keys: ["DD_STATSD_FORWARD_HOST".into(), "DD_STATSD_FORWARD_PORT".into()].into(),
+                    value: |address| {
+                        BTreeMap::from([
+                            (
+                                "DD_STATSD_FORWARD_HOST".into(),
+                                address.host().expect("a UDP endpoint has a host").into(),
+                            ),
+                            (
+                                "DD_STATSD_FORWARD_PORT".into(),
+                                address.port().expect("a UDP endpoint has a port").to_string(),
+                            ),
+                        ])
+                    },
                 },
             },
-        },
-    )])
+        ),
+        (
+            "intake".into(),
+            ConsumedEndpoint {
+                accepts: vec![EndpointKind::Http],
+                required: false,
+                delivery: Delivery::Env {
+                    keys: ["DD_DD_URL".into(), "DD_APM_DD_URL".into()].into(),
+                    value: |address| {
+                        BTreeMap::from([
+                            ("DD_DD_URL".into(), address.url().into()),
+                            ("DD_APM_DD_URL".into(), address.url().into()),
+                        ])
+                    },
+                },
+            },
+        ),
+    ])
 }
 
 struct Service {
@@ -763,6 +800,85 @@ mod tests {
     }
 
     #[test]
+    fn dogstatsd_tcp_requires_adp_to_own_an_enabled_dogstatsd_pipeline() {
+        for adp in ["false", "true"] {
+            for dogstatsd in ["false", "true"] {
+                for adp_dogstatsd in ["false", "true"] {
+                    let enabled = adp == "true" && dogstatsd == "true" && adp_dogstatsd == "true";
+                    for non_local in ["false", "true"] {
+                        for port in ["9126", "invalid"] {
+                            let config = config(&[
+                                ("DD_DATA_PLANE_ENABLED", adp),
+                                ("DD_USE_DOGSTATSD", dogstatsd),
+                                ("DD_DATA_PLANE_DOGSTATSD_ENABLED", adp_dogstatsd),
+                                ("DD_DOGSTATSD_TCP_PORT", port),
+                                ("DD_DOGSTATSD_NON_LOCAL_TRAFFIC", non_local),
+                            ]);
+                            let result = AgentAdp.endpoints(LINUX, &config);
+                            if enabled && port == "invalid" {
+                                assert!(result.unwrap_err().contains("DD_DOGSTATSD_TCP_PORT"));
+                                continue;
+                            }
+                            let endpoints = result.unwrap();
+                            assert_eq!(
+                                endpoints.contains_key("dogstatsd_tcp"),
+                                enabled && non_local == "true",
+                                "ADP={adp}, DogStatsD={dogstatsd}, ADP DogStatsD={adp_dogstatsd}, port={port}, non-local={non_local}"
+                            );
+                            if enabled && non_local == "true" {
+                                assert_network_endpoint(
+                                    &endpoints["dogstatsd_tcp"],
+                                    EndpointKind::Tcp,
+                                    9126,
+                                    Some(Evidence::tcp_accepts("dogstatsd_tcp")),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn dogstatsd_tcp_defaults_to_disabled_and_adp_port_overrides_win() {
+        for (dd_port, adp_port, expected) in [
+            (None, None, None),
+            (Some("0"), None, None),
+            (Some("9126"), None, Some(9126)),
+            (None, Some("9127"), Some(9127)),
+            (Some("9126"), Some("9127"), Some(9127)),
+            (Some("invalid"), Some("9127"), Some(9127)),
+            (Some("9126"), Some("0"), None),
+            (Some("0"), Some("9127"), Some(9127)),
+        ] {
+            let mut config = config(&[
+                ("DD_DATA_PLANE_ENABLED", "true"),
+                ("DD_DOGSTATSD_NON_LOCAL_TRAFFIC", "true"),
+            ]);
+            for (key, value) in [
+                ("DD_DOGSTATSD_TCP_PORT", dd_port),
+                ("ADP_DD_DOGSTATSD_TCP_PORT", adp_port),
+            ] {
+                if let Some(value) = value {
+                    config.env.insert(key.into(), value.into());
+                }
+            }
+            let endpoints = AgentAdp.endpoints(LINUX, &config).unwrap();
+            match expected {
+                Some(port) => assert_network_endpoint(
+                    &endpoints["dogstatsd_tcp"],
+                    EndpointKind::Tcp,
+                    port,
+                    Some(Evidence::tcp_accepts("dogstatsd_tcp")),
+                ),
+                None => assert!(!endpoints.contains_key("dogstatsd_tcp")),
+            }
+            assert!(endpoints.contains_key("dogstatsd_uds"));
+        }
+    }
+
+    #[test]
     fn adp_udp_readiness_matches_the_console_format_and_only_its_port() {
         // ADP's console formatter writes quoted fields before the message.
         let line = r#"2026-11-04 10:00:00 UTC | DATAPLANE | INFO | (lib/saluki-components/src/sources/dogstatsd/mod.rs:1265 in saluki_components::sources::dogstatsd) | listen_addr:"udp://0.0.0.0:58125" | DogStatsD listener started."#;
@@ -789,7 +905,7 @@ mod tests {
     }
 
     #[test]
-    fn the_dogstatsd_udp_listener_is_declared_only_when_it_accepts_non_local_traffic() {
+    fn the_dogstatsd_network_listeners_are_declared_only_when_they_accept_non_local_traffic() {
         for enabled in ["false", "true"] {
             for (overrides, declared) in [
                 (vec![], false),
@@ -814,12 +930,16 @@ mod tests {
             ] {
                 let mut config = config(&overrides);
                 config.env.insert("DD_DATA_PLANE_ENABLED".into(), enabled.into());
+                config.env.insert("DD_DOGSTATSD_TCP_PORT".into(), "9126".into());
+                let endpoints = AgentAdp.endpoints(LINUX, &config).unwrap();
                 assert_eq!(
-                    AgentAdp
-                        .endpoints(LINUX, &config)
-                        .unwrap()
-                        .contains_key("dogstatsd_udp"),
+                    endpoints.contains_key("dogstatsd_udp"),
                     declared,
+                    "{enabled}: {overrides:?}"
+                );
+                assert_eq!(
+                    endpoints.contains_key("dogstatsd_tcp"),
+                    enabled == "true" && declared,
                     "{enabled}: {overrides:?}"
                 );
             }
@@ -855,12 +975,16 @@ mod tests {
             for (enabled, expected) in [("true", adp), ("false", agent)] {
                 let mut config = config(&overrides);
                 config.env.insert("DD_DATA_PLANE_ENABLED".into(), enabled.into());
+                config.env.insert("DD_DOGSTATSD_TCP_PORT".into(), "9126".into());
+                let endpoints = AgentAdp.endpoints(LINUX, &config).unwrap();
                 assert_eq!(
-                    AgentAdp
-                        .endpoints(LINUX, &config)
-                        .unwrap()
-                        .contains_key("dogstatsd_udp"),
+                    endpoints.contains_key("dogstatsd_udp"),
                     expected,
+                    "{enabled}: {overrides:?}"
+                );
+                assert_eq!(
+                    endpoints.contains_key("dogstatsd_tcp"),
+                    enabled == "true" && expected,
                     "{enabled}: {overrides:?}"
                 );
             }
@@ -1184,6 +1308,12 @@ mod tests {
         for (key, value) in [
             ("DD_DOGSTATSD_PORT", "garbage"),
             ("ADP_DD_DOGSTATSD_PORT", "65536"),
+            ("DD_DOGSTATSD_TCP_PORT", "garbage"),
+            ("DD_DOGSTATSD_TCP_PORT", "-1"),
+            ("DD_DOGSTATSD_TCP_PORT", "65536"),
+            ("ADP_DD_DOGSTATSD_TCP_PORT", "garbage"),
+            ("ADP_DD_DOGSTATSD_TCP_PORT", "-1"),
+            ("ADP_DD_DOGSTATSD_TCP_PORT", "65536"),
             ("DD_DATA_PLANE_API_LISTEN_ADDRESS", "0.0.0.0:8080"),
             ("ADP_DD_DATA_PLANE_SECURE_API_LISTEN_ADDRESS", "tcp://host"),
             ("DD_DATA_PLANE_API_LISTEN_ADDRESS", "udp://0.0.0.0:8080"),
@@ -1213,7 +1343,10 @@ mod tests {
     #[test]
     fn connecting_an_intake_delivers_its_url_to_the_agent_and_apm() {
         let consumes = AgentAdp.consumes(LINUX, &config(&[]));
-        assert_eq!(consumes.len(), 1);
+        assert_eq!(
+            consumes.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["dogstatsd_forward", "intake"]
+        );
         let intake = &consumes["intake"];
         assert_eq!(intake.accepts, [EndpointKind::Http]);
         assert!(!intake.required);
@@ -1228,6 +1361,31 @@ mod tests {
                 ("DD_APM_DD_URL".into(), "http://intake:2049".into())
             ])
         );
+    }
+
+    #[test]
+    fn connecting_a_forward_target_delivers_its_host_and_port() {
+        let consumes = AgentAdp.consumes(LINUX, &config(&[]));
+        let forward = &consumes["dogstatsd_forward"];
+        assert_eq!(forward.accepts, [EndpointKind::Udp]);
+        assert!(!forward.required);
+        let Delivery::Env { keys, value } = &forward.delivery;
+        for (host, port) in [
+            ("intake", 9125),
+            ("forward-receiver", 18125),
+            ("127.0.0.1", 1),
+            ("::1", 65535),
+        ] {
+            let delivered = value(&http_address(host, port));
+            assert_eq!(keys.iter().collect::<Vec<_>>(), delivered.keys().collect::<Vec<_>>());
+            assert_eq!(
+                delivered,
+                BTreeMap::from([
+                    ("DD_STATSD_FORWARD_HOST".into(), host.into()),
+                    ("DD_STATSD_FORWARD_PORT".into(), port.to_string()),
+                ])
+            );
+        }
     }
 
     #[test]

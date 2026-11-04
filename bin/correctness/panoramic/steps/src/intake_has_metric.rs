@@ -16,6 +16,7 @@ use serde_json::json;
 use stele::{Metric, MetricValue};
 use tokio::time::{sleep_until, Instant};
 
+use crate::message::truncate_message;
 use crate::metrics::{
     get_formatted_metric_value, MetricType, NormalizationFailure, NormalizedMetric, NormalizedMetricContext,
     NormalizedMetrics,
@@ -55,11 +56,6 @@ const MAX_CANDIDATES: usize = 10;
 
 /// Most other metric names a failure message lists when no metric with the expected name was observed.
 const MAX_OTHER_NAMES: usize = 10;
-
-/// Most bytes in a failure message, including [`TRUNCATION_NOTICE`].
-const MAX_MESSAGE_BYTES: usize = 4096;
-
-const TRUNCATION_NOTICE: &str = "\n[message truncated]";
 
 /// Assertion that polls an intake participant for a metric matching the configured criteria.
 ///
@@ -386,16 +382,6 @@ fn value_matches(observed: &MetricValue, expected: f64) -> bool {
     }
 }
 
-/// Caps `message` at [`MAX_MESSAGE_BYTES`], cutting on a character boundary and ending with [`TRUNCATION_NOTICE`].
-fn truncate_message(mut message: String) -> String {
-    if message.len() > MAX_MESSAGE_BYTES {
-        let cut = message.floor_char_boundary(MAX_MESSAGE_BYTES - TRUNCATION_NOTICE.len());
-        message.truncate(cut);
-        message.push_str(TRUNCATION_NOTICE);
-    }
-    message
-}
-
 #[async_trait::async_trait]
 impl Step for IntakeHasMetric {
     fn name(&self) -> &'static str {
@@ -501,7 +487,10 @@ mod tests {
     use serde_json::Value;
 
     use super::*;
-    use crate::test_support::valid_fields;
+    use crate::{
+        message::{MAX_MESSAGE_BYTES, TRUNCATION_NOTICE},
+        test_support::valid_fields,
+    };
 
     fn count(value: f64) -> Value {
         json!({"mtype": "Count", "value": value})
