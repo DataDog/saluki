@@ -907,7 +907,7 @@ procedure:
 
     /// Creates a test planner with the binary's registries and local artifact defaults.
     pub(crate) fn planner() -> Planner<'static> {
-        Planner::new(crate::REGISTRIES, panoramic_core::artifact::ArtifactManifest::default()).unwrap()
+        Planner::with_run(crate::REGISTRIES, "inventry")
     }
 
     /// Loads and compiles one case for tests.
@@ -1442,7 +1442,7 @@ timeout: 30s
         for (name, yaml, reason) in [
             (
                 "second",
-                PARTICIPANT_FIELDS.replace("subject: true", "subject: true, realization: {kind: host-process-group}"),
+                PARTICIPANT_FIELDS.replace("subject: true", "subject: true, realization: {kind: windows-container}"),
                 Some("sets 'realization', which the integration runner does not support"),
             ),
             (
@@ -1452,11 +1452,11 @@ timeout: 30s
             ),
             (
                 "first",
-                PARTICIPANT_FIELDS.replace("subject: true", "subject: true, config: {env: {KEY: '{{ self.late.ip }}'}}"),
+                PARTICIPANT_FIELDS.replace("subject: true", "subject: true, config: {env: {KEY: '{{ self.facts.default_log_file }}'}}"),
                 Some("sets config.env 'KEY' with a template reference ('{{'); the integration runner does not support references in environment variables"),
             ),
         ] {
-            let yaml = yaml.replace("[linux]", "[macos]").replace("runtimes: [macos]", "runtimes: [mac]");
+            let yaml = yaml.replace("[linux]", "[windows]");
             let path = write_case(dir.path(), name, &yaml);
             cases.extend(crate::CASE_LOADER.load_file(&path).unwrap());
             if let Some(reason) = reason {
@@ -1467,7 +1467,7 @@ timeout: 30s
             }
         }
         let overrides = ["unmatched=image:override".parse().unwrap()];
-        let error = build_case_runners(cases, Os::MacOs, &overrides)
+        let error = build_case_runners(cases, Os::Windows, &overrides)
             .err()
             .expect("unsupported participant settings must fail runner construction");
         assert_eq!(

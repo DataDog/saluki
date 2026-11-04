@@ -96,14 +96,22 @@ impl EffectiveConfig {
     }
 }
 
-/// Configuration rendered for container creation, with case files keyed by configuration name.
+/// Configuration rendered for participant creation, with case files keyed by configuration name.
 pub struct RenderedConfig {
+    pub(crate) directory: String,
     pub(crate) env: BTreeMap<String, String>,
     pub(crate) params: BTreeMap<String, serde_json::Value>,
     pub(crate) files: BTreeMap<String, Vec<u8>>,
 }
 
 impl RenderedConfig {
+    /// The participant's directory under its scope's shared root: an absolute path in the
+    /// participant OS's style. On a host process group, its processes run in it and recipe files
+    /// are placed relative to it.
+    pub fn directory(&self) -> &str {
+        &self.directory
+    }
+
     /// Environment after resolving references and connection deliveries for creation.
     pub fn env(&self) -> &BTreeMap<String, String> {
         &self.env

@@ -1108,7 +1108,7 @@ fn correctness_ci_mixins_reject_a_skipped_row() {
 }
 
 #[test]
-fn linux_participant_cases_run_natively_and_macos_and_windows_use_the_bridge() {
+fn participant_cases_run_natively_on_linux_and_macos_and_use_the_bridge_on_windows() {
     let root = repository_root();
     for os in [Os::Linux, Os::MacOs, Os::Windows] {
         let cases = crate::CASE_LOADER
@@ -1122,7 +1122,11 @@ fn linux_participant_cases_run_natively_and_macos_and_windows_use_the_bridge() {
             let plan = planner().compile(case, os).unwrap().into_plan().unwrap();
             assert_eq!(
                 route(&plan),
-                if os == Os::Linux { Route::Native } else { Route::Bridge },
+                if os == Os::Windows {
+                    Route::Bridge
+                } else {
+                    Route::Native
+                },
                 "{} on {}",
                 plan.case().name(),
                 os.name()

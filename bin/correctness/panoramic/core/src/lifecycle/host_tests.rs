@@ -79,6 +79,7 @@ impl ParticipantType for FixtureType {
         }
         let mut recipe = HostRecipe::new(processes);
         recipe.env = config.env.clone();
+        recipe.env.insert("DIR".into(), config.directory().into());
         Ok(Recipe::HostProcessGroup(recipe))
     }
     fn endpoints(&self, _: Realization, config: &EffectiveConfig) -> Result<BTreeMap<String, Endpoint>, String> {
@@ -351,6 +352,50 @@ async fn a_failed_host_start_reclaims_processes_spawned_before_the_failure() {
     })
     .await
     .unwrap();
+    assert!(!Path::new(&plan.scope().unwrap().state_dir(Os::host()))
+        .parent()
+        .unwrap()
+        .exists());
+}
+
+#[tokio::test]
+async fn a_host_recipe_receives_its_participant_directory_which_is_its_processes_working_directory() {
+    let run_id = random_id();
+    let plan = plan(
+        json!({"subject": {"type": "host-fixture", "subject": true, "realization": {"kind": "host-process-group"}, "config": {"env": {
+            "MARKER": format!("panoramic-host-{run_id}-directory"),
+            "SCRIPT": "test \"$PWD\" -ef \"$DIR\" && test -d \"$DIR/shared\" && echo \"$DIR\"",
+        }}}}),
+        json!([{"step": "probe", "on": "subject", "process": "main"}]),
+        &run_id,
+    );
+    let logs = tempfile::tempdir().unwrap();
+    let control = control(logs.path());
+    let result = timeout(
+        BOUND,
+        run(
+            plan.participants().unwrap(),
+            TYPES,
+            &inputs(Path::new("/bin/sh")),
+            &control,
+        ),
+    )
+    .await
+    .unwrap();
+    let report = serde_json::to_value(control.observations.snapshot()).unwrap();
+    assert_eq!(control.tasks.stop_all(Clock::now() + BOUND).await, 0);
+    let (entries, issues) = control.ledger.reclaim(Clock::now() + BOUND).await;
+    assert!(issues.is_empty(), "{issues:?}");
+    assert!(entries.iter().all(|entry| entry.result == ReclaimResult::Reclaimed));
+    assert_eq!(result.outcome, TestOutcome::Passed, "{result:?}");
+    assert_eq!(
+        std::fs::read_to_string(logs.path().join("subject/main.stdout.log")).unwrap(),
+        format!("{}/subject\n", plan.scope().unwrap().state_dir(Os::host()))
+    );
+    assert_eq!(
+        report[0]["processes"][0]["exit"],
+        json!({"state": "exited", "source": "process", "code": 0})
+    );
     assert!(!Path::new(&plan.scope().unwrap().state_dir(Os::host()))
         .parent()
         .unwrap()

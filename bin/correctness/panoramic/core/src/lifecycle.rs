@@ -647,6 +647,7 @@ mod tests {
     #[test]
     fn the_default_recipe_names_the_type_and_realization() {
         let config = RenderedConfig {
+            directory: "/participant".into(),
             env: BTreeMap::new(),
             params: BTreeMap::new(),
             files: BTreeMap::new(),

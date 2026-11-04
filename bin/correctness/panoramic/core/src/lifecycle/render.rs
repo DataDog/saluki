@@ -3,13 +3,13 @@
 use std::{collections::BTreeMap, path::Path};
 
 use crate::{
-    backend::LateFact,
+    backend::{shared_root, LateFact},
     case::{
         config_references::{walk_config_strings_mut, ConfigField},
         template::{Reference, Template},
     },
     participant::RenderedConfig,
-    plan::ParticipantPlan,
+    plan::{participant_dir, ParticipantPlan},
 };
 
 pub(super) fn render(
@@ -51,7 +51,13 @@ pub(super) fn render(
             })
             .map_err(|error| format!("participant '{participant}' {field}: {error}"))
     };
+    let realization = plan
+        .layout()
+        .get(participant)
+        .expect("planned participant has a realization");
+    let root = shared_root(realization.kind, realization.os, plan.scope());
     let mut rendered = RenderedConfig {
+        directory: participant_dir(&root, participant, realization.os),
         env: config.env.clone(),
         params: config.params.clone(),
         files: BTreeMap::new(),
@@ -203,6 +209,33 @@ mod tests {
             .unwrap()
             .into_plan()
             .unwrap()
+    }
+
+    #[test]
+    fn rendered_configuration_names_the_participant_directory_under_each_realizations_shared_root() {
+        let registries = Registries {
+            participant_types: &[&Server],
+            steps: STEPS,
+            ..Default::default()
+        };
+        for (os, kind, directory) in [
+            (Os::Linux, "linux-container", "/airlock/subject"),
+            (Os::MacOs, "host-process-group", "/tmp/panoramic-testrun0/0000/subject"),
+            (Os::Windows, "windows-container", r"C:\airlock\subject"),
+        ] {
+            let yaml = format!("timeout: 1s\nsubject_os: [{}]\nparticipants:\n  subject: {{type: server, subject: true, realization: {{kind: {kind}}}}}\n{}", os.name(), minimal_procedure!());
+            let case = CaseLoader::new(registries, FixtureTypes, "fixture")
+                .load_content(&yaml, "case", Path::new("cases/case/config.yaml"))
+                .unwrap()
+                .remove(0);
+            let plan = Planner::with_run(registries, "testrun0")
+                .compile(case, os)
+                .unwrap()
+                .into_plan()
+                .unwrap();
+            let rendered = render(plan.participants().unwrap(), "subject", &BTreeMap::new()).unwrap();
+            assert_eq!(rendered.directory(), directory);
+        }
     }
 
     #[test]

@@ -38,7 +38,7 @@ use self::{
 };
 pub(crate) use self::{
     readiness::{PlannedCheck, StartGate},
-    scope::ScopeLayout,
+    scope::{participant_dir, ScopeLayout},
 };
 
 /// Holds the registries and artifact bindings shared across one run's plans.
@@ -138,8 +138,13 @@ impl<'a> Planner<'a> {
         self
     }
 
-    #[cfg(test)]
-    pub(crate) fn with_run(registries: Registries<'a>, run: &str) -> Self {
+    /// Creates a planner with default artifact bindings and a fixed run identity for tests.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the registries declare inconsistent artifact roles.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn with_run(registries: Registries<'a>, run: &str) -> Self {
         Self {
             scopes: ScopeRegistry::with_run(run),
             ..Self::new(registries, ArtifactManifest::default())

@@ -1,13 +1,10 @@
 //! Linux configuration and service overlays for the converged image.
-//!
-//! Derives DogStatsD listeners, ADP APIs, and the Agent's command and IPC listeners from the environment.
-//! DogStatsD's datagram socket uses the schema's Linux default unless its environment sets another path or disables it.
 
-use std::{collections::BTreeMap, net::IpAddr};
+use std::collections::BTreeMap;
 
 use async_trait::async_trait;
 use panoramic_core::{
-    endpoint::{ConsumedEndpoint, Delivery, Endpoint, EndpointKind, Evidence, Port},
+    endpoint::{ConsumedEndpoint, Delivery, EndpointKind},
     participant::{ExitChannel, OpContext, Operation, OutputChannel, OutputStream, ProcessSpec, RenderedConfig},
     recipe::{ContainerRecipe, Recipe},
     step::HandleError,
@@ -101,300 +98,6 @@ pub(super) fn default_env() -> BTreeMap<String, String> {
             "0.0.0.0:54318".to_string(),
         ),
     ])
-}
-
-#[derive(Clone, Copy)]
-enum Owner {
-    Agent,
-    Adp,
-    AdpOtlp,
-    AdpDogStatsD,
-    DogStatsD,
-}
-
-#[derive(Clone, Copy)]
-enum ValueKind {
-    Port,
-    PositivePort,
-    Address,
-    HostPort,
-    Path,
-}
-
-struct Listener {
-    name: &'static str,
-    kind: EndpointKind,
-    key: &'static str,
-    default: &'static str,
-    value: ValueKind,
-    owner: Owner,
-}
-
-// Owner selects each listener's pipeline gates and environment-variable precedence.
-const LISTENERS: &[Listener] = &[
-    Listener {
-        name: "dogstatsd_udp",
-        kind: EndpointKind::Udp,
-        key: "DOGSTATSD_PORT",
-        default: "8125",
-        value: ValueKind::Port,
-        owner: Owner::DogStatsD,
-    },
-    Listener {
-        name: "dogstatsd_tcp",
-        kind: EndpointKind::Tcp,
-        key: "DOGSTATSD_TCP_PORT",
-        default: "0",
-        value: ValueKind::Port,
-        owner: Owner::AdpDogStatsD,
-    },
-    Listener {
-        name: "dogstatsd_uds",
-        kind: EndpointKind::UnixDatagram,
-        key: "DOGSTATSD_SOCKET",
-        default: "/var/run/datadog/dsd.socket",
-        value: ValueKind::Path,
-        owner: Owner::DogStatsD,
-    },
-    Listener {
-        name: "dogstatsd_uds_stream",
-        kind: EndpointKind::UnixStream,
-        key: "DOGSTATSD_STREAM_SOCKET",
-        default: "",
-        value: ValueKind::Path,
-        owner: Owner::DogStatsD,
-    },
-    Listener {
-        name: "api",
-        kind: EndpointKind::Http,
-        key: "DATA_PLANE_API_LISTEN_ADDRESS",
-        default: "tcp://0.0.0.0:5100",
-        value: ValueKind::Address,
-        owner: Owner::Adp,
-    },
-    Listener {
-        name: "secure_api",
-        kind: EndpointKind::Tcp,
-        key: "DATA_PLANE_SECURE_API_LISTEN_ADDRESS",
-        default: "tcp://0.0.0.0:5101",
-        value: ValueKind::Address,
-        owner: Owner::Adp,
-    },
-    Listener {
-        name: "otlp_grpc",
-        kind: EndpointKind::Grpc,
-        key: "DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY",
-        default: "localhost:6317",
-        value: ValueKind::HostPort,
-        owner: Owner::AdpOtlp,
-    },
-    Listener {
-        name: "otlp_http",
-        kind: EndpointKind::Http,
-        key: "DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY",
-        default: "localhost:6318",
-        value: ValueKind::HostPort,
-        owner: Owner::AdpOtlp,
-    },
-    Listener {
-        name: "agent_cmd",
-        kind: EndpointKind::Tcp,
-        key: "CMD_PORT",
-        default: "5001",
-        value: ValueKind::Port,
-        owner: Owner::Agent,
-    },
-    Listener {
-        name: "agent_ipc",
-        kind: EndpointKind::Tcp,
-        key: "AGENT_IPC_PORT",
-        default: "0",
-        value: ValueKind::PositivePort,
-        owner: Owner::Agent,
-    },
-];
-
-struct Environment<'a>(&'a BTreeMap<String, String>);
-
-impl<'a> Environment<'a> {
-    fn value(&self, owner: Owner, key: &str, default: &'a str) -> (String, &'a str) {
-        if matches!(owner, Owner::Adp) {
-            let key = format!("ADP_DD_{key}");
-            if let Some(value) = self.0.get(&key) {
-                return (key, value);
-            }
-        }
-        let key = format!("DD_{key}");
-        let value = self.0.get(&key).map_or(default, String::as_str);
-        (key, value)
-    }
-
-    fn enabled(&self, owner: Owner, key: &str, default: &'a str) -> Result<bool, String> {
-        let (key, value) = self.value(owner, key, default);
-        value
-            .parse()
-            .map_err(|error| format!("{key}='{value}' must be true or false: {error}"))
-    }
-}
-
-pub(super) fn endpoints(env: &BTreeMap<String, String>) -> Result<BTreeMap<String, Endpoint>, String> {
-    let env = Environment(env);
-    let adp = env.enabled(Owner::Agent, "DATA_PLANE_ENABLED", "false")?;
-    let dogstatsd = env.enabled(Owner::Agent, "USE_DOGSTATSD", "true")?;
-    let adp_dogstatsd = adp && env.enabled(Owner::Agent, "DATA_PLANE_DOGSTATSD_ENABLED", "true")?;
-    let adp_otlp = adp && env.enabled(Owner::Adp, "DATA_PLANE_OTLP_ENABLED", "false")?;
-    let mut endpoints = BTreeMap::new();
-    for listener in LISTENERS {
-        let owner = match listener.owner {
-            Owner::Adp if !adp => continue,
-            Owner::AdpOtlp if !adp_otlp => continue,
-            Owner::AdpDogStatsD if !(adp && dogstatsd && adp_dogstatsd) => continue,
-            Owner::AdpOtlp | Owner::AdpDogStatsD => Owner::Adp,
-            Owner::DogStatsD if !dogstatsd => continue,
-            Owner::DogStatsD => {
-                if adp_dogstatsd {
-                    Owner::Adp
-                } else {
-                    Owner::Agent
-                }
-            }
-            owner => owner,
-        };
-        let tls = if listener.name == "otlp_http" {
-            let (cert_key, cert) = env.value(owner, "OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CERT_FILE", "");
-            let (key_key, key) = env.value(owner, "OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_KEY_FILE", "");
-            if cert.is_empty() != key.is_empty() {
-                return Err(format!(
-                    "{cert_key} and {key_key} must both be nonempty to enable OTLP HTTP TLS, or both empty"
-                ));
-            }
-            !cert.is_empty()
-        } else {
-            false
-        };
-        let (key, value) = env.value(owner, listener.key, listener.default);
-        let invalid = |reason: &str| format!("{key}='{value}' {reason}");
-        let endpoint = match listener.value {
-            ValueKind::Path => {
-                if value.is_empty() {
-                    continue;
-                }
-                if !value.starts_with('/') {
-                    return Err(invalid("must be an absolute socket path"));
-                }
-                match listener.kind {
-                    EndpointKind::UnixDatagram => Endpoint::unix_datagram(value),
-                    EndpointKind::UnixStream => Endpoint::unix_stream(value),
-                    _ => unreachable!("path listeners are sockets"),
-                }
-                .with_ready(Evidence::socket_exists(listener.name))
-            }
-            ValueKind::Port | ValueKind::PositivePort | ValueKind::Address | ValueKind::HostPort => {
-                let port = match listener.value {
-                    ValueKind::HostPort => {
-                        let address = url::Url::parse(&format!("tcp://{value}"))
-                            .map_err(|_| invalid("must be host:port with no scheme"))?;
-                        if address.host_str().is_none()
-                            || !address.username().is_empty()
-                            || address.password().is_some()
-                            || !address.path().is_empty()
-                            || address.query().is_some()
-                            || address.fragment().is_some()
-                            || value.contains('@')
-                            || value.chars().any(char::is_whitespace)
-                        {
-                            return Err(invalid("must be host:port with no scheme"));
-                        }
-                        let port = address.port().ok_or_else(|| invalid("must specify a port"))?;
-                        let host = url::Host::parse(address.host_str().unwrap())
-                            .map_err(|_| invalid("must be host:port with no scheme"))?;
-                        if loopback_host(&host.to_string()) {
-                            continue;
-                        }
-                        port
-                    }
-                    ValueKind::Address => {
-                        let address = url::Url::parse(value)
-                            .map_err(|error| invalid(&format!("must be tcp://host:port: {error}")))?;
-                        if address.scheme() != "tcp"
-                            || address.host_str().is_none()
-                            || !address.username().is_empty()
-                            || address.password().is_some()
-                            || !matches!(address.path(), "" | "/")
-                            || address.query().is_some()
-                            || address.fragment().is_some()
-                        {
-                            return Err(invalid("must be tcp://host:port"));
-                        }
-                        if loopback_host(address.host_str().unwrap()) {
-                            return Err(invalid(
-                                "must use a non-loopback host so other participants can reach it",
-                            ));
-                        }
-                        address.port().ok_or_else(|| invalid("must specify a port"))?
-                    }
-                    ValueKind::PositivePort => {
-                        let port: i64 = value
-                            .parse()
-                            .map_err(|error| invalid(&format!("must be an integer port: {error}")))?;
-                        if port <= 0 {
-                            continue;
-                        }
-                        port.try_into().map_err(|_| invalid("must be at most 65535"))?
-                    }
-                    _ => value
-                        .parse::<u16>()
-                        .map_err(|error| invalid(&format!("must be a port from 0 to 65535: {error}")))?,
-                };
-                if port == 0 {
-                    continue;
-                }
-                if listener.name.starts_with("dogstatsd_")
-                    && matches!(listener.kind, EndpointKind::Udp | EndpointKind::Tcp)
-                    && !env.enabled(owner, "DOGSTATSD_NON_LOCAL_TRAFFIC", "false")?
-                {
-                    let (_, host) = env.value(owner, "BIND_HOST", "");
-                    if host.is_empty() || loopback_host(host) {
-                        continue;
-                    }
-                }
-                match listener.kind {
-                    EndpointKind::Tcp => {
-                        Endpoint::tcp(Port::Fixed(port)).with_ready(Evidence::tcp_accepts(listener.name))
-                    }
-                    EndpointKind::Http => {
-                        Endpoint::http(Port::Fixed(port)).with_ready(Evidence::tcp_accepts(listener.name))
-                    }
-                    EndpointKind::Grpc => {
-                        Endpoint::grpc(Port::Fixed(port)).with_ready(Evidence::tcp_accepts(listener.name))
-                    }
-                    EndpointKind::Udp => {
-                        let endpoint = Endpoint::udp(Port::Fixed(port));
-                        if matches!(owner, Owner::Adp) {
-                            endpoint.with_ready(Evidence::output_matches(
-                                "adp",
-                                format!(r#"listen_addr:"udp://[^"]+:{port}" \| DogStatsD listener started\."#),
-                            ))
-                        } else {
-                            // The Agent's DogStatsD log line varies by release; readiness follows container startup.
-                            endpoint
-                        }
-                    }
-                    _ => unreachable!("network listeners use ports"),
-                }
-            }
-        };
-        let endpoint = if tls { endpoint.with_tls() } else { endpoint };
-        endpoints.insert(listener.name.into(), endpoint);
-    }
-    Ok(endpoints)
-}
-
-fn loopback_host(host: &str) -> bool {
-    let host = host.trim_matches(['[', ']']).trim_end_matches('.');
-    host.eq_ignore_ascii_case("localhost")
-        || host.to_ascii_lowercase().ends_with(".localhost")
-        || host.parse::<IpAddr>().is_ok_and(|ip| ip.to_canonical().is_loopback())
 }
 
 pub(super) fn consumes() -> BTreeMap<String, ConsumedEndpoint> {
@@ -568,8 +271,11 @@ fn body(script: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use panoramic_core::{
-        endpoint::test_support::{
-            assert_network_endpoint, assert_socket_endpoint, assert_tls_endpoint, http_address, unix_stream_address,
+        endpoint::{
+            test_support::{
+                assert_network_endpoint, assert_socket_endpoint, assert_tls_endpoint, http_address, unix_stream_address,
+            },
+            Evidence,
         },
         layout::{Os, Realization, RealizationKind},
         participant::{test_support::run_operation, CaseValues, EffectiveConfig, ParticipantType},
@@ -955,7 +661,7 @@ mod tests {
     }
 
     #[test]
-    fn the_dogstatsd_network_listeners_are_declared_only_when_they_accept_non_local_traffic() {
+    fn dogstatsd_network_listeners_are_declared_only_when_they_accept_non_local_traffic() {
         for enabled in ["false", "true"] {
             for (overrides, declared) in [
                 (vec![], false),
@@ -1040,10 +746,20 @@ mod tests {
             }
         }
         for key in ["DD_DOGSTATSD_NON_LOCAL_TRAFFIC", "ADP_DD_DOGSTATSD_NON_LOCAL_TRAFFIC"] {
-            let error = AgentAdp
-                .endpoints(LINUX, &config(&[("DD_DATA_PLANE_ENABLED", "true"), (key, "invalid")]))
-                .unwrap_err();
-            assert!(error.contains(key), "{error}");
+            for (udp_port, tcp_port) in [("58125", "0"), ("0", "9126")] {
+                let error = AgentAdp
+                    .endpoints(
+                        LINUX,
+                        &config(&[
+                            ("DD_DATA_PLANE_ENABLED", "true"),
+                            ("DD_DOGSTATSD_PORT", udp_port),
+                            ("DD_DOGSTATSD_TCP_PORT", tcp_port),
+                            (key, "invalid"),
+                        ]),
+                    )
+                    .unwrap_err();
+                assert!(error.contains(key), "{error}");
+            }
         }
     }
 

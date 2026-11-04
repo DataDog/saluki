@@ -1,6 +1,7 @@
 //! The `agent-adp` participant type: the Core Agent and ADP running together.
 //!
-//! Uses the default ten-second stop grace; s6 stops both services in about 2.6 s.
+//! Runs under s6 in Linux containers or as a native macOS host process group.
+//! Uses the default ten-second stop grace.
 
 use std::collections::BTreeMap;
 
@@ -15,6 +16,8 @@ use panoramic_core::recipe::Recipe;
 
 mod late;
 mod linux;
+mod listeners;
+mod macos;
 mod operations;
 
 /// The Core Agent and ADP running together.
@@ -81,6 +84,7 @@ impl ParticipantType for AgentAdp {
     fn recipe(&self, realization: Realization, config: &RenderedConfig) -> Result<Recipe, String> {
         match (realization.os, realization.kind) {
             (Os::Linux, RealizationKind::LinuxContainer) => linux::recipe(config),
+            (Os::MacOs, RealizationKind::HostProcessGroup) => macos::recipe(config),
             _ => Err(format!(
                 "participant type '{}' has no recipe for {} on {}",
                 Self::NAME,
@@ -99,15 +103,7 @@ impl ParticipantType for AgentAdp {
     }
 
     fn validate_config(&self, realization: Realization, config: &CaseValues) -> Result<(), String> {
-        if matches!(
-            (realization.os, realization.kind),
-            (Os::Linux, RealizationKind::LinuxContainer)
-        ) {
-            late::validate(&config.env, &config.params)?;
-            let mut env = linux::default_env();
-            env.extend(config.env.clone());
-            linux::endpoints(&env)?;
-        } else {
+        if (realization.os, realization.kind) != (Os::Linux, RealizationKind::LinuxContainer) {
             if config
                 .params
                 .get("extra_hosts")
@@ -119,12 +115,23 @@ impl ParticipantType for AgentAdp {
                 return Err("agent-adp case files are supported in Linux containers only".into());
             }
         }
+        match (realization.os, realization.kind) {
+            (Os::Linux, RealizationKind::LinuxContainer) => {
+                late::validate(&config.env, &config.params)?;
+                let mut env = linux::default_env();
+                env.extend(config.env.clone());
+                listeners::endpoints(realization, &env)?;
+            }
+            (Os::MacOs, RealizationKind::HostProcessGroup) => macos::validate_config(realization, config)?,
+            _ => {}
+        }
         Ok(())
     }
 
     fn default_env(&self, realization: Realization, _: &CaseValues) -> BTreeMap<String, String> {
         match (realization.os, realization.kind) {
             (Os::Linux, RealizationKind::LinuxContainer) => linux::default_env(),
+            (Os::MacOs, RealizationKind::HostProcessGroup) => macos::default_env(),
             _ => BTreeMap::new(),
         }
     }
@@ -133,7 +140,9 @@ impl ParticipantType for AgentAdp {
         &self, realization: Realization, config: &EffectiveConfig,
     ) -> Result<BTreeMap<String, Endpoint>, String> {
         match (realization.os, realization.kind) {
-            (Os::Linux, RealizationKind::LinuxContainer) => linux::endpoints(&config.env),
+            (Os::Linux, RealizationKind::LinuxContainer) | (Os::MacOs, RealizationKind::HostProcessGroup) => {
+                listeners::endpoints(realization, &config.env)
+            }
             _ => Ok(BTreeMap::new()),
         }
     }
@@ -188,6 +197,7 @@ impl ParticipantType for AgentAdp {
     fn process_specs(&self, realization: Realization) -> &'static [ProcessSpec] {
         match (realization.os, realization.kind) {
             (Os::Linux, RealizationKind::LinuxContainer) => &linux::PROCESS_SPECS,
+            (Os::MacOs, RealizationKind::HostProcessGroup) => &macos::PROCESS_SPECS,
             _ => &[],
         }
     }
@@ -340,9 +350,9 @@ mod tests {
     }
 
     #[test]
-    fn agent_adp_keeps_macos_and_windows_declarations_unchanged() {
+    fn agent_adp_keeps_windows_declarations_unchanged() {
         let config = EffectiveConfig::default();
-        for &(os, kind) in &AgentAdp.supports()[1..] {
+        for &(os, kind) in &AgentAdp.supports()[2..] {
             let realization = Realization { os, kind };
             assert!(AgentAdp.default_env(realization, &CaseValues::default()).is_empty());
             assert!(AgentAdp.process_specs(realization).is_empty());

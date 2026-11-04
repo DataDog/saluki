@@ -19,7 +19,7 @@ impl ScopeRegistry {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-util"))]
     pub(crate) fn with_run(run: &str) -> Self {
         assert_eq!(run.len(), 8);
         Self {
@@ -74,10 +74,17 @@ impl ScopeLayout {
     }
 }
 
+/// Renders a participant's directory beneath the shared filesystem root.
+pub(crate) fn participant_dir(root: &str, participant: &str, os: Os) -> String {
+    let separator = if os == Os::Windows { '\\' } else { '/' };
+    format!("{root}{separator}{participant}")
+}
+
 /// Renders a participant's socket directory beneath the shared filesystem root.
 pub(super) fn participant_shared_dir(root: &str, participant: &str, os: Os) -> String {
+    let directory = participant_dir(root, participant, os);
     let separator = if os == Os::Windows { '\\' } else { '/' };
-    format!("{root}{separator}{participant}{separator}shared")
+    format!("{directory}{separator}shared")
 }
 
 /// Checks that a socket another participant consumes lies under its server's `shared_dir` and fits the OS's

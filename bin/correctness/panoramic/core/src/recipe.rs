@@ -21,11 +21,7 @@ impl Recipe {
     }
 }
 
-/// Environment, relative files and processes for one host participant.
-#[cfg_attr(
-    not(unix),
-    expect(dead_code, reason = "Unix host runtimes consume recipe environments and files.")
-)]
+/// Environment, relative files and processes for a host process group.
 pub struct HostRecipe {
     pub(crate) env: BTreeMap<String, String>,
     pub(crate) files: Vec<RecipeFile>,
@@ -33,24 +29,38 @@ pub struct HostRecipe {
 }
 
 impl HostRecipe {
-    #[cfg_attr(
-        not(all(test, unix)),
-        expect(dead_code, reason = "Host participant type recipes construct process groups.")
-    )]
-    pub(crate) fn new(processes: Vec<HostProcess>) -> Self {
+    /// Creates a host process group with processes in startup order.
+    pub fn new(processes: Vec<HostProcess>) -> Self {
         Self {
             env: BTreeMap::new(),
             files: Vec::new(),
             processes,
         }
     }
+
+    /// Sets the environment shared by a host process group.
+    pub fn with_env(mut self, env: BTreeMap<String, String>) -> Self {
+        self.env = env;
+        self
+    }
+
+    /// Places a file relative to a host process group's participant directory before startup.
+    pub fn with_file(mut self, path: impl Into<String>, mode: u32, contents: impl Into<Vec<u8>>) -> Self {
+        self.files.push(RecipeFile {
+            path: path.into(),
+            mode,
+            contents: contents.into(),
+        });
+        self
+    }
 }
 
+/// One named process in a host process group.
 #[cfg_attr(
-    not(unix),
+    not(any(unix, test, feature = "test-util")),
     expect(dead_code, reason = "Unix host runtimes spawn the declared processes.")
 )]
-pub(crate) struct HostProcess {
+pub struct HostProcess {
     pub(crate) name: String,
     pub(crate) program: ArtifactRole,
     pub(crate) args: Vec<String>,
@@ -58,17 +68,20 @@ pub(crate) struct HostProcess {
 }
 
 impl HostProcess {
-    #[cfg_attr(
-        not(all(test, unix)),
-        expect(dead_code, reason = "Host participant type recipes declare their programs.")
-    )]
-    pub(crate) fn new(name: impl Into<String>, program: ArtifactRole, args: Vec<String>) -> Self {
+    /// Declares a host process group's executable and arguments.
+    pub fn new(name: impl Into<String>, program: ArtifactRole, args: Vec<String>) -> Self {
         Self {
             name: name.into(),
             program,
             args,
             env: BTreeMap::new(),
         }
+    }
+
+    /// Sets process-specific environment, overriding the host process group's environment.
+    pub fn with_env(mut self, env: BTreeMap<String, String>) -> Self {
+        self.env = env;
+        self
     }
 }
 
@@ -186,11 +199,11 @@ pub mod test_support {
 
     /// Returns each placed file's path, permission bits and contents.
     pub fn files(recipe: &Recipe) -> Vec<(&str, u32, &[u8])> {
-        let Recipe::Container(recipe) = recipe else {
-            panic!("expected a container recipe")
+        let files = match recipe {
+            Recipe::Container(recipe) => &recipe.files,
+            Recipe::HostProcessGroup(recipe) => &recipe.files,
         };
-        recipe
-            .files
+        files
             .iter()
             .map(|file| (file.path.as_str(), file.mode, file.contents.as_slice()))
             .collect()
@@ -200,14 +213,54 @@ pub mod test_support {
     pub fn rendered(
         env: BTreeMap<String, String>, files: BTreeMap<String, Vec<u8>>,
     ) -> crate::participant::RenderedConfig {
-        rendered_with_params(env, BTreeMap::new(), files)
+        rendered_in("/participant", env, files)
     }
 
     /// Builds rendered configuration with the supplied environment, parameters and files.
     pub fn rendered_with_params(
         env: BTreeMap<String, String>, params: BTreeMap<String, serde_json::Value>, files: BTreeMap<String, Vec<u8>>,
     ) -> crate::participant::RenderedConfig {
-        crate::participant::RenderedConfig { env, params, files }
+        crate::participant::RenderedConfig {
+            directory: "/participant".into(),
+            env,
+            params,
+            files,
+        }
+    }
+
+    /// Builds rendered configuration for a participant directory.
+    pub fn rendered_in(
+        directory: &str, env: BTreeMap<String, String>, files: BTreeMap<String, Vec<u8>>,
+    ) -> crate::participant::RenderedConfig {
+        crate::participant::RenderedConfig {
+            directory: directory.into(),
+            env,
+            params: BTreeMap::new(),
+            files,
+        }
+    }
+
+    /// A host process's name, program, arguments and effective environment.
+    pub type HostProcessView<'a> = (&'a str, ArtifactRole, &'a [String], BTreeMap<String, String>);
+
+    /// Returns each host process's name, program, arguments and effective environment.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the recipe is not a host process group.
+    pub fn host_processes(recipe: &Recipe) -> Vec<HostProcessView<'_>> {
+        let Recipe::HostProcessGroup(recipe) = recipe else {
+            panic!("expected a host process group")
+        };
+        recipe
+            .processes
+            .iter()
+            .map(|process| {
+                let mut env = recipe.env.clone();
+                env.extend(process.env.clone());
+                (process.name.as_str(), process.program, process.args.as_slice(), env)
+            })
+            .collect()
     }
 
     /// Builds a container recipe with the supplied image, entrypoint and command.
@@ -246,5 +299,37 @@ pub mod test_support {
             });
         }
         Recipe::Container(recipe)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::artifact::ArtifactKind;
+
+    #[test]
+    fn host_recipe_builders_keep_env_files_and_process_env() {
+        let role = ArtifactRole {
+            name: "shell",
+            kind: ArtifactKind::Binary,
+            local_default: "/bin/sh",
+        };
+        let shared = BTreeMap::from([("KEY".into(), "shared".into())]);
+        let process_env = BTreeMap::from([("KEY".into(), "process".into())]);
+        let recipe = HostRecipe::new(vec![
+            HostProcess::new("main", role, vec!["script".into()]).with_env(process_env.clone())
+        ])
+        .with_env(shared.clone())
+        .with_file("settings", 0o644, b"data".to_vec());
+        assert_eq!(recipe.env, shared);
+        assert_eq!(recipe.files.len(), 1);
+        assert_eq!(recipe.files[0].path, "settings");
+        assert_eq!(recipe.files[0].mode, 0o644);
+        assert_eq!(recipe.files[0].contents, b"data");
+        assert_eq!(recipe.processes.len(), 1);
+        assert_eq!(recipe.processes[0].name, "main");
+        assert_eq!(recipe.processes[0].program, role);
+        assert_eq!(recipe.processes[0].args, ["script"]);
+        assert_eq!(recipe.processes[0].env, process_env);
     }
 }

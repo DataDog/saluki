@@ -1,6 +1,6 @@
-//! Compares logging-case translations on every subject OS with the frozen integration configuration.
+//! Compares bridged logging cases with the frozen integration configuration.
 //!
-//! Only exposed ports change in the translation. Inventory rows also change schema, and Linux rows use
+//! Only exposed ports change in the translation. Inventory rows also change schema, and Linux and macOS rows use
 //! native execution, the subject's realization and role-keyed artifacts. Never regenerate the frozen baseline.
 
 use std::{
@@ -284,6 +284,13 @@ fn migrated(baseline: &RecordedCase) -> Vec<Value> {
                 "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
                 "fixup-image": "alpine:latest",
             });
+        } else if row["subject_os"] == "macos" {
+            row["execution"] = json!(NATIVE);
+            row["runtime"] = json!("host-process-group");
+            row["images"] = json!({
+                "adp-host-binary": "target/release/agent-data-plane",
+                "agent-host-install": "/tmp/saluki-dda/datadog-agent",
+            });
         }
     }
     rows
@@ -299,6 +306,9 @@ fn assert_logging_translation(content: &str, name: &str, baseline: &RecordedCase
             "windows" => Os::Windows,
             other => panic!("unknown subject OS {other}"),
         };
+        if !crate::config::integration_bridge::BRIDGED_TYPES.contains(&(AgentAdp::NAME, os)) {
+            continue;
+        }
         let case = crate::CASE_LOADER
             .load_content(content, name, Path::new("config.yaml"))
             .unwrap()
@@ -331,7 +341,7 @@ fn logging_case_twins_reproduce_the_frozen_translation_and_migrated_rows() {
 }
 
 #[test]
-fn checked_in_logging_cases_translate_to_the_frozen_baseline_on_every_subject_os() {
+fn checked_in_logging_cases_translate_to_the_frozen_baseline_on_bridged_subject_oses() {
     let baseline = logging_baseline();
     let recorded = recorded_integration_cases();
     let root = repository_root();
@@ -364,15 +374,45 @@ fn unrecorded_logging_case_fields(case: &Value) -> Value {
 fn logging_files_keep_their_twins_participants_and_unresolved_step_paths() {
     let baseline = logging_baseline();
     let root = repository_root();
+    let shared_paths = BTreeMap::from([
+        (
+            "adp-logging-respects-data-plane-log-file",
+            vec![("DD_DATA_PLANE_LOG_FILE", "adp-custom.log")],
+        ),
+        (
+            "adp-logging-mac-ignores-core-agent-log-file",
+            vec![
+                ("DD_LOG_FILE", "coreagent-only-mac.log"),
+                ("DD_DATA_PLANE_LOG_FILE", "adp-mac-ignores-core-agent-log-file.log"),
+            ],
+        ),
+    ]);
     for name in LOGGING_CASES {
         let path = root.join(format!("test/integration/cases/{name}/config.yaml"));
         let case: Value = serde_saphyr::from_str(&read_text(&path)).unwrap();
         let (twin, _) =
             participant_twin(&baseline[name].case["config"]).unwrap_or_else(|reason| panic!("{name}: {reason}"));
         let twin: Value = serde_json::from_str(&twin).unwrap();
+        let mut expected = unrecorded_logging_case_fields(&twin);
+        if let Some(paths) = shared_paths.get(name) {
+            for (key, file) in paths {
+                let old = format!("/tmp/{file}");
+                assert_eq!(expected["participants"]["adp"]["config"]["env"][key], old);
+                expected["participants"]["adp"]["config"]["env"][key] =
+                    json!(format!("{{{{ self.facts.shared_dir }}}}/{file}"));
+                let mut replaced = 0;
+                for path in expected["step_paths"].as_array_mut().unwrap() {
+                    if *path == old {
+                        *path = json!(format!("{{{{ adp.facts.shared_dir }}}}/{file}"));
+                        replaced += 1;
+                    }
+                }
+                assert_eq!(replaced, 1, "{name}: {file}");
+            }
+        }
         assert_eq!(
             unrecorded_logging_case_fields(&case),
-            unrecorded_logging_case_fields(&twin),
+            expected,
             "{name}: participants and unresolved step paths must match the frozen baseline's twin"
         );
     }

@@ -1761,13 +1761,16 @@
       "name": "adp-logging-mac-ignores-core-agent-log-file",
       "suite": "integration",
       "subject_os": "macos",
-      "runtime": "mac",
+      "runtime": "host-process-group",
       "source": "test/integration/cases/adp-logging-mac-ignores-core-agent-log-file/config.yaml",
       "schema": "participants",
-      "execution": "old",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
-      "images": {},
+      "images": {
+        "adp-host-binary": "target/release/agent-data-plane",
+        "agent-host-install": "/tmp/saluki-dda/datadog-agent"
+      },
       "ci_jobs": [
         "test-integration-macos-arm64",
         "test-integration-macos-amd64"
@@ -1800,13 +1803,16 @@
       "name": "adp-logging-respects-data-plane-log-file",
       "suite": "integration",
       "subject_os": "macos",
-      "runtime": "mac",
+      "runtime": "host-process-group",
       "source": "test/integration/cases/adp-logging-respects-data-plane-log-file/config.yaml",
       "schema": "participants",
-      "execution": "old",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
-      "images": {},
+      "images": {
+        "adp-host-binary": "target/release/agent-data-plane",
+        "agent-host-install": "/tmp/saluki-dda/datadog-agent"
+      },
       "ci_jobs": [
         "test-integration-macos-arm64",
         "test-integration-macos-amd64"
@@ -6927,10 +6933,10 @@
                 "DD_API_KEY": "00000000000000000000000000000000",
                 "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
                 "DD_DATA_PLANE_ENABLED": "true",
-                "DD_DATA_PLANE_LOG_FILE": "/tmp/adp-mac-ignores-core-agent-log-file.log",
+                "DD_DATA_PLANE_LOG_FILE": "/tmp/panoramic-inventry/0000/adp/shared/adp-mac-ignores-core-agent-log-file.log",
                 "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT": "true",
                 "DD_HOSTNAME": "integration-test-mac-ignore-core-log-file",
-                "DD_LOG_FILE": "/tmp/coreagent-only-mac.log"
+                "DD_LOG_FILE": "/tmp/panoramic-inventry/0000/adp/shared/coreagent-only-mac.log"
               },
               "realization": "host-process-group",
               "subject": true,
@@ -6946,14 +6952,14 @@
             },
             {
               "on": "adp",
-              "path": "/tmp/coreagent-only-mac.log",
+              "path": "{{ adp.facts.shared_dir }}/coreagent-only-mac.log",
               "pattern": "CORE",
               "step": "file_contains",
               "timeout": "30s"
             },
             {
               "on": "adp",
-              "path": "/tmp/adp-mac-ignores-core-agent-log-file.log",
+              "path": "{{ adp.facts.shared_dir }}/adp-mac-ignores-core-agent-log-file.log",
               "pattern": "DATAPLANE",
               "step": "file_contains",
               "timeout": "30s"
@@ -6982,7 +6988,7 @@
                 "DD_API_KEY": "00000000000000000000000000000000",
                 "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
                 "DD_DATA_PLANE_ENABLED": "true",
-                "DD_DATA_PLANE_LOG_FILE": "/tmp/adp-custom.log",
+                "DD_DATA_PLANE_LOG_FILE": "/airlock/adp/shared/adp-custom.log",
                 "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT": "true",
                 "DD_HOSTNAME": "integration-test-data-plane-log-override"
               },
@@ -7000,7 +7006,7 @@
             },
             {
               "on": "adp",
-              "path": "/tmp/adp-custom.log",
+              "path": "{{ adp.facts.shared_dir }}/adp-custom.log",
               "pattern": "DATAPLANE",
               "step": "file_contains",
               "timeout": "30s"
@@ -7014,7 +7020,7 @@
                 "DD_API_KEY": "00000000000000000000000000000000",
                 "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
                 "DD_DATA_PLANE_ENABLED": "true",
-                "DD_DATA_PLANE_LOG_FILE": "/tmp/adp-custom.log",
+                "DD_DATA_PLANE_LOG_FILE": "/tmp/panoramic-inventry/0000/adp/shared/adp-custom.log",
                 "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT": "true",
                 "DD_HOSTNAME": "integration-test-data-plane-log-override"
               },
@@ -7032,7 +7038,7 @@
             },
             {
               "on": "adp",
-              "path": "/tmp/adp-custom.log",
+              "path": "{{ adp.facts.shared_dir }}/adp-custom.log",
               "pattern": "DATAPLANE",
               "step": "file_contains",
               "timeout": "30s"

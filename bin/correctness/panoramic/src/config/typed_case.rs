@@ -563,7 +563,7 @@ mod tests {
     #[test]
     fn a_participant_case_in_another_suite_cannot_build_an_integration_runner() {
         let dir = tempfile::tempdir().unwrap();
-        let path = write_case(dir.path(), "alpha", &PARTICIPANT_FIELDS.replace("[linux]", "[macos]"));
+        let path = write_case(dir.path(), "alpha", &PARTICIPANT_FIELDS.replace("[linux]", "[windows]"));
         let loader = CaseLoader::new(
             Registries {
                 participant_types: panoramic_participants::REGISTERED_TYPES,
@@ -574,7 +574,7 @@ mod tests {
             TestSuite::Correctness.name(),
         );
         let cases = loader.load_file(&path).unwrap();
-        let error = build_case_runners(cases, Os::MacOs, &[])
+        let error = build_case_runners(cases, Os::Windows, &[])
             .err()
             .expect("the case and runner suites must agree");
         assert_eq!(

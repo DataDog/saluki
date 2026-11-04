@@ -5,8 +5,7 @@
 //! (`process` omitted), translated to `stream: both`, and `file_contains`.
 //! File paths may reference the participant's facts, resolved from the participant's planned realization;
 //! the integration runner rejects `shared_dir` and late-fact references.
-//! Log steps search captured output: Linux container logs (Agent and ADP under s6),
-//! macOS stdout and stderr of the spawned Agent and ADP processes, or Windows container console output only.
+//! The bridge runs Windows cases; log steps search Windows container console output only.
 //! The translated configuration has default container settings, with empty `container.exposed_ports`;
 //! `runtimes` follow `subject_os` order.
 
@@ -26,7 +25,7 @@ use super::{
 };
 
 /// Participant types the integration runner runs, by subject OS.
-pub(super) const BRIDGED_TYPES: &[(&str, Os)] = &[(AgentAdp::NAME, Os::MacOs), (AgentAdp::NAME, Os::Windows)];
+pub(super) const BRIDGED_TYPES: &[(&str, Os)] = &[(AgentAdp::NAME, Os::Windows)];
 
 /// Translates the case file's step fields, preserving step order and time budgets.
 ///
@@ -285,7 +284,7 @@ mod tests {
                 LOGGING_PARTICIPANT, PARTICIPANT_FIELDS,
             },
             typed_case::{RunnableCase, TypedConfig, TypedConfigLoader},
-            MAC_RUNTIME, WINDOWS_RUNTIME,
+            WINDOWS_RUNTIME,
         },
         test::TestSuite,
     };
@@ -360,69 +359,53 @@ mod tests {
     }
 
     #[test]
-    fn bridged_case_runners_match_their_integration_twins_on_macos_and_windows() {
+    fn bridged_case_runners_match_their_integration_twins_on_windows() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("alpha/config.yaml");
         let overrides = ["container=target:custom".parse().unwrap()];
-        for runtime in [MAC_RUNTIME, WINDOWS_RUNTIME] {
-            let os = crate::config::os_for_runtime(runtime).unwrap();
-            let [participant_plans, integration_plans] = [LOGGING_PARTICIPANT, LOGGING_INTEGRATION].map(|yaml| {
-                write_case(dir.path(), "alpha", yaml);
-                crate::CASE_LOADER
-                    .load_file(&path)
-                    .unwrap()
-                    .into_iter()
-                    .map(|case| planner().compile(case, os).unwrap().into_plan().unwrap())
-                    .collect::<Vec<_>>()
-            });
-            let overrides = if runtime == MAC_RUNTIME {
-                let errors = [&participant_plans, &integration_plans].map(|plans| {
-                    build_runners(plans, os, &RunnerArtifacts::Overrides(&overrides))
-                        .err()
-                        .expect("host processes have no container image to override")
-                        .to_string()
-                });
-                assert_eq!(errors[0], errors[1]);
-                &[][..]
-            } else {
-                &overrides[..]
-            };
-            let participant_runners =
-                build_runners(&participant_plans, os, &RunnerArtifacts::Overrides(overrides)).unwrap();
-            let integration_runners =
-                build_runners(&integration_plans, os, &RunnerArtifacts::Overrides(overrides)).unwrap();
-            assert_eq!(participant_runners.len(), 1);
-            assert_eq!(integration_runners.len(), 1);
-            let participant = &participant_runners[0];
-            let integration = &integration_runners[0];
-            assert_eq!(participant.plan.case().name(), integration.plan.case().name());
-            assert_eq!(participant.plan.case().name(), "alpha");
-            assert_eq!(participant.plan.case().suite(), integration.plan.case().suite());
-            assert_eq!(participant.plan.case().suite(), TestSuite::Integration.name());
-            assert_eq!(
-                participant.plan.case().source().parent().unwrap(),
-                integration.plan.case().source().parent().unwrap()
-            );
-            assert_eq!(
-                participant.plan.case().source().parent().unwrap(),
-                path.canonicalize().unwrap().parent().unwrap()
-            );
-            assert_eq!(participant.plan.case().timeout(), integration.plan.case().timeout());
-            assert_eq!(
-                participant.runner().unwrap().runtime(),
-                integration.runner().unwrap().runtime()
-            );
-            assert_eq!(participant.runner().unwrap().runtime(), runtime);
-            assert_eq!(
-                participant.runner().unwrap().images(),
-                integration.runner().unwrap().images()
-            );
-            if runtime == MAC_RUNTIME {
-                assert!(participant.runner().unwrap().images().is_empty());
-            } else {
-                assert_eq!(participant.runner().unwrap().images()["container"], "target:custom");
-            }
-        }
+        let runtime = WINDOWS_RUNTIME;
+        let os = crate::config::os_for_runtime(runtime).unwrap();
+        let [participant_plans, integration_plans] = [LOGGING_PARTICIPANT, LOGGING_INTEGRATION].map(|yaml| {
+            write_case(dir.path(), "alpha", yaml);
+            crate::CASE_LOADER
+                .load_file(&path)
+                .unwrap()
+                .into_iter()
+                .map(|case| planner().compile(case, os).unwrap().into_plan().unwrap())
+                .collect::<Vec<_>>()
+        });
+        let overrides = &overrides[..];
+        let participant_runners =
+            build_runners(&participant_plans, os, &RunnerArtifacts::Overrides(overrides)).unwrap();
+        let integration_runners =
+            build_runners(&integration_plans, os, &RunnerArtifacts::Overrides(overrides)).unwrap();
+        assert_eq!(participant_runners.len(), 1);
+        assert_eq!(integration_runners.len(), 1);
+        let participant = &participant_runners[0];
+        let integration = &integration_runners[0];
+        assert_eq!(participant.plan.case().name(), integration.plan.case().name());
+        assert_eq!(participant.plan.case().name(), "alpha");
+        assert_eq!(participant.plan.case().suite(), integration.plan.case().suite());
+        assert_eq!(participant.plan.case().suite(), TestSuite::Integration.name());
+        assert_eq!(
+            participant.plan.case().source().parent().unwrap(),
+            integration.plan.case().source().parent().unwrap()
+        );
+        assert_eq!(
+            participant.plan.case().source().parent().unwrap(),
+            path.canonicalize().unwrap().parent().unwrap()
+        );
+        assert_eq!(participant.plan.case().timeout(), integration.plan.case().timeout());
+        assert_eq!(
+            participant.runner().unwrap().runtime(),
+            integration.runner().unwrap().runtime()
+        );
+        assert_eq!(participant.runner().unwrap().runtime(), runtime);
+        assert_eq!(
+            participant.runner().unwrap().images(),
+            integration.runner().unwrap().images()
+        );
+        assert_eq!(participant.runner().unwrap().images()["container"], "target:custom");
     }
 
     #[test]
@@ -902,7 +885,7 @@ mod tests {
             ),
             (
                 "subject: true",
-                "subject: true, realization: {kind: host-process-group}",
+                "subject: true, realization: {kind: windows-container}",
                 "participant 'adp' sets 'realization', which the integration runner does not support",
             ),
             (
@@ -917,9 +900,9 @@ mod tests {
             ),
         ] {
             let dir = tempfile::tempdir().unwrap();
-            let path = write_case(dir.path(), "alpha", &PARTICIPANT_FIELDS.replace(old, new).replace("[linux]", "[macos]"));
+            let path = write_case(dir.path(), "alpha", &PARTICIPANT_FIELDS.replace(old, new).replace("[linux]", "[windows]"));
             let cases = crate::CASE_LOADER.load_file(&path).unwrap();
-            let error = build_case_runners(cases, Os::MacOs, &[])
+            let error = build_case_runners(cases, Os::Windows, &[])
                 .err()
                 .expect("unsupported participant cases must fail runner construction");
             assert_eq!(

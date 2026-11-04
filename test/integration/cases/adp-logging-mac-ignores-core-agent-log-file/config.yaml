@@ -8,14 +8,15 @@ participants:
     type: agent-adp
     subject: true
     config:
+      # Per-run paths prevent files left by earlier runs from satisfying these checks.
       env:
         DD_API_KEY: "00000000000000000000000000000000"
         DD_HOSTNAME: "integration-test-mac-ignore-core-log-file"
         DD_DATA_PLANE_ENABLED: "true"
         DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
         DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-        DD_LOG_FILE: "/tmp/coreagent-only-mac.log"
-        DD_DATA_PLANE_LOG_FILE: "/tmp/adp-mac-ignores-core-agent-log-file.log"
+        DD_LOG_FILE: "{{ self.facts.shared_dir }}/coreagent-only-mac.log"
+        DD_DATA_PLANE_LOG_FILE: "{{ self.facts.shared_dir }}/adp-mac-ignores-core-agent-log-file.log"
 
 procedure:
   - step: log_contains
@@ -24,11 +25,11 @@ procedure:
     timeout: 30s
   - step: file_contains
     on: adp
-    path: "/tmp/coreagent-only-mac.log"
+    path: "{{ adp.facts.shared_dir }}/coreagent-only-mac.log"
     pattern: "CORE"
     timeout: 30s
   - step: file_contains
     on: adp
-    path: "/tmp/adp-mac-ignores-core-agent-log-file.log"
+    path: "{{ adp.facts.shared_dir }}/adp-mac-ignores-core-agent-log-file.log"
     pattern: "DATAPLANE"
     timeout: 30s

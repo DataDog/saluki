@@ -402,6 +402,20 @@ pub mod test_support {
         assert_eq!(endpoint.ready, ready);
     }
 
+    /// Checks an assigned endpoint's kind and returns its environment delivery.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the endpoint is fixed or has a different kind.
+    #[track_caller]
+    pub fn assigned_delivery(endpoint: &Endpoint, kind: EndpointKind) -> fn(u16) -> BTreeMap<String, String> {
+        assert_eq!(endpoint.kind, kind);
+        let Listener::Port(Port::Assigned { deliver }) = endpoint.listener else {
+            panic!("expected an assigned port")
+        };
+        deliver
+    }
+
     /// Checks a network endpoint's kind, fixed port and readiness evidence.
     ///
     /// # Panics

@@ -70,6 +70,7 @@ CI: the `test-container-daemon` job in `.gitlab/e2e.yml` runs them after airlock
 The `panoramic-core` unit tests run host process groups through the native lifecycle on Unix hosts, using `/bin/sh`.
 They cover per-process exit and output observation, readiness, clean environments, file and command primitives,
 and bounded process-group cleanup. Run them with `cargo nextest run -p panoramic-core`.
+The macOS `agent-adp` participant cases use this native lifecycle.
 
 Host participants run in a planned per-case state directory under `/tmp`, which must not already exist. Each process
 inherits only `PATH`, `HOME` and `TMPDIR` from the runner when set, then receives the participant's environment and its
@@ -238,10 +239,10 @@ procedure:   # Required; at least one step.
 ```
 
 Panoramic routes a participant case to the integration runner when every participant's type has an integration bridge
-route on the selected subject OS. `agent-adp` uses the bridge on macOS and Windows, running as host processes on macOS
-or in a Windows container with default settings. Its Linux participant cases use native execution, as do other
+route on the selected subject OS. `agent-adp` uses the bridge on Windows, running in a Windows container with default
+settings. Its Linux and macOS participant cases use native execution, as do other
 participant types without a bridge route. Panoramic prepares each case's scope, creates participants in create order
-from verified image IDs, and starts each level once the readiness evidence of the servers it connects to is observed. A
+from verified artifacts, and starts each level once the readiness evidence of the servers it connects to is observed. A
 readiness wait fails as soon as its server's container exit is observed. Each started container's exit and output are
 watched in case-owned tasks. Output reaches `<log_dir>/<participant>/container.stdout.log` and `container.stderr.log` as
 it arrives, keeping the streams separate. Each process declares either container output or a file in its participant's
@@ -552,7 +553,7 @@ Every native Linux container receives three reserved variables: `PANORAMIC_PARTI
 Recipes that set any of these variables fail creation. The backend prepares the directories before start. The
 Linux backend always shares the host PID namespace. Its cgroup namespace is private unless
 `realization.options.host_cgroup_namespace` is true.
-macOS and Windows use the integration bridge.
+Windows uses the integration bridge.
 
 The integration runner's translation supports this subset of the schema:
 
@@ -565,7 +566,7 @@ The integration runner's translation supports this subset of the schema:
 - The step `file_contains`. Its `path` may reference a participant fact, written as in the example above with the
   participant's name and the fact's name.
   `agent-adp` declares `default_log_file` for its Linux and Windows containers only, so a case that runs on macOS writes
-  the path out.
+  the path out or uses its core-provided `shared_dir` fact under native execution.
 - `parallel` blocks of these steps.
 
 Step fields can also reference a participant's late facts as `<participant>.late.<fact>`: `ip` on every realization,
@@ -858,6 +859,17 @@ must not deliver a variable carrying an assigned listener port.
 Every required consumed endpoint must be connected, and each `config.endpoints` key must name an endpoint
 the participant serves. The integration bridge requires `connect` to be empty. The Linux `agent-adp` definition derives
 its listener ports from the environment; configure those ports through the listener's environment key.
+
+On macOS, the `agent-adp` definition declares every listener and lets core assign its port unless the case sets
+its environment key. Agent-internal listeners have macOS-only endpoint declarations so they also receive assigned
+ports. When ADP OTLP proxying is enabled, the Agent's proxy gRPC endpoint replaces its normal OTLP gRPC endpoint.
+The recipe keeps the gRPC protocol configured using ADP's gRPC address unless the case supplies that setting.
+The definition rejects `ADP_DD_` variables, which require Linux service scripts, and the definition-owned
+keys `DD_AUTH_TOKEN_FILE_PATH`, `DD_RUN_PATH` and `DD_DATA_PLANE_FORCE_ENABLE`. It rejects case configuration files.
+The Agent and ADP start together in the participant directory, which holds an empty `datadog.yaml` and their shared
+authentication token. ADP retries the token read while the Agent starts. Only the Agent receives the run path and,
+when ADP is enabled, the macOS force-enable switch. Each process's output goes to `<process>.stdout.log` and
+`<process>.stderr.log` under the participant's log directory.
 
 `--subject-os linux|macos|windows` selects which cases run. It defaults to the OS selected by `--runtime`, then the
 host's OS. Conflicting values exit 2 before discovery. Correctness cases run only for subject OS `linux` and are

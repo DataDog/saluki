@@ -8,13 +8,14 @@ participants:
     type: agent-adp
     subject: true
     config:
+      # Per-run paths prevent files left by earlier runs from satisfying these checks.
       env:
         DD_API_KEY: "00000000000000000000000000000000"
         DD_HOSTNAME: "integration-test-data-plane-log-override"
         DD_DATA_PLANE_ENABLED: "true"
         DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
         DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-        DD_DATA_PLANE_LOG_FILE: "/tmp/adp-custom.log"
+        DD_DATA_PLANE_LOG_FILE: "{{ self.facts.shared_dir }}/adp-custom.log"
 
 procedure:
   # Wait for ADP to receive its initial configuration from the Core Agent and reload logging.
@@ -25,6 +26,6 @@ procedure:
   # ADP writes to the explicitly-configured per-subagent path.
   - step: file_contains
     on: adp
-    path: "/tmp/adp-custom.log"
+    path: "{{ adp.facts.shared_dir }}/adp-custom.log"
     pattern: "DATAPLANE"
     timeout: 30s
