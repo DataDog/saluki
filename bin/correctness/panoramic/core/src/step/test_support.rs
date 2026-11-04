@@ -25,7 +25,7 @@ use crate::{
     probe::{AttemptLimits, ProbeAnswer},
 };
 
-struct Fixture(&'static [&'static str]);
+struct Fixture(&'static [&'static str], bool);
 
 impl ParticipantType for Fixture {
     fn name(&self) -> &'static str {
@@ -38,8 +38,9 @@ impl ParticipantType for Fixture {
         &[]
     }
     fn endpoints(&self, _: Realization, _: &EffectiveConfig) -> Result<BTreeMap<String, Endpoint>, String> {
+        let http = Endpoint::http(Port::Fixed(1003));
         Ok(BTreeMap::from([
-            ("http".into(), Endpoint::http(Port::Fixed(1003))),
+            ("http".into(), if self.1 { http.with_tls() } else { http }),
             ("tcp".into(), Endpoint::tcp(Port::Fixed(1001))),
             ("udp".into(), Endpoint::udp(Port::Fixed(1002))),
         ]))
@@ -126,7 +127,7 @@ pub async fn run_step(factory: &dyn StepFactory, fields: &StepFields) -> StepRep
 pub async fn run_step_with(
     factory: &dyn StepFactory, fields: &StepFields, fake: Option<&FakeParticipant>,
 ) -> StepReport {
-    run_step_with_port(factory, fields, fake, None).await
+    run_step_with_port(factory, fields, fake, None, false).await
 }
 
 /// Runs a step with a scripted participant and its HTTP request route reaching a loopback port.
@@ -137,13 +138,24 @@ pub async fn run_step_with(
 pub async fn run_step_reaching(
     factory: &dyn StepFactory, fields: &StepFields, fake: &FakeParticipant, port: u16,
 ) -> StepReport {
-    run_step_with_port(factory, fields, Some(fake), Some(port)).await
+    run_step_with_port(factory, fields, Some(fake), Some(port), false).await
+}
+
+/// Runs a step with a scripted participant and its HTTPS route reaching a loopback port.
+///
+/// # Panics
+///
+/// Panics if the fields cannot load or compile with the fixture participant and the single available port.
+pub async fn run_step_reaching_tls(
+    factory: &dyn StepFactory, fields: &StepFields, fake: &FakeParticipant, port: u16,
+) -> StepReport {
+    run_step_with_port(factory, fields, Some(fake), Some(port), true).await
 }
 
 async fn run_step_with_port(
-    factory: &dyn StepFactory, fields: &StepFields, fake: Option<&FakeParticipant>, port: Option<u16>,
+    factory: &dyn StepFactory, fields: &StepFields, fake: Option<&FakeParticipant>, port: Option<u16>, tls: bool,
 ) -> StepReport {
-    let fixture = Fixture(fake.map_or(&["main", "worker"][..], |fake| fake.process_names));
+    let fixture = Fixture(fake.map_or(&["main", "worker"][..], |fake| fake.process_names), tls);
     let registries = Registries {
         participant_types: &[&fixture],
         steps: &[factory],
@@ -157,7 +169,7 @@ async fn run_step_with_port(
         "procedure": [fields],
     })
     .to_string();
-    let case = CaseLoader::new(registries, Fixture(fixture.0), "fixture")
+    let case = CaseLoader::new(registries, Fixture(fixture.0, tls), "fixture")
         .load_content(&content, "case", Path::new("cases/case/config.yaml"))
         .unwrap()
         .remove(0);
@@ -229,6 +241,8 @@ pub struct FakeParticipant {
     processes: BTreeMap<&'static str, FakeProcess>,
     probes: Mutex<VecDeque<Result<ProbeAnswer, HandleError>>>,
     execs: Mutex<VecDeque<Result<ExecOutput, HandleError>>>,
+    exec_delay: Duration,
+    executed: Mutex<Vec<(ExecCommand, Duration)>>,
     sends: Mutex<VecDeque<Result<(), HandleError>>>,
     sent: Mutex<Vec<Vec<u8>>>,
 }
@@ -297,6 +311,8 @@ impl FakeParticipant {
             processes,
             probes: Mutex::new(VecDeque::new()),
             execs: Mutex::new(VecDeque::new()),
+            exec_delay: Duration::ZERO,
+            executed: Mutex::new(Vec::new()),
             sends: Mutex::new(VecDeque::new()),
             sent: Mutex::new(Vec::new()),
         }
@@ -337,6 +353,28 @@ impl FakeParticipant {
     /// Queues command output; the last queued answer repeats.
     pub fn push_exec(&self, answer: Result<ExecOutput, HandleError>) {
         self.execs.lock().unwrap().push_back(answer);
+    }
+
+    /// Delays each command before returning its scripted answer.
+    pub fn delay_exec(&mut self, delay: Duration) {
+        self.exec_delay = delay;
+    }
+
+    /// Checks every command and its execution limit in invocation order.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the recorded commands or limits differ from `commands`.
+    #[track_caller]
+    pub fn assert_executed(&self, commands: &[(ExecCommand, Duration)]) {
+        let executed = self.executed.lock().unwrap();
+        assert_eq!(executed.len(), commands.len());
+        for ((actual, actual_limit), (expected, expected_limit)) in executed.iter().zip(commands) {
+            assert_eq!(actual.argv, expected.argv);
+            assert_eq!(actual.env, expected.env);
+            assert_eq!(actual.stdin, expected.stdin);
+            assert_eq!(actual_limit, expected_limit);
+        }
     }
 
     /// Queues a send result; the last queued answer repeats.
@@ -388,7 +426,11 @@ impl FakeParticipant {
 
 #[async_trait]
 impl Primitives for FakeParticipant {
-    async fn exec(&self, _: ExecCommand, _: Duration) -> Result<ExecOutput, HandleError> {
+    async fn exec(&self, command: ExecCommand, limit: Duration) -> Result<ExecOutput, HandleError> {
+        self.executed.lock().unwrap().push((command, limit));
+        if !self.exec_delay.is_zero() {
+            tokio::time::sleep(self.exec_delay).await;
+        }
         let mut execs = self.execs.lock().unwrap();
         if execs.len() > 1 {
             execs.pop_front().unwrap()

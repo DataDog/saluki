@@ -241,7 +241,7 @@ Capture still writes every byte to disk, so the files remain the full output sou
 After the start levels, native Linux container cases run their procedure in the `steps` phase, using the same step
 budgets, case deadline, parallel blocks and fail-fast behavior as the integration runner. Steps receive the started
 participants through borrowed handles. File paths resolve early and late facts when the step runs.
-A `parallel` block accepts only assertions. Actions, such as `send`, must be sequential steps; discovery rejects an
+A `parallel` block accepts only assertions. Actions, such as `exec` and `send`, must be sequential steps; discovery rejects an
 action in a parallel block before building its fields.
 
 The native log and file steps accept `on`, `pattern` and an optional `regex` flag (default false):
@@ -278,8 +278,14 @@ Native process and endpoint steps also require `on`:
   `{equal: N}` or `{not_equal: N}`. An optional `pattern` matches the response body, with `regex: true` for a regular
   expression; `regex: true` requires `pattern`. Body bytes use lossy UTF-8 decoding. The step retries until both
   status and body match. At timeout, any HTTP response or product error makes the step fail; only harness errors
-  make it error. The last diagnostic gives the status and says when the body did not match. It supports plain HTTP;
-  TLS fields are rejected.
+  make it error. The last diagnostic gives the status and says when the body did not match. For an HTTPS endpoint,
+  set `insecure_skip_verify: true` to skip certificate and handshake-signature verification. It defaults to false;
+  HTTPS certificate verification is unsupported and produces a harness error. Skipping verification on a plain HTTP
+  endpoint also produces a harness error.
+- `exec` is an action requiring a nonempty `argv` list and a positive `timeout`. Each argument may reference
+  participant facts or late facts, resolved before execution. It runs once: exit 0 passes, a nonzero exit or an
+  abandoned command at timeout fails, and a failed execution mechanism errors. Diagnostics include the exit code
+  and trimmed stdout and stderr, capped at 4096 bytes.
 - `send` is an action requiring `endpoint`, `payload` and `timeout`. It sends the string's UTF-8 bytes verbatim,
   including any framing, through the endpoint's planned route. YAML escapes above `\x7f` encode as UTF-8, so
   frame-length bytes must be below 0x80. It retries failed sends until one is accepted or the timeout expires.
@@ -396,6 +402,12 @@ DogStatsD UDP 58125, ADP APIs 55100/55101 and Agent OTLP 54317/54318. The GUI is
 replace those defaults. The legacy translation receives only the case's environment after its OS overlay, so the
 legacy runner applies its own defaults.
 
+In Linux containers, `agent-adp` accepts the directory configuration names `files/` and `cont-init.d/`.
+Files under `files/` land beneath `/var/lib/panoramic/files`, available through the `files_dir` fact, with mode 0644.
+Files under `cont-init.d/` become executable hooks at `/etc/cont-init.d/50-<name>` with mode 0755, before the image's
+`99-agent-data-plane.sh` hook. Nested hook paths are rejected. Case files are rejected on other realizations,
+including files in OS overlays.
+
 The definition derives these endpoints from the effective environment:
 
 | Endpoint | Kind | Environment key | Conditions and readiness |
@@ -425,8 +437,10 @@ to false; `ADP_DD_DATA_PLANE_OTLP_ENABLED` takes precedence over `DD_DATA_PLANE_
 address keys use the same `ADP_DD_` over `DD_` precedence. Proxy mode does not change endpoint availability.
 Addresses use `host:port` without a scheme. A loopback host omits the endpoint, including the defaults
 `localhost:6317` and `localhost:6318`; set a non-loopback address to reach the receiver. Port 0 also omits the endpoint.
-Malformed addresses fail configuration with an error naming the key. The HTTP endpoint uses HTTP even when TLS is
-enabled.
+Malformed addresses fail configuration with an error naming the key. The HTTP endpoint uses HTTPS when both
+`DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CERT_FILE` and `DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_KEY_FILE`
+are nonempty, with the same `ADP_DD_` precedence. Setting only one is a configuration error. HTTP-status readiness
+on a TLS endpoint is rejected; TCP-acceptance readiness remains supported.
 
 An optional `connect: {intake: <participant>.api}` connection accepts HTTP and delivers its URL as both `DD_DD_URL`
 and `DD_APM_DD_URL`. It gates Agent startup on the intake's ready route.
@@ -485,6 +499,11 @@ needs a matching `connect` key. Planning stores each connection's and endpoint r
 holder; the configuration keeps the reference text until recipe rendering. `host` and `port` apply to network
 endpoints, `path` to sockets and pipes, and `url` to every kind. The integration runner rejects any reference in an
 environment variable, and `agent-adp` accepts no parameters.
+
+A declared configuration name ending in `/` requires a directory source; other names require regular files.
+Directories expand recursively into regular files in sorted path order. Empty directories contribute nothing.
+Symlinks and other file kinds inside a directory are rejected. A directory cannot use `template: true`.
+The participant type chooses destination paths and file modes.
 
 A `config.files` source can be a map with `from` and `template: true`. Panoramic reads that file when the case
 loads: it must be a regular UTF-8 file, and every double opening brace in it must start a reference.

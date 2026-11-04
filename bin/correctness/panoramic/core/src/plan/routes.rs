@@ -157,6 +157,7 @@ fn address(route: Route, server_name: &str, endpoint: &Endpoint, runner_host_por
             let scheme = match endpoint.kind {
                 EndpointKind::Tcp => "tcp",
                 EndpointKind::Udp => "udp",
+                EndpointKind::Http if endpoint.tls => "https",
                 EndpointKind::Http => "http",
                 EndpointKind::Grpc => "grpc",
                 _ => unreachable!("network routes use network endpoint kinds"),

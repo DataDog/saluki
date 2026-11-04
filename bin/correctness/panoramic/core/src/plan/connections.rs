@@ -122,7 +122,7 @@ mod tests {
 
     use crate::{
         case::fixtures::minimal_procedure,
-        endpoint::{EndpointKind, ResolvedAddress},
+        endpoint::{EndpointKind, EndpointOperation, ResolvedAddress, RunnerHostRoute},
         layout::Os,
         plan::{
             fixtures::{
@@ -132,6 +132,52 @@ mod tests {
             Planner, PortRegistry,
         },
     };
+
+    #[test]
+    fn a_tls_http_endpoint_renders_https_urls_for_routes_and_connections() {
+        for (os, server_os, host, connection_port, request_port) in [
+            (Os::Linux, "", "server", 8080, 20000),
+            (Os::MacOs, "", "127.0.0.1", 8080, 8080),
+            (Os::MacOs, "os: linux,", "127.0.0.1", 20000, 20000),
+            (Os::Windows, "", "server", 8080, 8080),
+        ] {
+            let yaml = CONNECTION_CASE
+                .replace("[linux]", &format!("[{}]", os.name()))
+                .replace(
+                    "type: server}",
+                    &format!("type: ready-server, {server_os} config: {{env: {{TLS: 'true'}}}}}}"),
+                )
+                .replace(
+                    minimal_procedure!(),
+                    "procedure: [{step: reach, endpoint: server.api, operation: request}]",
+                );
+            let plan = compile(&yaml, os).unwrap().unwrap();
+            let address = plan.connection_address("client", "upstream").unwrap();
+            assert_eq!(address.kind, EndpointKind::Http);
+            assert_eq!(address.url, format!("https://{host}:{connection_port}"));
+            assert_eq!(
+                plan.effective_config("client").unwrap().env["UPSTREAM_URL"],
+                address.url
+            );
+            let request_host = if os == Os::Windows { "server" } else { "127.0.0.1" };
+            let address = ResolvedAddress {
+                kind: EndpointKind::Http,
+                url: format!("https://{request_host}:{request_port}"),
+                host: Some(request_host.into()),
+                port: Some(request_port),
+                path: None,
+            };
+            let route = if os == Os::Windows {
+                RunnerHostRoute::Courier(address)
+            } else {
+                RunnerHostRoute::Direct(address)
+            };
+            assert_eq!(
+                plan.runner_host_route("server", "api", EndpointOperation::Request),
+                Some(&route)
+            );
+        }
+    }
 
     #[test]
     fn a_connection_stores_the_address_its_delivery_received() {

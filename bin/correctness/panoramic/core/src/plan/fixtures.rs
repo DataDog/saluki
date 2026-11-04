@@ -124,6 +124,11 @@ impl ParticipantType for ReadyServer {
             "named-pipe" => Endpoint::named_pipe("api"),
             kind => panic!("unknown fixture endpoint kind: {kind}"),
         };
+        let api = if config.env.contains_key("TLS") {
+            api.with_tls()
+        } else {
+            api
+        };
         let mut endpoints = BTreeMap::from([
             ("api".into(), api),
             ("metrics".into(), Endpoint::udp(Port::Fixed(9000))),
@@ -133,7 +138,11 @@ impl ParticipantType for ReadyServer {
     }
 
     fn readiness(&self, _realization: Realization, config: &EffectiveConfig) -> Vec<Evidence> {
-        participant_evidence(config)
+        let mut evidence = participant_evidence(config);
+        if let Some(path) = config.env.get("READY_PARTICIPANT_HTTP") {
+            evidence.push(Evidence::http_ok("api", path));
+        }
+        evidence
     }
 
     fn consumes(&self, realization: Realization, config: &EffectiveConfig) -> BTreeMap<String, ConsumedEndpoint> {

@@ -26,5 +26,8 @@ tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]
 panoramic-core = { workspace = true, features = ["test-util"] }
+rustls = { workspace = true }
+saluki-tls = { workspace = true, features = ["test-util"] }
 serde-saphyr = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "test-util"] }
+tokio-rustls = { workspace = true }

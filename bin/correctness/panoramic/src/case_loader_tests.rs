@@ -108,7 +108,7 @@ fn agent_adp_log_steps_may_name_the_adp_and_agent_processes_only() {
 }
 
 #[test]
-fn agent_adp_participants_accept_environment_variables_and_os_overlays_only() {
+fn agent_adp_participants_accept_environment_overlays_and_only_declared_file_names() {
     let dir = tempfile::tempdir().unwrap();
     let yaml = PARTICIPANT_FIELDS.replace(
         "subject: true",
@@ -125,11 +125,14 @@ fn agent_adp_participants_accept_environment_variables_and_os_overlays_only() {
     assert_eq!(config.os[&Os::Linux].env["ANY_KEY"], "linux");
 
     for (fields, expected) in [
-        ("config: {files: {settings.yaml: missing.yaml}}", "it declares none"),
+        (
+            "config: {files: {settings.yaml: missing.yaml}}",
+            "it declares cont-init.d/, files/",
+        ),
         ("config: {params: {mode: fast}}", "it accepts none"),
         (
             "config: {os: {linux: {files: {settings.yaml: missing.yaml}}}}",
-            "it declares none",
+            "it declares cont-init.d/, files/",
         ),
         ("config: {os: {linux: {params: {mode: fast}}}}", "it accepts none"),
     ] {
@@ -207,17 +210,24 @@ fn registered_template_fields_match_step_types_and_other_fields_reject_reference
             .template_fields()
             .iter()
             .all(|field| fields.contains_key(*field)));
-        for field in fields
-            .keys()
-            .filter(|field| fields[*field].is_string() && !matches!(field.as_str(), "duration" | "during" | "timeout"))
-        {
+        for field in fields.keys().filter(|field| {
+            (fields[*field].is_string() || field.as_str() == "argv")
+                && !matches!(field.as_str(), "duration" | "during" | "timeout")
+        }) {
             let mut referenced = fields.clone();
             let reference = if field == "path" {
                 "/{{ adp.facts.default_log_file }}"
             } else {
                 "{{ adp.facts.default_log_file }}"
             };
-            referenced.insert(field.clone(), Value::String(reference.into()));
+            referenced.insert(
+                field.clone(),
+                if field == "argv" {
+                    serde_json::json!(["tool", reference])
+                } else {
+                    Value::String(reference.into())
+                },
+            );
             let declared = factory.template_fields().contains(&field.as_str());
             let decode_error = if factory.name() == "config_key_equals" && field == "view" {
                 let message = factory.build(&referenced).unwrap_err();
@@ -279,11 +289,11 @@ fn participant_step_errors_name_the_canonical_file_and_step() {
     for (fields, expected) in [
         (
             "step: wait_ready",
-            "names unknown step 'wait_ready'; registered steps: config_key_equals, exits_with, file_contains, http_check, intake_has_forwarded_packets, intake_has_metric, log_contains, log_not_contains, port_listening, process_stable_for, send",
+            "names unknown step 'wait_ready'; registered steps: config_key_equals, exec, exits_with, file_contains, http_check, intake_has_forwarded_packets, intake_has_metric, log_contains, log_not_contains, port_listening, process_stable_for, send",
         ),
         (
             "step: adp_cli, on: adp, args: [status]",
-            "names unknown step 'adp_cli'; registered steps: config_key_equals, exits_with, file_contains, http_check, intake_has_forwarded_packets, intake_has_metric, log_contains, log_not_contains, port_listening, process_stable_for, send",
+            "names unknown step 'adp_cli'; registered steps: config_key_equals, exec, exits_with, file_contains, http_check, intake_has_forwarded_packets, intake_has_metric, log_contains, log_not_contains, port_listening, process_stable_for, send",
         ),
         (
             "step: port_listening, on: adp, timeout: 1s",
@@ -529,5 +539,33 @@ fn forwarding_case_frames_and_telemetry_match_their_wire_contracts() {
         observed.replace(",message_type", ",\nmessage_type"),
     ] {
         assert!(!pattern.is_match(&mismatched), "{mismatched}");
+    }
+}
+
+#[test]
+fn dogstatsd_top_tls_and_dns_cases_place_their_case_files_under_the_definitions_paths() {
+    use panoramic_core::plan::test_support::assert_request_scheme;
+
+    let cases_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../test/integration/cases");
+    for name in ["adp-ipc-no-dns", "otlp-tls", "dogstatsd-top"] {
+        let case = crate::CASE_LOADER
+            .load_file(&cases_dir.join(name).join("config.yaml"))
+            .unwrap()
+            .remove(0);
+        let plan = planner().compile(case, Os::Linux).unwrap().into_plan().unwrap();
+        assert!(plan.participants().is_some());
+        assert_eq!(plan.fact("adp", "files_dir"), Some("/var/lib/panoramic/files"));
+        if name == "otlp-tls" {
+            let env = &plan.effective_config("adp").unwrap().env;
+            for key in [
+                "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CERT_FILE",
+                "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_KEY_FILE",
+                "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CERT_FILE",
+                "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_KEY_FILE",
+            ] {
+                assert_eq!(env[key], "/var/lib/panoramic/files/server.pem");
+            }
+            assert_request_scheme(&plan, "adp", "otlp_http", "https");
+        }
     }
 }

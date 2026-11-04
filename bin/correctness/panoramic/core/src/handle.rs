@@ -37,6 +37,15 @@ pub struct ExecOutput {
     pub exit_code: i64,
 }
 
+/// Certificate and handshake-signature verification for an HTTPS request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TlsVerification {
+    /// Requires certificate verification; HTTPS verification is unsupported.
+    Verify,
+    /// Accepts any certificate and handshake signature. Valid only for HTTPS.
+    Skip,
+}
+
 /// An HTTP response's status and complete body.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HttpResponse {
@@ -128,9 +137,16 @@ pub(crate) async fn http_status_from_runner_host(
 pub(crate) async fn http_get_from_runner_host(
     route: &RunnerHostRoute, path: &str, limits: &AttemptLimits,
 ) -> Result<HttpResponse, HandleError> {
+    http_get_with_from_runner_host(route, path, TlsVerification::Verify, limits).await
+}
+
+/// Gets an HTTP response with an explicit TLS verification policy.
+pub(crate) async fn http_get_with_from_runner_host(
+    route: &RunnerHostRoute, path: &str, verification: TlsVerification, limits: &AttemptLimits,
+) -> Result<HttpResponse, HandleError> {
     match route {
         RunnerHostRoute::Direct(address) => {
-            match tokio::time::timeout(limits.attempt, http::get(address, path)).await {
+            match tokio::time::timeout(limits.attempt, http::get(address, path, verification)).await {
                 Ok(Ok((status, body))) => Ok(HttpResponse {
                     status,
                     body: body.to_vec(),

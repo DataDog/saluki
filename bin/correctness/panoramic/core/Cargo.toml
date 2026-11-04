@@ -26,6 +26,7 @@ kube = { workspace = true, features = ["client"] }
 panoramic-courier = { workspace = true }
 rand = { workspace = true, features = ["std", "thread_rng"] }
 regex = { workspace = true, features = ["std"] }
+rustls = { workspace = true }
 saluki-error = { workspace = true }
 serde = { workspace = true }
 serde-saphyr = { workspace = true }
@@ -34,18 +35,22 @@ serde_path_to_error = { workspace = true }
 sha2 = { workspace = true }
 snafu = { workspace = true }
 tokio = { workspace = true, features = ["fs", "io-util", "net", "rt", "signal", "sync", "time"] }
+tokio-rustls = { workspace = true }
 tokio-util = { workspace = true, features = ["rt"] }
 toml = { workspace = true, features = ["display"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
 bollard = { workspace = true }
+rcgen = { workspace = true, features = ["crypto", "pem"] }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
 tracing-subscriber = { workspace = true, features = ["fmt"] }
 
 [target.'cfg(not(windows))'.dev-dependencies]
+rcgen = { workspace = true, features = ["aws_lc_rs"] }
 rustls = { workspace = true, features = ["aws_lc_rs"] }
 
 [target.'cfg(windows)'.dev-dependencies]
+rcgen = { workspace = true, features = ["ring"] }
 rustls-cng-crypto = { workspace = true }

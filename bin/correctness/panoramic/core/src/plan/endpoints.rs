@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use super::{readiness::check_readiness, PortRegistry};
 use crate::{
     case::{declared_names, Template},
-    endpoint::{ConsumedEndpoint, Endpoint, Evidence, Listener, Port},
+    endpoint::{ConsumedEndpoint, Endpoint, EndpointKind, Evidence, Listener, Port},
     layout::{Os, Realization, RealizationKind},
     participant::{CaseValues, EffectiveConfig, ParticipantType},
 };
@@ -218,6 +218,12 @@ fn resolve_listeners(
         ));
     }
     for (name, endpoint) in endpoints {
+        if endpoint.tls && endpoint.kind != EndpointKind::Http {
+            return Err(format!(
+                "{holder} serves endpoint '{name}' with TLS, but it is {}; TLS requires an HTTP endpoint",
+                endpoint.kind.name(),
+            ));
+        }
         match &endpoint.listener {
             Listener::Port(Port::FromCase) => {
                 let Some(overridden) = config.endpoints.get(name) else {
@@ -297,6 +303,20 @@ mod tests {
             Planner,
         },
     };
+
+    #[test]
+    fn tls_on_a_non_http_endpoint_fails_compile() {
+        for kind in ["tcp", "udp", "grpc", "unix-datagram", "unix-stream", "named-pipe"] {
+            let yaml = PARTICIPANT_FIELDS.replace(
+                "type: server",
+                &format!("type: ready-server, config: {{env: {{TLS: 'true', READY_KIND: {kind}}}}}"),
+            );
+            let error = compile(&yaml, Os::Linux).err().unwrap().to_string();
+            assert_eq!(error, format!(
+                "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', participant 'subject' of type 'ready-server' as linux-container on linux serves endpoint 'api' with TLS, but it is {kind}; TLS requires an HTTP endpoint"
+            ));
+        }
+    }
 
     #[test]
     fn a_host_process_groups_assigned_port_is_delivered_into_its_type_defaults_and_rederived() {

@@ -1,48 +1,51 @@
-type: integration
 name: "dogstatsd-top"
 description: "Verifies retained DogStatsD contexts through the privileged API, online CLI, and offline Agent-compatible artifact"
 timeout: 180s
-runtimes: [linux]
+subject_os: [linux]
 
-env:
-  DD_API_KEY: "00000000000000000000000000000000"
-  DD_HOSTNAME: "integration-test-dogstatsd-top"
-  DD_DATA_PLANE_ENABLED: "true"
-  DD_DATA_PLANE_STANDALONE_MODE: "false"
-  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-
-container:
-  files:
-    - "run_dogstatsd_top_test.py:/dogstatsd-top/run_dogstatsd_top_test.py"
-    # Produced by Datadog Agent 7.80.3 `dogstatsd dump-contexts`; the NDJSON file is the exact
-    # decompressed content of the zstd artifact.
-    - "agent-7.80.3-contexts.json.zstd:/dogstatsd-top/agent-7.80.3-contexts.json.zstd"
-    - "agent-7.80.3-contexts.ndjson:/dogstatsd-top/agent-7.80.3-contexts.ndjson"
-  exposed_ports:
-    - "58125/udp"
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    config:
+      env:
+        DD_API_KEY: "00000000000000000000000000000000"
+        DD_HOSTNAME: "integration-test-dogstatsd-top"
+        DD_DATA_PLANE_ENABLED: "true"
+        DD_DATA_PLANE_STANDALONE_MODE: "false"
+        DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+      # Produced by Datadog Agent 7.80.3 `dogstatsd dump-contexts`; the NDJSON file is the exact
+      # decompressed content of the zstd artifact.
+      files: {files/: files}
 
 procedure:
   - parallel:
-      - assertion: port_listening
-        port: 58125
-        protocol: udp
+      - step: log_contains
+        on: adp
+        pattern: 'listen_addr:"udp://[^"]+:58125" \| DogStatsD listener started\.'
+        regex: true
         timeout: 60s
-      - assertion: log_contains
+      - step: log_contains
+        on: adp
         pattern: "Agent Data Plane running."
         timeout: 60s
-  - action: target_exec
-    command:
+  - step: exec
+    on: adp
+    argv:
       - "/opt/datadog-agent/embedded/bin/python3"
-      - "/dogstatsd-top/run_dogstatsd_top_test.py"
+      - "{{ adp.facts.files_dir }}/run_dogstatsd_top_test.py"
     timeout: 90s
-  - assertion: file_contains
+  - step: file_contains
+    on: adp
     path: "/tmp/dogstatsd-top-integration-result"
     pattern: "passed"
     timeout: 10s
   - parallel:
-      - assertion: process_stable_for
+      - step: process_stable_for
+        on: adp
         duration: 10s
-      - assertion: log_not_contains
+      - step: log_not_contains
+        on: adp
         pattern: "panic|PANIC"
         regex: true
         during: 10s

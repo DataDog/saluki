@@ -653,9 +653,27 @@ pub(crate) mod fixtures;
 #[cfg(test)]
 mod validation_tests;
 
-/// Plan identities used by daemon tests to find their resources after a failure.
+/// Plan assertions and resource identities for tests.
 #[cfg(any(test, feature = "test-util"))]
 pub mod test_support {
+    /// Checks the scheme of a direct HTTP request route.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the route is missing, indirect or has a different scheme.
+    #[track_caller]
+    pub fn assert_request_scheme<C>(plan: &super::CasePlan<C>, participant: &str, endpoint: &str, scheme: &str) {
+        let route = plan
+            .participants()
+            .expect("participant case")
+            .runner_host_route(participant, endpoint, crate::endpoint::EndpointOperation::Request)
+            .expect("planned request route");
+        let crate::endpoint::RunnerHostRoute::Direct(address) = route else {
+            panic!("expected a direct request route");
+        };
+        assert_eq!(address.url().split_once("://").unwrap().0, scheme);
+    }
+
     /// Returns the isolation-group label for a native case, or `None` for a typed case.
     pub fn scope_id<C>(plan: &super::CasePlan<C>) -> Option<String> {
         plan.participants().map(|plan| plan.scope().id())

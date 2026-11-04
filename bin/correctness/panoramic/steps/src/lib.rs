@@ -10,6 +10,7 @@ use panoramic_core::step::StepFactory;
 
 mod attempts;
 mod config_key_equals;
+mod exec;
 mod exits_with;
 mod file_contains;
 mod http_check;
@@ -30,6 +31,7 @@ pub use self::{
 /// Steps available to case files, sorted by name.
 pub const REGISTERED_STEPS: &[&dyn StepFactory] = &[
     &config_key_equals::ConfigKeyEqualsFactory,
+    &exec::ExecFactory,
     &exits_with::ExitsWithFactory,
     &file_contains::FileContainsFactory,
     &http_check::HttpCheckFactory,
@@ -94,7 +96,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        config_key_equals::ConfigKeyEquals, exits_with::ExitsWith, http_check::HttpCheck,
+        config_key_equals::ConfigKeyEquals, exec::Exec, exits_with::ExitsWith, http_check::HttpCheck,
         intake_has_forwarded_packets::IntakeHasForwardedPackets, intake_has_metric::IntakeHasMetric,
         port_listening::PortListening, process_stable_for::ProcessStableFor, send::Send, test_support::valid_fields,
     };
@@ -141,6 +143,7 @@ mod tests {
             names,
             [
                 "config_key_equals",
+                "exec",
                 "exits_with",
                 "file_contains",
                 "http_check",
@@ -165,6 +168,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             [
                 ConfigKeyEquals::NAME,
+                Exec::NAME,
                 ExitsWith::NAME,
                 FileContains::NAME,
                 HttpCheck::NAME,
@@ -180,7 +184,7 @@ mod tests {
     }
 
     #[test]
-    fn only_send_is_a_registered_action() {
+    fn exec_and_send_are_registered_actions() {
         assert_eq!(
             REGISTERED_STEPS
                 .iter()
@@ -188,6 +192,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             [
                 (ConfigKeyEquals::NAME, StepKind::Assertion),
+                (Exec::NAME, StepKind::Action),
                 (ExitsWith::NAME, StepKind::Assertion),
                 (FileContains::NAME, StepKind::Assertion),
                 (HttpCheck::NAME, StepKind::Assertion),
@@ -239,7 +244,7 @@ mod tests {
             let string_fields: &[&str] = match factory.name() {
                 ConfigKeyEquals::NAME => &["on", "key"],
                 IntakeHasMetric::NAME => &["on", "name"],
-                IntakeHasForwardedPackets::NAME => &["on"],
+                Exec::NAME | IntakeHasForwardedPackets::NAME => &["on"],
                 HttpCheck::NAME => &["on", "endpoint", "path", "pattern"],
                 Send::NAME => &["on", "endpoint", "payload"],
                 FileContains::NAME => &["on", "pattern", "path"],

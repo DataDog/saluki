@@ -6,13 +6,13 @@ use async_trait::async_trait;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-pub use crate::handle::{ExecCommand, ExecOutput, FileKind, FileStatus, HandleError, HttpResponse};
+pub use crate::handle::{ExecCommand, ExecOutput, FileKind, FileStatus, HandleError, HttpResponse, TlsVerification};
 pub use crate::observe::{ExitObservation, ExitStatus};
 use crate::{
     backend::LateFact,
     case::{template::Reference, StepTemplate},
     endpoint::{EndpointOperation, RunnerHostRoute},
-    handle::{http_get_from_runner_host, probe_from_runner_host, send_from_runner_host, Primitives},
+    handle::{http_get_with_from_runner_host, probe_from_runner_host, send_from_runner_host, Primitives},
     observe::{Capture, ParticipantExit, ParticipantObservation},
     participant::OpContext,
     plan::ParticipantPlan,
@@ -256,17 +256,30 @@ impl Handle<'_> {
         send_from_runner_host(route, self.primitives, payload, limits).await
     }
 
-    /// Gets an HTTP response through an endpoint's planned request route, bounded through completion of its body.
+    /// Gets an HTTP response with [`TlsVerification::Verify`], bounded through completion of its body.
     ///
     /// # Errors
     ///
-    /// Missing request needs, invalid requests and unsupported routes are harness errors.
+    /// Missing request needs, invalid requests, HTTPS verification and unsupported routes are harness errors.
     /// Connection failures, incomplete bodies and timeouts are product errors.
     pub async fn http_get(
         &self, endpoint: &str, path: &str, limits: &AttemptLimits,
     ) -> Result<HttpResponse, HandleError> {
+        self.http_get_with(endpoint, path, TlsVerification::Verify, limits)
+            .await
+    }
+
+    /// Gets an HTTP response with an explicit TLS verification policy.
+    ///
+    /// # Errors
+    ///
+    /// Missing request needs, invalid requests and unsupported routes or verification policies are harness errors.
+    /// Connection failures, incomplete bodies and timeouts are product errors.
+    pub async fn http_get_with(
+        &self, endpoint: &str, path: &str, verification: TlsVerification, limits: &AttemptLimits,
+    ) -> Result<HttpResponse, HandleError> {
         let route = self.route(endpoint, EndpointOperation::Request)?;
-        http_get_from_runner_host(route, path, limits).await
+        http_get_with_from_runner_host(route, path, verification, limits).await
     }
 
     fn route(&self, endpoint: &str, operation: EndpointOperation) -> Result<&RunnerHostRoute, HandleError> {

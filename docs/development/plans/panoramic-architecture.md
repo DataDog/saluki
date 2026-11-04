@@ -95,7 +95,7 @@ Use product `config_dump` output from CI runs to compare effective product confi
 
 | Suite | Files | Selected rows (subject OS / runtime) | Disabled rows | Assertions (subject OS) | Actions (subject OS) |
 | --- | --- | --- | --- | --- | --- |
-| integration | 52 | linux / linux: 37; linux / linux-container: 8; macos / mac: 31; windows / windows: 34 | 0 | linux: 192; macos: 130; windows: 144 | linux: 25; macos: 14; windows: 16 |
+| integration | 52 | linux / linux: 34; linux / linux-container: 11; macos / mac: 31; windows / windows: 34 | 0 | linux: 192; macos: 130; windows: 144 | linux: 25; macos: 14; windows: 16 |
 | correctness | 42 | linux / docker: 39; linux / kubernetes_in_docker: 7 | 2 | — | — |
 
 Total: 158 rows.
@@ -179,7 +179,7 @@ Total: 158 rows.
 | adp-disabled-exit | integration | linux | linux | selected | test-integration | integration | old | assertions: 1, actions: 0 | 0 |
 | adp-disabled-exit | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 1, actions: 0 | 0 |
 | adp-disabled-exit | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 1, actions: 0 | 0 |
-| adp-ipc-no-dns | integration | linux | linux | selected | test-integration | integration | old | assertions: 4, actions: 0 | 0 |
+| adp-ipc-no-dns | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 4, actions: 0 | 0 |
 | adp-logging-default-path | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 2, actions: 0 | 0 |
 | adp-logging-ignores-core-agent-log-file | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 3, actions: 0 | 0 |
 | adp-logging-mac-ignores-core-agent-log-file | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | old | assertions: 3, actions: 0 | 0 |
@@ -246,10 +246,10 @@ Total: 158 rows.
 | dogstatsd-require-listener-exit | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 3, actions: 0 | 0 |
 | dogstatsd-skip-failed-listener | integration | linux | linux | selected | test-integration | integration | old | assertions: 4, actions: 0 | 0 |
 | dogstatsd-skip-failed-listener | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 4, actions: 0 | 0 |
-| dogstatsd-top | integration | linux | linux | selected | test-integration | integration | old | assertions: 5, actions: 1 | 0 |
+| dogstatsd-top | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 5, actions: 1 | 0 |
 | dogstatsd-top-windows | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 5, actions: 1 | 0 |
 | liveness-container-tags | integration | linux | linux | selected | test-integration | integration | old | assertions: 4, actions: 1 | 0 |
-| otlp-tls | integration | linux | linux | selected | test-integration | integration | old | assertions: 3, actions: 1 | 0 |
+| otlp-tls | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 3, actions: 1 | 0 |
 | otlp-traces-enabled | integration | linux | linux | selected | test-integration | integration | old | assertions: 4, actions: 0 | 0 |
 | otlp-traces-enabled | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 4, actions: 0 | 0 |
 | otlp-traces-enabled | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 4, actions: 0 | 0 |
@@ -322,6 +322,22 @@ not translated:
   startup ordering. Assertion criteria remain unchanged.
 - Counts change from 12 assertions and no actions to 13 assertions and five actions.
 
+`adp-ipc-no-dns` uses native Linux execution. Its resolver-clearing hook is supplied through `cont-init.d/` and
+runs with a `50-` prefix instead of `01-`. The unused exposed UDP port is removed. Stability watches both ADP's
+and the Agent's exit records instead of container liveness. Environment, assertion count and timeout are unchanged.
+
+`otlp-tls` uses native Linux execution. Its PEM is supplied through `files/`, and the four certificate/key settings
+use the `files_dir` fact. The HTTP check reaches the named HTTPS endpoint through its assigned published port;
+explicit exposed ports are removed. The gRPC handshake command uses `exec`, with the same exit-code and timeout
+criteria; a failed execution mechanism now errors instead of failing. Stability watches both ADP's and the Agent's
+exit records. Assertion/action counts and timeouts are unchanged.
+
+`dogstatsd-top` uses native Linux execution. Its Python script and fixtures are supplied through `files/`, and the
+script locates fixtures next to itself. A listener-log regex replaces the UDP port probe, which could not prove a
+bind; non-local traffic remains disabled and the unused exposed UDP port is removed. The script uses `exec`, with
+the same exit-code and timeout criteria; execution-mechanism failures now error instead of failing. Stability
+watches both ADP's and the Agent's exit records. Assertion/action counts and timeouts are unchanged.
+
 ## Migration proofs
 
 When changing a case's schema or runner, add CI evidence per (case, subject OS, execution). Native rows may say
@@ -345,6 +361,9 @@ Link CI runs; don't copy their logs into the repository.
 | dogstatsd-forwarding | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `0a52942c17`. |
 | dogstatsd-host-tag | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `0a52942c17`. |
 | dogstatsd-intake-metric | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `0a52942c17`. |
+| adp-ipc-no-dns | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `d1efbab740`. |
+| otlp-tls | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `d1efbab740`. |
+| dogstatsd-top | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `d1efbab740`. |
 <!-- migration-proofs:end -->
 
 The macOS proofs carry a caveat: the integration runner's macOS host processes share the host's `/tmp`, and nothing

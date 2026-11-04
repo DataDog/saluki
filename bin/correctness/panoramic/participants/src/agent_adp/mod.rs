@@ -87,6 +87,10 @@ impl ParticipantType for AgentAdp {
         }
     }
 
+    fn config_files(&self) -> &'static [&'static str] {
+        &["cont-init.d/", "files/"]
+    }
+
     fn validate_config(&self, realization: Realization, config: &CaseValues) -> Result<(), String> {
         if matches!(
             (realization.os, realization.kind),
@@ -95,6 +99,8 @@ impl ParticipantType for AgentAdp {
             let mut env = linux::default_env();
             env.extend(config.env.clone());
             linux::endpoints(&env)?;
+        } else if !config.files.is_empty() {
+            return Err("agent-adp case files are supported in Linux containers only".into());
         }
         Ok(())
     }
@@ -126,10 +132,16 @@ impl ParticipantType for AgentAdp {
     /// Linux and Windows containers.
     fn facts(&self, realization: Realization) -> &'static [FactDeclaration] {
         match (realization.os, realization.kind) {
-            (Os::Linux, RealizationKind::LinuxContainer) => &[FactDeclaration {
-                name: "default_log_file",
-                value: "/var/log/datadog/agent-data-plane.log",
-            }],
+            (Os::Linux, RealizationKind::LinuxContainer) => &[
+                FactDeclaration {
+                    name: "default_log_file",
+                    value: "/var/log/datadog/agent-data-plane.log",
+                },
+                FactDeclaration {
+                    name: "files_dir",
+                    value: linux::FILES_DIR,
+                },
+            ],
             (Os::Windows, RealizationKind::WindowsContainer) => &[FactDeclaration {
                 name: "default_log_file",
                 value: r"C:\ProgramData\Datadog\logs\agent-data-plane.log",
@@ -269,12 +281,52 @@ mod tests {
     }
 
     #[test]
-    fn agent_adp_provides_default_log_file_for_its_linux_and_windows_containers_only() {
+    fn case_files_are_rejected_outside_linux_containers() {
+        for os in [Os::Linux, Os::MacOs, Os::Windows] {
+            for kind in [
+                RealizationKind::LinuxContainer,
+                RealizationKind::HostProcessGroup,
+                RealizationKind::WindowsContainer,
+                RealizationKind::KubernetesPod,
+            ] {
+                let realization = Realization { os, kind };
+                AgentAdp.validate_config(realization, &CaseValues::default()).unwrap();
+                for name in ["files/", "cont-init.d/"] {
+                    let config = CaseValues {
+                        files: BTreeMap::from([(
+                            name.into(),
+                            panoramic_core::case::FileSource {
+                                from: "case-files".into(),
+                                template: false,
+                            },
+                        )]),
+                        ..Default::default()
+                    };
+                    let result = AgentAdp.validate_config(realization, &config);
+                    if (os, kind) == (Os::Linux, RealizationKind::LinuxContainer) {
+                        result.unwrap();
+                    } else {
+                        assert_eq!(
+                            result.unwrap_err(),
+                            "agent-adp case files are supported in Linux containers only",
+                            "{os:?} {kind:?}: {name}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn agent_adp_provides_realization_specific_log_and_case_file_facts() {
         for (os, kind, expected) in [
             (
                 Os::Linux,
                 RealizationKind::LinuxContainer,
-                vec![("default_log_file", "/var/log/datadog/agent-data-plane.log")],
+                vec![
+                    ("default_log_file", "/var/log/datadog/agent-data-plane.log"),
+                    ("files_dir", "/var/lib/panoramic/files"),
+                ],
             ),
             (
                 Os::Windows,

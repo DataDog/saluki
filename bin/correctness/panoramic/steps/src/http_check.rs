@@ -8,7 +8,7 @@ use panoramic_core::{
     endpoint::EndpointOperation,
     probe::{AttemptLimits, POLL_INTERVAL},
     record::{AssertionStatus, StepReport},
-    step::{decode_fields, HandleError, Need, Step, StepContext, StepFactory, StepFields},
+    step::{decode_fields, HandleError, Need, Step, StepContext, StepFactory, StepFields, TlsVerification},
 };
 use serde::Deserialize;
 use tokio::time::{sleep_until, Instant};
@@ -31,6 +31,9 @@ struct Fields {
     /// Whether the body pattern is a regex. Defaults to false; true requires `pattern`.
     #[serde(default)]
     regex: bool,
+    /// Skips certificate and handshake-signature checks for HTTPS. Defaults to false; true requires HTTPS.
+    #[serde(default)]
+    insecure_skip_verify: bool,
     /// Required, positive time to wait for a match; has no default.
     timeout: CaseDuration,
 }
@@ -68,6 +71,7 @@ pub(crate) struct HttpCheck {
     path: String,
     status: StatusMatcher,
     matcher: Option<Matcher>,
+    verification: TlsVerification,
     timeout: Duration,
 }
 
@@ -115,7 +119,12 @@ impl Step for HttpCheck {
                 break;
             }
             match handle
-                .http_get(&self.endpoint, &self.path, &AttemptLimits::new(remaining))
+                .http_get_with(
+                    &self.endpoint,
+                    &self.path,
+                    self.verification,
+                    &AttemptLimits::new(remaining),
+                )
                 .await
             {
                 Ok(response) => {
@@ -182,6 +191,11 @@ impl StepFactory for HttpCheckFactory {
             path: fields.path,
             status: fields.status,
             matcher,
+            verification: if fields.insecure_skip_verify {
+                TlsVerification::Skip
+            } else {
+                TlsVerification::Verify
+            },
             timeout: fields.timeout.into(),
         }))
     }
@@ -189,7 +203,11 @@ impl StepFactory for HttpCheckFactory {
 
 #[cfg(test)]
 mod tests {
-    use panoramic_core::step::test_support::{run_step_reaching, run_step_with, FakeParticipant};
+    use std::sync::Arc;
+
+    use panoramic_core::step::test_support::{
+        run_step_reaching, run_step_reaching_tls, run_step_with, FakeParticipant,
+    };
     use serde_json::{json, Value};
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
@@ -233,6 +251,92 @@ mod tests {
             } => unreachable!(),
         };
         (report, requests)
+    }
+
+    #[tokio::test]
+    async fn http_check_skips_certificate_verification_over_tls_when_asked() {
+        let _ = saluki_tls::initialize_default_crypto_provider();
+        let certificate = saluki_tls::test_util::SelfSignedCert::new(["other.invalid"]);
+        let mut config =
+            rustls::ServerConfig::builder_with_provider(rustls::crypto::CryptoProvider::get_default().unwrap().clone())
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_no_client_auth()
+                .with_single_cert(certificate.cert_chain(), certificate.private_key())
+                .unwrap();
+        config.alpn_protocols = vec![b"http/1.1".to_vec()];
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let fake = FakeParticipant::default();
+        let mut fields = valid_fields(HttpCheck::NAME);
+        fields.insert("insecure_skip_verify".into(), json!(true));
+        fields.insert("status".into(), json!({"equal": 405}));
+        fields.insert("pattern".into(), json!("use POST"));
+        let responder = async {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut stream = acceptor.accept(stream).await.unwrap();
+            assert_eq!(stream.get_ref().1.alpn_protocol(), Some(b"http/1.1".as_slice()));
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                request.push(stream.read_u8().await.unwrap());
+            }
+            assert!(request.starts_with(b"GET /metrics HTTP/1.1\r\n"));
+            stream.write_all(&response(405, b"use POST")).await.unwrap();
+            stream.shutdown().await.unwrap();
+        };
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let (_, report) = tokio::join!(
+                responder,
+                run_step_reaching_tls(&HttpCheckFactory, &fields, &fake, port),
+            );
+            assert_eq!(report.status, AssertionStatus::Passed, "{}", report.message);
+            assert!(
+                report.message.ends_with("matched with status 405"),
+                "{}",
+                report.message
+            );
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn http_check_errors_on_https_without_insecure_skip_verify() {
+        let fake = FakeParticipant::default();
+        for skip in [None, Some(false)] {
+            let mut fields = valid_fields(HttpCheck::NAME);
+            if let Some(skip) = skip {
+                fields.insert("insecure_skip_verify".into(), json!(skip));
+            }
+            let report = run_step_reaching_tls(&HttpCheckFactory, &fields, &fake, 1).await;
+            assert_eq!(report.status, AssertionStatus::Errored, "{}", report.message);
+            assert_eq!(report.duration, Duration::from_secs(30));
+            assert!(
+                report
+                    .message
+                    .ends_with("last attempt: verifying an HTTPS endpoint's certificate is not supported"),
+                "{}",
+                report.message
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn http_check_errors_when_skipping_verification_on_plain_http() {
+        let fake = FakeParticipant::default();
+        let mut fields = valid_fields(HttpCheck::NAME);
+        fields.insert("insecure_skip_verify".into(), json!(true));
+        let report = run_step_reaching(&HttpCheckFactory, &fields, &fake, 1).await;
+        assert_eq!(report.status, AssertionStatus::Errored, "{}", report.message);
+        assert_eq!(report.duration, Duration::from_secs(30));
+        assert!(
+            report
+                .message
+                .ends_with("last attempt: skipping certificate verification requires an HTTPS endpoint"),
+            "{}",
+            report.message
+        );
     }
 
     #[tokio::test]
@@ -365,18 +469,22 @@ mod tests {
     }
 
     #[test]
-    fn the_http_step_requires_its_fields_and_rejects_tls_options() {
+    fn the_http_step_requires_its_fields_and_rejects_invalid_options() {
         for field in ["on", "endpoint", "path", "status", "timeout"] {
             let mut fields = valid_fields(HttpCheck::NAME);
             fields.remove(field).unwrap();
             let message = HttpCheckFactory.build(&fields).unwrap_err();
             assert!(message.contains(&format!("missing field `{field}`")), "{message}");
         }
-        for field in ["https", "insecure_skip_verify"] {
+        let mut fields = valid_fields(HttpCheck::NAME);
+        fields.insert("https".into(), json!(true));
+        let message = HttpCheckFactory.build(&fields).unwrap_err();
+        assert!(message.contains("unknown field `https`"), "{message}");
+        for value in [Value::Null, json!("true"), json!(1), json!({"skip": true})] {
             let mut fields = valid_fields(HttpCheck::NAME);
-            fields.insert(field.into(), json!(true));
+            fields.insert("insecure_skip_verify".into(), value);
             let message = HttpCheckFactory.build(&fields).unwrap_err();
-            assert!(message.contains(&format!("unknown field `{field}`")), "{message}");
+            assert!(message.contains("boolean"), "{message}");
         }
         for status in [
             Value::Null,

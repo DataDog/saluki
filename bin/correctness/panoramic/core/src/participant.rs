@@ -108,7 +108,9 @@ impl RenderedConfig {
         &self.env
     }
 
-    /// Case file contents keyed by their declared configuration names.
+    /// Case file contents in key order. A regular file uses its declared name as the key.
+    /// A directory named `d/` contributes its regular files recursively as `d/<relative path>`,
+    /// with `/` separators. Empty directories contribute nothing.
     pub fn files(&self) -> &BTreeMap<String, Vec<u8>> {
         &self.files
     }
@@ -287,6 +289,8 @@ pub trait ParticipantType: Send + Sync {
     }
 
     /// Names a case may supply under `config.files`. Defaults to none.
+    /// A name ending in `/` requires a directory source; every other name requires a regular file.
+    /// Directory sources cannot use `template: true`.
     fn config_files(&self) -> &'static [&'static str] {
         &[]
     }

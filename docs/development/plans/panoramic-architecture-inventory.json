@@ -1698,14 +1698,16 @@
       "name": "adp-ipc-no-dns",
       "suite": "integration",
       "subject_os": "linux",
-      "runtime": "linux",
+      "runtime": "linux-container",
       "source": "test/integration/cases/adp-ipc-no-dns/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/datadog-agent:testing-devel"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest"
       },
       "ci_jobs": [
         "test-integration"
@@ -2972,14 +2974,16 @@
       "name": "dogstatsd-top",
       "suite": "integration",
       "subject_os": "linux",
-      "runtime": "linux",
+      "runtime": "linux-container",
       "source": "test/integration/cases/dogstatsd-top/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "180s",
       "images": {
-        "container": "saluki-images/datadog-agent:testing-devel"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest"
       },
       "ci_jobs": [
         "test-integration"
@@ -3029,14 +3033,16 @@
       "name": "otlp-tls",
       "suite": "integration",
       "subject_os": "linux",
-      "runtime": "linux",
+      "runtime": "linux-container",
       "source": "test/integration/cases/otlp-tls/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/datadog-agent:testing-devel"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest"
       },
       "ci_jobs": [
         "test-integration"
@@ -6747,66 +6753,54 @@
     },
     "integration/adp-ipc-no-dns": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [],
-          "exposed_ports": [
-            "58125/udp"
-          ],
-          "files": [
-            "empty-resolv-conf.sh:/etc/cont-init.d/01-empty-resolv-conf.sh"
-          ],
-          "host_cgroup_namespace": false
-        },
-        "description": "Verifies ADP can start when /etc/resolv.conf has no nameservers",
-        "env": {
-          "DD_API_KEY": "00000000000000000000000000000000",
-          "DD_DATA_PLANE_DOGSTATSD_ENABLED": "false",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_OTLP_ENABLED": "true",
-          "DD_DATA_PLANE_OTLP_PROXY_ENABLED": "true",
-          "DD_DATA_PLANE_STANDALONE_MODE": "true",
-          "DD_HOSTNAME": "integration-test-ipc-no-dns"
-        },
-        "intake": {
-          "enabled": false
-        },
-        "name": "adp-ipc-no-dns",
-        "procedure": [
-          {
-            "parallel": [
-              {
-                "assertion": "process_stable_for",
-                "duration": "10s"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "false",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_OTLP_ENABLED": "true",
+                "DD_DATA_PLANE_OTLP_PROXY_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "true",
+                "DD_HOSTNAME": "integration-test-ipc-no-dns"
               },
-              {
-                "assertion": "log_contains",
-                "pattern": "Topology healthy",
-                "regex": false,
-                "stream": "both",
-                "timeout": "60s"
-              },
-              {
-                "assertion": "log_not_contains",
-                "during": "10s",
-                "pattern": "Failed to load system DNS configuration when creating DNS resolver for HTTP client",
-                "regex": false,
-                "stream": "both"
-              },
-              {
-                "assertion": "log_not_contains",
-                "during": "10s",
-                "pattern": "panic|PANIC",
-                "regex": true,
-                "stream": "both"
-              }
-            ]
-          }
-        ],
-        "runtimes": [
-          "linux"
-        ],
-        "timeout": "120s"
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "on": "adp",
+                  "pattern": "Topology healthy",
+                  "step": "log_contains",
+                  "timeout": "60s"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "Failed to load system DNS configuration when creating DNS resolver for HTTP client",
+                  "step": "log_not_contains"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        }
       },
       "steps": {
         "single_assertions": 0,
@@ -9282,84 +9276,73 @@
     },
     "integration/dogstatsd-top": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [],
-          "exposed_ports": [
-            "58125/udp"
-          ],
-          "files": [
-            "run_dogstatsd_top_test.py:/dogstatsd-top/run_dogstatsd_top_test.py",
-            "agent-7.80.3-contexts.json.zstd:/dogstatsd-top/agent-7.80.3-contexts.json.zstd",
-            "agent-7.80.3-contexts.ndjson:/dogstatsd-top/agent-7.80.3-contexts.ndjson"
-          ],
-          "host_cgroup_namespace": false
-        },
-        "description": "Verifies retained DogStatsD contexts through the privileged API, online CLI, and offline Agent-compatible artifact",
-        "env": {
-          "DD_API_KEY": "00000000000000000000000000000000",
-          "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_STANDALONE_MODE": "false",
-          "DD_HOSTNAME": "integration-test-dogstatsd-top"
-        },
-        "intake": {
-          "enabled": false
-        },
-        "name": "dogstatsd-top",
-        "procedure": [
-          {
-            "parallel": [
-              {
-                "assertion": "port_listening",
-                "port": 58125,
-                "protocol": "udp",
-                "timeout": "60s"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_HOSTNAME": "integration-test-dogstatsd-top"
               },
-              {
-                "assertion": "log_contains",
-                "pattern": "Agent Data Plane running.",
-                "regex": false,
-                "stream": "both",
-                "timeout": "60s"
-              }
-            ]
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
           },
-          {
-            "action": "target_exec",
-            "command": [
-              "/opt/datadog-agent/embedded/bin/python3",
-              "/dogstatsd-top/run_dogstatsd_top_test.py"
-            ],
-            "timeout": "90s"
-          },
-          {
-            "assertion": "file_contains",
-            "path": "/tmp/dogstatsd-top-integration-result",
-            "pattern": "passed",
-            "regex": false,
-            "timeout": "10s"
-          },
-          {
-            "parallel": [
-              {
-                "assertion": "process_stable_for",
-                "duration": "10s"
-              },
-              {
-                "assertion": "log_not_contains",
-                "during": "10s",
-                "pattern": "panic|PANIC",
-                "regex": true,
-                "stream": "both"
-              }
-            ]
-          }
-        ],
-        "runtimes": [
-          "linux"
-        ],
-        "timeout": "180s"
+          "procedure": [
+            {
+              "parallel": [
+                {
+                  "on": "adp",
+                  "pattern": "listen_addr:\"udp://[^\"]+:58125\" \\| DogStatsD listener started\\.",
+                  "regex": true,
+                  "step": "log_contains",
+                  "timeout": "60s"
+                },
+                {
+                  "on": "adp",
+                  "pattern": "Agent Data Plane running.",
+                  "step": "log_contains",
+                  "timeout": "60s"
+                }
+              ]
+            },
+            {
+              "argv": [
+                "/opt/datadog-agent/embedded/bin/python3",
+                "{{ adp.facts.files_dir }}/run_dogstatsd_top_test.py"
+              ],
+              "on": "adp",
+              "step": "exec",
+              "timeout": "90s"
+            },
+            {
+              "on": "adp",
+              "path": "/tmp/dogstatsd-top-integration-result",
+              "pattern": "passed",
+              "step": "file_contains",
+              "timeout": "10s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        }
       },
       "steps": {
         "single_assertions": 1,
@@ -9367,12 +9350,11 @@
         "parallel_assertions": 4,
         "actions": 1,
         "by_kind": {
+          "exec": 1,
           "file_contains": 1,
-          "log_contains": 1,
+          "log_contains": 2,
           "log_not_contains": 1,
-          "port_listening": 1,
-          "process_stable_for": 1,
-          "target_exec": 1
+          "process_stable_for": 1
         }
       },
       "ignored_fields": []
@@ -9564,75 +9546,67 @@
     },
     "integration/otlp-tls": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [],
-          "exposed_ports": [
-            "56317/tcp",
-            "56318/tcp"
-          ],
-          "files": [
-            "server.pem:/tmp/otlp-tls/server.pem"
-          ],
-          "host_cgroup_namespace": false
-        },
-        "description": "Verifies OTLP receiver serves TLS over gRPC and HTTP with cert_file and key_file",
-        "env": {
-          "DD_API_KEY": "test-api-key",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_OTLP_ENABLED": "true",
-          "DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY": "0.0.0.0:56317",
-          "DD_DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY": "0.0.0.0:56318",
-          "DD_DATA_PLANE_STANDALONE_MODE": "true",
-          "DD_HOSTNAME": "integration-test-otlp-tls",
-          "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CERT_FILE": "/tmp/otlp-tls/server.pem",
-          "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_KEY_FILE": "/tmp/otlp-tls/server.pem",
-          "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CERT_FILE": "/tmp/otlp-tls/server.pem",
-          "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_KEY_FILE": "/tmp/otlp-tls/server.pem"
-        },
-        "intake": {
-          "enabled": false
-        },
-        "name": "otlp-tls",
-        "procedure": [
-          {
-            "assertion": "http_check",
-            "endpoint": "https://localhost:56318/v1/metrics",
-            "insecure_skip_verify": true,
-            "status": {
-              "equal": 405
-            },
-            "timeout": "60s"
-          },
-          {
-            "action": "target_exec",
-            "command": [
-              "sh",
-              "-c",
-              "printf '' | openssl s_client -connect 127.0.0.1:56317 -alpn h2 -CAfile /tmp/otlp-tls/server.pem -verify_return_error 2>&1 | grep -q 'Verify return code: 0 (ok)'"
-            ],
-            "timeout": "30s"
-          },
-          {
-            "parallel": [
-              {
-                "assertion": "process_stable_for",
-                "duration": "10s"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "test-api-key",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_OTLP_ENABLED": "true",
+                "DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY": "0.0.0.0:56317",
+                "DD_DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY": "0.0.0.0:56318",
+                "DD_DATA_PLANE_STANDALONE_MODE": "true",
+                "DD_HOSTNAME": "integration-test-otlp-tls",
+                "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CERT_FILE": "/var/lib/panoramic/files/server.pem",
+                "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_KEY_FILE": "/var/lib/panoramic/files/server.pem",
+                "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CERT_FILE": "/var/lib/panoramic/files/server.pem",
+                "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_KEY_FILE": "/var/lib/panoramic/files/server.pem"
               },
-              {
-                "assertion": "log_not_contains",
-                "during": "10s",
-                "pattern": "panic|PANIC",
-                "regex": true,
-                "stream": "both"
-              }
-            ]
-          }
-        ],
-        "runtimes": [
-          "linux"
-        ],
-        "timeout": "120s"
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "endpoint": "otlp_http",
+              "insecure_skip_verify": true,
+              "on": "adp",
+              "path": "/v1/metrics",
+              "status": {
+                "equal": 405
+              },
+              "step": "http_check",
+              "timeout": "60s"
+            },
+            {
+              "argv": [
+                "sh",
+                "-c",
+                "printf '' | openssl s_client -connect 127.0.0.1:56317 -alpn h2 -CAfile {{ adp.facts.files_dir }}/server.pem -verify_return_error 2>&1 | grep -q 'Verify return code: 0 (ok)'"
+              ],
+              "on": "adp",
+              "step": "exec",
+              "timeout": "30s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        }
       },
       "steps": {
         "single_assertions": 1,
@@ -9640,10 +9614,10 @@
         "parallel_assertions": 2,
         "actions": 1,
         "by_kind": {
+          "exec": 1,
           "http_check": 1,
           "log_not_contains": 1,
-          "process_stable_for": 1,
-          "target_exec": 1
+          "process_stable_for": 1
         }
       },
       "ignored_fields": []

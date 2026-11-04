@@ -17,6 +17,7 @@ use serde_json::Value;
 use super::AgentAdp;
 
 const ADP_CLI_BINARY_PATH: &str = "/opt/datadog-agent/embedded/bin/agent-data-plane";
+pub(super) const FILES_DIR: &str = "/var/lib/panoramic/files";
 
 pub(super) const OPERATIONS: &[&dyn Operation] = &[&ConfigDump];
 
@@ -251,6 +252,18 @@ pub(super) fn endpoints(env: &BTreeMap<String, String>) -> Result<BTreeMap<Strin
             }
             owner => owner,
         };
+        let tls = if listener.name == "otlp_http" {
+            let (cert_key, cert) = env.value(owner, "OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CERT_FILE", "");
+            let (key_key, key) = env.value(owner, "OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_KEY_FILE", "");
+            if cert.is_empty() != key.is_empty() {
+                return Err(format!(
+                    "{cert_key} and {key_key} must both be nonempty to enable OTLP HTTP TLS, or both empty"
+                ));
+            }
+            !cert.is_empty()
+        } else {
+            false
+        };
         let (key, value) = env.value(owner, listener.key, listener.default);
         let invalid = |reason: &str| format!("{key}='{value}' {reason}");
         let endpoint = match listener.value {
@@ -363,6 +376,7 @@ pub(super) fn endpoints(env: &BTreeMap<String, String>) -> Result<BTreeMap<Strin
                 }
             }
         };
+        let endpoint = if tls { endpoint.with_tls() } else { endpoint };
         endpoints.insert(listener.name.into(), endpoint);
     }
     Ok(endpoints)
@@ -459,10 +473,22 @@ const SERVICES: [Service; 2] = [
 pub(super) const PROCESS_SPECS: [ProcessSpec; 2] = [SERVICES[0].process_spec(), SERVICES[1].process_spec()];
 
 pub(super) fn recipe(config: &RenderedConfig) -> Result<Recipe, String> {
-    if !config.files().is_empty() {
-        return Err("agent-adp does not accept case configuration files".into());
-    }
     let mut recipe = ContainerRecipe::new(AgentAdp::LINUX_IMAGE).with_env(config.env().clone());
+    for (name, contents) in config.files() {
+        let (path, mode) = if let Some(relative) = name.strip_prefix("files/") {
+            (format!("{FILES_DIR}/{relative}"), 0o644)
+        } else if let Some(hook) = name.strip_prefix("cont-init.d/") {
+            if hook.contains('/') {
+                return Err(format!("agent-adp cont-init.d hook '{name}' must not be nested"));
+            }
+            (format!("/etc/cont-init.d/50-{hook}"), 0o755)
+        } else {
+            return Err(format!(
+                "internal error: agent-adp received undeclared configuration file '{name}'"
+            ));
+        };
+        recipe = recipe.with_file(path, mode, contents.clone());
+    }
     for service in &SERVICES {
         let prefix = format!(
             r"#!/usr/bin/execlineb -S1
@@ -520,7 +546,7 @@ fn body(script: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use panoramic_core::{
-        endpoint::test_support::{assert_network_endpoint, assert_socket_endpoint, http_address},
+        endpoint::test_support::{assert_network_endpoint, assert_socket_endpoint, assert_tls_endpoint, http_address},
         layout::{Os, Realization, RealizationKind},
         participant::{test_support::run_operation, CaseValues, EffectiveConfig, ParticipantType},
         recipe::test_support::{assert_image_recipe, files, rendered},
@@ -1078,6 +1104,169 @@ mod tests {
     }
 
     #[test]
+    fn otlp_http_uses_https_when_its_tls_certificate_and_key_are_set() {
+        for prefix in ["DD_", "ADP_DD_"] {
+            let cert = format!("{prefix}OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CERT_FILE");
+            let key = format!("{prefix}OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_KEY_FILE");
+            let config = otlp_config(&[(&cert, "/cert.pem"), (&key, "/key.pem")]);
+            AgentAdp
+                .validate_config(
+                    LINUX,
+                    &CaseValues {
+                        env: config.env.clone(),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            let endpoints = AgentAdp.endpoints(LINUX, &config).unwrap();
+            assert_network_endpoint(
+                &endpoints["otlp_http"],
+                EndpointKind::Http,
+                56318,
+                Some(Evidence::tcp_accepts("otlp_http")),
+            );
+            assert_tls_endpoint(&endpoints["otlp_http"], true);
+            assert_tls_endpoint(&endpoints["otlp_grpc"], false);
+            assert_tls_endpoint(&endpoints["api"], false);
+        }
+    }
+
+    #[test]
+    fn otlp_http_stays_plain_without_http_tls_keys() {
+        for overrides in [
+            vec![],
+            vec![
+                ("DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CERT_FILE", ""),
+                ("DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_KEY_FILE", ""),
+            ],
+            vec![
+                ("ADP_DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CERT_FILE", ""),
+                ("ADP_DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_KEY_FILE", ""),
+            ],
+            vec![
+                ("DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CERT_FILE", "/cert.pem"),
+                ("DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_KEY_FILE", "/key.pem"),
+            ],
+            vec![
+                ("ADP_DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CERT_FILE", "/cert.pem"),
+                ("ADP_DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_KEY_FILE", "/key.pem"),
+            ],
+        ] {
+            let endpoints = AgentAdp.endpoints(LINUX, &otlp_config(&overrides)).unwrap();
+            assert_tls_endpoint(&endpoints["otlp_http"], false);
+            assert_tls_endpoint(&endpoints["otlp_grpc"], false);
+        }
+    }
+
+    #[test]
+    fn one_otlp_http_tls_key_alone_is_a_configuration_error() {
+        for prefix in ["DD_", "ADP_DD_"] {
+            let cert_key = format!("{prefix}OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CERT_FILE");
+            let key_key = format!("{prefix}OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_KEY_FILE");
+            for (cert, key) in [
+                (Some("/cert.pem"), None),
+                (None, Some("/key.pem")),
+                (Some("/cert.pem"), Some("")),
+                (Some(""), Some("/key.pem")),
+            ] {
+                for address in ["0.0.0.0:56318", "127.0.0.1:56318", "0.0.0.0:0"] {
+                    let mut config = otlp_config(&[("DD_DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY", address)]);
+                    for (name, value) in [(&cert_key, cert), (&key_key, key)] {
+                        if let Some(value) = value {
+                            config.env.insert(name.clone(), value.into());
+                        }
+                    }
+                    let error = AgentAdp
+                        .validate_config(
+                            LINUX,
+                            &CaseValues {
+                                env: config.env.clone(),
+                                ..Default::default()
+                            },
+                        )
+                        .unwrap_err();
+                    assert!(
+                        error.contains("OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CERT_FILE"),
+                        "{error}"
+                    );
+                    assert!(
+                        error.contains("OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_KEY_FILE"),
+                        "{error}"
+                    );
+                    assert_eq!(AgentAdp.endpoints(LINUX, &config).unwrap_err(), error);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn otlp_http_tls_prefers_adp_overrides_including_empty_values() {
+        for (dd_cert, dd_key, adp_cert, adp_key, expected) in [
+            (None, None, None, None, Some(false)),
+            (Some("cert"), Some("key"), None, None, Some(true)),
+            (Some(""), Some(""), Some("cert"), Some("key"), Some(true)),
+            (Some("cert"), Some("key"), Some(""), Some(""), Some(false)),
+            (Some("cert"), Some("key"), Some("adp-cert"), Some("adp-key"), Some(true)),
+            (Some(""), Some("key"), Some("adp-cert"), None, Some(true)),
+            (Some("cert"), Some(""), None, Some("adp-key"), Some(true)),
+            (None, Some("key"), Some("adp-cert"), None, Some(true)),
+            (Some("cert"), None, None, Some("adp-key"), Some(true)),
+            (Some("cert"), None, Some(""), None, Some(false)),
+            (None, Some("key"), None, Some(""), Some(false)),
+            (Some("cert"), Some("key"), Some(""), None, None),
+            (Some("cert"), Some("key"), None, Some(""), None),
+            (Some("cert"), Some("key"), Some("adp-cert"), Some(""), None),
+            (Some("cert"), Some("key"), Some(""), Some("adp-key"), None),
+        ] {
+            let mut config = otlp_config(&[]);
+            for (name, value) in [
+                ("DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CERT_FILE", dd_cert),
+                ("DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_KEY_FILE", dd_key),
+                ("ADP_DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CERT_FILE", adp_cert),
+                ("ADP_DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_KEY_FILE", adp_key),
+            ] {
+                if let Some(value) = value {
+                    config.env.insert(name.into(), value.into());
+                }
+            }
+            let result = AgentAdp.endpoints(LINUX, &config);
+            match expected {
+                Some(tls) => assert_tls_endpoint(&result.unwrap()["otlp_http"], tls),
+                None => {
+                    let error = result.unwrap_err();
+                    let cert_prefix = if adp_cert.is_some() { "ADP_DD_" } else { "DD_" };
+                    let key_prefix = if adp_key.is_some() { "ADP_DD_" } else { "DD_" };
+                    assert_eq!(
+                        error,
+                        format!(
+                            "{cert_prefix}OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CERT_FILE and \
+                             {key_prefix}OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_KEY_FILE must both be nonempty \
+                             to enable OTLP HTTP TLS, or both empty"
+                        )
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn disabled_otlp_ignores_http_tls_configuration() {
+        for overrides in [
+            vec![("DD_DATA_PLANE_ENABLED", "false")],
+            vec![("DD_DATA_PLANE_OTLP_ENABLED", "false")],
+            vec![("ADP_DD_DATA_PLANE_OTLP_ENABLED", "false")],
+        ] {
+            let mut config = otlp_config(&overrides);
+            config.env.insert(
+                "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CERT_FILE".into(),
+                "cert.pem".into(),
+            );
+            let endpoints = AgentAdp.endpoints(LINUX, &config).unwrap();
+            assert!(!endpoints.contains_key("otlp_http"));
+        }
+    }
+
+    #[test]
     fn otlp_addresses_and_enablement_prefer_adp_overrides() {
         let config = otlp_config(&[
             ("DD_DATA_PLANE_OTLP_ENABLED", "invalid"),
@@ -1389,6 +1578,49 @@ mod tests {
     }
 
     #[test]
+    fn case_directories_land_under_files_dir_and_cont_init_d() {
+        let config = rendered(
+            config(&[]).env,
+            BTreeMap::from([
+                ("files/server.pem".into(), b"certificate".to_vec()),
+                ("files/nested/data.txt".into(), b"data".to_vec()),
+                (
+                    "cont-init.d/empty-resolv-conf.sh".into(),
+                    b"#!/bin/sh\n: > /etc/resolv.conf\n".to_vec(),
+                ),
+            ]),
+        );
+        let recipe = AgentAdp.recipe(LINUX, &config).unwrap();
+        assert_image_recipe(&recipe, AgentAdp::LINUX_IMAGE, config.env());
+        let files = files(&recipe);
+        assert_eq!(files.len(), 9);
+        for expected in [
+            ("/var/lib/panoramic/files/server.pem", 0o644, b"certificate".as_slice()),
+            ("/var/lib/panoramic/files/nested/data.txt", 0o644, b"data".as_slice()),
+            (
+                "/etc/cont-init.d/50-empty-resolv-conf.sh",
+                0o755,
+                b"#!/bin/sh\n: > /etc/resolv.conf\n".as_slice(),
+            ),
+        ] {
+            assert!(files.contains(&expected), "missing {expected:?}");
+        }
+    }
+
+    #[test]
+    fn a_nested_cont_init_hook_is_rejected() {
+        let name = "cont-init.d/nested/hook.sh";
+        let config = rendered(
+            BTreeMap::new(),
+            BTreeMap::from([(name.into(), b"#!/bin/sh\n".to_vec())]),
+        );
+        assert_eq!(
+            AgentAdp.recipe(LINUX, &config).err().unwrap(),
+            format!("agent-adp cont-init.d hook '{name}' must not be nested")
+        );
+    }
+
+    #[test]
     fn service_script_bodies_drop_the_shebang_and_crlf_line_endings() {
         assert_eq!(body(b"#!/bin/sh\r\nfoo\r\nbar\rbaz\n"), b"foo\nbar\rbaz\n");
     }
@@ -1431,7 +1663,7 @@ ifthenelse
 "#
         );
         assert_eq!(AgentAdp.artifacts(LINUX), &[AgentAdp::LINUX_IMAGE]);
-        assert!(AgentAdp.config_files().is_empty());
+        assert_eq!(AgentAdp.config_files(), ["cont-init.d/", "files/"]);
         assert_eq!(AgentAdp.processes(), ["adp", "agent"]);
         for (service, spec) in SERVICES.iter().zip(AgentAdp.process_specs(LINUX)) {
             assert_eq!(spec.name, service.process);
@@ -1472,7 +1704,7 @@ ifthenelse
         let config = rendered(BTreeMap::new(), BTreeMap::from([("settings".into(), b"data".to_vec())]));
         assert_eq!(
             AgentAdp.recipe(LINUX, &config).err().unwrap(),
-            "agent-adp does not accept case configuration files"
+            "internal error: agent-adp received undeclared configuration file 'settings'"
         );
     }
 }

@@ -25,8 +25,8 @@ use crate::{
 /// parameter key syntax then declarations, OS overlays (reachable OS, file names and sources, parameter key syntax
 /// then declarations), connection targets (existing participant), and configuration reference syntax
 /// and names (base, then overlays; `env`, `params`, then template files). Sources must be nonempty relative paths
-/// within the case directory that resolve to existing files or directories. Template sources must be regular UTF-8 files;
-/// each template source is read and parsed once. Other sources are not read.
+/// within the case directory. Names ending in `/` require directories; other names require regular files.
+/// Template sources must be regular UTF-8 files; each is read and parsed once. Other sources are not read.
 /// Map keys and overlay OSes are checked in sorted order. Every error names the case and source.
 pub(super) fn check_participants(
     file: &CaseFile, subject_os: &BTreeSet<Os>, types: &[&dyn ParticipantType], name: &str, source: &Path,
@@ -158,8 +158,8 @@ pub(super) fn check_participants(
     Ok(templates)
 }
 
-/// Checks source paths stay within the case directory and exist. Symlink targets may be outside it.
-/// Reads only `template: true` sources, requiring regular UTF-8 files and caching each path in `sources` once.
+/// Checks source paths and declared kinds, following top-level symlinks even outside the case directory.
+/// Reads only `template: true` files, requiring UTF-8 and caching each path in `sources` once.
 fn check_file_sources(
     files: &BTreeMap<String, FileSource>, case_dir: &Path, holder: &str, suffix: &str,
     sources: &mut BTreeMap<PathBuf, String>,
@@ -192,6 +192,12 @@ fn check_file_sources(
                 "{holder} supplies configuration file '{name}'{suffix} from '{from}', which leaves the case directory"
             ));
         }
+        let directory = name.ends_with('/');
+        if directory && source.template {
+            return Err(format!(
+                "{holder} supplies configuration directory '{name}'{suffix} from '{from}' with 'template: true'; only a regular file can be a template"
+            ));
+        }
         let path = case_dir.join(&source.from);
         let metadata = std::fs::metadata(&path).map_err(|_| {
             format!(
@@ -199,17 +205,17 @@ fn check_file_sources(
                 path.display()
             )
         })?;
+        if directory && !metadata.is_dir() {
+            return Err(format!(
+                "{holder} supplies configuration directory '{name}'{suffix} from '{from}', which is not a directory"
+            ));
+        }
+        if !directory && !metadata.is_file() {
+            return Err(format!(
+                "{holder} supplies configuration file '{name}'{suffix} from '{from}', which is not a regular file"
+            ));
+        }
         if source.template {
-            if metadata.is_dir() {
-                return Err(format!(
-                    "{holder} supplies configuration file '{name}'{suffix} from directory '{from}' with 'template: true'; only a file can be a template"
-                ));
-            }
-            if !metadata.is_file() {
-                return Err(format!(
-                    "{holder} supplies configuration file '{name}'{suffix} from '{from}' with 'template: true', which is not a regular file"
-                ));
-            }
             if let Entry::Vacant(entry) = sources.entry(source.from.clone()) {
                 let bytes = std::fs::read(&path).map_err(|error| {
                     format!(
@@ -283,7 +289,7 @@ mod tests {
         }
 
         fn config_files(&self) -> &'static [&'static str] {
-            &["settings.yaml"]
+            &["files/", "settings.yaml"]
         }
 
         fn params(&self) -> &'static [&'static str] {
@@ -535,8 +541,11 @@ mod tests {
         "fixture-participants",
     );
 
-    fn file_case(from: &Path, overlay: bool) -> String {
-        let config = format!("{{files: {{settings.yaml: {}}}}}", serde_json::to_string(from).unwrap());
+    fn file_case(name: &str, from: &Path, template: bool, overlay: bool) -> String {
+        let config = format!(
+            "{{files: {{{name}: {{from: {}, template: {template}}}}}}}",
+            serde_json::to_string(from).unwrap(),
+        );
         let config = if overlay {
             format!("{{os: {{linux: {config}}}}}")
         } else {
@@ -570,7 +579,7 @@ mod tests {
                 #[cfg(unix)]
                 "dangling.yaml",
             ] {
-                let yaml = file_case(Path::new(from), overlay);
+                let yaml = file_case("settings.yaml", Path::new(from), false, overlay);
                 let message = FILE_LOADER
                     .load_content(&yaml, "alpha", &source)
                     .err()
@@ -583,16 +592,122 @@ mod tests {
             }
             for from in [
                 "settings.yaml",
-                "scripts",
                 "scripts/../settings.yaml",
                 #[cfg(unix)]
                 "linked.yaml",
             ] {
-                let yaml = file_case(Path::new(from), overlay);
+                let yaml = file_case("settings.yaml", Path::new(from), false, overlay);
                 std::fs::write(&source, yaml).unwrap();
                 let cases = FILE_LOADER.load_file(&source).unwrap();
                 assert_eq!(cases.len(), 1);
                 assert_eq!(cases[0].source(), source);
+            }
+        }
+    }
+
+    #[test]
+    fn a_directory_name_requires_a_directory_source_and_a_file_name_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = write_case(dir.path(), "alpha", "");
+        let case_dir = source.parent().unwrap();
+        std::fs::write(case_dir.join("input"), "").unwrap();
+        std::fs::create_dir(case_dir.join("directory")).unwrap();
+
+        for overlay in [false, true] {
+            let suffix = if overlay { " in its 'linux' overlay" } else { "" };
+            for (name, from, template, reason) in [
+                ("files/", "directory", false, None),
+                ("settings.yaml", "input", false, None),
+                ("settings.yaml", "input", true, None),
+                ("files/", "input", false, Some("directory")),
+                ("settings.yaml", "directory", false, Some("regular file")),
+                ("settings.yaml", "directory", true, Some("regular file")),
+            ] {
+                let yaml = file_case(name, Path::new(from), template, overlay);
+                let loaded = FILE_LOADER.load_content(&yaml, "alpha", &source);
+                if let Some(reason) = reason {
+                    let kind = if name.ends_with('/') { "directory" } else { "file" };
+                    assert_eq!(
+                        loaded.err().unwrap().to_string(),
+                        format!(
+                            "case 'alpha' in {}: participant 'subject' supplies configuration {kind} '{name}'{suffix} from '{from}', which is not a {reason}",
+                            source.display(),
+                        ),
+                    );
+                } else {
+                    assert_eq!(loaded.unwrap().len(), 1);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_template_directory_source_fails_to_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = write_case(dir.path(), "alpha", "");
+        let case_dir = source.parent().unwrap();
+        std::fs::write(case_dir.join("input"), "").unwrap();
+        std::fs::create_dir(case_dir.join("directory")).unwrap();
+
+        for overlay in [false, true] {
+            let suffix = if overlay { " in its 'linux' overlay" } else { "" };
+            for from in ["directory", "input", "missing"] {
+                let yaml = file_case("files/", Path::new(from), true, overlay);
+                assert_eq!(
+                    FILE_LOADER.load_content(&yaml, "alpha", &source).err().unwrap().to_string(),
+                    format!(
+                        "case 'alpha' in {}: participant 'subject' supplies configuration directory 'files/'{suffix} from '{from}' with 'template: true'; only a regular file can be a template",
+                        source.display(),
+                    ),
+                );
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn configuration_sources_follow_top_level_symlinks_to_files_and_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = write_case(dir.path(), "alpha", "");
+        let case_dir = source.parent().unwrap();
+        std::fs::create_dir(dir.path().join("external")).unwrap();
+        std::fs::write(dir.path().join("external/input"), "").unwrap();
+        std::os::unix::fs::symlink("../external", case_dir.join("directory")).unwrap();
+        std::os::unix::fs::symlink("../external/input", case_dir.join("input")).unwrap();
+        for overlay in [false, true] {
+            for (name, from, template) in [
+                ("files/", "directory", false),
+                ("settings.yaml", "input", false),
+                ("settings.yaml", "input", true),
+            ] {
+                let yaml = file_case(name, Path::new(from), template, overlay);
+                let loaded = FILE_LOADER.load_content(&yaml, "alpha", &source).unwrap();
+                assert_eq!(loaded.len(), 1);
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn special_configuration_sources_fail_to_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = write_case(dir.path(), "alpha", "");
+        let _socket = std::os::unix::net::UnixListener::bind(source.parent().unwrap().join("socket")).unwrap();
+        for overlay in [false, true] {
+            let suffix = if overlay { " in its 'linux' overlay" } else { "" };
+            for (name, template, kind, reason) in [
+                ("files/", false, "directory", "directory"),
+                ("settings.yaml", false, "file", "regular file"),
+                ("settings.yaml", true, "file", "regular file"),
+            ] {
+                let yaml = file_case(name, Path::new("socket"), template, overlay);
+                assert_eq!(
+                    FILE_LOADER.load_content(&yaml, "alpha", &source).err().unwrap().to_string(),
+                    format!(
+                        "case 'alpha' in {}: participant 'subject' supplies configuration {kind} '{name}'{suffix} from 'socket', which is not a {reason}",
+                        source.display(),
+                    ),
+                );
             }
         }
     }
@@ -604,7 +719,7 @@ mod tests {
         let from = source.parent().unwrap().join("settings.yaml");
         std::fs::write(&from, "").unwrap();
         for overlay in [false, true] {
-            let yaml = file_case(&from, overlay);
+            let yaml = file_case("settings.yaml", &from, false, overlay);
             let suffix = if overlay { " in its 'linux' overlay" } else { "" };
             let message = FILE_LOADER
                 .load_content(&yaml, "alpha", &source)
@@ -627,7 +742,7 @@ mod tests {
         for overlay in [false, true] {
             let suffix = if overlay { " in its 'linux' overlay" } else { "" };
             for from in ["", "..", "../outside.yaml", "nested/../../outside.yaml"] {
-                let yaml = file_case(Path::new(from), overlay);
+                let yaml = file_case("settings.yaml", Path::new(from), false, overlay);
                 let message = FILE_LOADER
                     .load_content(&yaml, "alpha", &source)
                     .err()
@@ -894,15 +1009,14 @@ mod tests {
     }
 
     #[test]
-    fn template_sources_must_be_files_but_other_sources_are_not_read() {
+    fn regular_file_sources_are_read_at_load_only_when_templated() {
         let dir = tempfile::tempdir().unwrap();
         let loader = loader();
         let source = write_case(dir.path(), "alpha", &template_case("{}"));
-        std::fs::create_dir(source.parent().unwrap().join("directory")).unwrap();
         std::fs::write(source.parent().unwrap().join("binary"), [0xff, 0xfe]).unwrap();
         std::fs::write(source.parent().unwrap().join("literal"), "{{ x").unwrap();
         std::fs::write(source.parent().unwrap().join("empty"), "").unwrap();
-        for from in ["directory", "binary", "literal", "empty"] {
+        for from in ["binary", "literal", "empty"] {
             let config = format!("{{files: {{settings.yaml: {from}}}}}");
             let loaded = loader.load_content(&template_case(&config), "alpha", &source).unwrap();
             assert_eq!(loaded.len(), 1);
@@ -911,37 +1025,6 @@ mod tests {
         let config = "{files: {settings.yaml: {from: empty, template: true}}}";
         let loaded = loader.load_content(&template_case(config), "alpha", &source).unwrap();
         assert_eq!(loaded[0].file_templates().get(Path::new("empty")), &"".parse().unwrap());
-        let values = "{files: {settings.yaml: {from: directory, template: true}}}";
-        for (config, suffix) in [
-            (values.to_string(), ""),
-            (format!("{{os: {{windows: {values}}}}}"), " in its 'windows' overlay"),
-        ] {
-            assert_eq!(loader.load_content(&template_case(&config), "alpha", &source).err().unwrap().to_string(),
-                format!("case 'alpha' in {}: participant 'subject' supplies configuration file 'settings.yaml'{suffix} from directory 'directory' with 'template: true'; only a file can be a template", source.display()));
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn template_sources_follow_symlinks_and_reject_special_files() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut sources = BTreeMap::new();
-        let files = BTreeMap::from([(
-            "settings.yaml".into(),
-            FileSource {
-                from: "source".into(),
-                template: true,
-            },
-        )]);
-        std::os::unix::fs::symlink(dir.path(), dir.path().join("source")).unwrap();
-        assert_eq!(check_file_sources(&files, dir.path(), "participant 'subject'", " in its 'windows' overlay", &mut sources).unwrap_err(),
-            "participant 'subject' supplies configuration file 'settings.yaml' in its 'windows' overlay from directory 'source' with 'template: true'; only a file can be a template");
-        std::fs::remove_file(dir.path().join("source")).unwrap();
-        let _listener = std::os::unix::net::UnixListener::bind(dir.path().join("source")).unwrap();
-        for suffix in ["", " in its 'windows' overlay"] {
-            assert_eq!(check_file_sources(&files, dir.path(), "participant 'subject'", suffix, &mut sources).unwrap_err(),
-                format!("participant 'subject' supplies configuration file 'settings.yaml'{suffix} from 'source' with 'template: true', which is not a regular file"));
-        }
     }
 
     #[test]

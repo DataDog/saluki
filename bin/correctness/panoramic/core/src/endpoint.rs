@@ -80,6 +80,7 @@ impl Transport {
 #[derive(Clone, Debug)]
 pub struct Endpoint {
     pub(crate) kind: EndpointKind,
+    pub(crate) tls: bool,
     pub(crate) listener: Listener,
     pub(crate) ready: Option<Evidence>,
 }
@@ -106,6 +107,12 @@ pub enum Port {
 }
 
 impl Endpoint {
+    /// Enables TLS for an HTTP listener. Invalid for other endpoint kinds.
+    pub fn with_tls(mut self) -> Self {
+        self.tls = true;
+        self
+    }
+
     /// Attaches readiness evidence to this endpoint.
     pub fn with_ready(mut self, evidence: Evidence) -> Self {
         self.ready = Some(evidence);
@@ -118,6 +125,7 @@ impl Endpoint {
             kind: EndpointKind::Tcp,
             listener: Listener::Port(port),
             ready: None,
+            tls: false,
         }
     }
 
@@ -127,6 +135,7 @@ impl Endpoint {
             kind: EndpointKind::Udp,
             listener: Listener::Port(port),
             ready: None,
+            tls: false,
         }
     }
 
@@ -136,6 +145,7 @@ impl Endpoint {
             kind: EndpointKind::Http,
             listener: Listener::Port(port),
             ready: None,
+            tls: false,
         }
     }
 
@@ -145,6 +155,7 @@ impl Endpoint {
             kind: EndpointKind::Grpc,
             listener: Listener::Port(port),
             ready: None,
+            tls: false,
         }
     }
 
@@ -154,6 +165,7 @@ impl Endpoint {
             kind: EndpointKind::UnixDatagram,
             listener: Listener::Path(path.into()),
             ready: None,
+            tls: false,
         }
     }
 
@@ -163,6 +175,7 @@ impl Endpoint {
             kind: EndpointKind::UnixStream,
             listener: Listener::Path(path.into()),
             ready: None,
+            tls: false,
         }
     }
 
@@ -172,6 +185,7 @@ impl Endpoint {
             kind: EndpointKind::NamedPipe,
             listener: Listener::Pipe(name.into()),
             ready: None,
+            tls: false,
         }
     }
 }
@@ -355,6 +369,16 @@ pub mod test_support {
         }
     }
 
+    /// Checks whether a listener uses TLS.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the TLS setting differs from `tls`.
+    #[track_caller]
+    pub fn assert_tls_endpoint(endpoint: &Endpoint, tls: bool) {
+        assert_eq!(endpoint.tls, tls);
+    }
+
     /// Checks a socket endpoint's kind, path and readiness evidence.
     ///
     /// # Panics
@@ -439,6 +463,7 @@ mod tests {
             Endpoint::named_pipe("log"),
         ] {
             assert_eq!(endpoint.ready, None);
+            assert!(!endpoint.tls);
         }
     }
 

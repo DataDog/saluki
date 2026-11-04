@@ -97,6 +97,11 @@ fn check_evidence(
                 declared_names(&served.keys().map(String::as_str).collect::<Vec<_>>()),
             )
         })?;
+        if endpoint.tls && matches!(evidence.check, Check::HttpOk { .. }) {
+            return Err(format!(
+                "{context}, but HTTP readiness on TLS endpoint '{name}' is not supported"
+            ));
+        }
         if !accepts.contains(&endpoint.kind) {
             return Err(format!(
                 "{context}, but endpoint '{name}' is {}; it requires {}",
@@ -246,6 +251,30 @@ mod tests {
             port: Some(port),
             path: None,
         }
+    }
+
+    #[test]
+    fn http_readiness_on_a_tls_endpoint_fails_compile() {
+        for (env, owner) in [
+            ("READY_HTTP: /ready", "endpoint 'api'"),
+            ("READY_HTTP: /ready, READY_ON: metrics", "endpoint 'metrics'"),
+            ("READY_PARTICIPANT_HTTP: /ready", "the participant"),
+        ] {
+            assert_error(
+                &ready_case(&format!("TLS: 'true', {env}")),
+                Os::Linux,
+                &format!(
+                    "participant 'server' of type 'ready-server' as linux-container on linux declares http-ok on 'api' at '/ready' for {owner}, but HTTP readiness on TLS endpoint 'api' is not supported"
+                ),
+            );
+        }
+        let plan = compile(&ready_case("TLS: 'true', READY_TCP: api"), Os::Linux)
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            plan.start_gates("consumer")[0].check,
+            PlannedCheck::Accepts(_)
+        ));
     }
 
     #[test]
