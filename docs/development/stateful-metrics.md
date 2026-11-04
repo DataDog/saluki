@@ -175,7 +175,7 @@ logical batches, and the worker flushes the queues through their persistence pat
 ### Internal retries
 
 The core keeps each payload it sends in its compressed wire form, once, with the keys of the
-dictionary definitions it references, instead of the logical batch. After a retryable failure, a
+dictionary definitions it references, instead of the logical batch. After a temporary failure, a
 drain timeout, or a credential change, it queues the endpoint's unacknowledged payloads and replays
 them on the next stream ahead of newer ones, resending the same compressed bytes under new batch IDs.
 Definitions a replay needs that its bytes do not carry are sent first as a definitions-only batch.
@@ -268,7 +268,7 @@ worker across input buffers and restarts. The sender does not use the context's 
 Each worker runs its own async task and independently owns its core, dictionaries, gRPC transport,
 priority/retry queues, reconnect and flush timers, acknowledgement deadline, and credential watcher.
 A stalled, rejected, or reconnecting stream does not suspend its peers. The dispatcher sends to
-all selected workers concurrently through bounded input queues of two logical batches per worker.
+all selected workers concurrently through bounded input queues of 32 logical batches per worker.
 A worker continues accepting input during a transport outage using the existing spill/drop policy.
 If queue processing itself stalls (for example, during slow disk I/O), bounded worker input queues eventually
 backpressure shared input. This is not a promise of isolation from shared CPU, memory, or disk exhaustion.
@@ -310,7 +310,7 @@ The existing forwarder queue capacities and disk limits apply **per worker**. In
 multiplies the aggregate high-priority capacity, retry-memory budget, disk budget, and maximum
 number of inflight payloads (8 per endpoint per worker). Adding endpoints splits each worker's retry
 budgets rather than multiplying them, but adds a transport and inflight window per endpoint. Each worker also adds a transport, compression state,
-dictionaries, a partial batch, a two-batch input queue, and up to
+dictionaries, a partial batch, a 32-batch input queue, and up to
 `data_plane.experimental.stateful_metrics.retry_max_bytes` of retained compressed payloads and retired
 definitions, plus the payloads its streams are carrying. Series distribution and dictionary
 reuse affect actual memory; these limits do not bound total process memory.
