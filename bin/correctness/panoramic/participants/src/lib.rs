@@ -15,6 +15,8 @@ pub use self::{agent_adp::AgentAdp, datadog_intake::DatadogIntake, fixture::Fixt
 
 /// Directory for case-supplied files in Linux containers.
 pub(crate) const CASE_FILES_DIR: &str = "/var/lib/panoramic/files";
+/// Directory for case-supplied files in Windows containers.
+pub(crate) const WINDOWS_CASE_FILES_DIR: &str = r"C:\panoramic\files";
 
 /// Participant types available to case files.
 pub const REGISTERED_TYPES: &[&dyn ParticipantType] = &[&AgentAdp, &DatadogIntake, &Fixture];

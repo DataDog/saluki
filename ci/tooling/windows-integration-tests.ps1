@@ -158,7 +158,6 @@ $PanoramicArgs = @(
     "-d", $TestDir,
     "--runtime", "windows",
     "--subject-os", "windows",
-    "--image-override", "container=$ImageTag",
     "--artifacts", $Manifest,
     "--no-tui",
     "-p", "4",

@@ -5,7 +5,8 @@ use panoramic_core::{
     recipe::{ContainerRecipe, Recipe},
 };
 
-use super::AgentAdp;
+use super::{late, AgentAdp};
+use crate::WINDOWS_CASE_FILES_DIR;
 
 const ENTRYPOINT_PATH: &str = r"C:\adp\participant-entrypoint.ps1";
 const ENTRYPOINT: &[u8] = include_bytes!("assets/windows/entrypoint.ps1");
@@ -43,6 +44,9 @@ const WINDOWS_ENV_ALIASES: &[(&str, &str)] = &[
 ];
 
 pub(super) fn validate_config(config: &CaseValues) -> Result<(), String> {
+    if config.files.contains_key("cont-init.d/") {
+        return Err("agent-adp cont-init.d is supported in Linux containers only".into());
+    }
     for key in config.env.keys() {
         if key.starts_with("ADP_DD_") {
             return Err(format!(
@@ -54,9 +58,6 @@ pub(super) fn validate_config(config: &CaseValues) -> Result<(), String> {
 }
 
 pub(super) fn recipe(config: &RenderedConfig) -> Result<Recipe, String> {
-    if !config.files().is_empty() {
-        return Err("agent-adp does not accept case configuration files".into());
-    }
     let mut env = config.env().clone();
     for &(source, target) in WINDOWS_ENV_ALIASES {
         if let Some(value) = env.get(source).cloned() {
@@ -68,13 +69,27 @@ pub(super) fn recipe(config: &RenderedConfig) -> Result<Recipe, String> {
         env.entry("DD_DATA_PLANE_FORCE_ENABLE".into())
             .or_insert_with(|| "true".into());
     }
-    Ok(Recipe::Container(
-        ContainerRecipe::new(AgentAdp::WINDOWS_IMAGE)
-            .with_entrypoint(["pwsh", "-NoProfile", "-NonInteractive", "-File", ENTRYPOINT_PATH])
-            .with_command(["-c", r"C:\ProgramData\Datadog\datadog.yaml", "run"])
-            .with_env(env)
-            .with_file(ENTRYPOINT_PATH, 0o644, ENTRYPOINT.to_vec()),
-    ))
+    let mut recipe = ContainerRecipe::new(AgentAdp::WINDOWS_IMAGE)
+        .with_entrypoint(["pwsh", "-NoProfile", "-NonInteractive", "-File", ENTRYPOINT_PATH])
+        .with_command(["-c", r"C:\ProgramData\Datadog\datadog.yaml", "run"])
+        .with_env(env)
+        .with_file(ENTRYPOINT_PATH, 0o644, ENTRYPOINT.to_vec());
+    if let Some(hook) = late::windows_hook(config.env(), config.params()) {
+        recipe = recipe.with_file(r"C:\adp\participant-late.ps1", 0o644, hook);
+    }
+    for (name, contents) in config.files() {
+        let Some(relative) = name.strip_prefix("files/") else {
+            return Err(format!(
+                "agent-adp does not accept case configuration file '{name}' on Windows"
+            ));
+        };
+        recipe = recipe.with_file(
+            format!(r"{WINDOWS_CASE_FILES_DIR}\{}", relative.replace('/', r"\")),
+            0o644,
+            contents.clone(),
+        );
+    }
+    Ok(Recipe::Container(recipe))
 }
 
 pub(super) const PROCESS_SPECS: [ProcessSpec; 2] = [
@@ -251,11 +266,49 @@ mod tests {
     }
 
     #[test]
-    fn the_windows_recipe_rejects_case_files() {
+    fn the_windows_recipe_rejects_unknown_case_files() {
         let config = rendered(BTreeMap::new(), BTreeMap::from([("datadog.yaml".into(), vec![])]));
         assert_eq!(
             AgentAdp.recipe(WINDOWS, &config).err().unwrap(),
-            "agent-adp does not accept case configuration files"
+            "agent-adp does not accept case configuration file 'datadog.yaml' on Windows"
+        );
+    }
+
+    #[test]
+    fn windows_case_files_land_under_the_files_directory_with_backslash_paths() {
+        let config = rendered(
+            BTreeMap::new(),
+            BTreeMap::from([
+                ("files/run.ps1".into(), b"script".to_vec()),
+                ("files/nested/data.txt".into(), b"fixture".to_vec()),
+            ]),
+        );
+        let recipe = AgentAdp.recipe(WINDOWS, &config).unwrap();
+        assert_eq!(
+            files(&recipe),
+            vec![
+                (ENTRYPOINT_PATH, 0o644, ENTRYPOINT),
+                (r"C:\panoramic\files\nested\data.txt", 0o644, b"fixture".as_slice()),
+                (r"C:\panoramic\files\run.ps1", 0o644, b"script".as_slice()),
+            ]
+        );
+    }
+
+    #[test]
+    fn windows_rejects_cont_init_case_files() {
+        let config = CaseValues {
+            files: BTreeMap::from([(
+                "cont-init.d/".into(),
+                panoramic_core::case::FileSource {
+                    from: "hooks".into(),
+                    template: false,
+                },
+            )]),
+            ..Default::default()
+        };
+        assert_eq!(
+            AgentAdp.validate_config(WINDOWS, &config).unwrap_err(),
+            "agent-adp cont-init.d is supported in Linux containers only"
         );
     }
 
@@ -321,6 +374,12 @@ mod tests {
         ] {
             assert!(!entrypoint.contains(forbidden), "unexpected {forbidden}");
         }
+        assert!(
+            entrypoint
+                .find(r#"if (Test-Path "C:\adp\participant-late.ps1") { . "C:\adp\participant-late.ps1" }"#)
+                .unwrap()
+                < entrypoint.find("Initialize-LogDirectories\n").unwrap()
+        );
         assert!(
             entrypoint.find("Initialize-LogDirectories\n").unwrap()
                 < entrypoint.find("$Agent = Start-Process").unwrap()

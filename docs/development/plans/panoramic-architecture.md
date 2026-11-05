@@ -94,7 +94,7 @@ Use product `config_dump` output from CI runs to compare effective product confi
 
 | Suite | Files | Selected rows (subject OS / runtime) | Disabled rows | Assertions (subject OS) | Actions (subject OS) |
 | --- | --- | --- | --- | --- | --- |
-| integration | 52 | linux / linux: 8; linux / linux-container: 37; macos / host-process-group: 29; macos / mac: 4; windows / windows: 9; windows / windows-container: 27 | 0 | linux: 192; macos: 140; windows: 154 | linux: 25; macos: 17; windows: 19 |
+| integration | 52 | linux / linux-container: 45; macos / host-process-group: 33; windows / windows-container: 36 | 0 | linux: 193; macos: 141; windows: 155 | linux: 25; macos: 17; windows: 24 |
 | correctness | 42 | linux / docker: 39; linux / kubernetes_in_docker: 7 | 2 | — | — |
 
 Total: 162 rows.
@@ -202,30 +202,30 @@ Total: 162 rows.
 | adp-memory-mode-strict-within-limit | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 3, actions: 0 | 0 |
 | adp-memory-mode-strict-within-limit | integration | macos | host-process-group | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | native | assertions: 3, actions: 0 | 0 |
 | adp-memory-mode-strict-within-limit | integration | windows | windows-container | selected | test-integration-windows-amd64 | participants | native | assertions: 3, actions: 0 | 0 |
-| adp-no-pipelines-exit | integration | linux | linux | selected | test-integration | integration | old | assertions: 1, actions: 0 | 0 |
-| adp-no-pipelines-exit | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 1, actions: 0 | 0 |
-| adp-no-pipelines-exit | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 1, actions: 0 | 0 |
-| adp-rar-disabled | integration | linux | linux | selected | test-integration | integration | old | assertions: 3, actions: 0 | 0 |
+| adp-no-pipelines-exit | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 2, actions: 0 | 0 |
+| adp-no-pipelines-exit | integration | macos | host-process-group | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | native | assertions: 2, actions: 0 | 0 |
+| adp-no-pipelines-exit | integration | windows | windows-container | selected | test-integration-windows-amd64 | participants | native | assertions: 2, actions: 0 | 0 |
+| adp-rar-disabled | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 3, actions: 0 | 0 |
 | adp-rar-registration | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 3, actions: 1 | 0 |
 | adp-rar-registration | integration | macos | host-process-group | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | native | assertions: 3, actions: 1 | 0 |
 | adp-rar-registration | integration | windows | windows-container | selected | test-integration-windows-amd64 | participants | native | assertions: 3, actions: 1 | 0 |
 | adp-rc-core-disabled | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 5, actions: 0 | 0 |
 | adp-rc-no-products | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 4, actions: 0 | 0 |
-| apm-bind-custom-hostname | integration | linux | linux | selected | test-integration | integration | old | assertions: 3, actions: 0 | 0 |
-| apm-bind-custom-hostname | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 3, actions: 0 | 0 |
+| apm-bind-custom-hostname | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 3, actions: 0 | 0 |
+| apm-bind-custom-hostname | integration | windows | windows-container | selected | test-integration-windows-amd64 | participants | native | assertions: 3, actions: 0 | 0 |
 | basic-startup | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 3, actions: 0 | 0 |
 | basic-startup | integration | macos | host-process-group | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | native | assertions: 3, actions: 0 | 0 |
 | basic-startup | integration | windows | windows-container | selected | test-integration-windows-amd64 | participants | native | assertions: 3, actions: 0 | 0 |
 | dogstatsd-autoscale-udp | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 3, actions: 0 | 0 |
 | dogstatsd-autoscale-udp | integration | macos | host-process-group | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | native | assertions: 3, actions: 0 | 0 |
 | dogstatsd-autoscale-udp | integration | windows | windows-container | selected | test-integration-windows-amd64 | participants | native | assertions: 3, actions: 0 | 0 |
-| dogstatsd-bind-custom-hostname | integration | linux | linux | selected | test-integration | integration | old | assertions: 3, actions: 0 | 0 |
-| dogstatsd-bind-custom-hostname | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 3, actions: 0 | 0 |
-| dogstatsd-bind-host | integration | linux | linux | selected | test-integration | integration | old | assertions: 3, actions: 0 | 0 |
-| dogstatsd-bind-host | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 3, actions: 0 | 0 |
-| dogstatsd-default-bind | integration | linux | linux | selected | test-integration | integration | old | assertions: 3, actions: 0 | 0 |
-| dogstatsd-default-bind | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 3, actions: 0 | 0 |
-| dogstatsd-default-bind | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 3, actions: 0 | 0 |
+| dogstatsd-bind-custom-hostname | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 3, actions: 0 | 0 |
+| dogstatsd-bind-custom-hostname | integration | windows | windows-container | selected | test-integration-windows-amd64 | participants | native | assertions: 3, actions: 0 | 0 |
+| dogstatsd-bind-host | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 3, actions: 0 | 0 |
+| dogstatsd-bind-host | integration | windows | windows-container | selected | test-integration-windows-amd64 | participants | native | assertions: 3, actions: 0 | 0 |
+| dogstatsd-default-bind | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 3, actions: 0 | 0 |
+| dogstatsd-default-bind | integration | macos | host-process-group | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | native | assertions: 3, actions: 0 | 0 |
+| dogstatsd-default-bind | integration | windows | windows-container | selected | test-integration-windows-amd64 | participants | native | assertions: 3, actions: 0 | 0 |
 | dogstatsd-enabled | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 3, actions: 0 | 0 |
 | dogstatsd-enabled | integration | macos | host-process-group | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | native | assertions: 3, actions: 0 | 0 |
 | dogstatsd-enabled | integration | windows | windows-container | selected | test-integration-windows-amd64 | participants | native | assertions: 3, actions: 0 | 0 |
@@ -236,12 +236,12 @@ Total: 162 rows.
 | dogstatsd-intake-metric | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 4, actions: 2 | 0 |
 | dogstatsd-intake-metric | integration | macos | host-process-group | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | native | assertions: 4, actions: 2 | 0 |
 | dogstatsd-intake-metric | integration | windows | windows-container | selected | test-integration-windows-amd64 | participants | native | assertions: 4, actions: 2 | 0 |
-| dogstatsd-named-pipe-windows | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 9, actions: 1 | 0 |
+| dogstatsd-named-pipe-windows | integration | windows | windows-container | selected | test-integration-windows-amd64 | participants | native | assertions: 9, actions: 6 | 0 |
 | dogstatsd-no-listener-continues | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 4, actions: 0 | 0 |
 | dogstatsd-no-listener-continues | integration | macos | host-process-group | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | native | assertions: 4, actions: 0 | 0 |
-| dogstatsd-non-local-overrides-bind-host | integration | linux | linux | selected | test-integration | integration | old | assertions: 3, actions: 0 | 0 |
-| dogstatsd-non-local-overrides-bind-host | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 3, actions: 0 | 0 |
-| dogstatsd-non-local-overrides-bind-host | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 3, actions: 0 | 0 |
+| dogstatsd-non-local-overrides-bind-host | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 3, actions: 0 | 0 |
+| dogstatsd-non-local-overrides-bind-host | integration | macos | host-process-group | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | native | assertions: 3, actions: 0 | 0 |
+| dogstatsd-non-local-overrides-bind-host | integration | windows | windows-container | selected | test-integration-windows-amd64 | participants | native | assertions: 3, actions: 0 | 0 |
 | dogstatsd-replay-unix | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 3, actions: 1 | 0 |
 | dogstatsd-replay-unix | integration | macos | host-process-group | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | native | assertions: 3, actions: 1 | 0 |
 | dogstatsd-replay-windows | integration | windows | windows-container | selected | test-integration-windows-amd64 | participants | native | assertions: 3, actions: 1 | 0 |
@@ -250,12 +250,12 @@ Total: 162 rows.
 | dogstatsd-skip-failed-listener | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 4, actions: 0 | 0 |
 | dogstatsd-skip-failed-listener | integration | macos | host-process-group | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | native | assertions: 4, actions: 0 | 0 |
 | dogstatsd-top | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 5, actions: 1 | 0 |
-| dogstatsd-top-windows | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 5, actions: 1 | 0 |
+| dogstatsd-top-windows | integration | windows | windows-container | selected | test-integration-windows-amd64 | participants | native | assertions: 5, actions: 1 | 0 |
 | liveness-container-tags | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 4, actions: 1 | 0 |
 | otlp-tls | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 3, actions: 1 | 0 |
-| otlp-traces-enabled | integration | linux | linux | selected | test-integration | integration | old | assertions: 4, actions: 0 | 0 |
-| otlp-traces-enabled | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 4, actions: 0 | 0 |
-| otlp-traces-enabled | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 4, actions: 0 | 0 |
+| otlp-traces-enabled | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 4, actions: 0 | 0 |
+| otlp-traces-enabled | integration | macos | host-process-group | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | native | assertions: 4, actions: 0 | 0 |
+| otlp-traces-enabled | integration | windows | windows-container | selected | test-integration-windows-amd64 | participants | native | assertions: 4, actions: 0 | 0 |
 | privileged-api-endpoints | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 3, actions: 10 | 0 |
 | privileged-api-endpoints | integration | macos | host-process-group | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | native | assertions: 3, actions: 10 | 0 |
 | privileged-api-endpoints | integration | windows | windows-container | selected | test-integration-windows-amd64 | participants | native | assertions: 3, actions: 10 | 0 |
@@ -312,7 +312,10 @@ plus the container log on Linux; the listener-started check names ADP.
 
 Log steps omit `process` to search every process's output plus the container log.
 
-`adp-rar-disabled` uses legacy execution and observes container liveness.
+`adp-rar-disabled` runs natively on Linux with Remote Agent Registry disabled on the Agent. ADP's registration
+failure and supervised restarts are expected. ADP logs the registration-failure warning before its bootstrap failure
+with `remote agent registry not enabled`. The case matches the registration warning, requires the Agent alone to
+stay running for 10 seconds, and checks the participant's logs for panics over the same window.
 
 ## Case migration notes
 
@@ -415,8 +418,39 @@ The following cases use native participants on Linux, macOS and Windows:
 - Log steps search both processes' output, preserving Linux coverage and widening Windows coverage to the Agent.
   The two listener gates explicitly name ADP.
 
-`adp-no-pipelines-exit` retains its legacy schema and log assertion. Native Linux validation observed ADP exit 1
-with `No data pipelines are enabled. Exiting.`, rather than the assumed exit 0. No exit assertion is added.
+`adp-no-pipelines-exit` checks the no-pipelines log assertion and ADP's first exit with code 1, matching the
+case's error-exit contract. It runs natively on Linux, macOS and Windows. The exit assertion has a 60-second
+timeout; the case has a 120-second timeout.
+
+`adp-config-check-warn` escapes the log separator in its regex: the intended line contains both the named key and
+its unsupported-key warning, separated by a literal pipe.
+
+### Bind addresses and Windows payloads
+
+`dogstatsd-bind-host`, `dogstatsd-bind-custom-hostname` and `apm-bind-custom-hostname` assert listener addresses
+on Linux and Windows. Own-IP substitution and `extra_hosts` configure the bind address; the assertion reads the
+backend's IP late fact. Stability watches both declared processes. The cases cover the issue-#1331 bind-host behavior.
+
+`dogstatsd-named-pipe-windows` uses six `send` actions and nine assertions. The oversize payload uses `repeat: 10000`.
+Each send opens one connection. Retries can duplicate delivery, but the assertions check presence or absence of
+distinct strings, not counts.
+
+`dogstatsd-top-windows` runs `files/run_dogstatsd_top_test.ps1` with `exec` through `files_dir` and checks its result
+file. Its listener-log regex, shared with `dogstatsd-top`, proves that a UDP listener started.
+Stability watches both processes.
+
+`dogstatsd-default-bind` and `dogstatsd-non-local-overrides-bind-host` assert fixed `:58125` listener patterns and
+pin `DD_DOGSTATSD_PORT` to that value in the macOS overlay. The port is product configuration under test, and CI runs
+host cases sequentially. `otlp-traces-enabled` pins its OTLP ports and names `otlp_grpc` and `otlp_http` for probes.
+These cases watch both declared processes for stability on every OS.
+
+### Coverage ledger
+
+The ledger test pins all 52 original integration cases and their subject OSes from `0668d6db67`, checks the rows
+individually, and preserves each original CI job, including both macOS architectures. The only intended additions
+are `dogstatsd-host-tag` and `dogstatsd-intake-metric` on macOS and Windows. Every integration row must use native
+execution, with no exceptions. The legacy Linux integration runner remains implemented, with no integration cases
+selecting it.
 
 ## Migration proofs
 
@@ -432,30 +466,30 @@ Link CI runs; don't copy their logs into the repository.
 | adp-logging-default-path | linux | native | Pending CI. Before: Tested `33e3e697c5` in [pipeline 149203111](https://gitlab.ddbuild.io/DataDog/saluki/-/pipelines/149203111): [test-integration](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351927) passed on the integration runner (execution `old`). Compared with the inventory at `b975a993e0`. |
 | adp-logging-ignores-core-agent-log-file | linux | native | Pending CI. Before: Tested `33e3e697c5` in [pipeline 149203111](https://gitlab.ddbuild.io/DataDog/saluki/-/pipelines/149203111): [test-integration](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351927) passed on the integration runner (execution `old`). Compared with the inventory at `b975a993e0`. |
 | adp-logging-respects-data-plane-log-file | linux | native | Pending CI. Before: Tested `33e3e697c5` in [pipeline 149203111](https://gitlab.ddbuild.io/DataDog/saluki/-/pipelines/149203111): [test-integration](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351927) passed on the integration runner (execution `old`). Compared with the inventory at `b975a993e0`. |
-| adp-logging-respects-data-plane-log-file | macos | native | Pending CI. Before: Tested `33e3e697c5` in [pipeline 149203111](https://gitlab.ddbuild.io/DataDog/saluki/-/pipelines/149203111): [test-integration-macos-arm64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351928) and [test-integration-macos-amd64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351929) passed on the macOS host-process runner (execution `old`). Compared with the inventory at `b975a993e0`. Caveat: the case writes to a fixed `/tmp` path that nothing deletes, so `file_contains` could match a file left by an earlier run on the same host. Compared with the inventory at `f428657238`. |
-| adp-logging-mac-ignores-core-agent-log-file | macos | native | Pending CI. Before: Tested `33e3e697c5` in [pipeline 149203111](https://gitlab.ddbuild.io/DataDog/saluki/-/pipelines/149203111): [test-integration-macos-arm64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351928) and [test-integration-macos-amd64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351929) passed on the macOS host-process runner (execution `old`). Compared with the inventory at `b975a993e0`. Caveat: the case writes to fixed `/tmp` paths that nothing deletes, so `file_contains` could match a file left by an earlier run on the same host. Compared with the inventory at `f428657238`. |
+| adp-logging-respects-data-plane-log-file | macos | native | Pending CI. Before: Tested `33e3e697c5` in [pipeline 149203111](https://gitlab.ddbuild.io/DataDog/saluki/-/pipelines/149203111): [test-integration-macos-arm64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351928) and [test-integration-macos-amd64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351929) passed on the macOS host-process runner (execution `old`). Compared with the inventory at `b975a993e0`. Caveat: the case writes to a fixed `/tmp` path that nothing deletes, so `file_contains` could match a file left by an earlier run on the same host. Compared with the inventory at `97f0507856`. |
+| adp-logging-mac-ignores-core-agent-log-file | macos | native | Pending CI. Before: Tested `33e3e697c5` in [pipeline 149203111](https://gitlab.ddbuild.io/DataDog/saluki/-/pipelines/149203111): [test-integration-macos-arm64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351928) and [test-integration-macos-amd64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351929) passed on the macOS host-process runner (execution `old`). Compared with the inventory at `b975a993e0`. Caveat: the case writes to fixed `/tmp` paths that nothing deletes, so `file_contains` could match a file left by an earlier run on the same host. Compared with the inventory at `97f0507856`. |
 | adp-logging-windows-default-path | windows | native | Pending CI. Before: Tested `33e3e697c5` in [pipeline 149203111](https://gitlab.ddbuild.io/DataDog/saluki/-/pipelines/149203111): [test-integration-windows-amd64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351930) passed on the integration runner (execution `old`). Compared with the inventory at `b975a993e0`. |
 | adp-logging-windows-ignores-core-agent-log-file | windows | native | Pending CI. Before: Tested `33e3e697c5` in [pipeline 149203111](https://gitlab.ddbuild.io/DataDog/saluki/-/pipelines/149203111): [test-integration-windows-amd64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351930) passed on the integration runner (execution `old`). Compared with the inventory at `b975a993e0`. |
 | adp-logging-windows-respects-data-plane-log-file | windows | native | Pending CI. Before: Tested `33e3e697c5` in [pipeline 149203111](https://gitlab.ddbuild.io/DataDog/saluki/-/pipelines/149203111): [test-integration-windows-amd64](https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/2199351930) passed on the integration runner (execution `old`). Compared with the inventory at `b975a993e0`. |
-| adp-rc-core-disabled | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `18554ba44c`. |
-| adp-rc-no-products | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `18554ba44c`. |
-| dogstatsd-forwarding | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `0a52942c17`. |
-| dogstatsd-host-tag | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `0a52942c17`. |
-| dogstatsd-intake-metric | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `0a52942c17`. |
-| adp-ipc-no-dns | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `d1efbab740`. |
-| otlp-tls | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `d1efbab740`. |
-| dogstatsd-top | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `d1efbab740`. |
-| liveness-container-tags | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `d1efbab740`. |
-| dogstatsd-no-listener-continues | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `b8ace701c8`. |
-| dogstatsd-no-listener-continues | macos | native | Pending CI. Before: passed with execution `old` in the last green `test-integration-macos-arm64` and `test-integration-macos-amd64` run before this change. Compared with the inventory at `b8ace701c8`. |
-| dogstatsd-require-listener-exit | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `b8ace701c8`. |
-| dogstatsd-require-listener-exit | macos | native | Pending CI. Before: passed with execution `old` in the last green `test-integration-macos-arm64` and `test-integration-macos-amd64` run before this change. Compared with the inventory at `b8ace701c8`. |
-| dogstatsd-skip-failed-listener | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `b8ace701c8`. |
-| dogstatsd-skip-failed-listener | macos | native | Pending CI. Before: passed with execution `old` in the last green `test-integration-macos-arm64` and `test-integration-macos-amd64` run before this change. Compared with the inventory at `b8ace701c8`. |
-| dogstatsd-host-tag | macos | native | Pending CI. Before: none; the case ran only on Linux. Compared with the inventory at `1f4685d997`. |
-| dogstatsd-host-tag | windows | native | Pending CI. Before: none; the case ran only on Linux. Compared with the inventory at `1f4685d997`. |
-| dogstatsd-intake-metric | macos | native | Pending CI. Before: none; the case ran only on Linux. Compared with the inventory at `1f4685d997`. |
-| dogstatsd-intake-metric | windows | native | Pending CI. Before: none; the case ran only on Linux. Compared with the inventory at `1f4685d997`. |
+| adp-rc-core-disabled | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `6187914497`. |
+| adp-rc-no-products | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `6187914497`. |
+| dogstatsd-forwarding | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `79e8059480`. |
+| dogstatsd-host-tag | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `79e8059480`. |
+| dogstatsd-intake-metric | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `79e8059480`. |
+| adp-ipc-no-dns | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `213e0bec60`. |
+| otlp-tls | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `213e0bec60`. |
+| dogstatsd-top | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `213e0bec60`. |
+| liveness-container-tags | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `213e0bec60`. |
+| dogstatsd-no-listener-continues | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `2624b2c308`. |
+| dogstatsd-no-listener-continues | macos | native | Pending CI. Before: passed with execution `old` in the last green `test-integration-macos-arm64` and `test-integration-macos-amd64` run before this change. Compared with the inventory at `2624b2c308`. |
+| dogstatsd-require-listener-exit | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `2624b2c308`. |
+| dogstatsd-require-listener-exit | macos | native | Pending CI. Before: passed with execution `old` in the last green `test-integration-macos-arm64` and `test-integration-macos-amd64` run before this change. Compared with the inventory at `2624b2c308`. |
+| dogstatsd-skip-failed-listener | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `2624b2c308`. |
+| dogstatsd-skip-failed-listener | macos | native | Pending CI. Before: passed with execution `old` in the last green `test-integration-macos-arm64` and `test-integration-macos-amd64` run before this change. Compared with the inventory at `2624b2c308`. |
+| dogstatsd-host-tag | macos | native | Pending CI. Before: none; the case ran only on Linux. Compared with the inventory at `d37e52ec98`. |
+| dogstatsd-host-tag | windows | native | Pending CI. Before: none; the case ran only on Linux. Compared with the inventory at `d37e52ec98`. |
+| dogstatsd-intake-metric | macos | native | Pending CI. Before: none; the case ran only on Linux. Compared with the inventory at `d37e52ec98`. |
+| dogstatsd-intake-metric | windows | native | Pending CI. Before: none; the case ran only on Linux. Compared with the inventory at `d37e52ec98`. |
 | adp-config-dynamic-basic | linux | native | Pending CI. Compared with the inventory at `4e9948b5ed` (execution `old`). |
 | adp-config-dynamic-basic | macos | native | Pending CI. Compared with the inventory at `4e9948b5ed` (execution `old`). |
 | adp-config-dynamic-basic | windows | native | Pending CI. Compared with the inventory at `4e9948b5ed` (execution `old`). |
@@ -522,6 +556,27 @@ Link CI runs; don't copy their logs into the repository.
 | unprivileged-api-endpoints | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `4e9948b5ed`. |
 | unprivileged-api-endpoints | macos | native | Pending CI. Before: passed with execution `old` in the last green `test-integration-macos-arm64` and `test-integration-macos-amd64` run before this change. Compared with the inventory at `4e9948b5ed`. |
 | unprivileged-api-endpoints | windows | native | Pending CI. Before: passed with execution `old` in the last green `test-integration-windows-amd64` run before this change. Compared with the inventory at `4e9948b5ed`. |
+| dogstatsd-bind-host | linux | native | Pending CI. Compared with the inventory at `36f1a365cf`. |
+| dogstatsd-bind-host | windows | native | Pending CI. Compared with the inventory at `36f1a365cf`. |
+| dogstatsd-bind-custom-hostname | linux | native | Pending CI. Compared with the inventory at `36f1a365cf`. |
+| dogstatsd-bind-custom-hostname | windows | native | Pending CI. Compared with the inventory at `36f1a365cf`. |
+| apm-bind-custom-hostname | linux | native | Pending CI. Compared with the inventory at `36f1a365cf`. |
+| apm-bind-custom-hostname | windows | native | Pending CI. Compared with the inventory at `36f1a365cf`. |
+| dogstatsd-named-pipe-windows | windows | native | Pending CI. Compared with the inventory at `36f1a365cf`. |
+| dogstatsd-top-windows | windows | native | Pending CI. Compared with the inventory at `36f1a365cf`. |
+| dogstatsd-default-bind | linux | native | Pending CI. Compared with the inventory at `36f1a365cf`. |
+| dogstatsd-default-bind | macos | native | Pending CI. Compared with the inventory at `36f1a365cf`. |
+| dogstatsd-default-bind | windows | native | Pending CI. Compared with the inventory at `36f1a365cf`. |
+| dogstatsd-non-local-overrides-bind-host | linux | native | Pending CI. Compared with the inventory at `36f1a365cf`. |
+| dogstatsd-non-local-overrides-bind-host | macos | native | Pending CI. Compared with the inventory at `36f1a365cf`. |
+| dogstatsd-non-local-overrides-bind-host | windows | native | Pending CI. Compared with the inventory at `36f1a365cf`. |
+| otlp-traces-enabled | linux | native | Pending CI. Compared with the inventory at `36f1a365cf`. |
+| otlp-traces-enabled | macos | native | Pending CI. Compared with the inventory at `36f1a365cf`. |
+| otlp-traces-enabled | windows | native | Pending CI. Compared with the inventory at `36f1a365cf`. |
+| adp-no-pipelines-exit | linux | native | Pending CI. Compared with the inventory at `36f1a365cf`. |
+| adp-no-pipelines-exit | macos | native | Pending CI. Compared with the inventory at `36f1a365cf`. |
+| adp-no-pipelines-exit | windows | native | Pending CI. Compared with the inventory at `36f1a365cf`. |
+| adp-rar-disabled | linux | native | Pending CI. Two native Linux/lima runs passed: ADP logged registration failure and restarted after exit 1 while the Agent stayed running for 10 seconds; no panic matched. Compared with the inventory at `26f84fe969`. |
 <!-- migration-proofs:end -->
 
 Native runs use fresh participant directories and reclaim them after each case.

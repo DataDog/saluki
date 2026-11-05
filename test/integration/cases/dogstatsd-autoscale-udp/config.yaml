@@ -1,5 +1,5 @@
 name: "dogstatsd-autoscale-udp"
-description: "Verifies DogStatsD UDP listener autoscaling (SO_REUSEPORT) starts cleanly on Linux"
+description: "Verifies DogStatsD starts a UDP listener and stays stable with autoscaling enabled"
 timeout: 120s
 subject_os: [linux, macos, windows]
 
@@ -18,8 +18,7 @@ participants:
         DD_DOGSTATSD_AUTOSCALE_UDP_LISTENERS: "true"
 
 procedure:
-  # Make sure the process becomes healthy and stays up without errors when autoscale is enabled,
-  # and that the UDP listener still binds to the configured port.
+  # Require a UDP listener and stable processes with autoscaling enabled.
   - parallel:
       - step: process_stable_for
         on: adp

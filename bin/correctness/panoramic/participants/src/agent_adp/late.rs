@@ -37,7 +37,7 @@ pub(super) fn validate(env: &BTreeMap<String, String>, params: &BTreeMap<String,
     Ok(())
 }
 
-pub(super) fn hook(env: &BTreeMap<String, String>, params: &BTreeMap<String, Value>) -> Option<Vec<u8>> {
+fn mapped_hosts<'a>(env: &BTreeMap<String, String>, params: &'a BTreeMap<String, Value>) -> Option<Vec<&'a str>> {
     let hosts = params.get("extra_hosts").and_then(Value::as_object);
     if !env
         .values()
@@ -46,11 +46,38 @@ pub(super) fn hook(env: &BTreeMap<String, String>, params: &BTreeMap<String, Val
     {
         return None;
     }
+    Some(
+        hosts
+            .into_iter()
+            .flat_map(|hosts| hosts.keys().map(String::as_str))
+            .collect(),
+    )
+}
+
+/// Returns the hook script, or `None` when no environment value references the own IP and no extra host is mapped.
+/// Host names are written inside single quotes without escaping, so pass only parameters that `validate` accepted.
+pub(super) fn hook(env: &BTreeMap<String, String>, params: &BTreeMap<String, Value>) -> Option<Vec<u8>> {
+    let hosts = mapped_hosts(env, params)?;
     let mut script = include_str!("assets/cont-init/late-substitution.sh")
         .replace("\r\n", "\n")
         .replace("@IP_REFERENCE@", LateFact::Ip.substituted_reference());
-    for host in hosts.into_iter().flat_map(|hosts| hosts.keys()) {
+    for host in hosts {
         script.push_str(&format!("printf '%s %s\\n' \"$ip\" '{host}' >> /etc/hosts\n"));
+    }
+    Some(script.into_bytes())
+}
+
+/// Returns the hook script, or `None` when no environment value references the own IP and no extra host is mapped.
+/// Host names are written inside single quotes without escaping, so pass only parameters that `validate` accepted.
+pub(super) fn windows_hook(env: &BTreeMap<String, String>, params: &BTreeMap<String, Value>) -> Option<Vec<u8>> {
+    let hosts = mapped_hosts(env, params)?;
+    let mut script = include_str!("assets/windows/late-substitution.ps1")
+        .replace("\r\n", "\n")
+        .replace("@IP_REFERENCE@", LateFact::Ip.substituted_reference());
+    for host in hosts {
+        script.push_str(&format!(
+            "Add-Content -Path 'C:\\Windows\\System32\\drivers\\etc\\hosts' -Value ($Ip + ' ' + '{host}')\n"
+        ));
     }
     Some(script.into_bytes())
 }
@@ -70,6 +97,11 @@ mod tests {
     const LINUX: Realization = Realization {
         os: Os::Linux,
         kind: RealizationKind::LinuxContainer,
+    };
+
+    const WINDOWS: Realization = Realization {
+        os: Os::Windows,
+        kind: RealizationKind::WindowsContainer,
     };
 
     #[test]
@@ -103,7 +135,9 @@ mod tests {
                 params: BTreeMap::from([("extra_hosts".into(), value)]),
                 ..Default::default()
             };
-            AgentAdp.validate_config(LINUX, &config).unwrap();
+            for realization in [LINUX, WINDOWS] {
+                AgentAdp.validate_config(realization, &config).unwrap();
+            }
         }
         for value in [
             Value::Null,
@@ -122,11 +156,13 @@ mod tests {
                 params: BTreeMap::from([("extra_hosts".into(), value.clone())]),
                 ..Default::default()
             };
-            let error = AgentAdp.validate_config(LINUX, &config).unwrap_err();
-            assert!(
-                error.contains("extra_hosts") && error.contains("self"),
-                "{value}: {error}"
-            );
+            for realization in [LINUX, WINDOWS] {
+                let error = AgentAdp.validate_config(realization, &config).unwrap_err();
+                assert!(
+                    error.contains("extra_hosts") && error.contains("self"),
+                    "{value}: {error}"
+                );
+            }
         }
         for host in [
             "",
@@ -144,8 +180,10 @@ mod tests {
                 params: BTreeMap::from([("extra_hosts".into(), json!({host: "self"}))]),
                 ..Default::default()
             };
-            let error = AgentAdp.validate_config(LINUX, &config).unwrap_err();
-            assert!(error.contains("extra_hosts name"), "{host:?}: {error}");
+            for realization in [LINUX, WINDOWS] {
+                let error = AgentAdp.validate_config(realization, &config).unwrap_err();
+                assert!(error.contains("extra_hosts name"), "{host:?}: {error}");
+            }
         }
     }
 
@@ -175,16 +213,24 @@ mod tests {
             ),
         ] {
             let config = rendered_with_params(env, params, BTreeMap::new());
-            let recipe = AgentAdp.recipe(LINUX, &config).unwrap();
-            let files = files(&recipe);
-            let hook = files
-                .iter()
-                .find(|(path, _, _)| *path == "/etc/cont-init.d/10-panoramic-late-substitution.sh");
-            assert_eq!(hook.is_some(), installed);
-            assert_eq!(files.len(), if installed { 7 } else { 6 });
-            if let Some((_, mode, script)) = hook {
-                assert_eq!(*mode, 0o755);
-                assert!(script.starts_with(b"#!/bin/bash\n"));
+            for (realization, path, mode, base_count) in [
+                (LINUX, "/etc/cont-init.d/10-panoramic-late-substitution.sh", 0o755, 6),
+                (WINDOWS, r"C:\adp\participant-late.ps1", 0o644, 1),
+            ] {
+                let recipe = AgentAdp.recipe(realization, &config).unwrap();
+                let files = files(&recipe);
+                let hook = files.iter().find(|(placed, _, _)| *placed == path);
+                assert_eq!(hook.is_some(), installed, "{realization:?}");
+                assert_eq!(files.len(), base_count + usize::from(installed));
+                if let Some((_, placed_mode, script)) = hook {
+                    assert_eq!(*placed_mode, mode);
+                    if realization == LINUX {
+                        assert!(script.starts_with(b"#!/bin/bash\n"));
+                    }
+                    assert!(script
+                        .windows(LateFact::Ip.substituted_reference().len())
+                        .any(|text| text == LateFact::Ip.substituted_reference().as_bytes()));
+                }
             }
         }
     }
@@ -209,6 +255,30 @@ mod tests {
         ] {
             assert!(script.contains(expected), "missing {expected:?}: {script}");
         }
+        assert!(!script.contains("@IP_REFERENCE@"));
+    }
+
+    #[test]
+    fn the_windows_hook_replaces_the_canonical_ip_reference_and_adds_one_hosts_line_per_host() {
+        let params = BTreeMap::from([("extra_hosts".into(), json!({"foo.local": "self", "bar.local": "self"}))]);
+        validate(&BTreeMap::new(), &params).unwrap();
+        let script = String::from_utf8(windows_hook(&BTreeMap::new(), &params).unwrap()).unwrap();
+        for expected in [
+            "[System.Net.Dns]::GetHostAddresses([System.Net.Dns]::GetHostName())",
+            "[System.Net.Sockets.AddressFamily]::InterNetwork",
+            r#"$Text -ne "127.0.0.1" -and $Text -ne "0.0.0.0""#,
+            r#"throw "panoramic: could not determine the participant IP address""#,
+            "$Ip = Get-ContainerIPv4Address",
+            "$Placeholder = '{{ self.late.ip }}'",
+            "foreach ($Item in Get-ChildItem Env:)",
+            "$Item.Value.Contains($Placeholder)",
+            r#"Set-Item -Path "Env:\$($Item.Name)" -Value $Item.Value.Replace($Placeholder, $Ip)"#,
+            r"Add-Content -Path 'C:\Windows\System32\drivers\etc\hosts' -Value ($Ip + ' ' + 'bar.local')",
+            r"Add-Content -Path 'C:\Windows\System32\drivers\etc\hosts' -Value ($Ip + ' ' + 'foo.local')",
+        ] {
+            assert!(script.contains(expected), "missing {expected:?}: {script}");
+        }
+        assert_eq!(script.matches("Add-Content").count(), 2);
         assert!(!script.contains("@IP_REFERENCE@"));
     }
 }

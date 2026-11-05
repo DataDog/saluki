@@ -10,33 +10,41 @@
 # Without this test, an implementation could incorrectly let bind_host
 # override non_local_traffic, breaking the core agent's contract.
 
-type: integration
 name: "dogstatsd-non-local-overrides-bind-host"
 description: "Verifies dogstatsd_non_local_traffic takes precedence over bind_host"
 timeout: 120s
-runtimes: [linux, mac, windows]
+subject_os: [linux, macos, windows]
 
-env:
-  DD_API_KEY: "00000000000000000000000000000000"
-  DD_HOSTNAME: "integration-test-dsd-non-local-override"
-  DD_DATA_PLANE_ENABLED: "true"
-  DD_DATA_PLANE_STANDALONE_MODE: "false"
-  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-  DD_DOGSTATSD_NON_LOCAL_TRAFFIC: "true"
-  # Arbitrary, unreachable IP: non_local_traffic=true wins over bind_host,
-  # so the value is ignored. Using something obviously-not-a-real-binding
-  # address makes the "the value doesn't matter" intent unmistakable.
-  DD_BIND_HOST: "10.9.8.7"
-
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    config:
+      env:
+        DD_API_KEY: "00000000000000000000000000000000"
+        DD_HOSTNAME: "integration-test-dsd-non-local-override"
+        DD_DATA_PLANE_ENABLED: "true"
+        DD_DATA_PLANE_STANDALONE_MODE: "false"
+        DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+        DD_DOGSTATSD_NON_LOCAL_TRAFFIC: "true"
+        # non_local_traffic=true must override this unreachable bind_host.
+        DD_BIND_HOST: "10.9.8.7"
+      os:
+        macos:
+          env:
+            DD_DOGSTATSD_PORT: "58125"
 
 procedure:
-  - assertion: log_contains
+  - step: log_contains
+    on: adp
     pattern: 'listen_addr:"udp://0.0.0.0:58125"'
     timeout: 60s
   - parallel:
-      - assertion: process_stable_for
+      - step: process_stable_for
+        on: adp
         duration: 10s
-      - assertion: log_not_contains
+      - step: log_not_contains
+        on: adp
         pattern: "panic|PANIC"
         regex: true
         during: 10s

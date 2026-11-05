@@ -276,20 +276,16 @@ impl StepTemplate {
         })
     }
 
-    /// Substitutes early facts, failing on the first unavailable reference or if the result contains `{{`.
-    pub fn resolve<'a>(&self, fact: impl Fn(&str, &str) -> Option<&'a str>) -> Result<String, String> {
-        self.0.substitute(|written, reference| match reference {
-            Reference::Fact {
-                participant: ParticipantRef::Named(participant),
-                fact: name,
-            } => fact(participant, name)
-                .map(|value| Some(value.to_owned()))
-                .ok_or_else(|| format!("cannot resolve fact reference '{written}'")),
-            Reference::Late { .. } => Err(format!(
-                "cannot resolve late fact reference '{written}' before the participant runs"
-            )),
-            _ => Err(format!("cannot resolve '{written}'")),
-        })
+    /// Returns the text when the template contains only literal segments.
+    pub fn literal(&self) -> Option<String> {
+        self.0
+            .segments
+            .iter()
+            .map(|segment| match segment {
+                Segment::Literal(text) => Some(text.as_str()),
+                Segment::Reference { .. } => None,
+            })
+            .collect()
     }
 }
 
@@ -459,11 +455,11 @@ mod tests {
     }
 
     #[test]
-    fn literal_templates_resolve_verbatim_including_backslashes_and_single_braces() {
+    fn literal_templates_preserve_backslashes_and_single_braces() {
         for text in ["", "/logs/output.log", r"C:\logs\{output}.log", "}text{", "text }}"] {
             let template: StepTemplate = text.parse().unwrap();
             assert!(template.0.references().next().is_none());
-            assert_eq!(template.resolve(|_, _| None).unwrap(), text);
+            assert_eq!(template.literal().unwrap(), text);
         }
     }
 
@@ -535,7 +531,7 @@ mod tests {
     }
 
     #[test]
-    fn literals_and_repeated_references_resolve_in_text_order() {
+    fn needs_preserve_reference_order_and_duplicates() {
         let template: StepTemplate = "prefix/{{ other.facts.dir }}/{{subject.facts.file}}/{{ other.facts.dir }}.log"
             .parse()
             .unwrap();
@@ -546,16 +542,6 @@ mod tests {
                 Need::Fact("subject".into(), "file".into()),
                 Need::Fact("other".into(), "dir".into())
             ]
-        );
-        assert_eq!(
-            template
-                .resolve(|participant, fact| match (participant, fact) {
-                    ("other", "dir") => Some("logs"),
-                    ("subject", "file") => Some("output"),
-                    _ => None,
-                })
-                .unwrap(),
-            "prefix/logs/output/logs.log"
         );
     }
 
@@ -720,51 +706,20 @@ mod tests {
     }
 
     #[test]
-    fn resolution_substitutes_facts_and_rejects_late_facts_by_name() {
-        for reference in ["subject.late.ip", "other.late.container_id", "other.late.pod_uid"] {
-            let template: StepTemplate =
-                format!("{{{{ subject.facts.file }}}}/{{{{{reference}}}}}/{{{{ other.late.ip }}}}")
-                    .parse()
-                    .unwrap();
-            assert_eq!(
-                template.resolve(|_, _| None).unwrap_err(),
-                "cannot resolve fact reference '{{ subject.facts.file }}'"
-            );
-            assert_eq!(
-                template.resolve(|_, _| Some("logs")).unwrap_err(),
-                format!("cannot resolve late fact reference '{{{{{reference}}}}}' before the participant runs")
-            );
-        }
-        let template: StepTemplate = "{{subject.facts.file}}".parse().unwrap();
-        assert_eq!(template.resolve(|_, _| Some("logs")).unwrap(), "logs");
-    }
-
-    #[test]
-    fn resolution_names_the_first_missing_reference() {
-        for reference in ["{{ other.facts.b }}", "{{other.facts.b}}", "{{  other.facts.b  }}"] {
-            let template: StepTemplate = format!("{{{{ subject.facts.a }}}}{reference}{{{{ subject.facts.c }}}}")
-                .parse()
-                .unwrap();
-            assert_eq!(
-                template
-                    .resolve(|_, name| (name == "a").then_some("found"))
-                    .unwrap_err(),
-                format!("cannot resolve fact reference '{reference}'")
-            );
-        }
-    }
-
-    #[test]
-    fn resolution_cannot_introduce_a_template_reference() {
-        for (text, value) in [
-            ("{{ subject.facts.file }}", "{{ unresolved }}"),
-            ("{{ subject.facts.file }}{", "{"),
+    fn literal_rejects_early_and_late_references() {
+        for reference in [
+            "subject.facts.file",
+            "subject.late.ip",
+            "other.late.container_id",
+            "other.late.pod_uid",
         ] {
-            let template: StepTemplate = text.parse().unwrap();
-            assert_eq!(
-                template.resolve(|_, _| Some(value)).unwrap_err(),
-                "substitution would form a template delimiter ('{{')"
-            );
+            for text in [
+                format!("{{{{ {reference} }}}}"),
+                format!("prefix/{{{{ {reference} }}}}/suffix"),
+            ] {
+                let template: StepTemplate = text.parse().unwrap();
+                assert_eq!(template.literal(), None, "{text}");
+            }
         }
     }
 }

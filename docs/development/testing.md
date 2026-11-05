@@ -322,8 +322,10 @@ Native process and endpoint steps also require `on`:
   abandoned command at timeout fails, and a failed execution mechanism errors. Diagnostics include the exit code
   and trimmed stdout and stderr, capped at 4096 bytes.
 - `send` is an action requiring `endpoint`, `payload` and `timeout`. It sends the string's UTF-8 bytes verbatim,
-  including any framing, through the endpoint's planned route. YAML escapes above `\x7f` encode as UTF-8, so
-  frame-length bytes must be below 0x80. It retries failed sends until one is accepted or the timeout expires.
+  including any framing, through the endpoint's planned route. Optional `repeat` is a positive integer (default 1):
+  it repeats the payload in one message, and diagnostics report the total bytes. Zero is rejected at load.
+  YAML escapes above `\x7f` encode as UTF-8, so frame-length bytes must be below 0x80.
+  It retries failed sends until one is accepted or the timeout expires.
   A retry after a harness error may deliver the payload twice. A timeout fails after any product refusal; it errors
   if only harness failures occurred. UDP cannot confirm a listener, so gate UDP sends on the participant's listener
   output.
@@ -500,8 +502,10 @@ replace those defaults.
 In Linux containers, `agent-adp` accepts the directory configuration names `files/` and `cont-init.d/`.
 Files under `files/` land beneath `/var/lib/panoramic/files`, available through the `files_dir` fact, with mode 0644.
 Files under `cont-init.d/` become executable hooks at `/etc/cont-init.d/50-<name>` with mode 0755, before the image's
-`99-agent-data-plane.sh` hook. Nested hook paths are rejected. Case files are rejected on other realizations,
-including files in OS overlays.
+`99-agent-data-plane.sh` hook. Nested hook paths are rejected.
+Windows containers accept `files/`, placing regular files under `C:\panoramic\files` with mode 0644 and backslash
+paths. The Windows `files_dir` fact names that directory. `cont-init.d/` is Linux-only.
+macOS host process groups reject case files, including files in OS overlays.
 
 The definition derives these endpoints from the effective environment:
 
@@ -630,10 +634,16 @@ the container. Values in `ADP_DD_*` variables cannot use this placeholder: the i
 unresolved later; use the `DD_` spelling instead. Processes started through operations (Docker exec) inherit the
 container's original environment, so they still see the placeholder.
 
-`agent-adp` accepts `config.params.extra_hosts` in Linux containers: a map from host names to the string `self`.
-The same init hook maps each name to the participant's own address in `/etc/hosts`. Names must be nonempty,
+Windows containers substitute the same own-`ip` placeholder through `C:\adp\participant-late.ps1`.
+The entrypoint dot-sources the script before starting either product, so resolved process environment variables
+reach both. It finds the container's primary IPv4 address using hostname resolution; failure to find an address
+stops the entrypoint before any exit record is written. Process observation reports that exit as undetermined.
+
+`agent-adp` accepts `config.params.extra_hosts` in Linux and Windows containers: a map from host names to the string
+`self`. The late-substitution hook maps each name to the participant's own address in `/etc/hosts` on Linux or
+`C:\Windows\System32\drivers\etc\hosts` on Windows. Names must be nonempty,
 contain only ASCII letters, digits, dots and hyphens, and not be `localhost` (case-insensitive, including a trailing
-dot). Other targets and value shapes are rejected. Nonempty mappings are supported only in Linux containers.
+dot). Other targets and value shapes are rejected. macOS host process groups reject nonempty mappings.
 
 ```yaml
 participants:

@@ -27,12 +27,6 @@ mod port_listening;
 mod process_stable_for;
 mod send;
 
-#[cfg(any(test, feature = "test-util"))]
-use self::{
-    file_contains::FileContains,
-    log_contains::{LogContains, LogNotContains},
-};
-
 /// Steps available to case files, sorted by name.
 pub const REGISTERED_STEPS: &[&dyn StepFactory] = &[
     &cli::CliFactory,
@@ -105,11 +99,22 @@ mod tests {
 
     use super::*;
     use crate::{
-        cli::Cli, config_key_equals::ConfigKeyEquals, config_set::ConfigSet, dogstatsd_replay::DogstatsdReplay,
-        exec::Exec, exits_with::ExitsWith, http_check::HttpCheck,
-        intake_has_forwarded_packets::IntakeHasForwardedPackets, intake_has_metric::IntakeHasMetric,
-        intake_has_service_check::IntakeHasServiceCheck, port_listening::PortListening,
-        process_stable_for::ProcessStableFor, send::Send, test_support::valid_fields,
+        cli::Cli,
+        config_key_equals::ConfigKeyEquals,
+        config_set::ConfigSet,
+        dogstatsd_replay::DogstatsdReplay,
+        exec::Exec,
+        exits_with::ExitsWith,
+        file_contains::FileContains,
+        http_check::HttpCheck,
+        intake_has_forwarded_packets::IntakeHasForwardedPackets,
+        intake_has_metric::IntakeHasMetric,
+        intake_has_service_check::IntakeHasServiceCheck,
+        log_contains::{LogContains, LogNotContains},
+        port_listening::PortListening,
+        process_stable_for::ProcessStableFor,
+        send::Send,
+        test_support::valid_fields,
     };
 
     const PATTERN_STEPS: &[&dyn StepFactory] = &[

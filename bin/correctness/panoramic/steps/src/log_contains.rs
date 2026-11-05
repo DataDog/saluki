@@ -109,7 +109,9 @@ impl Step for LogStep {
                     resolved = Matcher::Literal(pattern);
                     &resolved
                 }
-                Err(message) => return StepReport::new(started, AssertionStatus::Errored, message),
+                Err(message) => {
+                    return StepReport::new(started, AssertionStatus::Errored, format!("pattern: {message}"))
+                }
             },
         };
         let pattern = matcher.pattern();
@@ -166,13 +168,10 @@ impl Step for LogStep {
 }
 
 fn compile_pattern(pattern: &StepTemplate, regex: bool) -> Result<Option<Matcher>, String> {
-    if pattern.needs().next().is_some() {
-        if regex {
-            return Err("pattern: template references are allowed only in literal patterns (regex: false)".into());
-        }
-        Ok(None)
-    } else {
-        Matcher::build(&pattern.resolve(|_, _| None)?, regex).map(Some)
+    match pattern.literal() {
+        Some(text) => Matcher::build(&text, regex).map(Some),
+        None if regex => Err("pattern: template references are allowed only in literal patterns (regex: false)".into()),
+        None => Ok(None),
     }
 }
 
@@ -275,7 +274,7 @@ mod tests {
             for fake in [None, Some(FakeParticipant::default())] {
                 let report = run_step_with(factory, &fields, fake.as_ref()).await;
                 assert_eq!(report.status, AssertionStatus::Errored, "{report:?}");
-                assert_eq!(report.message, "participant 'subject' has no late fact 'ip'");
+                assert_eq!(report.message, "pattern: participant 'subject' has no late fact 'ip'");
             }
         }
     }
@@ -438,7 +437,7 @@ mod tests {
         let step: LogContains = decode_fields(&fields).unwrap();
         assert_eq!(step.on, "subject");
         assert_eq!(step.process, None);
-        assert_eq!(step.pattern.resolve(|_, _| None).unwrap(), "ready");
+        assert_eq!(step.pattern.literal().unwrap(), "ready");
         assert!(!step.regex);
         assert_eq!(Duration::from(step.timeout), Duration::from_secs(30));
     }
@@ -449,7 +448,7 @@ mod tests {
         let step: LogNotContains = decode_fields(&fields).unwrap();
         assert_eq!(step.on, "subject");
         assert_eq!(step.process, None);
-        assert_eq!(step.pattern.resolve(|_, _| None).unwrap(), "panic");
+        assert_eq!(step.pattern.literal().unwrap(), "panic");
         assert!(!step.regex);
         assert_eq!(Duration::from(step.during), Duration::from_secs(10));
         let during = fields.remove("during").unwrap();

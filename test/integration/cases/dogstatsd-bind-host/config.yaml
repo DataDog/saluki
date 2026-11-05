@@ -1,46 +1,36 @@
-# Issue #1331: bind_host support — test 2 of 3 (bind_host is used)
-#
-# The core agent reads `bind_host` from config to determine which address
-# DogStatsD binds to. When bind_host is set and non_local_traffic is false,
-# the core agent binds to the specified address instead of localhost.
-#
-# ADP must match this behavior. This test sets bind_host to the container's
-# eth0 IP (resolved at runtime via PANORAMIC_DYNAMIC_CONTAINER_IP) and
-# verifies the listener binds to that address. The eth0 IP is guaranteed
-# to be neither 127.0.0.1 nor 0.0.0.0, which proves bind_host was actually
-# read from config and used — not just coincidentally matching a hardcoded
-# default.
+# Issue #1331: bind_host support — bind_host is used.
+# The participant resolves its own container IP before either product starts.
+# Binding that non-loopback address proves ADP reads bind_host rather than a default.
 
-type: integration
 name: "dogstatsd-bind-host"
 description: "Verifies DogStatsD binds to the address specified by bind_host"
 timeout: 120s
-# Not run on the mac runtime: dynamic-variable resolution there has no portable equivalent for
-# discovering a non-loopback bind address.
-runtimes: [linux, windows]
+subject_os: [linux, windows]
 
-env:
-  DD_API_KEY: "00000000000000000000000000000000"
-  DD_HOSTNAME: "integration-test-dsd-bind-host"
-  DD_DATA_PLANE_ENABLED: "true"
-  DD_DATA_PLANE_STANDALONE_MODE: "false"
-  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-  # PANORAMIC_DYNAMIC_* values are interpreted by the test runtime, not by the test image:
-  #  - On Linux, the value is executed as a shell command inside the container at startup.
-  #  - On Windows, the harness ignores the value and resolves the variable by name (CONTAINER_IP
-  #    looks up the container's primary IPv4 address).
-  PANORAMIC_DYNAMIC_CONTAINER_IP: "hostname -i | awk '{print $1}'"
-  DD_BIND_HOST: "{{PANORAMIC_DYNAMIC_CONTAINER_IP}}"
-
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    config:
+      env:
+        DD_API_KEY: "00000000000000000000000000000000"
+        DD_HOSTNAME: "integration-test-dsd-bind-host"
+        DD_DATA_PLANE_ENABLED: "true"
+        DD_DATA_PLANE_STANDALONE_MODE: "false"
+        DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+        DD_BIND_HOST: "{{ self.late.ip }}"
 
 procedure:
-  - assertion: log_contains
-    pattern: 'listen_addr:"udp://{{PANORAMIC_DYNAMIC_CONTAINER_IP}}:58125"'
+  - step: log_contains
+    on: adp
+    pattern: 'listen_addr:"udp://{{ adp.late.ip }}:58125"'
     timeout: 60s
   - parallel:
-      - assertion: process_stable_for
+      - step: process_stable_for
+        on: adp
         duration: 10s
-      - assertion: log_not_contains
+      - step: log_not_contains
+        on: adp
         pattern: "panic|PANIC"
         regex: true
         during: 10s

@@ -279,7 +279,7 @@ pub(super) fn endpoints(
         (Os::Linux, RealizationKind::LinuxContainer) => Platform::LinuxContainer,
         (Os::Windows, RealizationKind::WindowsContainer) => Platform::WindowsContainer,
         (Os::MacOs, RealizationKind::HostProcessGroup) => Platform::MacOsHost,
-        _ => return Ok(BTreeMap::new()),
+        _ => unreachable!("agent-adp dispatches listener configuration only for supported realizations"),
     };
     let env = Environment { values: env, platform };
     let adp = env.enabled(Owner::Agent, "DATA_PLANE_ENABLED", "false")?;

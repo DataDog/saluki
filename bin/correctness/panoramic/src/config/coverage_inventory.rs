@@ -739,6 +739,115 @@ fn first_difference(path: &str, saved: &str, generated: &str) -> Option<String> 
     ))
 }
 
+/// Every integration case and subject OS as first recorded in the coverage inventory; a change here removes or adds
+/// coverage.
+const ORIGINAL_INTEGRATION_ROWS: &[(&str, &[Os])] = &[
+    ("adp-cmd-port", &[Os::Linux, Os::MacOs, Os::Windows]),
+    ("adp-config-check-exit", &[Os::Linux, Os::MacOs, Os::Windows]),
+    ("adp-config-check-no-warn", &[Os::Linux, Os::MacOs, Os::Windows]),
+    ("adp-config-check-warn", &[Os::Linux, Os::MacOs, Os::Windows]),
+    ("adp-config-dynamic-basic", &[Os::Linux, Os::MacOs, Os::Windows]),
+    ("adp-config-dynamic-runtime", &[Os::Linux, Os::MacOs, Os::Windows]),
+    ("adp-config-otlp", &[Os::Linux, Os::MacOs, Os::Windows]),
+    ("adp-config-stream", &[Os::Linux, Os::MacOs, Os::Windows]),
+    ("adp-disabled-exit", &[Os::Linux, Os::MacOs, Os::Windows]),
+    ("adp-ipc-no-dns", &[Os::Linux]),
+    ("adp-logging-default-path", &[Os::Linux]),
+    ("adp-logging-ignores-core-agent-log-file", &[Os::Linux]),
+    ("adp-logging-mac-ignores-core-agent-log-file", &[Os::MacOs]),
+    ("adp-logging-respects-data-plane-log-file", &[Os::Linux, Os::MacOs]),
+    ("adp-logging-windows-default-path", &[Os::Windows]),
+    ("adp-logging-windows-ignores-core-agent-log-file", &[Os::Windows]),
+    ("adp-logging-windows-respects-data-plane-log-file", &[Os::Windows]),
+    ("adp-memory-mode-disabled", &[Os::Linux, Os::MacOs, Os::Windows]),
+    (
+        "adp-memory-mode-permissive-exceeds-limit",
+        &[Os::Linux, Os::MacOs, Os::Windows],
+    ),
+    (
+        "adp-memory-mode-permissive-within-limit",
+        &[Os::Linux, Os::MacOs, Os::Windows],
+    ),
+    (
+        "adp-memory-mode-strict-exceeds-limit",
+        &[Os::Linux, Os::MacOs, Os::Windows],
+    ),
+    (
+        "adp-memory-mode-strict-within-limit",
+        &[Os::Linux, Os::MacOs, Os::Windows],
+    ),
+    ("adp-no-pipelines-exit", &[Os::Linux, Os::MacOs, Os::Windows]),
+    ("adp-rar-disabled", &[Os::Linux]),
+    ("adp-rar-registration", &[Os::Linux, Os::MacOs, Os::Windows]),
+    ("adp-rc-core-disabled", &[Os::Linux]),
+    ("adp-rc-no-products", &[Os::Linux]),
+    ("apm-bind-custom-hostname", &[Os::Linux, Os::Windows]),
+    ("basic-startup", &[Os::Linux, Os::MacOs, Os::Windows]),
+    ("dogstatsd-autoscale-udp", &[Os::Linux, Os::MacOs, Os::Windows]),
+    ("dogstatsd-bind-custom-hostname", &[Os::Linux, Os::Windows]),
+    ("dogstatsd-bind-host", &[Os::Linux, Os::Windows]),
+    ("dogstatsd-default-bind", &[Os::Linux, Os::MacOs, Os::Windows]),
+    ("dogstatsd-enabled", &[Os::Linux, Os::MacOs, Os::Windows]),
+    ("dogstatsd-forwarding", &[Os::Linux]),
+    ("dogstatsd-host-tag", &[Os::Linux]),
+    ("dogstatsd-intake-metric", &[Os::Linux]),
+    ("dogstatsd-named-pipe-windows", &[Os::Windows]),
+    ("dogstatsd-no-listener-continues", &[Os::Linux, Os::MacOs]),
+    (
+        "dogstatsd-non-local-overrides-bind-host",
+        &[Os::Linux, Os::MacOs, Os::Windows],
+    ),
+    ("dogstatsd-replay-unix", &[Os::Linux, Os::MacOs]),
+    ("dogstatsd-replay-windows", &[Os::Windows]),
+    ("dogstatsd-require-listener-exit", &[Os::Linux, Os::MacOs]),
+    ("dogstatsd-skip-failed-listener", &[Os::Linux, Os::MacOs]),
+    ("dogstatsd-top-windows", &[Os::Windows]),
+    ("dogstatsd-top", &[Os::Linux]),
+    ("liveness-container-tags", &[Os::Linux]),
+    ("otlp-tls", &[Os::Linux]),
+    ("otlp-traces-enabled", &[Os::Linux, Os::MacOs, Os::Windows]),
+    ("privileged-api-endpoints", &[Os::Linux, Os::MacOs, Os::Windows]),
+    ("telemetry-endpoint", &[Os::Linux, Os::MacOs, Os::Windows]),
+    ("unprivileged-api-endpoints", &[Os::Linux, Os::MacOs, Os::Windows]),
+];
+
+/// Rows added on purpose beyond the original coverage.
+const INTENDED_ADDITIONS: &[(&str, &[Os])] = &[
+    ("dogstatsd-host-tag", &[Os::MacOs, Os::Windows]),
+    ("dogstatsd-intake-metric", &[Os::MacOs, Os::Windows]),
+];
+
+#[test]
+fn every_original_integration_row_runs_natively() {
+    let inventory = Inventory::generate(&repository_root());
+    let expected: BTreeSet<_> = ORIGINAL_INTEGRATION_ROWS
+        .iter()
+        .chain(INTENDED_ADDITIONS)
+        .flat_map(|&(name, oses)| oses.iter().map(move |os| (name, os.name())))
+        .collect();
+    let rows: Vec<_> = inventory.rows.iter().filter(|row| row.suite == INTEGRATION).collect();
+    let actual: BTreeSet<_> = rows
+        .iter()
+        .map(|row| (row.name.as_str(), row.subject_os.as_str()))
+        .collect();
+    assert_eq!(
+        actual, expected,
+        "integration coverage must keep every original row and only the intended additions"
+    );
+    for row in rows {
+        let key = (row.name.as_str(), row.subject_os.as_str());
+        assert_eq!(row.execution, NATIVE, "{key:?}: must run natively");
+        assert_eq!(row.status, SELECTED, "{key:?}");
+        let jobs: &[&str] = match row.subject_os.as_str() {
+            "linux" => &["test-integration"],
+            "macos" => &["test-integration-macos-arm64", "test-integration-macos-amd64"],
+            "windows" => &["test-integration-windows-amd64"],
+            _ => unreachable!("the row set was checked"),
+        };
+        assert_eq!(row.ci_jobs, jobs, "{key:?}: original CI jobs must be preserved");
+    }
+}
+
 #[test]
 fn coverage_inventory_matches_the_case_files() {
     let root = repository_root();

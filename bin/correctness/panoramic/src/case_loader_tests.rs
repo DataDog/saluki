@@ -616,32 +616,27 @@ fn agent_adp_default_log_file_in_env_plans_on_linux_and_windows_but_not_macos() 
 }
 
 #[test]
-fn agent_adp_accepts_its_own_ip_in_linux_env_but_rejects_it_in_windows_env() {
-    for (os, kind) in [("linux", "linux-container"), ("windows", "windows-container")] {
+fn agent_adp_accepts_and_canonicalizes_its_own_ip_in_container_env() {
+    for os in [Os::Linux, Os::Windows] {
         for reference in [
             "{{self.late.ip}}",
             "{{adp.late.ip}}",
             "{{ self.late.ip }}",
             "{{  adp.late.ip  }}",
         ] {
-            let yaml = PARTICIPANT_FIELDS.replace("[linux]", &format!("[{os}]")).replace(
-                "subject: true",
-                &format!("subject: true, config: {{env: {{IP: '{reference}'}}}}"),
-            );
+            let yaml = PARTICIPANT_FIELDS
+                .replace("[linux]", &format!("[{}]", os.name()))
+                .replace(
+                    "subject: true",
+                    &format!("subject: true, config: {{env: {{IP: '{reference}'}}}}"),
+                );
             let case = crate::CASE_LOADER
                 .load_content(&yaml, "alpha", Path::new("alpha/config.yaml"))
                 .unwrap()
                 .remove(0);
-            let result = planner().compile(case, Os::Linux);
-            if os == "linux" {
-                let plan = result.unwrap().into_plan().unwrap();
-                assert_eq!(plan.case_values("adp").unwrap().env["IP"], "{{ self.late.ip }}");
-                assert_eq!(plan.effective_config("adp").unwrap().env["IP"], "{{ self.late.ip }}");
-            } else {
-                assert_eq!(result.err().unwrap().to_string(), format!(
-                    "case 'alpha' in alpha/config.yaml: on subject OS '{os}', participant 'adp' of type 'agent-adp' as {kind} on {os} environment variable 'IP' '{reference}' references its own late fact 'ip', which type 'agent-adp' does not substitute into its environment as {kind}"
-                ));
-            }
+            let plan = planner().compile(case, os).unwrap().into_plan().unwrap();
+            assert_eq!(plan.case_values("adp").unwrap().env["IP"], "{{ self.late.ip }}");
+            assert_eq!(plan.effective_config("adp").unwrap().env["IP"], "{{ self.late.ip }}");
         }
     }
 }

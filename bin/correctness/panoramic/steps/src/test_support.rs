@@ -3,10 +3,21 @@
 use panoramic_core::step::StepFields;
 
 use crate::{
-    cli::Cli, config_key_equals::ConfigKeyEquals, config_set::ConfigSet, dogstatsd_replay::DogstatsdReplay, exec::Exec,
-    exits_with::ExitsWith, http_check::HttpCheck, intake_has_forwarded_packets::IntakeHasForwardedPackets,
-    intake_has_metric::IntakeHasMetric, intake_has_service_check::IntakeHasServiceCheck, port_listening::PortListening,
-    process_stable_for::ProcessStableFor, send::Send, FileContains, LogContains, LogNotContains,
+    cli::Cli,
+    config_key_equals::ConfigKeyEquals,
+    config_set::ConfigSet,
+    dogstatsd_replay::DogstatsdReplay,
+    exec::Exec,
+    exits_with::ExitsWith,
+    file_contains::FileContains,
+    http_check::HttpCheck,
+    intake_has_forwarded_packets::IntakeHasForwardedPackets,
+    intake_has_metric::IntakeHasMetric,
+    intake_has_service_check::IntakeHasServiceCheck,
+    log_contains::{LogContains, LogNotContains},
+    port_listening::PortListening,
+    process_stable_for::ProcessStableFor,
+    send::Send,
 };
 
 /// Returns fields that build the registered step `name`, on participant `subject`.

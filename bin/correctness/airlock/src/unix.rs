@@ -367,7 +367,8 @@ mod tests {
     #[tokio::test]
     async fn dropping_a_process_kills_its_whole_group() {
         // The backgrounded `sleep` shares the shell's process group and output pipes.
-        let (process, mut rx, exit_token) = spawn_shell("sleep 60 & echo ready; wait").await;
+        // Keep the shell alive if its child receives the group kill first.
+        let (process, mut rx, exit_token) = spawn_shell("sleep 60 & echo ready; wait; exec sleep 60").await;
         let exit_code = process.exit_code_cell();
         wait_for_line(&mut rx, "ready").await;
 

@@ -1,44 +1,45 @@
-type: integration
 name: "otlp-traces-enabled"
 description: "Verifies OTLP pipeline starts with native trace handling and proxying for metrics/logs"
 timeout: 120s
-runtimes: [linux, mac, windows]
+subject_os: [linux, macos, windows]
 
-env:
-  DD_API_KEY: "test-api-key"
-  DD_HOSTNAME: "integration-test-dsd"
-  DD_DATA_PLANE_ENABLED: "true"
-  DD_DATA_PLANE_STANDALONE_MODE: "true"
-  DD_DATA_PLANE_OTLP_ENABLED: "true"
-  DD_DATA_PLANE_OTLP_PROXY_ENABLED: "true"
-  DD_DATA_PLANE_OTLP_PROXY_TRACES_ENABLED: "false"
-  # Bind ADP to framework-isolated addresses reachable through the container port mapping.
-  #
-  # TODO(#2177): Replace these temporary keys and ports with the canonical schema keys and the
-  # framework's `54317`/`54318` ports once OTLP listener ownership prevents contention.
-  DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY: "0.0.0.0:56317"
-  DD_DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY: "0.0.0.0:56318"
-
-container:
-  exposed_ports:
-    - "56317/tcp"
-    - "56318/tcp"
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    config:
+      env:
+        DD_API_KEY: "test-api-key"
+        DD_HOSTNAME: "integration-test-dsd"
+        DD_DATA_PLANE_ENABLED: "true"
+        DD_DATA_PLANE_STANDALONE_MODE: "true"
+        DD_DATA_PLANE_OTLP_ENABLED: "true"
+        DD_DATA_PLANE_OTLP_PROXY_ENABLED: "true"
+        DD_DATA_PLANE_OTLP_PROXY_TRACES_ENABLED: "false"
+        # Bind ADP's OTLP receivers to fixed ports apart from the Core Agent's 54317/54318.
+        #
+        # TODO(#2177): Replace these temporary keys and ports with the canonical schema keys and the
+        # framework's `54317`/`54318` ports once OTLP listener ownership prevents contention.
+        DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY: "0.0.0.0:56317"
+        DD_DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY: "0.0.0.0:56318"
 
 procedure:
   # Make sure the process becomes healthy, and stays up without errors, listening for OTLP (HTTP and gRPC),
   # for ~10 seconds after.
   - parallel:
-      - assertion: process_stable_for
+      - step: process_stable_for
+        on: adp
         duration: 10s
-      - assertion: port_listening
-        port: 56317
-        protocol: tcp
+      - step: port_listening
+        on: adp
+        endpoint: otlp_grpc
         timeout: 60s
-      - assertion: port_listening
-        port: 56318
-        protocol: tcp
+      - step: port_listening
+        on: adp
+        endpoint: otlp_http
         timeout: 60s
-      - assertion: log_not_contains
+      - step: log_not_contains
+        on: adp
         pattern: "panic|PANIC"
         regex: true
         during: 10s

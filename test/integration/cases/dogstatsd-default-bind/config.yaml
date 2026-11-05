@@ -8,28 +8,38 @@
 # bind_host configured, no non_local_traffic. The DogStatsD listener
 # should bind to 127.0.0.1.
 
-type: integration
 name: "dogstatsd-default-bind"
 description: "Verifies DogStatsD binds to 127.0.0.1 by default when bind_host is not configured"
 timeout: 120s
-runtimes: [linux, mac, windows]
+subject_os: [linux, macos, windows]
 
-env:
-  DD_API_KEY: "00000000000000000000000000000000"
-  DD_HOSTNAME: "integration-test-dsd-default-bind"
-  DD_DATA_PLANE_ENABLED: "true"
-  DD_DATA_PLANE_STANDALONE_MODE: "false"
-  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    config:
+      env:
+        DD_API_KEY: "00000000000000000000000000000000"
+        DD_HOSTNAME: "integration-test-dsd-default-bind"
+        DD_DATA_PLANE_ENABLED: "true"
+        DD_DATA_PLANE_STANDALONE_MODE: "false"
+        DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+      os:
+        macos:
+          env:
+            DD_DOGSTATSD_PORT: "58125"
 
 procedure:
-  - assertion: log_contains
+  - step: log_contains
+    on: adp
     pattern: 'listen_addr:"udp://127.0.0.1:58125"'
     timeout: 60s
   - parallel:
-      - assertion: process_stable_for
+      - step: process_stable_for
+        on: adp
         duration: 10s
-      - assertion: log_not_contains
+      - step: log_not_contains
+        on: adp
         pattern: "panic|PANIC"
         regex: true
         during: 10s

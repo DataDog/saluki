@@ -2248,14 +2248,16 @@
       "name": "adp-no-pipelines-exit",
       "suite": "integration",
       "subject_os": "linux",
-      "runtime": "linux",
+      "runtime": "linux-container",
       "source": "test/integration/cases/adp-no-pipelines-exit/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/datadog-agent:testing-devel"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest"
       },
       "ci_jobs": [
         "test-integration"
@@ -2267,13 +2269,16 @@
       "name": "adp-no-pipelines-exit",
       "suite": "integration",
       "subject_os": "macos",
-      "runtime": "mac",
+      "runtime": "host-process-group",
       "source": "test/integration/cases/adp-no-pipelines-exit/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
-      "images": {},
+      "images": {
+        "adp-host-binary": "target/release/agent-data-plane",
+        "agent-host-install": "/tmp/saluki-dda/datadog-agent"
+      },
       "ci_jobs": [
         "test-integration-macos-arm64",
         "test-integration-macos-amd64"
@@ -2285,14 +2290,15 @@
       "name": "adp-no-pipelines-exit",
       "suite": "integration",
       "subject_os": "windows",
-      "runtime": "windows",
+      "runtime": "windows-container",
       "source": "test/integration/cases/adp-no-pipelines-exit/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/agent-data-plane:testing-windows"
+        "agent-adp-windows-image": "saluki-images/agent-data-plane:testing-windows",
+        "courier-windows-binary": "target/release/panoramic-courier.exe"
       },
       "ci_jobs": [
         "test-integration-windows-amd64"
@@ -2304,14 +2310,16 @@
       "name": "adp-rar-disabled",
       "suite": "integration",
       "subject_os": "linux",
-      "runtime": "linux",
+      "runtime": "linux-container",
       "source": "test/integration/cases/adp-rar-disabled/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/datadog-agent:testing-devel"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest"
       },
       "ci_jobs": [
         "test-integration"
@@ -2427,14 +2435,16 @@
       "name": "apm-bind-custom-hostname",
       "suite": "integration",
       "subject_os": "linux",
-      "runtime": "linux",
+      "runtime": "linux-container",
       "source": "test/integration/cases/apm-bind-custom-hostname/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/datadog-agent:testing-devel"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest"
       },
       "ci_jobs": [
         "test-integration"
@@ -2446,14 +2456,15 @@
       "name": "apm-bind-custom-hostname",
       "suite": "integration",
       "subject_os": "windows",
-      "runtime": "windows",
+      "runtime": "windows-container",
       "source": "test/integration/cases/apm-bind-custom-hostname/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/agent-data-plane:testing-windows"
+        "agent-adp-windows-image": "saluki-images/agent-data-plane:testing-windows",
+        "courier-windows-binary": "target/release/panoramic-courier.exe"
       },
       "ci_jobs": [
         "test-integration-windows-amd64"
@@ -2589,14 +2600,16 @@
       "name": "dogstatsd-bind-custom-hostname",
       "suite": "integration",
       "subject_os": "linux",
-      "runtime": "linux",
+      "runtime": "linux-container",
       "source": "test/integration/cases/dogstatsd-bind-custom-hostname/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/datadog-agent:testing-devel"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest"
       },
       "ci_jobs": [
         "test-integration"
@@ -2608,14 +2621,15 @@
       "name": "dogstatsd-bind-custom-hostname",
       "suite": "integration",
       "subject_os": "windows",
-      "runtime": "windows",
+      "runtime": "windows-container",
       "source": "test/integration/cases/dogstatsd-bind-custom-hostname/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/agent-data-plane:testing-windows"
+        "agent-adp-windows-image": "saluki-images/agent-data-plane:testing-windows",
+        "courier-windows-binary": "target/release/panoramic-courier.exe"
       },
       "ci_jobs": [
         "test-integration-windows-amd64"
@@ -2627,14 +2641,16 @@
       "name": "dogstatsd-bind-host",
       "suite": "integration",
       "subject_os": "linux",
-      "runtime": "linux",
+      "runtime": "linux-container",
       "source": "test/integration/cases/dogstatsd-bind-host/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/datadog-agent:testing-devel"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest"
       },
       "ci_jobs": [
         "test-integration"
@@ -2646,14 +2662,15 @@
       "name": "dogstatsd-bind-host",
       "suite": "integration",
       "subject_os": "windows",
-      "runtime": "windows",
+      "runtime": "windows-container",
       "source": "test/integration/cases/dogstatsd-bind-host/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/agent-data-plane:testing-windows"
+        "agent-adp-windows-image": "saluki-images/agent-data-plane:testing-windows",
+        "courier-windows-binary": "target/release/panoramic-courier.exe"
       },
       "ci_jobs": [
         "test-integration-windows-amd64"
@@ -2665,14 +2682,16 @@
       "name": "dogstatsd-default-bind",
       "suite": "integration",
       "subject_os": "linux",
-      "runtime": "linux",
+      "runtime": "linux-container",
       "source": "test/integration/cases/dogstatsd-default-bind/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/datadog-agent:testing-devel"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest"
       },
       "ci_jobs": [
         "test-integration"
@@ -2684,13 +2703,16 @@
       "name": "dogstatsd-default-bind",
       "suite": "integration",
       "subject_os": "macos",
-      "runtime": "mac",
+      "runtime": "host-process-group",
       "source": "test/integration/cases/dogstatsd-default-bind/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
-      "images": {},
+      "images": {
+        "adp-host-binary": "target/release/agent-data-plane",
+        "agent-host-install": "/tmp/saluki-dda/datadog-agent"
+      },
       "ci_jobs": [
         "test-integration-macos-arm64",
         "test-integration-macos-amd64"
@@ -2702,14 +2724,15 @@
       "name": "dogstatsd-default-bind",
       "suite": "integration",
       "subject_os": "windows",
-      "runtime": "windows",
+      "runtime": "windows-container",
       "source": "test/integration/cases/dogstatsd-default-bind/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/agent-data-plane:testing-windows"
+        "agent-adp-windows-image": "saluki-images/agent-data-plane:testing-windows",
+        "courier-windows-binary": "target/release/panoramic-courier.exe"
       },
       "ci_jobs": [
         "test-integration-windows-amd64"
@@ -2935,14 +2958,15 @@
       "name": "dogstatsd-named-pipe-windows",
       "suite": "integration",
       "subject_os": "windows",
-      "runtime": "windows",
+      "runtime": "windows-container",
       "source": "test/integration/cases/dogstatsd-named-pipe-windows/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/agent-data-plane:testing-windows"
+        "agent-adp-windows-image": "saluki-images/agent-data-plane:testing-windows",
+        "courier-windows-binary": "target/release/panoramic-courier.exe"
       },
       "ci_jobs": [
         "test-integration-windows-amd64"
@@ -2996,14 +3020,16 @@
       "name": "dogstatsd-non-local-overrides-bind-host",
       "suite": "integration",
       "subject_os": "linux",
-      "runtime": "linux",
+      "runtime": "linux-container",
       "source": "test/integration/cases/dogstatsd-non-local-overrides-bind-host/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/datadog-agent:testing-devel"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest"
       },
       "ci_jobs": [
         "test-integration"
@@ -3015,13 +3041,16 @@
       "name": "dogstatsd-non-local-overrides-bind-host",
       "suite": "integration",
       "subject_os": "macos",
-      "runtime": "mac",
+      "runtime": "host-process-group",
       "source": "test/integration/cases/dogstatsd-non-local-overrides-bind-host/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
-      "images": {},
+      "images": {
+        "adp-host-binary": "target/release/agent-data-plane",
+        "agent-host-install": "/tmp/saluki-dda/datadog-agent"
+      },
       "ci_jobs": [
         "test-integration-macos-arm64",
         "test-integration-macos-amd64"
@@ -3033,14 +3062,15 @@
       "name": "dogstatsd-non-local-overrides-bind-host",
       "suite": "integration",
       "subject_os": "windows",
-      "runtime": "windows",
+      "runtime": "windows-container",
       "source": "test/integration/cases/dogstatsd-non-local-overrides-bind-host/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/agent-data-plane:testing-windows"
+        "agent-adp-windows-image": "saluki-images/agent-data-plane:testing-windows",
+        "courier-windows-binary": "target/release/panoramic-courier.exe"
       },
       "ci_jobs": [
         "test-integration-windows-amd64"
@@ -3219,14 +3249,15 @@
       "name": "dogstatsd-top-windows",
       "suite": "integration",
       "subject_os": "windows",
-      "runtime": "windows",
+      "runtime": "windows-container",
       "source": "test/integration/cases/dogstatsd-top-windows/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "180s",
       "images": {
-        "container": "saluki-images/agent-data-plane:testing-windows"
+        "agent-adp-windows-image": "saluki-images/agent-data-plane:testing-windows",
+        "courier-windows-binary": "target/release/panoramic-courier.exe"
       },
       "ci_jobs": [
         "test-integration-windows-amd64"
@@ -3281,14 +3312,16 @@
       "name": "otlp-traces-enabled",
       "suite": "integration",
       "subject_os": "linux",
-      "runtime": "linux",
+      "runtime": "linux-container",
       "source": "test/integration/cases/otlp-traces-enabled/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/datadog-agent:testing-devel"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest"
       },
       "ci_jobs": [
         "test-integration"
@@ -3300,13 +3333,16 @@
       "name": "otlp-traces-enabled",
       "suite": "integration",
       "subject_os": "macos",
-      "runtime": "mac",
+      "runtime": "host-process-group",
       "source": "test/integration/cases/otlp-traces-enabled/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
-      "images": {},
+      "images": {
+        "adp-host-binary": "target/release/agent-data-plane",
+        "agent-host-install": "/tmp/saluki-dda/datadog-agent"
+      },
       "ci_jobs": [
         "test-integration-macos-arm64",
         "test-integration-macos-amd64"
@@ -3318,14 +3354,15 @@
       "name": "otlp-traces-enabled",
       "suite": "integration",
       "subject_os": "windows",
-      "runtime": "windows",
+      "runtime": "windows-container",
       "source": "test/integration/cases/otlp-traces-enabled/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/agent-data-plane:testing-windows"
+        "agent-adp-windows-image": "saluki-images/agent-data-plane:testing-windows",
+        "courier-windows-binary": "target/release/panoramic-courier.exe"
       },
       "ci_jobs": [
         "test-integration-windows-amd64"
@@ -6606,7 +6643,7 @@
           "procedure": [
             {
               "on": "adp",
-              "pattern": "key:\"dogstatsd_telemetry_enabled_listener_id\" | Unsupported configuration key. Proceeding.",
+              "pattern": "key:\"dogstatsd_telemetry_enabled_listener_id\" \\| Unsupported configuration key. Proceeding.",
               "regex": true,
               "step": "log_contains",
               "timeout": "60s"
@@ -6649,7 +6686,7 @@
           "procedure": [
             {
               "on": "adp",
-              "pattern": "key:\"dogstatsd_telemetry_enabled_listener_id\" | Unsupported configuration key. Proceeding.",
+              "pattern": "key:\"dogstatsd_telemetry_enabled_listener_id\" \\| Unsupported configuration key. Proceeding.",
               "regex": true,
               "step": "log_contains",
               "timeout": "60s"
@@ -6692,7 +6729,7 @@
           "procedure": [
             {
               "on": "adp",
-              "pattern": "key:\"dogstatsd_telemetry_enabled_listener_id\" | Unsupported configuration key. Proceeding.",
+              "pattern": "key:\"dogstatsd_telemetry_enabled_listener_id\" \\| Unsupported configuration key. Proceeding.",
               "regex": true,
               "step": "log_contains",
               "timeout": "60s"
@@ -9401,48 +9438,110 @@
     },
     "integration/adp-no-pipelines-exit": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [],
-          "exposed_ports": [],
-          "files": [],
-          "host_cgroup_namespace": false
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "false",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_OTLP_ENABLED": "false",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_HOSTNAME": "integration-test"
+              },
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "No data pipelines are enabled. Exiting.",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "code": 1,
+              "on": "adp",
+              "process": "adp",
+              "step": "exits_with",
+              "timeout": "60s"
+            }
+          ]
         },
-        "description": "Verify ADP exits with error when no data pipelines enabled",
-        "env": {
-          "DD_API_KEY": "00000000000000000000000000000000",
-          "DD_DATA_PLANE_DOGSTATSD_ENABLED": "false",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_OTLP_ENABLED": "false",
-          "DD_DATA_PLANE_STANDALONE_MODE": "false",
-          "DD_HOSTNAME": "integration-test"
+        "macos": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "false",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_OTLP_ENABLED": "false",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_HOSTNAME": "integration-test"
+              },
+              "realization": "host-process-group",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "No data pipelines are enabled. Exiting.",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "code": 1,
+              "on": "adp",
+              "process": "adp",
+              "step": "exits_with",
+              "timeout": "60s"
+            }
+          ]
         },
-        "intake": {
-          "enabled": false
-        },
-        "name": "adp-no-pipelines-exit",
-        "procedure": [
-          {
-            "assertion": "log_contains",
-            "pattern": "No data pipelines are enabled. Exiting.",
-            "regex": false,
-            "stream": "both",
-            "timeout": "60s"
-          }
-        ],
-        "runtimes": [
-          "linux",
-          "mac",
-          "windows"
-        ],
-        "timeout": "120s"
+        "windows": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "false",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_OTLP_ENABLED": "false",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_HOSTNAME": "integration-test"
+              },
+              "realization": "windows-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "No data pipelines are enabled. Exiting.",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "code": 1,
+              "on": "adp",
+              "process": "adp",
+              "step": "exits_with",
+              "timeout": "60s"
+            }
+          ]
+        }
       },
       "steps": {
-        "single_assertions": 1,
+        "single_assertions": 2,
         "parallel_blocks": 0,
         "parallel_assertions": 0,
         "actions": 0,
         "by_kind": {
+          "exits_with": 1,
           "log_contains": 1
         }
       },
@@ -9450,57 +9549,50 @@
     },
     "integration/adp-rar-disabled": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [],
-          "exposed_ports": [
-            "58125/udp"
-          ],
-          "files": [],
-          "host_cgroup_namespace": false
-        },
-        "description": "Verify ADP gracefully handles RAR being disabled on the Core Agent",
-        "env": {
-          "DD_API_KEY": "00000000000000000000000000000000",
-          "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_REMOTE_AGENT_ENABLED": "true",
-          "DD_DATA_PLANE_STANDALONE_MODE": "false",
-          "DD_HOSTNAME": "integration-test-rar-disabled",
-          "DD_REMOTE_AGENT_REGISTRY_ENABLED": "false"
-        },
-        "intake": {
-          "enabled": false
-        },
-        "name": "adp-rar-disabled",
-        "procedure": [
-          {
-            "assertion": "log_contains",
-            "pattern": "Failed to register with the Datadog Agent. Registration will be retried periodically in the background.",
-            "regex": false,
-            "stream": "both",
-            "timeout": "15s"
-          },
-          {
-            "parallel": [
-              {
-                "assertion": "process_stable_for",
-                "duration": "10s"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_REMOTE_AGENT_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_HOSTNAME": "integration-test-rar-disabled",
+                "DD_REMOTE_AGENT_REGISTRY_ENABLED": "false"
               },
-              {
-                "assertion": "log_not_contains",
-                "during": "10s",
-                "pattern": "panic|PANIC",
-                "regex": true,
-                "stream": "both"
-              }
-            ]
-          }
-        ],
-        "runtimes": [
-          "linux"
-        ],
-        "timeout": "120s"
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "Failed to register with the Datadog Agent. Registration will be retried periodically in the background.",
+              "process": "adp",
+              "step": "log_contains",
+              "timeout": "15s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "process": "agent",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        }
       },
       "steps": {
         "single_assertions": 1,
@@ -9834,59 +9926,92 @@
     },
     "integration/apm-bind-custom-hostname": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [],
-          "exposed_ports": [],
-          "files": [],
-          "host_cgroup_namespace": false
-        },
-        "description": "Verifies APM proxy resolves a custom hostname in bind_host via DNS",
-        "env": {
-          "DD_API_KEY": "00000000000000000000000000000000",
-          "DD_APM_ENABLED": "false",
-          "DD_APM_NON_LOCAL_TRAFFIC": "false",
-          "DD_BIND_HOST": "{{PANORAMIC_DYNAMIC_CUSTOM_HOSTNAME}}",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_EXPERIMENTAL_APM_ENABLED": "true",
-          "DD_DATA_PLANE_STANDALONE_MODE": "false",
-          "DD_HOSTNAME": "integration-test-apm-bind-host-hostname",
-          "PANORAMIC_DYNAMIC_CONTAINER_IP": "hostname -i | awk '{print $1}'",
-          "PANORAMIC_DYNAMIC_CUSTOM_HOSTNAME": "echo \"$(hostname -i | awk '{print $1}') foo.local\" >> /etc/hosts; echo foo.local"
-        },
-        "intake": {
-          "enabled": false
-        },
-        "name": "apm-bind-custom-hostname",
-        "procedure": [
-          {
-            "assertion": "log_contains",
-            "pattern": "listen_addr:\"tcp://{{PANORAMIC_DYNAMIC_CONTAINER_IP}}:58126\"",
-            "regex": false,
-            "stream": "both",
-            "timeout": "60s"
-          },
-          {
-            "parallel": [
-              {
-                "assertion": "process_stable_for",
-                "duration": "10s"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_APM_ENABLED": "false",
+                "DD_APM_NON_LOCAL_TRAFFIC": "false",
+                "DD_BIND_HOST": "foo.local",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_EXPERIMENTAL_APM_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_HOSTNAME": "integration-test-apm-bind-host-hostname"
               },
-              {
-                "assertion": "log_not_contains",
-                "during": "10s",
-                "pattern": "panic|PANIC",
-                "regex": true,
-                "stream": "both"
-              }
-            ]
-          }
-        ],
-        "runtimes": [
-          "linux",
-          "windows"
-        ],
-        "timeout": "120s"
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "listen_addr:\"tcp://{{ adp.late.ip }}:58126\"",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        },
+        "windows": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_APM_ENABLED": "false",
+                "DD_APM_NON_LOCAL_TRAFFIC": "false",
+                "DD_BIND_HOST": "foo.local",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_EXPERIMENTAL_APM_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_HOSTNAME": "integration-test-apm-bind-host-hostname"
+              },
+              "realization": "windows-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "listen_addr:\"tcp://{{ adp.late.ip }}:58126\"",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        }
       },
       "steps": {
         "single_assertions": 1,
@@ -10184,57 +10309,88 @@
     },
     "integration/dogstatsd-bind-custom-hostname": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [],
-          "exposed_ports": [],
-          "files": [],
-          "host_cgroup_namespace": false
-        },
-        "description": "Verifies DogStatsD resolves a custom hostname in bind_host via DNS",
-        "env": {
-          "DD_API_KEY": "00000000000000000000000000000000",
-          "DD_BIND_HOST": "{{PANORAMIC_DYNAMIC_CUSTOM_HOSTNAME}}",
-          "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_STANDALONE_MODE": "false",
-          "DD_HOSTNAME": "integration-test-dsd-bind-host-hostname",
-          "PANORAMIC_DYNAMIC_CONTAINER_IP": "hostname -i | awk '{print $1}'",
-          "PANORAMIC_DYNAMIC_CUSTOM_HOSTNAME": "echo \"$(hostname -i | awk '{print $1}') foo.local\" >> /etc/hosts; echo foo.local"
-        },
-        "intake": {
-          "enabled": false
-        },
-        "name": "dogstatsd-bind-custom-hostname",
-        "procedure": [
-          {
-            "assertion": "log_contains",
-            "pattern": "listen_addr:\"udp://{{PANORAMIC_DYNAMIC_CONTAINER_IP}}:58125\"",
-            "regex": false,
-            "stream": "both",
-            "timeout": "60s"
-          },
-          {
-            "parallel": [
-              {
-                "assertion": "process_stable_for",
-                "duration": "10s"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_BIND_HOST": "foo.local",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_HOSTNAME": "integration-test-dsd-bind-host-hostname"
               },
-              {
-                "assertion": "log_not_contains",
-                "during": "10s",
-                "pattern": "panic|PANIC",
-                "regex": true,
-                "stream": "both"
-              }
-            ]
-          }
-        ],
-        "runtimes": [
-          "linux",
-          "windows"
-        ],
-        "timeout": "120s"
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "listen_addr:\"udp://{{ adp.late.ip }}:58125\"",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        },
+        "windows": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_BIND_HOST": "foo.local",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_HOSTNAME": "integration-test-dsd-bind-host-hostname"
+              },
+              "realization": "windows-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "listen_addr:\"udp://{{ adp.late.ip }}:58125\"",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        }
       },
       "steps": {
         "single_assertions": 1,
@@ -10251,56 +10407,88 @@
     },
     "integration/dogstatsd-bind-host": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [],
-          "exposed_ports": [],
-          "files": [],
-          "host_cgroup_namespace": false
-        },
-        "description": "Verifies DogStatsD binds to the address specified by bind_host",
-        "env": {
-          "DD_API_KEY": "00000000000000000000000000000000",
-          "DD_BIND_HOST": "{{PANORAMIC_DYNAMIC_CONTAINER_IP}}",
-          "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_STANDALONE_MODE": "false",
-          "DD_HOSTNAME": "integration-test-dsd-bind-host",
-          "PANORAMIC_DYNAMIC_CONTAINER_IP": "hostname -i | awk '{print $1}'"
-        },
-        "intake": {
-          "enabled": false
-        },
-        "name": "dogstatsd-bind-host",
-        "procedure": [
-          {
-            "assertion": "log_contains",
-            "pattern": "listen_addr:\"udp://{{PANORAMIC_DYNAMIC_CONTAINER_IP}}:58125\"",
-            "regex": false,
-            "stream": "both",
-            "timeout": "60s"
-          },
-          {
-            "parallel": [
-              {
-                "assertion": "process_stable_for",
-                "duration": "10s"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_BIND_HOST": "{{ self.late.ip }}",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_HOSTNAME": "integration-test-dsd-bind-host"
               },
-              {
-                "assertion": "log_not_contains",
-                "during": "10s",
-                "pattern": "panic|PANIC",
-                "regex": true,
-                "stream": "both"
-              }
-            ]
-          }
-        ],
-        "runtimes": [
-          "linux",
-          "windows"
-        ],
-        "timeout": "120s"
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "listen_addr:\"udp://{{ adp.late.ip }}:58125\"",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        },
+        "windows": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_BIND_HOST": "{{ self.late.ip }}",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_HOSTNAME": "integration-test-dsd-bind-host"
+              },
+              "realization": "windows-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "listen_addr:\"udp://{{ adp.late.ip }}:58125\"",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        }
       },
       "steps": {
         "single_assertions": 1,
@@ -10317,55 +10505,127 @@
     },
     "integration/dogstatsd-default-bind": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [],
-          "exposed_ports": [],
-          "files": [],
-          "host_cgroup_namespace": false
-        },
-        "description": "Verifies DogStatsD binds to 127.0.0.1 by default when bind_host is not configured",
-        "env": {
-          "DD_API_KEY": "00000000000000000000000000000000",
-          "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_STANDALONE_MODE": "false",
-          "DD_HOSTNAME": "integration-test-dsd-default-bind"
-        },
-        "intake": {
-          "enabled": false
-        },
-        "name": "dogstatsd-default-bind",
-        "procedure": [
-          {
-            "assertion": "log_contains",
-            "pattern": "listen_addr:\"udp://127.0.0.1:58125\"",
-            "regex": false,
-            "stream": "both",
-            "timeout": "60s"
-          },
-          {
-            "parallel": [
-              {
-                "assertion": "process_stable_for",
-                "duration": "10s"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_HOSTNAME": "integration-test-dsd-default-bind"
               },
-              {
-                "assertion": "log_not_contains",
-                "during": "10s",
-                "pattern": "panic|PANIC",
-                "regex": true,
-                "stream": "both"
-              }
-            ]
-          }
-        ],
-        "runtimes": [
-          "linux",
-          "mac",
-          "windows"
-        ],
-        "timeout": "120s"
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "listen_addr:\"udp://127.0.0.1:58125\"",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        },
+        "macos": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DOGSTATSD_PORT": "58125",
+                "DD_HOSTNAME": "integration-test-dsd-default-bind"
+              },
+              "realization": "host-process-group",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "listen_addr:\"udp://127.0.0.1:58125\"",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        },
+        "windows": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_HOSTNAME": "integration-test-dsd-default-bind"
+              },
+              "realization": "windows-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "listen_addr:\"udp://127.0.0.1:58125\"",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        }
       },
       "steps": {
         "single_assertions": 1,
@@ -11245,120 +11505,139 @@
     },
     "integration/dogstatsd-named-pipe-windows": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [],
-          "exposed_ports": [],
-          "files": [],
-          "host_cgroup_namespace": false
-        },
-        "description": "Verifies Windows DogStatsD named-pipe intake accepts client writes and decodes frames",
-        "env": {
-          "DD_API_KEY": "00000000000000000000000000000000",
-          "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_STANDALONE_MODE": "false",
-          "DD_DOGSTATSD_EOL_REQUIRED": "named_pipe",
-          "DD_DOGSTATSD_PIPE_NAME": "datadog-dogstatsd-integration",
-          "DD_DOGSTATSD_PORT": "0",
-          "DD_HOSTNAME": "integration-test-dsd-named-pipe"
-        },
-        "intake": {
-          "enabled": false
-        },
-        "name": "dogstatsd-named-pipe-windows",
-        "procedure": [
-          {
-            "assertion": "log_contains",
-            "pattern": "listen_addr:\"npipe://datadog-dogstatsd-integration\"",
-            "regex": false,
-            "stream": "both",
-            "timeout": "30s"
-          },
-          {
-            "action": "target_exec",
-            "command": [
-              "pwsh",
-              "-NoProfile",
-              "-NonInteractive",
-              "-Command",
-              "$ErrorActionPreference = \"Stop\"\nSet-StrictMode -Version 3.0\nfunction Send-NamedPipePayload([string] $Payload) {\n  $pipe = [System.IO.Pipes.NamedPipeClientStream]::new(\n    \".\",\n    \"datadog-dogstatsd-integration\",\n    [System.IO.Pipes.PipeDirection]::Out\n  )\n  try {\n    $pipe.Connect(30000)\n    $bytes = [System.Text.Encoding]::UTF8.GetBytes($Payload)\n    $pipe.Write($bytes, 0, $bytes.Length)\n    $pipe.Flush()\n  } finally {\n    $pipe.Dispose()\n  }\n}\n\nSend-NamedPipePayload \"integration.named_pipe.invalid`n\"\nSend-NamedPipePayload \"integration.named_pipe.with_eol.invalid`n\"\nSend-NamedPipePayload \"integration.named_pipe.no_eol.invalid\"\nSend-NamedPipePayload \"integration.named_pipe.multi_one.invalid`nintegration.named_pipe.multi_two.invalid`n\"\nSend-NamedPipePayload (\"x\" * 10000)\nSend-NamedPipePayload \"integration.named_pipe.after_oversize.invalid`n\"\n"
-            ],
-            "timeout": "30s"
-          },
-          {
-            "assertion": "log_contains",
-            "pattern": "integration.named_pipe.invalid",
-            "regex": false,
-            "stream": "both",
-            "timeout": "30s"
-          },
-          {
-            "assertion": "log_contains",
-            "pattern": "integration.named_pipe.with_eol.invalid",
-            "regex": false,
-            "stream": "both",
-            "timeout": "30s"
-          },
-          {
-            "assertion": "log_not_contains",
-            "during": "10s",
-            "pattern": "integration.named_pipe.no_eol.invalid",
-            "regex": false,
-            "stream": "both"
-          },
-          {
-            "assertion": "log_contains",
-            "pattern": "integration.named_pipe.multi_one.invalid",
-            "regex": false,
-            "stream": "both",
-            "timeout": "30s"
-          },
-          {
-            "assertion": "log_contains",
-            "pattern": "integration.named_pipe.multi_two.invalid",
-            "regex": false,
-            "stream": "both",
-            "timeout": "30s"
-          },
-          {
-            "assertion": "log_contains",
-            "pattern": "integration.named_pipe.after_oversize.invalid",
-            "regex": false,
-            "stream": "both",
-            "timeout": "30s"
-          },
-          {
-            "parallel": [
-              {
-                "assertion": "process_stable_for",
-                "duration": "10s"
+        "windows": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DOGSTATSD_EOL_REQUIRED": "named_pipe",
+                "DD_DOGSTATSD_PIPE_NAME": "datadog-dogstatsd-integration",
+                "DD_DOGSTATSD_PORT": "0",
+                "DD_HOSTNAME": "integration-test-dsd-named-pipe"
               },
-              {
-                "assertion": "log_not_contains",
-                "during": "10s",
-                "pattern": "panic|PANIC",
-                "regex": true,
-                "stream": "both"
-              }
-            ]
-          }
-        ],
-        "runtimes": [
-          "windows"
-        ],
-        "timeout": "120s"
+              "realization": "windows-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "listen_addr:\"npipe://datadog-dogstatsd-integration\"",
+              "step": "log_contains",
+              "timeout": "30s"
+            },
+            {
+              "endpoint": "dogstatsd_pipe",
+              "on": "adp",
+              "payload": "integration.named_pipe.invalid\n",
+              "step": "send",
+              "timeout": "30s"
+            },
+            {
+              "endpoint": "dogstatsd_pipe",
+              "on": "adp",
+              "payload": "integration.named_pipe.with_eol.invalid\n",
+              "step": "send",
+              "timeout": "30s"
+            },
+            {
+              "endpoint": "dogstatsd_pipe",
+              "on": "adp",
+              "payload": "integration.named_pipe.no_eol.invalid",
+              "step": "send",
+              "timeout": "30s"
+            },
+            {
+              "endpoint": "dogstatsd_pipe",
+              "on": "adp",
+              "payload": "integration.named_pipe.multi_one.invalid\nintegration.named_pipe.multi_two.invalid\n",
+              "step": "send",
+              "timeout": "30s"
+            },
+            {
+              "endpoint": "dogstatsd_pipe",
+              "on": "adp",
+              "payload": "x",
+              "repeat": 10000,
+              "step": "send",
+              "timeout": "30s"
+            },
+            {
+              "endpoint": "dogstatsd_pipe",
+              "on": "adp",
+              "payload": "integration.named_pipe.after_oversize.invalid\n",
+              "step": "send",
+              "timeout": "30s"
+            },
+            {
+              "on": "adp",
+              "pattern": "integration.named_pipe.invalid",
+              "step": "log_contains",
+              "timeout": "30s"
+            },
+            {
+              "on": "adp",
+              "pattern": "integration.named_pipe.with_eol.invalid",
+              "step": "log_contains",
+              "timeout": "30s"
+            },
+            {
+              "during": "10s",
+              "on": "adp",
+              "pattern": "integration.named_pipe.no_eol.invalid",
+              "step": "log_not_contains"
+            },
+            {
+              "on": "adp",
+              "pattern": "integration.named_pipe.multi_one.invalid",
+              "step": "log_contains",
+              "timeout": "30s"
+            },
+            {
+              "on": "adp",
+              "pattern": "integration.named_pipe.multi_two.invalid",
+              "step": "log_contains",
+              "timeout": "30s"
+            },
+            {
+              "on": "adp",
+              "pattern": "integration.named_pipe.after_oversize.invalid",
+              "step": "log_contains",
+              "timeout": "30s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        }
       },
       "steps": {
         "single_assertions": 7,
         "parallel_blocks": 1,
         "parallel_assertions": 2,
-        "actions": 1,
+        "actions": 6,
         "by_kind": {
           "log_contains": 6,
           "log_not_contains": 2,
           "process_stable_for": 1,
-          "target_exec": 1
+          "send": 6
         }
       },
       "ignored_fields": []
@@ -11479,57 +11758,133 @@
     },
     "integration/dogstatsd-non-local-overrides-bind-host": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [],
-          "exposed_ports": [],
-          "files": [],
-          "host_cgroup_namespace": false
-        },
-        "description": "Verifies dogstatsd_non_local_traffic takes precedence over bind_host",
-        "env": {
-          "DD_API_KEY": "00000000000000000000000000000000",
-          "DD_BIND_HOST": "10.9.8.7",
-          "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_STANDALONE_MODE": "false",
-          "DD_DOGSTATSD_NON_LOCAL_TRAFFIC": "true",
-          "DD_HOSTNAME": "integration-test-dsd-non-local-override"
-        },
-        "intake": {
-          "enabled": false
-        },
-        "name": "dogstatsd-non-local-overrides-bind-host",
-        "procedure": [
-          {
-            "assertion": "log_contains",
-            "pattern": "listen_addr:\"udp://0.0.0.0:58125\"",
-            "regex": false,
-            "stream": "both",
-            "timeout": "60s"
-          },
-          {
-            "parallel": [
-              {
-                "assertion": "process_stable_for",
-                "duration": "10s"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_BIND_HOST": "10.9.8.7",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DOGSTATSD_NON_LOCAL_TRAFFIC": "true",
+                "DD_HOSTNAME": "integration-test-dsd-non-local-override"
               },
-              {
-                "assertion": "log_not_contains",
-                "during": "10s",
-                "pattern": "panic|PANIC",
-                "regex": true,
-                "stream": "both"
-              }
-            ]
-          }
-        ],
-        "runtimes": [
-          "linux",
-          "mac",
-          "windows"
-        ],
-        "timeout": "120s"
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "listen_addr:\"udp://0.0.0.0:58125\"",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        },
+        "macos": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_BIND_HOST": "10.9.8.7",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DOGSTATSD_NON_LOCAL_TRAFFIC": "true",
+                "DD_DOGSTATSD_PORT": "58125",
+                "DD_HOSTNAME": "integration-test-dsd-non-local-override"
+              },
+              "realization": "host-process-group",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "listen_addr:\"udp://0.0.0.0:58125\"",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        },
+        "windows": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_BIND_HOST": "10.9.8.7",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DOGSTATSD_NON_LOCAL_TRAFFIC": "true",
+                "DD_HOSTNAME": "integration-test-dsd-non-local-override"
+              },
+              "realization": "windows-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "listen_addr:\"udp://0.0.0.0:58125\"",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        }
       },
       "steps": {
         "single_assertions": 1,
@@ -12062,83 +12417,76 @@
     },
     "integration/dogstatsd-top-windows": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [],
-          "exposed_ports": [
-            "58125/udp"
-          ],
-          "files": [],
-          "host_cgroup_namespace": false
-        },
-        "description": "Verifies the privileged DogStatsD top workflow and context artifact replacement on Windows",
-        "env": {
-          "DD_API_KEY": "00000000000000000000000000000000",
-          "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_STANDALONE_MODE": "false",
-          "DD_HOSTNAME": "integration-test-dogstatsd-top-windows"
-        },
-        "intake": {
-          "enabled": false
-        },
-        "name": "dogstatsd-top-windows",
-        "procedure": [
-          {
-            "parallel": [
-              {
-                "assertion": "port_listening",
-                "port": 58125,
-                "protocol": "udp",
-                "timeout": "60s"
+        "windows": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_HOSTNAME": "integration-test-dogstatsd-top-windows"
               },
-              {
-                "assertion": "log_contains",
-                "pattern": "Agent Data Plane running.",
-                "regex": false,
-                "stream": "both",
-                "timeout": "60s"
-              }
-            ]
+              "realization": "windows-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
           },
-          {
-            "action": "target_exec",
-            "command": [
-              "pwsh",
-              "-NoProfile",
-              "-NonInteractive",
-              "-Command",
-              "$ErrorActionPreference = \"Stop\"\nSet-StrictMode -Version 3.0\n\n$Adp = \"C:\\adp\\agent-data-plane.exe\"\n$Config = \"C:\\ProgramData\\Datadog\\datadog.yaml\"\n$Result = \"C:\\dogstatsd-top-result\"\n$CopiedDump = \"C:\\dogstatsd-top-copied.json.zstd\"\n$RequestRow = \"          2`tintegration.windows.top.requests`t(2 instance, 1 env)\"\n$QueueRow = \"          1`tintegration.windows.top.queue`t(1 queue)\"\n\nfunction Invoke-AdpDogStatsD([string[]] $Arguments) {\n    $Output = @(& $Adp --config $Config dogstatsd @Arguments 2>&1)\n    if ($LASTEXITCODE -ne 0) {\n        throw \"ADP command failed ($LASTEXITCODE): $($Arguments -join ' ')`n$($Output -join \"`n\")\"\n    }\n    return $Output -join \"`n\"\n}\n\nfunction Send-DogStatsDContexts {\n    $Payload = @(\n        \"integration.windows.top.requests:1|c|#host:windows-a,env:prod,instance:a\",\n        \"integration.windows.top.requests:1|c|#host:windows-b,env:prod,instance:b\",\n        \"integration.windows.top.queue:1|c|#queue:alpha\"\n    ) -join \"`n\"\n    $Bytes = [System.Text.Encoding]::UTF8.GetBytes($Payload)\n    $Client = [System.Net.Sockets.UdpClient]::new()\n    try {\n        1..3 | ForEach-Object { [void] $Client.Send($Bytes, $Bytes.Length, \"127.0.0.1\", 58125) }\n    } finally {\n        $Client.Dispose()\n    }\n}\n\nfunction Wait-ForOnlineReport {\n    $LastOutput = \"\"\n    foreach ($Attempt in 1..40) {\n        $LastOutput = Invoke-AdpDogStatsD @(\"top\")\n        if ($LastOutput.Contains($RequestRow) -and $LastOutput.Contains($QueueRow)) {\n            return $LastOutput\n        }\n        Start-Sleep -Milliseconds 500\n    }\n    throw \"Retained contexts did not appear in online output:`n$LastOutput\"\n}\n\nfunction Get-DumpPath([string] $Output) {\n    $Lines = @($Output -split \"`r?`n\" | Where-Object { $_ -ne \"\" })\n    if ($Lines.Count -ne 1 -or -not $Lines[0].StartsWith(\"Wrote \")) {\n        throw \"Unexpected dump-contexts output: $Output\"\n    }\n    $Path = $Lines[0].Substring(\"Wrote \".Length)\n    if (-not [System.IO.Path]::IsPathRooted($Path) -or [System.IO.Path]::GetFileName($Path) -ne \"dogstatsd_contexts.json.zstd\") {\n        throw \"Unexpected context dump path: $Path\"\n    }\n    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {\n        throw \"Context dump was not created: $Path\"\n    }\n    return $Path\n}\n\nSend-DogStatsDContexts\n$Online = Wait-ForOnlineReport\nif (-not $Online.StartsWith(\"Wrote \")) {\n    throw \"Online top did not print the generated artifact path:`n$Online\"\n}\n\n$DumpPath = Get-DumpPath (Invoke-AdpDogStatsD @(\"dump-contexts\"))\nCopy-Item -LiteralPath $DumpPath -Destination $CopiedDump -Force\n$Offline = Invoke-AdpDogStatsD @(\"top\", \"--path\", $CopiedDump)\nif (-not $Offline.Contains($RequestRow) -or -not $Offline.Contains($QueueRow)) {\n    throw \"Offline report is missing retained contexts:`n$Offline\"\n}\n\nSet-Content -LiteralPath $Result -Value \"passed\" -Encoding ASCII\n"
-            ],
-            "timeout": "90s"
-          },
-          {
-            "assertion": "file_contains",
-            "path": "C:\\dogstatsd-top-result",
-            "pattern": "passed",
-            "regex": false,
-            "timeout": "10s"
-          },
-          {
-            "parallel": [
-              {
-                "assertion": "process_stable_for",
-                "duration": "10s"
-              },
-              {
-                "assertion": "log_not_contains",
-                "during": "10s",
-                "pattern": "panic|PANIC",
-                "regex": true,
-                "stream": "both"
-              }
-            ]
-          }
-        ],
-        "runtimes": [
-          "windows"
-        ],
-        "timeout": "180s"
+          "procedure": [
+            {
+              "parallel": [
+                {
+                  "on": "adp",
+                  "pattern": "listen_addr:\"udp://[^\"]+:58125\" \\| DogStatsD listener started\\.",
+                  "regex": true,
+                  "step": "log_contains",
+                  "timeout": "60s"
+                },
+                {
+                  "on": "adp",
+                  "pattern": "Agent Data Plane running.",
+                  "step": "log_contains",
+                  "timeout": "60s"
+                }
+              ]
+            },
+            {
+              "argv": [
+                "pwsh",
+                "-NoProfile",
+                "-NonInteractive",
+                "-File",
+                "{{ adp.facts.files_dir }}\\run_dogstatsd_top_test.ps1"
+              ],
+              "on": "adp",
+              "step": "exec",
+              "timeout": "90s"
+            },
+            {
+              "on": "adp",
+              "path": "C:\\dogstatsd-top-result",
+              "pattern": "passed",
+              "step": "file_contains",
+              "timeout": "10s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        }
       },
       "steps": {
         "single_assertions": 1,
@@ -12146,12 +12494,11 @@
         "parallel_assertions": 4,
         "actions": 1,
         "by_kind": {
+          "exec": 1,
           "file_contains": 1,
-          "log_contains": 1,
+          "log_contains": 2,
           "log_not_contains": 1,
-          "port_listening": 1,
-          "process_stable_for": 1,
-          "target_exec": 1
+          "process_stable_for": 1
         }
       },
       "ignored_fields": []
@@ -12340,67 +12687,156 @@
     },
     "integration/otlp-traces-enabled": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [],
-          "exposed_ports": [
-            "56317/tcp",
-            "56318/tcp"
-          ],
-          "files": [],
-          "host_cgroup_namespace": false
-        },
-        "description": "Verifies OTLP pipeline starts with native trace handling and proxying for metrics/logs",
-        "env": {
-          "DD_API_KEY": "test-api-key",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_OTLP_ENABLED": "true",
-          "DD_DATA_PLANE_OTLP_PROXY_ENABLED": "true",
-          "DD_DATA_PLANE_OTLP_PROXY_TRACES_ENABLED": "false",
-          "DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY": "0.0.0.0:56317",
-          "DD_DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY": "0.0.0.0:56318",
-          "DD_DATA_PLANE_STANDALONE_MODE": "true",
-          "DD_HOSTNAME": "integration-test-dsd"
-        },
-        "intake": {
-          "enabled": false
-        },
-        "name": "otlp-traces-enabled",
-        "procedure": [
-          {
-            "parallel": [
-              {
-                "assertion": "process_stable_for",
-                "duration": "10s"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "test-api-key",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_OTLP_ENABLED": "true",
+                "DD_DATA_PLANE_OTLP_PROXY_ENABLED": "true",
+                "DD_DATA_PLANE_OTLP_PROXY_TRACES_ENABLED": "false",
+                "DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY": "0.0.0.0:56317",
+                "DD_DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY": "0.0.0.0:56318",
+                "DD_DATA_PLANE_STANDALONE_MODE": "true",
+                "DD_HOSTNAME": "integration-test-dsd"
               },
-              {
-                "assertion": "port_listening",
-                "port": 56317,
-                "protocol": "tcp",
-                "timeout": "60s"
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "endpoint": "otlp_grpc",
+                  "on": "adp",
+                  "step": "port_listening",
+                  "timeout": "60s"
+                },
+                {
+                  "endpoint": "otlp_http",
+                  "on": "adp",
+                  "step": "port_listening",
+                  "timeout": "60s"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        },
+        "macos": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "test-api-key",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_OTLP_ENABLED": "true",
+                "DD_DATA_PLANE_OTLP_PROXY_ENABLED": "true",
+                "DD_DATA_PLANE_OTLP_PROXY_TRACES_ENABLED": "false",
+                "DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY": "0.0.0.0:56317",
+                "DD_DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY": "0.0.0.0:56318",
+                "DD_DATA_PLANE_STANDALONE_MODE": "true",
+                "DD_HOSTNAME": "integration-test-dsd"
               },
-              {
-                "assertion": "port_listening",
-                "port": 56318,
-                "protocol": "tcp",
-                "timeout": "60s"
+              "realization": "host-process-group",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "endpoint": "otlp_grpc",
+                  "on": "adp",
+                  "step": "port_listening",
+                  "timeout": "60s"
+                },
+                {
+                  "endpoint": "otlp_http",
+                  "on": "adp",
+                  "step": "port_listening",
+                  "timeout": "60s"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        },
+        "windows": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "test-api-key",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_OTLP_ENABLED": "true",
+                "DD_DATA_PLANE_OTLP_PROXY_ENABLED": "true",
+                "DD_DATA_PLANE_OTLP_PROXY_TRACES_ENABLED": "false",
+                "DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY": "0.0.0.0:56317",
+                "DD_DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY": "0.0.0.0:56318",
+                "DD_DATA_PLANE_STANDALONE_MODE": "true",
+                "DD_HOSTNAME": "integration-test-dsd"
               },
-              {
-                "assertion": "log_not_contains",
-                "during": "10s",
-                "pattern": "panic|PANIC",
-                "regex": true,
-                "stream": "both"
-              }
-            ]
-          }
-        ],
-        "runtimes": [
-          "linux",
-          "mac",
-          "windows"
-        ],
-        "timeout": "120s"
+              "realization": "windows-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "endpoint": "otlp_grpc",
+                  "on": "adp",
+                  "step": "port_listening",
+                  "timeout": "60s"
+                },
+                {
+                  "endpoint": "otlp_http",
+                  "on": "adp",
+                  "step": "port_listening",
+                  "timeout": "60s"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        }
       },
       "steps": {
         "single_assertions": 0,

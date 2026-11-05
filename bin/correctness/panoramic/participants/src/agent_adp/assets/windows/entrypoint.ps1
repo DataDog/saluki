@@ -29,6 +29,7 @@ $InitializeExitRecords = {
 }
 . $InitializeExitRecords
 
+if (Test-Path "C:\adp\participant-late.ps1") { . "C:\adp\participant-late.ps1" }
 Initialize-LogDirectories
 $Agent = $null
 $AgentWait = $null

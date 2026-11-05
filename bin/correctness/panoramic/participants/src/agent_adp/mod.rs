@@ -105,16 +105,19 @@ impl ParticipantType for AgentAdp {
     }
 
     fn validate_config(&self, realization: Realization, config: &CaseValues) -> Result<(), String> {
-        if (realization.os, realization.kind) != (Os::Linux, RealizationKind::LinuxContainer) {
+        if !matches!(
+            (realization.os, realization.kind),
+            (Os::Linux, RealizationKind::LinuxContainer) | (Os::Windows, RealizationKind::WindowsContainer)
+        ) {
             if config
                 .params
                 .get("extra_hosts")
                 .is_some_and(|hosts| hosts.as_object().is_none_or(|hosts| !hosts.is_empty()))
             {
-                return Err("agent-adp extra_hosts is supported in Linux containers only".into());
+                return Err("agent-adp extra_hosts is supported in containers only".into());
             }
             if !config.files.is_empty() {
-                return Err("agent-adp case files are supported in Linux containers only".into());
+                return Err("agent-adp case files are supported in containers only".into());
             }
         }
         match (realization.os, realization.kind) {
@@ -127,6 +130,7 @@ impl ParticipantType for AgentAdp {
             (Os::MacOs, RealizationKind::HostProcessGroup) => macos::validate_config(realization, config)?,
             (Os::Windows, RealizationKind::WindowsContainer) => {
                 windows::validate_config(config)?;
+                late::validate(&config.env, &config.params)?;
                 let mut env = container_default_env();
                 env.extend(config.env.clone());
                 listeners::endpoints(realization, &env)?;
@@ -181,17 +185,25 @@ impl ParticipantType for AgentAdp {
                     value: crate::CASE_FILES_DIR,
                 },
             ],
-            (Os::Windows, RealizationKind::WindowsContainer) => &[FactDeclaration {
-                name: "default_log_file",
-                value: r"C:\ProgramData\Datadog\logs\agent-data-plane.log",
-            }],
+            (Os::Windows, RealizationKind::WindowsContainer) => &[
+                FactDeclaration {
+                    name: "default_log_file",
+                    value: r"C:\ProgramData\Datadog\logs\agent-data-plane.log",
+                },
+                FactDeclaration {
+                    name: "files_dir",
+                    value: crate::WINDOWS_CASE_FILES_DIR,
+                },
+            ],
             _ => &[],
         }
     }
 
     fn substituted_late_facts(&self, realization: Realization) -> &'static [LateFact] {
         match (realization.os, realization.kind) {
-            (Os::Linux, RealizationKind::LinuxContainer) => &[LateFact::Ip],
+            (Os::Linux, RealizationKind::LinuxContainer) | (Os::Windows, RealizationKind::WindowsContainer) => {
+                &[LateFact::Ip]
+            }
             _ => &[],
         }
     }
@@ -277,7 +289,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn agent_adp_substitutes_its_own_ip_only_in_linux_containers() {
+    fn agent_adp_substitutes_its_own_ip_in_linux_and_windows_containers() {
         for os in [Os::Linux, Os::MacOs, Os::Windows] {
             for kind in [
                 RealizationKind::LinuxContainer,
@@ -285,7 +297,10 @@ mod tests {
                 RealizationKind::HostProcessGroup,
                 RealizationKind::KubernetesPod,
             ] {
-                let expected: &[LateFact] = if (os, kind) == (Os::Linux, RealizationKind::LinuxContainer) {
+                let expected: &[LateFact] = if matches!(
+                    (os, kind),
+                    (Os::Linux, RealizationKind::LinuxContainer) | (Os::Windows, RealizationKind::WindowsContainer)
+                ) {
                     &[LateFact::Ip]
                 } else {
                     &[]
@@ -296,9 +311,13 @@ mod tests {
     }
 
     #[test]
-    fn extra_hosts_are_rejected_outside_linux_containers() {
+    fn extra_hosts_are_rejected_on_macos_host_process_groups() {
         assert_eq!(AgentAdp.params(), &["extra_hosts"]);
-        for &(os, kind) in &AgentAdp.supports()[1..] {
+        for &(os, kind) in AgentAdp
+            .supports()
+            .iter()
+            .filter(|&&(os, kind)| (os, kind) == (Os::MacOs, RealizationKind::HostProcessGroup))
+        {
             for (hosts, accepted) in [
                 (serde_json::json!({}), true),
                 (serde_json::json!({"foo.local": "self"}), false),
@@ -314,7 +333,7 @@ mod tests {
                 } else {
                     assert_eq!(
                         result.unwrap_err(),
-                        "agent-adp extra_hosts is supported in Linux containers only"
+                        "agent-adp extra_hosts is supported in containers only"
                     );
                 }
             }
@@ -461,7 +480,7 @@ mod tests {
     }
 
     #[test]
-    fn case_files_are_rejected_outside_linux_containers() {
+    fn case_files_are_supported_in_containers_and_init_hooks_only_on_linux() {
         for os in [Os::Linux, Os::MacOs, Os::Windows] {
             for kind in [
                 RealizationKind::LinuxContainer,
@@ -483,12 +502,19 @@ mod tests {
                         ..Default::default()
                     };
                     let result = AgentAdp.validate_config(realization, &config);
-                    if (os, kind) == (Os::Linux, RealizationKind::LinuxContainer) {
+                    if (os, kind) == (Os::Linux, RealizationKind::LinuxContainer)
+                        || ((os, kind) == (Os::Windows, RealizationKind::WindowsContainer) && name == "files/")
+                    {
                         result.unwrap();
+                    } else if (os, kind) == (Os::Windows, RealizationKind::WindowsContainer) {
+                        assert_eq!(
+                            result.unwrap_err(),
+                            "agent-adp cont-init.d is supported in Linux containers only"
+                        );
                     } else {
                         assert_eq!(
                             result.unwrap_err(),
-                            "agent-adp case files are supported in Linux containers only",
+                            "agent-adp case files are supported in containers only",
                             "{os:?} {kind:?}: {name}"
                         );
                     }
@@ -511,7 +537,10 @@ mod tests {
             (
                 Os::Windows,
                 RealizationKind::WindowsContainer,
-                vec![("default_log_file", r"C:\ProgramData\Datadog\logs\agent-data-plane.log")],
+                vec![
+                    ("default_log_file", r"C:\ProgramData\Datadog\logs\agent-data-plane.log"),
+                    ("files_dir", r"C:\panoramic\files"),
+                ],
             ),
             (Os::MacOs, RealizationKind::HostProcessGroup, vec![]),
             (Os::Linux, RealizationKind::KubernetesPod, vec![]),

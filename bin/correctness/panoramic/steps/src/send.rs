@@ -1,6 +1,6 @@
 //! Sends a payload verbatim to a participant's named endpoint.
 
-use std::time::Duration;
+use std::{num::NonZeroUsize, time::Duration};
 
 use async_trait::async_trait;
 use panoramic_core::{
@@ -27,8 +27,15 @@ pub(crate) struct Send {
     /// Required payload, sent as UTF-8 bytes verbatim, including framing; has no default.
     /// YAML escapes above `\x7f` encode as UTF-8, so frame-length bytes must be below 0x80.
     payload: String,
+    /// Positive number of payload copies to send in one message; defaults to 1.
+    #[serde(default = "default_repeat")]
+    repeat: NonZeroUsize,
     /// Required, positive time to wait for an accepted send; has no default.
     timeout: CaseDuration,
+}
+
+fn default_repeat() -> NonZeroUsize {
+    NonZeroUsize::MIN
 }
 
 impl Send {
@@ -64,6 +71,7 @@ impl Step for Send {
                 format!("participant '{}' has not started", self.on),
             );
         };
+        let payload = self.payload.repeat(self.repeat.get());
         let subject = format!("endpoint '{}' of participant '{}'", self.endpoint, self.on);
         let mut attempts = Attempts::default();
         loop {
@@ -72,14 +80,14 @@ impl Step for Send {
                 break;
             }
             match handle
-                .send(&self.endpoint, self.payload.as_bytes(), &AttemptLimits::new(remaining))
+                .send(&self.endpoint, payload.as_bytes(), &AttemptLimits::new(remaining))
                 .await
             {
                 Ok(()) => {
                     return StepReport::new(
                         started,
                         AssertionStatus::Passed,
-                        format!("sent {} bytes to {subject}", self.payload.len()),
+                        format!("sent {} bytes to {subject}", payload.len()),
                     );
                 }
                 Err(HandleError::Product { message }) => attempts.observed(message),
@@ -239,6 +247,38 @@ mod tests {
                 u32::from_le_bytes(expected[..4].try_into().unwrap()) as usize,
                 expected.len() - 4
             );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn send_repeats_its_payload_in_one_message_and_reports_the_total_bytes() {
+        for (payload, repeat) in [("métric:1|c\n", 3), ("x", 10000), ("", 2)] {
+            let fake = FakeParticipant::default();
+            fake.push_send(Ok(()));
+            let mut fields = valid_fields(Send::NAME);
+            fields.insert("payload".into(), json!(payload));
+            fields.insert("repeat".into(), json!(repeat));
+            let report = run_step_with(&SendFactory, &fields, Some(&fake)).await;
+            assert_eq!(report.status, AssertionStatus::Passed);
+            let expected = payload.repeat(repeat);
+            fake.assert_sent(&[expected.as_bytes()]);
+            assert_eq!(
+                report.message,
+                format!(
+                    "sent {} bytes to endpoint 'udp' of participant 'subject'",
+                    expected.len()
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn send_rejects_zero_negative_and_noninteger_repeat_counts() {
+        for repeat in [json!(0), json!(-1), json!(1.5), json!("2")] {
+            let mut fields = valid_fields(Send::NAME);
+            fields.insert("repeat".into(), repeat);
+            let error = SendFactory.build(&fields).unwrap_err();
+            assert!(error.starts_with("repeat:"), "{error}");
         }
     }
 
