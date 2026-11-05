@@ -180,6 +180,15 @@ make test-correctness-case CASE=dsd-plain
 
 The `test-correctness` target handles building all of the necessary prerequisites -- `millstone`, `datadog-intake`, `panoramic`, the bundled Agent/ADP image, and so on -- before running the test cases.
 
+The seven `dsd-origin-detection-matrix-<variant>` cases run as Kubernetes pods in kind. Each has its own directory
+under `test/correctness/cases/`, with symlinks to the configuration and workload files in
+`test/correctness/shared/dsd-origin-detection-matrix/`. To run one with your artifact manifest:
+
+```bash
+target/release/panoramic run -d "$(pwd)/test/correctness/cases" \
+  -t dsd-origin-detection-matrix-legacy --subject-os linux --artifacts artifacts.toml --no-tui
+```
+
 Correctness tests are run in the `e2e` stage in CI (`.gitlab/e2e.yml`).
 
 ## Integration tests (panoramic)

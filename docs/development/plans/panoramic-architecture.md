@@ -48,27 +48,28 @@ equivalence, and migration proofs: their rows, CI links and comparison commit.
 
 ## Coverage details
 
-- There are 52 integration files and 42 correctness files, two of them under `test/correctness/disabled/`.
-  Integration selects 45 Linux, 33 macOS and 36 Windows rows. Correctness selects 46 Linux rows: 39 Docker and seven
-  Kubernetes-in-Docker variants. Two correctness cases are disabled (`otlp-traces` and `otlp-traces-ets`) and live in
-  `test/correctness/disabled/`. The inventory has 162 rows.
+- There are 52 integration files and 48 correctness files, two of them under `test/correctness/disabled/`.
+  Integration selects 45 Linux, 33 macOS and 36 Windows rows. Correctness selects 46 Linux rows: six typed Docker,
+  33 native Linux-container and seven native Kubernetes-pod cases. Two correctness cases are disabled (`otlp-traces`
+  and `otlp-traces-ets`) and live in `test/correctness/disabled/`. The inventory has 162 rows.
 - Correctness cases declare only Linux; `run` and `list` report them as skipped for other subject OSes.
   CI runs all selected correctness cases on Linux.
-  The seven variants come from `dsd-origin-detection-matrix`: `legacy`, `legacy-high-cardinality`,
-  `legacy-optout-disabled`, `legacy-with-client-fields`, `unified`, `unified-high-cardinality` and
-  `unified-with-client-fields`. File counts are not runnable counts.
+  The seven origin detection variants have separate `dsd-origin-detection-matrix-<variant>` directories: `legacy`,
+  `legacy-high-cardinality`, `legacy-optout-disabled`, `legacy-with-client-fields`, `unified`,
+  `unified-high-cardinality` and `unified-with-client-fields`. They share configuration and workload files through
+  symlinks into `test/correctness/shared/dsd-origin-detection-matrix/`.
 - Integration has 27 cases on all three OSes, five on Linux/macOS, three on Linux/Windows, 10 Linux-only, one
   macOS-only and six Windows-only. Every integration `name` equals its directory name. The 52 files contain 218
   assertions, 23 actions and 42 parallel blocks.
-- Every correctness baseline and comparison declares `saluki-images/datadog-agent:testing-release`. The generator
+- Typed correctness files declare `saluki-images/datadog-agent:testing-release` for baseline and comparison. The generator
   adds `.test-correctness-adp-baseline` for every case needing `agent-adp-linux-image`, including every selected
   correctness case. CI runs with `--artifacts`, binding both sides to that role with the same `bundled-agent-adp` image.
   `every_selected_correctness_case_declares_a_local_baseline_image` checks the declared baseline for the
   `saluki-images/` prefix so a published baseline cannot be silently replaced.
 - Correctness baseline and comparison both bind to `agent-adp-linux-image`, matching CI's shared image. Its local
-  default is `saluki-images/datadog-agent:testing-devel` (debug), while correctness files declare `:testing-release`
-  (release). Artifact commands, text listings and `run --artifacts` use the role binding; without that flag,
-  runners use the files' images, subject to image overrides.
+  default is `saluki-images/datadog-agent:testing-devel` (debug), while typed correctness files declare `:testing-release`
+  (release). Artifact commands, text listings and native execution use the role binding. Typed runners use it with
+  `run --artifacts`; without that flag, they use the files' images, subject to image overrides.
 - Integration uses `saluki-images/datadog-agent:testing-devel` on Linux and
   `saluki-images/agent-data-plane:testing-windows` on Windows (bound in CI through `agent-adp-windows-image`).
   macOS uses host processes. `dogstatsd-forwarding`, `dogstatsd-host-tag` and `dogstatsd-intake-metric` declare a
@@ -111,7 +112,7 @@ Use product `config_dump` output from CI runs to compare effective product confi
 | Suite | Files | Selected rows (subject OS / runtime) | Disabled rows | Assertions (subject OS) | Actions (subject OS) |
 | --- | --- | --- | --- | --- | --- |
 | integration | 52 | linux / linux-container: 45; macos / host-process-group: 33; windows / windows-container: 36 | 0 | linux: 193; macos: 141; windows: 155 | linux: 25; macos: 17; windows: 24 |
-| correctness | 42 | linux / kubernetes_in_docker: 7; linux / linux-container: 39 | 2 | linux: 156 | linux: 0 |
+| correctness | 48 | linux / kubernetes-pod: 7; linux / linux-container: 39 | 2 | linux: 177 | linux: 7 |
 
 Total: 162 rows.
 
@@ -129,13 +130,13 @@ Total: 162 rows.
 | dsd-mapper-blocklist | correctness | linux | linux-container | selected | test-correctness-dsd-mapper-blocklist | participants | native | assertions: 4, actions: 0 | 0 |
 | dsd-metric-filterlist-prefix | correctness | linux | linux-container | selected | test-correctness-dsd-metric-filterlist-prefix | participants | native | assertions: 4, actions: 0 | 0 |
 | dsd-origin-detection | correctness | linux | linux-container | selected | test-correctness-dsd-origin-detection | participants | native | assertions: 4, actions: 0 | 0 |
-| dsd-origin-detection-matrix/legacy | correctness | linux | kubernetes_in_docker | selected | test-correctness-dsd-origin-detection-matrix-legacy | correctness_matrix | old | compare metrics | 0 |
-| dsd-origin-detection-matrix/legacy-high-cardinality | correctness | linux | kubernetes_in_docker | selected | test-correctness-dsd-origin-detection-matrix-legacy-high-cardinality | correctness_matrix | old | compare metrics | 0 |
-| dsd-origin-detection-matrix/legacy-optout-disabled | correctness | linux | kubernetes_in_docker | selected | test-correctness-dsd-origin-detection-matrix-legacy-optout-disabled | correctness_matrix | old | compare metrics | 0 |
-| dsd-origin-detection-matrix/legacy-with-client-fields | correctness | linux | kubernetes_in_docker | selected | test-correctness-dsd-origin-detection-matrix-legacy-with-client-fields | correctness_matrix | old | compare metrics | 0 |
-| dsd-origin-detection-matrix/unified | correctness | linux | kubernetes_in_docker | selected | test-correctness-dsd-origin-detection-matrix-unified | correctness_matrix | old | compare metrics | 0 |
-| dsd-origin-detection-matrix/unified-high-cardinality | correctness | linux | kubernetes_in_docker | selected | test-correctness-dsd-origin-detection-matrix-unified-high-cardinality | correctness_matrix | old | compare metrics | 0 |
-| dsd-origin-detection-matrix/unified-with-client-fields | correctness | linux | kubernetes_in_docker | selected | test-correctness-dsd-origin-detection-matrix-unified-with-client-fields | correctness_matrix | old | compare metrics | 0 |
+| dsd-origin-detection-matrix-legacy | correctness | linux | kubernetes-pod | selected | test-correctness-dsd-origin-detection-matrix-legacy | participants | native | assertions: 3, actions: 1 | 0 |
+| dsd-origin-detection-matrix-legacy-high-cardinality | correctness | linux | kubernetes-pod | selected | test-correctness-dsd-origin-detection-matrix-legacy-high-cardinality | participants | native | assertions: 3, actions: 1 | 0 |
+| dsd-origin-detection-matrix-legacy-optout-disabled | correctness | linux | kubernetes-pod | selected | test-correctness-dsd-origin-detection-matrix-legacy-optout-disabled | participants | native | assertions: 3, actions: 1 | 0 |
+| dsd-origin-detection-matrix-legacy-with-client-fields | correctness | linux | kubernetes-pod | selected | test-correctness-dsd-origin-detection-matrix-legacy-with-client-fields | participants | native | assertions: 3, actions: 1 | 0 |
+| dsd-origin-detection-matrix-unified | correctness | linux | kubernetes-pod | selected | test-correctness-dsd-origin-detection-matrix-unified | participants | native | assertions: 3, actions: 1 | 0 |
+| dsd-origin-detection-matrix-unified-high-cardinality | correctness | linux | kubernetes-pod | selected | test-correctness-dsd-origin-detection-matrix-unified-high-cardinality | participants | native | assertions: 3, actions: 1 | 0 |
+| dsd-origin-detection-matrix-unified-with-client-fields | correctness | linux | kubernetes-pod | selected | test-correctness-dsd-origin-detection-matrix-unified-with-client-fields | participants | native | assertions: 3, actions: 1 | 0 |
 | dsd-plain | correctness | linux | linux-container | selected | test-correctness-dsd-plain | participants | native | assertions: 4, actions: 0 | 0 |
 | dsd-plain-v3 | correctness | linux | linux-container | selected | test-correctness-dsd-plain-v3 | participants | native | assertions: 4, actions: 0 | 0 |
 | dsd-provider-kind | correctness | linux | linux-container | selected | test-correctness-dsd-provider-kind | participants | native | assertions: 4, actions: 0 | 0 |
@@ -634,7 +635,90 @@ Link CI runs; don't copy their logs into the repository.
 | apm-trace-uds | linux | native | Pending CI. Legacy passed (74.284 s); a dump-capture repeat was interrupted by the enclosing validation tool timeout before comparison; the next repeat passed (69.708 s). Checked-in native host view errored on the rootless /host/proc remount (2.087 s). No-host-view attempt 1 was interrupted after the injected APM port caused ADP to collide with the trace-agent (147.874 s); the participant default was fixed without changing the case or comparison. Attempt 2 errored because another invocation held runner ports 20000/20001 (4.089 s). Attempt 3 failed with 8 mismatched stats groups (58.304 s); unchanged attempt 4 passed (49.662 s). Legacy/final native inputs match; both have 17,057 spans per side and matching tag-key sets. Container enrichment remains unproven locally. Compared with `4a461d30e5`. |
 | otlp-traces | linux | native | Pending CI. Not selected; compiled only. Linux list reports runnable; the inventory retains disabled status and no CI jobs or mixins. The disabling TODO is retained and ignored intake config_path removed. Compared with `4a461d30e5`. |
 | otlp-traces-ets | linux | native | Pending CI. Not selected; compiled only. Linux list reports runnable; the inventory retains disabled status and no CI jobs or mixins. Error-tracking settings and the disabling TODO are retained; ignored intake config_path removed. Compared with `4a461d30e5`. |
+| dsd-origin-detection-matrix-legacy | linux | native | Pending CI. Before: passed with execution `old` as dsd-origin-detection-matrix/legacy in the last green `test-correctness-dsd-origin-detection-matrix-legacy` run before this change. Compared with the inventory at `b5babaec96`. |
+| dsd-origin-detection-matrix-unified | linux | native | Pending CI. Before: passed with execution `old` as dsd-origin-detection-matrix/unified in the last green `test-correctness-dsd-origin-detection-matrix-unified` run before this change. Compared with the inventory at `b5babaec96`. |
+| dsd-origin-detection-matrix-legacy-with-client-fields | linux | native | Pending CI. Before: passed with execution `old` as dsd-origin-detection-matrix/legacy-with-client-fields in the last green `test-correctness-dsd-origin-detection-matrix-legacy-with-client-fields` run before this change. Compared with the inventory at `b5babaec96`. |
+| dsd-origin-detection-matrix-unified-with-client-fields | linux | native | Pending CI. Before: passed with execution `old` as dsd-origin-detection-matrix/unified-with-client-fields in the last green `test-correctness-dsd-origin-detection-matrix-unified-with-client-fields` run before this change. Compared with the inventory at `b5babaec96`. |
+| dsd-origin-detection-matrix-legacy-high-cardinality | linux | native | Pending CI. Before: passed with execution `old` as dsd-origin-detection-matrix/legacy-high-cardinality in the last green `test-correctness-dsd-origin-detection-matrix-legacy-high-cardinality` run before this change. Compared with the inventory at `b5babaec96`. |
+| dsd-origin-detection-matrix-unified-high-cardinality | linux | native | Pending CI. Before: passed with execution `old` as dsd-origin-detection-matrix/unified-high-cardinality in the last green `test-correctness-dsd-origin-detection-matrix-unified-high-cardinality` run before this change. Compared with the inventory at `b5babaec96`. |
+| dsd-origin-detection-matrix-legacy-optout-disabled | linux | native | Pending CI. Before: passed with execution `old` as dsd-origin-detection-matrix/legacy-optout-disabled in the last green `test-correctness-dsd-origin-detection-matrix-legacy-optout-disabled` run before this change. Compared with the inventory at `b5babaec96`. |
 <!-- migration-proofs:end -->
+
+### Kubernetes origin detection evidence
+
+The seven flat cases preserve the former matrix's per-side environment overlays, workload, timeouts, sender-exit
+checks and metric comparison. Only delivered endpoint paths and late container/pod identity references replace the
+legacy placeholders. `host_view: true` mounts the node's proc, cgroup filesystem and containerd socket; `host_pid`
+shares the node PID namespace; `cri_socket` requires the node socket to exist and be mounted by the recipe.
+The Millstone round-trip test reads the shared workload directly with those references intact. Comparisons also
+require at least one workload context with `image_name` on each side, plus `container_id` for both high-cardinality
+variants, so losing origin enrichment on both sides cannot produce a passing comparison.
+
+With the required-tag assertions applied to `0e559af67e`, a native kind run of `legacy-high-cardinality` passed on
+its first attempt in 47.580 seconds, with zero metric mismatches. Both sides emitted 3,028 workload contexts, all
+carrying `image_name` and `container_id`. No retry was needed.
+
+The local runs and controls below predate the rebase onto the base used by `a1b1087b88`; the proof rows compare
+inventories against the current pre-migration ancestor `b5babaec96`, not runtime evidence gathered on that tree.
+Local Linux/kind validation ran each variant twice, serially, using the same `testing-devel` Agent/ADP image and
+`correctness-tools:latest` tools image. Six of fourteen runs passed; these results are not an all-green correctness
+proof. A zero mismatch count means the case passed; every nonzero count below was a comparison failure.
+
+| Variant | Run 1 seconds | Run 1 mismatches | Run 2 seconds | Run 2 mismatches |
+| --- | ---: | ---: | ---: | ---: |
+| legacy | 52.819 | 3,027 | 55.708 | 26 |
+| legacy-high-cardinality | 51.269 | 26 | 50.210 | 0 |
+| legacy-optout-disabled | 56.966 | 0 | 50.242 | 0 |
+| legacy-with-client-fields | 51.179 | 8,567 | 49.085 | 70 |
+| unified | 49.174 | 26 | 50.124 | 0 |
+| unified-high-cardinality | 49.710 | 0 | 51.059 | 0 |
+| unified-with-client-fields | 50.181 | 8,438 | 49.160 | 71 |
+
+The 26-mismatch `legacy` repeat reproduces the earlier histogram-derived gauge bucket split: the Agent emitted one
+bucket and ADP two. The first `legacy-high-cardinality` and `unified` runs had the same 26-gauge pattern. The second
+client-field runs had 70 and 71 such histogram-gauge mismatches. The larger first-run failures also affected rates,
+ordinary gauges and sketches; their cause remains unresolved. No workload, assertion or comparison tolerance was
+changed to make these runs pass.
+
+Two controls used the original matrix files, unchanged, before that rebase and with the same artifacts. Legacy
+`legacy` passed in 55.037 seconds. Legacy `legacy-with-client-fields` failed in 50.434 seconds with 71 histogram-gauge
+mismatches, again one Agent bucket versus two ADP buckets. That reproduces the client-field bucket-split failure
+without the migration; it does not explain the broader first-run failures.
+
+Decoded captures from all fourteen native runs had matching workload contexts and origin-tag counts and values
+between baseline and subject. The five variants without client fields had 3,028 contexts per side, each carrying
+`image_id`, `image_name`, `image_tag` and `short_image`; only the two high-cardinality variants also had `container_id`
+on all contexts. Each client-field variant had 9,084 contexts per side, image tags on 6,056 and `container_id` on 3,028.
+No side emitted `container_name`, `pod_name`, `kube_namespace`, `kube_container_name` or `pod_uid` on workload metrics.
+All fourteen runs reported no harness issues and reclaimed every participant, namespace and node directory.
+
+A scratch copy of `legacy`, with only the subject's tag cardinality changed to `high`, failed as expected in 50.743
+seconds: 3,028 contexts appeared only in each side. Both decoded captures, their manifest and ten container/process
+log files survived the comparison failure. The reclaim ledger and direct checks confirmed removal of all five
+participants, Services, the namespace and node directory. The scratch case is not part of the checked-in suite.
+
+Inventory checks still select 46 Linux correctness rows, with seven native Kubernetes-pod rows and no matrix
+expansion. All non-matrix rows and effective configurations are unchanged. CI generation changed only these seven
+selection variables, with job names, ordering and mixins preserved:
+
+```diff
+-    CORRECTNESS_TEST_CASE: dsd-origin-detection-matrix/<variant>
++    CORRECTNESS_TEST_CASE: dsd-origin-detection-matrix-<variant>
+```
+
+Unit tests of the four Panoramic packages, `make check-docs` and the kind scenarios passed.
+
+Earlier pre-rebase paired proofs recorded these case wall times: `legacy` 55.445 seconds old → 51.811 seconds native;
+`legacy-high-cardinality` 51.014 → 48.870 seconds. Together with the controls and repeats above, these are the retained
+measurements. No legacy timing was recorded for `legacy-optout-disabled`, `unified`, `unified-high-cardinality` or
+`unified-with-client-fields`.
+
+The earlier paired proofs also recorded effective configuration differences for both variants: five leaves in the
+baseline Agent, fifteen in the subject Agent and fourteen in ADP. They were limited to delivered intake/APM URLs,
+socket paths, explicit baseline ADP disablement, `/host/proc` and the existing Linux listener defaults. No other
+configuration leaf or workload/origin setting differed. The recipes explicitly set both `DD_PROC_ROOT=/host/proc`
+and `DD_CGROUP_ROOT=/host/sys/fs/cgroup`; only the subject receives port-isolation defaults. This is the retained
+summary of the pre-rebase comparison, not a fresh comparison at HEAD; its raw config dumps are no longer retained.
 
 ### DogStatsD discovery and configuration evidence
 

@@ -1,0 +1,65 @@
+# Legacy origin detection with high tag cardinality. Verifies that the cardinality setting is
+# respected in the legacy code path.
+description: Compares Agent and ADP origin detection in legacy-high-cardinality mode.
+timeout: 20m
+subject_os: [linux]
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    realization: {kind: kubernetes-pod, options: {host_pid: true, cri_socket: true}}
+    connect: {intake: intake-adp.api}
+    config:
+      params: {host_view: true}
+      files:
+        datadog.yaml: {from: datadog-base.yaml, template: true}
+      env:
+        DD_API_KEY: correctness-test
+        DD_DATA_PLANE_ENABLED: "true"
+        DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+        DD_DATA_PLANE_REMOTE_AGENT_ENABLED: "true"
+        DD_DATA_PLANE_STANDALONE_MODE: "false"
+        DD_DOGSTATSD_ORIGIN_DETECTION: "true"
+        DD_DOGSTATSD_TAG_CARDINALITY: high
+  agent:
+    type: agent
+    realization: {kind: kubernetes-pod, options: {host_pid: true, cri_socket: true}}
+    connect: {intake: intake-agent.api}
+    config:
+      params: {host_view: true}
+      files:
+        datadog.yaml: {from: datadog-base.yaml, template: true}
+      env:
+        DD_API_KEY: correctness-test
+        DD_DOGSTATSD_ORIGIN_DETECTION: "true"
+        DD_DOGSTATSD_TAG_CARDINALITY: high
+  intake-adp:
+    type: datadog-intake
+  intake-agent:
+    type: datadog-intake
+  load:
+    type: millstone
+    connect:
+      target: adp.dogstatsd_uds
+      baseline_target: agent.dogstatsd_uds
+    config:
+      files:
+        millstone.yaml: {from: millstone.yaml, template: true}
+procedure:
+  - step: exits_with
+    on: load
+    process: subject
+    code: 0
+    timeout: 5m
+  - step: exits_with
+    on: load
+    process: baseline
+    code: 0
+    timeout: 5m
+  - step: wait
+    duration: 30s
+  - step: compare
+    required_metric_tag_keys: [image_name, container_id]
+    kind: metrics
+    subject: intake-adp
+    baseline: intake-agent

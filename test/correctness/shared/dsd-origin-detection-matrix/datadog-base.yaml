@@ -1,9 +1,5 @@
-# Base agent configuration shared across all origin detection matrix variants.
-#
-# Origin detection settings (dogstatsd_origin_detection, origin_detection_unified, etc.) are
-# intentionally absent here. Each matrix variant injects them via DD_* environment variables,
-# which the agent and ADP both map to the corresponding config keys. This keeps the base file
-# minimal and avoids conflicts with per-variant overrides.
+# Shared Agent configuration for the origin detection cases.
+# Each case's config.yaml sets origin detection keys through DD_* environment variables on both Agents.
 
 # Using a fixed hostname is both required to avoid errors, and also will ensure consistent tags
 # between DSD/ADP.
@@ -15,14 +11,10 @@ api_key: dummy-api-key-correctness-testing
 # We have to specifically configure the health port to use.
 health_port: 5555
 
-# In a multi-container pod all containers share localhost, so we use localhost instead of the
-# container name.
-dd_url: "http://localhost:2049"
-
 # Turn off UDP and listen on a UDS socket instead. All origin detection variants use UDS because
 # SO_PASSCRED-based PID resolution only works on Unix domain sockets.
 dogstatsd_port: 0
-dogstatsd_socket: /airlock/metrics.sock
+dogstatsd_socket: "{{ self.facts.shared_dir }}/metrics.sock"
 
 # Point both the core agent and ADP at the containerd socket mounted from the kind node. Without
 # an explicit path here, both agents skip containerd detection when running inside Docker (inside

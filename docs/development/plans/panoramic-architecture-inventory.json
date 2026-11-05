@@ -251,20 +251,19 @@
       "case": "correctness/dsd-origin-detection"
     },
     {
-      "name": "dsd-origin-detection-matrix/legacy",
+      "name": "dsd-origin-detection-matrix-legacy",
       "suite": "correctness",
       "subject_os": "linux",
-      "runtime": "kubernetes_in_docker",
-      "source": "test/correctness/cases/dsd-origin-detection-matrix/config.yaml",
-      "schema": "correctness_matrix",
-      "execution": "old",
+      "runtime": "kubernetes-pod",
+      "source": "test/correctness/cases/dsd-origin-detection-matrix-legacy/config.yaml",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "1200s",
       "images": {
-        "baseline": "saluki-images/datadog-agent:testing-release",
-        "comparison": "saluki-images/datadog-agent:testing-release",
-        "datadog-intake": "saluki-images/correctness-tools:latest",
-        "millstone": "saluki-images/correctness-tools:latest"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "tools-linux-image": "saluki-images/correctness-tools:latest"
       },
       "ci_jobs": [
         "test-correctness-dsd-origin-detection-matrix-legacy"
@@ -273,23 +272,22 @@
         ".test-correctness-kind-definition",
         ".test-correctness-adp-baseline"
       ],
-      "case": "correctness/dsd-origin-detection-matrix/legacy"
+      "case": "correctness/dsd-origin-detection-matrix-legacy"
     },
     {
-      "name": "dsd-origin-detection-matrix/legacy-high-cardinality",
+      "name": "dsd-origin-detection-matrix-legacy-high-cardinality",
       "suite": "correctness",
       "subject_os": "linux",
-      "runtime": "kubernetes_in_docker",
-      "source": "test/correctness/cases/dsd-origin-detection-matrix/config.yaml",
-      "schema": "correctness_matrix",
-      "execution": "old",
+      "runtime": "kubernetes-pod",
+      "source": "test/correctness/cases/dsd-origin-detection-matrix-legacy-high-cardinality/config.yaml",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "1200s",
       "images": {
-        "baseline": "saluki-images/datadog-agent:testing-release",
-        "comparison": "saluki-images/datadog-agent:testing-release",
-        "datadog-intake": "saluki-images/correctness-tools:latest",
-        "millstone": "saluki-images/correctness-tools:latest"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "tools-linux-image": "saluki-images/correctness-tools:latest"
       },
       "ci_jobs": [
         "test-correctness-dsd-origin-detection-matrix-legacy-high-cardinality"
@@ -298,23 +296,22 @@
         ".test-correctness-kind-definition",
         ".test-correctness-adp-baseline"
       ],
-      "case": "correctness/dsd-origin-detection-matrix/legacy-high-cardinality"
+      "case": "correctness/dsd-origin-detection-matrix-legacy-high-cardinality"
     },
     {
-      "name": "dsd-origin-detection-matrix/legacy-optout-disabled",
+      "name": "dsd-origin-detection-matrix-legacy-optout-disabled",
       "suite": "correctness",
       "subject_os": "linux",
-      "runtime": "kubernetes_in_docker",
-      "source": "test/correctness/cases/dsd-origin-detection-matrix/config.yaml",
-      "schema": "correctness_matrix",
-      "execution": "old",
+      "runtime": "kubernetes-pod",
+      "source": "test/correctness/cases/dsd-origin-detection-matrix-legacy-optout-disabled/config.yaml",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "1200s",
       "images": {
-        "baseline": "saluki-images/datadog-agent:testing-release",
-        "comparison": "saluki-images/datadog-agent:testing-release",
-        "datadog-intake": "saluki-images/correctness-tools:latest",
-        "millstone": "saluki-images/correctness-tools:latest"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "tools-linux-image": "saluki-images/correctness-tools:latest"
       },
       "ci_jobs": [
         "test-correctness-dsd-origin-detection-matrix-legacy-optout-disabled"
@@ -323,23 +320,22 @@
         ".test-correctness-kind-definition",
         ".test-correctness-adp-baseline"
       ],
-      "case": "correctness/dsd-origin-detection-matrix/legacy-optout-disabled"
+      "case": "correctness/dsd-origin-detection-matrix-legacy-optout-disabled"
     },
     {
-      "name": "dsd-origin-detection-matrix/legacy-with-client-fields",
+      "name": "dsd-origin-detection-matrix-legacy-with-client-fields",
       "suite": "correctness",
       "subject_os": "linux",
-      "runtime": "kubernetes_in_docker",
-      "source": "test/correctness/cases/dsd-origin-detection-matrix/config.yaml",
-      "schema": "correctness_matrix",
-      "execution": "old",
+      "runtime": "kubernetes-pod",
+      "source": "test/correctness/cases/dsd-origin-detection-matrix-legacy-with-client-fields/config.yaml",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "1200s",
       "images": {
-        "baseline": "saluki-images/datadog-agent:testing-release",
-        "comparison": "saluki-images/datadog-agent:testing-release",
-        "datadog-intake": "saluki-images/correctness-tools:latest",
-        "millstone": "saluki-images/correctness-tools:latest"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "tools-linux-image": "saluki-images/correctness-tools:latest"
       },
       "ci_jobs": [
         "test-correctness-dsd-origin-detection-matrix-legacy-with-client-fields"
@@ -348,23 +344,22 @@
         ".test-correctness-kind-definition",
         ".test-correctness-adp-baseline"
       ],
-      "case": "correctness/dsd-origin-detection-matrix/legacy-with-client-fields"
+      "case": "correctness/dsd-origin-detection-matrix-legacy-with-client-fields"
     },
     {
-      "name": "dsd-origin-detection-matrix/unified",
+      "name": "dsd-origin-detection-matrix-unified",
       "suite": "correctness",
       "subject_os": "linux",
-      "runtime": "kubernetes_in_docker",
-      "source": "test/correctness/cases/dsd-origin-detection-matrix/config.yaml",
-      "schema": "correctness_matrix",
-      "execution": "old",
+      "runtime": "kubernetes-pod",
+      "source": "test/correctness/cases/dsd-origin-detection-matrix-unified/config.yaml",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "1200s",
       "images": {
-        "baseline": "saluki-images/datadog-agent:testing-release",
-        "comparison": "saluki-images/datadog-agent:testing-release",
-        "datadog-intake": "saluki-images/correctness-tools:latest",
-        "millstone": "saluki-images/correctness-tools:latest"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "tools-linux-image": "saluki-images/correctness-tools:latest"
       },
       "ci_jobs": [
         "test-correctness-dsd-origin-detection-matrix-unified"
@@ -373,23 +368,22 @@
         ".test-correctness-kind-definition",
         ".test-correctness-adp-baseline"
       ],
-      "case": "correctness/dsd-origin-detection-matrix/unified"
+      "case": "correctness/dsd-origin-detection-matrix-unified"
     },
     {
-      "name": "dsd-origin-detection-matrix/unified-high-cardinality",
+      "name": "dsd-origin-detection-matrix-unified-high-cardinality",
       "suite": "correctness",
       "subject_os": "linux",
-      "runtime": "kubernetes_in_docker",
-      "source": "test/correctness/cases/dsd-origin-detection-matrix/config.yaml",
-      "schema": "correctness_matrix",
-      "execution": "old",
+      "runtime": "kubernetes-pod",
+      "source": "test/correctness/cases/dsd-origin-detection-matrix-unified-high-cardinality/config.yaml",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "1200s",
       "images": {
-        "baseline": "saluki-images/datadog-agent:testing-release",
-        "comparison": "saluki-images/datadog-agent:testing-release",
-        "datadog-intake": "saluki-images/correctness-tools:latest",
-        "millstone": "saluki-images/correctness-tools:latest"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "tools-linux-image": "saluki-images/correctness-tools:latest"
       },
       "ci_jobs": [
         "test-correctness-dsd-origin-detection-matrix-unified-high-cardinality"
@@ -398,23 +392,22 @@
         ".test-correctness-kind-definition",
         ".test-correctness-adp-baseline"
       ],
-      "case": "correctness/dsd-origin-detection-matrix/unified-high-cardinality"
+      "case": "correctness/dsd-origin-detection-matrix-unified-high-cardinality"
     },
     {
-      "name": "dsd-origin-detection-matrix/unified-with-client-fields",
+      "name": "dsd-origin-detection-matrix-unified-with-client-fields",
       "suite": "correctness",
       "subject_os": "linux",
-      "runtime": "kubernetes_in_docker",
-      "source": "test/correctness/cases/dsd-origin-detection-matrix/config.yaml",
-      "schema": "correctness_matrix",
-      "execution": "old",
+      "runtime": "kubernetes-pod",
+      "source": "test/correctness/cases/dsd-origin-detection-matrix-unified-with-client-fields/config.yaml",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "1200s",
       "images": {
-        "baseline": "saluki-images/datadog-agent:testing-release",
-        "comparison": "saluki-images/datadog-agent:testing-release",
-        "datadog-intake": "saluki-images/correctness-tools:latest",
-        "millstone": "saluki-images/correctness-tools:latest"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "tools-linux-image": "saluki-images/correctness-tools:latest"
       },
       "ci_jobs": [
         "test-correctness-dsd-origin-detection-matrix-unified-with-client-fields"
@@ -423,7 +416,7 @@
         ".test-correctness-kind-definition",
         ".test-correctness-adp-baseline"
       ],
-      "case": "correctness/dsd-origin-detection-matrix/unified-with-client-fields"
+      "case": "correctness/dsd-origin-detection-matrix-unified-with-client-fields"
     },
     {
       "name": "dsd-plain",
@@ -4422,397 +4415,644 @@
       },
       "ignored_fields": []
     },
-    "correctness/dsd-origin-detection-matrix/legacy": {
+    "correctness/dsd-origin-detection-matrix-legacy": {
       "config": {
-        "additional_span_ignore_fields": [],
-        "analysis_mode": "metrics",
-        "baseline": {
-          "command": [],
-          "entrypoint": [],
-          "env": {
-            "DD_API_KEY": "correctness-test",
-            "DD_DOGSTATSD_ORIGIN_DETECTION": "true"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "correctness-test",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_REMOTE_AGENT_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DOGSTATSD_ORIGIN_DETECTION": "true"
+              },
+              "realization": "kubernetes-pod",
+              "subject": true,
+              "type": "agent-adp"
+            },
+            "agent": {
+              "env": {
+                "DD_API_KEY": "correctness-test",
+                "DD_DOGSTATSD_ORIGIN_DETECTION": "true"
+              },
+              "realization": "kubernetes-pod",
+              "subject": false,
+              "type": "agent"
+            },
+            "intake-adp": {
+              "env": {},
+              "realization": "kubernetes-pod",
+              "subject": false,
+              "type": "datadog-intake"
+            },
+            "intake-agent": {
+              "env": {},
+              "realization": "kubernetes-pod",
+              "subject": false,
+              "type": "datadog-intake"
+            },
+            "load": {
+              "env": {},
+              "realization": "kubernetes-pod",
+              "subject": false,
+              "type": "millstone"
+            }
           },
-          "files": [
-            "datadog-base.yaml:/etc/datadog-agent/datadog.yaml"
-          ],
-          "image": "saluki-images/datadog-agent:testing-release"
-        },
-        "comparison": {
-          "command": [],
-          "entrypoint": [],
-          "env": {
-            "DD_API_KEY": "correctness-test",
-            "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-            "DD_DATA_PLANE_ENABLED": "true",
-            "DD_DATA_PLANE_REMOTE_AGENT_ENABLED": "true",
-            "DD_DATA_PLANE_STANDALONE_MODE": "false",
-            "DD_DOGSTATSD_ORIGIN_DETECTION": "true"
-          },
-          "files": [
-            "datadog-base.yaml:/etc/datadog-agent/datadog.yaml"
-          ],
-          "image": "saluki-images/datadog-agent:testing-release"
-        },
-        "datadog_intake": {
-          "binary_path": "/usr/local/bin/datadog-intake",
-          "image": "saluki-images/correctness-tools:latest"
-        },
-        "disabled": false,
-        "millstone": {
-          "binary_path": "/usr/local/bin/millstone",
-          "config_path": "millstone.yaml",
-          "image": "saluki-images/correctness-tools:latest"
-        },
-        "otlp_direct_analysis_mode": false,
-        "require_dogstatsd_forwarded_packets": false,
-        "runtime": "kubernetes_in_docker"
+          "procedure": [
+            {
+              "code": 0,
+              "on": "load",
+              "process": "subject",
+              "step": "exits_with",
+              "timeout": "5m"
+            },
+            {
+              "code": 0,
+              "on": "load",
+              "process": "baseline",
+              "step": "exits_with",
+              "timeout": "5m"
+            },
+            {
+              "duration": "30s",
+              "step": "wait"
+            },
+            {
+              "baseline": "intake-agent",
+              "kind": "metrics",
+              "required_metric_tag_keys": [
+                "image_name"
+              ],
+              "step": "compare",
+              "subject": "intake-adp"
+            }
+          ]
+        }
       },
-      "comparison": {
-        "additional_span_ignore_fields": 0,
-        "analysis_mode": "metrics",
-        "otlp_direct_analysis_mode": false,
-        "require_dogstatsd_forwarded_packets": false
+      "steps": {
+        "single_assertions": 3,
+        "parallel_blocks": 0,
+        "parallel_assertions": 0,
+        "actions": 1,
+        "by_kind": {
+          "compare": 1,
+          "exits_with": 2,
+          "wait": 1
+        }
       },
       "ignored_fields": []
     },
-    "correctness/dsd-origin-detection-matrix/legacy-high-cardinality": {
+    "correctness/dsd-origin-detection-matrix-legacy-high-cardinality": {
       "config": {
-        "additional_span_ignore_fields": [],
-        "analysis_mode": "metrics",
-        "baseline": {
-          "command": [],
-          "entrypoint": [],
-          "env": {
-            "DD_API_KEY": "correctness-test",
-            "DD_DOGSTATSD_ORIGIN_DETECTION": "true",
-            "DD_DOGSTATSD_TAG_CARDINALITY": "high"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "correctness-test",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_REMOTE_AGENT_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DOGSTATSD_ORIGIN_DETECTION": "true",
+                "DD_DOGSTATSD_TAG_CARDINALITY": "high"
+              },
+              "realization": "kubernetes-pod",
+              "subject": true,
+              "type": "agent-adp"
+            },
+            "agent": {
+              "env": {
+                "DD_API_KEY": "correctness-test",
+                "DD_DOGSTATSD_ORIGIN_DETECTION": "true",
+                "DD_DOGSTATSD_TAG_CARDINALITY": "high"
+              },
+              "realization": "kubernetes-pod",
+              "subject": false,
+              "type": "agent"
+            },
+            "intake-adp": {
+              "env": {},
+              "realization": "kubernetes-pod",
+              "subject": false,
+              "type": "datadog-intake"
+            },
+            "intake-agent": {
+              "env": {},
+              "realization": "kubernetes-pod",
+              "subject": false,
+              "type": "datadog-intake"
+            },
+            "load": {
+              "env": {},
+              "realization": "kubernetes-pod",
+              "subject": false,
+              "type": "millstone"
+            }
           },
-          "files": [
-            "datadog-base.yaml:/etc/datadog-agent/datadog.yaml"
-          ],
-          "image": "saluki-images/datadog-agent:testing-release"
-        },
-        "comparison": {
-          "command": [],
-          "entrypoint": [],
-          "env": {
-            "DD_API_KEY": "correctness-test",
-            "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-            "DD_DATA_PLANE_ENABLED": "true",
-            "DD_DATA_PLANE_REMOTE_AGENT_ENABLED": "true",
-            "DD_DATA_PLANE_STANDALONE_MODE": "false",
-            "DD_DOGSTATSD_ORIGIN_DETECTION": "true",
-            "DD_DOGSTATSD_TAG_CARDINALITY": "high"
-          },
-          "files": [
-            "datadog-base.yaml:/etc/datadog-agent/datadog.yaml"
-          ],
-          "image": "saluki-images/datadog-agent:testing-release"
-        },
-        "datadog_intake": {
-          "binary_path": "/usr/local/bin/datadog-intake",
-          "image": "saluki-images/correctness-tools:latest"
-        },
-        "disabled": false,
-        "millstone": {
-          "binary_path": "/usr/local/bin/millstone",
-          "config_path": "millstone.yaml",
-          "image": "saluki-images/correctness-tools:latest"
-        },
-        "otlp_direct_analysis_mode": false,
-        "require_dogstatsd_forwarded_packets": false,
-        "runtime": "kubernetes_in_docker"
+          "procedure": [
+            {
+              "code": 0,
+              "on": "load",
+              "process": "subject",
+              "step": "exits_with",
+              "timeout": "5m"
+            },
+            {
+              "code": 0,
+              "on": "load",
+              "process": "baseline",
+              "step": "exits_with",
+              "timeout": "5m"
+            },
+            {
+              "duration": "30s",
+              "step": "wait"
+            },
+            {
+              "baseline": "intake-agent",
+              "kind": "metrics",
+              "required_metric_tag_keys": [
+                "image_name",
+                "container_id"
+              ],
+              "step": "compare",
+              "subject": "intake-adp"
+            }
+          ]
+        }
       },
-      "comparison": {
-        "additional_span_ignore_fields": 0,
-        "analysis_mode": "metrics",
-        "otlp_direct_analysis_mode": false,
-        "require_dogstatsd_forwarded_packets": false
+      "steps": {
+        "single_assertions": 3,
+        "parallel_blocks": 0,
+        "parallel_assertions": 0,
+        "actions": 1,
+        "by_kind": {
+          "compare": 1,
+          "exits_with": 2,
+          "wait": 1
+        }
       },
       "ignored_fields": []
     },
-    "correctness/dsd-origin-detection-matrix/legacy-optout-disabled": {
+    "correctness/dsd-origin-detection-matrix-legacy-optout-disabled": {
       "config": {
-        "additional_span_ignore_fields": [],
-        "analysis_mode": "metrics",
-        "baseline": {
-          "command": [],
-          "entrypoint": [],
-          "env": {
-            "DD_API_KEY": "correctness-test",
-            "DD_DOGSTATSD_ORIGIN_DETECTION": "true",
-            "DD_DOGSTATSD_ORIGIN_OPTOUT_ENABLED": "false"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "correctness-test",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_REMOTE_AGENT_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DOGSTATSD_ORIGIN_DETECTION": "true",
+                "DD_DOGSTATSD_ORIGIN_OPTOUT_ENABLED": "false"
+              },
+              "realization": "kubernetes-pod",
+              "subject": true,
+              "type": "agent-adp"
+            },
+            "agent": {
+              "env": {
+                "DD_API_KEY": "correctness-test",
+                "DD_DOGSTATSD_ORIGIN_DETECTION": "true",
+                "DD_DOGSTATSD_ORIGIN_OPTOUT_ENABLED": "false"
+              },
+              "realization": "kubernetes-pod",
+              "subject": false,
+              "type": "agent"
+            },
+            "intake-adp": {
+              "env": {},
+              "realization": "kubernetes-pod",
+              "subject": false,
+              "type": "datadog-intake"
+            },
+            "intake-agent": {
+              "env": {},
+              "realization": "kubernetes-pod",
+              "subject": false,
+              "type": "datadog-intake"
+            },
+            "load": {
+              "env": {},
+              "realization": "kubernetes-pod",
+              "subject": false,
+              "type": "millstone"
+            }
           },
-          "files": [
-            "datadog-base.yaml:/etc/datadog-agent/datadog.yaml"
-          ],
-          "image": "saluki-images/datadog-agent:testing-release"
-        },
-        "comparison": {
-          "command": [],
-          "entrypoint": [],
-          "env": {
-            "DD_API_KEY": "correctness-test",
-            "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-            "DD_DATA_PLANE_ENABLED": "true",
-            "DD_DATA_PLANE_REMOTE_AGENT_ENABLED": "true",
-            "DD_DATA_PLANE_STANDALONE_MODE": "false",
-            "DD_DOGSTATSD_ORIGIN_DETECTION": "true",
-            "DD_DOGSTATSD_ORIGIN_OPTOUT_ENABLED": "false"
-          },
-          "files": [
-            "datadog-base.yaml:/etc/datadog-agent/datadog.yaml"
-          ],
-          "image": "saluki-images/datadog-agent:testing-release"
-        },
-        "datadog_intake": {
-          "binary_path": "/usr/local/bin/datadog-intake",
-          "image": "saluki-images/correctness-tools:latest"
-        },
-        "disabled": false,
-        "millstone": {
-          "binary_path": "/usr/local/bin/millstone",
-          "config_path": "millstone.yaml",
-          "image": "saluki-images/correctness-tools:latest"
-        },
-        "otlp_direct_analysis_mode": false,
-        "require_dogstatsd_forwarded_packets": false,
-        "runtime": "kubernetes_in_docker"
+          "procedure": [
+            {
+              "code": 0,
+              "on": "load",
+              "process": "subject",
+              "step": "exits_with",
+              "timeout": "5m"
+            },
+            {
+              "code": 0,
+              "on": "load",
+              "process": "baseline",
+              "step": "exits_with",
+              "timeout": "5m"
+            },
+            {
+              "duration": "30s",
+              "step": "wait"
+            },
+            {
+              "baseline": "intake-agent",
+              "kind": "metrics",
+              "required_metric_tag_keys": [
+                "image_name"
+              ],
+              "step": "compare",
+              "subject": "intake-adp"
+            }
+          ]
+        }
       },
-      "comparison": {
-        "additional_span_ignore_fields": 0,
-        "analysis_mode": "metrics",
-        "otlp_direct_analysis_mode": false,
-        "require_dogstatsd_forwarded_packets": false
+      "steps": {
+        "single_assertions": 3,
+        "parallel_blocks": 0,
+        "parallel_assertions": 0,
+        "actions": 1,
+        "by_kind": {
+          "compare": 1,
+          "exits_with": 2,
+          "wait": 1
+        }
       },
       "ignored_fields": []
     },
-    "correctness/dsd-origin-detection-matrix/legacy-with-client-fields": {
+    "correctness/dsd-origin-detection-matrix-legacy-with-client-fields": {
       "config": {
-        "additional_span_ignore_fields": [],
-        "analysis_mode": "metrics",
-        "baseline": {
-          "command": [],
-          "entrypoint": [],
-          "env": {
-            "DD_API_KEY": "correctness-test",
-            "DD_DOGSTATSD_ORIGIN_DETECTION": "true",
-            "DD_DOGSTATSD_ORIGIN_DETECTION_CLIENT": "true"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "correctness-test",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_REMOTE_AGENT_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DOGSTATSD_ORIGIN_DETECTION": "true",
+                "DD_DOGSTATSD_ORIGIN_DETECTION_CLIENT": "true"
+              },
+              "realization": "kubernetes-pod",
+              "subject": true,
+              "type": "agent-adp"
+            },
+            "agent": {
+              "env": {
+                "DD_API_KEY": "correctness-test",
+                "DD_DOGSTATSD_ORIGIN_DETECTION": "true",
+                "DD_DOGSTATSD_ORIGIN_DETECTION_CLIENT": "true"
+              },
+              "realization": "kubernetes-pod",
+              "subject": false,
+              "type": "agent"
+            },
+            "intake-adp": {
+              "env": {},
+              "realization": "kubernetes-pod",
+              "subject": false,
+              "type": "datadog-intake"
+            },
+            "intake-agent": {
+              "env": {},
+              "realization": "kubernetes-pod",
+              "subject": false,
+              "type": "datadog-intake"
+            },
+            "load": {
+              "env": {},
+              "realization": "kubernetes-pod",
+              "subject": false,
+              "type": "millstone"
+            }
           },
-          "files": [
-            "datadog-base.yaml:/etc/datadog-agent/datadog.yaml"
-          ],
-          "image": "saluki-images/datadog-agent:testing-release"
-        },
-        "comparison": {
-          "command": [],
-          "entrypoint": [],
-          "env": {
-            "DD_API_KEY": "correctness-test",
-            "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-            "DD_DATA_PLANE_ENABLED": "true",
-            "DD_DATA_PLANE_REMOTE_AGENT_ENABLED": "true",
-            "DD_DATA_PLANE_STANDALONE_MODE": "false",
-            "DD_DOGSTATSD_ORIGIN_DETECTION": "true",
-            "DD_DOGSTATSD_ORIGIN_DETECTION_CLIENT": "true"
-          },
-          "files": [
-            "datadog-base.yaml:/etc/datadog-agent/datadog.yaml"
-          ],
-          "image": "saluki-images/datadog-agent:testing-release"
-        },
-        "datadog_intake": {
-          "binary_path": "/usr/local/bin/datadog-intake",
-          "image": "saluki-images/correctness-tools:latest"
-        },
-        "disabled": false,
-        "millstone": {
-          "binary_path": "/usr/local/bin/millstone",
-          "config_path": "millstone.yaml",
-          "image": "saluki-images/correctness-tools:latest"
-        },
-        "otlp_direct_analysis_mode": false,
-        "require_dogstatsd_forwarded_packets": false,
-        "runtime": "kubernetes_in_docker"
+          "procedure": [
+            {
+              "code": 0,
+              "on": "load",
+              "process": "subject",
+              "step": "exits_with",
+              "timeout": "5m"
+            },
+            {
+              "code": 0,
+              "on": "load",
+              "process": "baseline",
+              "step": "exits_with",
+              "timeout": "5m"
+            },
+            {
+              "duration": "30s",
+              "step": "wait"
+            },
+            {
+              "baseline": "intake-agent",
+              "kind": "metrics",
+              "required_metric_tag_keys": [
+                "image_name"
+              ],
+              "step": "compare",
+              "subject": "intake-adp"
+            }
+          ]
+        }
       },
-      "comparison": {
-        "additional_span_ignore_fields": 0,
-        "analysis_mode": "metrics",
-        "otlp_direct_analysis_mode": false,
-        "require_dogstatsd_forwarded_packets": false
+      "steps": {
+        "single_assertions": 3,
+        "parallel_blocks": 0,
+        "parallel_assertions": 0,
+        "actions": 1,
+        "by_kind": {
+          "compare": 1,
+          "exits_with": 2,
+          "wait": 1
+        }
       },
       "ignored_fields": []
     },
-    "correctness/dsd-origin-detection-matrix/unified": {
+    "correctness/dsd-origin-detection-matrix-unified": {
       "config": {
-        "additional_span_ignore_fields": [],
-        "analysis_mode": "metrics",
-        "baseline": {
-          "command": [],
-          "entrypoint": [],
-          "env": {
-            "DD_API_KEY": "correctness-test",
-            "DD_DOGSTATSD_ORIGIN_DETECTION": "true",
-            "DD_ORIGIN_DETECTION_UNIFIED": "true"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "correctness-test",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_REMOTE_AGENT_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DOGSTATSD_ORIGIN_DETECTION": "true",
+                "DD_ORIGIN_DETECTION_UNIFIED": "true"
+              },
+              "realization": "kubernetes-pod",
+              "subject": true,
+              "type": "agent-adp"
+            },
+            "agent": {
+              "env": {
+                "DD_API_KEY": "correctness-test",
+                "DD_DOGSTATSD_ORIGIN_DETECTION": "true",
+                "DD_ORIGIN_DETECTION_UNIFIED": "true"
+              },
+              "realization": "kubernetes-pod",
+              "subject": false,
+              "type": "agent"
+            },
+            "intake-adp": {
+              "env": {},
+              "realization": "kubernetes-pod",
+              "subject": false,
+              "type": "datadog-intake"
+            },
+            "intake-agent": {
+              "env": {},
+              "realization": "kubernetes-pod",
+              "subject": false,
+              "type": "datadog-intake"
+            },
+            "load": {
+              "env": {},
+              "realization": "kubernetes-pod",
+              "subject": false,
+              "type": "millstone"
+            }
           },
-          "files": [
-            "datadog-base.yaml:/etc/datadog-agent/datadog.yaml"
-          ],
-          "image": "saluki-images/datadog-agent:testing-release"
-        },
-        "comparison": {
-          "command": [],
-          "entrypoint": [],
-          "env": {
-            "DD_API_KEY": "correctness-test",
-            "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-            "DD_DATA_PLANE_ENABLED": "true",
-            "DD_DATA_PLANE_REMOTE_AGENT_ENABLED": "true",
-            "DD_DATA_PLANE_STANDALONE_MODE": "false",
-            "DD_DOGSTATSD_ORIGIN_DETECTION": "true",
-            "DD_ORIGIN_DETECTION_UNIFIED": "true"
-          },
-          "files": [
-            "datadog-base.yaml:/etc/datadog-agent/datadog.yaml"
-          ],
-          "image": "saluki-images/datadog-agent:testing-release"
-        },
-        "datadog_intake": {
-          "binary_path": "/usr/local/bin/datadog-intake",
-          "image": "saluki-images/correctness-tools:latest"
-        },
-        "disabled": false,
-        "millstone": {
-          "binary_path": "/usr/local/bin/millstone",
-          "config_path": "millstone.yaml",
-          "image": "saluki-images/correctness-tools:latest"
-        },
-        "otlp_direct_analysis_mode": false,
-        "require_dogstatsd_forwarded_packets": false,
-        "runtime": "kubernetes_in_docker"
+          "procedure": [
+            {
+              "code": 0,
+              "on": "load",
+              "process": "subject",
+              "step": "exits_with",
+              "timeout": "5m"
+            },
+            {
+              "code": 0,
+              "on": "load",
+              "process": "baseline",
+              "step": "exits_with",
+              "timeout": "5m"
+            },
+            {
+              "duration": "30s",
+              "step": "wait"
+            },
+            {
+              "baseline": "intake-agent",
+              "kind": "metrics",
+              "required_metric_tag_keys": [
+                "image_name"
+              ],
+              "step": "compare",
+              "subject": "intake-adp"
+            }
+          ]
+        }
       },
-      "comparison": {
-        "additional_span_ignore_fields": 0,
-        "analysis_mode": "metrics",
-        "otlp_direct_analysis_mode": false,
-        "require_dogstatsd_forwarded_packets": false
+      "steps": {
+        "single_assertions": 3,
+        "parallel_blocks": 0,
+        "parallel_assertions": 0,
+        "actions": 1,
+        "by_kind": {
+          "compare": 1,
+          "exits_with": 2,
+          "wait": 1
+        }
       },
       "ignored_fields": []
     },
-    "correctness/dsd-origin-detection-matrix/unified-high-cardinality": {
+    "correctness/dsd-origin-detection-matrix-unified-high-cardinality": {
       "config": {
-        "additional_span_ignore_fields": [],
-        "analysis_mode": "metrics",
-        "baseline": {
-          "command": [],
-          "entrypoint": [],
-          "env": {
-            "DD_API_KEY": "correctness-test",
-            "DD_DOGSTATSD_ORIGIN_DETECTION": "true",
-            "DD_DOGSTATSD_TAG_CARDINALITY": "high",
-            "DD_ORIGIN_DETECTION_UNIFIED": "true"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "correctness-test",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_REMOTE_AGENT_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DOGSTATSD_ORIGIN_DETECTION": "true",
+                "DD_DOGSTATSD_TAG_CARDINALITY": "high",
+                "DD_ORIGIN_DETECTION_UNIFIED": "true"
+              },
+              "realization": "kubernetes-pod",
+              "subject": true,
+              "type": "agent-adp"
+            },
+            "agent": {
+              "env": {
+                "DD_API_KEY": "correctness-test",
+                "DD_DOGSTATSD_ORIGIN_DETECTION": "true",
+                "DD_DOGSTATSD_TAG_CARDINALITY": "high",
+                "DD_ORIGIN_DETECTION_UNIFIED": "true"
+              },
+              "realization": "kubernetes-pod",
+              "subject": false,
+              "type": "agent"
+            },
+            "intake-adp": {
+              "env": {},
+              "realization": "kubernetes-pod",
+              "subject": false,
+              "type": "datadog-intake"
+            },
+            "intake-agent": {
+              "env": {},
+              "realization": "kubernetes-pod",
+              "subject": false,
+              "type": "datadog-intake"
+            },
+            "load": {
+              "env": {},
+              "realization": "kubernetes-pod",
+              "subject": false,
+              "type": "millstone"
+            }
           },
-          "files": [
-            "datadog-base.yaml:/etc/datadog-agent/datadog.yaml"
-          ],
-          "image": "saluki-images/datadog-agent:testing-release"
-        },
-        "comparison": {
-          "command": [],
-          "entrypoint": [],
-          "env": {
-            "DD_API_KEY": "correctness-test",
-            "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-            "DD_DATA_PLANE_ENABLED": "true",
-            "DD_DATA_PLANE_REMOTE_AGENT_ENABLED": "true",
-            "DD_DATA_PLANE_STANDALONE_MODE": "false",
-            "DD_DOGSTATSD_ORIGIN_DETECTION": "true",
-            "DD_DOGSTATSD_TAG_CARDINALITY": "high",
-            "DD_ORIGIN_DETECTION_UNIFIED": "true"
-          },
-          "files": [
-            "datadog-base.yaml:/etc/datadog-agent/datadog.yaml"
-          ],
-          "image": "saluki-images/datadog-agent:testing-release"
-        },
-        "datadog_intake": {
-          "binary_path": "/usr/local/bin/datadog-intake",
-          "image": "saluki-images/correctness-tools:latest"
-        },
-        "disabled": false,
-        "millstone": {
-          "binary_path": "/usr/local/bin/millstone",
-          "config_path": "millstone.yaml",
-          "image": "saluki-images/correctness-tools:latest"
-        },
-        "otlp_direct_analysis_mode": false,
-        "require_dogstatsd_forwarded_packets": false,
-        "runtime": "kubernetes_in_docker"
+          "procedure": [
+            {
+              "code": 0,
+              "on": "load",
+              "process": "subject",
+              "step": "exits_with",
+              "timeout": "5m"
+            },
+            {
+              "code": 0,
+              "on": "load",
+              "process": "baseline",
+              "step": "exits_with",
+              "timeout": "5m"
+            },
+            {
+              "duration": "30s",
+              "step": "wait"
+            },
+            {
+              "baseline": "intake-agent",
+              "kind": "metrics",
+              "required_metric_tag_keys": [
+                "image_name",
+                "container_id"
+              ],
+              "step": "compare",
+              "subject": "intake-adp"
+            }
+          ]
+        }
       },
-      "comparison": {
-        "additional_span_ignore_fields": 0,
-        "analysis_mode": "metrics",
-        "otlp_direct_analysis_mode": false,
-        "require_dogstatsd_forwarded_packets": false
+      "steps": {
+        "single_assertions": 3,
+        "parallel_blocks": 0,
+        "parallel_assertions": 0,
+        "actions": 1,
+        "by_kind": {
+          "compare": 1,
+          "exits_with": 2,
+          "wait": 1
+        }
       },
       "ignored_fields": []
     },
-    "correctness/dsd-origin-detection-matrix/unified-with-client-fields": {
+    "correctness/dsd-origin-detection-matrix-unified-with-client-fields": {
       "config": {
-        "additional_span_ignore_fields": [],
-        "analysis_mode": "metrics",
-        "baseline": {
-          "command": [],
-          "entrypoint": [],
-          "env": {
-            "DD_API_KEY": "correctness-test",
-            "DD_DOGSTATSD_ORIGIN_DETECTION": "true",
-            "DD_DOGSTATSD_ORIGIN_DETECTION_CLIENT": "true",
-            "DD_ORIGIN_DETECTION_UNIFIED": "true"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "correctness-test",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_REMOTE_AGENT_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DOGSTATSD_ORIGIN_DETECTION": "true",
+                "DD_DOGSTATSD_ORIGIN_DETECTION_CLIENT": "true",
+                "DD_ORIGIN_DETECTION_UNIFIED": "true"
+              },
+              "realization": "kubernetes-pod",
+              "subject": true,
+              "type": "agent-adp"
+            },
+            "agent": {
+              "env": {
+                "DD_API_KEY": "correctness-test",
+                "DD_DOGSTATSD_ORIGIN_DETECTION": "true",
+                "DD_DOGSTATSD_ORIGIN_DETECTION_CLIENT": "true",
+                "DD_ORIGIN_DETECTION_UNIFIED": "true"
+              },
+              "realization": "kubernetes-pod",
+              "subject": false,
+              "type": "agent"
+            },
+            "intake-adp": {
+              "env": {},
+              "realization": "kubernetes-pod",
+              "subject": false,
+              "type": "datadog-intake"
+            },
+            "intake-agent": {
+              "env": {},
+              "realization": "kubernetes-pod",
+              "subject": false,
+              "type": "datadog-intake"
+            },
+            "load": {
+              "env": {},
+              "realization": "kubernetes-pod",
+              "subject": false,
+              "type": "millstone"
+            }
           },
-          "files": [
-            "datadog-base.yaml:/etc/datadog-agent/datadog.yaml"
-          ],
-          "image": "saluki-images/datadog-agent:testing-release"
-        },
-        "comparison": {
-          "command": [],
-          "entrypoint": [],
-          "env": {
-            "DD_API_KEY": "correctness-test",
-            "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-            "DD_DATA_PLANE_ENABLED": "true",
-            "DD_DATA_PLANE_REMOTE_AGENT_ENABLED": "true",
-            "DD_DATA_PLANE_STANDALONE_MODE": "false",
-            "DD_DOGSTATSD_ORIGIN_DETECTION": "true",
-            "DD_DOGSTATSD_ORIGIN_DETECTION_CLIENT": "true",
-            "DD_ORIGIN_DETECTION_UNIFIED": "true"
-          },
-          "files": [
-            "datadog-base.yaml:/etc/datadog-agent/datadog.yaml"
-          ],
-          "image": "saluki-images/datadog-agent:testing-release"
-        },
-        "datadog_intake": {
-          "binary_path": "/usr/local/bin/datadog-intake",
-          "image": "saluki-images/correctness-tools:latest"
-        },
-        "disabled": false,
-        "millstone": {
-          "binary_path": "/usr/local/bin/millstone",
-          "config_path": "millstone.yaml",
-          "image": "saluki-images/correctness-tools:latest"
-        },
-        "otlp_direct_analysis_mode": false,
-        "require_dogstatsd_forwarded_packets": false,
-        "runtime": "kubernetes_in_docker"
+          "procedure": [
+            {
+              "code": 0,
+              "on": "load",
+              "process": "subject",
+              "step": "exits_with",
+              "timeout": "5m"
+            },
+            {
+              "code": 0,
+              "on": "load",
+              "process": "baseline",
+              "step": "exits_with",
+              "timeout": "5m"
+            },
+            {
+              "duration": "30s",
+              "step": "wait"
+            },
+            {
+              "baseline": "intake-agent",
+              "kind": "metrics",
+              "required_metric_tag_keys": [
+                "image_name"
+              ],
+              "step": "compare",
+              "subject": "intake-adp"
+            }
+          ]
+        }
       },
-      "comparison": {
-        "additional_span_ignore_fields": 0,
-        "analysis_mode": "metrics",
-        "otlp_direct_analysis_mode": false,
-        "require_dogstatsd_forwarded_packets": false
+      "steps": {
+        "single_assertions": 3,
+        "parallel_blocks": 0,
+        "parallel_assertions": 0,
+        "actions": 1,
+        "by_kind": {
+          "compare": 1,
+          "exits_with": 2,
+          "wait": 1
+        }
       },
       "ignored_fields": []
     },

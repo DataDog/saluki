@@ -105,21 +105,18 @@ const LATE_POD_UID: &str = "{{ self.late.pod_uid }}";
 #[test]
 fn pod_recipe_keeps_late_references_as_strings_in_the_real_origin_detection_matrix() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../../test/correctness/cases/dsd-origin-detection-matrix/millstone.yaml");
+        .join("../../../../test/correctness/shared/dsd-origin-detection-matrix/millstone.yaml");
     let fixture = std::fs::read_to_string(path).unwrap();
-    let legacy_target = "unixgram:///$GROUP-airlock/metrics.sock";
+    let target_reference = "{{ self.connections.target.url }}";
     let subject = "unixgram:///airlock/subject/shared/metrics.sock";
     let baseline = "unixgram:///airlock/baseline/shared/metrics.sock";
-    for placeholder in [legacy_target, "{{CONTAINER_ID}}", "{{POD_UID}}"] {
+    for placeholder in [target_reference, LATE_CONTAINER_ID, LATE_POD_UID] {
         assert!(
             fixture.contains(placeholder),
             "{placeholder} missing from the matrix millstone.yaml"
         );
     }
-    let templated = fixture
-        .replace(legacy_target, subject)
-        .replace("{{CONTAINER_ID}}", LATE_CONTAINER_ID)
-        .replace("{{POD_UID}}", LATE_POD_UID);
+    let templated = fixture.replace(target_reference, subject);
     let env = BTreeMap::from([
         (TARGET_ENV.into(), subject.into()),
         (BASELINE_TARGET_ENV.into(), baseline.into()),
@@ -149,9 +146,9 @@ fn pod_recipe_keeps_late_references_as_strings_in_the_real_origin_detection_matr
         ),
     ] {
         let resolved = fixture
-            .replace(legacy_target, subject)
-            .replace("{{CONTAINER_ID}}", container_id)
-            .replace("{{POD_UID}}", pod_uid);
+            .replace(target_reference, subject)
+            .replace(LATE_CONTAINER_ID, container_id)
+            .replace(LATE_POD_UID, pod_uid);
         let mut expected: Value = serde_saphyr::from_str(&resolved).unwrap();
         for (index, target) in [(1, subject), (2, baseline)] {
             let (_, _, contents) = placed[index];
