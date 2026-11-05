@@ -33,7 +33,7 @@ mod telemetry;
 ///
 /// The internal supervisor manages:
 /// - **Control plane**: Health registry, unprivileged and privileged APIs (including the
-///   `/metrics` telemetry route), remote agent registration, and the rest
+///   `/metrics` and `/compat/metrics` telemetry routes), remote agent registration, and the rest
 ///   of ADP's internal HTTP/gRPC surface.
 ///
 /// Each subsystem runs on its own dedicated single-threaded runtime for isolation.

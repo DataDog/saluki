@@ -1,6 +1,6 @@
 type: integration
 name: "telemetry-endpoint"
-description: "Verifies only the internal metrics route is exposed on the unprivileged API endpoint"
+description: "Verifies the internal telemetry routes are exposed on the unprivileged API endpoint"
 timeout: 120s
 runtimes: [linux, mac, windows]
 
@@ -16,7 +16,8 @@ container:
     - "55100/tcp"
 
 procedure:
-  # Make sure the process becomes healthy and serves only the metrics route on the unprivileged API.
+  # Make sure the process becomes healthy, and stays up without errors, with the telemetry routes
+  # served on the unprivileged API endpoint.
   - parallel:
       - assertion: process_stable_for
         duration: 10s
@@ -32,7 +33,7 @@ procedure:
       - assertion: http_check
         endpoint: "http://localhost:55100/compat/metrics"
         status:
-          equal: 404
+          equal: 200
         timeout: 60s
       - assertion: log_not_contains
         pattern: "panic|PANIC"

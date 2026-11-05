@@ -15,14 +15,18 @@ use saluki_core::{
 use saluki_error::generic_error;
 use tokio::sync::Mutex;
 
+use crate::state::metrics::get_compat_remappings;
+
 /// State shared by the telemetry API routes.
 #[derive(Clone)]
 pub struct InternalTelemetryState {
     metrics: Reflector<AggregatedMetricsProcessor>,
     raw: Arc<Mutex<TelemetryProcessor>>,
+    compat: Arc<Mutex<TelemetryProcessor>>,
 }
 
-/// API handler that exposes the internal `/metrics` telemetry route on the unprivileged endpoint.
+/// API handler that exposes the internal telemetry routes (`/metrics`, `/compat/metrics`) on the
+/// unprivileged endpoint.
 pub struct InternalTelemetryAPIHandler {
     state: InternalTelemetryState,
 }
@@ -33,12 +37,20 @@ impl InternalTelemetryAPIHandler {
             state: InternalTelemetryState {
                 metrics,
                 raw: Arc::new(Mutex::new(TelemetryProcessor::new())),
+                compat: Arc::new(Mutex::new(
+                    TelemetryProcessor::new().with_remapper_rules(get_compat_remappings()),
+                )),
             },
         }
     }
 
     async fn metrics_handler(State(state): State<InternalTelemetryState>) -> impl IntoResponse {
         let mut processor = state.raw.lock().await;
+        processor.process(state.metrics.state())
+    }
+
+    async fn compat_metrics_handler(State(state): State<InternalTelemetryState>) -> impl IntoResponse {
+        let mut processor = state.compat.lock().await;
         processor.process(state.metrics.state())
     }
 }
@@ -51,14 +63,27 @@ impl APIHandler for InternalTelemetryAPIHandler {
     }
 
     fn generate_routes(&self) -> Router<Self::State> {
-        Router::new().route("/metrics", get(Self::metrics_handler))
+        Router::new()
+            .route("/metrics", get(Self::metrics_handler))
+            .route("/compat/metrics", get(Self::compat_metrics_handler))
     }
 }
 
 /// A worker that exposes ADP's internal telemetry on the unprivileged API endpoint.
 ///
-/// Asserts `GET /metrics`, serving the full aggregated metrics state as Prometheus text exposition.
+/// Asserts two routes on the unprivileged endpoint:
+///
+/// - `GET /metrics`: the full aggregated metrics state, rendered as Prometheus text exposition.
+/// - `GET /compat/metrics`: the subset of metrics that match the Datadog Agent compatibility
+///   remapper rules, rendered with the remapped names so they line up with Core Agent telemetry.
 pub struct InternalTelemetryAPIWorker;
+
+impl InternalTelemetryAPIWorker {
+    /// Creates a new `InternalTelemetryAPIWorker`.
+    pub fn new() -> Self {
+        Self
+    }
+}
 
 #[async_trait]
 impl Supervisable for InternalTelemetryAPIWorker {
@@ -79,40 +104,5 @@ impl Supervisable for InternalTelemetryAPIWorker {
             process_shutdown.await;
             Ok(())
         }))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use futures::stream;
-    use http::{Request, StatusCode};
-    use http_body_util::Empty;
-    use hyper::body::Bytes;
-    use saluki_core::observability::metrics::MetricsSnapshot;
-    use tower::ServiceExt as _;
-
-    use super::*;
-
-    fn handler() -> InternalTelemetryAPIHandler {
-        let (metrics, _worker) = Reflector::new(stream::empty::<Vec<MetricsSnapshot>>(), AggregatedMetricsProcessor);
-        InternalTelemetryAPIHandler::new(metrics)
-    }
-
-    async fn status(handler: &InternalTelemetryAPIHandler, path: &str) -> StatusCode {
-        let request = Request::get(path).body(Empty::<Bytes>::new()).unwrap();
-        handler
-            .generate_routes()
-            .with_state(handler.generate_initial_state())
-            .oneshot(request)
-            .await
-            .unwrap()
-            .status()
-    }
-
-    #[tokio::test]
-    async fn serves_only_metrics_route() {
-        let handler = handler();
-        assert_eq!(status(&handler, "/metrics").await, StatusCode::OK);
-        assert_eq!(status(&handler, "/compat/metrics").await, StatusCode::NOT_FOUND);
     }
 }
