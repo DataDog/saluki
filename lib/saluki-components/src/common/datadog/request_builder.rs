@@ -163,6 +163,33 @@ where
     }
 }
 
+/// Framing written to the payload before an input.
+#[derive(Clone, Copy)]
+enum InputFraming {
+    /// The payload prefix, written before the first input.
+    Prefix(&'static [u8]),
+
+    /// The input separator, written before every input after the first.
+    Separator(&'static [u8]),
+}
+
+impl InputFraming {
+    fn bytes(self) -> &'static [u8] {
+        match self {
+            Self::Prefix(prefix) => prefix,
+            Self::Separator(separator) => separator,
+        }
+    }
+
+    /// Returns `true` if the framing counts towards `RequestBuilder::uncompressed_len`.
+    ///
+    /// The payload prefix doesn't: it's accounted for up front, along with the payload suffix, through
+    /// `RequestBuilder::uncompressed_len_prefix_suffix`.
+    const fn counts_towards_uncompressed_len(self) -> bool {
+        matches!(self, Self::Separator(_))
+    }
+}
+
 /// Generic builder for creating HTTP requests with payloads consisting of encoded and compressed input events.
 pub struct RequestBuilder<E>
 where
@@ -289,18 +316,34 @@ where
         self.uncompressed_len + self.uncompressed_len_prefix_suffix
     }
 
-    /// Returns the framing that must be written before the next input, and whether it counts towards the
-    /// uncompressed length.
-    ///
-    /// That's the payload prefix before the first input, and the input separator before every other input. The payload
-    /// prefix doesn't count, since we account for the payload prefix/suffix length through
-    /// `self.uncompressed_len_prefix_suffix`.
-    fn next_input_framing(&self) -> Option<(&'static [u8], bool)> {
+    /// Returns the framing that must be written before the next input, if any.
+    fn next_input_framing(&self) -> Option<InputFraming> {
         if self.uncompressed_len == 0 {
-            self.encoder.get_payload_prefix().map(|prefix| (prefix, false))
+            self.encoder.get_payload_prefix().map(InputFraming::Prefix)
         } else {
-            self.encoder.get_input_separator().map(|separator| (separator, true))
+            self.encoder.get_input_separator().map(InputFraming::Separator)
         }
+    }
+
+    /// Returns `true` if writing `framing` and then an encoded input of `encoded_len` bytes would take the current
+    /// request payload over the uncompressed size limit, or is likely to take it over the compressed size limit.
+    fn would_exceed_limits(&self, framing: Option<InputFraming>, encoded_len: usize) -> bool {
+        // `self.uncompressed_len()` already includes the payload prefix and suffix, whether or not they've been written
+        // yet, so that we know the uncompressed length of the finalized payload. Only an input separator adds to it.
+        let counted_framing_len = framing
+            .filter(|framing| framing.counts_towards_uncompressed_len())
+            .map_or(0, |framing| framing.bytes().len());
+        let would_exceed_uncompressed_limit =
+            self.uncompressed_len() + counted_framing_len + encoded_len > self.uncompressed_len_limit;
+
+        // The compression estimator only knows about bytes that have actually been written to the compressor, so it has
+        // to be told about all of the framing, including the payload prefix.
+        let framing_len = framing.map_or(0, |framing| framing.bytes().len());
+        let likely_exceeds_compressed_limit = self
+            .compression_estimator
+            .would_write_exceed_threshold(framing_len + encoded_len, self.compressed_len_limit);
+
+        would_exceed_uncompressed_limit || likely_exceeds_compressed_limit
     }
 
     /// Writes framing, such as the payload prefix, an input separator, or the payload suffix, to the compressor.
@@ -428,20 +471,9 @@ where
         // If the input can't fit into the current request payload based on the uncompressed size limit, or isn't likely
         // to fit into the current request payload based on the estimated compressed size limit, then return it to the
         // caller: this indicates that a flush must happen before trying to encode the same input again.
-        //
-        // We specifically include the prefix/suffix length separately, as this lets us account for them before having
-        // actually written the suffix, such that our calculation of the uncompressed length of the finalized payload is
-        // accurate. The input separator, if one is needed, is counted along with the input.
         let encoded_len = self.scratch_buf.len();
         let framing = self.next_input_framing();
-        let framing_len = framing.map_or(0, |(framing, _)| framing.len());
-        let counted_framing_len = framing.map_or(0, |(framing, counted)| if counted { framing.len() } else { 0 });
-        let would_exceed_uncompressed_limit =
-            self.uncompressed_len() + counted_framing_len + encoded_len > self.uncompressed_len_limit;
-        let likely_exceeds_compressed_limit = self
-            .compression_estimator
-            .would_write_exceed_threshold(framing_len + encoded_len, self.compressed_len_limit);
-        if would_exceed_uncompressed_limit || likely_exceeds_compressed_limit {
+        if self.would_exceed_limits(framing, encoded_len) {
             trace!(
                 encoder = E::encoder_name(),
                 endpoint = ?self.encoder.endpoint_uri(),
@@ -454,8 +486,10 @@ where
         }
 
         // Write any configured prefix/input separator, and then the scratch buffer, to the compressor.
-        if let Some((framing, counted)) = framing {
-            self.write_framing(framing, counted).await.context(Io)?;
+        if let Some(framing) = framing {
+            self.write_framing(framing.bytes(), framing.counts_towards_uncompressed_len())
+                .await
+                .context(Io)?;
         }
         self.flush_scratch_buffer().await.context(Io)?;
 
