@@ -1,8 +1,7 @@
 ---
 fixes:
   - |
-    Agent Data Plane no longer sends invalid JSON for service checks, logs, and metrics on the V1 series endpoint
-    (``use_v2_series_api: false``). The Datadog intake rejected these requests, and every service check, log, or metric
-    in them was lost. It happened when a request reached its size limit, and for V1 series metrics, also after a metric
-    too large to send was dropped. Logs were affected when checks run in Agent Data Plane, or when OTLP logs are ingested
-    natively rather than through the default proxy mode.
+    Fix requests for service checks, logs, and V1 series metrics (``use_v2_series_api: false``) being sent as invalid
+    JSON when they filled up to their size limit. The Datadog intake drops such a request, so every service check,
+    log, or metric in it was lost. V1 series requests could also become invalid after Agent Data Plane dropped a single
+    metric that was too large to send. Requests that stayed under their size limits weren't affected.
