@@ -164,7 +164,8 @@ async fn levels() {
 
 #[tokio::test]
 async fn messages() {
-    // The message is sent as it is, as a JSON string escaped the way Go escapes it.
+    // The message is sent as it is, as a JSON string. Unlike Go, `serde_json` doesn't escape `<`, `>`, `&`, or U+2028
+    // (`gap/json-encoding`).
     let cases = [
         ("", entry(r#""""#, "info")),
         (
@@ -176,11 +177,8 @@ async fn messages() {
             "line one\nline two\ttabbed",
             entry(r#""line one\nline two\ttabbed""#, "info"),
         ),
-        (
-            "<a href=\"x\">&amp;</a>",
-            entry(r#""\u003ca href=\"x\"\u003e\u0026amp;\u003c/a\u003e""#, "info"),
-        ),
-        ("café ☕ 日本語 \u{2028}", entry(r#""café ☕ 日本語 \u2028""#, "info")),
+        ("<a href=\"x\">&amp;</a>", entry(r#""<a href=\"x\">&amp;</a>""#, "info")),
+        ("café ☕ 日本語 \u{2028}", entry("\"café ☕ 日本語 \u{2028}\"", "info")),
     ];
 
     for (message, expected) in cases {

@@ -1,5 +1,3 @@
-use std::convert::Infallible;
-
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
@@ -192,7 +190,7 @@ impl LogsEndpointEncoder {
     /// field is present, empty when the log has no value for it. The message is written as it is: a log's producer
     /// renders whatever content the message should carry, such as a JSON object holding the log's properties, so the
     /// log's additional properties aren't written.
-    fn write_envelope(&mut self, log: &Log, buffer: &mut Vec<u8>) {
+    fn write_envelope(&mut self, log: &Log, buffer: &mut Vec<u8>) -> Result<(), serde_json::Error> {
         // A log without a status is sent as `info`.
         let status = if log.status().is_empty() {
             DEFAULT_STATUS
@@ -202,17 +200,17 @@ impl LogsEndpointEncoder {
         let source = log.source().as_deref().unwrap_or_default();
 
         buffer.extend_from_slice(b"{\"message\":");
-        go_json::write_string(buffer, log.message());
+        serde_json::to_writer(&mut *buffer, log.message())?;
         buffer.extend_from_slice(b",\"status\":");
-        go_json::write_string(buffer, status);
+        serde_json::to_writer(&mut *buffer, status)?;
         buffer.extend_from_slice(b",\"timestamp\":");
         buffer.extend_from_slice(itoa::Buffer::new().format((self.clock)().timestamp_millis()).as_bytes());
         buffer.extend_from_slice(b",\"hostname\":");
-        go_json::write_string(buffer, log.hostname());
+        serde_json::to_writer(&mut *buffer, log.hostname())?;
         buffer.extend_from_slice(b",\"service\":");
-        go_json::write_string(buffer, log.service());
+        serde_json::to_writer(&mut *buffer, log.service())?;
         buffer.extend_from_slice(b",\"ddsource\":");
-        go_json::write_string(buffer, source);
+        serde_json::to_writer(&mut *buffer, source)?;
 
         // ddtags: comma-separated, deduplicated
         buffer.extend_from_slice(b",\"ddtags\":");
@@ -223,14 +221,15 @@ impl LogsEndpointEncoder {
             }
             self.tags_buffer.push_str(tag.as_str());
         }
-        go_json::write_string(buffer, &self.tags_buffer);
+        serde_json::to_writer(&mut *buffer, &self.tags_buffer)?;
         buffer.push(b'}');
+        Ok(())
     }
 }
 
 impl EndpointEncoder for LogsEndpointEncoder {
     type Input = Log;
-    type EncodeError = Infallible;
+    type EncodeError = serde_json::Error;
 
     fn encoder_name() -> &'static str {
         "logs"
@@ -257,8 +256,7 @@ impl EndpointEncoder for LogsEndpointEncoder {
     }
 
     fn encode(&mut self, input: &Self::Input, buffer: &mut Vec<u8>) -> Result<(), Self::EncodeError> {
-        self.write_envelope(input, buffer);
-        Ok(())
+        self.write_envelope(input, buffer)
     }
 
     fn endpoint_uri(&self) -> Uri {
@@ -304,7 +302,9 @@ mod tests {
     fn envelope(log: &Log) -> String {
         let mut encoder = LogsEndpointEncoder::new(fixed_clock);
         let mut buffer = Vec::new();
-        encoder.write_envelope(log, &mut buffer);
+        encoder
+            .write_envelope(log, &mut buffer)
+            .expect("envelope should serialize");
         String::from_utf8(buffer).expect("envelope should be UTF-8")
     }
 
@@ -362,7 +362,8 @@ mod tests {
     }
 
     #[test]
-    fn escapes_strings_as_go_does() {
+    fn escapes_strings_as_serde_json_does() {
+        // `serde_json` doesn't escape `<`, `>`, `&`, or U+2028, which Go escapes (`gap/json-encoding`).
         let log = Log::new("<a href=\"x\">&amp;</a> \u{2028} \t")
             .with_service(MetaString::from_static("s<v>c"))
             .with_tags(tag_set(["a&b"]));
@@ -370,7 +371,7 @@ mod tests {
         assert_eq!(
             envelope(&log),
             format!(
-                r#"{{"message":"\u003ca href=\"x\"\u003e\u0026amp;\u003c/a\u003e \u2028 \t","status":"info","timestamp":{},"hostname":"","service":"s\u003cv\u003ec","ddsource":"","ddtags":"a\u0026b"}}"#,
+                "{{\"message\":\"<a href=\\\"x\\\">&amp;</a> \u{2028} \\t\",\"status\":\"info\",\"timestamp\":{},\"hostname\":\"\",\"service\":\"s<v>c\",\"ddsource\":\"\",\"ddtags\":\"a&b\"}}",
                 NOW_MS
             )
         );
