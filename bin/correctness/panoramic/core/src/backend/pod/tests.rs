@@ -27,6 +27,7 @@ pub(super) fn recipe(script: &str) -> PodRecipe {
                 .with_command([script]),
             ports: vec![(Transport::Tcp, 8080)],
         }],
+        late_files: Default::default(),
     }
 }
 
@@ -60,8 +61,18 @@ fn manifests_keep_commands_files_ports_and_named_service_routing() {
     let container = &pod.containers[0];
     assert_eq!(container.image.as_deref(), Some("local:test"));
     assert_eq!(container.image_pull_policy.as_deref(), Some("Never"));
-    assert_eq!(container.command.as_ref().unwrap(), &["sh"]);
-    assert_eq!(container.args.as_ref().unwrap(), &["-c", "exec sleep 60"]);
+    assert_eq!(container.command.as_ref().unwrap(), &["sh", "-eu", "-c"]);
+    assert_eq!(
+        container.args.as_ref().unwrap(),
+        &[
+            "until [ -f \"$1\" ]; do sleep 1; done; shift; exec \"$@\"",
+            "pod-files",
+            "/airlock/server/files-ready",
+            "sh",
+            "-c",
+            "exec sleep 60",
+        ]
+    );
     let env: BTreeMap<_, _> = container
         .env
         .as_ref()
@@ -226,7 +237,14 @@ fn invalid_pod_files_names_ports_and_reserved_environment_fail_before_creation()
             .to_string()
             .contains(key));
     }
-    assert!(build(&PodRecipe { containers: vec![] }, &BTreeMap::new()).is_err());
+    assert!(build(
+        &PodRecipe {
+            containers: vec![],
+            late_files: Default::default()
+        },
+        &BTreeMap::new()
+    )
+    .is_err());
 }
 
 #[test]
@@ -264,4 +282,133 @@ fn late_facts_wait_for_all_containers_and_choose_the_primary_identity() {
     );
     pod.status.as_mut().unwrap().container_statuses.as_mut().unwrap()[1].container_id = None;
     assert!(started_facts(&pod, "main").unwrap().is_none());
+}
+
+#[test]
+fn late_files_require_all_referenced_facts_before_any_file_can_be_released() {
+    let mut recipe = recipe("cat /settings");
+    recipe.containers[0].recipe.files.extend([
+        crate::recipe::RecipeFile {
+            path: "/settings".into(),
+            mode: 0o640,
+            contents: b"own={{ self.late.pod_uid }} id={{server.late.container_id}} peer={{ peer.late.ip }}".to_vec(),
+        },
+        crate::recipe::RecipeFile {
+            path: "/airlock/server/shared/peer".into(),
+            mode: 0o600,
+            contents: b"{{peer.late.pod_uid}}".to_vec(),
+        },
+        crate::recipe::RecipeFile {
+            path: "/literal".into(),
+            mode: 0o600,
+            contents: b"{{not-a-template}}\0\xff".to_vec(),
+        },
+    ]);
+    recipe.late_files = ["/settings".into(), "/airlock/server/shared/peer".into()].into();
+    let built = build(&recipe, &BTreeMap::new()).unwrap();
+    assert!(built.files[0].contents.is_empty());
+    assert!(built.files[1].contents.is_empty());
+    assert_eq!(built.files[2].contents, b"{{not-a-template}}\0\xff");
+    assert_eq!(built.files[0].mode, 0o640);
+    let mut facts = super::super::runtime::LateFacts::new();
+    assert!(built
+        .render_late_files("server", &facts)
+        .unwrap_err()
+        .to_string()
+        .contains("self.late.pod_uid"));
+    facts.insert(
+        "server".into(),
+        [
+            (LateFact::PodUid, "own-uid".into()),
+            (LateFact::ContainerId, "own-id".into()),
+        ]
+        .into(),
+    );
+    assert!(built
+        .render_late_files("server", &facts)
+        .unwrap_err()
+        .to_string()
+        .contains("peer.late.ip"));
+    facts.insert("peer".into(), [(LateFact::Ip, "10.0.0.7".into())].into());
+    assert!(built
+        .render_late_files("server", &facts)
+        .unwrap_err()
+        .to_string()
+        .contains("peer.late.pod_uid"));
+    facts
+        .get_mut("peer")
+        .unwrap()
+        .insert(LateFact::PodUid, "peer-uid".into());
+    assert_eq!(
+        built.render_late_files("server", &facts).unwrap(),
+        [
+            (
+                "/tmp/panoramic-run/0000/server/files/0/0",
+                "own=own-uid id=own-id peer=10.0.0.7".into()
+            ),
+            ("/tmp/panoramic-run/0000/server/shared/peer", "peer-uid".into()),
+        ]
+    );
+}
+
+#[test]
+fn late_file_and_gate_errors_are_rejected_before_pod_creation() {
+    for contents in [
+        &b"{{ self.facts.path }}"[..],
+        b"{{ self.connections.upstream.url }}",
+        b"{{broken}}",
+        b"\xff",
+    ] {
+        let mut recipe = recipe("true");
+        recipe.containers[0].recipe.files.push(crate::recipe::RecipeFile {
+            path: "/settings".into(),
+            mode: 0o600,
+            contents: contents.into(),
+        });
+        recipe.late_files.insert("/settings".into());
+        assert!(build(&recipe, &BTreeMap::new()).is_err());
+    }
+    let mut absent = recipe("true");
+    absent.late_files.insert("/missing".into());
+    assert!(build(&absent, &BTreeMap::new())
+        .err()
+        .unwrap()
+        .to_string()
+        .contains("absent"));
+    let mut implicit = recipe("true");
+    implicit.containers[0].recipe.entrypoint = None;
+    assert!(build(&implicit, &BTreeMap::new())
+        .err()
+        .unwrap()
+        .to_string()
+        .contains("explicit entrypoint"));
+    implicit.containers[0].recipe.entrypoint = Some(vec!["true".into()]);
+    implicit.containers[0].recipe.command = None;
+    assert!(build(&implicit, &BTreeMap::new())
+        .err()
+        .unwrap()
+        .to_string()
+        .contains("explicit command"));
+}
+
+#[test]
+fn every_container_waits_for_the_same_file_gate_with_its_argv_preserved() {
+    let mut recipe = recipe("exec sleep 60");
+    recipe.containers.push(PodContainer {
+        name: "helper".into(),
+        recipe: ContainerRecipe::new(IMAGE)
+            .with_entrypoint(["/path with spaces/tool"])
+            .with_command(["$literal; 'quoted'"]),
+        ports: vec![],
+    });
+    let built = build(&recipe, &BTreeMap::new()).unwrap();
+    let pod = built.pod.spec.unwrap();
+    for container in &pod.containers {
+        assert_eq!(container.command.as_ref().unwrap(), &["sh", "-eu", "-c"]);
+        assert_eq!(container.args.as_ref().unwrap()[2], "/airlock/server/files-ready");
+    }
+    assert_eq!(
+        &pod.containers[1].args.as_ref().unwrap()[3..],
+        &["/path with spaces/tool", "$literal; 'quoted'"]
+    );
 }

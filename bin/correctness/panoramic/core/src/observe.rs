@@ -63,6 +63,8 @@ pub enum ExitObservation {
 pub(crate) enum ProcessObservation {
     /// Shares the participant's container exit observation.
     Container(watch::Receiver<ParticipantExit>),
+    /// Receives a container's exit with its signal and runtime timestamp preserved.
+    ContainerStatus(watch::Receiver<ExitObservation>),
     /// Receives the first recorded exit from a case-owned watcher.
     Record {
         status: watch::Receiver<ExitObservation>,
@@ -103,7 +105,7 @@ impl ProcessObservation {
                 };
                 (observation, receiver.has_changed().is_err())
             }
-            Self::Record { status: receiver, .. } | Self::Wait(receiver) => {
+            Self::ContainerStatus(receiver) | Self::Record { status: receiver, .. } | Self::Wait(receiver) => {
                 let current = receiver.borrow();
                 (current.clone(), receiver.has_changed().is_err())
             }
@@ -150,7 +152,7 @@ impl ProcessObservation {
 
     pub(crate) fn snapshot(&self) -> ProcessExitReport {
         let source = match self {
-            Self::Container(_) => ExitSource::Container,
+            Self::Container(_) | Self::ContainerStatus(_) => ExitSource::Container,
             Self::Record { .. } => ExitSource::Record,
             Self::Wait(_) => ExitSource::Process,
         };
@@ -178,7 +180,7 @@ impl ProcessObservation {
                 Self::Container(receiver) => {
                     let _ = receiver.changed().await;
                 }
-                Self::Record { status: receiver, .. } | Self::Wait(receiver) => {
+                Self::ContainerStatus(receiver) | Self::Record { status: receiver, .. } | Self::Wait(receiver) => {
                     let _ = receiver.changed().await;
                 }
             }
@@ -194,7 +196,6 @@ pub(crate) enum ParticipantExit {
     /// The participant stopped with the reported code and optional Docker error.
     Exited { code: i64, error: Option<String> },
     /// Every process in the participant has an observed exit.
-    #[cfg_attr(not(any(unix, test)), expect(dead_code, reason = "Host process groups run on Unix."))]
     Ended,
     /// The wait failed, leaving the participant's running state unknown.
     Undetermined { reason: String },
@@ -313,6 +314,10 @@ impl ParticipantObservation {
                 let output = &self.outputs[spec.name];
                 let first = output.paths.first().cloned();
                 let output = match spec.output {
+                    OutputChannel::Container if self.stdout_path == self.stderr_path => ProcessOutputReport {
+                        merged: self.stdout_path.clone(),
+                        ..Default::default()
+                    },
                     OutputChannel::Container => ProcessOutputReport {
                         stdout: self.stdout_path.clone(),
                         stderr: self.stderr_path.clone(),

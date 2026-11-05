@@ -530,11 +530,27 @@ async fn start_level(
             Err(error) => failures.push(error),
         }
     }
-    if failures.is_empty() {
-        Ok(())
-    } else {
-        Err(failures.join("; "))
+    if !failures.is_empty() {
+        return Err(failures.join("; "));
     }
+    let facts = participants
+        .iter()
+        .map(|(name, created)| (name.clone(), created.late.clone()))
+        .chain(
+            running
+                .iter()
+                .map(|(name, started)| (name.clone(), started.late.clone())),
+        )
+        .collect();
+    for name in level {
+        control
+            .cancel
+            .run_until_cancelled(running[name].participant.write_late_files(&facts))
+            .await
+            .ok_or_else(|| format!("cancelled while writing late files for participant '{name}'"))?
+            .map_err(|error| format!("participant '{name}': {error:#}"))?;
+    }
+    Ok(())
 }
 
 fn undeclared_role(participant: &str, type_name: &str, role: ArtifactRole, realization: Realization) -> String {

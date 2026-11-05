@@ -3,6 +3,7 @@
 
 mod manifests;
 pub(crate) mod node;
+mod observe;
 
 use std::{path::Path, sync::Arc, time::Duration};
 
@@ -22,7 +23,6 @@ use saluki_error::{generic_error, GenericError};
 use tokio::{
     io::AsyncReadExt as _,
     net::TcpListener,
-    sync::watch,
     time::{sleep, timeout, Instant},
 };
 
@@ -33,7 +33,7 @@ use crate::{
     handle::{ExecCommand, ExecOutput, FileStatus, HandleError, HttpResponse, Primitives},
     layout::Os,
     ledger::{ParticipantRemoval, ResourceLedger},
-    observe::{Capture, ExitObservation, ParticipantExit, ParticipantObservation, ProcessObservation, ProcessOutput},
+    observe::ParticipantObservation,
     participant::ProcessSpec,
     plan::ScopeLayout,
     probe::{AttemptLimits, ProbeAnswer},
@@ -265,33 +265,26 @@ impl RuntimeParticipant for PodParticipant {
         Ok(facts)
     }
 
-    async fn observe(self: Arc<Self>, _tasks: &CaseTasks, output_dir: &Path) -> ParticipantObservation {
-        let reason = "Pod exit and output observation is unavailable".to_string();
-        let (_, exit) = watch::channel(ParticipantExit::Undetermined { reason: reason.clone() });
-        let (_, capture) = watch::channel(Capture::Failed { reason: reason.clone() });
-        let mut observation = ParticipantObservation::new(
-            exit,
-            capture.clone(),
-            output_dir.join("container.stdout.log"),
-            output_dir.join("container.stderr.log"),
-        );
-        for spec in self.specs {
-            observation.processes.insert(
-                spec.name,
-                ProcessObservation::Record {
-                    status: watch::channel(ExitObservation::Undetermined(reason.clone())).1,
-                    refresh: None,
-                },
-            );
-            observation.outputs.insert(
-                spec.name,
-                ProcessOutput {
-                    capture: capture.clone(),
-                    paths: Vec::new(),
-                },
-            );
+    async fn write_late_files(&self, facts: &super::runtime::LateFacts) -> Result<(), GenericError> {
+        let rendered = self.manifests.render_late_files(&self.name, facts)?;
+        for (path, contents) in rendered {
+            // Single-file hostPath mounts retain their inode when the node path is replaced.
+            self.node
+                .checked_shell("cat > \"$1\"", &[path], Some(contents.into_bytes()))
+                .await?;
         }
-        observation
+        self.node
+            .checked_shell(
+                ": > \"$1\"",
+                &[&format!("{}/{}/files-ready", self.root, self.name)],
+                None,
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn observe(self: Arc<Self>, tasks: &CaseTasks, output_dir: &Path) -> ParticipantObservation {
+        self.observation(tasks, output_dir).await
     }
 }
 

@@ -13,6 +13,8 @@ use saluki_error::{generic_error, GenericError};
 use serde_json::Value;
 
 use crate::{
+    backend::runtime::LateFacts,
+    case::template::{Reference, Template},
     endpoint::{RunnerHostPort, Transport},
     recipe::PodRecipe,
 };
@@ -41,6 +43,7 @@ pub(super) struct Manifests {
     pub(super) service: Service,
     pub(super) files: Vec<PlacedFile>,
     pub(super) readable_files: BTreeMap<String, String>,
+    late_files: Vec<(String, Template)>,
 }
 
 impl Manifests {
@@ -96,11 +99,14 @@ impl Manifests {
         let mut containers = Vec::new();
         let mut files: Vec<PlacedFile> = Vec::new();
         let mut readable_files = BTreeMap::new();
+        let mut late_files = Vec::new();
+        let mut unplaced = recipe.late_files.clone();
         for (index, (container, image)) in recipe.containers.iter().zip(images).enumerate() {
             check_name(&container.name)?;
             if !names.insert(&container.name) {
                 return Err(generic_error!("Pod '{name}' repeats container '{}'", container.name));
             }
+            let late_paths = &recipe.late_files;
             let recipe = &container.recipe;
             if !recipe.mounts.is_empty() {
                 return Err(generic_error!(
@@ -157,10 +163,29 @@ impl Manifests {
                 if index == 0 {
                     readable_files.insert(file.path.clone(), node_path.clone());
                 }
+                let contents = if late_paths.contains(&file.path) {
+                    unplaced.remove(&file.path);
+                    let template = String::from_utf8(file.contents.clone())?
+                        .parse::<Template>()
+                        .map_err(|error| generic_error!(error))?;
+                    if template
+                        .references()
+                        .any(|reference| !matches!(reference, Reference::Late { .. }))
+                    {
+                        return Err(generic_error!(
+                            "Pod late file '{}' has an unresolved non-late reference",
+                            file.path
+                        ));
+                    }
+                    late_files.push((node_path.clone(), template));
+                    Vec::new()
+                } else {
+                    file.contents.clone()
+                };
                 files.push(PlacedFile {
                     node_path,
                     mode: file.mode,
-                    contents: file.contents.clone(),
+                    contents,
                 });
             }
             let mut container_ports = Vec::new();
@@ -177,12 +202,34 @@ impl Manifests {
                     ..Default::default()
                 });
             }
+            let entrypoint = recipe
+                .entrypoint
+                .as_ref()
+                .filter(|argv| !argv.is_empty())
+                .ok_or_else(|| {
+                    generic_error!(
+                        "Pod container '{}' needs an explicit entrypoint for its file gate",
+                        container.name
+                    )
+                })?;
+            let command = recipe.command.as_ref().ok_or_else(|| {
+                generic_error!(
+                    "Pod container '{}' needs explicit command arguments (which may be empty)",
+                    container.name
+                )
+            })?;
+            let mut args = vec![
+                "until [ -f \"$1\" ]; do sleep 1; done; shift; exec \"$@\"".into(),
+                "pod-files".into(),
+                format!("/airlock/{name}/files-ready"),
+            ];
+            args.extend(entrypoint.iter().chain(command).cloned());
             containers.push(Container {
                 name: container.name.clone(),
                 image: Some(image.clone()),
                 image_pull_policy: Some("Never".into()),
-                command: recipe.entrypoint.clone(),
-                args: recipe.command.clone(),
+                command: Some(vec!["sh".into(), "-eu".into(), "-c".into()]),
+                args: Some(args),
                 env: Some(
                     env.into_iter()
                         .map(|(name, value)| EnvVar {
@@ -196,6 +243,11 @@ impl Manifests {
                 ports: Some(container_ports),
                 ..Default::default()
             });
+        }
+        if !unplaced.is_empty() {
+            return Err(generic_error!(
+                "Pod '{name}' declares late files absent from its recipes: {unplaced:?}"
+            ));
         }
         ports.extend(routes.iter().map(|route| (route.transport, route.container_port)));
         let pod = Pod {
@@ -244,7 +296,33 @@ impl Manifests {
             service,
             files,
             readable_files,
+            late_files,
         })
+    }
+
+    pub(super) fn render_late_files<'a>(
+        &'a self, holder: &str, facts: &LateFacts,
+    ) -> Result<Vec<(&'a str, String)>, GenericError> {
+        self.late_files
+            .iter()
+            .map(|(path, template)| {
+                template
+                    .substitute(|written, reference| {
+                        let Reference::Late { participant, fact } = reference else {
+                            unreachable!("late files are validated before creation")
+                        };
+                        let participant = participant.name(holder);
+                        facts
+                            .get(participant)
+                            .and_then(|values| values.get(fact))
+                            .cloned()
+                            .map(Some)
+                            .ok_or_else(|| format!("late file '{path}' needs unavailable reference '{written}'"))
+                    })
+                    .map(|contents| (path.as_str(), contents))
+                    .map_err(|error| generic_error!(error))
+            })
+            .collect()
     }
 }
 

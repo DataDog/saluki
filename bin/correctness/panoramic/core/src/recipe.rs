@@ -1,6 +1,6 @@
 //! Files, environment and host mounts supplied by a participant type.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::artifact::ArtifactRole;
 
@@ -29,8 +29,11 @@ impl Recipe {
 }
 
 /// Containers sharing a pod. The first container supplies exec and the container-ID late fact.
+/// Each container must set an entrypoint and command arguments (possibly empty), wrapped by a file-ready gate.
 pub struct PodRecipe {
     pub(crate) containers: Vec<PodContainer>,
+    /// Paths of recipe files whose remaining references resolve after start.
+    pub(crate) late_files: BTreeSet<String>,
 }
 
 pub(crate) struct PodContainer {

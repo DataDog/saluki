@@ -44,9 +44,16 @@ pub(crate) trait RuntimeParticipant: Primitives {
     async fn create(&self) -> Result<Vec<(LateFact, String)>, GenericError>;
     /// Starts the participant and returns the late facts known after start.
     async fn start(&self) -> Result<Vec<(LateFact, String)>, GenericError>;
+    /// Places late files after the start level publishes its facts, before consumers wait for readiness.
+    async fn write_late_files(&self, _facts: &LateFacts) -> Result<(), GenericError> {
+        Ok(())
+    }
     /// Follows the started participant's exits and output under the case's tasks.
     async fn observe(self: Arc<Self>, tasks: &CaseTasks, output_dir: &Path) -> ParticipantObservation;
 }
+
+/// Facts published by created or started participants.
+pub(crate) type LateFacts = BTreeMap<String, BTreeMap<LateFact, String>>;
 
 /// Operating systems supported by an implemented runtime.
 pub(crate) fn implemented(kind: RealizationKind) -> Option<&'static [Os]> {

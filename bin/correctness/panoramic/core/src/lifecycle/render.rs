@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    backend::{shared_root, LateFact},
+    backend::{shared_root, writes_late_files, LateFact},
     case::{
         config_references::{walk_config_strings_mut, ConfigField},
         template::{Reference, Template},
@@ -18,6 +18,10 @@ pub(super) fn render(
     let config = plan
         .effective_config(participant)
         .ok_or_else(|| format!("internal error: participant '{participant}' has no planned configuration"))?;
+    let realization = plan
+        .layout()
+        .get(participant)
+        .expect("planned participant has a realization");
     let substitute = |template: &Template, field: ConfigField<'_>| {
         template
             .substitute(|written, reference| {
@@ -45,16 +49,19 @@ pub(super) fn render(
                         .and_then(|address| address.part(*part)),
                     Reference::Late { .. } => None,
                 };
+                if value.is_none()
+                    && matches!(reference, Reference::Late { .. })
+                    && matches!(field, ConfigField::File(_))
+                    && writes_late_files(realization.kind)
+                {
+                    return Ok(None);
+                }
                 value
                     .map(Some)
                     .ok_or_else(|| format!("internal error: no creation-time value for '{written}'"))
             })
             .map_err(|error| format!("participant '{participant}' {field}: {error}"))
     };
-    let realization = plan
-        .layout()
-        .get(participant)
-        .expect("planned participant has a realization");
     let root = shared_root(realization.kind, realization.os, plan.scope());
     let mut rendered = RenderedConfig {
         directory: participant_dir(&root, participant, realization.os),
@@ -84,6 +91,7 @@ pub(super) fn render(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::path::Path;
 
     use serde_json::json;
@@ -92,10 +100,10 @@ mod tests {
     use crate::{
         artifact::ArtifactRole,
         case::{
-            fixtures::{minimal_procedure, write_case, Client, Configured, FixtureConfig, FixtureTypes, Server, STEPS},
+            fixtures::{minimal_procedure, write_case, Configured, FixtureConfig, FixtureTypes, Server, STEPS},
             CaseLoader, Registries,
         },
-        endpoint::{ConsumedEndpoint, Endpoint},
+        endpoint::{ConsumedEndpoint, Delivery, Endpoint, EndpointKind, Port},
         layout::{Os, Realization, RealizationKind},
         participant::{EffectiveConfig, ParticipantType},
         plan::{CasePlan, Planner},
@@ -109,7 +117,12 @@ mod tests {
         }
 
         fn supports(&self) -> &'static [(Os, RealizationKind)] {
-            Server.supports()
+            &[
+                (Os::Linux, RealizationKind::LinuxContainer),
+                (Os::MacOs, RealizationKind::HostProcessGroup),
+                (Os::Windows, RealizationKind::WindowsContainer),
+                (Os::Linux, RealizationKind::KubernetesPod),
+            ]
         }
 
         fn artifacts(&self, _realization: Realization) -> &'static [ArtifactRole] {
@@ -127,14 +140,24 @@ mod tests {
         fn endpoints(
             &self, _realization: Realization, _config: &EffectiveConfig,
         ) -> Result<BTreeMap<String, Endpoint>, String> {
-            Ok(BTreeMap::from([(
-                "socket".into(),
-                Endpoint::unix_stream("/run/input.sock"),
-            )]))
+            Ok(BTreeMap::from([
+                ("socket".into(), Endpoint::unix_stream("/run/input.sock")),
+                ("api".into(), Endpoint::http(Port::Fixed(8080))),
+            ]))
         }
 
-        fn consumes(&self, realization: Realization, config: &EffectiveConfig) -> BTreeMap<String, ConsumedEndpoint> {
-            Client.consumes(realization, config)
+        fn consumes(&self, _realization: Realization, _config: &EffectiveConfig) -> BTreeMap<String, ConsumedEndpoint> {
+            BTreeMap::from([(
+                "upstream".into(),
+                ConsumedEndpoint {
+                    accepts: vec![EndpointKind::Http],
+                    required: false,
+                    delivery: Delivery::Env {
+                        keys: BTreeSet::from(["UPSTREAM_URL".into()]),
+                        value: |address| BTreeMap::from([("UPSTREAM_URL".into(), address.url.clone())]),
+                    },
+                },
+            )])
         }
 
         fn processes(&self) -> &'static [&'static str] {
@@ -143,17 +166,25 @@ mod tests {
     }
 
     fn try_compile(config: &str, source: &Path) -> Result<CasePlan<FixtureConfig>, String> {
+        let yaml = format!(
+            "timeout: 1s\nsubject_os: [linux]\nparticipants:\n  subject: {{type: file-client, subject: true, connect: {{upstream: server.api}}, config: {config}}}\n  server: {{type: server, config: {{env: {{OWN: '{{{{  self.late.ip  }}}}/{{{{server.late.ip}}}}'}}}}}}\n{}\n",
+            minimal_procedure!()
+        );
+        try_compile_case(&yaml, source)
+    }
+
+    fn compile_case(yaml: &str, source: &Path) -> CasePlan<FixtureConfig> {
+        try_compile_case(yaml, source).unwrap()
+    }
+
+    fn try_compile_case(yaml: &str, source: &Path) -> Result<CasePlan<FixtureConfig>, String> {
         let registries = Registries {
             participant_types: &[&FileClient, &Server],
             steps: STEPS,
             ..Default::default()
         };
-        let yaml = format!(
-            "timeout: 1s\nsubject_os: [linux]\nparticipants:\n  subject: {{type: file-client, subject: true, connect: {{upstream: server.api}}, config: {config}}}\n  server: {{type: server, config: {{env: {{OWN: '{{{{  self.late.ip  }}}}/{{{{server.late.ip}}}}'}}}}}}\n{}\n",
-            minimal_procedure!()
-        );
         let case = CaseLoader::new(registries, FixtureTypes)
-            .load_content("cases", &yaml, "alpha", source)
+            .load_content("cases", yaml, "alpha", source)
             .map_err(|error| error.to_string())?
             .remove(0);
         Planner::with_run(registries, "testrun0")
@@ -260,6 +291,72 @@ mod tests {
             assert_eq!(
                 render(plan.participants().unwrap(), "subject", &BTreeMap::new()).err().unwrap(),
                 format!("participant 'subject' {field}: internal error: no creation-time value for '{{{{server.late.container_id}}}}'")
+            );
+        }
+    }
+
+    #[test]
+    fn pod_template_files_defer_late_references_but_env_and_params_do_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = write_case(dir.path(), "alpha", "");
+        let compile_pods = |config: &str| {
+            let yaml = format!(
+                "timeout: 1s\nsubject_os: [linux]\nparticipants:\n  subject: {{type: file-client, subject: true, realization: {{kind: kubernetes-pod}}, connect: {{upstream: server.api}}, config: {config}}}\n  server: {{type: file-client}}\n  container: {{type: server, realization: {{kind: linux-container}}}}\n{}\n",
+                minimal_procedure!()
+            );
+            compile_case(&yaml, &source)
+        };
+        let late = concat!(
+            "{{self.late.pod_uid}}|{{ self.late.container_id }}|{{self.late.ip}}|",
+            "{{subject.late.pod_uid}}|{{ subject.late.container_id }}|{{subject.late.ip}}|",
+            "{{server.late.pod_uid}}|{{ server.late.container_id }}|{{server.late.ip}}|",
+            "{{container.late.container_id}}|{{container.late.ip}}"
+        );
+        let text = format!(
+            "{late}|{{{{container.facts.file}}}}|{{{{self.connections.upstream.url}}}}|{{{{self.connections.upstream.host}}}}|{{{{self.connections.upstream.port}}}}"
+        );
+        std::fs::write(source.parent().unwrap().join("input.txt"), text).unwrap();
+        let plan = compile_pods("{files: {settings.yaml: {from: input.txt, template: true}}}");
+        let created = BTreeMap::from([
+            ("server".into(), "created-pod-id".into()),
+            ("container".into(), "created-id".into()),
+        ]);
+        // Pod file rendering used to reject unavailable peer late facts; defer only those to the late write.
+        for (created, expected) in [
+            (&BTreeMap::new(), late.to_owned()),
+            (
+                &created,
+                late.replace("{{ server.late.container_id }}", "created-pod-id")
+                    .replace("{{container.late.container_id}}", "created-id"),
+            ),
+        ] {
+            let rendered = render(plan.participants().unwrap(), "subject", created).unwrap();
+            assert_eq!(
+                rendered.files["settings.yaml"],
+                format!("{expected}|/logs/output.log|http://server:8080|server|8080").as_bytes()
+            );
+            assert_eq!(rendered.env["UPSTREAM_URL"], "http://server:8080");
+        }
+        for (config, field) in [
+            (
+                "{env: {ID: '{{container.late.container_id}}'}}",
+                "environment variable 'ID'",
+            ),
+            (
+                "{params: {mode: [{nested: '{{container.late.container_id}}'}]}}",
+                "parameter 'mode'",
+            ),
+        ] {
+            let plan = compile_pods(config);
+            let rendered = render(plan.participants().unwrap(), "subject", &created).unwrap();
+            if field == "environment variable 'ID'" {
+                assert_eq!(rendered.env["ID"], "created-id");
+            } else {
+                assert_eq!(rendered.params["mode"], json!([{ "nested": "created-id" }]));
+            }
+            assert_eq!(
+                render(plan.participants().unwrap(), "subject", &BTreeMap::new()).err().unwrap(),
+                format!("participant 'subject' {field}: internal error: no creation-time value for '{{{{container.late.container_id}}}}'")
             );
         }
     }
