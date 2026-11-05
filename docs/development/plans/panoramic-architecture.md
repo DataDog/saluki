@@ -94,7 +94,7 @@ Use product `config_dump` output from CI runs to compare effective product confi
 | Suite | Files | Selected rows (subject OS / runtime) | Disabled rows | Assertions (subject OS) | Actions (subject OS) |
 | --- | --- | --- | --- | --- | --- |
 | integration | 52 | linux / linux-container: 45; macos / host-process-group: 33; windows / windows-container: 36 | 0 | linux: 193; macos: 141; windows: 155 | linux: 25; macos: 17; windows: 24 |
-| correctness | 42 | linux / docker: 21; linux / kubernetes_in_docker: 7; linux / linux-container: 18 | 2 | linux: 72 | linux: 0 |
+| correctness | 42 | linux / docker: 6; linux / kubernetes_in_docker: 7; linux / linux-container: 33 | 2 | linux: 132 | linux: 0 |
 
 Total: 162 rows.
 
@@ -129,21 +129,21 @@ Total: 162 rows.
 | dsd-udp | correctness | linux | linux-container | selected | test-correctness-dsd-udp | participants | native | assertions: 4, actions: 0 | 0 |
 | dsd-uds-stream | correctness | linux | linux-container | selected | test-correctness-dsd-uds-stream | participants | native | assertions: 4, actions: 0 | 0 |
 | dsd-v1-api-series | correctness | linux | linux-container | selected | test-correctness-dsd-v1-api-series | participants | native | assertions: 4, actions: 0 | 0 |
-| otlp-metrics | correctness | linux | docker | selected | test-correctness-otlp-metrics | correctness | old | compare metrics | 0 |
-| otlp-metrics-as-type-rate | correctness | linux | docker | selected | test-correctness-otlp-metrics-as-type-rate | correctness | old | compare metrics | 0 |
-| otlp-metrics-configured-tags | correctness | linux | docker | selected | test-correctness-otlp-metrics-configured-tags | correctness | old | compare metrics | 0 |
-| otlp-metrics-core-resource-attributes | correctness | linux | docker | selected | test-correctness-otlp-metrics-core-resource-attributes | correctness | old | compare metrics | 0 |
-| otlp-metrics-cumulative-monotonic | correctness | linux | docker | selected | test-correctness-otlp-metrics-cumulative-monotonic | correctness | old | compare metrics | 0 |
-| otlp-metrics-ec2-host | correctness | linux | docker | selected | test-correctness-otlp-metrics-ec2-host | correctness | old | compare metrics | 0 |
-| otlp-metrics-fargate | correctness | linux | docker | selected | test-correctness-otlp-metrics-fargate | correctness | old | compare metrics | 0 |
-| otlp-metrics-gcp-host | correctness | linux | docker | selected | test-correctness-otlp-metrics-gcp-host | correctness | old | compare metrics | 0 |
-| otlp-metrics-histogram-counters | correctness | linux | docker | selected | test-correctness-otlp-metrics-histogram-counters | correctness | old | compare metrics | 0 |
-| otlp-metrics-histogram-nobuckets | correctness | linux | docker | selected | test-correctness-otlp-metrics-histogram-nobuckets | correctness | old | compare metrics | 0 |
-| otlp-metrics-host | correctness | linux | docker | selected | test-correctness-otlp-metrics-host | correctness | old | compare metrics | 0 |
-| otlp-metrics-kafka-parity | correctness | linux | docker | selected | test-correctness-otlp-metrics-kafka-parity | correctness | old | compare metrics | 0 |
-| otlp-metrics-resource-attributes | correctness | linux | docker | selected | test-correctness-otlp-metrics-resource-attributes | correctness | old | compare metrics | 0 |
-| otlp-metrics-scope-metadata | correctness | linux | docker | selected | test-correctness-otlp-metrics-scope-metadata | correctness | old | compare metrics | 0 |
-| otlp-metrics-summary-mode | correctness | linux | docker | selected | test-correctness-otlp-metrics-summary-mode | correctness | old | compare metrics | 0 |
+| otlp-metrics | correctness | linux | linux-container | selected | test-correctness-otlp-metrics | participants | native | assertions: 4, actions: 0 | 0 |
+| otlp-metrics-as-type-rate | correctness | linux | linux-container | selected | test-correctness-otlp-metrics-as-type-rate | participants | native | assertions: 4, actions: 0 | 0 |
+| otlp-metrics-configured-tags | correctness | linux | linux-container | selected | test-correctness-otlp-metrics-configured-tags | participants | native | assertions: 4, actions: 0 | 0 |
+| otlp-metrics-core-resource-attributes | correctness | linux | linux-container | selected | test-correctness-otlp-metrics-core-resource-attributes | participants | native | assertions: 4, actions: 0 | 0 |
+| otlp-metrics-cumulative-monotonic | correctness | linux | linux-container | selected | test-correctness-otlp-metrics-cumulative-monotonic | participants | native | assertions: 4, actions: 0 | 0 |
+| otlp-metrics-ec2-host | correctness | linux | linux-container | selected | test-correctness-otlp-metrics-ec2-host | participants | native | assertions: 4, actions: 0 | 0 |
+| otlp-metrics-fargate | correctness | linux | linux-container | selected | test-correctness-otlp-metrics-fargate | participants | native | assertions: 4, actions: 0 | 0 |
+| otlp-metrics-gcp-host | correctness | linux | linux-container | selected | test-correctness-otlp-metrics-gcp-host | participants | native | assertions: 4, actions: 0 | 0 |
+| otlp-metrics-histogram-counters | correctness | linux | linux-container | selected | test-correctness-otlp-metrics-histogram-counters | participants | native | assertions: 4, actions: 0 | 0 |
+| otlp-metrics-histogram-nobuckets | correctness | linux | linux-container | selected | test-correctness-otlp-metrics-histogram-nobuckets | participants | native | assertions: 4, actions: 0 | 0 |
+| otlp-metrics-host | correctness | linux | linux-container | selected | test-correctness-otlp-metrics-host | participants | native | assertions: 4, actions: 0 | 0 |
+| otlp-metrics-kafka-parity | correctness | linux | linux-container | selected | test-correctness-otlp-metrics-kafka-parity | participants | native | assertions: 4, actions: 0 | 0 |
+| otlp-metrics-resource-attributes | correctness | linux | linux-container | selected | test-correctness-otlp-metrics-resource-attributes | participants | native | assertions: 4, actions: 0 | 0 |
+| otlp-metrics-scope-metadata | correctness | linux | linux-container | selected | test-correctness-otlp-metrics-scope-metadata | participants | native | assertions: 4, actions: 0 | 0 |
+| otlp-metrics-summary-mode | correctness | linux | linux-container | selected | test-correctness-otlp-metrics-summary-mode | participants | native | assertions: 4, actions: 0 | 0 |
 | otlp-traces | correctness | linux | docker | disabled | — | correctness | old | compare traces | 1 |
 | otlp-traces-ets | correctness | linux | docker | disabled | — | correctness | old | compare traces | 1 |
 | otlp-traces-ottl-filtering | correctness | linux | docker | selected | test-correctness-otlp-traces-ottl-filtering | correctness | old | compare traces | 0 |
@@ -594,6 +594,21 @@ Link CI runs; don't copy their logs into the repository.
 | dsd-udp | linux | native | Pending CI. Legacy Linux/lima passed (78.216 s wall); native at `a18ec636c4` failed comparison (57.952 s wall; 672 metric mismatches); an unchanged rerun passed (50.661 s wall). Earlier paired captures have matching input digests and only documented config differences. Compared with `5003c5f6d6`. |
 | dsd-forwarding | linux | native | Pending CI. Legacy Linux/lima passed (72.205 s wall); native at `a18ec636c4` passed (49.683 s wall). Earlier paired captures have matching input digests and only documented config differences. Those captures contain 100/6897 Agent/ADP packets with the same 6897 messages per side. Compared with `5003c5f6d6`. |
 | dsd-forwarding-burst | linux | native | Pending CI. Legacy Linux/lima passed (68.668 s wall); native at `a18ec636c4` passed (48.843 s wall). Earlier paired captures have matching input digests and only documented config differences. Those captures contain 10/2447 Agent/ADP packets with the same 2447 messages per side. Compared with `5003c5f6d6`. |
+| otlp-metrics | linux | native | Pending CI. Legacy/native Linux/lima passed (66.579→51.544 s wall); input digests and OTLP runtime settings match. Config dumps differ only in documented routing, defaults and host roots. Compared with `56bdfaf8fb`. |
+| otlp-metrics-as-type-rate | linux | native | Pending CI. Legacy/native Linux/lima passed (67.201→46.844 s wall); input digests and OTLP runtime settings match. Config dumps differ only in documented routing, defaults and host roots. Compared with `56bdfaf8fb`. |
+| otlp-metrics-configured-tags | linux | native | Pending CI. Native Linux/lima passed (49.147 s wall); paired sender digests match. Plan-level env and product/workload bytes match after the address rewrites. Compared with `56bdfaf8fb`. |
+| otlp-metrics-core-resource-attributes | linux | native | Pending CI. Native Linux/lima passed (40.388 s wall); paired sender digests match. Plan-level env and product/workload bytes match after the address rewrites. Compared with `56bdfaf8fb`. |
+| otlp-metrics-cumulative-monotonic | linux | native | Pending CI. Native Linux/lima passed (49.461 s wall); paired sender digests match. Plan-level env and product/workload bytes match after the address rewrites. Compared with `56bdfaf8fb`. |
+| otlp-metrics-ec2-host | linux | native | Pending CI. Native Linux/lima passed (39.990 s wall); paired sender digests match. Plan-level env and product/workload bytes match after the address rewrites. Compared with `56bdfaf8fb`. |
+| otlp-metrics-fargate | linux | native | Pending CI. Native Linux/lima passed (40.571 s wall); paired sender digests match. Plan-level env and product/workload bytes match after the address rewrites. Compared with `56bdfaf8fb`. |
+| otlp-metrics-gcp-host | linux | native | Pending CI. Native Linux/lima passed (39.149 s wall); paired sender digests match. Plan-level env and product/workload bytes match after the address rewrites. Compared with `56bdfaf8fb`. |
+| otlp-metrics-histogram-counters | linux | native | Pending CI. Legacy/native Linux/lima passed (71.531→40.096 s wall); input digests and OTLP runtime settings match. Config dumps differ only in documented routing, defaults and host roots. Compared with `56bdfaf8fb`. |
+| otlp-metrics-histogram-nobuckets | linux | native | Pending CI. Native Linux/lima passed (39.929 s wall); paired sender digests match. Plan-level env and product/workload bytes match after the address rewrites. Compared with `56bdfaf8fb`. |
+| otlp-metrics-host | linux | native | Pending CI. Native Linux/lima passed (42.175 s wall); paired sender digests match. Plan-level env and product/workload bytes match after the address rewrites. Compared with `56bdfaf8fb`. |
+| otlp-metrics-kafka-parity | linux | native | Pending CI. Native Linux/lima passed (46.469 s wall); paired sender digests match. Plan-level env and product/workload bytes match after the address rewrites. Compared with `56bdfaf8fb`. |
+| otlp-metrics-resource-attributes | linux | native | Pending CI. Native Linux/lima passed (41.403 s wall); paired sender digests match. Plan-level env and product/workload bytes match after the address rewrites. Compared with `56bdfaf8fb`. |
+| otlp-metrics-scope-metadata | linux | native | Pending CI. Native Linux/lima passed (40.133 s wall); paired sender digests match. Plan-level env and product/workload bytes match after the address rewrites. Compared with `56bdfaf8fb`. |
+| otlp-metrics-summary-mode | linux | native | Pending CI. Native Linux/lima passed (40.285 s wall); paired sender digests match. Plan-level env and product/workload bytes match after the address rewrites. Compared with `56bdfaf8fb`. |
 <!-- migration-proofs:end -->
 
 ### DogStatsD discovery and configuration evidence
@@ -606,6 +621,25 @@ comparison. Their rows retain both attempts and the new wall times. Every sender
 The two host-view rows retain their earlier negative origin-tag proof; host view and enrichment remain pending CI.
 Earlier captures from eight legacy/native pairs match input digests and have no configuration differences beyond
 the documented addresses, listener defaults, baseline ADP disablement and host roots.
+
+### OTLP metrics discovery and configuration evidence
+
+Compared with `56bdfaf8fb`, all 46 correctness names remain runnable with unchanged artifact-role arrays; exactly
+fifteen layouts become participant cases. All 162 inventory rows retain their CI jobs and mixins. Every converted
+case preserves its environment and product/workload file bytes after the intake and target-address rewrites.
+All fifteen native runs pass and their paired senders have identical input counts and digests.
+
+Legacy/native pairs for `otlp-metrics`, `otlp-metrics-as-type-rate` and `otlp-metrics-histogram-counters` also match
+input digests: respectively 299/1/1 payloads, 1,592,458/112/108 bytes, and FNV-1a digests `7c2c8ef4ca382913`,
+`243e7e41e0f01ebe`, `e31e35923096c394`. Wall times, including the capture wrapper, appear in the proof rows.
+
+Each pair's Agent dumps differ in three baseline and twelve subject leaves: delivered intake/APM URLs, explicit
+baseline ADP disablement, and the existing isolated listener and GUI defaults. ADP source dumps differ in 14/7/7
+leaves and runtime dumps in 8/6/6; after normalizing routing, listener defaults and host roots, no difference remains.
+In both runners, the baseline's file-defined gRPC ports stay 54317/54317/4317, and the subject's Agent receivers move
+to loopback ports 14317/14318. ADP's OTLP runtime configuration is identical, including its gRPC ports 54317/54317/4317.
+The two standalone source dumps gain the native Agent HTTP default `0.0.0.0:54318`; ADP's HTTP receiver stays at
+`localhost:6318`. This source-only default does not change the receiver used by either sender.
 
 ### Linux comparison evidence
 

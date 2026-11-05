@@ -23,6 +23,7 @@ const WRAPPER_PATH: &str = "/usr/local/bin/panoramic-millstone.sh";
 const WRAPPER: &[u8] = include_bytes!("assets/run.sh");
 const TARGET_ENV: &str = "MILLSTONE_TARGET";
 const BASELINE_TARGET_ENV: &str = "MILLSTONE_BASELINE_TARGET";
+const TARGET_REFERENCE: &str = "self.connections.target.url";
 
 /// Two deterministic senders, kept alive after sending so targets can resolve their origin while flushing.
 pub struct Millstone;
@@ -48,6 +49,19 @@ impl Millstone {
         serde_json::from_value::<[u8; 32]>(config.get("seed").cloned().unwrap_or_default())
             .map_err(|_| "millstone.yaml key 'seed' must be an array of 32 bytes (0–255)".to_string())?;
         Ok(config)
+    }
+
+    /// Whether `target` is the connection reference with an optional literal path.
+    fn is_target_reference(target: &str) -> bool {
+        target
+            .strip_prefix("{{")
+            .and_then(|target| target.split_once("}}"))
+            .is_some_and(|(reference, suffix)| reference.trim() == TARGET_REFERENCE && Self::is_path_suffix(suffix))
+    }
+
+    /// A literal suffix must be empty or start with `/` to keep it out of the URL authority.
+    fn is_path_suffix(suffix: &str) -> bool {
+        (suffix.is_empty() || suffix.starts_with('/')) && !suffix.contains("{{") && !suffix.contains("}}")
     }
 }
 
@@ -82,17 +96,25 @@ impl ParticipantType for Millstone {
             .with_command(["/usr/local/bin/millstone", CONFIG_DIR, STATE_DIR])
             .with_env(config.env().clone())
             .with_file(WRAPPER_PATH, 0o755, WRAPPER);
+        let subject_target = config
+            .env()
+            .get(TARGET_ENV)
+            .filter(|target| !target.is_empty())
+            .ok_or_else(|| format!("millstone requires the subject connection delivery '{TARGET_ENV}'"))?;
+        let suffix = sender_config["target"]
+            .as_str()
+            .and_then(|rendered| rendered.strip_prefix(subject_target.as_str()))
+            .filter(|suffix| Self::is_path_suffix(suffix))
+            .ok_or("millstone.yaml key 'target' must be the delivered target URL plus an optional path")?
+            .to_string();
         for (process, key) in [("subject", TARGET_ENV), ("baseline", BASELINE_TARGET_ENV)] {
             let target = config
                 .env()
                 .get(key)
                 .filter(|target| !target.is_empty())
                 .ok_or_else(|| format!("millstone requires the {process} connection delivery '{key}'"))?;
-            if process == "subject" && sender_config["target"].as_str() != Some(target) {
-                return Err("millstone.yaml key 'target' must equal the delivered target URL".into());
-            }
             // Re-serialize with only `target` changed; key order and formatting may differ
-            sender_config["target"] = Value::String(target.clone());
+            sender_config["target"] = Value::String(format!("{target}{suffix}"));
             let contents = serde_saphyr::to_string(&sender_config)
                 .map_err(|error| format!("cannot serialize {process} millstone.yaml: {error}"))?;
             recipe = recipe.with_file(format!("{CONFIG_DIR}/{process}.yaml"), 0o644, contents.into_bytes());
@@ -136,13 +158,12 @@ impl ParticipantType for Millstone {
         }
         let document = Self::configuration(&config.file_contents)?;
         let target = document["target"].as_str().expect("configuration checks target");
-        if target
-            .strip_prefix("{{")
-            .and_then(|target| target.strip_suffix("}}"))
-            .map(str::trim)
-            != Some("self.connections.target.url")
-        {
-            return Err("millstone.yaml key 'target' must be '{{ self.connections.target.url }}'".into());
+        if !Self::is_target_reference(target) {
+            return Err(
+                "millstone.yaml key 'target' must be '{{ self.connections.target.url }}', optionally followed by a \
+                 literal path starting with '/'"
+                    .into(),
+            );
         }
         Ok(())
     }

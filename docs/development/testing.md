@@ -515,18 +515,26 @@ It retains the image's defaults and shares file handling and connections with `a
 `cli_agent` and `config_dump`. The `runtime` dump view returns `agent config`, decoded from YAML to JSON.
 The Agent rejects the `source` view before execution; it offers only runtime configuration.
 
+On Linux, `agent` exposes `agent_otlp_grpc` and `agent_otlp_http` from the corresponding
+`DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT` and `DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT` variables,
+or `otlp_config.receiver.protocols.grpc.endpoint` and `otlp_config.receiver.protocols.http.endpoint` in
+`datadog.yaml`. Environment values win over the file. These listeners have no default; empty, loopback and port-zero
+values disable the endpoint. Connections keep the configured ports and wait for TCP acceptance. Linux `agent-adp`
+doesn't expose the Agent's OTLP receivers; its `otlp_grpc` and `otlp_http` belong to ADP.
+
 Both types accept `config.params.host_view: true` on Linux. This mounts `/proc`, `/sys/fs/cgroup`, and the Docker
 socket read-only and sets the corresponding Agent host paths. Rootless Docker can reject file placement with a
 `remount-ro /host/proc: operation not permitted` error. Removing host view can diagnose other behavior, but cannot
 prove container-origin enrichment.
 
 The Linux-only `millstone` type runs `baseline` and `subject` senders in one container from `tools-linux-image`.
-Both use the seed in the required `millstone.yaml` template; its target is the `target` connection's URL, and the
-baseline configuration changes only that field to `baseline_target`. Both connections are required. Senders stay
-alive after `Millstone finished sending` so their container identity remains available through flushing. Each has
-its own exit record and log. The baseline capture is collected into `traffic/`; the subject capture manifest is kept
-under `load/collected/` when the participant is named `load`, allowing payload-digest comparison without retaining
-a second payload stream. `dsd-plain` and `dsd-origin-detection` demonstrate this composition.
+Both use the seed in the required `millstone.yaml` template. Its target is a reference to the `target` connection's
+URL, optionally followed by a literal path starting with `/`, such as an OTLP service path. The baseline uses the
+`baseline_target` URL with the same suffix. Both connections are required; suffixes cannot contain references.
+Senders stay alive after `Millstone finished sending` so their container identity remains available through flushing.
+Each has its own exit record and log. The baseline capture is collected into `traffic/`; the subject capture manifest
+is kept under `load/collected/` when the participant is named `load`, allowing payload-digest comparison without
+retaining a second payload stream. `dsd-plain` and `dsd-origin-detection` demonstrate this composition.
 
 In Linux containers, `agent-adp` accepts the directory configuration names `files/` and `cont-init.d/`.
 Files under `files/` land beneath `/var/lib/panoramic/files`, available through the `files_dir` fact, with mode 0644.

@@ -39,7 +39,7 @@ pub(super) fn validate_config(realization: Realization, config: &CaseValues) -> 
             return Err(format!("{key} is owned by agent-adp on macos host-process-group"));
         }
     }
-    listeners::endpoints(realization, &config.env, None)
+    listeners::endpoints(realization, &config.env, None, listeners::Product::AgentAdp)
         .map(|_| ())
         .map_err(|error| format!("{error} on macos host-process-group"))
 }

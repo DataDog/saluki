@@ -135,7 +135,7 @@ impl ParticipantType for AgentAdp {
                 let file = config_file::ConfigFile::parse(&config.file_contents)?;
                 let mut env = self.default_env(realization, config);
                 env.extend(config.env.clone());
-                listeners::endpoints(realization, &env, Some(&file))?;
+                listeners::endpoints(realization, &env, Some(&file), listeners::Product::AgentAdp)?;
             }
             (Os::MacOs, RealizationKind::HostProcessGroup) => macos::validate_config(realization, config)?,
             (Os::Windows, RealizationKind::WindowsContainer) => {
@@ -143,7 +143,7 @@ impl ParticipantType for AgentAdp {
                 late::validate(&config.env, &config.params)?;
                 let mut env = container_default_env();
                 env.extend(config.env.clone());
-                listeners::endpoints(realization, &env, None)?;
+                listeners::endpoints(realization, &env, None, listeners::Product::AgentAdp)?;
             }
             _ => {}
         }
@@ -165,10 +165,10 @@ impl ParticipantType for AgentAdp {
         match (realization.os, realization.kind) {
             (Os::Linux, RealizationKind::LinuxContainer) => {
                 let file = config_file::ConfigFile::parse(&config.files)?;
-                listeners::endpoints(realization, &config.env, Some(&file))
+                listeners::endpoints(realization, &config.env, Some(&file), listeners::Product::AgentAdp)
             }
             (Os::MacOs, RealizationKind::HostProcessGroup) | (Os::Windows, RealizationKind::WindowsContainer) => {
-                listeners::endpoints(realization, &config.env, None)
+                listeners::endpoints(realization, &config.env, None, listeners::Product::AgentAdp)
             }
             _ => Ok(BTreeMap::new()),
         }

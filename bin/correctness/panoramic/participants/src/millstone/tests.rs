@@ -111,7 +111,14 @@ fn both_connections_are_required_and_deliver_disjoint_target_urls() {
 
 #[test]
 fn configuration_requires_a_templated_target_and_a_valid_seed() {
-    for target in ["{{ self.connections.target.url }}", "{{self.connections.target.url}}"] {
+    for target in [
+        "{{ self.connections.target.url }}",
+        "{{self.connections.target.url}}",
+        "{{  self.connections.target.url\t}}",
+        "{{ self.connections.target.url }}/",
+        "{{self.connections.target.url}}/pkg.Service/Export",
+        "{{ self.connections.target.url }}/v0.4/traces?a=b#c",
+    ] {
         Millstone
             .validate_config(LINUX, &case_values(&configuration(target)))
             .unwrap();
@@ -128,6 +135,47 @@ fn configuration_requires_a_templated_target_and_a_valid_seed() {
             "self.connections.target.url",
         ),
         (configuration("{{ self.late.ip }}"), "self.connections.target.url"),
+        (
+            configuration("{{ self.connections.target.url }}x"),
+            "self.connections.target.url",
+        ),
+        (
+            configuration("{{ self.connections.target.url }}:81"),
+            "self.connections.target.url",
+        ),
+        (
+            configuration("{{ self.connections.target.url }}@host/"),
+            "self.connections.target.url",
+        ),
+        (
+            configuration("{{ self.connections.target.url }}?a=b"),
+            "self.connections.target.url",
+        ),
+        (
+            configuration("{{ self.connections.target.url }}/{{ self.late.ip }}"),
+            "self.connections.target.url",
+        ),
+        (
+            configuration("{{ self.connections.target.url }}/a{{"),
+            "self.connections.target.url",
+        ),
+        // Reject unmatched closing delimiters before template rendering.
+        (
+            configuration("{{ self.connections.target.url }}/a}}"),
+            "self.connections.target.url",
+        ),
+        (
+            configuration(" {{ self.connections.target.url }}/a"),
+            "self.connections.target.url",
+        ),
+        (
+            configuration("/a{{ self.connections.target.url }}"),
+            "self.connections.target.url",
+        ),
+        (
+            configuration("{{ self.connections.target.url /a"),
+            "self.connections.target.url",
+        ),
     ] {
         let error = Millstone.validate_config(LINUX, &case_values(&document)).unwrap_err();
         assert!(error.contains(message), "{error}");
@@ -168,6 +216,28 @@ fn configuration_requires_a_templated_target_and_a_valid_seed() {
 }
 
 #[test]
+fn a_recipe_applies_the_rendered_path_to_both_senders() {
+    let path = "/opentelemetry.proto.collector.metrics.v1.MetricsService/Export";
+    let env = BTreeMap::from([
+        (TARGET_ENV.into(), "http://subject:4317".into()),
+        (BASELINE_TARGET_ENV.into(), "http://baseline:54317".into()),
+    ]);
+    let document = configuration(&format!("http://subject:4317{path}"));
+    let recipe = Millstone
+        .recipe(LINUX, &rendered(env, case_values(&document).file_contents))
+        .unwrap();
+    let placed = files(&recipe);
+    for (index, expected_target) in [
+        (1, format!("http://subject:4317{path}")),
+        (2, format!("http://baseline:54317{path}")),
+    ] {
+        let actual: Value = serde_saphyr::from_str(simdutf8::basic::from_utf8(placed[index].2).unwrap()).unwrap();
+        assert_eq!(actual["target"], expected_target);
+        assert_eq!(actual["seed"], json!(SEED));
+    }
+}
+
+#[test]
 fn a_recipe_rejects_missing_deliveries_and_a_target_that_bypasses_its_connection() {
     let document = configuration("udp://subject:8125");
     let env = BTreeMap::from([
@@ -183,14 +253,29 @@ fn a_recipe_rejects_missing_deliveries_and_a_target_that_bypasses_its_connection
             .unwrap();
         assert!(error.contains(key), "{error}");
     }
-    let error = Millstone
-        .recipe(
-            LINUX,
-            &rendered(env, case_values(&configuration("udp://unconnected:8125")).file_contents),
-        )
-        .err()
-        .unwrap();
-    assert_eq!(error, "millstone.yaml key 'target' must equal the delivered target URL");
+    for target in [
+        "udp://unconnected:8125",
+        "udp://subject:8125x",
+        "udp://subject:81250/path",
+        "udp://subject:8125@unconnected:8125/path",
+        "udp://subject:8125.unconnected/path",
+        "udp://subject:8125?query",
+        "udp://subject:8125/{{ self.late.ip }}",
+        "udp://subject:8125/a}}",
+        "udp://subject:812/path",
+    ] {
+        let error = Millstone
+            .recipe(
+                LINUX,
+                &rendered(env.clone(), case_values(&configuration(target)).file_contents),
+            )
+            .err()
+            .unwrap();
+        assert_eq!(
+            error, "millstone.yaml key 'target' must be the delivered target URL plus an optional path",
+            "{target}"
+        );
+    }
 }
 
 #[test]

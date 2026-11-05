@@ -9,6 +9,12 @@ use panoramic_core::{
 
 use super::config_file::ConfigFile;
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) enum Product {
+    AgentAdp,
+    Agent,
+}
+
 #[derive(Clone, Copy)]
 enum Owner {
     Agent,
@@ -17,6 +23,7 @@ enum Owner {
     AdpDogStatsD,
     AgentOtlpProxy,
     AgentOtlpGrpc,
+    AgentOtlpHttp,
     DogStatsD,
 }
 
@@ -43,6 +50,8 @@ struct Listener {
 
 // Owners select DATA_PLANE_ENABLED, DATA_PLANE_DOGSTATSD_ENABLED, DATA_PLANE_OTLP_ENABLED and USE_DOGSTATSD.
 // On macOS, DATA_PLANE_OTLP_PROXY_ENABLED selects the Agent proxy receiver in place of its normal gRPC receiver.
+// On Linux, only the `agent` type exposes the Agent's OTLP receivers: in `agent-adp` the image moves
+// them to loopback when ADP takes OTLP.
 const LISTENERS: &[Listener] = &[
     Listener {
         name: "dogstatsd_udp",
@@ -196,7 +205,7 @@ const LISTENERS: &[Listener] = &[
             )])
         }),
         owner: Owner::AgentOtlpGrpc,
-        macos_only: true,
+        macos_only: false,
         windows_only: false,
     },
     Listener {
@@ -210,8 +219,8 @@ const LISTENERS: &[Listener] = &[
                 format!("0.0.0.0:{port}"),
             )])
         }),
-        owner: Owner::Agent,
-        macos_only: true,
+        owner: Owner::AgentOtlpHttp,
+        macos_only: false,
         windows_only: false,
     },
     Listener {
@@ -282,7 +291,7 @@ pub(super) fn otlp_proxy_enabled(env: &BTreeMap<String, String>) -> Result<bool,
 }
 
 pub(crate) fn endpoints(
-    realization: Realization, env: &BTreeMap<String, String>, file: Option<&ConfigFile>,
+    realization: Realization, env: &BTreeMap<String, String>, file: Option<&ConfigFile>, product: Product,
 ) -> Result<BTreeMap<String, Endpoint>, String> {
     let platform = match (realization.os, realization.kind) {
         (Os::Linux, RealizationKind::LinuxContainer) => Platform::LinuxContainer,
@@ -316,7 +325,13 @@ pub(crate) fn endpoints(
             continue;
         }
         let owner = match listener.owner {
-            Owner::AgentOtlpGrpc => Owner::Agent,
+            Owner::AgentOtlpGrpc | Owner::AgentOtlpHttp
+                if platform == Platform::WindowsContainer
+                    || (platform == Platform::LinuxContainer && product != Product::Agent) =>
+            {
+                continue;
+            }
+            Owner::AgentOtlpGrpc | Owner::AgentOtlpHttp => Owner::Agent,
             Owner::AgentOtlpProxy if !proxy => continue,
             Owner::AgentOtlpProxy => Owner::Agent,
             Owner::Adp if !adp => continue,
@@ -339,7 +354,7 @@ pub(crate) fn endpoints(
             }
             owner => owner,
         };
-        let tls = if listener.name == "otlp_http" {
+        let tls = if matches!(listener.name, "otlp_http" | "agent_otlp_http") {
             let (cert_key, cert) = env.value(owner, "OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CERT_FILE", "")?;
             let (key_key, key) = env.value(owner, "OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_KEY_FILE", "")?;
             if cert.is_empty() != key.is_empty() {
@@ -391,6 +406,10 @@ pub(crate) fn endpoints(
                 } else {
                     let port = match listener.value {
                         ValueKind::HostPort(_) => {
+                            // Linux Agent OTLP receivers have no default; an empty value leaves them disabled.
+                            if platform == Platform::LinuxContainer && value.is_empty() && listener.default.is_empty() {
+                                continue;
+                            }
                             let address = url::Url::parse(&format!("tcp://{value}"))
                                 .map_err(|_| invalid("must be host:port with no scheme"))?;
                             if address.host_str().is_none()
@@ -550,10 +569,28 @@ mod tests {
         }
     }
 
+    const LINUX: Realization = Realization {
+        os: Os::Linux,
+        kind: RealizationKind::LinuxContainer,
+    };
     const MACOS: Realization = Realization {
         os: Os::MacOs,
         kind: RealizationKind::HostProcessGroup,
     };
+    const WINDOWS: Realization = Realization {
+        os: Os::Windows,
+        kind: RealizationKind::WindowsContainer,
+    };
+    const OTLP_FILE: &str = "\
+otlp_config:
+  receiver:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+";
+
     const NETWORK: &[(&str, EndpointKind, &str, &str)] = &[
         ("agent_cmd", EndpointKind::Tcp, "DD_CMD_PORT", "20001"),
         ("agent_ipc", EndpointKind::Tcp, "DD_AGENT_IPC_PORT", "20001"),
@@ -614,11 +651,6 @@ mod tests {
             ..Default::default()
         }
     }
-
-    const WINDOWS: Realization = Realization {
-        os: Os::Windows,
-        kind: RealizationKind::WindowsContainer,
-    };
 
     #[test]
     fn windows_declares_fixed_container_listeners_without_unix_sockets_or_host_only_listeners() {
@@ -1008,6 +1040,52 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn linux_agent_adp_never_declares_the_agent_otlp_listeners() {
+        for adp_enabled in [true, false] {
+            for adp_otlp in ["true", "false"] {
+                let env = [
+                    ("DD_DATA_PLANE_OTLP_ENABLED", adp_otlp),
+                    ("DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT", "0.0.0.0:5317"),
+                    ("DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT", "0.0.0.0:5318"),
+                ];
+                for file in [None, Some(OTLP_FILE)] {
+                    let mut config = config();
+                    config.env.extend(env.map(|(key, value)| (key.into(), value.into())));
+                    config
+                        .env
+                        .insert("DD_DATA_PLANE_ENABLED".into(), adp_enabled.to_string());
+                    if let Some(file) = file {
+                        config.files.insert("datadog.yaml".into(), file.as_bytes().to_vec());
+                    }
+                    let endpoints = AgentAdp.endpoints(LINUX, &config).unwrap();
+                    assert!(!endpoints.contains_key("agent_otlp_grpc"), "{adp_otlp}");
+                    assert!(!endpoints.contains_key("agent_otlp_http"), "{adp_otlp}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn windows_never_declares_the_agent_otlp_listeners() {
+        let env = BTreeMap::from([
+            ("DD_DATA_PLANE_ENABLED".into(), "false".into()),
+            (
+                "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT".into(),
+                "0.0.0.0:5317".into(),
+            ),
+            (
+                "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT".into(),
+                "0.0.0.0:5318".into(),
+            ),
+        ]);
+        for product in [Product::Agent, Product::AgentAdp] {
+            let endpoints = endpoints(WINDOWS, &env, None, product).unwrap();
+            assert!(!endpoints.contains_key("agent_otlp_grpc"));
+            assert!(!endpoints.contains_key("agent_otlp_http"));
         }
     }
 }
