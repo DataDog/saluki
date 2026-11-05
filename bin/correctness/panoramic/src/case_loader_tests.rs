@@ -1,10 +1,13 @@
 //! Loads case files through `CASE_LOADER` with the participant types and steps the binary registers.
 
-use std::path::Path;
+use std::{fs, path::Path};
 
 use panoramic_core::case::{CaseSchema, ProcedureNode};
+use panoramic_core::endpoint::{test_support::assert_socket_endpoint, EndpointKind, Evidence};
 use panoramic_core::layout::{Os, Realization, RealizationKind};
+use panoramic_core::participant::ParticipantType;
 use panoramic_core::step::Need;
+use panoramic_participants::{Agent, AgentAdp};
 use panoramic_steps::{test_support::valid_fields, REGISTERED_STEPS};
 use serde_json::Value;
 
@@ -12,6 +15,47 @@ use crate::config::{
     discover_in_scope,
     tests::{minimal_procedure, planner, write_case, PARTICIPANT_FIELDS},
 };
+
+#[test]
+fn apm_socket_file_templates_resolve_to_each_participants_shared_directory() {
+    let root = tempfile::tempdir().unwrap();
+    let directory = root.path().join("test/correctness/cases");
+    write_case(
+        &directory,
+        "alpha",
+        "timeout: 1s\nsubject_os: [linux]\nparticipants:\n  adp:\n    type: agent-adp\n    subject: true\n    config: {files: {datadog.yaml: {from: datadog.yaml, template: true}}}\n  agent:\n    type: agent\n    config: {files: {datadog.yaml: {from: datadog.yaml, template: true}}}\nprocedure: [{step: log_contains, on: adp, pattern: ready, timeout: 5s}]\n",
+    );
+    fs::write(
+        directory.join("alpha/datadog.yaml"),
+        "apm_config:\n  enabled: true\n  receiver_socket: '{{ self.facts.shared_dir }}/apm.socket'\n",
+    )
+    .unwrap();
+    let case = crate::CASE_LOADER.discover_cases(&[directory]).unwrap().pop().unwrap();
+    let plan = planner().compile(case, Os::Linux).unwrap().into_plan().unwrap();
+    for participant in [&AgentAdp as &dyn ParticipantType, &Agent] {
+        let name = if participant.name() == "agent-adp" {
+            "adp"
+        } else {
+            "agent"
+        };
+        let config = plan.effective_config(name).unwrap();
+        let endpoints = participant
+            .endpoints(
+                Realization {
+                    os: Os::Linux,
+                    kind: RealizationKind::LinuxContainer,
+                },
+                config,
+            )
+            .unwrap();
+        assert_socket_endpoint(
+            &endpoints["apm_uds"],
+            EndpointKind::UnixStream,
+            &format!("/airlock/{name}/shared/apm.socket"),
+            Some(Evidence::socket_exists("apm_uds")),
+        );
+    }
+}
 
 #[test]
 fn pod_host_view_requires_host_pid_at_plan_compile_for_both_agent_types() {

@@ -115,10 +115,6 @@ pub(crate) fn default_env(config: &CaseValues, mut env: BTreeMap<String, String>
     ConfigFile::parse(&config.file_contents)
         .expect("datadog.yaml was validated")
         .omit_defaults(&mut env);
-    // The Agent's config stream treats an injected receiver port as explicit, masking ADP-only overrides.
-    if config.env.contains_key("ADP_DD_APM_RECEIVER_PORT") {
-        env.remove("DD_APM_RECEIVER_PORT");
-    }
     env
 }
 
@@ -364,17 +360,70 @@ mod tests {
 
     #[test]
     fn apm_port_defaults_yield_to_an_adp_only_override() {
-        let values = CaseValues {
-            env: BTreeMap::from([("ADP_DD_APM_RECEIVER_PORT".into(), "0".into())]),
-            ..Default::default()
-        };
-        let defaults = AgentAdp.default_env(LINUX, &values);
-        assert!(!defaults.contains_key("DD_APM_RECEIVER_PORT"));
-        assert_eq!(defaults["DD_CMD_PORT"], "55001");
-        assert_eq!(
-            AgentAdp.default_env(LINUX, &CaseValues::default())["DD_APM_RECEIVER_PORT"],
-            "58126"
-        );
+        // Dropping isolation in standalone mode makes the trace-agent collide with ADP on its default port.
+        for (yaml, extra_env, omitted) in [
+            ("{}", vec![], false),
+            ("data_plane: {enabled: true}", vec![], false),
+            (
+                "data_plane: {enabled: true, experimental: {apm: {enabled: true}}}",
+                vec![],
+                true,
+            ),
+            (
+                "data_plane: {enabled: true}",
+                vec![("ADP_DD_DATA_PLANE_EXPERIMENTAL_APM_ENABLED", "true")],
+                true,
+            ),
+            (
+                "data_plane: {enabled: true, experimental: {apm: {enabled: true}}, standalone_mode: true}",
+                vec![],
+                false,
+            ),
+            (
+                "data_plane: {enabled: true, experimental: {apm: {enabled: true}}, standalone_mode: false}",
+                vec![("DD_DATA_PLANE_STANDALONE_MODE", "true")],
+                false,
+            ),
+            (
+                "data_plane: {enabled: true, experimental: {apm: {enabled: true}}, standalone_mode: true}",
+                vec![("DD_DATA_PLANE_STANDALONE_MODE", "false")],
+                true,
+            ),
+            (
+                "data_plane: {enabled: true, experimental: {apm: {enabled: true}}}",
+                vec![("DD_DATA_PLANE_ENABLED", "false")],
+                false,
+            ),
+            (
+                "data_plane: {enabled: true, experimental: {apm: {enabled: true}}}",
+                vec![("ADP_DD_DATA_PLANE_EXPERIMENTAL_APM_ENABLED", "false")],
+                false,
+            ),
+        ] {
+            for kind in [RealizationKind::LinuxContainer, RealizationKind::KubernetesPod] {
+                let realization = Realization { os: Os::Linux, kind };
+                let mut values = CaseValues {
+                    env: BTreeMap::from([("ADP_DD_APM_RECEIVER_PORT".into(), "8126".into())]),
+                    file_contents: BTreeMap::from([("datadog.yaml".into(), yaml.as_bytes().to_vec())]),
+                    ..Default::default()
+                };
+                values
+                    .env
+                    .extend(extra_env.iter().map(|(key, value)| ((*key).into(), (*value).into())));
+                AgentAdp.validate_config(realization, &values).unwrap();
+                let defaults = AgentAdp.default_env(realization, &values);
+                assert_eq!(
+                    defaults.get("DD_APM_RECEIVER_PORT").map(String::as_str),
+                    if omitted { None } else { Some("58126") },
+                    "{yaml} {extra_env:?}"
+                );
+                assert_eq!(defaults["DD_CMD_PORT"], "55001");
+                values.env.insert("DD_APM_RECEIVER_PORT".into(), "8127".into());
+                let mut env = AgentAdp.default_env(realization, &values);
+                env.extend(values.env);
+                assert_eq!(env["DD_APM_RECEIVER_PORT"], "8127");
+            }
+        }
     }
 
     #[test]

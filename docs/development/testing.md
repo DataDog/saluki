@@ -548,7 +548,7 @@ doesn't expose the Agent's OTLP receivers; its `otlp_grpc` and `otlp_http` belon
 The `agent` type also accepts `otel-config.yaml`, placed at `/etc/datadog-agent/otel-config.yaml`.
 Enabling the embedded collector through `DD_OTELCOLLECTOR_ENABLED` or `otelcollector.enabled` in `datadog.yaml`
 requires that file. Its `receivers.otlp.protocols.grpc.endpoint` declares `otel_otlp_grpc`: a non-loopback
-`host:port` with a nonzero port, gated on TCP acceptance. It cannot share a port with `agent_otlp_grpc`.
+`host:port` with a nonzero port, gated on TCP acceptance. It cannot share a port with any declared Agent listener.
 Only the receiver address must be available while planning; exporter URLs may use connection references.
 
 Both types accept `config.params.host_view: true` on Linux. In containers this mounts `/proc`, `/sys/fs/cgroup`,
@@ -583,8 +583,8 @@ The definition derives these endpoints from the effective environment and, on Li
 | `dogstatsd_uds` | Unix datagram | `DD_DOGSTATSD_SOCKET` | Defaults to `/var/run/datadog/dsd.socket` on Linux; empty disables it; waits for the socket |
 | `dogstatsd_uds_stream` | Unix stream | `DD_DOGSTATSD_STREAM_SOCKET` | Nonempty enables it; waits for the socket |
 | `dogstatsd_pipe` | Named pipe | `DD_DOGSTATSD_PIPE_NAME` | Windows only; nonempty enables it when DogStatsD is enabled; reached through the courier at `\\.\pipe\<name>`; gate sends on ADP's `listen_addr:"npipe://<name>"` log line |
-| `apm_tcp` | HTTP | `DD_APM_RECEIVER_PORT` | Linux only; requires APM explicitly enabled and a nonzero port; waits for TCP acceptance |
-| `apm_uds` | Unix stream | `DD_APM_RECEIVER_SOCKET` | Linux only; requires APM explicitly enabled; defaults to `/var/run/datadog/apm.socket`; empty disables it; waits for the socket |
+| `apm_tcp` | HTTP | `DD_APM_RECEIVER_PORT` | Linux only; declared only when the case explicitly enables APM (`DD_APM_ENABLED` or `apm_config.enabled`); requires a nonzero port; waits for TCP acceptance |
+| `apm_uds` | Unix stream | `DD_APM_RECEIVER_SOCKET` | Linux only; declared only when the case explicitly enables APM (`DD_APM_ENABLED` or `apm_config.enabled`); defaults to `/var/run/datadog/apm.socket`; empty disables it; waits for the socket |
 | `api` | HTTP | `DD_DATA_PLANE_API_LISTEN_ADDRESS` | Requires ADP and a non-loopback host; waits for TCP acceptance |
 | `secure_api` | TCP | `DD_DATA_PLANE_SECURE_API_LISTEN_ADDRESS` | Requires ADP and a non-loopback host; waits for TCP acceptance; the listener uses TLS |
 | `otlp_grpc` | gRPC | `DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY` | Requires ADP and its OTLP pipeline, a nonzero port and a non-loopback host; waits for TCP acceptance |
@@ -601,13 +601,21 @@ follow the same owner precedence. With both unset, DogStatsD binds loopback and 
 ADP API addresses use `tcp://host:port`; a loopback host is a configuration error, and port 0 disables the endpoint.
 Invalid listener values name the configuration key in their errors.
 
-On Linux, both `agent` and `agent-adp` declare APM endpoints only when `DD_APM_ENABLED` or `apm_config.enabled`
-explicitly enables APM. ADP owns these receivers when `DD_DATA_PLANE_ENABLED` and
-`DD_DATA_PLANE_EXPERIMENTAL_APM_ENABLED` are true; otherwise the trace-agent owns them. ADP-owned values prefer
-`ADP_DD_` over `DD_`, then the file. Setting `ADP_DD_APM_RECEIVER_PORT` also suppresses the injected Core Agent
-APM port default, whose config-stream value would otherwise mask the ADP-only override.
-The TCP endpoint is omitted when `bind_host` is loopback unless
-`apm_config.apm_non_local_traffic` enables non-local traffic. With neither key set, APM binds every interface.
+On Linux, both `agent` and `agent-adp` declare APM endpoints only when the case explicitly enables APM
+(`DD_APM_ENABLED` or `apm_config.enabled`). This is the definition's opt-in, not a condition on ADP's proxy binding.
+ADP owns these receivers when `DD_DATA_PLANE_ENABLED` and `DD_DATA_PLANE_EXPERIMENTAL_APM_ENABLED`
+(ADP reads `ADP_DD_` first) are true; otherwise the trace-agent owns them. ADP-owned values prefer `ADP_DD_`
+over `DD_`, then the file.
+
+When ADP reads the Agent's config stream, `agent-adp` omits a container default `DD_<K>` if the case sets
+`ADP_DD_<K>`; otherwise the streamed default would mask the override. This requires `data_plane.enabled` to be true
+and `data_plane.standalone_mode` not to be true, with their `DD_` environment values taking precedence.
+The APM port default is omitted only when ADP owns APM; standalone mode keeps the trace-agent's isolated port.
+Explicit case values are unchanged. The `agent` type does not apply this rule.
+
+Unless non-local traffic is enabled, the APM TCP endpoint is omitted when `bind_host` is loopback, or when it is
+unset or empty and `apm_config.apm_non_local_traffic` is explicitly false. With neither key set, APM binds every
+interface. Environment values follow the receiver's ownership.
 
 ADP's OTLP endpoints require `DD_DATA_PLANE_ENABLED=true` and an enabled OTLP pipeline. The OTLP switch defaults
 to false; `ADP_DD_DATA_PLANE_OTLP_ENABLED` takes precedence over `DD_DATA_PLANE_OTLP_ENABLED`. The receiver

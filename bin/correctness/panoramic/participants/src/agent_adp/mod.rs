@@ -60,6 +60,16 @@ impl AgentAdp {
         },
         local_default: "/tmp/saluki-dda/datadog-agent",
     };
+
+    fn linux_default_env(realization: Realization, config: &CaseValues) -> Result<BTreeMap<String, String>, String> {
+        let file = config_file::ConfigFile::parse(&config.file_contents)?;
+        let mut defaults = container_default_env();
+        file.omit_adp_defaults(realization, &config.env, &mut defaults)?;
+        Ok(match realization.kind {
+            RealizationKind::KubernetesPod => pod::default_env(config, defaults),
+            _ => linux::default_env(config, defaults),
+        })
+    }
 }
 
 impl ParticipantType for AgentAdp {
@@ -147,7 +157,7 @@ impl ParticipantType for AgentAdp {
             (Os::Linux, RealizationKind::LinuxContainer | RealizationKind::KubernetesPod) => {
                 linux::validate_config(config)?;
                 let file = config_file::ConfigFile::parse(&config.file_contents)?;
-                let mut env = self.default_env(realization, config);
+                let mut env = Self::linux_default_env(realization, config)?;
                 env.extend(config.env.clone());
                 listeners::endpoints(realization, &env, Some(&file), listeners::Product::AgentAdp)?;
             }
@@ -175,8 +185,9 @@ impl ParticipantType for AgentAdp {
 
     fn default_env(&self, realization: Realization, config: &CaseValues) -> BTreeMap<String, String> {
         match (realization.os, realization.kind) {
-            (Os::Linux, RealizationKind::LinuxContainer) => linux::default_env(config, container_default_env()),
-            (Os::Linux, RealizationKind::KubernetesPod) => pod::default_env(config, container_default_env()),
+            (Os::Linux, RealizationKind::LinuxContainer | RealizationKind::KubernetesPod) => {
+                Self::linux_default_env(realization, config).expect("Linux configuration was validated")
+            }
             (Os::Windows, RealizationKind::WindowsContainer) => container_default_env(),
             (Os::MacOs, RealizationKind::HostProcessGroup) => macos::default_env(),
             _ => BTreeMap::new(),

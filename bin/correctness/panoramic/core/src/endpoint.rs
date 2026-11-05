@@ -107,6 +107,14 @@ pub enum Port {
 }
 
 impl Endpoint {
+    /// The configured network port, excluding case-supplied and dynamically assigned ports.
+    pub fn fixed_port(&self) -> Option<u16> {
+        match self.listener {
+            Listener::Port(Port::Fixed(port)) => Some(port),
+            _ => None,
+        }
+    }
+
     /// Enables TLS for an HTTP listener. Invalid for other endpoint kinds.
     pub fn with_tls(mut self) -> Self {
         self.tls = true;
@@ -444,6 +452,28 @@ pub mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fixed_ports_exclude_unassigned_ports_and_socket_paths() {
+        for constructor in [Endpoint::tcp, Endpoint::udp, Endpoint::http, Endpoint::grpc] {
+            assert_eq!(constructor(Port::Fixed(4321)).fixed_port(), Some(4321));
+            assert_eq!(constructor(Port::FromCase).fixed_port(), None);
+            assert_eq!(
+                constructor(Port::Assigned {
+                    deliver: |_| BTreeMap::new()
+                })
+                .fixed_port(),
+                None
+            );
+        }
+        for endpoint in [
+            Endpoint::unix_stream("/run/stream.sock"),
+            Endpoint::unix_datagram("/run/dgram.sock"),
+            Endpoint::named_pipe("pipe"),
+        ] {
+            assert_eq!(endpoint.fixed_port(), None);
+        }
+    }
 
     #[test]
     fn resolved_addresses_expose_network_hosts_and_ports() {

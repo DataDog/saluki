@@ -2,8 +2,10 @@
 
 use std::{borrow::Cow, collections::BTreeMap};
 
-use panoramic_core::participant::require_early_config_value;
+use panoramic_core::{layout::Realization, participant::require_early_config_value};
 use serde_json::Value;
+
+use super::listeners;
 
 const NAME: &str = "datadog.yaml";
 
@@ -33,6 +35,24 @@ impl ConfigFile {
             let key = file_key(suffix);
             self.lookup(&key).is_none()
         });
+    }
+
+    pub(crate) fn omit_adp_defaults(
+        &self, realization: Realization, case_env: &BTreeMap<String, String>, defaults: &mut BTreeMap<String, String>,
+    ) -> Result<(), String> {
+        if !listeners::enabled(realization, case_env, Some(self), "DATA_PLANE_ENABLED", "false")?
+            || listeners::enabled(realization, case_env, Some(self), "DATA_PLANE_STANDALONE_MODE", "false")?
+        {
+            return Ok(());
+        }
+        let adp_apm = listeners::adp_owns_apm(realization, case_env, Some(self))?;
+        // Streamed defaults mask ADP-only overrides; preserve the trace-agent's port when it owns APM.
+        defaults.retain(|key, _| {
+            !key.starts_with("DD_")
+                || (key == "DD_APM_RECEIVER_PORT" && !adp_apm)
+                || !case_env.contains_key(&format!("ADP_{key}"))
+        });
+        Ok(())
     }
 
     pub(crate) fn value(&self, suffix: &str) -> Result<Option<(String, Cow<'_, str>)>, String> {
@@ -77,6 +97,7 @@ fn file_key(suffix: &str) -> String {
         "OTELCOLLECTOR_ENABLED" => "otelcollector.enabled",
         "PROCESS_CONFIG_CMD_PORT" => "process_config.cmd_port",
         "AGENT_IPC_PORT" => "agent_ipc.port",
+        "DATA_PLANE_STANDALONE_MODE" => "data_plane.standalone_mode",
         "DATA_PLANE_ENABLED" => "data_plane.enabled",
         "DATA_PLANE_DOGSTATSD_ENABLED" => "data_plane.dogstatsd.enabled",
         "DATA_PLANE_API_LISTEN_ADDRESS" => "data_plane.api_listen_address",
@@ -433,6 +454,7 @@ mod tests {
             );
         }
     }
+
     #[test]
     fn apm_listeners_require_explicit_enablement_and_follow_receiver_ownership() {
         for participant in [&Agent as &dyn ParticipantType, &AgentAdp] {
@@ -443,20 +465,30 @@ mod tests {
                 assert!(!endpoints.contains_key("apm_tcp"));
                 assert!(!endpoints.contains_key("apm_uds"));
             }
-            for proxy in [false, true] {
+            // ADP-only proxy enablement must select ADP, not bypass it through the trace-agent.
+            for (file_proxy, env_proxy, proxy) in [
+                (false, None, false),
+                (true, None, true),
+                (false, Some("true"), true),
+                (true, Some("false"), false),
+            ] {
                 let adp = participant.name() == "agent-adp";
-                let yaml = format!("apm_config: {{enabled: true, receiver_port: 8126, receiver_socket: /run/file.sock}}\ndata_plane: {{enabled: {adp}, experimental: {{apm: {{enabled: {proxy}}}}}}}");
+                let yaml = format!("apm_config: {{enabled: true, receiver_port: 8126, receiver_socket: /run/file.sock}}\ndata_plane: {{enabled: {adp}, experimental: {{apm: {{enabled: {file_proxy}}}}}}}");
                 let overrides = [
                     ("DD_APM_RECEIVER_PORT", "8127"),
                     ("DD_APM_RECEIVER_SOCKET", "/run/agent.sock"),
                     ("ADP_DD_APM_RECEIVER_PORT", "8128"),
                     ("ADP_DD_APM_RECEIVER_SOCKET", "/run/adp.sock"),
                 ];
-                for env in [&[][..], &overrides[..]] {
+                for ports in [&[][..], &overrides[..]] {
+                    let mut env = ports.to_vec();
+                    if let Some(value) = env_proxy {
+                        env.push(("ADP_DD_DATA_PLANE_EXPERIMENTAL_APM_ENABLED", value));
+                    }
                     let endpoints = participant
-                        .endpoints(LINUX, &effective(participant, case(&yaml, env)))
+                        .endpoints(LINUX, &effective(participant, case(&yaml, &env)))
                         .unwrap();
-                    let (port, path) = if env.is_empty() {
+                    let (port, path) = if ports.is_empty() {
                         (8126, "/run/file.sock")
                     } else if adp && proxy {
                         (8128, "/run/adp.sock")
@@ -477,6 +509,31 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn adp_only_overrides_omit_other_defaults_only_when_reading_the_config_stream() {
+        for (enabled, standalone, omitted) in [(true, false, true), (true, true, false), (false, false, false)] {
+            let yaml = format!("data_plane: {{enabled: {enabled}, standalone_mode: {standalone}}}");
+            let values = case(&yaml, &[("ADP_DD_DATA_PLANE_API_LISTEN_ADDRESS", "tcp://0.0.0.0:5200")]);
+            AgentAdp.validate_config(LINUX, &values).unwrap();
+            assert_eq!(
+                AgentAdp
+                    .default_env(LINUX, &values)
+                    .contains_key("DD_DATA_PLANE_API_LISTEN_ADDRESS"),
+                !omitted
+            );
+        }
+        for values in [
+            case("data_plane: {enabled: true, standalone_mode: maybe}", &[]),
+            case(
+                "data_plane: {enabled: true}",
+                &[("DD_DATA_PLANE_STANDALONE_MODE", "maybe")],
+            ),
+        ] {
+            let error = AgentAdp.validate_config(LINUX, &values).unwrap_err();
+            assert!(error.contains("must be true or false"), "{error}");
         }
     }
 
@@ -522,22 +579,57 @@ mod tests {
 
     #[test]
     fn apm_tcp_accepts_unspecified_or_non_local_hosts_and_honors_non_local_traffic() {
-        for participant in [&Agent as &dyn ParticipantType, &AgentAdp] {
+        // Explicit false was treated as unset, advertising a loopback-only APM listener.
+        for (participant, proxy) in [
+            (&Agent as &dyn ParticipantType, false),
+            (&AgentAdp, false),
+            (&AgentAdp, true),
+        ] {
             for (host, non_local, serves) in [
-                ("", false, true),
-                ("0.0.0.0", false, true),
-                ("127.0.0.1", false, false),
-                ("localhost", false, false),
-                ("::1", false, false),
-                ("127.0.0.1", true, true),
+                (None, None, true),
+                (None, Some(false), false),
+                (Some(""), Some(false), false),
+                (Some("0.0.0.0"), Some(false), true),
+                (Some("127.0.0.1"), None, false),
+                (Some("localhost"), Some(false), false),
+                (Some("::1"), Some(false), false),
+                (Some("127.0.0.1"), Some(true), true),
+                (None, Some(true), true),
             ] {
-                let yaml =
-                    format!("bind_host: '{host}'\napm_config: {{enabled: true, apm_non_local_traffic: {non_local}}}");
-                let endpoints = participant
-                    .endpoints(LINUX, &effective(participant, case(&yaml, &[])))
-                    .unwrap();
-                assert_eq!(endpoints.contains_key("apm_tcp"), serves, "{host} {non_local}");
-                assert!(endpoints.contains_key("apm_uds"));
+                for from_env in [false, true] {
+                    let adp = participant.name() == "agent-adp";
+                    let mut document = json!({"apm_config": {"enabled": true}, "data_plane": {"enabled": adp, "experimental": {"apm": {"enabled": proxy}}}});
+                    let mut overrides = Vec::new();
+                    let prefix = if proxy { "ADP_DD_" } else { "DD_" };
+                    if let Some(host) = host {
+                        if from_env {
+                            overrides.push((format!("{prefix}BIND_HOST"), host.to_owned()));
+                        } else {
+                            document["bind_host"] = json!(host);
+                        }
+                    }
+                    if let Some(non_local) = non_local {
+                        if from_env {
+                            overrides.push((format!("{prefix}APM_NON_LOCAL_TRAFFIC"), non_local.to_string()));
+                        } else {
+                            document["apm_config"]["apm_non_local_traffic"] = json!(non_local);
+                        }
+                    }
+                    let overrides = overrides
+                        .iter()
+                        .map(|(key, value)| (key.as_str(), value.as_str()))
+                        .collect::<Vec<_>>();
+                    let endpoints = participant
+                        .endpoints(LINUX, &effective(participant, case(&document.to_string(), &overrides)))
+                        .unwrap();
+                    assert_eq!(
+                        endpoints.contains_key("apm_tcp"),
+                        serves,
+                        "{} {proxy} {host:?} {non_local:?} {from_env}",
+                        participant.name()
+                    );
+                    assert!(endpoints.contains_key("apm_uds"));
+                }
             }
         }
         for realization in [

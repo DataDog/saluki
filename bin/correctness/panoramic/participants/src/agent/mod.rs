@@ -29,17 +29,18 @@ impl Agent {
     ) -> Result<BTreeMap<String, Endpoint>, String> {
         let file = ConfigFile::parse(files)?;
         let mut endpoints = listeners::endpoints(realization, env, Some(&file), listeners::Product::Agent)?;
-        let enabled = match env.get("DD_OTELCOLLECTOR_ENABLED") {
-            Some(value) => value.clone(),
-            None => file
-                .value("OTELCOLLECTOR_ENABLED")?
-                .map_or_else(|| "false".into(), |(_, value)| value.into_owned()),
-        };
-        if !enabled
-            .parse::<bool>()
-            .map_err(|_| "DD_OTELCOLLECTOR_ENABLED / otelcollector.enabled must be true or false")?
-        {
-            return Ok(endpoints);
+        if let Some(endpoint) = Self::collector_endpoint(realization, env, &file, files, &endpoints)? {
+            endpoints.insert("otel_otlp_grpc".into(), endpoint);
+        }
+        Ok(endpoints)
+    }
+
+    fn collector_endpoint(
+        realization: Realization, env: &BTreeMap<String, String>, file: &ConfigFile, files: &BTreeMap<String, Vec<u8>>,
+        endpoints: &BTreeMap<String, Endpoint>,
+    ) -> Result<Option<Endpoint>, String> {
+        if !listeners::enabled(realization, env, Some(file), "OTELCOLLECTOR_ENABLED", "false")? {
+            return Ok(None);
         }
         let name = "otel-config.yaml";
         let key = "receivers.otlp.protocols.grpc.endpoint";
@@ -60,28 +61,18 @@ impl Agent {
                 "{name} key '{key}' must use a non-loopback host and a nonzero port"
             ));
         }
-        if endpoints.contains_key("agent_otlp_grpc") {
-            let receiver = match env.get("DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT") {
-                Some(value) => value.clone(),
-                None => file
-                    .value("OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT")?
-                    .expect("the declared Agent listener has a configured address")
-                    .1
-                    .into_owned(),
-            };
-            if listeners::host_port(&receiver)
-                .expect("the Agent listener was validated")
-                .1
-                == port
-            {
-                return Err(format!("otel_otlp_grpc and agent_otlp_grpc cannot share port {port}"));
-            }
+        if listeners::agent_otlp_grpc_port(realization, env, Some(file))? == Some(port) {
+            return Err(format!("otel_otlp_grpc and agent_otlp_grpc cannot share port {port}"));
         }
-        endpoints.insert(
-            "otel_otlp_grpc".into(),
+        if let Some((name, _)) = endpoints
+            .iter()
+            .find(|(_, endpoint)| endpoint.fixed_port() == Some(port))
+        {
+            return Err(format!("otel_otlp_grpc and {name} cannot share port {port}"));
+        }
+        Ok(Some(
             Endpoint::grpc(Port::Fixed(port)).with_ready(Evidence::tcp_accepts("otel_otlp_grpc")),
-        );
-        Ok(endpoints)
+        ))
     }
 }
 
@@ -545,6 +536,7 @@ otlp_config:
         assert!(!endpoints.contains_key("agent_otlp_grpc"));
         assert!(!endpoints.contains_key("agent_otlp_http"));
     }
+
     fn collector_case(endpoint: &str) -> CaseValues {
         CaseValues {
             files: ["datadog.yaml", "otel-config.yaml"]
@@ -707,21 +699,49 @@ otlp_config:
     }
 
     #[test]
-    fn collector_and_core_agent_cannot_declare_the_same_grpc_port() {
-        for env_override in [false, true] {
-            let mut values = collector_case("0.0.0.0:4317");
-            if env_override {
-                values.env.insert(
-                    "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT".into(),
-                    "0.0.0.0:4317".into(),
+    fn collector_cannot_share_a_fixed_port_with_any_declared_agent_listener() {
+        // Checking only gRPC let collector ports collide with HTTP and other Agent listeners.
+        for (name, key, value, file) in [
+            (
+                "agent_otlp_grpc",
+                "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT",
+                "0.0.0.0:4317",
+                "otlp_config: {receiver: {protocols: {grpc: {endpoint: '0.0.0.0:4317'}}}}",
+            ),
+            (
+                "agent_otlp_http",
+                "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT",
+                "0.0.0.0:4317",
+                "otlp_config: {receiver: {protocols: {http: {endpoint: '0.0.0.0:4317'}}}}",
+            ),
+            ("agent_cmd", "DD_CMD_PORT", "4317", "cmd_port: 4317"),
+            ("agent_ipc", "DD_AGENT_IPC_PORT", "4317", "agent_ipc: {port: 4317}"),
+            (
+                "apm_tcp",
+                "DD_APM_RECEIVER_PORT",
+                "4317",
+                "apm_config: {receiver_port: 4317}",
+            ),
+            ("dogstatsd_udp", "DD_DOGSTATSD_PORT", "4317", "dogstatsd_port: 4317"),
+        ] {
+            for env_override in [false, true] {
+                let mut values = collector_case("0.0.0.0:4317");
+                values.env.extend([
+                    ("DD_APM_ENABLED".into(), "true".into()),
+                    ("DD_DOGSTATSD_NON_LOCAL_TRAFFIC".into(), "true".into()),
+                ]);
+                let mut yaml = "otelcollector: {enabled: true}\n".to_owned();
+                if env_override {
+                    values.env.insert(key.into(), value.into());
+                } else {
+                    yaml.push_str(file);
+                }
+                values.file_contents.insert("datadog.yaml".into(), yaml.into_bytes());
+                assert_eq!(
+                    Agent.validate_config(LINUX, &values).unwrap_err(),
+                    format!("otel_otlp_grpc and {name} cannot share port 4317"),
                 );
-            } else {
-                values.file_contents.insert("datadog.yaml".into(), b"otelcollector: {enabled: true}\notlp_config: {receiver: {protocols: {grpc: {endpoint: '0.0.0.0:4317'}}}}".to_vec());
             }
-            assert_eq!(
-                Agent.validate_config(LINUX, &values).unwrap_err(),
-                "otel_otlp_grpc and agent_otlp_grpc cannot share port 4317"
-            );
         }
     }
 }

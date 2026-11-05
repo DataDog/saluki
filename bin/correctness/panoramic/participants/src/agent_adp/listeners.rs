@@ -49,6 +49,22 @@ struct Listener {
     windows_only: bool,
 }
 
+const AGENT_OTLP_GRPC: Listener = Listener {
+    name: "agent_otlp_grpc",
+    kind: EndpointKind::Grpc,
+    key: "OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT",
+    default: "",
+    value: ValueKind::HostPort(|port| {
+        BTreeMap::from([(
+            "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT".into(),
+            format!("0.0.0.0:{port}"),
+        )])
+    }),
+    owner: Owner::AgentOtlpGrpc,
+    macos_only: false,
+    windows_only: false,
+};
+
 // Owners select DATA_PLANE_ENABLED, DATA_PLANE_DOGSTATSD_ENABLED, DATA_PLANE_OTLP_ENABLED and USE_DOGSTATSD.
 // On macOS, DATA_PLANE_OTLP_PROXY_ENABLED selects the Agent proxy receiver in place of its normal gRPC receiver.
 // On Linux, only the `agent` type exposes the Agent's OTLP receivers: in `agent-adp` the image moves
@@ -214,21 +230,7 @@ const LISTENERS: &[Listener] = &[
         macos_only: true,
         windows_only: false,
     },
-    Listener {
-        name: "agent_otlp_grpc",
-        kind: EndpointKind::Grpc,
-        key: "OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT",
-        default: "",
-        value: ValueKind::HostPort(|port| {
-            BTreeMap::from([(
-                "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT".into(),
-                format!("0.0.0.0:{port}"),
-            )])
-        }),
-        owner: Owner::AgentOtlpGrpc,
-        macos_only: false,
-        windows_only: false,
-    },
+    AGENT_OTLP_GRPC,
     Listener {
         name: "agent_otlp_http",
         kind: EndpointKind::Http,
@@ -275,21 +277,50 @@ struct Environment<'a> {
 }
 
 impl<'a> Environment<'a> {
-    fn value(&self, owner: Owner, key: &str, default: &'a str) -> Result<(String, Cow<'a, str>), String> {
+    fn new(realization: Realization, values: &'a BTreeMap<String, String>, file: Option<&'a ConfigFile>) -> Self {
+        let platform = match (realization.os, realization.kind) {
+            (Os::Linux, RealizationKind::LinuxContainer | RealizationKind::KubernetesPod) => Platform::LinuxContainer,
+            (Os::Windows, RealizationKind::WindowsContainer) => Platform::WindowsContainer,
+            (Os::MacOs, RealizationKind::HostProcessGroup) => Platform::MacOsHost,
+            _ => unreachable!("listener configuration requires a supported realization"),
+        };
+        Self { values, platform, file }
+    }
+
+    fn configured_value(&self, owner: Owner, key: &str) -> Result<Option<(String, Cow<'a, str>)>, String> {
         if self.platform == Platform::LinuxContainer && matches!(owner, Owner::Adp) {
             let key = format!("ADP_DD_{key}");
             if let Some(value) = self.values.get(&key) {
-                return Ok((key, Cow::Borrowed(value)));
+                return Ok(Some((key, Cow::Borrowed(value))));
             }
         }
         let env_key = format!("DD_{key}");
         if let Some(value) = self.values.get(&env_key) {
-            return Ok((env_key, Cow::Borrowed(value)));
+            return Ok(Some((env_key, Cow::Borrowed(value))));
         }
-        if let Some(value) = self.file.map(|file| file.value(key)).transpose()?.flatten() {
-            return Ok(value);
+        self.file.map(|file| file.value(key)).transpose().map(Option::flatten)
+    }
+
+    fn is_set(&self, owner: Owner, key: &str) -> Result<bool, String> {
+        Ok(self.configured_value(owner, key)?.is_some())
+    }
+
+    fn value(&self, owner: Owner, key: &str, default: &'a str) -> Result<(String, Cow<'a, str>), String> {
+        Ok(self
+            .configured_value(owner, key)?
+            .unwrap_or_else(|| (format!("DD_{key}"), Cow::Borrowed(default))))
+    }
+
+    fn host_port(&self, key: &str, value: &str, default: &str) -> Result<Option<u16>, String> {
+        // Linux Agent OTLP receivers have no default; an empty value leaves them disabled.
+        if self.platform == Platform::LinuxContainer && value.is_empty() && default.is_empty() {
+            return Ok(None);
         }
-        Ok((env_key, Cow::Borrowed(default)))
+        let (host, port) = host_port(value).map_err(|error| format!("{key}='{value}' {error}"))?;
+        if port == 0 || (self.platform != Platform::MacOsHost && loopback_host(&host)) {
+            return Ok(None);
+        }
+        Ok(Some(port))
     }
 
     fn enabled(&self, owner: Owner, key: &str, default: &'a str) -> Result<bool, String> {
@@ -298,6 +329,28 @@ impl<'a> Environment<'a> {
             .parse()
             .map_err(|error| format!("{key}='{value}' must be true or false: {error}"))
     }
+}
+
+pub(crate) fn enabled(
+    realization: Realization, env: &BTreeMap<String, String>, file: Option<&ConfigFile>, key: &str, default: &str,
+) -> Result<bool, String> {
+    Environment::new(realization, env, file).enabled(Owner::Agent, key, default)
+}
+
+pub(crate) fn adp_owns_apm(
+    realization: Realization, env: &BTreeMap<String, String>, file: Option<&ConfigFile>,
+) -> Result<bool, String> {
+    let env = Environment::new(realization, env, file);
+    Ok(env.enabled(Owner::Agent, "DATA_PLANE_ENABLED", "false")?
+        && env.enabled(Owner::Adp, "DATA_PLANE_EXPERIMENTAL_APM_ENABLED", "false")?)
+}
+
+pub(crate) fn agent_otlp_grpc_port(
+    realization: Realization, env: &BTreeMap<String, String>, file: Option<&ConfigFile>,
+) -> Result<Option<u16>, String> {
+    let env = Environment::new(realization, env, file);
+    let (key, value) = env.value(Owner::Agent, AGENT_OTLP_GRPC.key, AGENT_OTLP_GRPC.default)?;
+    env.host_port(&key, &value, AGENT_OTLP_GRPC.default)
 }
 
 pub(super) fn otlp_proxy_enabled(env: &BTreeMap<String, String>) -> Result<bool, String> {
@@ -314,17 +367,9 @@ pub(super) fn otlp_proxy_enabled(env: &BTreeMap<String, String>) -> Result<bool,
 pub(crate) fn endpoints(
     realization: Realization, env: &BTreeMap<String, String>, file: Option<&ConfigFile>, product: Product,
 ) -> Result<BTreeMap<String, Endpoint>, String> {
-    let platform = match (realization.os, realization.kind) {
-        (Os::Linux, RealizationKind::LinuxContainer | RealizationKind::KubernetesPod) => Platform::LinuxContainer,
-        (Os::Windows, RealizationKind::WindowsContainer) => Platform::WindowsContainer,
-        (Os::MacOs, RealizationKind::HostProcessGroup) => Platform::MacOsHost,
-        _ => unreachable!("agent-adp dispatches listener configuration only for supported realizations"),
-    };
-    let env = Environment {
-        values: env,
-        platform,
-        file,
-    };
+    let adp_apm = adp_owns_apm(realization, env, file)?;
+    let env = Environment::new(realization, env, file);
+    let platform = env.platform;
     let adp = env.enabled(Owner::Agent, "DATA_PLANE_ENABLED", "false")?;
     let dogstatsd = env.enabled(Owner::Agent, "USE_DOGSTATSD", "true")?;
     let adp_dogstatsd = adp && env.enabled(Owner::Agent, "DATA_PLANE_DOGSTATSD_ENABLED", "true")?;
@@ -351,7 +396,7 @@ pub(crate) fn endpoints(
         let owner = match listener.owner {
             Owner::Apm if !env.enabled(Owner::Agent, "APM_ENABLED", "false")? => continue,
             Owner::Apm => {
-                if adp && env.enabled(Owner::Agent, "DATA_PLANE_EXPERIMENTAL_APM_ENABLED", "false")? {
+                if adp_apm {
                     Owner::Adp
                 } else {
                     Owner::Agent
@@ -438,14 +483,9 @@ pub(crate) fn endpoints(
                 } else {
                     let port = match listener.value {
                         ValueKind::HostPort(_) => {
-                            // Linux Agent OTLP receivers have no default; an empty value leaves them disabled.
-                            if platform == Platform::LinuxContainer && value.is_empty() && listener.default.is_empty() {
+                            let Some(port) = env.host_port(&key, &value, listener.default)? else {
                                 continue;
-                            }
-                            let (host, port) = host_port(&value).map_err(invalid)?;
-                            if platform != Platform::MacOsHost && loopback_host(&host) {
-                                continue;
-                            }
+                            };
                             port
                         }
                         ValueKind::Address(_) => {
@@ -497,7 +537,7 @@ pub(crate) fn endpoints(
                 }
                 if listener.name == "apm_tcp" && !env.enabled(owner, "APM_NON_LOCAL_TRAFFIC", "false")? {
                     let (_, host) = env.value(owner, "BIND_HOST", "")?;
-                    if loopback_host(&host) {
+                    if loopback_host(&host) || (host.is_empty() && env.is_set(owner, "APM_NON_LOCAL_TRAFFIC")?) {
                         continue;
                     }
                 }
