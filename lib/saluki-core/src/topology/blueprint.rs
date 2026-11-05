@@ -530,6 +530,11 @@ impl TopologyBuildState {
             .keys()
             .filter(|id| !self.prunable_components.contains_key(*id))
             .count();
+        let live_decoders = self
+            .decoders
+            .keys()
+            .filter(|id| !self.prunable_components.contains_key(*id))
+            .count();
 
         let interconnect_capacity = self.interconnect_capacity.get();
 
@@ -558,7 +563,7 @@ impl TopologyBuildState {
         // TODO: Add a firm subitem for payloads when we have payload interconnects.
         let max_in_flight_event_buffers = ((live_transforms + live_destinations) * interconnect_capacity)
             + self.sources.len()
-            + self.decoders.len()
+            + live_decoders
             + live_transforms;
 
         bounds_builder
@@ -1153,12 +1158,14 @@ mod tests {
             sources::{Source, SourceBuilder, SourceContext},
             ComponentContext,
         },
-        data_model::event::EventType,
+        data_model::{event::EventType, payload::PayloadType},
         health::HealthRegistry,
         runtime::{InitializationError, RestartStrategy, Supervisable, Supervisor, SupervisorError, SupervisorFuture},
         support::SubsystemIdentifier,
         topology::{
-            test_util::{TestDestinationBuilder, TestSourceBuilder, TestTransformBuilder},
+            test_util::{
+                TestDecoderBuilder, TestDestinationBuilder, TestRelayBuilder, TestSourceBuilder, TestTransformBuilder,
+            },
             EdgeCondition, OutputDefinition,
         },
     };
@@ -2101,6 +2108,44 @@ mod tests {
 
         assert!(state.destinations.contains_key(&component_id("observer")));
         assert!(state.graph.validate().is_ok());
+    }
+
+    #[test]
+    fn pruned_decoder_is_excluded_from_event_buffer_bounds() {
+        // A decoder whose only input is a connection with a false condition is pruned, so it shouldn't contribute an
+        // in-flight event buffer to the memory bounds: the bounds should match a topology without the decoder at all.
+        let with_pruned_decoder = {
+            let mut blueprint = blueprint_with_observer();
+            blueprint
+                .add_relay("relay", TestRelayBuilder::default_output(PayloadType::Raw))
+                .unwrap()
+                .add_decoder(
+                    "decoder",
+                    TestDecoderBuilder::with_input_and_output_type(PayloadType::Raw, EventType::EventD),
+                )
+                .unwrap()
+                .connect_components_when("relay", "decoder", EdgeCondition::fixed(false))
+                .unwrap()
+                .connect_components("decoder", "observer")
+                .unwrap()
+                .connect_components("source", "observer")
+                .unwrap();
+            blueprint
+        };
+        let without_decoder = {
+            let mut blueprint = blueprint_with_observer();
+            blueprint
+                .add_relay("relay", TestRelayBuilder::default_output(PayloadType::Raw))
+                .unwrap()
+                .connect_components("source", "observer")
+                .unwrap();
+            blueprint
+        };
+
+        assert_eq!(
+            firm_bound_bytes(&with_pruned_decoder),
+            firm_bound_bytes(&without_decoder)
+        );
     }
 
     #[test]
