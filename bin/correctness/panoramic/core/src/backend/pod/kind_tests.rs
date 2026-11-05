@@ -1046,7 +1046,6 @@ async fn runs_native_cases(
     let registries = Registries {
         participant_types: &[&NativePod],
         steps: fixtures::STEPS,
-        typed_case_roles: &[],
     };
     let scenarios = [
         (
@@ -1091,7 +1090,7 @@ async fn runs_native_cases(
     ];
     assert_eq!(scopes.len(), scenarios.len());
     for (scope, (name, participants, procedure)) in scopes.iter().zip(scenarios) {
-        let case = CaseLoader::new(registries, fixtures::FixtureTypes)
+        let case = CaseLoader::new(registries)
             .load_content(
                 "cases",
                 &format!("timeout: 90s\nsubject_os: [linux]\nparticipants:\n{participants}\nprocedure: {procedure}\n"),
@@ -1105,10 +1104,10 @@ async fn runs_native_cases(
             .unwrap()
             .into_plan()
             .unwrap();
-        assert_eq!(plan.scope().unwrap(), scope);
+        assert_eq!(plan.scope(), scope);
         if name == "late-files" {
             assert_eq!(
-                plan.start_order().unwrap(),
+                plan.start_order(),
                 &[vec!["first".to_string()], vec!["second".to_string()]]
             );
         }
@@ -1139,7 +1138,7 @@ async fn runs_native_cases(
         let limit = Duration::from_secs(if name == "missing-image" { 30 } else { 90 });
         let result = timeout(
             limit,
-            lifecycle::run(plan.participants().unwrap(), &[&NativePod], &inputs, &control),
+            lifecycle::run(plan.participants(), &[&NativePod], &inputs, &control),
         )
         .await
         .unwrap_or_else(|_| panic!("native scenario '{name}' did not finish within {limit:?}"));
@@ -1221,7 +1220,7 @@ async fn runs_native_cases(
             _ => unreachable!(),
         }
         let services: Api<Service> = Api::namespaced(connection.client.clone(), &scope.id());
-        for participant in plan.participants().unwrap().file().participants.keys() {
+        for participant in plan.participants().file().participants.keys() {
             assert!(pods.get_opt(participant).await.unwrap().is_some());
             assert!(services.get_opt(participant).await.unwrap().is_some());
         }

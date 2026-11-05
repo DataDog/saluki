@@ -129,8 +129,8 @@ mod tests {
     use crate::{
         artifact::ArtifactRole,
         case::{
-            fixtures::{minimal_procedure, FixtureTypes, PARTICIPANT_FIELDS, STEPS},
-            CaseLoader, CaseSchema, ProcedureNode, Registries,
+            fixtures::{minimal_procedure, PARTICIPANT_FIELDS, STEPS},
+            CaseLoader, ProcedureNode, Registries,
         },
         layout::{Realization, RealizationKind},
         participant::{FactDeclaration, ParticipantType, SHARED_DIR_FACT},
@@ -344,9 +344,8 @@ mod tests {
         let registries = Registries {
             participant_types: &[&ReservedFact, &EveryKindServer],
             steps: STEPS,
-            ..Default::default()
         };
-        let loader = CaseLoader::new(registries, FixtureTypes);
+        let loader = CaseLoader::new(registries);
         for (os, kind) in [
             (Os::Linux, "linux-container"),
             (Os::MacOs, "host-process-group"),
@@ -403,9 +402,7 @@ mod tests {
             .replace(minimal_procedure!(), "procedure: [{step: probe, on: subject, path: '{{ subject.facts.shared_dir }}/{{ other.facts.shared_dir }}'}]");
         for os in [Os::Linux, Os::MacOs, Os::Windows] {
             let plan = compile(&yaml, os).unwrap().unwrap();
-            let CaseSchema::Participants { procedure, .. } = plan.case().schema() else {
-                panic!("participant case")
-            };
+            let procedure = plan.case().procedure();
             let ProcedureNode::Step(step) = &procedure[0] else {
                 panic!("single step")
             };

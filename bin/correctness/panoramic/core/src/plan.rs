@@ -7,7 +7,7 @@ use saluki_error::{generic_error, GenericError};
 use crate::{
     artifact::{ArtifactBinding, ArtifactManifest, ArtifactRole},
     backend,
-    case::{config_references::FileTemplates, CaseConfig, CaseFile, CaseSchema, FileSource, ProcedureNode, Registries},
+    case::{config_references::FileTemplates, CaseConfig, CaseFile, FileSource, ProcedureNode, Registries},
     endpoint::{Endpoint, EndpointOperation, Listener, Port, ResolvedAddress, RunnerHostPort, RunnerHostRoute},
     layout::{describe_participant, lay_out, Layout, LayoutEntry, Os, RealizationKind},
     participant::{
@@ -50,21 +50,20 @@ pub struct Planner<'a> {
     ports: PortRegistry,
     scopes: ScopeRegistry,
     bindings: BTreeMap<String, String>,
-    catalog: BTreeMap<&'static str, ArtifactRole>,
 }
 
 /// The result of compiling a case for one subject OS.
-pub enum Compiled<C> {
+pub enum Compiled {
     /// The case declares the selected OS.
-    Planned(Box<CasePlan<C>>),
+    Planned(Box<CasePlan>),
     /// The case's `subject_os` omits the selected OS.
-    Excluded(Box<CaseConfig<C>>),
+    Excluded(Box<CaseConfig>),
 }
 
-impl<C> Compiled<C> {
+impl Compiled {
     /// Returns the plan when the case declares the selected OS.
     #[cfg(any(test, feature = "test-util"))]
-    pub fn into_plan(self) -> Option<CasePlan<C>> {
+    pub fn into_plan(self) -> Option<CasePlan> {
         match self {
             Self::Planned(plan) => Some(*plan),
             Self::Excluded(_) => None,
@@ -73,12 +72,12 @@ impl<C> Compiled<C> {
 }
 
 /// A loaded case with the layout selected for execution.
-pub struct CasePlan<C> {
-    case: CaseConfig<C>,
+pub struct CasePlan {
+    case: CaseConfig,
     subject_os: Os,
     artifacts: Vec<ArtifactBinding>,
     image_roles: BTreeMap<RealizationKind, Vec<ArtifactRole>>,
-    participants: Option<ParticipantData>,
+    participants: ParticipantData,
 }
 
 struct ParticipantData {
@@ -120,7 +119,7 @@ impl<'a> Planner<'a> {
     /// # Errors
     ///
     /// Returns an error for invalid install main-binary paths or conflicting role declarations across registered
-    /// participant types, backends and typed schemas, then for unknown manifest roles.
+    /// participant types and backends, then for unknown manifest roles.
     pub fn new(registries: Registries<'a>, manifest: ArtifactManifest) -> Result<Self, GenericError> {
         let catalog = artifacts::role_catalog(registries).map_err(|error| generic_error!(error))?;
         artifacts::check_manifest(&catalog, &manifest).map_err(|error| generic_error!(error))?;
@@ -129,7 +128,6 @@ impl<'a> Planner<'a> {
             ports: PortRegistry::new(),
             scopes: ScopeRegistry::new(),
             bindings: manifest.roles,
-            catalog,
         })
     }
 
@@ -154,7 +152,6 @@ impl<'a> Planner<'a> {
     }
 
     /// Validates every declared subject OS, returning a plan for a declared selection or the excluded case.
-    /// Participant cases carry a layout; typed cases retain their loader-supplied data.
     /// A participant case declaring the selected OS draws one isolation scope from this planner.
     /// Only the selected OS draws runner-host ports from this planner; other OSes use separate registries.
     /// Ports are drawn in check order: assigned listeners per participant and endpoint in name order,
@@ -165,7 +162,6 @@ impl<'a> Planner<'a> {
     /// # Errors
     ///
     /// Returns the first failing check, naming the case and source, and for per-OS checks the failing subject OS.
-    /// Typed cases must declare roles matching the catalog for the selected OS.
     /// Participant cases are checked in this order:
     ///
     /// 1. Isolation scope allocation, when the case declares the selected OS.
@@ -192,120 +188,93 @@ impl<'a> Planner<'a> {
     ///    9. Step fact, late-fact, operation and endpoint needs in procedure order, naming the step. Endpoint needs
     ///       check the served endpoint and operation-specific route, then allocate any port it needs and render its address.
     ///       Operation needs check the names the type offers on the participant's realization.
-    pub fn compile<C>(&mut self, case: CaseConfig<C>, subject_os: Os) -> Result<Compiled<C>, GenericError> {
+    pub fn compile(&mut self, case: CaseConfig, subject_os: Os) -> Result<Compiled, GenericError> {
         let selected = case.subject_os().contains(&subject_os);
-        let mut artifacts = Vec::new();
-        let mut image_roles = BTreeMap::new();
+        let file = case.file();
+        let procedure = case.procedure();
         let mut selected_participants = None;
-        let mut participants = None;
-        if let CaseSchema::Participants { file, procedure } = case.schema() {
-            let candidate_scope = if selected {
-                self.scopes.allocate().map_err(|error| {
-                    generic_error!(
-                        "case '{}' in {}: cannot allocate an isolation scope: {error}",
-                        case.name(),
-                        case.source().display()
-                    )
-                })?
-            } else {
-                self.scopes.unallocated()
-            };
-            for &os in case.subject_os() {
-                let error = |message: String| {
-                    generic_error!(
-                        "case '{}' in {}: on subject OS '{}', {}",
-                        case.name(),
-                        case.source().display(),
-                        os.name(),
-                        message
-                    )
-                };
-                let candidate = lay_out(&file.participants, self.registries.participant_types, os).map_err(&error)?;
-                let mut scratch_ports = PortRegistry::new();
-                let os_ports = if os == subject_os {
-                    &mut self.ports
-                } else {
-                    &mut scratch_ports
-                };
-                let planned = plan_participants(
-                    file,
-                    procedure,
-                    case.file_templates(),
-                    case.source(),
-                    &candidate,
-                    &candidate_scope,
-                    self.registries.participant_types,
-                    os_ports,
+        let candidate_scope = if selected {
+            self.scopes.allocate().map_err(|error| {
+                generic_error!(
+                    "case '{}' in {}: cannot allocate an isolation scope: {error}",
+                    case.name(),
+                    case.source().display()
                 )
-                .map_err(error)?;
-                if os == subject_os {
-                    (artifacts, image_roles) =
-                        artifacts::bind(file, &candidate, self.registries.participant_types, &self.bindings);
-                    selected_participants = Some((candidate, planned));
-                }
-            }
-            if let Some((layout, planned)) = selected_participants {
-                participants = Some(ParticipantData {
-                    layout,
-                    scope: candidate_scope,
-                    planned,
-                });
-            }
-        } else if selected {
-            let roles = case.typed_artifact_roles(subject_os);
-            for role in roles {
-                let mismatch = match self.catalog.get(role.name) {
-                    None => "is not declared by any participant type, backend or typed case schema".to_string(),
-                    Some(declared) if role != declared => {
-                        format!("is {} but declared as {}", role.describe(), declared.describe())
-                    }
-                    Some(_) => continue,
-                };
-                return Err(generic_error!(
-                    "case '{}' in {}: on subject OS '{}', artifact role '{}' {mismatch}",
+            })?
+        } else {
+            self.scopes.unallocated()
+        };
+        for &os in case.subject_os() {
+            let error = |message: String| {
+                generic_error!(
+                    "case '{}' in {}: on subject OS '{}', {}",
                     case.name(),
                     case.source().display(),
-                    subject_os.name(),
-                    role.name,
-                ));
+                    os.name(),
+                    message
+                )
+            };
+            let candidate = lay_out(&file.participants, self.registries.participant_types, os).map_err(&error)?;
+            let mut scratch_ports = PortRegistry::new();
+            let os_ports = if os == subject_os {
+                &mut self.ports
+            } else {
+                &mut scratch_ports
+            };
+            let planned = plan_participants(
+                file,
+                procedure,
+                case.file_templates(),
+                case.source(),
+                &candidate,
+                &candidate_scope,
+                self.registries.participant_types,
+                os_ports,
+            )
+            .map_err(error)?;
+            if os == subject_os {
+                let (artifacts, image_roles) =
+                    artifacts::bind(file, &candidate, self.registries.participant_types, &self.bindings);
+                selected_participants = Some((candidate, planned, artifacts, image_roles));
             }
-            artifacts = artifacts::bind_roles(roles.iter().copied(), &self.bindings);
         }
         if !selected {
             return Ok(Compiled::Excluded(Box::new(case)));
         }
+        let (layout, planned, artifacts, image_roles) = selected_participants.expect("the selected OS was planned");
         Ok(Compiled::Planned(Box::new(CasePlan {
             case,
             subject_os,
             artifacts,
             image_roles,
-            participants,
+            participants: ParticipantData {
+                layout,
+                scope: candidate_scope,
+                planned,
+            },
         })))
     }
 }
 
-impl<C> CasePlan<C> {
+impl CasePlan {
     /// Returns the loaded case and its metadata.
-    pub fn case(&self) -> &CaseConfig<C> {
+    pub fn case(&self) -> &CaseConfig {
         &self.case
     }
 
-    /// Returns the participant plan, or `None` for a typed case.
-    pub fn participants(&self) -> Option<ParticipantPlan<'_>> {
-        let CaseSchema::Participants { file, procedure } = self.case.schema() else {
-            return None;
-        };
-        Some(ParticipantPlan {
-            file,
-            procedure,
+    /// Returns the participant plan.
+    pub fn participants(&self) -> ParticipantPlan<'_> {
+        ParticipantPlan {
+            file: self.case.file(),
+            procedure: self.case.procedure(),
             templates: self.case.file_templates(),
-            data: self.participants.as_ref()?,
-        })
+            data: &self.participants,
+        }
     }
 
     #[cfg(test)]
-    pub(crate) fn scope(&self) -> Option<&ScopeLayout> {
-        self.participants().map(|plan| plan.scope())
+    pub(crate) fn scope(&self) -> &ScopeLayout {
+        self.participants().scope()
     }
 
     /// Returns the subject OS selected for execution.
@@ -313,28 +282,22 @@ impl<C> CasePlan<C> {
         self.subject_os
     }
 
-    /// Returns `Some(layout)` for participant cases and `None` for typed cases.
-    pub fn layout(&self) -> Option<&Layout> {
-        self.participants().map(|plan| plan.layout())
+    /// Returns the participants' layout for the selected subject OS.
+    pub fn layout(&self) -> &Layout {
+        self.participants().layout()
     }
 
     /// Reports each participant's type, OS and realization in name order.
-    /// Returns `None` for cases with a top-level `type`, which declare no participants.
-    pub fn layout_entries(&self) -> Option<Vec<LayoutEntry>> {
-        let CaseSchema::Participants { file, .. } = self.case.schema() else {
-            return None;
-        };
-        Some(
-            self.layout()?
-                .iter()
-                .map(|(name, realization)| LayoutEntry {
-                    participant: Some(name.to_string()),
-                    participant_type: Some(file.participants[name].participant_type.clone()),
-                    os: realization.os,
-                    realization: realization.kind,
-                })
-                .collect(),
-        )
+    pub fn layout_entries(&self) -> Vec<LayoutEntry> {
+        self.layout()
+            .iter()
+            .map(|(name, realization)| LayoutEntry {
+                participant: name.to_string(),
+                participant_type: self.case.file().participants[name].participant_type.clone(),
+                os: realization.os,
+                realization: realization.kind,
+            })
+            .collect()
     }
 
     /// Returns the case's artifact bindings for the selected OS, sorted by role name.
@@ -343,42 +306,40 @@ impl<C> CasePlan<C> {
     }
 
     /// Returns participant and backend image roles for a realization kind, sorted and deduplicated by name.
-    /// Typed cases have no participant realizations and return an empty slice.
     pub fn image_roles_for(&self, kind: RealizationKind) -> &[ArtifactRole] {
         self.image_roles.get(&kind).map(Vec::as_slice).unwrap_or(&[])
     }
 
-    /// Returns create dependency levels for participant cases, or `None` for typed cases.
+    /// Returns create dependency levels.
     ///
     /// A participant follows every other participant whose late fact, known once created, its configuration embeds.
     /// Each level lists independent participants in name order.
-    pub fn create_order(&self) -> Option<&[Vec<String>]> {
-        self.participants().map(|plan| plan.create_order())
+    pub fn create_order(&self) -> &[Vec<String>] {
+        self.participants().create_order()
     }
 
-    /// Returns start dependency levels for participant cases, or `None` for typed cases.
+    /// Returns start dependency levels.
     ///
     /// A participant follows every other participant it connects to. A pod also follows every other participant
     /// whose late fact its template files reference when that fact becomes available only after start.
     /// Each level lists independent participants in name order.
-    pub fn start_order(&self) -> Option<&[Vec<String>]> {
-        self.participants().map(|plan| plan.start_order())
+    pub fn start_order(&self) -> &[Vec<String>] {
+        self.participants().start_order()
     }
 
     /// Returns a fact from the participant's planned realization, including `shared_dir`.
     pub fn fact(&self, participant: &str, fact: &str) -> Option<&str> {
-        self.participants()?.fact(participant, fact)
+        self.participants().fact(participant, fact)
     }
 
     /// Returns the participant's effective configuration for its planned realization.
     pub fn effective_config(&self, participant: &str) -> Option<&EffectiveConfig> {
-        self.participants()?.effective_config(participant)
+        self.participants().effective_config(participant)
     }
 
     /// Returns the substituted case values after the participant OS overlay, before defaults and deliveries.
     pub fn case_values(&self, participant: &str) -> Option<&CaseValues> {
         self.participants
-            .as_ref()?
             .planned
             .participants
             .get(participant)
@@ -387,33 +348,29 @@ impl<C> CasePlan<C> {
 
     #[cfg(test)]
     pub(crate) fn start_gates(&self, participant: &str) -> &[StartGate] {
-        self.participants()
-            .map(|plan| plan.start_gates(participant))
-            .unwrap_or(&[])
+        self.participants().start_gates(participant)
     }
 
     #[cfg(test)]
     pub(crate) fn connection_address(&self, participant: &str, key: &str) -> Option<&ResolvedAddress> {
-        self.participants()?.connection_address(participant, key)
+        self.participants().connection_address(participant, key)
     }
 
     #[cfg(test)]
     pub(crate) fn endpoint_address(&self, holder: &str, server: &str, endpoint: &str) -> Option<&ResolvedAddress> {
-        self.participants()?.endpoint_address(holder, server, endpoint)
+        self.participants().endpoint_address(holder, server, endpoint)
     }
 
     #[cfg(test)]
     pub(crate) fn runner_host_route(
         &self, server: &str, endpoint: &str, operation: EndpointOperation,
     ) -> Option<&RunnerHostRoute> {
-        self.participants()?.runner_host_route(server, endpoint, operation)
+        self.participants().runner_host_route(server, endpoint, operation)
     }
 
     #[cfg(test)]
     pub(crate) fn runner_host_ports(&self, participant: &str) -> Vec<RunnerHostPort> {
-        self.participants()
-            .map(|plan| plan.runner_host_ports(participant))
-            .unwrap_or_default()
+        self.participants().runner_host_ports(participant)
     }
 }
 
@@ -685,10 +642,9 @@ pub mod test_support {
     ///
     /// Panics if the route is missing, indirect or has a different scheme.
     #[track_caller]
-    pub fn assert_request_scheme<C>(plan: &super::CasePlan<C>, participant: &str, endpoint: &str, scheme: &str) {
+    pub fn assert_request_scheme(plan: &super::CasePlan, participant: &str, endpoint: &str, scheme: &str) {
         let route = plan
             .participants()
-            .expect("participant case")
             .runner_host_route(participant, endpoint, crate::endpoint::EndpointOperation::Request)
             .expect("planned request route");
         let crate::endpoint::RunnerHostRoute::Direct(address) = route else {
@@ -697,9 +653,9 @@ pub mod test_support {
         assert_eq!(address.url().split_once("://").unwrap().0, scheme);
     }
 
-    /// Returns the isolation-group label for a native case, or `None` for a typed case.
-    pub fn scope_id<C>(plan: &super::CasePlan<C>) -> Option<String> {
-        plan.participants().map(|plan| plan.scope().id())
+    /// Returns the isolation-group label for a case.
+    pub fn scope_id(plan: &super::CasePlan) -> String {
+        plan.participants().scope().id()
     }
 }
 
@@ -713,7 +669,7 @@ mod tests {
     };
     use crate::{
         case::{
-            fixtures::{minimal_procedure, FixtureTypes, LOADER, PARTICIPANT_FIELDS, REGISTRIES, STEPS},
+            fixtures::{minimal_procedure, LOADER, PARTICIPANT_FIELDS, REGISTRIES, STEPS},
             CaseLoader,
         },
         endpoint::Transport,
@@ -767,9 +723,6 @@ mod tests {
             None
         );
         assert_eq!(planner.ports.allocate(), Ok(20003));
-        let typed = compile("type: fixture", Os::MacOs).unwrap().unwrap();
-        assert!(typed.runner_host_ports("server").is_empty());
-        assert_eq!(typed.runner_host_route("server", "api", EndpointOperation::Probe), None);
     }
 
     #[test]
@@ -778,23 +731,21 @@ mod tests {
         let plan = compile(&yaml, Os::MacOs).unwrap().unwrap();
         assert_eq!(
             plan.layout_entries(),
-            Some(vec![
+            vec![
                 LayoutEntry {
-                    participant: Some("server".into()),
-                    participant_type: Some("server".into()),
+                    participant: "server".into(),
+                    participant_type: "server".into(),
                     os: Os::Linux,
                     realization: RealizationKind::LinuxContainer,
                 },
                 LayoutEntry {
-                    participant: Some("z-caller".into()),
-                    participant_type: Some("client".into()),
+                    participant: "z-caller".into(),
+                    participant_type: "client".into(),
                     os: Os::MacOs,
                     realization: RealizationKind::HostProcessGroup,
                 },
-            ])
+            ]
         );
-        let typed = compile("type: fixture", Os::MacOs).unwrap().unwrap();
-        assert_eq!(typed.layout_entries(), None);
     }
 
     #[test]
@@ -803,12 +754,12 @@ mod tests {
         let mut planner = planner();
         for (index, os) in [Os::Linux, Os::MacOs, Os::Windows].into_iter().enumerate() {
             let plan = compile_with(&mut planner, &yaml, os).unwrap().unwrap();
-            let scope = plan.scope().unwrap();
+            let scope = plan.scope();
             assert_eq!(usize::from(scope.index), index);
             assert_eq!(scope.run, "testrun0");
             if os == Os::MacOs {
                 assert_eq!(
-                    plan.participants.as_ref().unwrap().planned.participants["subject"].facts[SHARED_DIR_FACT],
+                    plan.participants.planned.participants["subject"].facts[SHARED_DIR_FACT],
                     "/tmp/panoramic-testrun0/0001/subject/shared"
                 );
             }
@@ -817,14 +768,11 @@ mod tests {
     }
 
     #[test]
-    fn a_case_excluding_the_selected_os_and_a_typed_case_draw_no_scope() {
+    fn a_case_excluding_the_selected_os_draws_no_scope() {
         let mut planner = planner();
         assert!(compile_with(&mut planner, PARTICIPANT_FIELDS, Os::MacOs)
             .unwrap()
             .is_none());
-        let plan = compile_with(&mut planner, "type: fixture", Os::MacOs).unwrap().unwrap();
-        assert!(plan.participants().is_none());
-        assert_eq!(plan.fact("subject", SHARED_DIR_FACT), None);
         assert_eq!(planner.scopes.allocate().unwrap().index, 0);
     }
 
@@ -839,11 +787,6 @@ mod tests {
             "case 'alpha' in cases/alpha/config.yaml: cannot allocate an isolation scope: all 10000 isolation scopes are allocated");
         assert!(compile_with(&mut planner, PARTICIPANT_FIELDS, Os::MacOs)
             .unwrap()
-            .is_none());
-        assert!(compile_with(&mut planner, "type: fixture", Os::MacOs)
-            .unwrap()
-            .unwrap()
-            .participants()
             .is_none());
     }
 
@@ -1012,7 +955,7 @@ mod tests {
             steps: STEPS,
             ..FILE_REGISTRIES
         };
-        let loader = CaseLoader::new(registries, FixtureTypes);
+        let loader = CaseLoader::new(registries);
         let mut yaml = r#"timeout: 1s
 subject_os: [linux]
 participants:
@@ -1098,27 +1041,8 @@ procedure: [{step: probe, on: subject, path: '{{observer.facts.file}}'}]
             .unwrap()
             .into_plan()
             .unwrap();
-        assert_eq!(
-            plan.create_order().unwrap(),
-            [vec!["observer", "subject"], vec!["fixture"]]
-        );
-        assert_eq!(
-            plan.start_order().unwrap(),
-            [vec!["observer", "subject"], vec!["fixture"]]
-        );
-    }
-
-    #[test]
-    fn a_typed_plan_has_no_dependency_orders() {
-        let plan = compile("type: fixture", Os::MacOs).unwrap().unwrap();
-        assert_eq!(plan.create_order(), None);
-        assert_eq!(plan.start_order(), None);
-    }
-
-    #[test]
-    fn a_typed_plan_has_no_effective_configs() {
-        let plan = compile("type: fixture", Os::MacOs).unwrap().unwrap();
-        assert_eq!(plan.effective_config("subject"), None);
+        assert_eq!(plan.create_order(), [vec!["observer", "subject"], vec!["fixture"]]);
+        assert_eq!(plan.start_order(), [vec!["observer", "subject"], vec!["fixture"]]);
     }
 
     #[test]
@@ -1133,12 +1057,6 @@ procedure: [{step: probe, on: subject, path: '{{observer.facts.file}}'}]
             assert_eq!(plan.fact("subject", "unknown"), None);
             assert_eq!(plan.fact("unknown", "file"), None);
         }
-    }
-
-    #[test]
-    fn a_typed_plan_resolves_no_facts() {
-        let plan = compile("type: fixture", Os::MacOs).unwrap().unwrap();
-        assert_eq!(plan.fact("subject", "file"), None);
     }
 
     #[test]
@@ -1180,7 +1098,7 @@ procedure: [{step: probe, on: subject, path: '{{observer.facts.file}}'}]
             assert_eq!(plan.case().name(), "alpha");
             assert_eq!(plan.subject_os(), os);
             assert_eq!(
-                plan.layout().unwrap().iter().collect::<Vec<_>>(),
+                plan.layout().iter().collect::<Vec<_>>(),
                 [("subject", Realization { os, kind })]
             );
         }
@@ -1202,12 +1120,9 @@ procedure: [{step: probe, on: subject, path: '{{observer.facts.file}}'}]
             panic!("Linux is excluded");
         };
         let plan = planner.compile(*case, Os::MacOs).unwrap().into_plan().unwrap();
+        assert_eq!(plan.scope().state_dir(Os::MacOs), "/tmp/panoramic-testrun0/0000");
         assert_eq!(
-            plan.scope().unwrap().state_dir(Os::MacOs),
-            "/tmp/panoramic-testrun0/0000"
-        );
-        assert_eq!(
-            plan.participants.as_ref().unwrap().planned.runner_host_ports,
+            plan.participants.planned.runner_host_ports,
             BTreeMap::from([(("server".into(), "api".into()), 20000)])
         );
     }
@@ -1234,25 +1149,6 @@ procedure: [{step: probe, on: subject, path: '{{observer.facts.file}}'}]
                 ),
                 "{message}"
             );
-        }
-    }
-
-    #[test]
-    fn a_typed_case_is_planned_without_a_layout_for_its_declared_subject_os() {
-        for os in [Os::MacOs, Os::Windows] {
-            let case = LOADER
-                .load_content("cases", "type: fixture", "alpha", Path::new("config.yaml"))
-                .unwrap()
-                .remove(0);
-            let mut planner = Planner::with_run(REGISTRIES, "testrun0");
-            let Compiled::Excluded(case) = planner.compile(case, Os::Linux).unwrap() else {
-                panic!("Linux is excluded");
-            };
-            let plan = planner.compile(*case, os).unwrap().into_plan().unwrap();
-            assert_eq!(plan.subject_os(), os);
-            assert_eq!(plan.case().name(), "alpha");
-            assert!(plan.layout().is_none());
-            assert!(plan.participants().is_none());
         }
     }
 

@@ -340,9 +340,8 @@ mod tests {
     use tokio::sync::Notify;
 
     use super::*;
-    use crate::config::{BuiltCase, Execution};
-    use crate::runner::test_support::{test_runner_settings, Behavior, ScriptedTest};
-    use crate::runner::{RunArgs, Runner};
+    use crate::runner::test_support::{Behavior, ScriptedTest};
+    use crate::runner::{BuiltCase, RunArgs, Runner};
     use crate::text_output::OutputFormat;
 
     /// Bounds test waits below the runner's cleanup grace period so hangs fail promptly.
@@ -374,13 +373,10 @@ mod tests {
             );
             let collector = RunCollector::start(report, fail_fast);
 
-            let mut runner = Runner::new(log_dir.path(), test_runner_settings());
+            let mut runner = Runner::new(log_dir.path());
             for test in tests {
                 runner
-                    .register(BuiltCase {
-                        plan: test.plan(),
-                        execution: Execution::Runner(Box::new(test)),
-                    })
+                    .register(BuiltCase::new(test.plan(), Box::new(test)))
                     .expect("scripted test names are unique");
             }
             let cancel_all = CancellationToken::new();

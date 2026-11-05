@@ -10,6 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use async_trait::async_trait;
 use futures::stream::{self, StreamExt as _};
 use panoramic_core::deadline::{Budget, Deadline};
 use panoramic_core::events::{EventSender, TestEvent};
@@ -17,6 +18,7 @@ use panoramic_core::ledger::RECLAIM_TIME;
 use panoramic_core::lifecycle::{self, CaseControl, NativeInputs};
 use panoramic_core::machine_output::RESULT_LOG_FILE_NAME;
 use panoramic_core::participant::ParticipantType;
+use panoramic_core::plan::CasePlan;
 use panoramic_core::record::{ActiveStep, CaseRecord, StepStatus};
 use panoramic_core::result::{
     ErrorKind, Issue, IssueKind, PhaseTiming, PhaseTracker, StopCause, StoppedBy, TestResult, TimeoutAttribution,
@@ -29,11 +31,8 @@ use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
-use crate::config::typed_case::{case_dir, layout_entries, needs_pod};
-use crate::config::{BuiltCase, Execution};
-use crate::test::{RunnerSettings, TestContext};
-#[cfg(test)]
-use crate::{config::typed_case::LoadedPlan, test::Test};
+use crate::config::{case_dir, needs_pod};
+use crate::test::{Test, TestContext};
 
 /// How long a cancelled or timed-out test has to return its result before the runner drops it.
 const GRACE_TIME: Duration = Duration::from_secs(30);
@@ -78,35 +77,85 @@ impl RunArgs {
 /// Owns the set of registered tests and orchestrates their execution.
 ///
 /// Handles parallelism, timeout enforcement, cancellation propagation, log directory creation,
-/// and event dispatch. Case bodies use typed runners or the native lifecycle.
+/// and event dispatch. Case bodies run through the [`Test`] interface.
 pub(crate) struct Runner {
     tests: Vec<BuiltCase>,
     log_base_dir: PathBuf,
-    settings: RunnerSettings,
     kind_ready: Option<crate::test::KindReadyReceiver>,
-    native: Option<NativeExecution>,
 }
 
-/// Verified artifacts and participant types used to run native cases.
-struct NativeExecution {
-    inputs: NativeInputs,
-    types: &'static [&'static dyn ParticipantType],
+/// A compiled case paired with its executable body.
+pub(crate) struct BuiltCase {
+    /// Case identity, placement, and procedure.
+    pub(crate) plan: CasePlan,
+    /// Executes the case or reports why it cannot run.
+    body: Box<dyn Test>,
+    requires_kind: bool,
 }
 
-impl Runner {
-    pub(crate) fn new(log_base_dir: impl Into<PathBuf>, settings: RunnerSettings) -> Self {
+impl BuiltCase {
+    /// Pairs a runnable body with its plan and cluster prerequisite.
+    pub(crate) fn new(plan: CasePlan, body: Box<dyn Test>) -> Self {
         Self {
-            tests: Vec::new(),
-            log_base_dir: log_base_dir.into(),
-            settings,
-            kind_ready: None,
-            native: None,
+            requires_kind: needs_pod(&plan),
+            plan,
+            body,
         }
     }
 
-    pub(crate) fn with_native(mut self, inputs: NativeInputs, types: &'static [&'static dyn ParticipantType]) -> Self {
-        self.native = Some(NativeExecution { inputs, types });
-        self
+    /// Reports an unavailable realization without waiting for cluster setup.
+    pub(crate) fn unprovidable(plan: CasePlan, message: String) -> Self {
+        Self {
+            plan,
+            body: Box::new(Unprovidable { message }),
+            requires_kind: false,
+        }
+    }
+}
+
+/// Runs a case's participants from verified artifacts.
+pub(crate) struct NativeTest {
+    pub(crate) inputs: Arc<NativeInputs>,
+    pub(crate) types: &'static [&'static dyn ParticipantType],
+}
+
+#[async_trait]
+impl Test for NativeTest {
+    async fn run(&self, plan: &CasePlan, tctx: TestContext) -> TestResult {
+        let control = CaseControl {
+            observations: tctx.observations.clone(),
+            record: tctx.record.clone(),
+            deadline: tctx.deadline,
+            cancel: tctx.test_cancel_token(),
+            interrupt: tctx.interrupt.clone(),
+            phases: tctx.phases.clone(),
+            ledger: tctx.ledger.clone(),
+            tasks: tctx.tasks.clone(),
+            log_dir: tctx.log_dir().to_owned(),
+        };
+        lifecycle::run(plan.participants(), self.types, &self.inputs, &control).await
+    }
+}
+
+/// Reports a realization that the host cannot provide as a setup error.
+struct Unprovidable {
+    message: String,
+}
+
+#[async_trait]
+impl Test for Unprovidable {
+    async fn run(&self, _plan: &CasePlan, _tctx: TestContext) -> TestResult {
+        TestResult::errored("", ErrorKind::Setup, &self.message, Duration::ZERO, vec![])
+    }
+}
+
+impl Runner {
+    pub(crate) fn new(log_base_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            tests: Vec::new(),
+            log_base_dir: log_base_dir.into(),
+            kind_ready: None,
+        }
     }
 
     pub(crate) fn with_kind_ready(mut self, rx: crate::test::KindReadyReceiver) -> Self {
@@ -165,7 +214,7 @@ impl Runner {
                 break;
             }
 
-            let kind_ready = if needs_pod(&built.plan) && !matches!(built.execution, Execution::Unprovidable(_)) {
+            let kind_ready = if built.requires_kind {
                 self.kind_ready.clone()
             } else {
                 None
@@ -184,16 +233,7 @@ impl Runner {
             }
 
             let _permit = semaphore.acquire().await.unwrap();
-            let result = Self::run_one(
-                built,
-                event_sender,
-                cancel_all,
-                self.log_base_dir.clone(),
-                self.settings.clone(),
-                kind_ready,
-                self.native.as_ref(),
-            )
-            .await;
+            let result = Self::run_one(built, event_sender, cancel_all, self.log_base_dir.clone(), kind_ready).await;
 
             if !result.outcome.is_passed() {
                 break;
@@ -211,8 +251,7 @@ impl Runner {
             let semaphore = semaphore.clone();
             let cancel = cancel_all.clone();
             let log_base_dir = self.log_base_dir.clone();
-            let settings = self.settings.clone();
-            let mut kind_ready = if needs_pod(&built.plan) && !matches!(built.execution, Execution::Unprovidable(_)) {
+            let mut kind_ready = if built.requires_kind {
                 self.kind_ready.clone()
             } else {
                 None
@@ -246,16 +285,7 @@ impl Runner {
                     return;
                 }
 
-                Self::run_one(
-                    built,
-                    event_sender,
-                    &cancel,
-                    log_base_dir,
-                    settings,
-                    kind_ready,
-                    self.native.as_ref(),
-                )
-                .await;
+                Self::run_one(built, event_sender, &cancel, log_base_dir, kind_ready).await;
             });
 
             while futures.len() >= parallelism {
@@ -268,7 +298,7 @@ impl Runner {
 
     async fn run_one(
         built: &BuiltCase, event_sender: &EventSender, cancel_all: &CancellationToken, log_base_dir: PathBuf,
-        settings: RunnerSettings, kind_ready: Option<crate::test::KindReadyReceiver>, native: Option<&NativeExecution>,
+        kind_ready: Option<crate::test::KindReadyReceiver>,
     ) -> TestResult {
         let plan = &built.plan;
         let case = plan.case();
@@ -282,35 +312,27 @@ impl Runner {
 
         // Create a directory for the test to write logs into and pass it into the test context.
         let log_dir = log_base_dir.join(case.suite()).join(case.name());
-        if let Err(e) = tokio::fs::create_dir_all(&log_dir).await {
-            let mut result = TestResult::errored(
-                name.clone(),
-                ErrorKind::Setup,
-                format!(
-                    "Test failed to start due to an error during setup. Error creating log directory at {}: {e}",
-                    log_dir.display()
-                ),
-                started.elapsed(),
-                vec![],
-            );
+        let setup_failure = |message: String| {
+            let mut result = TestResult::errored(name.clone(), ErrorKind::Setup, message, started.elapsed(), vec![]);
             result.case_path = Some(case_path.clone());
-            result.layout = Some(layout_entries(plan));
+            result.layout = Some(plan.layout_entries());
 
             // Report setup failures through events so the collector accounts for the selected test.
-            let _ = event_sender.send(TestEvent::TestStarted { name });
+            let _ = event_sender.send(TestEvent::TestStarted { name: name.clone() });
             let _ = event_sender.send(TestEvent::TestCompleted {
                 result: Box::new(result.clone()),
-                log_dir,
+                log_dir: log_dir.clone(),
             });
-
-            return result;
+            result
+        };
+        if let Err(e) = tokio::fs::create_dir_all(&log_dir).await {
+            return setup_failure(format!(
+                "Test failed to start due to an error during setup. Error creating log directory at {}: {e}",
+                log_dir.display()
+            ));
         }
-
         let deadline = Deadline::after(Budget::Case, timeout);
-        let mut tctx = TestContext::new(test_cancel.clone(), deadline, log_dir.clone(), settings);
-        if let Some(rx) = kind_ready {
-            tctx = tctx.with_kind_ready(rx);
-        }
+        let tctx = TestContext::new(test_cancel.clone(), cancel_all.clone(), deadline, log_dir.clone());
 
         let _ = event_sender.send(TestEvent::TestStarted { name: name.clone() });
 
@@ -322,60 +344,29 @@ impl Runner {
 
         let (mut result, observed) = {
             let run_fut = async {
-                match &built.execution {
-                    Execution::Runner(test) => test.run(tctx).await,
-                    Execution::Native => {
-                        if needs_pod(plan) {
-                            let phase = phases.enter("kind_setup");
-                            let status = tctx.kind_ready.as_ref().and_then(|rx| rx.borrow().clone());
-                            let error = match status {
-                                Some(Ok(())) => None,
-                                Some(Err(error)) => Some(format!("Kind cluster setup failed: {error}")),
-                                None => Some("Kind cluster setup did not complete".to_string()),
-                            };
-                            if let Some(error) = error {
-                                return TestResult::errored(
-                                    "",
-                                    ErrorKind::Setup,
-                                    error,
-                                    started.elapsed(),
-                                    phase.finish_and_collect(),
-                                );
-                            }
+                if built.requires_kind {
+                    let phase = phases.enter("kind_setup");
+                    let status = kind_ready.as_ref().and_then(|rx| rx.borrow().clone());
+                    match status {
+                        Some(Ok(())) => {
                             phase.finish();
                         }
-                        let Some(native) = native else {
+                        status => {
+                            let message = match status {
+                                Some(Err(error)) => format!("Kind cluster setup failed: {error}"),
+                                _ => "Kind cluster setup did not complete".to_string(),
+                            };
                             return TestResult::errored(
                                 "",
-                                ErrorKind::Internal,
-                                "Native execution inputs were not prepared.",
-                                Duration::ZERO,
-                                vec![],
+                                ErrorKind::Setup,
+                                message,
+                                started.elapsed(),
+                                phase.finish_and_collect(),
                             );
-                        };
-                        let control = CaseControl {
-                            observations: observations.clone(),
-                            record: tctx.record.clone(),
-                            deadline: tctx.deadline,
-                            cancel: tctx.test_cancel_token(),
-                            interrupt: cancel_all.clone(),
-                            phases: tctx.phases.clone(),
-                            ledger: tctx.ledger.clone(),
-                            tasks: tctx.tasks.clone(),
-                            log_dir: log_dir.clone(),
-                        };
-                        lifecycle::run(
-                            plan.participants().expect("native cases declare participants"),
-                            native.types,
-                            &native.inputs,
-                            &control,
-                        )
-                        .await
-                    }
-                    Execution::Unprovidable(message) => {
-                        TestResult::errored("", ErrorKind::Setup, message, Duration::ZERO, vec![])
+                        }
                     }
                 }
+                built.body.run(plan, tctx).await
             };
             pin!(run_fut);
 
@@ -441,7 +432,7 @@ impl Runner {
         // Stamp the case identity, layout and artifact provenance before reporting the result.
         result.name = case.name().to_string();
         result.case_path = Some(case_path.clone());
-        result.layout = Some(layout_entries(plan));
+        result.layout = Some(plan.layout_entries());
         result.log_dir = Some(log_dir.clone());
 
         // Retention can merge sidecars or delete captures; report only artifacts that remain on disk.
@@ -597,13 +588,13 @@ fn write_result_log(result: &TestResult, dir: impl AsRef<Path>) {
     }
 }
 
-/// Scripted tests and settings for exercising [`Runner`].
+/// Scripted tests for exercising [`Runner`].
 #[cfg(test)]
 pub(crate) mod test_support {
     use std::collections::BTreeMap;
 
     use panoramic_core::artifact::{ArtifactKind, ArtifactManifest, ArtifactRole};
-    use panoramic_core::case::{CaseLoader, Registries};
+    use panoramic_core::case::{CaseConfig, CaseLoader, Registries};
     use panoramic_core::layout::{Os, Realization, RealizationKind};
     use panoramic_core::plan::Planner;
     use panoramic_core::record::{AssertionResult, AssertionStatus};
@@ -619,7 +610,6 @@ pub(crate) mod test_support {
     use tokio::sync::{mpsc, Notify};
 
     use super::*;
-    use crate::config::typed_case::{LoadedCase, TypedConfigLoader};
 
     pub(crate) struct PodTest;
 
@@ -663,12 +653,12 @@ pub(crate) mod test_support {
         }
     }
 
-    pub(crate) fn native_pod_case() -> BuiltCase {
+    pub(crate) fn native_pod_plan() -> CasePlan {
         let registries = Registries {
             participant_types: &[&PodTest],
             ..crate::REGISTRIES
         };
-        let case = CaseLoader::new(registries, TypedConfigLoader)
+        let case = CaseLoader::new(registries)
             .load_content(
                 "integration",
                 r#"
@@ -693,18 +683,12 @@ procedure: [{step: file_contains, on: pod, path: /ready, pattern: ready, timeout
             ]),
         )
         .unwrap();
-        let plan = Planner::new(registries, manifest)
+        Planner::new(registries, manifest)
             .unwrap()
             .compile(case, Os::Linux)
             .unwrap()
             .into_plan()
-            .unwrap();
-        crate::config::build_runners(
-            [plan],
-            &crate::config::runner_artifacts::RunnerArtifacts::Overrides(&[]),
-        )
-        .unwrap()
-        .remove(0)
+            .unwrap()
     }
 
     /// Runs a native case through artifact verification, checks its report and confirms scope removal.
@@ -725,7 +709,6 @@ procedure: [{step: file_contains, on: pod, path: /ready, pattern: ready, timeout
         use super::report_tests::assert_scope_removed;
         use crate::{
             cli::{Cli, Command},
-            config::typed_case::TypedConfigLoader,
             console::Console,
             run_command,
         };
@@ -733,7 +716,6 @@ procedure: [{step: file_contains, on: pod, path: /ready, pattern: ready, timeout
         let registries = panoramic_core::case::Registries {
             participant_types,
             steps,
-            typed_case_roles: &[],
         };
         let logs = tempfile::tempdir().unwrap();
         let participants = case_json["participants"]
@@ -742,7 +724,7 @@ procedure: [{step: file_contains, on: pod, path: /ready, pattern: ready, timeout
             .keys()
             .cloned()
             .collect::<std::collections::BTreeSet<_>>();
-        let case = CaseLoader::new(registries, TypedConfigLoader)
+        let case = CaseLoader::new(registries)
             .load_content(
                 "cases",
                 &case_json.to_string(),
@@ -770,13 +752,9 @@ procedure: [{step: file_contains, on: pod, path: /ready, pattern: ready, timeout
             .unwrap()
             .into_plan()
             .unwrap();
-        let scope = panoramic_core::plan::test_support::scope_id(&plan).unwrap();
+        let scope = panoramic_core::plan::test_support::scope_id(&plan);
         eprintln!("Native runner test scope: {scope}");
         let limit = plan.case().timeout() + Duration::from_secs(30);
-        let built = BuiltCase {
-            plan,
-            execution: Execution::Native,
-        };
         let Command::Run(cmd) = Cli::try_parse_from([
             "panoramic",
             "run",
@@ -796,23 +774,30 @@ procedure: [{step: file_contains, on: pod, path: /ready, pattern: ready, timeout
             &cmd,
             &Console { use_tui: false },
             Os::Linux,
-            std::slice::from_ref(&built),
+            std::slice::from_ref(&plan),
             &BTreeMap::new(),
         )
         .await
         .unwrap();
         let verified = serde_json::to_value(verified.unwrap()).unwrap();
         let verified = verified.as_array().unwrap();
-        assert_eq!(verified.len(), built.plan.artifacts().len());
-        for binding in built.plan.artifacts() {
+        assert_eq!(verified.len(), plan.artifacts().len());
+        for binding in plan.artifacts() {
             assert!(verified.iter().any(|artifact| artifact["role"] == binding.role.name
                 && artifact["identity"]
                     .as_str()
                     .is_some_and(|identity| !identity.is_empty())));
         }
-        let mut runner =
-            Runner::new(logs.path(), test_runner_settings()).with_native(native.unwrap(), participant_types);
-        runner.register(built).unwrap();
+        let mut runner = Runner::new(logs.path());
+        runner
+            .register(BuiltCase::new(
+                plan,
+                Box::new(NativeTest {
+                    inputs: Arc::new(native.unwrap()),
+                    types: participant_types,
+                }),
+            ))
+            .unwrap();
         let (tx, mut rx) = mpsc::unbounded_channel();
         tokio::time::timeout(limit, runner.run_tests(RunArgs::new(cancel, tx)))
             .await
@@ -946,7 +931,7 @@ procedure: [{step: file_contains, on: pod, path: /ready, pattern: ready, timeout
         }
 
         /// Plans a Linux integration case with this test's name and timeout, sourced from `/cases/<name>/config.yaml`.
-        pub(crate) fn plan(&self) -> LoadedPlan {
+        pub(crate) fn plan(&self) -> CasePlan {
             let case = crate::CASE_LOADER
                 .load_content("cases",
                     &format!(
@@ -964,7 +949,7 @@ procedure: [{step: file_contains, on: pod, path: /ready, pattern: ready, timeout
     }
 
     /// Compiles a Linux-enabled test case with local artifact defaults.
-    pub(crate) fn plan_for_linux(case: LoadedCase) -> LoadedPlan {
+    pub(crate) fn plan_for_linux(case: CaseConfig) -> CasePlan {
         crate::config::tests::planner()
             .compile(case, Os::Linux)
             .unwrap()
@@ -974,11 +959,7 @@ procedure: [{step: file_contains, on: pod, path: /ready, pattern: ready, timeout
 
     #[async_trait::async_trait]
     impl Test for ScriptedTest {
-        fn images(&self) -> BTreeMap<&str, String> {
-            BTreeMap::new()
-        }
-
-        async fn run(&self, tctx: TestContext) -> TestResult {
+        async fn run(&self, _plan: &CasePlan, tctx: TestContext) -> TestResult {
             if let Some(dir) = &self.registers {
                 std::fs::create_dir_all(dir).expect("the registered directory should be creatable");
                 tctx.ledger.directory(dir.clone());
@@ -1137,25 +1118,18 @@ procedure: [{step: file_contains, on: pod, path: /ready, pattern: ready, timeout
         }
     }
 
-    /// Runs a test with explicit settings and a timeout to catch hangs.
-    pub(crate) async fn run_with_settings(
-        built: &BuiltCase, settings: RunnerSettings, log_base_dir: &Path, cancel_all: &CancellationToken,
-        bound: Duration,
+    /// Runs a test with a timeout to catch hangs.
+    pub(crate) async fn run_case(
+        built: &BuiltCase, log_base_dir: &Path, cancel_all: &CancellationToken, bound: Duration,
     ) -> TestResult {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
 
         tokio::time::timeout(
             bound,
-            Runner::run_one(built, &tx, cancel_all, log_base_dir.to_path_buf(), settings, None, None),
+            Runner::run_one(built, &tx, cancel_all, log_base_dir.to_path_buf(), None),
         )
         .await
         .expect("the runner should finish the test within the bound")
-    }
-
-    pub(crate) fn test_runner_settings() -> RunnerSettings {
-        RunnerSettings {
-            alpine_image: airlock::driver::DEFAULT_ALPINE_IMAGE.to_string(),
-        }
     }
 }
 
@@ -1167,20 +1141,14 @@ mod tests {
     use panoramic_core::result::{ReclaimResult, TestOutcome, TimeoutDeadline};
     use tokio::sync::mpsc;
 
-    use super::test_support::{
-        plan_for_linux, run_with_settings, test_runner_settings, Behavior, ScriptedTest, TaskProbe,
-    };
+    use super::test_support::{plan_for_linux, run_case, Behavior, ScriptedTest, TaskProbe};
     use super::*;
 
     #[tokio::test]
     async fn the_runner_reports_a_native_case_through_the_lifecycle() {
         use panoramic_core::backend::RunBackends;
 
-        use crate::config::{
-            build_runners,
-            runner_artifacts::RunnerArtifacts,
-            tests::{plan_with_plain, Plain, PARTICIPANT_FIELDS},
-        };
+        use crate::config::tests::{plan_with_plain, Plain, PARTICIPANT_FIELDS};
 
         for fail_fast in [false, true] {
             let logs = tempfile::tempdir().unwrap();
@@ -1191,12 +1159,16 @@ mod tests {
                 "native",
                 Os::MacOs,
             );
-            let layout = layout_entries(&plan);
-            let built = build_runners([plan], &RunnerArtifacts::Overrides(&[]))
-                .unwrap()
-                .remove(0);
+            let layout = plan.layout_entries();
             let inputs = NativeInputs::new(Arc::new(RunBackends::default()), &[], logs.path()).unwrap();
-            let mut runner = Runner::new(logs.path(), test_runner_settings()).with_native(inputs, &[&Plain]);
+            let built = BuiltCase::new(
+                plan,
+                Box::new(NativeTest {
+                    inputs: Arc::new(inputs),
+                    types: &[&Plain],
+                }),
+            );
+            let mut runner = Runner::new(logs.path());
             runner.register(built).unwrap();
             let (tx, mut rx) = mpsc::unbounded_channel();
             let args = RunArgs::new(CancellationToken::new(), tx).with_fail_fast(fail_fast);
@@ -1253,9 +1225,9 @@ mod tests {
         for fail_fast in [false, true] {
             let logs = tempfile::tempdir().unwrap();
             let (ready_tx, ready_rx) = tokio::sync::watch::channel(None);
-            let mut runner = Runner::new(logs.path(), test_runner_settings()).with_kind_ready(ready_rx);
-            let mut built = super::test_support::native_pod_case();
-            built.execution = Execution::Unprovidable("Docker context mismatch".into());
+            let mut runner = Runner::new(logs.path()).with_kind_ready(ready_rx);
+            let built =
+                BuiltCase::unprovidable(super::test_support::native_pod_plan(), "Docker context mismatch".into());
             runner.register(built).unwrap();
             let (tx, mut rx) = mpsc::unbounded_channel();
             let args = RunArgs::new(CancellationToken::new(), tx).with_fail_fast(fail_fast);
@@ -1280,13 +1252,13 @@ mod tests {
     async fn native_pod_cases_report_failed_or_unfinished_kind_setup_without_creating_resources() {
         use panoramic_core::backend::RunBackends;
 
-        use super::test_support::{native_pod_case, PodTest};
+        use super::test_support::{native_pod_plan, PodTest};
 
         for fail_fast in [false, true] {
             for state in ["failed", "pending", "closed", "missing"] {
                 let logs = tempfile::tempdir().unwrap();
                 let inputs = NativeInputs::new(Arc::new(RunBackends::default()), &[], logs.path()).unwrap();
-                let mut runner = Runner::new(logs.path(), test_runner_settings()).with_native(inputs, &[&PodTest]);
+                let mut runner = Runner::new(logs.path());
                 let (ready_tx, ready_rx) = tokio::sync::watch::channel(if state == "failed" {
                     Some(Err("cluster creation failed".to_string()))
                 } else {
@@ -1295,7 +1267,15 @@ mod tests {
                 if state != "missing" {
                     runner = runner.with_kind_ready(ready_rx);
                 }
-                runner.register(native_pod_case()).unwrap();
+                runner
+                    .register(BuiltCase::new(
+                        native_pod_plan(),
+                        Box::new(NativeTest {
+                            inputs: Arc::new(inputs),
+                            types: &[&PodTest],
+                        }),
+                    ))
+                    .unwrap();
                 let (tx, mut rx) = mpsc::unbounded_channel();
                 let args = RunArgs::new(CancellationToken::new(), tx).with_fail_fast(fail_fast);
                 let task = tokio::spawn(async move { runner.run_tests(args).await });
@@ -1339,55 +1319,61 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn only_cases_that_need_a_kubernetes_pod_wait_for_the_kind_cluster() {
-        struct ChecksContext {
-            scripted: ScriptedTest,
-            needs_pod: bool,
+    fn pod_plan() -> CasePlan {
+        struct Pod;
+
+        impl ParticipantType for Pod {
+            fn name(&self) -> &'static str {
+                "pod"
+            }
+            fn supports(&self) -> &'static [(Os, RealizationKind)] {
+                &[(Os::Linux, RealizationKind::KubernetesPod)]
+            }
+            fn artifacts(
+                &self, _: panoramic_core::layout::Realization,
+            ) -> &'static [panoramic_core::artifact::ArtifactRole] {
+                &[]
+            }
+            fn processes(&self) -> &'static [&'static str] {
+                &[]
+            }
         }
 
-        #[async_trait::async_trait]
-        impl Test for ChecksContext {
-            fn images(&self) -> std::collections::BTreeMap<&str, String> {
-                self.scripted.images()
-            }
-
-            async fn run(&self, tctx: TestContext) -> TestResult {
-                assert_eq!(tctx.kind_ready.is_some(), self.needs_pod);
-                self.scripted.run(tctx).await
-            }
-        }
-
-        for fail_fast in [false, true] {
-            let logs = tempfile::tempdir().unwrap();
-            let (ready_tx, ready_rx) = tokio::sync::watch::channel(None);
-            let mut runner = Runner::new(logs.path(), test_runner_settings()).with_kind_ready(ready_rx);
-            let linux = ScriptedTest::new("linux", Behavior::Pass);
-            let linux_plan = linux.plan();
-            let pod_case = crate::CASE_LOADER
+        let registries = panoramic_core::case::Registries {
+            participant_types: &[&Pod],
+            ..crate::REGISTRIES
+        };
+        let pod_case = panoramic_core::case::CaseLoader::new(registries)
                 .load_content(
                     "cases",
-                    &format!(
-                        "type: correctness\n{}",
-                        crate::config::tests::CORRECTNESS_FIELDS
-                            .replace("runtime: docker", "runtime: kubernetes_in_docker")
-                    ),
+                    "timeout: 1m\nsubject_os: [linux]\nparticipants: {adp: {type: pod, subject: true, realization: {kind: kubernetes-pod}}}\nprocedure: [{step: log_contains, on: adp, pattern: ready, timeout: 5s}]",
                     "pod",
                     Path::new("/cases/pod/config.yaml"),
                 )
                 .unwrap()
                 .remove(0);
-            let pod_plan = plan_for_linux(pod_case);
-            for (plan, scripted, needs_pod) in [
-                (linux_plan, linux, false),
-                (pod_plan, ScriptedTest::new("pod", Behavior::Pass), true),
+        panoramic_core::plan::Planner::new(registries, Default::default())
+            .unwrap()
+            .compile(pod_case, Os::Linux)
+            .unwrap()
+            .into_plan()
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn only_cases_that_need_a_kubernetes_pod_wait_for_the_kind_cluster() {
+        for fail_fast in [false, true] {
+            let logs = tempfile::tempdir().unwrap();
+            let (ready_tx, ready_rx) = tokio::sync::watch::channel(None);
+            let mut runner = Runner::new(logs.path()).with_kind_ready(ready_rx);
+            let linux = ScriptedTest::new("linux", Behavior::Pass);
+            let linux_plan = linux.plan();
+            let pod_plan = pod_plan();
+            for (plan, scripted) in [
+                (linux_plan, linux),
+                (pod_plan, ScriptedTest::new("pod", Behavior::Pass)),
             ] {
-                runner
-                    .register(BuiltCase {
-                        plan,
-                        execution: Execution::Runner(Box::new(ChecksContext { scripted, needs_pod })),
-                    })
-                    .unwrap();
+                runner.register(BuiltCase::new(plan, Box::new(scripted))).unwrap();
             }
             let (tx, mut rx) = mpsc::unbounded_channel();
             let args = RunArgs::new(CancellationToken::new(), tx)
@@ -1422,6 +1408,77 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn a_failed_or_incomplete_kind_setup_is_reported_without_running_the_pod_body() {
+        struct MustNotRun;
+        #[async_trait]
+        impl Test for MustNotRun {
+            async fn run(&self, _: &CasePlan, _: TestContext) -> TestResult {
+                panic!("a pod body must not run before successful cluster setup");
+            }
+        }
+
+        // Waiting for a channel update alone used to lose cluster setup errors and run the body anyway.
+        for fail_fast in [false, true] {
+            for (ready, message) in [
+                (Some(Err("boom".to_string())), "Kind cluster setup failed: boom"),
+                (None, "Kind cluster setup did not complete"),
+            ] {
+                let logs = tempfile::tempdir().unwrap();
+                let (ready_tx, ready_rx) = tokio::sync::watch::channel(ready);
+                drop(ready_tx);
+                let mut runner = Runner::new(logs.path()).with_kind_ready(ready_rx);
+                let plan = pod_plan();
+                let layout = plan.layout_entries();
+                runner.register(BuiltCase::new(plan, Box::new(MustNotRun))).unwrap();
+                let (tx, mut rx) = mpsc::unbounded_channel();
+                let args = RunArgs::new(CancellationToken::new(), tx).with_fail_fast(fail_fast);
+                tokio::time::timeout(BOUND, runner.run_tests(args)).await.unwrap();
+                assert!(matches!(
+                    rx.try_recv().unwrap(),
+                    TestEvent::RunStarted { total_tests: 1 }
+                ));
+                assert!(matches!(rx.try_recv().unwrap(), TestEvent::TestStarted { name } if name == "pod"));
+                let TestEvent::TestCompleted { result, log_dir } = rx.try_recv().unwrap() else {
+                    panic!("cluster setup failure must complete the selected test");
+                };
+                assert_eq!(result.name, "pod");
+                assert_eq!(result.outcome, TestOutcome::Errored);
+                let error = result.error.as_ref().unwrap();
+                assert_eq!(error.kind, ErrorKind::Setup);
+                assert_eq!(error.message, message);
+                assert_eq!(result.case_path.as_deref(), Some(Path::new("/cases/pod")));
+                assert_eq!(result.layout, Some(layout));
+                assert_eq!(log_dir, logs.path().join("cases/pod"));
+                assert!(rx.try_recv().is_err());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn the_body_receives_the_run_interrupt_separately_from_case_cancellation() {
+        struct InterruptsRun(CancellationToken);
+        #[async_trait]
+        impl Test for InterruptsRun {
+            async fn run(&self, plan: &CasePlan, context: TestContext) -> TestResult {
+                assert!(!context.interrupt.is_cancelled());
+                self.0.cancel();
+                assert!(context.interrupt.is_cancelled());
+                assert!(!context.test_cancel_token().is_cancelled());
+                ScriptedTest::new("case", Behavior::Pass).run(plan, context).await
+            }
+        }
+        let interrupt = CancellationToken::new();
+        let built = BuiltCase::new(
+            ScriptedTest::new("case", Behavior::Pass).plan(),
+            Box::new(InterruptsRun(interrupt.clone())),
+        );
+        let logs = tempfile::tempdir().unwrap();
+        let result = run_case(&built, logs.path(), &interrupt, BOUND).await;
+        assert!(interrupt.is_cancelled());
+        assert_eq!(result.outcome, TestOutcome::Passed);
+    }
+
     /// A bound for real-time tests.
     const BOUND: Duration = Duration::from_secs(5);
 
@@ -1435,12 +1492,8 @@ mod tests {
     async fn run_scripted_test(
         test: &ScriptedTest, log_base_dir: &Path, cancel_all: &CancellationToken, bound: Duration,
     ) -> TestResult {
-        let settings = test_runner_settings();
-        let built = BuiltCase {
-            plan: test.plan(),
-            execution: Execution::Runner(Box::new(test.clone())),
-        };
-        run_with_settings(&built, settings, log_base_dir, cancel_all, bound).await
+        let built = BuiltCase::new(test.plan(), Box::new(test.clone()));
+        run_case(&built, log_base_dir, cancel_all, bound).await
     }
 
     /// Returns a token that cancels the run after `after`.
@@ -1505,49 +1558,22 @@ mod tests {
     #[tokio::test]
     async fn run_one_stamps_the_plan_layout_on_the_result_and_its_result_json() {
         let test = ScriptedTest::new("case", Behavior::Pass);
-        let participant = crate::config::tests::plan(crate::config::tests::PARTICIPANT_FIELDS, Os::Linux);
-        let expected = Some(vec![LayoutEntry {
-            participant: Some("adp".into()),
-            participant_type: Some("agent-adp".into()),
+        let plan = crate::config::tests::plan(crate::config::tests::PARTICIPANT_FIELDS, Os::Linux);
+        let layout = Some(vec![LayoutEntry {
+            participant: "adp".into(),
+            participant_type: "agent-adp".into(),
             os: Os::Linux,
             realization: RealizationKind::LinuxContainer,
         }]);
-        let typed_layout = Some(vec![LayoutEntry {
-            participant: None,
-            participant_type: None,
-            os: Os::Linux,
-            realization: RealizationKind::LinuxContainer,
-        }]);
-        for (plan, layout) in [
-            (participant, expected),
-            (
-                crate::config::tests::plan(
-                    &format!("type: correctness\n{}", crate::config::tests::CORRECTNESS_FIELDS),
-                    Os::Linux,
-                ),
-                typed_layout,
-            ),
-        ] {
-            let logs = tempfile::tempdir().unwrap();
-            let built = BuiltCase {
-                plan,
-                execution: Execution::Runner(Box::new(test.clone())),
-            };
-            let result = run_with_settings(
-                &built,
-                test_runner_settings(),
-                logs.path(),
-                &CancellationToken::new(),
-                BOUND,
-            )
-            .await;
-            assert_eq!(result.outcome, TestOutcome::Passed);
-            assert_eq!(result.layout, layout);
-            assert_eq!(
-                written_report(&result).get("layout"),
-                Some(&serde_json::to_value(layout).unwrap())
-            );
-        }
+        let logs = tempfile::tempdir().unwrap();
+        let built = BuiltCase::new(plan, Box::new(test));
+        let result = run_case(&built, logs.path(), &CancellationToken::new(), BOUND).await;
+        assert_eq!(result.outcome, TestOutcome::Passed);
+        assert_eq!(result.layout, layout);
+        assert_eq!(
+            written_report(&result).get("layout"),
+            Some(&serde_json::to_value(layout).unwrap())
+        );
     }
 
     #[tokio::test]
@@ -1560,17 +1586,12 @@ mod tests {
 
         let test = ScriptedTest::new("case", Behavior::WaitForCancel { finish_on_cancel: true });
         let plan = crate::config::tests::plan(crate::config::tests::PARTICIPANT_FIELDS, Os::Linux);
-        let built = BuiltCase {
-            plan,
-            execution: Execution::Runner(Box::new(test)),
-        };
+        let built = BuiltCase::new(plan, Box::new(test));
         let result = Runner::run_one(
             &built,
             &tx,
             &CancellationToken::new(),
             occupied_base_dir.path().to_path_buf(),
-            test_runner_settings(),
-            None,
             None,
         )
         .await;
@@ -1578,7 +1599,7 @@ mod tests {
         assert_eq!(result.outcome, TestOutcome::Errored);
         assert_eq!(result.error.as_ref().map(|e| e.kind), Some(ErrorKind::Setup));
         assert_eq!(result.case_path, Some(PathBuf::from("/test/integration/cases/case")));
-        assert_eq!(result.layout, Some(layout_entries(&built.plan)));
+        assert_eq!(result.layout, Some(built.plan.layout_entries()));
 
         let mut reported = None;
         while let Ok(event) = rx.try_recv() {
@@ -1589,7 +1610,7 @@ mod tests {
 
         let reported = reported.expect("a setup failure should be reported as a completed test");
         assert_eq!(reported.name, "case");
-        assert_eq!(reported.layout, Some(layout_entries(&built.plan)));
+        assert_eq!(reported.layout, Some(built.plan.layout_entries()));
         assert_eq!(reported.outcome, TestOutcome::Errored);
         assert_eq!(reported.error.as_ref().map(|e| e.kind), Some(ErrorKind::Setup));
     }
@@ -1597,10 +1618,11 @@ mod tests {
     #[tokio::test]
     async fn reported_identity_comes_from_the_loaded_case() {
         let case = crate::CASE_LOADER
-            .load_content("cases",
-                "type: correctness\nruntime: docker\nanalysis_mode: metrics\nbaseline: {image: base}\ncomparison: {image: comp}\n",
+            .load_content(
+                "correctness",
+                crate::config::tests::PARTICIPANT_FIELDS,
                 "reported",
-                Path::new("/cases/reported/config.yaml"),
+                Path::new("/test/correctness/cases/reported/config.yaml"),
             )
             .unwrap()
             .remove(0);
@@ -1608,10 +1630,7 @@ mod tests {
         let test = ScriptedTest::new("body", Behavior::Pass);
         let log_base_dir = tempfile::tempdir().expect("temp dir should be creatable");
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let built = BuiltCase {
-            plan,
-            execution: Execution::Runner(Box::new(test)),
-        };
+        let built = BuiltCase::new(plan, Box::new(test));
 
         let result = tokio::time::timeout(
             BOUND,
@@ -1620,8 +1639,6 @@ mod tests {
                 &tx,
                 &CancellationToken::new(),
                 log_base_dir.path().to_path_buf(),
-                test_runner_settings(),
-                None,
                 None,
             ),
         )
@@ -1631,7 +1648,10 @@ mod tests {
         let log_dir = log_base_dir.path().join("correctness/reported");
         assert_eq!(result.outcome, TestOutcome::Passed);
         assert_eq!(result.name, "reported");
-        assert_eq!(result.case_path.as_deref(), Some(Path::new("/cases/reported")));
+        assert_eq!(
+            result.case_path.as_deref(),
+            Some(Path::new("/test/correctness/cases/reported"))
+        );
         assert_eq!(result.log_dir.as_ref(), Some(&log_dir));
         assert_eq!(written_report(&result)["name"], "reported");
         let result_log = std::fs::read_to_string(log_dir.join(RESULT_LOG_FILE_NAME)).unwrap();
@@ -1645,7 +1665,10 @@ mod tests {
             panic!("the runner should report completion");
         };
         assert_eq!(result.name, "reported");
-        assert_eq!(result.case_path.as_deref(), Some(Path::new("/cases/reported")));
+        assert_eq!(
+            result.case_path.as_deref(),
+            Some(Path::new("/test/correctness/cases/reported"))
+        );
         assert_eq!(reported_dir, log_dir);
         assert!(rx.try_recv().is_err());
     }
@@ -1665,10 +1688,7 @@ mod tests {
         assert_eq!(test.timeout, Duration::from_secs(60));
         let log_base_dir = tempfile::tempdir().expect("temp dir should be creatable");
         let (tx, _rx) = mpsc::unbounded_channel();
-        let built = BuiltCase {
-            plan,
-            execution: Execution::Runner(Box::new(test)),
-        };
+        let built = BuiltCase::new(plan, Box::new(test));
 
         let result = tokio::time::timeout(
             BOUND,
@@ -1677,8 +1697,6 @@ mod tests {
                 &tx,
                 &CancellationToken::new(),
                 log_base_dir.path().to_path_buf(),
-                test_runner_settings(),
-                None,
                 None,
             ),
         )
@@ -2035,10 +2053,7 @@ mod tests {
 
         #[async_trait::async_trait]
         impl Test for Blocks {
-            fn images(&self) -> std::collections::BTreeMap<&str, String> {
-                Default::default()
-            }
-            async fn run(&self, tctx: TestContext) -> TestResult {
+            async fn run(&self, _plan: &CasePlan, tctx: TestContext) -> TestResult {
                 let release = self.release.lock().unwrap().take().unwrap();
                 let (started_tx, started_rx) = tokio::sync::oneshot::channel();
                 tctx.tasks.spawn(async move {
@@ -2053,20 +2068,13 @@ mod tests {
 
         let logs = tempfile::tempdir().unwrap();
         let (release, receiver) = std::sync::mpsc::channel();
-        let built = BuiltCase {
-            plan: ScriptedTest::new("blocked-task", Behavior::Pass).plan(),
-            execution: Execution::Runner(Box::new(Blocks {
+        let built = BuiltCase::new(
+            ScriptedTest::new("blocked-task", Behavior::Pass).plan(),
+            Box::new(Blocks {
                 release: std::sync::Mutex::new(Some(receiver)),
-            })),
-        };
-        let result = run_with_settings(
-            &built,
-            test_runner_settings(),
-            logs.path(),
-            &CancellationToken::new(),
-            Duration::from_secs(15),
-        )
-        .await;
+            }),
+        );
+        let result = run_case(&built, logs.path(), &CancellationToken::new(), Duration::from_secs(15)).await;
         drop(release);
         assert_eq!(result.outcome, TestOutcome::Passed);
         assert_eq!(

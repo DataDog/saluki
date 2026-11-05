@@ -13,7 +13,7 @@ use crate::{
     artifact::ArtifactRole,
     backend,
     case::{
-        fixtures::{minimal_procedure, write_case, Client, Configured, FixtureConfig, FixtureTypes, Server, STEPS},
+        fixtures::{minimal_procedure, write_case, Client, Configured, Server, STEPS},
         CaseLoader, Registries,
     },
     endpoint::{ConsumedEndpoint, Delivery, Endpoint, EndpointKind, Evidence, Port},
@@ -346,17 +346,16 @@ impl ParticipantType for FileServer {
 pub(super) const FILE_REGISTRIES: Registries<'_> = Registries {
     participant_types: &[&FileServer, &Server],
     steps: STEPS,
-    ..crate::case::fixtures::REGISTRIES
 };
 pub(super) const FILE_CONFIG: &str = "{files: {settings.yaml: {from: source.yaml, template: true}}}";
 
-pub(super) fn compile_files(yaml: &str, sources: &[(&str, &str)], os: Os) -> Result<CasePlan<FixtureConfig>, String> {
+pub(super) fn compile_files(yaml: &str, sources: &[(&str, &str)], os: Os) -> Result<CasePlan, String> {
     let dir = tempfile::tempdir().unwrap();
     let source = write_case(dir.path(), "alpha", yaml);
     for (from, text) in sources {
         std::fs::write(source.parent().unwrap().join(from), text).unwrap();
     }
-    let loader = CaseLoader::new(FILE_REGISTRIES, FixtureTypes);
+    let loader = CaseLoader::new(FILE_REGISTRIES);
     let normalize = |error: saluki_error::GenericError| {
         error
             .to_string()
@@ -569,21 +568,20 @@ pub(super) const CONFIG_REGISTRIES: Registries<'static> = Registries {
         &ReadyServer,
     ],
     steps: STEPS,
-    ..crate::case::fixtures::REGISTRIES
 };
-pub(super) const CONFIG_LOADER: CaseLoader<'static, FixtureTypes> = CaseLoader::new(CONFIG_REGISTRIES, FixtureTypes);
+pub(super) const CONFIG_LOADER: CaseLoader<'static> = CaseLoader::new(CONFIG_REGISTRIES);
 
 pub(super) fn planner() -> Planner<'static> {
     Planner::with_run(CONFIG_REGISTRIES, "testrun0")
 }
 
-pub(super) fn compile(yaml: &str, os: Os) -> Result<Option<CasePlan<FixtureConfig>>, GenericError> {
+pub(super) fn compile(yaml: &str, os: Os) -> Result<Option<CasePlan>, GenericError> {
     compile_with(&mut planner(), yaml, os)
 }
 
 pub(super) fn compile_with(
     planner: &mut Planner<'static>, yaml: &str, os: Os,
-) -> Result<Option<CasePlan<FixtureConfig>>, GenericError> {
+) -> Result<Option<CasePlan>, GenericError> {
     let case = CONFIG_LOADER
         .load_content("cases", yaml, "alpha", Path::new("cases/alpha/config.yaml"))
         .unwrap()

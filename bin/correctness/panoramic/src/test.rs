@@ -1,29 +1,20 @@
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use panoramic_core::deadline::Deadline;
 use panoramic_core::ledger::ResourceLedger;
 use panoramic_core::lifecycle::Observations;
+use panoramic_core::plan::CasePlan;
 use panoramic_core::record::CaseRecord;
 use panoramic_core::result::{PhaseTracker, TestResult};
 use panoramic_core::tasks::CaseTasks;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-/// Signal used to notify kind-runtime tests when the cluster is ready.
+/// Cluster setup result awaited by the runner before pod cases start.
 ///
-/// The receiver holds `None` until setup completes, then `Some(Ok(()))` on success or
-/// `Some(Err(message))` on failure. `watch::Receiver` implements `Clone`, so each task
-/// gets its own independent receiver with its own "last seen" mark—no mutex needed.
+/// Holds `None` until setup completes, then `Some(Ok(()))` or `Some(Err(message))`.
 pub(crate) type KindReadyReceiver = watch::Receiver<Option<Result<(), String>>>;
-
-/// Settings shared by every test in a run.
-#[derive(Debug, Clone)]
-pub(crate) struct RunnerSettings {
-    /// The Alpine image used for the short-lived shared-volume permission fix-up container.
-    pub(crate) alpine_image: String,
-}
 
 /// Carries information that a test needs at runtime such as the logging directory and the cancellation channel.
 #[derive(Debug, Clone)]
@@ -39,12 +30,8 @@ pub(crate) struct TestContext {
     /// A directory, which has been created for them, into which tests may write their logs.
     log_dir: PathBuf,
 
-    /// Settings shared by every test in the run.
-    pub(crate) settings: RunnerSettings,
-
-    /// For kind-runtime tests: a shared channel that fires when the cluster is ready (or has failed).
-    /// Non-kind tests leave this as `None` and proceed immediately.
-    pub(crate) kind_ready: Option<KindReadyReceiver>,
+    /// Signals interruption of the whole run, independently of the case deadline.
+    pub(crate) interrupt: CancellationToken,
 
     /// Where a test marks the phase it is executing, so the runner can name it if a deadline fires.
     pub(crate) phases: PhaseTracker,
@@ -64,25 +51,19 @@ pub(crate) struct TestContext {
 
 impl TestContext {
     pub(crate) fn new(
-        cancel: CancellationToken, deadline: Deadline, log_dir: PathBuf, settings: RunnerSettings,
+        cancel: CancellationToken, interrupt: CancellationToken, deadline: Deadline, log_dir: PathBuf,
     ) -> Self {
         Self {
             tasks: CaseTasks::new(&cancel),
             test_cancel_token: cancel,
             deadline,
             log_dir,
-            settings,
-            kind_ready: None,
+            interrupt,
             phases: PhaseTracker::default(),
             record: CaseRecord::default(),
             observations: Observations::default(),
             ledger: ResourceLedger::default(),
         }
-    }
-
-    pub(crate) fn with_kind_ready(mut self, rx: KindReadyReceiver) -> Self {
-        self.kind_ready = Some(rx);
-        self
     }
 
     pub(crate) fn test_cancel_token(&self) -> CancellationToken {
@@ -96,32 +77,9 @@ impl TestContext {
 
 #[async_trait]
 pub(crate) trait Test: Send + Sync {
-    /// Returns the list of images that this test depends on as a map of `name -> image`.
-    ///
-    /// Panoramic depends on container images to be built and ready. Build processes need to be able to inspect these
-    /// so we offer a command by which a build process can see these.
-    fn images(&self) -> BTreeMap<&str, String>;
-
-    /// The runtime identifier for this test (for example, `"docker"`, `"kubernetes_in_docker"`).
-    ///
-    /// Reported by `list --json` for CI job selection. Defaults to `"docker"`.
-    fn runtime(&self) -> String {
-        "docker".to_string()
-    }
-
     /// Runs the test, reporting errors in its `TestResult`.
     ///
     /// Watch the context's cancellation token and return when it fires. Register resources in its ledger for cleanup
     /// after the test ends. Use its `tasks` for runner-managed background work.
-    async fn run(&self, tctx: TestContext) -> TestResult;
-}
-
-/// Resolves a file-relative path without requiring the destination to exist.
-pub(crate) fn resolve_case_path(loaded_from: &Path, path: impl AsRef<Path>) -> PathBuf {
-    let path = path.as_ref();
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        loaded_from.parent().unwrap_or(Path::new("")).join(path)
-    }
+    async fn run(&self, plan: &CasePlan, tctx: TestContext) -> TestResult;
 }

@@ -7,14 +7,13 @@ use std::{
     time::SystemTime,
 };
 
-use saluki_error::GenericError;
 use serde_json::{json, Value};
 use tokio::sync::watch;
 
 use super::*;
 use crate::{
     artifact::ArtifactRole,
-    case::{CaseLoader, Registries, TypedCase, TypedCaseLoader},
+    case::{CaseLoader, Registries},
     endpoint::{Endpoint, Port, ResolvedAddress},
     layout::{Os, Realization, RealizationKind},
     observe::{
@@ -135,13 +134,6 @@ impl Operation for ExecOperation {
     }
 }
 
-impl TypedCaseLoader for Fixture {
-    type Config = ();
-    fn load(&self, _: &Value, _: &str, _: &str, _: &Path) -> Result<Vec<TypedCase<()>>, GenericError> {
-        panic!("step tests declare participants");
-    }
-}
-
 /// Builds and runs a step with a `subject` participant in its planned state.
 ///
 /// # Panics
@@ -222,7 +214,6 @@ async fn run_step_using(
     let registries = Registries {
         participant_types: &[&fixture],
         steps: &[factory],
-        typed_case_roles: &[],
     };
     let mut fields = fields.clone();
     fields.insert("step".into(), factory.name().into());
@@ -232,7 +223,7 @@ async fn run_step_using(
         "procedure": [fields],
     })
     .to_string();
-    let case = CaseLoader::new(registries, fixture)
+    let case = CaseLoader::new(registries)
         .load_content("cases", &content, "case", Path::new("cases/case/config.yaml"))
         .unwrap()
         .remove(0);
@@ -241,7 +232,7 @@ async fn run_step_using(
         planner = planner.with_port_range(port..=port);
     }
     let plan = planner.compile(case, Os::Linux).unwrap().into_plan().unwrap();
-    let plan = plan.participants().unwrap();
+    let plan = plan.participants();
     let fakes = fake.map(|fake| ("subject", fake)).into_iter().collect::<Vec<_>>();
     run_planned_step(plan, &fakes, Path::new(".")).await
 }
@@ -271,7 +262,6 @@ pub async fn run_step_with_participants(
     let registries = Registries {
         participant_types: &types,
         steps: &[factory],
-        typed_case_roles: &[],
     };
     let subject = participants
         .iter()
@@ -288,7 +278,7 @@ pub async fn run_step_with_participants(
         "timeout": "30s", "subject_os": ["linux"], "participants": declarations, "procedure": [fields],
     })
     .to_string();
-    let case = CaseLoader::new(registries, fixtures[0])
+    let case = CaseLoader::new(registries)
         .load_content("cases", &content, "case", Path::new("cases/case/config.yaml"))
         .unwrap()
         .remove(0);
@@ -298,7 +288,7 @@ pub async fn run_step_with_participants(
         .unwrap()
         .into_plan()
         .unwrap();
-    run_planned_step(plan.participants().unwrap(), participants, log_dir).await
+    run_planned_step(plan.participants(), participants, log_dir).await
 }
 
 async fn run_planned_step(

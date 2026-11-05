@@ -583,28 +583,20 @@ participants:
             ]
         );
         assert_eq!(
-            plan.participants
-                .as_ref()
-                .unwrap()
-                .planned
-                .start_gates
-                .keys()
-                .collect::<Vec<_>>(),
+            plan.participants.planned.start_gates.keys().collect::<Vec<_>>(),
             ["consumer"]
         );
-        assert_eq!(plan.start_order().unwrap(), [vec!["alpha", "zeta"], vec!["consumer"]]);
+        assert_eq!(plan.start_order(), [vec!["alpha", "zeta"], vec!["consumer"]]);
         assert!(plan.runner_host_ports("zeta").is_empty());
     }
 
     #[test]
     fn an_endpoint_without_evidence_adds_no_gate() {
         let plan = compile(&ready_case(""), Os::Linux).unwrap().unwrap();
-        assert!(plan.participants.as_ref().unwrap().planned.start_gates.is_empty());
+        assert!(plan.participants.planned.start_gates.is_empty());
         for name in ["consumer", "server", "unknown"] {
             assert!(plan.start_gates(name).is_empty());
         }
-        let typed = compile("type: fixture", Os::MacOs).unwrap().unwrap();
-        assert!(typed.start_gates("consumer").is_empty());
         let plan = compile(&ready_case("READY_FILE: /ready"), Os::Linux).unwrap().unwrap();
         assert_eq!(plan.start_gates("consumer").len(), 1);
         assert_eq!(plan.start_gates("consumer")[0].endpoint, None);
@@ -623,9 +615,9 @@ participants:
             );
         let mut planner = planner();
         let plan = compile_with(&mut planner, &yaml, Os::Linux).unwrap().unwrap();
-        assert!(plan.participants.as_ref().unwrap().planned.start_gates.is_empty());
+        assert!(plan.participants.planned.start_gates.is_empty());
         assert!(plan.runner_host_ports("server").is_empty());
-        assert_eq!(plan.start_order().unwrap(), [vec!["server"]]);
+        assert_eq!(plan.start_order(), [vec!["server"]]);
         assert_eq!(planner.ports.allocate(), Ok(20000));
     }
 
@@ -687,7 +679,7 @@ participants:
             .replace("type: client", "type: every-kind-client");
         let mut planner = planner();
         let plan = compile_with(&mut planner, &yaml, Os::Linux).unwrap().unwrap();
-        assert!(plan.participants.as_ref().unwrap().planned.start_gates.is_empty());
+        assert!(plan.participants.planned.start_gates.is_empty());
         assert!(plan.runner_host_ports("server").is_empty());
         assert_eq!(planner.ports.allocate(), Ok(20000));
     }
@@ -729,8 +721,8 @@ participants:
                 ", config: {env: {REF: '{{server.endpoints.api.url}}'}}",
             );
         let plan = compile(&yaml, Os::Linux).unwrap().unwrap();
-        assert!(plan.participants.as_ref().unwrap().planned.start_gates.is_empty());
-        assert_eq!(plan.start_order().unwrap(), [vec!["consumer", "server"]]);
+        assert!(plan.participants.planned.start_gates.is_empty());
+        assert_eq!(plan.start_order(), [vec!["consumer", "server"]]);
         assert!(plan.runner_host_ports("server").is_empty());
     }
 

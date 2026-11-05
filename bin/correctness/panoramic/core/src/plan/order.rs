@@ -170,7 +170,7 @@ impl DependencyGraph {
 #[cfg(test)]
 mod tests {
     use crate::{
-        case::fixtures::{minimal_procedure, FixtureConfig},
+        case::fixtures::minimal_procedure,
         layout::Os,
         plan::{
             fixtures::{compile, compile_files},
@@ -204,7 +204,7 @@ participants:
     );
 
     #[track_caller]
-    fn assert_orders(plan: &CasePlan<FixtureConfig>, create: &[&[&str]], start: &[&[&str]]) {
+    fn assert_orders(plan: &CasePlan, create: &[&[&str]], start: &[&[&str]]) {
         for (label, actual, expected) in [
             ("create", plan.create_order(), create),
             ("start", plan.start_order(), start),
@@ -213,7 +213,7 @@ participants:
                 .iter()
                 .map(|level| level.iter().map(|name| name.to_string()).collect())
                 .collect();
-            assert_eq!(actual.unwrap(), expected, "{label} order");
+            assert_eq!(actual, expected, "{label} order");
         }
     }
 
@@ -460,8 +460,8 @@ participants:
                                 Start => (flat.as_slice(), ordered.as_slice()),
                                 Rejected => unreachable!(),
                             };
-                            assert_eq!(plan.create_order(), Some(create), "{context}: create order");
-                            assert_eq!(plan.start_order(), Some(start), "{context}: start order");
+                            assert_eq!(plan.create_order(), create, "{context}: create order");
+                            assert_eq!(plan.start_order(), start, "{context}: start order");
                         }
                     }
                 }

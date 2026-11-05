@@ -14,22 +14,15 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use panoramic_core::case::{CaseFile, CaseSchema, ProcedureNode, StepNode};
+use panoramic_core::case::{CaseConfig, CaseFile, ProcedureNode, StepNode};
 use panoramic_core::layout::Os;
-use panoramic_core::plan::Compiled;
+use panoramic_core::plan::{CasePlan, Compiled};
 use panoramic_core::step::StepKind;
-use panoramic_steps::compare::analysis::AnalysisMode;
 use saluki_error::GenericError;
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use super::{
-    build_runners,
-    runner_artifacts::RunnerArtifacts,
-    tests::{planner, write_case, LOGGING_PARTICIPANT, PARTICIPANT_FIELDS},
-    typed_case::{LoadedCase, LoadedPlan, TypedConfig},
-    BuiltCase,
-};
+use super::tests::{planner, write_case, LOGGING_PARTICIPANT, PARTICIPANT_FIELDS};
 
 const JSON_PATH: &str = "docs/development/plans/panoramic-architecture-inventory.json";
 const MARKDOWN_PATH: &str = "docs/development/plans/panoramic-architecture.md";
@@ -46,7 +39,6 @@ const CORRECTNESS: &str = "correctness";
 const PARTICIPANTS: &str = "participants";
 const SELECTED: &str = "selected";
 const DISABLED: &str = "disabled";
-const OLD: &str = "old";
 const NATIVE: &str = "native";
 
 /// Case directories relative to the repository root, with the suite and status their cases must have.
@@ -85,20 +77,8 @@ struct Row {
 #[derive(Serialize)]
 struct Case {
     config: Value,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    steps: Option<Steps>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    comparison: Option<Comparison>,
+    steps: Steps,
     ignored_fields: Vec<String>,
-}
-
-/// Correctness comparison settings, including the count of additional ignored span fields.
-#[derive(Serialize)]
-struct Comparison {
-    additional_span_ignore_fields: usize,
-    analysis_mode: AnalysisMode,
-    otlp_direct_analysis_mode: bool,
-    require_dogstatsd_forwarded_packets: bool,
 }
 
 /// Integration assertion and action counts, including assertions in parallel blocks.
@@ -112,56 +92,27 @@ struct Steps {
 }
 
 impl Row {
-    fn from_case(
-        root: &Path, built: &BuiltCase, subject_os: &str, status: &'static str, schemas: &BTreeMap<String, String>,
-        listed: &Value,
-    ) -> Self {
-        let case = built.plan.case();
-        let (runtime, images, execution) = if let Some(runner) = built.runner() {
-            (
-                runner.runtime(),
-                runner.images().into_iter().map(|(k, v)| (k.to_string(), v)).collect(),
-                OLD,
-            )
-        } else {
-            let CaseSchema::Participants { file, .. } = case.schema() else {
-                panic!("native cases declare participants")
-            };
-            let subject = file.participants.iter().find(|(_, entry)| entry.subject).unwrap().0;
-            let realization = built
-                .plan
-                .layout()
-                .unwrap()
-                .iter()
-                .find(|(name, _)| name == subject)
-                .unwrap()
-                .1;
-            (
-                realization.kind.name().into(),
-                built
-                    .plan
-                    .artifacts()
-                    .iter()
-                    .map(|binding| (binding.role.name.into(), binding.reference.clone()))
-                    .collect(),
-                NATIVE,
-            )
-        };
+    fn from_case(root: &Path, plan: &CasePlan, subject_os: &str, status: &'static str, listed: &Value) -> Self {
+        let case = plan.case();
+        let file = case.file();
+        let subject = file.participants.iter().find(|(_, entry)| entry.subject).unwrap().0;
+        let realization = plan.layout().iter().find(|(name, _)| name == subject).unwrap().1;
+        let images = plan
+            .artifacts()
+            .iter()
+            .map(|binding| (binding.role.name.into(), binding.reference.clone()))
+            .collect();
         let source = relative_path(root, case.source());
-        let schema = match case.schema() {
-            CaseSchema::Participants { .. } => PARTICIPANTS.to_string(),
-            _ => schemas[&source].clone(),
-        };
         let suite = case.suite();
         let mut row = Self {
             case: format!("{suite}/{}", case.name()),
             name: case.name().to_string(),
             suite: suite.to_string(),
             subject_os: subject_os.to_string(),
-            runtime,
+            runtime: realization.kind.name().into(),
             source,
-            schema,
-            execution,
+            schema: PARTICIPANTS.to_string(),
+            execution: NATIVE,
             status,
             timeout: format!("{:?}", case.timeout()),
             images,
@@ -211,23 +162,7 @@ fn correctness_ci_mixins(listed: &Value) -> Vec<String> {
 
 impl Inventory {
     fn generate(root: &Path) -> Self {
-        let mut schemas = BTreeMap::new();
         let mut rows = Vec::new();
-        for (suite_dir, ..) in CASE_DIRS {
-            for entry in fs::read_dir(root.join(suite_dir)).unwrap() {
-                let dir = entry.unwrap().path();
-                let path = dir.join("config.yaml");
-                if !dir.is_dir() || !path.is_file() {
-                    continue;
-                }
-                let source = relative_path(root, &path);
-                let text = read_text(&path);
-                let doc: Value = serde_saphyr::from_str(&text).unwrap();
-                if let Some(schema) = doc.get("type").and_then(Value::as_str) {
-                    schemas.insert(source, schema.to_string());
-                }
-            }
-        }
         // Discover all directories together, per OS, to reject duplicate names across suites and statuses.
         for os in [Os::Linux, Os::MacOs, Os::Windows] {
             let cases = crate::CASE_LOADER
@@ -240,29 +175,15 @@ impl Inventory {
                     Compiled::Excluded(_) => None,
                 })
                 .collect();
-            let built = build_runners(plans, &RunnerArtifacts::Overrides(&[])).unwrap();
-            let listed = crate::list_command::listing(&built, &[], os);
-            for built in built {
-                let case = built.plan.case();
-                let status = if matches!(case.schema(), CaseSchema::Participants { .. }) {
-                    CASE_DIRS
-                        .iter()
-                        .find(|(dir, ..)| case.source().starts_with(root.join(dir)))
-                        .expect("discovered participant case belongs to an inventory directory")
-                        .2
-                } else if case.is_disabled() {
-                    DISABLED
-                } else {
-                    SELECTED
-                };
-                rows.push(Row::from_case(
-                    root,
-                    &built,
-                    os.name(),
-                    status,
-                    &schemas,
-                    &listed[case.name()],
-                ));
+            let listed = crate::list_command::listing(&plans, &[], os);
+            for plan in plans {
+                let case = plan.case();
+                let status = CASE_DIRS
+                    .iter()
+                    .find(|(dir, ..)| case.source().starts_with(root.join(dir)))
+                    .expect("discovered cases belong to an inventory directory")
+                    .2;
+                rows.push(Row::from_case(root, &plan, os.name(), status, &listed[case.name()]));
             }
         }
 
@@ -342,11 +263,10 @@ impl Inventory {
                 *selected
                     .entry(format!("{} / {}", row.subject_os, row.runtime))
                     .or_default() += 1;
-                if let Some(steps) = &self.cases[&row.case].steps {
-                    *assertions.entry(row.subject_os.clone()).or_default() +=
-                        steps.single_assertions + steps.parallel_assertions;
-                    *actions.entry(row.subject_os.clone()).or_default() += steps.actions;
-                }
+                let steps = &self.cases[&row.case].steps;
+                *assertions.entry(row.subject_os.clone()).or_default() +=
+                    steps.single_assertions + steps.parallel_assertions;
+                *actions.entry(row.subject_os.clone()).or_default() += steps.actions;
             }
             writeln!(
                 text,
@@ -366,27 +286,12 @@ impl Inventory {
         );
         for row in &self.rows {
             let case = &self.cases[&row.case];
-            let steps = if let Some(steps) = &case.steps {
-                format!(
-                    "assertions: {}, actions: {}",
-                    steps.single_assertions + steps.parallel_assertions,
-                    steps.actions
-                )
-            } else {
-                let comparison = case.comparison.as_ref().unwrap();
-                format!(
-                    "compare {}{}",
-                    serde_json::to_value(&comparison.analysis_mode)
-                        .unwrap()
-                        .as_str()
-                        .unwrap(),
-                    if comparison.require_dogstatsd_forwarded_packets {
-                        ", forwarded packets"
-                    } else {
-                        ""
-                    }
-                )
-            };
+            let steps = &case.steps;
+            let steps = format!(
+                "assertions: {}, actions: {}",
+                steps.single_assertions + steps.parallel_assertions,
+                steps.actions
+            );
             writeln!(
                 text,
                 "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
@@ -437,73 +342,58 @@ fn load_cases(path: &Path) -> Vec<(String, Case)> {
     cases
 }
 
-/// Records each case under `<suite>/<name>`: its runner configuration and step or comparison coverage.
-fn record_cases(cases: &[LoadedCase], content: &str, directory: &str) -> Result<Vec<(String, Case)>, GenericError> {
+/// Records each case under `<suite>/<name>` with its planned configuration and step coverage.
+fn record_cases(cases: &[CaseConfig], content: &str, directory: &str) -> Result<Vec<(String, Case)>, GenericError> {
     let mut recorded = Vec::new();
     for case in cases {
-        let effective = match case.schema() {
-            CaseSchema::Typed(TypedConfig::Correctness(config)) => Case {
-                config: serde_json::to_value(config)?,
-                steps: None,
-                comparison: Some(Comparison {
-                    additional_span_ignore_fields: config.additional_span_ignore_fields.len(),
-                    analysis_mode: config.analysis_mode.clone(),
-                    otlp_direct_analysis_mode: config.otlp_direct_analysis_mode,
-                    require_dogstatsd_forwarded_packets: config.require_dogstatsd_forwarded_packets,
-                }),
-                ignored_fields: Vec::new(),
-            },
-            CaseSchema::Participants { file, .. } => {
-                let mut steps = Steps::default();
-                let mut step_value = |step: &StepNode| {
-                    *steps.by_kind.entry(step.name.clone()).or_default() += 1;
-                    let mut fields = step.fields.clone();
-                    fields.insert("step".into(), json!(step.name));
-                    json!(fields)
-                };
-                let procedure = file
-                    .procedure
-                    .iter()
-                    .map(|node| match node {
-                        ProcedureNode::Step(step) => {
-                            let factory = panoramic_steps::REGISTERED_STEPS
-                                .iter()
-                                .find(|factory| factory.name() == step.name)
-                                .expect("loaded steps have a registered factory");
-                            match factory.kind() {
-                                StepKind::Action => steps.actions += 1,
-                                StepKind::Assertion => steps.single_assertions += 1,
-                            }
-                            step_value(step)
-                        }
-                        ProcedureNode::Parallel(parallel) => {
-                            steps.parallel_blocks += 1;
-                            steps.parallel_assertions += parallel.len();
-                            json!({"parallel": parallel.iter().map(&mut step_value).collect::<Vec<_>>()})
-                        }
-                    })
-                    .collect::<Vec<_>>();
-                let mut config = BTreeMap::new();
-                for os in case.subject_os() {
-                    let loaded = crate::CASE_LOADER
-                        .load_content("cases", content, directory, case.source())?
-                        .into_iter()
-                        .find(|loaded| loaded.name() == case.name())
-                        .expect("reloading yields the same case");
-                    let plan = planner()
-                        .compile(loaded, *os)?
-                        .into_plan()
-                        .expect("the case declares this subject OS");
-                    let participants = participant_records(&plan, file);
-                    config.insert(os.name(), json!({"participants": participants, "procedure": procedure}));
+        let file = case.file();
+        let mut steps = Steps::default();
+        let mut step_value = |step: &StepNode| {
+            *steps.by_kind.entry(step.name.clone()).or_default() += 1;
+            let mut fields = step.fields.clone();
+            fields.insert("step".into(), json!(step.name));
+            json!(fields)
+        };
+        let procedure = file
+            .procedure
+            .iter()
+            .map(|node| match node {
+                ProcedureNode::Step(step) => {
+                    let factory = panoramic_steps::REGISTERED_STEPS
+                        .iter()
+                        .find(|factory| factory.name() == step.name)
+                        .expect("loaded steps have a registered factory");
+                    match factory.kind() {
+                        StepKind::Action => steps.actions += 1,
+                        StepKind::Assertion => steps.single_assertions += 1,
+                    }
+                    step_value(step)
                 }
-                Case {
-                    config: json!(config),
-                    steps: Some(steps),
-                    comparison: None,
-                    ignored_fields: Vec::new(),
+                ProcedureNode::Parallel(parallel) => {
+                    steps.parallel_blocks += 1;
+                    steps.parallel_assertions += parallel.len();
+                    json!({"parallel": parallel.iter().map(&mut step_value).collect::<Vec<_>>()})
                 }
-            }
+            })
+            .collect::<Vec<_>>();
+        let mut config = BTreeMap::new();
+        for os in case.subject_os() {
+            let loaded = crate::CASE_LOADER
+                .load_content("cases", content, directory, case.source())?
+                .into_iter()
+                .find(|loaded| loaded.name() == case.name())
+                .expect("reloading yields the same case");
+            let plan = planner()
+                .compile(loaded, *os)?
+                .into_plan()
+                .expect("the case declares this subject OS");
+            let participants = participant_records(&plan, file);
+            config.insert(os.name(), json!({"participants": participants, "procedure": procedure}));
+        }
+        let effective = Case {
+            config: json!(config),
+            steps,
+            ignored_fields: Vec::new(),
         };
         let suite = case.suite();
         recorded.push((format!("{suite}/{}", case.name()), effective));
@@ -511,9 +401,8 @@ fn record_cases(cases: &[LoadedCase], content: &str, directory: &str) -> Result<
     Ok(recorded)
 }
 
-fn participant_records<'a>(plan: &'a LoadedPlan, file: &CaseFile) -> BTreeMap<&'a str, Value> {
+fn participant_records<'a>(plan: &'a CasePlan, file: &CaseFile) -> BTreeMap<&'a str, Value> {
     plan.layout()
-        .unwrap()
         .iter()
         .map(|(name, realization)| {
             let entry = &file.participants[name];
@@ -553,9 +442,6 @@ fn ignored_fields(doc: &Value, view: &impl Fn(Value) -> Result<Value, GenericErr
     ];
     let mut ignored = Vec::new();
     for (pointer, dotted) in &paths {
-        if pointer == "/type" {
-            continue;
-        }
         let ignored_here = sentinels.iter().all(|sentinel| {
             let mut probe = doc.clone();
             *probe.pointer_mut(pointer).unwrap() = sentinel.clone();
@@ -1075,9 +961,7 @@ fn every_original_correctness_row_runs_natively_with_its_comparison() {
 
         let loaded = crate::CASE_LOADER.load_file(&root.join(&row.source)).unwrap();
         assert_eq!(loaded.len(), 1, "{name}: one case per file");
-        let CaseSchema::Participants { file, .. } = loaded[0].schema() else {
-            panic!("{name}: must declare participants");
-        };
+        let file = loaded[0].file();
         let comparisons: Vec<_> = file
             .procedure
             .iter()
@@ -1275,7 +1159,7 @@ fn participant_inventory_records_native_rows_and_per_os_configuration_as_written
         case.config["linux"]["participants"]["adp"]["env"],
         written["participants"]["adp"]["config"]["env"]
     );
-    let steps = case.steps.as_ref().unwrap();
+    let steps = &case.steps;
     assert_eq!(
         (
             steps.single_assertions,
@@ -1308,7 +1192,7 @@ fn participant_inventory_counts_actions_by_registered_kind() {
     let case = &inventory.cases["integration/alpha"];
     let written: Value = serde_saphyr::from_str(&yaml).unwrap();
     assert_eq!(case.config["linux"]["procedure"], written["procedure"]);
-    let steps = case.steps.as_ref().unwrap();
+    let steps = &case.steps;
     assert_eq!(
         (
             steps.single_assertions,
@@ -1340,7 +1224,7 @@ fn inventory_rejects_a_case_name_used_in_both_suites() {
     write_case(
         &root.path().join("test/correctness/cases"),
         "shared",
-        "type: correctness\nruntime: docker\nanalysis_mode: metrics\nbaseline: {image: base}\ncomparison: {image: comp}\n",
+        PARTICIPANT_FIELDS,
     );
     Inventory::generate(root.path());
 }
@@ -1350,11 +1234,7 @@ fn inventory_records_a_case_in_the_disabled_directory_as_disabled_without_ci_job
     let root = tempfile::tempdir().unwrap();
     let root = root.path().canonicalize().unwrap();
     create_case_dirs(&root);
-    write_case(
-        &root.join("test/correctness/disabled"),
-        "alpha",
-        "type: correctness\ndisabled: true\nruntime: docker\nanalysis_mode: metrics\nbaseline: {image: base}\ncomparison: {image: comp}\n",
-    );
+    write_case(&root.join("test/correctness/disabled"), "alpha", PARTICIPANT_FIELDS);
 
     let inventory = Inventory::generate(&root);
     assert_eq!(inventory.rows.len(), 1);
@@ -1389,32 +1269,6 @@ fn participant_cases_in_the_disabled_directory_compile_without_ci_selection() {
 }
 
 #[test]
-#[should_panic(expected = "a disabled correctness case belongs in test/correctness/disabled/")]
-fn inventory_rejects_a_disabled_case_in_the_selected_correctness_directory() {
-    let root = tempfile::tempdir().unwrap();
-    create_case_dirs(root.path());
-    write_case(
-        &root.path().join("test/correctness/cases"),
-        "alpha",
-        "type: correctness\ndisabled: true\nruntime: docker\nanalysis_mode: metrics\nbaseline: {image: base}\ncomparison: {image: comp}\n",
-    );
-    Inventory::generate(&root.path().canonicalize().unwrap());
-}
-
-#[test]
-#[should_panic(expected = "a selected correctness case belongs in test/correctness/cases/")]
-fn inventory_rejects_an_enabled_case_in_the_disabled_directory() {
-    let root = tempfile::tempdir().unwrap();
-    create_case_dirs(root.path());
-    write_case(
-        &root.path().join("test/correctness/disabled"),
-        "alpha",
-        "type: correctness\nruntime: docker\nanalysis_mode: metrics\nbaseline: {image: base}\ncomparison: {image: comp}\n",
-    );
-    Inventory::generate(&root.path().canonicalize().unwrap());
-}
-
-#[test]
 fn inventory_reports_a_participant_case_in_a_correctness_directory_as_native_correctness() {
     let root = tempfile::tempdir().unwrap();
     create_case_dirs(root.path());
@@ -1441,19 +1295,19 @@ fn inventory_rejects_a_case_name_used_in_the_selected_and_disabled_correctness_d
     write_case(
         &root.path().join("test/correctness/cases"),
         "shared",
-        "type: correctness\nruntime: docker\nanalysis_mode: metrics\nbaseline: {image: base}\ncomparison: {image: comp}\n",
+        PARTICIPANT_FIELDS,
     );
     write_case(
         &root.path().join("test/correctness/disabled"),
         "shared",
-        "type: correctness\ndisabled: true\nruntime: docker\nanalysis_mode: metrics\nbaseline: {image: base}\ncomparison: {image: comp}\n",
+        PARTICIPANT_FIELDS,
     );
     Inventory::generate(&root.path().canonicalize().unwrap());
 }
 
 #[test]
-#[should_panic(expected = "must be a string: 'correctness' or 'correctness_matrix'")]
-fn inventory_reports_the_loader_error_for_a_non_string_type() {
+#[should_panic(expected = "unknown field `type`")]
+fn inventory_reports_the_loader_error_for_a_top_level_type() {
     let root = tempfile::tempdir().unwrap();
     create_case_dirs(root.path());
     write_case(&root.path().join("test/integration/cases"), "alpha", "type: 3\n");
@@ -1940,37 +1794,7 @@ fn ci_jobs_in_the_inventory_are_defined() {
 }
 
 #[test]
-fn ignored_key_probe_reports_only_keys_the_loader_drops() {
-    let mut correctness: Value = serde_saphyr::from_str(
-        r#"
-type: correctness
-runtime: docker
-analysis_mode: metrics
-millstone: {image: saluki-images/correctness-tools:latest, config_path: millstone.yaml}
-datadog_intake: {image: saluki-images/correctness-tools:latest, config_path: intake.yaml}
-baseline: {image: baseline, env: {DD_API_KEY: test}}
-comparison: {image: comparison}
-"#,
-    )
-    .unwrap();
-    assert_eq!(
-        ignored_fields(
-            &correctness,
-            &|doc| loaded_view("cases", &doc, "probe", Path::new("probe/config.yaml")),
-            Path::new("probe/config.yaml"),
-        ),
-        ["datadog_intake.config_path"],
-    );
-    correctness["type"] = json!("correctness_matrix");
-    correctness["variants"] = json!([{ "name": "one", "env": {"DD_TAGS": "a:b"} }]);
-    assert_eq!(
-        ignored_fields(
-            &correctness,
-            &|doc| loaded_view("cases", &doc, "probe", Path::new("probe/config.yaml")),
-            Path::new("probe/config.yaml"),
-        ),
-        ["datadog_intake.config_path"],
-    );
+fn participant_keys_are_not_ignored() {
     let mut participant: Value = serde_saphyr::from_str(LOGGING_PARTICIPANT).unwrap();
     assert_eq!(
         ignored_fields(

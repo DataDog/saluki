@@ -800,7 +800,7 @@ mod tests {
             phases: PhaseTracker::default(),
             ledger: ResourceLedger::default(),
         };
-        let result = run(plan.participants().unwrap(), fixtures::TYPES, &inputs, &control).await;
+        let result = run(plan.participants(), fixtures::TYPES, &inputs, &control).await;
         let error = result.error.unwrap();
         assert_eq!(error.kind, ErrorKind::Setup);
         assert_eq!(
@@ -818,7 +818,7 @@ mod tests {
             participant_types: TYPES,
             ..fixtures::REGISTRIES
         };
-        let loader = crate::case::CaseLoader::new(registries, fixtures::FixtureTypes);
+        let loader = crate::case::CaseLoader::new(registries);
         for (os, participants, expected) in [
             (
                 Os::Linux,
@@ -860,7 +860,7 @@ mod tests {
                 phases: PhaseTracker::default(),
                 ledger: ResourceLedger::default(),
             };
-            let result = run(plan.participants().unwrap(), TYPES, &inputs, &control).await;
+            let result = run(plan.participants(), TYPES, &inputs, &control).await;
             let error = result.error.unwrap();
             assert_eq!(error.kind, ErrorKind::Setup);
             assert_eq!(error.message, expected);
@@ -970,7 +970,7 @@ participants:
 "#,
                 fixtures::minimal_procedure!()
             );
-            let case = crate::case::CaseLoader::new(registries, fixtures::FixtureTypes)
+            let case = crate::case::CaseLoader::new(registries)
                 .load_content("cases", &yaml, "case", &source)
                 .unwrap()
                 .remove(0);
@@ -989,7 +989,7 @@ participants:
                         contents: contents.unwrap_or(b"id={{ self.late.pod_uid }}"),
                     }) as Box<dyn ScopeRuntime>,
                 )]),
-                id: plan.participants().unwrap().scope().id(),
+                id: plan.participants().scope().id(),
                 process_specs: BTreeMap::from([("subject".into(), &[] as &'static [ProcessSpec])]),
             };
             let inputs = NativeInputs::new(Arc::default(), &[], dir.path()).unwrap();
@@ -1006,7 +1006,7 @@ participants:
                 ledger: ResourceLedger::default(),
             };
             let error = create(
-                plan.participants().unwrap(),
+                plan.participants(),
                 types,
                 &inputs,
                 &control,
@@ -1353,13 +1353,7 @@ participants:
                 ledger: ResourceLedger::default(),
                 log_dir: log_dir.path().to_owned(),
             };
-            let result = run(
-                linux_plan().participants().unwrap(),
-                &[&Specs(specs)],
-                &inputs,
-                &control,
-            )
-            .await;
+            let result = run(linux_plan().participants(), &[&Specs(specs)], &inputs, &control).await;
             let error = result.error.unwrap();
             assert_eq!(error.kind, ErrorKind::Setup);
             assert_eq!(
@@ -1381,7 +1375,7 @@ participants:
             ..fixtures::REGISTRIES
         };
         let yaml = fixtures::PARTICIPANT_FIELDS.replace("participants:\n", "participants:\n  z: {type: pod-server}\n");
-        let case = crate::case::CaseLoader::new(registries, fixtures::FixtureTypes)
+        let case = crate::case::CaseLoader::new(registries)
             .load_content("cases", &yaml, "case", Path::new("/cases/case/config.yaml"))
             .unwrap()
             .remove(0);
@@ -1405,7 +1399,7 @@ participants:
             ledger: ResourceLedger::default(),
             log_dir: log_dir.path().to_owned(),
         };
-        let result = run(plan.participants().unwrap(), TYPES, &inputs, &control).await;
+        let result = run(plan.participants(), TYPES, &inputs, &control).await;
         let error = result.error.unwrap();
         assert_eq!(error.kind, ErrorKind::Setup);
         assert_eq!(
@@ -1440,7 +1434,7 @@ participants:
             ledger: ResourceLedger::default(),
             log_dir: log_dir.clone(),
         };
-        let result = run(linux_plan().participants().unwrap(), fixtures::TYPES, &inputs, &control).await;
+        let result = run(linux_plan().participants(), fixtures::TYPES, &inputs, &control).await;
         let error = result.error.unwrap();
         assert_eq!(error.kind, ErrorKind::Setup);
         let path = log_dir.join("subject");
@@ -1481,7 +1475,7 @@ participants:
                 phases: PhaseTracker::default(),
                 ledger: ResourceLedger::default(),
             };
-            let result = run(plan.participants().unwrap(), fixtures::TYPES, &inputs, &control).await;
+            let result = run(plan.participants(), fixtures::TYPES, &inputs, &control).await;
             let error = result.error.unwrap();
             assert_eq!(error.kind, ErrorKind::Setup);
             assert_eq!(
@@ -1499,7 +1493,7 @@ participants:
         }
     }
 
-    fn linux_plan() -> CasePlan<fixtures::FixtureConfig> {
+    fn linux_plan() -> CasePlan {
         let case = fixtures::LOADER
             .load_content(
                 "cases",
@@ -1537,7 +1531,7 @@ participants:
             phases: PhaseTracker::default(),
             ledger: ResourceLedger::default(),
         };
-        let result = run(plan.participants().unwrap(), fixtures::TYPES, &inputs, &control).await;
+        let result = run(plan.participants(), fixtures::TYPES, &inputs, &control).await;
         assert_eq!(result.error.as_ref().unwrap().kind, ErrorKind::Setup);
         assert!(result
             .error

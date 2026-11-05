@@ -5,10 +5,7 @@ use tokio::time::{timeout, Instant as Clock};
 
 use super::*;
 use crate::{
-    case::{
-        fixtures::{FixtureConfig, FixtureTypes, STEPS},
-        CaseLoader, Registries,
-    },
+    case::{fixtures::STEPS, CaseLoader, Registries},
     deadline::Budget,
     endpoint::{ConsumedEndpoint, Delivery, Endpoint, EndpointKind, Evidence, Port},
     layout::Os,
@@ -117,12 +114,11 @@ const TYPES: &[&dyn ParticipantType] = &[&FixtureType];
 const REGISTRIES: Registries<'static> = Registries {
     participant_types: TYPES,
     steps: STEPS,
-    typed_case_roles: &[],
 };
 
-fn plan(participants: serde_json::Value, procedure: serde_json::Value, run: &str) -> CasePlan<FixtureConfig> {
+fn plan(participants: serde_json::Value, procedure: serde_json::Value, run: &str) -> CasePlan {
     let yaml = json!({"timeout": "30s", "subject_os": [Os::host().name()], "participants": participants, "procedure": procedure}).to_string();
-    let case = CaseLoader::new(REGISTRIES, FixtureTypes)
+    let case = CaseLoader::new(REGISTRIES)
         .load_content("cases", &yaml, "case", Path::new("/cases/host/config.yaml"))
         .unwrap()
         .remove(0);
@@ -198,12 +194,7 @@ async fn host_groups_run_through_readiness_procedure_reports_and_reclaim() {
     let control = control(logs.path());
     let result = timeout(
         BOUND,
-        run(
-            plan.participants().unwrap(),
-            TYPES,
-            &inputs(Path::new("/bin/sh")),
-            &control,
-        ),
+        run(plan.participants(), TYPES, &inputs(Path::new("/bin/sh")), &control),
     )
     .await
     .unwrap();
@@ -274,11 +265,11 @@ async fn host_groups_run_through_readiness_procedure_reports_and_reclaim() {
         [
             "participant:subject",
             "participant:server",
-            &format!("directory:{}", plan.scope().unwrap().state_dir(Os::host()))
+            &format!("directory:{}", plan.scope().state_dir(Os::host()))
         ]
     );
     assert!(reclaimed.iter().all(|entry| entry.result == ReclaimResult::Reclaimed));
-    assert!(!Path::new(&plan.scope().unwrap().state_dir(Os::host()))
+    assert!(!Path::new(&plan.scope().state_dir(Os::host()))
         .parent()
         .unwrap()
         .exists());
@@ -301,13 +292,10 @@ async fn a_failed_host_start_reclaims_processes_spawned_before_the_failure() {
         &run_id,
     );
     let control = control(logs.path());
-    let result = timeout(
-        BOUND,
-        run(plan.participants().unwrap(), TYPES, &inputs(&broken), &control),
-    )
-    .await
-    .unwrap();
-    let pidfile = PathBuf::from(plan.scope().unwrap().state_dir(Os::host())).join("subject/shared/pid");
+    let result = timeout(BOUND, run(plan.participants(), TYPES, &inputs(&broken), &control))
+        .await
+        .unwrap();
+    let pidfile = PathBuf::from(plan.scope().state_dir(Os::host())).join("subject/shared/pid");
     let pid: i32 = timeout(BOUND, async {
         loop {
             if let Ok(contents) = std::fs::read_to_string(&pidfile) {
@@ -353,7 +341,7 @@ async fn a_failed_host_start_reclaims_processes_spawned_before_the_failure() {
     })
     .await
     .unwrap();
-    assert!(!Path::new(&plan.scope().unwrap().state_dir(Os::host()))
+    assert!(!Path::new(&plan.scope().state_dir(Os::host()))
         .parent()
         .unwrap()
         .exists());
@@ -374,12 +362,7 @@ async fn a_host_recipe_receives_its_participant_directory_which_is_its_processes
     let control = control(logs.path());
     let result = timeout(
         BOUND,
-        run(
-            plan.participants().unwrap(),
-            TYPES,
-            &inputs(Path::new("/bin/sh")),
-            &control,
-        ),
+        run(plan.participants(), TYPES, &inputs(Path::new("/bin/sh")), &control),
     )
     .await
     .unwrap();
@@ -391,13 +374,13 @@ async fn a_host_recipe_receives_its_participant_directory_which_is_its_processes
     assert_eq!(result.outcome, TestOutcome::Passed, "{result:?}");
     assert_eq!(
         std::fs::read_to_string(logs.path().join("subject/main.stdout.log")).unwrap(),
-        format!("{}/subject\n", plan.scope().unwrap().state_dir(Os::host()))
+        format!("{}/subject\n", plan.scope().state_dir(Os::host()))
     );
     assert_eq!(
         report[0]["processes"][0]["exit"],
         json!({"state": "exited", "source": "process", "code": 0})
     );
-    assert!(!Path::new(&plan.scope().unwrap().state_dir(Os::host()))
+    assert!(!Path::new(&plan.scope().state_dir(Os::host()))
         .parent()
         .unwrap()
         .exists());

@@ -7,10 +7,8 @@ use std::{
 
 use super::*;
 use crate::{
-    case::{
-        fixtures::{FixtureConfig, FixtureTypes, REGISTRIES},
-        CaseLoader,
-    },
+    artifact::ArtifactRole,
+    case::{fixtures::REGISTRIES, CaseLoader},
     endpoint::{ConsumedEndpoint, Delivery, EndpointKind},
     layout::{Realization, RealizationKind},
     participant::{ExitChannel, OutputChannel, ProcessSpec},
@@ -77,12 +75,12 @@ impl ParticipantType for Declarations {
 
 const CASE: &str = "timeout: 1s\nsubject_os: [linux]\nparticipants:\n  subject: {type: checked, subject: true}\nprocedure: [{step: noop}]";
 
-fn compile(declarations: &Declarations, yaml: &str, os: Os) -> Result<CasePlan<FixtureConfig>, GenericError> {
+fn compile(declarations: &Declarations, yaml: &str, os: Os) -> Result<CasePlan, GenericError> {
     let registries = Registries {
         participant_types: &[declarations],
         ..REGISTRIES
     };
-    let case = CaseLoader::new(registries, FixtureTypes)
+    let case = CaseLoader::new(registries)
         .load_content("cases", yaml, "alpha", Path::new("cases/alpha/config.yaml"))?
         .remove(0);
     Ok(Planner::new(registries, Default::default())?

@@ -11,7 +11,7 @@ use crate::utils::strip_ansi_codes;
 
 pub const DEFAULT_CLUSTER_NAME: &str = "saluki-correctness";
 
-/// Manages the lifecycle of a kind cluster used for kind-runtime correctness tests.
+/// Manages a kind cluster for cases with Kubernetes pod participants.
 ///
 /// On construction, ensures a cluster is running (creating one if needed) and loads
 /// all required images into it. On teardown, optionally deletes the cluster.
@@ -20,8 +20,7 @@ pub struct KindLifecycle {
 }
 
 impl KindLifecycle {
-    /// Ensures a kind cluster with the given name is running, then pulls and loads
-    /// all required images into it. Creates the cluster if it doesn't already exist.
+    /// Creates or reuses the named kind cluster, then loads the verified local image references.
     pub async fn ensure(
         cluster_name: String, images: Vec<String>, event_tx: mpsc::UnboundedSender<TestEvent>,
     ) -> Result<Self, GenericError> {
@@ -141,54 +140,9 @@ async fn load_image(cluster_name: &str, image: &str) -> Result<(), GenericError>
     Ok(())
 }
 
-/// Returns true if the image is already present in the local Docker daemon.
-async fn image_present_locally(image: &str) -> Result<bool, GenericError> {
-    let status = Command::new("docker")
-        .args(["image", "inspect", "--format", "{{.Id}}", image])
-        .output()
-        .await
-        .error_context("Failed to spawn docker image inspect")?;
-    Ok(status.status.success())
-}
-
-async fn pull_image(image: &str) -> Result<(), GenericError> {
-    let status = Command::new("docker")
-        .args(["pull", image])
-        .status()
-        .await
-        .error_context("Failed to spawn docker pull")?;
-    if !status.success() {
-        return Err(generic_error!("'docker pull {}' failed", image));
-    }
-    Ok(())
-}
-
-async fn ensure_image_present(image: &str) -> Result<(), GenericError> {
-    if image_present_locally(image).await? {
-        debug!("Image '{}' already present in local Docker daemon.", image);
-        return Ok(());
-    }
-    debug!("Image '{}' not found locally, pulling...", image);
-    pull_image(image)
-        .await
-        .with_error_context(|| format!("Image '{}' is not available locally and could not be pulled", image))
-}
-
 async fn load_images(
     cluster_name: &str, images: &[String], event_tx: &mpsc::UnboundedSender<TestEvent>,
 ) -> Result<(), GenericError> {
-    let _ = event_tx.send(TestEvent::StatusLine {
-        message: "Pulling container images (if not already present)...".to_string(),
-    });
-
-    // Ensure all images are present in the local Docker daemon before loading into kind.
-    // Runs in parallel; any pull failure is fatal — kind load requires the image to be present.
-    let ensure_futs: Vec<_> = images.iter().map(|img| ensure_image_present(img.as_str())).collect();
-    let ensure_results = future::join_all(ensure_futs).await;
-    for (img, result) in images.iter().zip(ensure_results) {
-        result.with_error_context(|| format!("Failed to ensure image '{}' is available", img))?;
-    }
-
     let _ = event_tx.send(TestEvent::StatusLine {
         message: format!("Loading images into kind cluster '{}'...", cluster_name),
     });

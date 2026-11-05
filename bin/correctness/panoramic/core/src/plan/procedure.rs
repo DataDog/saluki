@@ -123,8 +123,8 @@ mod tests {
     use crate::{
         backend,
         case::{
-            fixtures::{minimal_procedure, FixtureTypes, PodServer, PARTICIPANT_FIELDS, STEPS},
-            CaseLoader, CaseSchema, Registries,
+            fixtures::{minimal_procedure, PodServer, PARTICIPANT_FIELDS, STEPS},
+            CaseLoader, Registries,
         },
         endpoint::{EndpointKind, ResolvedAddress, RunnerHostPort, Transport},
         layout::{Os, RealizationKind},
@@ -153,9 +153,8 @@ mod tests {
         let registries = Registries {
             participant_types: &[&OperationServer],
             steps: &[&CallFactory],
-            typed_case_roles: &[],
         };
-        let loader = CaseLoader::new(registries, FixtureTypes);
+        let loader = CaseLoader::new(registries);
         for (os, operation, expected) in [
             (Os::Linux, "config_dump", None),
             (Os::Linux, "missing", Some("calls operation 'missing' of participant 'subject', which type 'server' doesn't offer as linux-container on linux; it offers: config_dump")),
@@ -169,7 +168,7 @@ mod tests {
                 assert_eq!(error, format!("case 'alpha' in cases/alpha/config.yaml: on subject OS '{}', step 1 'call' {expected}", os.name()));
             } else {
                 let plan = result.unwrap().into_plan().unwrap();
-                let plan = plan.participants().unwrap();
+                let plan = plan.participants();
                 assert_eq!(plan.operations("subject").iter().map(|operation| operation.name()).collect::<Vec<_>>(), ["config_dump"]);
                 assert!(plan.operations("missing").is_empty());
             }
@@ -183,9 +182,8 @@ mod tests {
         let registries = Registries {
             participant_types: &[&HttpOperationServer(&["api", "other"])],
             steps: &[&CallFactory],
-            typed_case_roles: &[],
         };
-        let loader = CaseLoader::new(registries, FixtureTypes);
+        let loader = CaseLoader::new(registries);
         for os in [Os::Linux, Os::MacOs, Os::Windows] {
             let yaml = format!(
                 "timeout: 1s\nsubject_os: [{}]\nparticipants:\n  subject: {{type: server, subject: true}}\nprocedure: [{{step: call, on: subject, operation: http_dump}}, {{step: call, on: subject, operation: http_dump}}]",
@@ -244,9 +242,8 @@ mod tests {
         let registries = Registries {
             participant_types: &[&HttpOperationServer(&["other"])],
             steps: &[&CallFactory],
-            typed_case_roles: &[],
         };
-        let case = CaseLoader::new(registries, FixtureTypes)
+        let case = CaseLoader::new(registries)
             .load_content("cases",
                 "timeout: 1s\nsubject_os: [linux]\nparticipants:\n  subject: {type: server, subject: true}\nprocedure: [{step: call, on: subject, operation: http_dump}]",
                 "alpha",
@@ -544,7 +541,7 @@ mod tests {
                 }))
             );
         }
-        assert_eq!(plan.participants.as_ref().unwrap().planned.runner_host_routes.len(), 4);
+        assert_eq!(plan.participants.planned.runner_host_routes.len(), 4);
         assert_eq!(
             plan.runner_host_ports("server"),
             vec![RunnerHostPort {
@@ -694,10 +691,8 @@ mod tests {
         for os in [Os::Linux, Os::MacOs, Os::Windows] {
             let plan = compile(&yaml, os).unwrap().unwrap();
             assert_eq!(plan.subject_os(), os);
-            let CaseSchema::Participants { procedure, .. } = plan.case().schema() else {
-                panic!("expected participant data");
-            };
-            let [ProcedureNode::Step(step)] = procedure.as_slice() else {
+            let procedure = plan.case().procedure();
+            let [ProcedureNode::Step(step)] = procedure else {
                 panic!("expected one step");
             };
             assert_eq!(
@@ -715,9 +710,8 @@ mod tests {
         let registries = Registries {
             participant_types: &[&PodServer],
             steps: STEPS,
-            ..Default::default()
         };
-        let loader = CaseLoader::new(registries, FixtureTypes);
+        let loader = CaseLoader::new(registries);
         let yaml = FACT_CASE
             .replace("type: server", "type: pod-server, realization: {kind: kubernetes-pod}")
             .replace("subject.facts.file", "subject.late.pod_uid");
@@ -731,7 +725,7 @@ mod tests {
             .into_plan()
             .unwrap();
         assert_eq!(
-            plan.layout().unwrap().get("subject").unwrap().kind,
+            plan.layout().get("subject").unwrap().kind,
             RealizationKind::KubernetesPod
         );
         let case = loader
@@ -783,9 +777,8 @@ mod tests {
         let registries = Registries {
             participant_types: &[&PodServer],
             steps: STEPS,
-            ..Default::default()
         };
-        let loader = CaseLoader::new(registries, FixtureTypes);
+        let loader = CaseLoader::new(registries);
         let yaml = FACT_CASE.replace("type: server", "type: pod-server, realization: {kind: kubernetes-pod}");
         let case = loader
             .load_content("cases", &yaml, "alpha", Path::new("cases/alpha/config.yaml"))

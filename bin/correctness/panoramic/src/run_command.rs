@@ -2,32 +2,26 @@ use std::{collections::BTreeMap, path::Path, process::ExitCode, sync::Arc};
 
 use panoramic_core::artifact::{verified_artifacts, ArtifactBinding, VerifiedArtifact};
 use panoramic_core::backend::RunBackends;
+use panoramic_core::case::CaseConfig;
 use panoramic_core::events::create_event_channel;
 use panoramic_core::interrupts::Interrupts;
 use panoramic_core::layout::{Os, Realization, RealizationKind};
 use panoramic_core::lifecycle::NativeInputs;
 use panoramic_core::machine_output::{revision, RunReport, TestReport, RUN_REPORT_FILE_NAME};
-use panoramic_core::plan::needed_artifacts;
+use panoramic_core::plan::{needed_artifacts, CasePlan};
 use tokio::sync::{watch, Mutex};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info};
+use tracing::{error, info};
 
 use crate::{
     artifact_commands, cli,
     collector::{self, consume_run, run_teardown, RunCollector, RunDisplay, RunEnd, EXIT_HARNESS_ERROR},
-    config::{
-        build_runners,
-        runner_artifacts::{BoundArtifacts, RunnerArtifacts},
-        runtime_for_os,
-        typed_case::{case_dir, needs_pod, realizations, LoadedCase, LoadedPlan},
-        BuiltCase, Discovered, Execution,
-    },
+    config::{case_dir, needs_pod, runtime_for_os, Discovered},
     console::{Console, SetupFailure},
     discovery::{prepare_discovery, Selection},
     kind::KindLifecycle,
     providability,
-    runner::{self, Runner},
-    test::RunnerSettings,
+    runner::{self, BuiltCase, NativeTest, Runner},
     text_output::{OutputFormat, Reporter},
     tui,
 };
@@ -53,12 +47,12 @@ fn retain_selected<T>(cases: &mut Vec<T>, selected: Option<&[String]>, name: imp
     cases.retain(|case| selected.is_none_or(|names| names.iter().any(|selected| selected == name(case))));
 }
 
-/// Cases and settings ready for reporting and execution.
+/// Selected plans and verified inputs ready for reporting and execution.
 struct PreparedRun {
     subject_os: Os,
-    built: Vec<BuiltCase>,
-    excluded: Vec<LoadedCase>,
-    settings: RunnerSettings,
+    plans: Vec<CasePlan>,
+    unprovidable: BTreeMap<Realization, String>,
+    excluded: Vec<CaseConfig>,
     verified: Option<Vec<VerifiedArtifact>>,
     native: Option<NativeInputs>,
 }
@@ -71,68 +65,35 @@ pub(crate) async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
     }
 }
 
-/// Discovers, builds, selects and verifies the cases before starting a run.
+/// Discovers, selects and verifies the cases before starting a run.
 async fn prepare_run(cmd: &cli::RunCommand, console: &Console) -> Result<PreparedRun, SetupFailure> {
     let Selection {
         subject_os,
-        discovered: Discovered { plans, mut excluded },
+        discovered: Discovered {
+            mut plans,
+            mut excluded,
+        },
     } = prepare_discovery(&cmd.test_dirs, cmd.subject_os, cmd.artifacts.as_deref())?
         .discover_selection(console, false)?;
-    let (mut built, settings, artifacts) = build_cases(cmd, plans)?;
-    check_legacy_inputs(cmd, &built, &settings, &artifacts)?;
-    select_cases(cmd, console, subject_os, &mut built, &mut excluded)?;
+    select_cases(cmd, console, subject_os, &mut plans, &mut excluded)?;
     let backends = Arc::new(RunBackends::default().with_kube_context(format!("kind-{}", cmd.kind_cluster_name)));
-    let unprovidable = check_providability(&backends, console, &mut built).await?;
-    let (verified, native) = prepare_artifacts(backends, cmd, console, subject_os, &built, &unprovidable).await?;
+    let unprovidable = check_providability(&backends, console, &plans).await;
+    let (verified, native) = prepare_artifacts(backends, cmd, console, subject_os, &plans, &unprovidable).await?;
     Ok(PreparedRun {
         subject_os,
-        built,
+        plans,
+        unprovidable,
         excluded,
-        settings,
         verified,
         native,
     })
 }
 
-/// Builds runners with settings and artifacts resolved from the command.
-fn build_cases(
-    cmd: &cli::RunCommand, plans: Vec<LoadedPlan>,
-) -> Result<(Vec<BuiltCase>, RunnerSettings, RunnerArtifacts<'_>), SetupFailure> {
-    let mut settings = cmd.runner_settings();
-    let artifacts = if cmd.artifacts.is_some() {
-        let bound = BoundArtifacts::new(needed_artifacts(&plans));
-        bound.apply_runner_settings(&mut settings);
-        RunnerArtifacts::Bound(bound)
-    } else {
-        RunnerArtifacts::Overrides(&cmd.image_overrides)
-    };
-    let built = build_runners(plans, &artifacts).map_err(SetupFailure::discovery)?;
-    Ok((built, settings, artifacts))
-}
-
-/// Checks explicit image inputs against artifact bindings and logs resolved settings.
-fn check_legacy_inputs(
-    cmd: &cli::RunCommand, built: &[BuiltCase], settings: &RunnerSettings, artifacts: &RunnerArtifacts<'_>,
-) -> Result<(), SetupFailure> {
-    if let RunnerArtifacts::Bound(bound) = artifacts {
-        let runners: Vec<_> = built.iter().filter_map(BuiltCase::runner).collect();
-        bound
-            .check_legacy_inputs(&cmd.legacy_artifact_inputs(), &runners)
-            .map_err(SetupFailure::discovery)?;
-    }
-    debug!(
-        alpine_image = %settings.alpine_image,
-        "Resolved runner settings."
-    );
-    Ok(())
-}
-
 /// Resolves the requested test names and announces cases excluded by the subject OS.
 fn select_cases(
-    cmd: &cli::RunCommand, console: &Console, subject_os: Os, built: &mut Vec<BuiltCase>,
-    excluded: &mut Vec<LoadedCase>,
+    cmd: &cli::RunCommand, console: &Console, subject_os: Os, plans: &mut Vec<CasePlan>, excluded: &mut Vec<CaseConfig>,
 ) -> Result<(), SetupFailure> {
-    if built.is_empty() && excluded.is_empty() {
+    if plans.is_empty() && excluded.is_empty() {
         let dirs_str: Vec<_> = cmd.test_dirs.iter().map(|d| d.display().to_string()).collect();
         let msg = format!("No test cases found in: {}", dirs_str.join(", "));
         return Err(SetupFailure::harness(msg));
@@ -142,10 +103,10 @@ fn select_cases(
     // selection that leaves nothing to run, is an error rather than a green run of zero tests.
     let selected_tests = match cmd.tests.as_deref() {
         Some(requested) => {
-            let names: Vec<_> = built
+            let names: Vec<_> = plans
                 .iter()
-                .map(|built| built.plan.case().name())
-                .chain(excluded.iter().map(LoadedCase::name))
+                .map(|plan| plan.case().name())
+                .chain(excluded.iter().map(CaseConfig::name))
                 .collect();
             let (selected, unmatched) = resolve_selection(requested, &names);
             if !unmatched.is_empty() {
@@ -166,11 +127,11 @@ fn select_cases(
         None => None,
     };
     // Register only the selected tests so the runner and `run.json` share one selection.
-    retain_selected(built, selected_tests.as_deref(), |built| built.plan.case().name());
-    retain_selected(excluded, selected_tests.as_deref(), LoadedCase::name);
+    retain_selected(plans, selected_tests.as_deref(), |plan| plan.case().name());
+    retain_selected(excluded, selected_tests.as_deref(), CaseConfig::name);
 
     if !excluded.is_empty() {
-        let names = excluded.iter().map(LoadedCase::name).collect::<Vec<_>>().join(", ");
+        let names = excluded.iter().map(CaseConfig::name).collect::<Vec<_>>().join(", ");
         let message = format!(
             "Skipping {} test(s) whose subject_os excludes {}: {names}",
             excluded.len(),
@@ -184,25 +145,26 @@ fn select_cases(
 
 /// Checks whether the host can provide each selected case's realizations.
 async fn check_providability(
-    backends: &RunBackends, console: &Console, built: &mut [BuiltCase],
-) -> Result<BTreeMap<Realization, String>, SetupFailure> {
-    let unprovidable = if built.is_empty() {
+    backends: &RunBackends, console: &Console, plans: &[CasePlan],
+) -> BTreeMap<Realization, String> {
+    if plans.is_empty() {
         BTreeMap::new()
     } else {
         console.info("Checking that this host can provide the selected cases...");
-        providability::check(backends, built).await
-    };
-    Ok(unprovidable)
+        providability::check(backends, plans).await
+    }
 }
 
 /// Verifies selected artifacts and loads native inputs before creating any run logs.
 pub(crate) async fn prepare_artifacts(
-    backends: Arc<RunBackends>, cmd: &cli::RunCommand, console: &Console, subject_os: Os, built: &[BuiltCase],
+    backends: Arc<RunBackends>, cmd: &cli::RunCommand, console: &Console, subject_os: Os, plans: &[CasePlan],
     unprovidable: &BTreeMap<Realization, String>,
 ) -> Result<(Option<Vec<VerifiedArtifact>>, Option<NativeInputs>), SetupFailure> {
-    let bindings = verification_bindings(built, unprovidable, cmd.artifacts.is_some());
-    let has_native = built.iter().any(|built| matches!(built.execution, Execution::Native));
-    if bindings.is_none() && !has_native {
+    let bindings = verification_bindings(plans, unprovidable, cmd.artifacts.is_some());
+    let any_providable = plans
+        .iter()
+        .any(|plan| providability::is_providable(plan, unprovidable));
+    if bindings.is_none() && !any_providable {
         return Ok((None, None));
     }
     let base = std::env::current_dir()
@@ -211,7 +173,7 @@ pub(crate) async fn prepare_artifacts(
         Some(bindings) => Some(verify_run_artifacts(&backends, &bindings, subject_os, &base, console).await?),
         None => None,
     };
-    let native = if has_native {
+    let native = if any_providable {
         Some(
             NativeInputs::new(backends, verified.as_deref().unwrap_or_default(), &base)
                 .map_err(SetupFailure::harness)?,
@@ -226,9 +188,9 @@ pub(crate) async fn prepare_artifacts(
 async fn report_run(prepared: PreparedRun, cmd: &cli::RunCommand, console: &Console) -> ExitCode {
     let PreparedRun {
         subject_os,
-        built,
+        plans,
+        unprovidable,
         excluded,
-        settings,
         verified,
         native,
     } = prepared;
@@ -254,7 +216,7 @@ async fn report_run(prepared: PreparedRun, cmd: &cli::RunCommand, console: &Cons
         subject_os,
         cmd.parallelism.get(),
         log_dir.clone(),
-        built.iter().map(|built| built.plan.case().name().to_string()).collect(),
+        plans.iter().map(|plan| plan.case().name().to_string()).collect(),
         excluded
             .into_iter()
             .map(|case| TestReport::skipped(case.name().to_string(), case_dir(&case), subject_os))
@@ -266,10 +228,10 @@ async fn report_run(prepared: PreparedRun, cmd: &cli::RunCommand, console: &Cons
     };
     let mut collector = RunCollector::start(report, cmd.fail_fast);
 
-    let display_error = if !built.is_empty() {
+    let display_error = if !plans.is_empty() {
         execute(
-            built,
-            settings,
+            plans,
+            unprovidable,
             native,
             cmd,
             console,
@@ -311,20 +273,21 @@ async fn report_run(prepared: PreparedRun, cmd: &cli::RunCommand, console: &Cons
 
 /// Runs the selected cases, collects their results and handles kind cluster cleanup.
 async fn execute(
-    built: Vec<BuiltCase>, settings: RunnerSettings, native: Option<NativeInputs>, cmd: &cli::RunCommand,
-    console: &Console, log_dir: &Path, collector: &mut RunCollector, interrupts: &mut Interrupts,
+    plans: Vec<CasePlan>, unprovidable: BTreeMap<Realization, String>, native: Option<NativeInputs>,
+    cmd: &cli::RunCommand, console: &Console, log_dir: &Path, collector: &mut RunCollector,
+    interrupts: &mut Interrupts,
 ) -> Option<std::io::Error> {
     // Create the event channel early so the kind setup task can emit status messages.
     let (tx, rx) = create_event_channel();
 
     // Spawn kind cluster setup in the background so non-kind tests start immediately.
     // Kind tests wait on `kind_rx` before doing any work.
-    let kind_images = collect_kind_images(&built, native.as_ref());
+    let kind_images = collect_kind_images(&plans, &unprovidable, native.as_ref());
     let kind_lifecycle_slot = std::sync::Arc::new(Mutex::new(None::<KindLifecycle>));
     let slot = kind_lifecycle_slot.clone();
     let cluster_name = cmd.kind_cluster_name.clone();
     let event_tx = tx.clone();
-    let kind_rx = start_kind_setup(&built, kind_images, move |images| async move {
+    let kind_rx = start_kind_setup(&plans, &unprovidable, kind_images, move |images| async move {
         let lifecycle = KindLifecycle::ensure(cluster_name, images, event_tx)
             .await
             .map_err(|error| format!("{error:?}"))?;
@@ -332,14 +295,22 @@ async fn execute(
         Ok(())
     });
 
-    let mut registry = Runner::new(log_dir, settings);
-    if let Some(inputs) = native {
-        registry = registry.with_native(inputs, crate::REGISTRIES.participant_types);
-    }
+    let mut registry = Runner::new(log_dir);
+    let inputs = native.map(Arc::new);
     if let Some(ref rx) = kind_rx {
         registry = registry.with_kind_ready(rx.clone());
     }
-    for built in built {
+    for plan in plans {
+        let built = match providability::error(&plan, &unprovidable) {
+            Some(message) => BuiltCase::unprovidable(plan, message),
+            None => BuiltCase::new(
+                plan,
+                Box::new(NativeTest {
+                    inputs: inputs.as_ref().expect("providable cases have prepared inputs").clone(),
+                    types: crate::REGISTRIES.participant_types,
+                }),
+            ),
+        };
         registry.register(built).expect("failure to register test");
     }
 
@@ -419,24 +390,20 @@ async fn execute(
     display_error
 }
 
-/// Selects native roles, or every route's roles with a manifest, after name selection and host checks.
-fn run_artifacts(
-    built: &[BuiltCase], unprovidable: &BTreeMap<Realization, String>, with_manifest: bool,
-) -> Vec<ArtifactBinding> {
-    needed_artifacts(built.iter().filter_map(|built| {
-        let selected = with_manifest || matches!(built.execution, Execution::Native);
-        let providable = realizations(&built.plan)
+/// Selects the roles needed by cases this host can provide.
+fn run_artifacts(plans: &[CasePlan], unprovidable: &BTreeMap<Realization, String>) -> Vec<ArtifactBinding> {
+    needed_artifacts(
+        plans
             .iter()
-            .all(|(_, realization)| !unprovidable.contains_key(realization));
-        (selected && providable).then_some(&built.plan)
-    }))
+            .filter(|plan| providability::is_providable(plan, unprovidable)),
+    )
 }
 
 /// Chooses whether to verify, retaining an empty selection when a manifest was supplied.
 fn verification_bindings(
-    built: &[BuiltCase], unprovidable: &BTreeMap<Realization, String>, with_manifest: bool,
+    plans: &[CasePlan], unprovidable: &BTreeMap<Realization, String>, with_manifest: bool,
 ) -> Option<Vec<ArtifactBinding>> {
-    let bindings = run_artifacts(built, unprovidable, with_manifest);
+    let bindings = run_artifacts(plans, unprovidable);
     (!bindings.is_empty() || with_manifest).then_some(bindings)
 }
 
@@ -460,23 +427,20 @@ async fn verify_run_artifacts(
     })
 }
 
-/// Collects the unique images of cases that need Kubernetes pods.
-fn collect_kind_images(built: &[BuiltCase], native: Option<&NativeInputs>) -> Result<Vec<String>, String> {
+/// Collects unique verified image references for providable cases' Kubernetes pods.
+fn collect_kind_images(
+    plans: &[CasePlan], unprovidable: &BTreeMap<Realization, String>, native: Option<&NativeInputs>,
+) -> Result<Vec<String>, String> {
     use std::collections::BTreeSet;
+
     let mut images = BTreeSet::new();
-    for BuiltCase { plan, execution } in built {
-        if !needs_pod(plan) {
+    for plan in plans {
+        if !needs_pod(plan) || !providability::is_providable(plan, unprovidable) {
             continue;
         }
-        match execution {
-            Execution::Runner(runner) => images.extend(runner.images().into_values()),
-            Execution::Native => {
-                let inputs = native.ok_or("Native execution inputs were not prepared.")?;
-                for &role in plan.image_roles_for(RealizationKind::KubernetesPod) {
-                    images.insert(inputs.image_reference(role)?.to_string());
-                }
-            }
-            Execution::Unprovidable(_) => {}
+        let inputs = native.ok_or("Native execution inputs were not prepared.")?;
+        for &role in plan.image_roles_for(RealizationKind::KubernetesPod) {
+            images.insert(inputs.image_reference(role)?.to_string());
         }
     }
     Ok(images.into_iter().collect())
@@ -484,14 +448,15 @@ fn collect_kind_images(built: &[BuiltCase], native: Option<&NativeInputs>) -> Re
 
 /// Starts cluster setup for providable pod cases, even when they have no images to load.
 fn start_kind_setup<F>(
-    built: &[BuiltCase], images: Result<Vec<String>, String>, setup: impl FnOnce(Vec<String>) -> F + Send + 'static,
+    plans: &[CasePlan], unprovidable: &BTreeMap<Realization, String>, images: Result<Vec<String>, String>,
+    setup: impl FnOnce(Vec<String>) -> F + Send + 'static,
 ) -> Option<crate::test::KindReadyReceiver>
 where
     F: std::future::Future<Output = Result<(), String>> + Send + 'static,
 {
-    if !built
+    if !plans
         .iter()
-        .any(|built| needs_pod(&built.plan) && !matches!(built.execution, Execution::Unprovidable(_)))
+        .any(|plan| needs_pod(plan) && providability::is_providable(plan, unprovidable))
     {
         return None;
     }
@@ -527,11 +492,11 @@ mod tests {
         collector::EXIT_NO_TESTS_SELECTED,
         config::{
             discover_in_scope,
-            tests::{planner, write_case, CORRECTNESS_FIELDS, PARTICIPANT_FIELDS},
+            tests::{planner, write_case, PARTICIPANT_FIELDS},
         },
         discovery::NO_TEST_DIRECTORIES,
         list_command::listing,
-        test, REGISTRIES,
+        REGISTRIES,
     };
 
     async fn run_skipped_selection(requested: Option<&str>, manifest: Option<ArtifactManifest>) {
@@ -544,11 +509,7 @@ mod tests {
             "windows",
             "name: windows\ntimeout: 1s\nsubject_os: [windows]\nparticipants: {adp: {type: agent-adp, subject: true}}\nprocedure: [{step: log_contains, on: adp, pattern: ready, timeout: 5s}]\n",
         );
-        write_case(
-            &cases,
-            "correctness",
-            &format!("type: correctness\n{CORRECTNESS_FIELDS}"),
-        );
+        write_case(&cases, "correctness", PARTICIPANT_FIELDS);
         let manifest = manifest.map(|manifest| {
             let path = dir.path().join("artifacts.toml");
             std::fs::write(&path, manifest.render()).unwrap();
@@ -762,11 +723,7 @@ mod tests {
         use panoramic_core::layout::RealizationKind;
 
         let dir = tempfile::tempdir().unwrap();
-        write_case(
-            dir.path(),
-            "correctness",
-            &format!("type: correctness\n{CORRECTNESS_FIELDS}"),
-        );
+        write_case(dir.path(), "correctness", PARTICIPANT_FIELDS);
         write_case(
             dir.path(),
             "host",
@@ -787,29 +744,28 @@ mod tests {
                 vec!["adp-host-binary", "agent-host-install"],
             ),
         ] {
-            let Discovered { plans, excluded } =
+            let Discovered { mut plans, excluded } =
                 discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], Os::MacOs).unwrap();
             assert_eq!(
-                excluded.iter().map(LoadedCase::name).collect::<Vec<_>>(),
+                excluded.iter().map(CaseConfig::name).collect::<Vec<_>>(),
                 ["correctness"]
             );
-            let mut built = build_runners(plans, &RunnerArtifacts::Overrides(&[])).unwrap();
-            let names: Vec<_> = built
+            let names: Vec<_> = plans
                 .iter()
-                .map(|built| built.plan.case().name())
-                .chain(excluded.iter().map(LoadedCase::name))
+                .map(|plan| plan.case().name())
+                .chain(excluded.iter().map(CaseConfig::name))
                 .collect();
             let selected = selected.map(|requested| {
                 let (selected, unmatched) = resolve_selection(requested, &names);
                 assert!(unmatched.is_empty());
                 selected
             });
-            retain_selected(&mut built, selected.as_deref(), |built| built.plan.case().name());
+            retain_selected(&mut plans, selected.as_deref(), |plan| plan.case().name());
             let unprovidable = unavailable
                 .into_iter()
                 .map(|realization| (realization, "unavailable".into()))
                 .collect();
-            let bindings = run_artifacts(&built, &unprovidable, true);
+            let bindings = run_artifacts(&plans, &unprovidable);
             assert_eq!(
                 bindings.iter().map(|binding| binding.role.name).collect::<Vec<_>>(),
                 expected
@@ -818,26 +774,21 @@ mod tests {
     }
 
     #[test]
-    fn without_a_manifest_only_native_rows_have_their_bindings_verified() {
+    fn artifact_bindings_follow_selection_and_providability_with_or_without_a_manifest() {
         use panoramic_core::layout::RealizationKind;
 
         use crate::config::tests::plan_with_plain;
 
-        let native = PARTICIPANT_FIELDS.replace("agent-adp", "plain");
-        let unavailable = native.replace("  adp:", "  windows: {type: agent-adp, os: windows}\n  adp:");
-        let plans = [
-            plan_with_plain(&native, "native", Os::Linux),
+        let plain = PARTICIPANT_FIELDS.replace("agent-adp", "plain");
+        let unavailable = plain.replace("  adp:", "  windows: {type: agent-adp, os: windows}\n  adp:");
+        let mut plans = vec![
+            plan_with_plain(&plain, "plain", Os::Linux),
             plan_with_plain(&unavailable, "unavailable", Os::Linux),
-            plan_with_plain(&format!("type: correctness\n{CORRECTNESS_FIELDS}"), "typed", Os::Linux),
-            plan_with_plain(
-                &format!("type: correctness\n{CORRECTNESS_FIELDS}"),
-                "unselected",
-                Os::Linux,
-            ),
+            plan_with_plain(PARTICIPANT_FIELDS, "selected", Os::Linux),
+            plan_with_plain(PARTICIPANT_FIELDS, "unselected", Os::Linux),
         ];
-        let mut built = build_runners(plans, &RunnerArtifacts::Overrides(&[])).unwrap();
-        let selected = ["native".into(), "unavailable".into(), "typed".into()];
-        retain_selected(&mut built, Some(&selected), |built| built.plan.case().name());
+        let selected = ["plain".into(), "unavailable".into(), "selected".into()];
+        retain_selected(&mut plans, Some(&selected), |plan| plan.case().name());
         let unprovidable = BTreeMap::from([(
             Realization {
                 os: Os::Windows,
@@ -845,27 +796,15 @@ mod tests {
             },
             "unavailable".into(),
         )]);
-        built[1].execution = Execution::Unprovidable("unavailable".into());
-        for (with_manifest, expected) in [
-            (false, vec!["courier-linux-binary", "fixup-image"]),
-            (
-                true,
-                vec![
-                    "agent-adp-linux-image",
-                    "courier-linux-binary",
-                    "fixup-image",
-                    "tools-linux-image",
-                ],
-            ),
-        ] {
-            let bindings = run_artifacts(&built, &unprovidable, with_manifest);
+        for with_manifest in [false, true] {
+            let bindings = verification_bindings(&plans, &unprovidable, with_manifest).unwrap();
             assert_eq!(
                 bindings.iter().map(|binding| binding.role.name).collect::<Vec<_>>(),
-                expected
+                ["agent-adp-linux-image", "courier-linux-binary", "fixup-image"]
             );
         }
-        built.remove(0);
-        assert!(run_artifacts(&built, &unprovidable, false).is_empty());
+        plans.retain(|plan| plan.case().name() == "unavailable");
+        assert!(run_artifacts(&plans, &unprovidable).is_empty());
     }
 
     #[test]
@@ -877,23 +816,21 @@ mod tests {
         assert_eq!(verification_bindings(&[], &unprovidable, true), Some(vec![]));
 
         let plan = plan_with_plain(&PARTICIPANT_FIELDS.replace("agent-adp", "plain"), "native", Os::Linux);
-        let built = build_runners([plan], &RunnerArtifacts::Overrides(&[])).unwrap();
-        let bindings = verification_bindings(&built, &unprovidable, false).expect("native bindings must be verified");
+        let plans = vec![plan];
+        let bindings = verification_bindings(&plans, &unprovidable, false).expect("native bindings must be verified");
         assert_eq!(
             bindings.iter().map(|binding| binding.role.name).collect::<Vec<_>>(),
             ["courier-linux-binary", "fixup-image"]
         );
     }
 
-    fn native_file_run(dir: &Path) -> (cli::RunCommand, Vec<BuiltCase>) {
+    fn native_file_run(dir: &Path) -> (cli::RunCommand, Vec<CasePlan>) {
         use panoramic_core::{
             artifact::{ArtifactKind, ArtifactRole},
             case::{CaseLoader, Registries},
             layout::RealizationKind,
             participant::ParticipantType,
         };
-
-        use crate::config::typed_case::TypedConfigLoader;
 
         struct LocalFiles;
 
@@ -946,7 +883,7 @@ mod tests {
                 "subject: true",
                 "subject: true, realization: {kind: host-process-group}",
             );
-        let case = CaseLoader::new(registries, TypedConfigLoader)
+        let case = CaseLoader::new(registries)
             .load_content("cases", &yaml, "native", &dir.join("native/config.yaml"))
             .unwrap()
             .remove(0);
@@ -964,8 +901,7 @@ mod tests {
             .unwrap()
             .into_plan()
             .unwrap();
-        let built = build_runners([plan], &RunnerArtifacts::Overrides(&[])).unwrap();
-        assert!(matches!(built[0].execution, Execution::Native));
+        let plans = vec![plan];
         let logs = dir.join("logs");
         let Command::Run(cmd) = Cli::try_parse_from([
             "panoramic",
@@ -982,7 +918,7 @@ mod tests {
             panic!("expected run")
         };
         assert!(cmd.artifacts.is_none());
-        (*cmd, built)
+        (*cmd, plans)
     }
 
     #[tokio::test]
@@ -990,10 +926,10 @@ mod tests {
         use tracing::instrument::WithSubscriber as _;
 
         let dir = tempfile::tempdir().unwrap();
-        let (cmd, mut built) = native_file_run(dir.path());
+        let (cmd, plans) = native_file_run(dir.path());
         let console = Console { use_tui: false };
         let backends = Arc::new(RunBackends::default());
-        let unprovidable = check_providability(&backends, &console, &mut built).await.unwrap();
+        let unprovidable = check_providability(&backends, &console, &plans).await;
         assert!(unprovidable.is_empty());
         let output = std::fs::File::create(dir.path().join("diagnostic.log")).unwrap();
         let subscriber = tracing_subscriber::fmt()
@@ -1001,7 +937,7 @@ mod tests {
             .without_time()
             .with_writer(std::sync::Mutex::new(output))
             .finish();
-        let failure = prepare_artifacts(backends, &cmd, &console, Os::host(), &built, &unprovidable)
+        let failure = prepare_artifacts(backends, &cmd, &console, Os::host(), &plans, &unprovidable)
             .with_subscriber(subscriber)
             .await
             .err()
@@ -1022,23 +958,23 @@ mod tests {
         use panoramic_core::artifact::test_util::write_executable;
 
         let dir = tempfile::tempdir().unwrap();
-        let (cmd, mut built) = native_file_run(dir.path());
+        let (cmd, plans) = native_file_run(dir.path());
         write_executable(&dir.path().join("binary"));
         write_executable(&dir.path().join("install/bin/main"));
         let console = Console { use_tui: false };
         let backends = Arc::new(RunBackends::default());
-        let unprovidable = check_providability(&backends, &console, &mut built).await.unwrap();
+        let unprovidable = check_providability(&backends, &console, &plans).await;
         assert!(unprovidable.is_empty());
-        let (verified, native) = prepare_artifacts(backends, &cmd, &console, Os::host(), &built, &unprovidable)
+        let (verified, native) = prepare_artifacts(backends, &cmd, &console, Os::host(), &plans, &unprovidable)
             .await
             .unwrap();
         assert!(native.is_some());
         assert!(!dir.path().join("logs").exists());
         let prepared = PreparedRun {
             subject_os: Os::host(),
-            built,
+            plans,
+            unprovidable,
             excluded: vec![],
-            settings: cmd.runner_settings(),
             verified,
             native,
         };
@@ -1300,17 +1236,27 @@ mod tests {
         }
     }
 
-    async fn run_with_diagnostics(cmd: cli::RunCommand, dir: &Path) -> (ExitCode, String) {
-        use tracing::instrument::WithSubscriber as _;
+    struct PodFixture;
 
-        let output = std::fs::File::create(dir.join("diagnostic.log")).unwrap();
-        let subscriber = tracing_subscriber::fmt()
-            .with_ansi(false)
-            .without_time()
-            .with_writer(std::sync::Mutex::new(output))
-            .finish();
-        let exit = run_tests(cmd, false).with_subscriber(subscriber).await;
-        (exit, std::fs::read_to_string(dir.join("diagnostic.log")).unwrap())
+    impl panoramic_core::participant::ParticipantType for PodFixture {
+        fn name(&self) -> &'static str {
+            "pod-fixture"
+        }
+
+        fn supports(&self) -> &'static [(Os, panoramic_core::layout::RealizationKind)] {
+            &[(Os::Linux, panoramic_core::layout::RealizationKind::KubernetesPod)]
+        }
+
+        fn artifacts(&self, _realization: Realization) -> &'static [panoramic_core::artifact::ArtifactRole] {
+            &[
+                panoramic_participants::AgentAdp::LINUX_IMAGE,
+                panoramic_participants::TOOLS_LINUX_IMAGE,
+            ]
+        }
+
+        fn processes(&self) -> &'static [&'static str] {
+            &[]
+        }
     }
 
     #[test]
@@ -1378,14 +1324,21 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let manifest = dir.path().join("artifacts.toml");
-        std::fs::write(
-            &manifest,
-            format!(
-                "schema = 1\n[roles]\nfixup-image = {:?}\n",
-                variables["PANORAMIC_ALPINE_IMAGE"]
-            ),
-        )
-        .unwrap();
+        let render = mixins[".test-correctness-definition"]["script"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|line| line.as_str().unwrap())
+            .find(|line| line.starts_with("target/release/panoramic artifacts render "))
+            .unwrap();
+        let Command::Artifacts(cli::ArtifactsCommand {
+            command: cli::ArtifactsSubcommand::Render(mut render),
+        }) = Cli::try_parse_from(render.split_whitespace()).unwrap().command
+        else {
+            panic!("expected artifact render");
+        };
+        render.output = manifest.clone();
+        assert_eq!(artifact_commands::render(render), ExitCode::SUCCESS);
         let cases = root.join("test/correctness/cases");
         let Command::Run(cmd) = Cli::try_parse_from([
             "panoramic",
@@ -1405,125 +1358,71 @@ mod tests {
         else {
             panic!("expected run")
         };
-        let plans = discover_in_scope(
-            &mut crate::config::load_planner(Some(&manifest)).unwrap(),
-            &[cases],
-            Os::Linux,
-        )
-        .unwrap()
-        .plans;
-        let (built, settings, artifacts) = build_cases(&cmd, plans).unwrap();
-        assert_eq!(built.len(), 46);
-        assert!(built.iter().all(|case| matches!(case.execution, Execution::Native)));
-        // Legacy container-name overrides reject these plans before any participant can start.
-        check_legacy_inputs(&cmd, &built, &settings, &artifacts).unwrap();
-    }
-
-    #[tokio::test]
-    async fn legacy_image_inputs_must_agree_before_verification_or_log_creation() {
-        let dir = tempfile::tempdir().unwrap();
-        let cases = dir.path().join("cases");
-        write_case(
-            &cases,
-            "correctness",
-            &format!("type: correctness\n{CORRECTNESS_FIELDS}"),
-        );
-        let manifest = dir.path().join("artifacts.toml");
-        std::fs::write(&manifest, "schema = 1\n[roles]\nfixup-image = 'fixup:bound'\n").unwrap();
-        let logs = dir.path().join("logs");
-        for image in ["fixup:bound", "fixup:different"] {
-            let Command::Run(cmd) = Cli::try_parse_from([
-                "panoramic",
-                "run",
-                "-d",
-                cases.to_str().unwrap(),
-                "--subject-os",
-                "linux",
-                "--artifacts",
-                manifest.to_str().unwrap(),
-                "--alpine-image",
-                image,
-                "--no-tui",
-                "-l",
-                logs.to_str().unwrap(),
-            ])
+        let console = Console { use_tui: false };
+        let Selection {
+            subject_os,
+            discovered: Discovered {
+                mut plans,
+                mut excluded,
+            },
+        } = prepare_discovery(&cmd.test_dirs, cmd.subject_os, cmd.artifacts.as_deref())
             .unwrap()
-            .command
-            else {
-                panic!("expected run")
-            };
-            if image == "fixup:bound" {
-                let plans = discover_in_scope(
-                    &mut crate::config::load_planner(Some(&manifest)).unwrap(),
-                    std::slice::from_ref(&cases),
-                    Os::Linux,
-                )
-                .unwrap()
-                .plans;
-                let (built, settings, artifacts) = build_cases(&cmd, plans).unwrap();
-                check_legacy_inputs(&cmd, &built, &settings, &artifacts).unwrap();
-                assert_eq!(settings.alpine_image, "fixup:bound");
-            } else {
-                let (exit, diagnostic) = run_with_diagnostics(*cmd, dir.path()).await;
-                assert_eq!(exit, ExitCode::from(2));
-                assert!(diagnostic.contains("--alpine-image (PANORAMIC_ALPINE_IMAGE) names 'fixup:different' for role 'fixup-image', bound to 'fixup:bound' (manifest)"), "{diagnostic}");
-                assert!(!diagnostic.contains("Verifying the artifacts"), "{diagnostic}");
-                assert!(!diagnostic.contains("Checking that this host"), "{diagnostic}");
-            }
-            assert!(!logs.exists());
-        }
+            .discover_selection(&console, false)
+            .unwrap();
+        assert_eq!(plans.len(), 46);
+        assert!(excluded.is_empty());
+        assert!(cmd.log_dir().starts_with(variables["PANORAMIC_LOG_DIR"]));
+        select_cases(&cmd, &console, subject_os, &mut plans, &mut excluded).unwrap();
+        assert_eq!(
+            plans.iter().map(|plan| plan.case().name()).collect::<Vec<_>>(),
+            ["dsd-plain"]
+        );
     }
 
-    #[tokio::test]
-    async fn image_override_name_errors_have_the_same_prefix_with_or_without_artifacts() {
-        let dir = tempfile::tempdir().unwrap();
-        let cases = dir.path().join("cases");
-        write_case(&cases, "linux", &format!("type: correctness\n{CORRECTNESS_FIELDS}"));
-        let manifest = dir.path().join("artifacts.toml");
-        std::fs::write(&manifest, "schema = 1\n[roles]\n").unwrap();
-        let logs = dir.path().join("logs");
-        for (overrides, expected) in [
-            ("baseline=x,baseline=y", "Failed to discover tests: Image override 'baseline' is given more than once. Name each container at most once."),
-            ("unknown=x", "Failed to discover tests: No test in this run uses a container named 'unknown'. Available: baseline, comparison, datadog-intake, millstone."),
-        ] {
-            for use_artifacts in [false, true] {
-                let mut args = vec![
-                    "panoramic", "run", "-d", cases.to_str().unwrap(),
-                    "--subject-os", "linux", "--image-override", overrides,
-                    "-l", logs.to_str().unwrap(),
-                ];
-                if use_artifacts {
-                    args.extend(["--artifacts", manifest.to_str().unwrap()]);
-                }
-                let Command::Run(cmd) = Cli::try_parse_from(args).unwrap().command else {
-                    panic!("expected run")
-                };
-                let (exit, diagnostic) = run_with_diagnostics(*cmd, dir.path()).await;
-                assert_eq!(exit, ExitCode::from(2));
-                assert!(diagnostic.contains(expected), "{diagnostic}");
-                assert!(!logs.exists());
-            }
-        }
+    fn plans_with_pods(dir: &Path, os: Os, manifest: ArtifactManifest) -> Vec<CasePlan> {
+        let registries = panoramic_core::case::Registries {
+            participant_types: &[&panoramic_participants::AgentAdp, &PodFixture],
+            ..REGISTRIES
+        };
+        let mut planner = Planner::new(registries, manifest).unwrap();
+        panoramic_core::case::CaseLoader::new(registries)
+            .discover_cases(&[dir.to_path_buf()])
+            .unwrap()
+            .into_iter()
+            .filter_map(|case| planner.compile(case, os).unwrap().into_plan())
+            .collect()
+    }
+
+    fn kind_inputs(plans: &[CasePlan], base: &Path) -> NativeInputs {
+        use panoramic_core::artifact::ArtifactVerification;
+
+        let verified = verified_artifacts(
+            &needed_artifacts(plans)
+                .into_iter()
+                .filter(|binding| matches!(binding.role.kind, ArtifactKind::Image { .. }))
+                .map(|binding| ArtifactVerification {
+                    identity: Ok(format!("verified:{}", binding.role.name)),
+                    binding,
+                })
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        NativeInputs::new(Arc::new(RunBackends::default()), &verified, base).unwrap()
     }
 
     #[test]
-    fn runners_built_from_bindings_report_bound_images_to_kind_and_listing() {
+    fn plans_report_bound_images_to_kind_and_listing() {
         let dir = tempfile::tempdir().unwrap();
         write_case(
             dir.path(),
             "integration",
-            "name: integration\ntimeout: 1s\nsubject_os: [linux, windows]\nparticipants: {adp: {type: agent-adp, subject: true}}\nprocedure: [{step: log_contains, on: adp, pattern: ready, timeout: 5s}]\n",
+            &PARTICIPANT_FIELDS.replace("[linux]", "[linux, windows]"),
         );
-        for (name, runtime) in [("docker", "docker"), ("kind", "kubernetes_in_docker")] {
-            write_case(
-                dir.path(),
-                name,
-                &format!(
-                    "type: correctness\n{}",
-                    CORRECTNESS_FIELDS.replace("runtime: docker", &format!("runtime: {runtime}"))
-                ),
-            );
-        }
+        write_case(dir.path(), "docker", PARTICIPANT_FIELDS);
+        let pod = PARTICIPANT_FIELDS
+            .replace("agent-adp", "pod-fixture")
+            .replace("subject: true", "subject: true, realization: {kind: kubernetes-pod}");
+        write_case(dir.path(), "kind", &pod);
         for os in [Os::Linux, Os::Windows] {
             let manifest = ArtifactManifest::new(
                 "test",
@@ -1534,17 +1433,11 @@ mod tests {
                 ]),
             )
             .unwrap();
-            let plans = discover_in_scope(
-                &mut Planner::new(REGISTRIES, manifest).unwrap(),
-                &[dir.path().to_path_buf()],
-                os,
-            )
-            .unwrap()
-            .plans;
-            let artifacts = RunnerArtifacts::Bound(BoundArtifacts::new(needed_artifacts(&plans)));
-            let built = build_runners(plans, &artifacts).unwrap();
-            let listing = listing(&built, &[], os);
-            assert!(listing["integration"].get("images").is_none());
+            let plans = plans_with_pods(dir.path(), os, manifest);
+            let listing = listing(&plans, &[], os);
+            assert!(listing
+                .values()
+                .all(|row| row.get("images").is_none() && row.get("runtime").is_none()));
             assert_eq!(
                 listing["integration"]["roles"][0]["reference"],
                 if os == Os::Linux {
@@ -1553,20 +1446,9 @@ mod tests {
                     "windows:bound"
                 }
             );
-            for name in ["docker", "kind"] {
-                if os != Os::Linux {
-                    assert!(!listing.contains_key(name));
-                    continue;
-                }
-                assert_eq!(
-                    listing[name]["images"],
-                    serde_json::json!({
-                        "baseline": "linux:bound", "comparison": "linux:bound", "datadog-intake": "tools:bound", "millstone": "tools:bound",
-                    })
-                );
-            }
+            let inputs = kind_inputs(&plans, dir.path());
             assert_eq!(
-                collect_kind_images(&built, None).unwrap(),
+                collect_kind_images(&plans, &BTreeMap::new(), Some(&inputs)).unwrap(),
                 if os == Os::Linux {
                     vec!["linux:bound", "tools:bound"]
                 } else {
@@ -1614,11 +1496,9 @@ mod tests {
         let prepared = prepare_run(&cmd, &console)
             .await
             .unwrap_or_else(|_| panic!("run should prepare"));
-        assert_eq!(prepared.built.len(), 1);
-        let Execution::Unprovidable(message) = &prepared.built[0].execution else {
-            panic!("unavailable realization must be an explicit execution state");
-        };
-        let message = message.clone();
+        assert_eq!(prepared.plans.len(), 1);
+        let message = providability::error(&prepared.plans[0], &prepared.unprovidable)
+            .expect("unavailable realization must report a setup error");
         assert_eq!(report_run(prepared, &cmd, &console).await, ExitCode::from(2));
         let run_dir = std::fs::read_dir(&logs).unwrap().next().unwrap().unwrap().path();
         let report: serde_json::Value =
@@ -1645,122 +1525,51 @@ mod tests {
     }
 
     #[test]
-    fn kind_images_come_only_from_cases_that_need_a_kubernetes_pod() {
-        // Reporting the default runtime makes image collection rely on the plan's realization.
-        struct DefaultRuntime(Box<dyn test::Test>);
-
-        #[async_trait::async_trait]
-        impl test::Test for DefaultRuntime {
-            fn images(&self) -> BTreeMap<&str, String> {
-                self.0.images()
-            }
-
-            async fn run(&self, _tctx: test::TestContext) -> panoramic_core::result::TestResult {
-                panic!("collecting images must not run a case")
-            }
-        }
+    fn kind_images_come_only_from_providable_cases_that_need_a_kubernetes_pod() {
+        use crate::{config::tests::plan, runner::test_support::native_pod_plan};
 
         let dir = tempfile::tempdir().unwrap();
-        write_case(
-            dir.path(),
-            "docker",
-            &format!("type: correctness\n{CORRECTNESS_FIELDS}"),
+        let plans = [plan(PARTICIPANT_FIELDS, Os::Linux), native_pod_plan()];
+        let inputs = kind_inputs(&plans, dir.path());
+        assert_eq!(
+            collect_kind_images(&plans, &BTreeMap::new(), Some(&inputs)).unwrap(),
+            ["pod:bound"]
         );
-        write_case(
-            dir.path(),
-            "pod",
-            &format!(
-                "type: correctness\n{}",
-                CORRECTNESS_FIELDS
-                    .replace("runtime: docker", "runtime: kubernetes_in_docker")
-                    .replace("base:file", "base:pod")
-                    .replace("comp:file", "comp:pod")
-            ),
-        );
-        let plans = discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], Os::Linux)
-            .unwrap()
-            .plans;
-        let mut built: Vec<_> = build_runners(plans, &RunnerArtifacts::Overrides(&[]))
-            .unwrap()
-            .into_iter()
-            .map(|BuiltCase { plan, execution }| {
-                let Execution::Runner(runner) = execution else {
-                    panic!("expected a runner")
-                };
-                BuiltCase {
-                    plan,
-                    execution: Execution::Runner(Box::new(DefaultRuntime(runner))),
-                }
-            })
-            .collect();
-        let expected: std::collections::BTreeSet<_> = built
-            .iter()
-            .find(|built| built.plan.case().name() == "pod")
-            .unwrap()
-            .runner()
-            .unwrap()
-            .images()
-            .into_values()
-            .collect();
-        let images = collect_kind_images(&built, None).unwrap();
-        assert_eq!(images, expected.into_iter().collect::<Vec<_>>());
-        assert!(images.contains(&"base:pod".to_string()));
-        assert!(images.contains(&"comp:pod".to_string()));
-        assert!(!images.contains(&"base:file".to_string()));
-        assert!(!images.contains(&"comp:file".to_string()));
-        built
-            .iter_mut()
-            .find(|built| built.plan.case().name() == "pod")
-            .unwrap()
-            .execution = Execution::Unprovidable("kind unavailable".to_string());
-        assert!(collect_kind_images(&built, None).unwrap().is_empty());
-
-        use panoramic_core::artifact::ArtifactVerification;
-
-        use crate::runner::test_support::native_pod_case;
-
-        let native = native_pod_case();
-        let verified = verified_artifacts(
-            &native
-                .plan
-                .artifacts()
-                .iter()
-                .filter(|binding| matches!(binding.role.kind, ArtifactKind::Image { .. } | ArtifactKind::Binary))
-                .map(|binding| ArtifactVerification {
-                    binding: binding.clone(),
-                    identity: Ok(format!("verified:{}", binding.role.name)),
-                })
-                .collect::<Vec<_>>(),
-        )
-        .unwrap();
-        let inputs = NativeInputs::new(Arc::new(RunBackends::default()), &verified, dir.path()).unwrap();
-        built.push(native);
-        assert_eq!(collect_kind_images(&built, Some(&inputs)).unwrap(), ["pod:bound"]);
-        assert!(collect_kind_images(&built, None)
+        assert!(collect_kind_images(&plans, &BTreeMap::new(), None)
             .unwrap_err()
             .contains("inputs were not prepared"));
         let empty_inputs = NativeInputs::new(Arc::new(RunBackends::default()), &[], dir.path()).unwrap();
         assert_eq!(
-            collect_kind_images(&built, Some(&empty_inputs)).unwrap_err(),
+            collect_kind_images(&plans, &BTreeMap::new(), Some(&empty_inputs)).unwrap_err(),
             "native inputs lack verified image role 'pod-image'",
         );
+
+        for kind in [RealizationKind::KubernetesPod, RealizationKind::LinuxContainer] {
+            let unprovidable = BTreeMap::from([(Realization { os: Os::Linux, kind }, "unavailable".into())]);
+            assert!(collect_kind_images(&plans, &unprovidable, None).unwrap().is_empty());
+        }
     }
 
     #[tokio::test]
     async fn a_native_pod_case_starts_kind_even_without_images_to_load() {
-        use crate::runner::test_support::native_pod_case;
+        use crate::runner::test_support::native_pod_plan;
 
-        let mut ready = start_kind_setup(&[native_pod_case()], Ok(Vec::new()), |images| async move {
-            assert!(images.is_empty());
-            Ok(())
-        })
+        let mut ready = start_kind_setup(
+            &[native_pod_plan()],
+            &BTreeMap::new(),
+            Ok(Vec::new()),
+            |images| async move {
+                assert!(images.is_empty());
+                Ok(())
+            },
+        )
         .expect("a native pod case needs cluster setup");
         tokio::time::timeout(std::time::Duration::from_secs(5), ready.wait_for(Option::is_some))
             .await
             .unwrap()
             .unwrap();
         assert_eq!(*ready.borrow(), Some(Ok(())));
-        assert!(start_kind_setup(&[], Ok(Vec::new()), |_| async {
+        assert!(start_kind_setup(&[], &BTreeMap::new(), Ok(Vec::new()), |_| async {
             panic!("a run without pod cases must not start a cluster")
         })
         .is_none());
@@ -1769,9 +1578,15 @@ mod tests {
     #[tokio::test]
     async fn unprovidable_pod_cases_do_not_start_kind() {
         // A providability failure must not start a cluster on the rejected Docker context.
-        let mut built = crate::runner::test_support::native_pod_case();
-        built.execution = Execution::Unprovidable("Docker context mismatch".into());
-        assert!(start_kind_setup(&[built], Ok(Vec::new()), |_| async {
+        let plan = crate::runner::test_support::native_pod_plan();
+        let unprovidable = BTreeMap::from([(
+            Realization {
+                os: Os::Linux,
+                kind: RealizationKind::KubernetesPod,
+            },
+            "Docker context mismatch".into(),
+        )]);
+        assert!(start_kind_setup(&[plan], &unprovidable, Ok(Vec::new()), |_| async {
             panic!("unprovidable pods must not start a cluster")
         })
         .is_none());
@@ -1787,46 +1602,6 @@ mod tests {
             "revision was: {}",
             build_revision
         );
-    }
-
-    #[tokio::test]
-    async fn image_override_validation_precedes_name_selection() {
-        let dir = tempfile::tempdir().unwrap();
-        let case_dir = dir.path().join("unselected");
-        std::fs::create_dir(&case_dir).unwrap();
-        std::fs::write(
-            case_dir.join("config.yaml"),
-            r#"
-type: correctness
-runtime: docker
-analysis_mode: metrics
-baseline: {image: base}
-comparison: {image: comp}
-"#,
-        )
-        .unwrap();
-        for (entry, expected) in [
-            ("millstone=tools:custom", EXIT_NO_TESTS_SELECTED),
-            ("typo=tools:custom", EXIT_HARNESS_ERROR),
-        ] {
-            let cli = Cli::try_parse_from([
-                "panoramic",
-                "run",
-                "--subject-os",
-                "linux",
-                "-d",
-                dir.path().to_str().unwrap(),
-                "-t",
-                "not-discovered",
-                "--image-override",
-                entry,
-            ])
-            .unwrap();
-            let Command::Run(cmd) = cli.command else {
-                panic!("expected run")
-            };
-            assert_eq!(run_tests(*cmd, false).await, ExitCode::from(expected));
-        }
     }
 
     #[tokio::test]
@@ -1871,29 +1646,27 @@ comparison: {image: comp}
     }
 
     #[test]
-    fn selection_matches_loaded_case_names_including_matrix_variants() {
+    fn selection_matches_loaded_case_names() {
         let dir = tempfile::tempdir().unwrap();
         write_case(
             dir.path(),
             "integration",
             "name: integration\ntimeout: 7s\nsubject_os: [linux]\nparticipants: {adp: {type: agent-adp, subject: true}}\nprocedure: [{step: log_contains, on: adp, pattern: ready, timeout: 5s}]\n",
         );
-        write_case(
-            dir.path(),
-            "matrix",
-            &format!("type: correctness_matrix\n{CORRECTNESS_FIELDS}variants: [{{name: second}}, {{name: first}}]\n"),
-        );
+        for name in ["matrix-first", "matrix-second"] {
+            write_case(dir.path(), name, PARTICIPANT_FIELDS);
+        }
         let cases = discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], Os::Linux)
             .unwrap()
             .plans;
         let names: Vec<_> = cases.iter().map(|plan| plan.case().name()).collect();
-        let (selected, unmatched) = resolve_selection("matrix/first, missing, integration", &names);
-        assert_eq!(selected, ["matrix/first", "integration"]);
+        let (selected, unmatched) = resolve_selection("matrix-first, missing, integration", &names);
+        assert_eq!(selected, ["matrix-first", "integration"]);
         assert_eq!(unmatched, ["missing"]);
     }
 
     #[tokio::test]
-    async fn selection_rejects_disabled_cases() {
+    async fn selection_rejects_cases_outside_the_discovery_roots() {
         let dir = tempfile::tempdir().unwrap();
         write_case(
             dir.path(),
@@ -1905,11 +1678,7 @@ comparison: {image: comp}
             "linux-only",
             "name: linux-only\ntimeout: 7s\nsubject_os: [linux]\nparticipants: {adp: {type: agent-adp, subject: true}}\nprocedure: [{step: log_contains, on: adp, pattern: ready, timeout: 5s}]\n",
         );
-        write_case(
-            dir.path(),
-            "disabled",
-            &format!("type: correctness\ndisabled: true\n{CORRECTNESS_FIELDS}"),
-        );
+        write_case(&dir.path().join("disabled-cases"), "disabled", PARTICIPANT_FIELDS);
         let cli = Cli::try_parse_from([
             "panoramic",
             "run",

@@ -3,7 +3,6 @@
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
-use airlock::driver::DEFAULT_ALPINE_IMAGE;
 use chrono::Local;
 use clap::{
     builder::{PossibleValuesParser, TypedValueParser},
@@ -11,9 +10,7 @@ use clap::{
 };
 use panoramic_core::layout::Os;
 
-use crate::config::runner_artifacts::LegacyArtifactInputs;
 use crate::text_output::OutputFormat;
-use crate::{image_override::ImageOverride, test::RunnerSettings};
 
 /// Environment variables Panoramic honors but doesn't own, rendered at the bottom of the help output.
 ///
@@ -82,8 +79,8 @@ impl LogLevel {
 //
 // Panoramic-owned settings should preferably be passed by command-line argument. If an
 // environment variable is desired, it should be prefixed with PANORAMIC_. For example:
-// CLI arg: --alpine-image
-// ENV var: PANORAMIC_ALPINE_IMAGE
+// CLI arg: --log-dir
+// ENV var: PANORAMIC_LOG_DIR
 //
 // Saluki-repo-owned settings need not have a PANORAMIC_ prefix if they are shared with other
 // processes, build or CI environments. These SHOULD have an addressable command-line argument.
@@ -196,8 +193,8 @@ pub struct ArtifactCasesCommand {
     pub subject_os: Os,
 
     /// Artifact manifest (TOML) binding artifact roles to image references and paths.
-    /// Roles it omits use their local defaults; a role no participant type, backend or
-    /// typed case schema declares is an error. Each needed role is printed with the
+    /// Roles it omits use their local defaults; a role no participant type or backend
+    /// declares is an error. Each needed role is printed with the
     /// reference it resolves to.
     #[arg(long, value_name = "FILE", verbatim_doc_comment)]
     pub artifacts: Option<PathBuf>,
@@ -224,12 +221,8 @@ pub struct RunCommand {
     pub subject_os: Os,
 
     /// Artifact manifest (TOML) binding artifact roles to image references and paths.
-    /// Roles it omits use their local defaults; a role no participant type, backend or
-    /// typed case schema declares is an error. Every needed artifact is verified
-    /// before any case starts. Explicit --image-override and --alpine-image values,
-    /// including their PANORAMIC_*
-    /// environment variables, must name the same reference as the role they feed,
-    /// or the run exits 2.
+    /// Roles it omits use their local defaults; a role no participant type or backend
+    /// declares is an error. Every needed artifact is verified before any case starts.
     #[arg(long, value_name = "FILE", verbatim_doc_comment)]
     pub artifacts: Option<PathBuf>,
 
@@ -245,7 +238,7 @@ pub struct RunCommand {
     #[arg(short = 'f', long)]
     pub fail_fast: bool,
 
-    /// Show verbose output including all assertion details.
+    /// Show every step's message, including for passing tests.
     #[arg(short = 'v', long)]
     pub verbose: bool,
 
@@ -258,53 +251,17 @@ pub struct RunCommand {
     #[arg(short = 'l', long, env = "PANORAMIC_LOG_DIR", verbatim_doc_comment)]
     log_dir: Option<PathBuf>,
 
-    /// Name of the kind cluster to create or reuse for kind-runtime tests.
+    /// Name of the kind cluster to create or reuse for cases with Kubernetes pod participants.
     #[arg(long, default_value = crate::kind::DEFAULT_CLUSTER_NAME)]
     pub kind_cluster_name: String,
 
-    /// Don't delete the kind cluster after kind-runtime tests complete (useful for
-    /// local iteration)
+    /// Don't delete the kind cluster after cases with Kubernetes pod participants complete
+    /// (useful for local iteration).
     #[arg(long, verbatim_doc_comment)]
     pub no_delete_kind_cluster: bool,
-
-    #[arg(long, env = "PANORAMIC_ALPINE_IMAGE", help = format!(
-        "Alpine image for the short-lived container that fixes up shared-volume\npermissions. CI points this at an internal registry [default: {}]",
-        DEFAULT_ALPINE_IMAGE
-    ))]
-    alpine_image: Option<String>,
-
-    /// Image to run for one of a test's containers, as `<name>=<image>`, replacing
-    /// what the test case declares. Repeat the flag to name more than one container; the
-    /// environment variable takes them as one comma-separated list. CI uses this to run
-    /// the cases against the images built for the commit. `panoramic list --json`
-    /// reports the container names each test declares, and a name no test in the run
-    /// declares is an error
-    #[arg(
-        long = "image-override",
-        value_name = "NAME=IMAGE",
-        env = "PANORAMIC_IMAGE_OVERRIDES",
-        value_delimiter = ',',
-        verbatim_doc_comment
-    )]
-    pub image_overrides: Vec<ImageOverride>,
 }
 
 impl RunCommand {
-    /// Collects the settings that the runner hands to every test.
-    pub(crate) fn runner_settings(&self) -> RunnerSettings {
-        RunnerSettings {
-            alpine_image: self.alpine_image.clone().unwrap_or_else(|| DEFAULT_ALPINE_IMAGE.into()),
-        }
-    }
-
-    /// Collects artifact inputs explicitly given by flags or environment variables.
-    pub(crate) fn legacy_artifact_inputs(&self) -> LegacyArtifactInputs<'_> {
-        LegacyArtifactInputs {
-            image_overrides: &self.image_overrides,
-            alpine_image: self.alpine_image.as_deref(),
-        }
-    }
-
     /// Gets the log directory for this run.
     ///
     /// The base comes from `--log-dir`/`PANORAMIC_LOG_DIR`, falling back to a temporary directory.
@@ -333,14 +290,14 @@ pub struct ListCommand {
     pub subject_os: Os,
 
     /// Artifact manifest (TOML) binding artifact roles to image references and paths.
-    /// Roles it omits use their local defaults; a role no participant type, backend or
-    /// typed case schema declares is an error. The text listing shows the reference
+    /// Roles it omits use their local defaults; a role no participant type or backend
+    /// declares is an error. The text listing shows the reference
     /// each role resolves to.
     #[arg(long, value_name = "FILE", verbatim_doc_comment)]
     pub artifacts: Option<PathBuf>,
 
-    /// Output the discovered tests as json along with their image dependencies. A
-    /// `ci` script depends on this for dynamic pipeline creation
+    /// Output the discovered cases as JSON, with their layouts and artifact roles. The
+    /// correctness CI generator reads it.
     #[arg(long, verbatim_doc_comment)]
     pub json: bool,
 }
@@ -360,11 +317,7 @@ mod tests {
 
     /// Panoramic's own settings, each an argument on `run` with a `PANORAMIC_*` fallback that clap
     /// renders next to the flag.
-    const PANORAMIC_ENV_FALLBACKS: &[(&str, &str)] = &[
-        ("alpine_image", "PANORAMIC_ALPINE_IMAGE"),
-        ("log_dir", "PANORAMIC_LOG_DIR"),
-        ("image_overrides", "PANORAMIC_IMAGE_OVERRIDES"),
-    ];
+    const PANORAMIC_ENV_FALLBACKS: &[(&str, &str)] = &[("log_dir", "PANORAMIC_LOG_DIR")];
 
     fn run_command_of(cli: &Cli) -> &RunCommand {
         match &cli.command {
@@ -428,6 +381,26 @@ mod tests {
             assert!(help.contains("--subject-os"), "{help}");
             assert!(help.contains("host's OS"), "{help}");
             assert!(!help.contains("--runtime"), "{help}");
+        }
+    }
+
+    #[test]
+    fn help_describes_pod_cases_step_messages_and_listing_roles() {
+        for (command, expected) in [
+            ("run", "cases with Kubernetes pod participants"),
+            ("run", "Show every step's message, including for passing tests"),
+            (
+                "list",
+                "Output the discovered cases as JSON, with their layouts and artifact roles. The correctness CI generator reads it.",
+            ),
+        ] {
+            let mut cli = Cli::command();
+            let help = cli.find_subcommand_mut(command).unwrap().render_long_help().to_string();
+            let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(help.contains(expected), "{help}");
+            for obsolete in ["kind-runtime", "image dependencies", "assertion details"] {
+                assert!(!help.contains(obsolete), "{help}");
+            }
         }
     }
 
@@ -582,51 +555,17 @@ mod tests {
         assert!(!cmd.verbose);
         assert!(!cmd.no_tui);
         assert!(!cmd.no_delete_kind_cluster);
-        assert!(cmd.image_overrides.is_empty());
     }
 
     #[test]
-    fn image_overrides_accept_a_repeated_flag_and_a_delimited_list() {
-        let repeated = Cli::try_parse_from([
-            "panoramic",
-            "run",
-            "-d",
-            "cases",
-            "--image-override",
-            "millstone=registry.example.com/tools:abc123",
-            "--image-override",
-            "baseline=registry.example.com/agent:abc123",
-        ])
-        .expect("repeated flags should parse");
-
-        // The same pairs as one delimited value, which is the shape the environment variable takes.
-        let delimited = Cli::try_parse_from([
-            "panoramic",
-            "run",
-            "-d",
-            "cases",
-            "--image-override",
-            "millstone=registry.example.com/tools:abc123,baseline=registry.example.com/agent:abc123",
-        ])
-        .expect("a delimited value should parse");
-
-        for cmd in [run_command_of(&repeated), run_command_of(&delimited)] {
-            let pairs: Vec<(&str, &str)> = cmd
-                .image_overrides
-                .iter()
-                .map(|entry| (entry.name.as_str(), entry.image.as_str()))
-                .collect();
-            assert_eq!(
-                pairs,
-                vec![
-                    ("millstone", "registry.example.com/tools:abc123"),
-                    ("baseline", "registry.example.com/agent:abc123")
-                ]
-            );
+    fn removed_image_flags_are_unknown_arguments() {
+        for flag in ["--image-override", "--alpine-image"] {
+            let error = Cli::try_parse_from(["panoramic", "run", flag, "image:unused"])
+                .err()
+                .expect("removed flags must not parse");
+            assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+            assert!(error.to_string().contains(flag));
         }
-
-        // A value that isn't a `name=image` pair fails at parse time rather than mid-run.
-        assert!(Cli::try_parse_from(["panoramic", "run", "-d", "cases", "--image-override", "millstone"]).is_err());
     }
 
     #[test]
@@ -685,30 +624,6 @@ mod tests {
         assert_eq!(cmd.subject_os, Os::MacOs);
         assert_eq!(cmd.kind_cluster_name, "custom");
         assert!(cmd.no_delete_kind_cluster);
-    }
-
-    #[test]
-    fn runner_settings_fall_back_to_the_documented_defaults() {
-        let cli = Cli::try_parse_from(["panoramic", "run", "-d", "cases"]).expect("minimal run should parse");
-        let settings = run_command_of(&cli).runner_settings();
-
-        assert_eq!(settings.alpine_image, DEFAULT_ALPINE_IMAGE);
-    }
-
-    #[test]
-    fn explicit_run_flags_plumb_into_runner_settings() {
-        let cli = Cli::try_parse_from([
-            "panoramic",
-            "run",
-            "-d",
-            "cases",
-            "--alpine-image",
-            "registry.example/alpine:3.20",
-        ])
-        .expect("run with explicit paths should parse");
-        let settings = run_command_of(&cli).runner_settings();
-
-        assert_eq!(settings.alpine_image, "registry.example/alpine:3.20");
     }
 
     #[test]
@@ -781,34 +696,6 @@ mod tests {
     }
 
     #[test]
-    fn legacy_artifact_inputs_contain_only_explicitly_given_values() {
-        let cli = Cli::try_parse_from(["panoramic", "run"]).unwrap();
-        let inputs = run_command_of(&cli).legacy_artifact_inputs();
-        assert!(inputs.image_overrides.is_empty());
-        assert_eq!(inputs.alpine_image, None);
-
-        let cli = Cli::try_parse_from([
-            "panoramic",
-            "run",
-            "--alpine-image",
-            "registry.example/alpine:latest",
-            "--image-override",
-            "comparison=agent:bound,datadog-intake=tools:bound",
-        ])
-        .unwrap();
-        let inputs = run_command_of(&cli).legacy_artifact_inputs();
-        assert_eq!(inputs.alpine_image, Some("registry.example/alpine:latest"));
-        assert_eq!(
-            inputs
-                .image_overrides
-                .iter()
-                .map(|entry| (entry.name.as_str(), entry.image.as_str()))
-                .collect::<Vec<_>>(),
-            [("comparison", "agent:bound"), ("datadog-intake", "tools:bound")]
-        );
-    }
-
-    #[test]
     fn run_artifacts_combines_with_non_artifact_run_flags() {
         let cli = Cli::try_parse_from([
             "panoramic",
@@ -830,7 +717,7 @@ mod tests {
     }
 
     #[test]
-    fn artifact_help_names_typed_case_schemas_as_role_declarers() {
+    fn artifact_help_names_participant_types_and_backends_as_role_declarers() {
         for path in [
             vec!["list"],
             vec!["run"],
@@ -844,7 +731,10 @@ mod tests {
                 subcommand = subcommand.find_subcommand_mut(name).unwrap();
             }
             let help = subcommand.render_long_help().to_string();
-            assert!(help.contains("typed case schema declares is an error."), "{help}");
+            let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(help.contains("no participant type or backend"), "{help}");
+            assert!(help.contains("declares is an error."), "{help}");
+            assert!(!help.contains("typed"), "{help}");
         }
     }
 

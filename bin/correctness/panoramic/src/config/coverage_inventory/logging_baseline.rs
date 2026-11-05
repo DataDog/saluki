@@ -11,9 +11,7 @@ use panoramic_core::{
 use panoramic_participants::AgentAdp;
 use serde_json::{json, Value};
 
-use super::{
-    create_case_dirs, read_text, repository_root, Inventory, INTEGRATION, JSON_PATH, NATIVE, OLD, PARTICIPANTS,
-};
+use super::{create_case_dirs, read_text, repository_root, Inventory, INTEGRATION, JSON_PATH, NATIVE, PARTICIPANTS};
 use crate::config::tests::write_case;
 
 const LOGGING_CASES: [&str; 7] = [
@@ -248,7 +246,7 @@ fn logging_baseline() -> BTreeMap<String, RecordedCase> {
         assert!(recorded.contains_key(name), "missing baseline case for {name}");
         assert_eq!(row["suite"], INTEGRATION, "{name}: unexpected baseline suite");
         assert_eq!(row["schema"], INTEGRATION, "{name}: unexpected baseline schema");
-        assert_eq!(row["execution"], OLD, "{name}: unexpected baseline execution");
+        assert_eq!(row["execution"], "old", "{name}: unexpected baseline execution");
     }
     recorded
 }

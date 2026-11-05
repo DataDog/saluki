@@ -19,14 +19,10 @@
 //! Input records are in send order. Decoded records are grouped by kind and ordered within each kind as
 //! `datadog-intake` dumped them; there is no global receive order across kinds.
 
-use std::{
-    fs::File,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 use panoramic_core::result::TestOutcome;
-pub(crate) use panoramic_steps::compare::decoded::Side;
-use panoramic_steps::compare::{decoded::write_decoded_records, intake::CollectedData};
+use panoramic_steps::compare::decoded::Side;
 use saluki_error::{ErrorContext as _, GenericError};
 use serde::Serialize;
 use serde_json::Value;
@@ -40,9 +36,6 @@ const INPUT_RECORDS_FILE_NAME: &str = "input.jsonl.zst";
 /// Must match `millstone::capture::INPUT_MANIFEST_FILE_NAME`.
 const INPUT_MANIFEST_FILE_NAME: &str = "input-manifest.json";
 
-/// File a runtime writes to explain why it produced no input capture.
-const INPUT_UNAVAILABLE_FILE_NAME: &str = "input-unavailable.txt";
-
 /// The merged manifest, the one artifact every completed test keeps.
 const MANIFEST_FILE_NAME: &str = "manifest.json";
 
@@ -52,7 +45,7 @@ const MANIFEST_FORMAT: &str = "panoramic-traffic-manifest";
 const MANIFEST_FORMAT_VERSION: u32 = 1;
 
 /// Returns the traffic directory for a test's log directory.
-pub(crate) fn traffic_dir(log_dir: &Path) -> PathBuf {
+fn traffic_dir(log_dir: &Path) -> PathBuf {
     log_dir.join(TRAFFIC_DIR_NAME)
 }
 
@@ -90,60 +83,6 @@ struct TrafficManifest {
 struct DecodedUnavailable {
     side: &'static str,
     reason: String,
-}
-
-/// Writes one side's decoded telemetry into `dir`, creating it if necessary.
-///
-/// A failure is logged and recorded as the side's unavailable reason, never fatal: a missing artifact is a lost
-/// diagnostic, not a failed verdict.
-pub(crate) fn write_decoded(dir: &Path, side: Side, data: &CollectedData) {
-    if let Err(e) = try_write_decoded(dir, side, data) {
-        warn!(side = side.name(), error = %format!("{:#}", e), "Failed to write decoded telemetry capture.");
-        record_decoded_unavailable(dir, side, &format!("Failed to write the decoded capture: {:#}", e));
-    }
-}
-
-fn try_write_decoded(dir: &Path, side: Side, data: &CollectedData) -> Result<(), GenericError> {
-    std::fs::create_dir_all(dir)
-        .with_error_context(|| format!("Failed to create traffic directory '{}'.", dir.display()))?;
-
-    let records_path = dir.join(side.records_file_name());
-    let file = File::create(&records_path)
-        .with_error_context(|| format!("Failed to create decoded capture '{}'.", records_path.display()))?;
-    let role = match side {
-        Side::Baseline => "core Agent alone (reference side)",
-        Side::Comparison => "core Agent with ADP (side under test)",
-    };
-    let manifest = match write_decoded_records(file, side, role, "datadog-intake dump endpoints", data) {
-        Ok(manifest) => manifest,
-        Err(e) => {
-            // A half-written file can't be read back, and leaving it would look like a complete capture.
-            let _ = std::fs::remove_file(&records_path);
-            return Err(e);
-        }
-    };
-
-    write_json_file(&dir.join(side.manifest_file_name()), &manifest)
-}
-
-/// Records why a runtime produced no input capture, for [`finalize`] to fold into the manifest.
-///
-/// Failures are logged, never fatal.
-pub(crate) fn record_input_unavailable(dir: &Path, reason: &str) {
-    write_marker(dir, INPUT_UNAVAILABLE_FILE_NAME, reason);
-}
-
-/// Records why `side` has no decoded capture, for [`finalize`] to fold into the manifest.
-///
-/// Failures are logged, never fatal.
-fn record_decoded_unavailable(dir: &Path, side: Side, reason: &str) {
-    write_marker(dir, &side.unavailable_file_name(), reason);
-}
-
-fn write_marker(dir: &Path, file_name: &str, reason: &str) {
-    if let Err(e) = std::fs::create_dir_all(dir).and_then(|()| std::fs::write(dir.join(file_name), reason)) {
-        warn!(path = %dir.display(), file = file_name, error = %e, "Failed to record missing traffic capture.");
-    }
 }
 
 /// Merges the traffic sidecars into [`MANIFEST_FILE_NAME`] and applies the outcome's retention policy.
@@ -198,7 +137,7 @@ pub(crate) fn finalize(log_dir: &Path, outcome: TestOutcome) {
 
     let input_unavailable_reason = input_manifest
         .is_none()
-        .then(|| missing_input_reason(&dir, input_bytes.is_some()));
+        .then(|| missing_input_reason(input_bytes.is_some()));
     let input =
         input_manifest.map(|manifest| with_file_state(manifest, INPUT_RECORDS_FILE_NAME, input_bytes, &input_records));
     let decoded = decoded_manifests
@@ -236,21 +175,20 @@ pub(crate) fn finalize(log_dir: &Path, outcome: TestOutcome) {
     for sidecar in sidecars {
         remove_file(&sidecar);
     }
-    remove_file(&dir.join(INPUT_UNAVAILABLE_FILE_NAME));
     for side in Side::ALL {
         remove_file(&dir.join(side.unavailable_file_name()));
     }
 }
 
-/// Explains an unusable input capture: a runtime's own note if it left one, otherwise what the directory shows.
-fn missing_input_reason(dir: &Path, has_orphaned_records: bool) -> String {
-    match std::fs::read_to_string(dir.join(INPUT_UNAVAILABLE_FILE_NAME)) {
-        Ok(reason) => reason.trim().to_string(),
-        Err(_) if has_orphaned_records => format!(
+/// Explains an unusable input capture from the directory contents.
+fn missing_input_reason(has_orphaned_records: bool) -> String {
+    if has_orphaned_records {
+        format!(
             "'{}' has no readable '{}', so the capture cannot be interpreted.",
             INPUT_RECORDS_FILE_NAME, INPUT_MANIFEST_FILE_NAME
-        ),
-        Err(_) => "No input capture was written for this test.".to_string(),
+        )
+    } else {
+        "No input capture was written for this test.".to_string()
     }
 }
 
@@ -434,18 +372,16 @@ mod tests {
         let log_dir = tempfile::tempdir().expect("temp dir should be created");
         let dir = seed_traffic_dir(log_dir.path(), false);
 
-        record_input_unavailable(&dir, "the kind runtime cannot extract it");
         finalize(log_dir.path(), TestOutcome::Failed);
 
         let manifest = read_manifest(&dir);
         assert!(manifest["input"].is_null());
         assert_eq!(
             manifest["input_unavailable_reason"],
-            "the kind runtime cannot extract it"
+            "No input capture was written for this test."
         );
         // The decoded captures are unaffected by a missing input capture.
         assert_eq!(manifest["decoded"].as_array().map(Vec::len), Some(2));
-        assert!(!dir.join(INPUT_UNAVAILABLE_FILE_NAME).exists());
     }
 
     #[test]
@@ -477,8 +413,9 @@ mod tests {
     fn a_decoded_capture_is_kept_on_failure_and_deleted_on_pass() {
         for (outcome, retained) in [(TestOutcome::Failed, true), (TestOutcome::Passed, false)] {
             let log_dir = tempfile::tempdir().expect("temp dir should be created");
-            let dir = traffic_dir(log_dir.path());
-            write_decoded(&dir, Side::Comparison, &CollectedData::default());
+            let dir = seed_traffic_dir(log_dir.path(), false);
+            std::fs::remove_file(dir.join(Side::Baseline.manifest_file_name())).unwrap();
+            std::fs::remove_file(dir.join(Side::Baseline.records_file_name())).unwrap();
 
             finalize(log_dir.path(), outcome);
 
@@ -495,31 +432,22 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_decoded_write_is_reported_as_unavailable() {
-        let log_dir = tempfile::tempdir().expect("temp dir should be created");
+    fn a_missing_decoded_capture_is_reported_with_its_reason() {
+        let log_dir = tempfile::tempdir().unwrap();
         let dir = traffic_dir(log_dir.path());
-        // A directory where the sidecar belongs makes the sidecar write fail after the records are written.
-        std::fs::create_dir_all(dir.join(Side::Comparison.manifest_file_name())).expect("dir should be created");
-
-        write_decoded(&dir, Side::Comparison, &CollectedData::default());
-        assert!(dir.join(Side::Comparison.unavailable_file_name()).exists());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(Side::Comparison.unavailable_file_name()),
+            "capture write failed",
+        )
+        .unwrap();
 
         finalize(log_dir.path(), TestOutcome::Failed);
 
         let manifest = read_manifest(&dir);
-        assert_eq!(manifest["decoded"].as_array().map(Vec::len), Some(0));
+        assert_eq!(manifest["decoded"], serde_json::json!([]));
         assert_eq!(manifest["decoded_unavailable"][0]["side"], "comparison");
-        let reason = manifest["decoded_unavailable"][0]["reason"]
-            .as_str()
-            .expect("reason should be a string");
-        assert!(
-            reason.starts_with("Failed to write the decoded capture: Failed to write '"),
-            "{}",
-            reason
-        );
-        // The chain continues past the outer context to the I/O cause.
-        assert!(reason.contains("comparison-decoded-manifest.json'.: "), "{}", reason);
-        assert!(dir.join("comparison-decoded.jsonl.zst").exists());
+        assert_eq!(manifest["decoded_unavailable"][0]["reason"], "capture write failed");
         assert!(!dir.join(Side::Comparison.unavailable_file_name()).exists());
     }
 
@@ -554,7 +482,8 @@ mod tests {
     fn unavailable_markers_stay_until_the_manifest_is_written() {
         let log_dir = tempfile::tempdir().expect("temp dir should be created");
         let dir = traffic_dir(log_dir.path());
-        record_decoded_unavailable(&dir, Side::Comparison, "collection failed");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(Side::Comparison.unavailable_file_name()), "collection failed").unwrap();
         // A directory where the merged manifest belongs makes its write fail.
         std::fs::create_dir_all(dir.join(MANIFEST_FILE_NAME)).expect("dir should be created");
 

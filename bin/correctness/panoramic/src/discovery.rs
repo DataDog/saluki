@@ -129,11 +129,7 @@ mod tests {
             "{}",
             failure.message
         );
-        assert!(
-            failure.message.contains("Unknown test type 'bogus'"),
-            "{}",
-            failure.message
-        );
+        assert!(failure.message.contains("unknown field `type`"), "{}", failure.message);
         assert!(failure.message.contains(path.canonicalize().unwrap().to_str().unwrap()));
         assert_eq!(failure.exit, ExitCode::from(2));
     }

@@ -321,7 +321,7 @@ mod tests {
     use crate::{
         artifact::ArtifactRole,
         case::{
-            fixtures::{minimal_procedure, FixtureTypes, Server, STEPS},
+            fixtures::{minimal_procedure, Server, STEPS},
             CaseLoader, Registries,
         },
         endpoint::{ConsumedEndpoint, Endpoint, ResolvedAddress},
@@ -417,9 +417,8 @@ mod tests {
         let registries = Registries {
             participant_types: &[&Observer, &Server],
             steps: STEPS,
-            ..Default::default()
         };
-        let loader = CaseLoader::new(registries, FixtureTypes);
+        let loader = CaseLoader::new(registries);
         let yaml = concat!("timeout: 1s\nsubject_os: [linux]\nparticipants:\n  subject: {type: observer, subject: true, config: {env: {PORT: '{{ self.facts.port }}', OWN: '{{self.late.ip}}/{{  subject.late.ip  }}'}, params: {mode: [{nested: ['{{z-other.facts.file}}', false, 7]}]}}}\n  z-other: {type: server}\n", minimal_procedure!(), "\n");
         let case = loader
             .load_content("cases", yaml, "alpha", Path::new("alpha/config.yaml"))
@@ -782,7 +781,7 @@ mod tests {
                     assert_eq!(config.params["mode"][0]["nested"], reference);
                 }
                 assert_eq!(
-                    plan.participants.as_ref().unwrap().planned.participants["subject"]
+                    plan.participants.planned.participants["subject"]
                         .endpoint_references
                         .len(),
                     1
@@ -810,7 +809,7 @@ mod tests {
             })
         );
         assert_eq!(
-            plan.participants.as_ref().unwrap().planned.participants["subject"]
+            plan.participants.planned.participants["subject"]
                 .endpoint_references
                 .len(),
             1
@@ -878,8 +877,8 @@ mod tests {
                         assert_eq!(plan.effective_config("subject").unwrap().env["TARGET"], url);
                     }
                     assert_eq!(plan.effective_config("subject").unwrap().env["KEY"], reference);
-                    assert_eq!(plan.start_order().unwrap(), &[vec!["subject".to_string()]]);
-                    assert!(plan.participants.as_ref().unwrap().planned.runner_host_ports.is_empty());
+                    assert_eq!(plan.start_order(), &[vec!["subject".to_string()]]);
+                    assert!(plan.participants.planned.runner_host_ports.is_empty());
                 }
             }
         }
@@ -917,7 +916,7 @@ mod tests {
             let plan = compile_with(&mut planner, &yaml, os).unwrap().unwrap();
             if os == Os::Linux {
                 assert_eq!(plan.endpoint_address("subject", "server", "api"), None);
-                assert!(plan.participants.as_ref().unwrap().planned.participants["subject"]
+                assert!(plan.participants.planned.participants["subject"]
                     .endpoint_references
                     .is_empty());
                 assert_eq!(planner.ports.allocate(), Ok(20000));

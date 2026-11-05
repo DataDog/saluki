@@ -19,8 +19,7 @@ use panoramic_core::{
     step::{Need, Step, StepContext, StepFactory, StepFields},
 };
 
-use super::{test_support::test_runner_settings, *};
-use crate::config::typed_case::TypedConfigLoader;
+use super::*;
 
 const IMAGE: ArtifactRole = ArtifactRole {
     name: "report-test-image",
@@ -124,13 +123,12 @@ impl StepFactory for Pass {
     }
 }
 
-fn plan() -> LoadedPlan {
+fn plan() -> CasePlan {
     let registries = Registries {
         participant_types: &[&Fixture],
         steps: &[&Pass],
-        typed_case_roles: &[],
     };
-    let case = CaseLoader::new(registries, TypedConfigLoader)
+    let case = CaseLoader::new(registries)
         .load_content("cases", "timeout: 2m\nsubject_os: [linux]\nparticipants:\n  subject: {type: fixture, subject: true}\nprocedure: [{step: pass}]",
             "report", Path::new("cases/report/config.yaml"))
         .unwrap().remove(0);
@@ -161,17 +159,13 @@ fn plan() -> LoadedPlan {
 }
 
 struct StallsAfterStartup {
-    plan: LoadedPlan,
     inputs: NativeInputs,
     cancel_run: CancellationToken,
 }
 
 #[async_trait]
 impl Test for StallsAfterStartup {
-    fn images(&self) -> BTreeMap<&str, String> {
-        BTreeMap::new()
-    }
-    async fn run(&self, tctx: TestContext) -> TestResult {
+    async fn run(&self, plan: &CasePlan, tctx: TestContext) -> TestResult {
         let control = CaseControl {
             interrupt: self.cancel_run.clone(),
             observations: tctx.observations.clone(),
@@ -183,7 +177,7 @@ impl Test for StallsAfterStartup {
             tasks: tctx.tasks.clone(),
             log_dir: tctx.log_dir().to_owned(),
         };
-        let result = lifecycle::run(self.plan.participants().unwrap(), &[&Fixture], &self.inputs, &control).await;
+        let result = lifecycle::run(plan.participants(), &[&Fixture], &self.inputs, &control).await;
         if result.outcome != TestOutcome::Passed {
             return result;
         }
@@ -199,23 +193,24 @@ async fn run_report_case(stall: bool) {
     let verified = verified_artifacts(&verified).expect("daemon, image and built Linux courier must be available");
     let inputs = NativeInputs::new(backends, &verified, Path::new(".")).unwrap();
     let logs = tempfile::tempdir().unwrap();
-    let mut runner = Runner::new(logs.path(), test_runner_settings());
+    let mut runner = Runner::new(logs.path());
     let cancel = CancellationToken::new();
     let built = if stall {
-        BuiltCase {
-            plan: self::plan(),
-            execution: Execution::Runner(Box::new(StallsAfterStartup {
-                plan,
+        BuiltCase::new(
+            plan,
+            Box::new(StallsAfterStartup {
                 inputs,
                 cancel_run: cancel.clone(),
-            })),
-        }
+            }),
+        )
     } else {
-        runner = runner.with_native(inputs, &[&Fixture]);
-        BuiltCase {
+        BuiltCase::new(
             plan,
-            execution: Execution::Native,
-        }
+            Box::new(NativeTest {
+                inputs: Arc::new(inputs),
+                types: &[&Fixture],
+            }),
+        )
     };
     runner.register(built).unwrap();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();

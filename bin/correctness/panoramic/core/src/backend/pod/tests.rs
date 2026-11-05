@@ -247,7 +247,7 @@ fn pod_host_mounts_come_from_recipes_and_reject_file_or_mount_overlap() {
 
 #[test]
 fn pod_options_are_validated_by_the_loader_and_manifest_builder() {
-    let loader = CaseLoader::new(fixtures::REGISTRIES, fixtures::FixtureTypes);
+    let loader = CaseLoader::new(fixtures::REGISTRIES);
     for (options, valid) in [
         ("host_pid: true, cri_socket: false", true),
         ("unknown: true", false),

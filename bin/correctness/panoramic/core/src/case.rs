@@ -1,9 +1,9 @@
-//! Loads participant case files and hands typed files to a supplied loader.
+//! Loads and discovers participant case files.
 //!
 //! [`CaseConfig`] records each case's metadata and parsed data.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeSet,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -12,7 +12,6 @@ use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::de::DeserializeOwned;
 
 use crate::{
-    artifact::ArtifactRole,
     layout::Os,
     participant::ParticipantType,
     step::{Step, StepFactory},
@@ -34,75 +33,35 @@ use self::{config_references::FileTemplates, participant_check::check_participan
 pub use self::{
     duration::CaseDuration,
     file::{
-        deserialize_env_map, CaseFile, ConfigOverlay, ConnectionTarget, EndpointOverride, FileSource,
-        ParticipantConfig, ParticipantEntry, ProcedureNode, RequestedRealization, StepNode,
+        CaseFile, ConfigOverlay, ConnectionTarget, EndpointOverride, FileSource, ParticipantConfig, ParticipantEntry,
+        ProcedureNode, RequestedRealization, StepNode,
     },
     template::StepTemplate,
 };
 
-/// Participant types, steps and typed-schema artifact roles available to case files. Defaults to empty registries.
+/// Participant types and steps available to case files. Defaults to empty registries.
 #[derive(Clone, Copy, Default)]
 pub struct Registries<'a> {
     /// Participant types registered as [`ParticipantType`] values, available to case files.
     pub participant_types: &'a [&'a dyn ParticipantType],
     /// Steps available to case procedures.
     pub steps: &'a [&'a dyn StepFactory],
-    /// Artifact roles declared by typed case schemas in addition to participant types and backends.
-    pub typed_case_roles: &'a [ArtifactRole],
 }
 
-/// Loads case files that select their schema with a top-level `type` key.
-pub trait TypedCaseLoader {
-    /// Parsed data of one typed case.
-    type Config;
-
-    /// Loads every case `content` declares. `case_type` is the file's `type` value as written,
-    /// which need not be a string.
-    fn load(
-        &self, case_type: &serde_json::Value, content: &str, directory: &str, source: &Path,
-    ) -> Result<Vec<TypedCase<Self::Config>>, GenericError>;
-}
-
-/// One case a typed loader loaded, with the metadata [`CaseConfig`] records for it.
-pub struct TypedCase<C> {
-    /// Case name used for selection and reporting.
-    pub name: String,
-    /// Optional reporting description.
-    pub description: Option<String>,
-    /// Suite used to group the case in reports.
-    pub suite: String,
-    /// Maximum execution time for the case.
-    pub timeout: Duration,
-    /// Operating systems the subject supports.
-    pub subject_os: BTreeSet<Os>,
-    /// Roles the runner uses on each declared subject OS, including backend roles.
-    pub artifact_roles: BTreeMap<Os, Vec<ArtifactRole>>,
-    /// Whether the case is excluded from execution.
-    pub disabled: bool,
-    /// Parsed data supplied by the typed loader.
-    pub config: C,
-}
-
-/// Loads and discovers cases with fixed registries and typed schemas.
-pub struct CaseLoader<'a, L> {
+/// Loads and discovers cases with fixed registries.
+pub struct CaseLoader<'a> {
     registries: Registries<'a>,
-    typed: L,
 }
 
-impl<'a, L> CaseLoader<'a, L> {
-    /// Creates a loader with registries and a typed loader.
-    pub const fn new(registries: Registries<'a>, typed: L) -> Self {
-        Self { registries, typed }
+impl<'a> CaseLoader<'a> {
+    /// Creates a loader with participant and step registries.
+    pub const fn new(registries: Registries<'a>) -> Self {
+        Self { registries }
     }
-}
 
-impl<L> CaseLoader<'_, L>
-where
-    L: TypedCaseLoader,
-{
-    /// Discovers every case in direct subdirectories, sorted by name and source, including disabled cases.
+    /// Discovers cases in direct subdirectories, sorted by name and source.
     ///
-    /// A `config.yaml` declares participants or selects a schema through the typed loader.
+    /// A `config.yaml` declares participants and their procedure.
     /// A `config.yml` is rejected even alongside a `config.yaml`; discovery loads the latter to report every problem.
     /// A `config.yaml` entry that cannot be resolved or read is a load error, including a dangling symlink.
     /// Participant cases take their suite from the directory above each discovery root, before resolving symlinks.
@@ -111,7 +70,7 @@ where
     ///
     /// Returns an error if a directory is missing or unreadable, a case cannot be loaded,
     /// a directory contains `config.yml`, or multiple cases share a name.
-    pub fn discover_cases(&self, dirs: &[PathBuf]) -> Result<Vec<CaseConfig<L::Config>>, GenericError> {
+    pub fn discover_cases(&self, dirs: &[PathBuf]) -> Result<Vec<CaseConfig>, GenericError> {
         let mut cases = Vec::new();
         let mut load_errors = Vec::new();
 
@@ -180,13 +139,13 @@ where
         Ok(cases)
     }
 
-    /// Loads every case a file declares, including disabled cases.
+    /// Loads the participant case declared by a file.
     ///
     /// # Errors
     ///
     /// Returns path resolution and read errors, an error if the directory has no name or no suite ancestor,
     /// and every error of [`Self::load_content`].
-    pub fn load_file(&self, config_path: &Path) -> Result<Vec<CaseConfig<L::Config>>, GenericError> {
+    pub fn load_file(&self, config_path: &Path) -> Result<Vec<CaseConfig>, GenericError> {
         let canonical_path = config_path.canonicalize().error_context(format!(
             "Failed to resolve configuration file: {}",
             config_path.display()
@@ -210,14 +169,11 @@ where
         self.load_content(suite, &content, dir_name, config_path)
     }
 
-    /// Loads `content` as the `config.yaml` recorded at `source`, in directory `directory`, using `suite` for participant cases.
-    ///
-    /// Files without a top-level `type` declare participants; other files go to the typed loader.
+    /// Loads `content` as the `config.yaml` recorded at `source`, in directory `directory`, using `suite` for reports.
     ///
     /// # Errors
     ///
-    /// Returns an error for invalid YAML or a typed file that declares no cases. Propagates typed-loader errors unchanged.
-    /// Typed artifact-role keys must match the case's declared subject operating systems.
+    /// Returns an error for invalid YAML or unknown fields.
     /// A declared name must match the directory. Participant cases require at least one participant,
     /// a nonempty, unique `subject_os` list using `linux`, `macos` or `windows`, and a nonempty procedure.
     /// Participant names must be DNS labels starting with a letter, other than `self`;
@@ -232,101 +188,46 @@ where
     /// are checked like environment values. Other sources are not read.
     pub fn load_content(
         &self, suite: &str, content: &str, directory: &str, source: &Path,
-    ) -> Result<Vec<CaseConfig<L::Config>>, GenericError> {
-        let peek: serde_json::Value = serde_saphyr::from_str(content)
-            .error_context(format!("Failed to parse config file as YAML: {}", source.display()))?;
-        let Some(case_type) = peek.get("type") else {
-            let file: CaseFile = deserialize_case(content, source)?;
-            let name = case_name(file.name.as_deref(), directory, source)?;
-            let subject_os = file.check(&name, source)?;
-            let file_templates =
-                check_participants(&file, &subject_os, self.registries.participant_types, &name, source)?;
-            let procedure = build_steps(
-                &file,
-                self.registries.steps,
-                self.registries.participant_types,
-                &name,
-                source,
-            )?;
-            return Ok(vec![CaseConfig {
-                name,
-                description: file.description.clone(),
-                suite: suite.into(),
-                source: source.to_path_buf(),
-                timeout: file.timeout.into(),
-                subject_os,
-                artifact_roles: BTreeMap::new(),
-                disabled: false,
-                schema: CaseSchema::Participants { file, procedure },
-                file_templates,
-            }]);
-        };
-        let cases = self.typed.load(case_type, content, directory, source)?;
-        if cases.is_empty() {
-            return Err(generic_error!("{} declares no cases", source.display()));
-        }
-        cases
-            .into_iter()
-            .map(|case| {
-                if !case.artifact_roles.keys().copied().eq(case.subject_os.iter().copied()) {
-                    return Err(generic_error!(
-                        "case '{}' in {}: artifact role operating systems must match subject_os: roles cover [{}], subject_os is [{}]",
-                        case.name,
-                        source.display(),
-                        case.artifact_roles.keys().map(|os| os.name()).collect::<Vec<_>>().join(", "),
-                        case.subject_os.iter().map(|os| os.name()).collect::<Vec<_>>().join(", "),
-                    ));
-                }
-                Ok(CaseConfig {
-                    name: case.name,
-                    description: case.description,
-                    suite: case.suite,
-                    source: source.to_path_buf(),
-                    timeout: case.timeout,
-                    subject_os: case.subject_os,
-                    artifact_roles: case.artifact_roles,
-                    disabled: case.disabled,
-                    schema: CaseSchema::Typed(case.config),
-                    file_templates: FileTemplates::default(),
-                })
-            })
-            .collect()
+    ) -> Result<Vec<CaseConfig>, GenericError> {
+        let file: CaseFile = deserialize_case(content, source)?;
+        let name = case_name(file.name.as_deref(), directory, source)?;
+        let subject_os = file.check(&name, source)?;
+        let file_templates = check_participants(&file, &subject_os, self.registries.participant_types, &name, source)?;
+        let procedure = build_steps(
+            &file,
+            self.registries.steps,
+            self.registries.participant_types,
+            &name,
+            source,
+        )?;
+        Ok(vec![CaseConfig {
+            name,
+            description: file.description.clone(),
+            suite: suite.into(),
+            source: source.to_path_buf(),
+            timeout: file.timeout.into(),
+            subject_os,
+            file,
+            procedure,
+            file_templates,
+        }])
     }
 }
 
 /// Immutable case metadata and parsed data.
-pub struct CaseConfig<C> {
+pub struct CaseConfig {
     name: String,
     description: Option<String>,
     suite: String,
     source: PathBuf,
     timeout: Duration,
     subject_os: BTreeSet<Os>,
-    artifact_roles: BTreeMap<Os, Vec<ArtifactRole>>,
-    disabled: bool,
-    schema: CaseSchema<C>,
+    file: CaseFile,
+    procedure: Vec<ProcedureNode<Box<dyn Step>>>,
     file_templates: FileTemplates,
 }
 
-/// A participant case or data supplied by the typed loader.
-pub enum CaseSchema<C> {
-    /// A participant case with its validated procedure.
-    Participants {
-        /// Parsed case file, including the original procedure fields.
-        file: CaseFile,
-        /// Steps built from their registered declarations.
-        procedure: Vec<ProcedureNode<Box<dyn Step>>>,
-    },
-    /// Parsed data supplied by the typed loader.
-    Typed(C),
-}
-
-impl<C> CaseConfig<C> {
-    /// Roles for a typed case on `os`, which must be in `subject_os`; loading guarantees a matching map entry.
-    pub(crate) fn typed_artifact_roles(&self, os: Os) -> &[ArtifactRole] {
-        &self.artifact_roles[&os]
-    }
-
+impl CaseConfig {
     pub(crate) fn file_templates(&self) -> &FileTemplates {
         &self.file_templates
     }
@@ -361,14 +262,14 @@ impl<C> CaseConfig<C> {
         &self.subject_os
     }
 
-    /// Returns whether the case is excluded from execution.
-    pub fn is_disabled(&self) -> bool {
-        self.disabled
+    /// Returns the parsed participant case file.
+    pub fn file(&self) -> &CaseFile {
+        &self.file
     }
 
-    /// Returns the parsed case data and built procedure.
-    pub fn schema(&self) -> &CaseSchema<C> {
-        &self.schema
+    /// Returns the validated procedure built from registered steps.
+    pub fn procedure(&self) -> &[ProcedureNode<Box<dyn Step>>] {
+        &self.procedure
     }
 }
 
@@ -416,105 +317,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_file_with_a_top_level_type_is_handed_to_the_typed_loader_with_its_text_directory_and_source() {
-        let content = "# Preserve the text, including comments.\ntype: fixture\nvalue: 'true'\n";
-        let source = Path::new("original/config.yaml");
-        let cases = fixtures::LOADER
-            .load_content("cases", content, "alias", source)
-            .unwrap();
-        assert_eq!(cases.len(), 1);
-        let case = &cases[0];
-        assert_eq!(case.name(), "alias");
-        assert_eq!(case.description(), Some("alias fixture"));
-        assert_eq!(case.suite(), "fixture-typed");
-        assert_eq!(case.source(), source);
-        assert_eq!(case.timeout(), Duration::from_secs(3));
-        assert_eq!(*case.subject_os(), BTreeSet::from([Os::MacOs, Os::Windows]));
-        assert!(case.is_disabled());
-        let CaseSchema::Typed(config) = case.schema() else {
-            panic!("expected typed data");
-        };
-        assert_eq!(config.case_type, serde_json::json!("fixture"));
-        assert_eq!(config.content, content);
-        assert_eq!(config.directory, "alias");
-        assert_eq!(config.source, source);
-    }
-
-    #[test]
-    fn a_non_string_type_is_handed_to_the_typed_loader_as_written() {
-        for (yaml, received) in [
-            ("null", serde_json::json!(null)),
-            ("true", serde_json::json!(true)),
-            ("3", serde_json::json!(3)),
-            ("[fixture, 3]", serde_json::json!(["fixture", 3])),
-            ("{schema: fixture}", serde_json::json!({"schema": "fixture"})),
-        ] {
-            let error = fixtures::LOADER
-                .load_content("cases", &format!("type: {yaml}\n"), "alpha", Path::new("config.yaml"))
-                .err()
-                .expect("the fixture loader rejects non-string types");
-            assert_eq!(error.to_string(), format!("Unsupported fixture type: {received}"));
-        }
-    }
-
-    #[test]
-    fn typed_loader_errors_are_returned_unchanged() {
-        let content = "type: unknown\n";
-        let source = Path::new("alpha/config.yaml");
-        let expected = fixtures::FixtureTypes
-            .load(&serde_json::json!("unknown"), content, "alpha", source)
-            .err()
-            .expect("the fixture loader rejects unknown types");
-        let error = fixtures::LOADER
-            .load_content("cases", content, "alpha", source)
-            .err()
-            .expect("the case loader propagates typed errors");
-        assert_eq!(error.to_string(), "Unsupported fixture type: \"unknown\"");
-        assert_eq!(format!("{error:#}"), format!("{expected:#}"));
-    }
-
-    #[test]
-    fn a_typed_case_artifact_role_map_must_cover_exactly_its_declared_operating_systems() {
-        for (systems, covered) in [
-            (vec![], ""),
-            (vec![Os::MacOs], "macos"),
-            (vec![Os::Linux, Os::Windows], "linux, windows"),
-            (vec![Os::Linux, Os::MacOs, Os::Windows], "linux, macos, windows"),
-        ] {
-            let loader = CaseLoader::new(
-                fixtures::REGISTRIES,
-                fixtures::FixtureTypesWithRoles(systems.into_iter().map(|os| (os, vec![])).collect()),
-            );
-            let error = loader
-                .load_content("cases", "type: fixture", "alpha", Path::new("alpha/config.yaml"))
-                .err()
-                .expect("typed roles must cover exactly subject_os");
-            assert_eq!(
-                error.to_string(),
-                format!(
-                    "case 'alpha' in alpha/config.yaml: artifact role operating systems must match subject_os: \
-                         roles cover [{covered}], subject_os is [macos, windows]"
-                )
-            );
-        }
-    }
-
-    #[test]
-    fn a_typed_file_that_declares_no_cases_fails_to_load_and_discover() {
+    fn a_top_level_type_is_rejected_as_an_unknown_field() {
         let dir = tempfile::tempdir().unwrap();
-        let path = write_case(dir.path(), "empty", "type: empty\n");
-        write_case(dir.path(), "participant", PARTICIPANT_FIELDS);
-        let expected = format!("{} declares no cases", path.canonicalize().unwrap().display());
-        let error = fixtures::LOADER
-            .load_file(&path)
-            .err()
-            .expect("a case file must produce at least one case");
-        assert_eq!(error.to_string(), expected);
-        let error = fixtures::LOADER
-            .discover_cases(&[dir.path().to_path_buf()])
-            .err()
-            .expect("discovery must report an empty file alongside valid cases");
-        assert_eq!(error.to_string(), format!("Failed to load test cases:\n  - {expected}"));
+        for value in ["fixture", "null", "true", "3", "[fixture, 3]", "{schema: fixture}"] {
+            let path = write_case(dir.path(), "alpha", &format!("type: {value}\n{PARTICIPANT_FIELDS}"));
+            let error = fixtures::LOADER
+                .load_file(&path)
+                .err()
+                .expect("unknown fields must fail");
+            let message = format!("{error:#}");
+            assert!(message.contains("unknown field `type`"), "{message}");
+            assert!(
+                message.contains(&path.canonicalize().unwrap().display().to_string()),
+                "{message}"
+            );
+            let discovery = fixtures::LOADER
+                .discover_cases(&[dir.path().to_path_buf()])
+                .err()
+                .unwrap();
+            assert!(format!("{discovery:#}").contains("unknown field `type`"));
+        }
     }
 
     #[test]
@@ -535,10 +357,8 @@ mod tests {
         let cases = fixtures::LOADER
             .load_content("cases", &content, "alpha", source)
             .unwrap();
-        let CaseSchema::Participants { procedure, .. } = cases[0].schema() else {
-            panic!("expected participant data");
-        };
-        let [ProcedureNode::Step(step)] = procedure.as_slice() else {
+        let procedure = cases[0].procedure();
+        let [ProcedureNode::Step(step)] = procedure else {
             panic!("expected one built step");
         };
         let expected = fixtures::Probe {
@@ -550,13 +370,10 @@ mod tests {
         };
         assert_eq!(format!("{step:?}"), format!("{expected:?}"));
 
-        let loader = CaseLoader::new(
-            Registries {
-                steps: &[],
-                ..fixtures::REGISTRIES
-            },
-            fixtures::FixtureTypes,
-        );
+        let loader = CaseLoader::new(Registries {
+            steps: &[],
+            ..fixtures::REGISTRIES
+        });
         let error = loader
             .load_content("cases", &content, "alpha", source)
             .err()
@@ -568,12 +385,12 @@ mod tests {
     }
 
     #[test]
-    fn discovery_sorts_typed_and_participant_cases_together_and_rejects_a_name_they_share() {
+    fn discovery_sorts_cases_and_rejects_duplicate_names() {
         let dir = tempfile::tempdir().unwrap();
         let first = dir.path().join("first");
         let second = dir.path().join("second");
-        let typed = write_case(&first, "alpha", "type: fixture\n");
-        write_case(&first, "gamma", "type: fixture\n");
+        let original = write_case(&first, "alpha", PARTICIPANT_FIELDS);
+        write_case(&first, "gamma", PARTICIPANT_FIELDS);
         write_case(&second, "beta", PARTICIPANT_FIELDS);
         for roots in [[first.clone(), second.clone()], [second.clone(), first.clone()]] {
             let cases = fixtures::LOADER.discover_cases(&roots).unwrap();
@@ -581,21 +398,18 @@ mod tests {
                 cases.iter().map(CaseConfig::name).collect::<Vec<_>>(),
                 ["alpha", "beta", "gamma"]
             );
-            assert!(matches!(cases[0].schema(), CaseSchema::Typed(_)));
-            assert!(matches!(cases[1].schema(), CaseSchema::Participants { .. }));
-            assert!(matches!(cases[2].schema(), CaseSchema::Typed(_)));
         }
         let participant = write_case(&second, "alpha", PARTICIPANT_FIELDS);
         let expected = format!(
             "Failed to load test cases:\n  - Case name 'alpha' is declared more than once: {}, {}",
-            typed.canonicalize().unwrap().display(),
+            original.canonicalize().unwrap().display(),
             participant.canonicalize().unwrap().display()
         );
         for roots in [[first.clone(), second.clone()], [second, first]] {
             let error = fixtures::LOADER
                 .discover_cases(&roots)
                 .err()
-                .expect("names must be unique across schemas");
+                .expect("case names must be unique");
             assert_eq!(error.to_string(), expected);
         }
     }
@@ -624,11 +438,8 @@ mod tests {
             case.suite(),
             dir.path().parent().unwrap().file_name().unwrap().to_str().unwrap()
         );
-        assert!(!case.is_disabled());
         assert_eq!(case.source(), path.canonicalize().unwrap());
-        let CaseSchema::Participants { file, .. } = case.schema() else {
-            panic!("expected participant data");
-        };
+        let file = case.file();
         assert_eq!(file.participants["subject"].participant_type, "server");
         let [ProcedureNode::Step(step)] = file.procedure.as_slice() else {
             panic!("expected one step");
@@ -727,13 +538,11 @@ procedure:
         );
         let cases = fixtures::LOADER.load_file(&path).unwrap();
         assert_eq!(cases.len(), 1);
-        let CaseSchema::Participants { file, procedure } = cases[0].schema() else {
-            panic!("expected participant data");
-        };
+        let file = cases[0].file();
+        let procedure = cases[0].procedure();
         assert_eq!(file.participants["subject"].config.env["KEY"], "0000");
         assert_eq!(file.procedure.len(), 3);
-        let [ProcedureNode::Step(first), ProcedureNode::Parallel(members), ProcedureNode::Step(last)] =
-            procedure.as_slice()
+        let [ProcedureNode::Step(first), ProcedureNode::Parallel(members), ProcedureNode::Step(last)] = procedure
         else {
             panic!("expected step, parallel, step");
         };
@@ -863,7 +672,7 @@ procedure:
     fn a_case_file_without_a_named_directory_is_rejected() {
         let dir = tempfile::tempdir().unwrap();
         fs::create_dir(dir.path().join("sub")).unwrap();
-        fs::write(dir.path().join("config.yaml"), "type: fixture\n").unwrap();
+        fs::write(dir.path().join("config.yaml"), PARTICIPANT_FIELDS).unwrap();
         let path = dir.path().join("sub/../config.yaml");
         let error = fixtures::LOADER
             .load_file(&path)
@@ -881,7 +690,7 @@ procedure:
     #[test]
     fn source_is_canonical_when_the_file_is_named_through_a_non_canonical_path() {
         let dir = tempfile::tempdir().unwrap();
-        let path = write_case(dir.path(), "case", "type: fixture\n");
+        let path = write_case(dir.path(), "case", PARTICIPANT_FIELDS);
         let cases = fixtures::LOADER
             .load_file(&dir.path().join("case/../case/config.yaml"))
             .unwrap();
@@ -917,7 +726,7 @@ procedure:
             )
         );
         for (yaml, context) in [
-            ("type: [", "Failed to parse config file as YAML"),
+            ("type: [", "Failed to parse configuration file"),
             ("timeout: 1s\n", "Failed to parse configuration file"),
         ] {
             let path = write_case(dir.path(), "invalid", yaml).canonicalize().unwrap();

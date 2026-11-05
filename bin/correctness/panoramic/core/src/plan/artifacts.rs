@@ -16,7 +16,7 @@ use crate::{
     participant::{find_type, ParticipantType},
 };
 
-/// Checks bindings against the artifact roles declared by all registered participant types, backends and typed schemas.
+/// Checks bindings against the artifact roles declared by all registered participant types and backends.
 ///
 /// # Errors
 ///
@@ -98,9 +98,6 @@ pub(super) fn role_catalog(registries: Registries<'_>) -> Result<BTreeMap<&'stat
             declare(role, format!("the {} backend", backend.kind().name()))?;
         }
     }
-    for &role in registries.typed_case_roles {
-        declare(role, "typed case schemas".to_string())?;
-    }
     Ok(roles.into_iter().map(|(name, (role, _))| (name, role)).collect())
 }
 
@@ -155,7 +152,7 @@ pub(super) fn bind(
     (bindings, image_roles)
 }
 
-pub(super) fn bind_roles(
+fn bind_roles(
     roles: impl IntoIterator<Item = ArtifactRole>, bindings: &BTreeMap<String, String>,
 ) -> Vec<ArtifactBinding> {
     roles
@@ -179,7 +176,7 @@ pub(super) fn bind_roles(
 
 /// Collects one binding per role, sorted by name.
 /// Plans must come from one planner, which binds each role identically.
-pub fn needed_artifacts<'p, C: 'p>(plans: impl IntoIterator<Item = &'p CasePlan<C>>) -> Vec<ArtifactBinding> {
+pub fn needed_artifacts<'p>(plans: impl IntoIterator<Item = &'p CasePlan>) -> Vec<ArtifactBinding> {
     let mut bindings = BTreeMap::new();
     for plan in plans {
         for binding in plan.artifacts() {
@@ -197,8 +194,8 @@ mod tests {
         artifact::{ArtifactBinding, ArtifactKind, ArtifactManifest, ArtifactRole, BindingSource},
         backend::{COURIER_LINUX_BINARY, COURIER_WINDOWS_BINARY},
         case::{
-            fixtures::{minimal_procedure, FixtureConfig, FixtureTypesWithRoles, PARTICIPANT_FIELDS},
-            CaseConfig, CaseLoader, Registries,
+            fixtures::{minimal_procedure, PARTICIPANT_FIELDS},
+            Registries,
         },
         layout::{Os, Realization, RealizationKind},
         participant::ParticipantType,
@@ -313,13 +310,6 @@ mod tests {
             .collect()
     }
 
-    fn typed_case(roles: BTreeMap<Os, Vec<ArtifactRole>>) -> CaseConfig<FixtureConfig> {
-        CaseLoader::new(CONFIG_REGISTRIES, FixtureTypesWithRoles(roles))
-            .load_content("cases", "type: fixture", "typed", Path::new("typed/config.yaml"))
-            .unwrap()
-            .remove(0)
-    }
-
     #[test]
     fn a_plan_lists_each_role_of_its_participant_types_and_backends_once_sorted_by_name() {
         let yaml = TWO_TYPES
@@ -365,34 +355,17 @@ mod tests {
         assert_eq!(plan.image_roles_for(RealizationKind::KubernetesPod), [POD_IMAGE]);
         assert_eq!(plan.image_roles_for(RealizationKind::LinuxContainer), [FIXUP]);
         assert!(plan.image_roles_for(RealizationKind::HostProcessGroup).is_empty());
-        let typed = planner
-            .compile(
-                typed_case(BTreeMap::from([(Os::MacOs, vec![TOOL]), (Os::Windows, vec![])])),
-                Os::MacOs,
-            )
-            .unwrap()
-            .into_plan()
-            .unwrap();
-        assert!(typed.image_roles_for(RealizationKind::KubernetesPod).is_empty());
     }
 
     #[test]
-    fn needed_artifacts_deduplicates_and_sorts_roles_across_participant_and_typed_plans() {
+    fn needed_artifacts_deduplicates_and_sorts_roles_across_participant_plans() {
         let mut planner = role_planner(&[&SERVER]);
         let yaml = PARTICIPANT_FIELDS.replace("[linux]", "[linux, windows]");
         let windows = compile_with(&mut planner, &yaml, Os::Windows).unwrap().unwrap();
         let linux = compile_with(&mut planner, &yaml, Os::Linux).unwrap().unwrap();
         let another = compile_with(&mut planner, &yaml, Os::Linux).unwrap().unwrap();
-        let typed = planner
-            .compile(
-                typed_case(BTreeMap::from([(Os::MacOs, vec![TOOL]), (Os::Windows, vec![])])),
-                Os::MacOs,
-            )
-            .unwrap()
-            .into_plan()
-            .unwrap();
         assert_eq!(
-            needed_artifacts([&windows, &typed, &linux, &another]),
+            needed_artifacts([&windows, &linux, &another]),
             local_bindings(&[
                 COURIER_LINUX_BINARY,
                 COURIER_WINDOWS_BINARY,
@@ -402,11 +375,10 @@ mod tests {
                 WINDOWS_TOOL
             ])
         );
-        assert_eq!(needed_artifacts([&typed]), local_bindings(&[TOOL]));
     }
 
     #[test]
-    fn a_typed_case_plan_binds_selected_os_artifact_roles_once_in_name_order() {
+    fn a_participant_case_plan_binds_selected_os_artifact_roles_once_in_name_order() {
         let manifest =
             ArtifactManifest::new("--set", BTreeMap::from([("tool".into(), "bin/override".into())])).unwrap();
         let mut planner = Planner::new(
@@ -429,91 +401,14 @@ mod tests {
                     },
                 ],
             ),
-            (Os::Windows, local_bindings(&[WINDOWS_TOOL])),
+            (Os::Windows, local_bindings(&[COURIER_WINDOWS_BINARY, WINDOWS_TOOL])),
         ] {
-            let case = typed_case(BTreeMap::from([
-                (Os::MacOs, vec![TOOL, RESOURCES, TOOL]),
-                (Os::Windows, vec![WINDOWS_TOOL]),
-            ]));
-            let plan = planner.compile(case, os).unwrap().into_plan().unwrap();
+            let yaml = TWO_TYPES
+                .replace("type: configured", "type: server")
+                .replace("[macos]", "[macos, windows]");
+            let plan = compile_with(&mut planner, &yaml, os).unwrap().unwrap();
             assert_eq!(plan.artifacts(), expected);
         }
-    }
-
-    #[test]
-    fn a_typed_case_artifact_role_must_match_a_catalog_declaration() {
-        for (role, expected) in [
-            (
-                ArtifactRole {
-                    name: "unknown",
-                    ..TOOL
-                },
-                "artifact role 'unknown' is not declared by any participant type, backend or typed case schema",
-            ),
-            (
-                ArtifactRole {
-                    local_default: "bin/different",
-                    ..TOOL
-                },
-                "artifact role 'tool' is binary 'bin/different' but declared as binary 'bin/tool'",
-            ),
-            (
-                ArtifactRole {
-                    kind: ArtifactKind::Image { os: Os::Linux },
-                    ..TOOL
-                },
-                "artifact role 'tool' is linux image 'bin/tool' but declared as binary 'bin/tool'",
-            ),
-        ] {
-            let case = typed_case(BTreeMap::from([(Os::MacOs, vec![role]), (Os::Windows, vec![])]));
-            let error = role_planner(&[&SERVER]).compile(case, Os::MacOs).err().unwrap();
-            assert_eq!(
-                error.to_string(),
-                format!("case 'typed' in typed/config.yaml: on subject OS 'macos', {expected}")
-            );
-        }
-    }
-
-    #[test]
-    fn a_role_only_typed_schemas_declare_is_accepted_by_manifest_checking_and_planning() {
-        let registries = Registries {
-            typed_case_roles: &[TOOL],
-            ..Default::default()
-        };
-        let manifest =
-            ArtifactManifest::new("--set", BTreeMap::from([("tool".into(), "bin/override".into())])).unwrap();
-        check_artifact_manifest(registries, &manifest).unwrap();
-        let mut planner = Planner::new(registries, manifest).unwrap();
-        let case = typed_case(BTreeMap::from([(Os::MacOs, vec![TOOL]), (Os::Windows, vec![])]));
-        let plan = planner.compile(case, Os::MacOs).unwrap().into_plan().unwrap();
-        assert_eq!(
-            plan.artifacts(),
-            [ArtifactBinding {
-                role: TOOL,
-                reference: "bin/override".into(),
-                source: BindingSource::Manifest,
-            }]
-        );
-    }
-
-    #[test]
-    fn a_typed_schema_artifact_role_cannot_disagree_with_a_participant_type() {
-        let roles = [ArtifactRole {
-            kind: ArtifactKind::Image { os: Os::Linux },
-            ..TOOL
-        }];
-        let registries = Registries {
-            participant_types: &[&SERVER],
-            typed_case_roles: &roles,
-            ..Default::default()
-        };
-        let manifest = ArtifactManifest::default();
-        let checked = check_artifact_manifest(registries, &manifest).unwrap_err();
-        let planned = Planner::new(registries, manifest).err().unwrap();
-        let expected = "artifact role 'tool' is declared as linux image 'bin/tool' by typed case schemas, \
-                        but as binary 'bin/tool' by participant type 'server' as linux-container on linux";
-        assert_eq!(checked.to_string(), expected);
-        assert_eq!(planned.to_string(), expected);
     }
 
     #[test]
@@ -563,18 +458,42 @@ mod tests {
 
     #[test]
     fn the_role_catalog_accepts_windows_container_binaries_and_rejects_macos_ones() {
-        for os in [Os::Linux, Os::Windows, Os::MacOs] {
-            let roles = [ArtifactRole {
-                kind: ArtifactKind::ContainerBinary { os },
-                ..TOOL
-            }];
+        const CASES: &[(Os, &[ArtifactRole])] = &[
+            (
+                Os::Linux,
+                &[ArtifactRole {
+                    kind: ArtifactKind::ContainerBinary { os: Os::Linux },
+                    ..TOOL
+                }],
+            ),
+            (
+                Os::Windows,
+                &[ArtifactRole {
+                    kind: ArtifactKind::ContainerBinary { os: Os::Windows },
+                    ..TOOL
+                }],
+            ),
+            (
+                Os::MacOs,
+                &[ArtifactRole {
+                    kind: ArtifactKind::ContainerBinary { os: Os::MacOs },
+                    ..TOOL
+                }],
+            ),
+        ];
+        for &(os, roles) in CASES {
+            let participant_type = Type {
+                name: "server",
+                roles,
+                windows_roles: &[],
+            };
             let registries = Registries {
-                typed_case_roles: &roles,
+                participant_types: &[&participant_type],
                 ..Default::default()
             };
             let result = super::role_catalog(registries);
             if os == Os::MacOs {
-                assert_eq!(result.unwrap_err(), "artifact role 'tool' declared by typed case schemas is a macos container binary; container binaries run on linux or windows");
+                assert_eq!(result.unwrap_err(), "artifact role 'tool' declared by participant type 'server' as linux-container on linux is a macos container binary; container binaries run on linux or windows");
             } else {
                 assert_eq!(result.unwrap()["tool"], roles[0]);
             }
@@ -929,17 +848,18 @@ mod tests {
         ] {
             let mut planner = Planner::new(
                 Registries {
-                    typed_case_roles: &[REQUIRED_TOOL],
-                    ..Default::default()
+                    participant_types: &[&Type {
+                        name: "server",
+                        roles: &[REQUIRED_TOOL],
+                        windows_roles: &[],
+                    }],
+                    ..CONFIG_REGISTRIES
                 },
                 ArtifactManifest::new("test", roles).unwrap(),
             )
             .unwrap();
-            let case = typed_case(BTreeMap::from([
-                (Os::MacOs, vec![REQUIRED_TOOL]),
-                (Os::Windows, vec![]),
-            ]));
-            let plan = planner.compile(case, Os::MacOs).unwrap().into_plan().unwrap();
+            let yaml = PARTICIPANT_FIELDS.replace("[linux]", "[macos]");
+            let plan = compile_with(&mut planner, &yaml, Os::MacOs).unwrap().unwrap();
             assert_eq!(
                 plan.artifacts(),
                 &[ArtifactBinding {

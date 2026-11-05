@@ -82,19 +82,17 @@ pub struct Realization {
     pub kind: RealizationKind,
 }
 
-/// A participant's or typed runner's placement in `list --json`, `run.json` and `result.json`.
+/// A participant's placement in `list --json`, `run.json` and `result.json`.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct LayoutEntry {
-    /// Participant name from the case file. `None` for a case with a top-level `type`, whose runner
-    /// creates no named participants.
-    pub participant: Option<String>,
-    /// Registered participant type. `None` for a case with a top-level `type`, whose runner creates
-    /// no named participants.
+    /// Participant name from the case file.
+    pub participant: String,
+    /// Registered participant type.
     #[serde(rename = "type")]
-    pub participant_type: Option<String>,
+    pub participant_type: String,
     /// Operating system of the processes.
     pub os: Os,
-    /// Execution mechanism for the participant or typed runner.
+    /// Execution mechanism for the participant.
     pub realization: RealizationKind,
 }
 

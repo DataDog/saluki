@@ -13,10 +13,7 @@ use crate::{
         linux_container::daemon_tests::{courier_bytes, host_ports, remaining_resources},
         COURIER_LINUX_BINARY, FIXUP_IMAGE,
     },
-    case::{
-        fixtures::{self, FixtureConfig, FixtureTypes},
-        CaseLoader, Registries,
-    },
+    case::{fixtures, CaseLoader, Registries},
     deadline::Budget,
     endpoint::{ConsumedEndpoint, Delivery, Endpoint, EndpointKind, Evidence, Port},
     layout::{Os, Realization},
@@ -160,7 +157,7 @@ impl ParticipantType for Fixture {
 
 struct Observed {
     docker: Docker,
-    plan: CasePlan<FixtureConfig>,
+    plan: CasePlan,
     result: TestResult,
     record: CaseRecord,
     image_id: String,
@@ -170,7 +167,7 @@ struct Observed {
 impl Observed {
     async fn container(&self, name: &str) -> ContainerInspectResponse {
         self.docker
-            .inspect_container(&format!("airlock-{}-{name}", self.plan.scope().unwrap().id()), None)
+            .inspect_container(&format!("airlock-{}-{name}", self.plan.scope().id()), None)
             .await
             .unwrap()
     }
@@ -219,7 +216,7 @@ impl Observed {
 
     fn driver(&self, name: &str) -> Driver {
         Driver::from_config(
-            self.plan.scope().unwrap().id(),
+            self.plan.scope().id(),
             DriverConfig::from_image(name, IMAGE.local_default.into()),
         )
         .unwrap()
@@ -265,9 +262,8 @@ async fn with_case_control<F: Future<Output = ()> + Send + 'static>(
     let registries = Registries {
         participant_types: &[&Fixture(false), &Fixture(true)],
         steps: fixtures::STEPS,
-        typed_case_roles: &[],
     };
-    let case = CaseLoader::new(registries, FixtureTypes)
+    let case = CaseLoader::new(registries)
         .load_content(
             "cases",
             &format!("timeout: 60s\nsubject_os: [linux]\nparticipants:\n{participants}\nprocedure: {procedure}\n"),
@@ -283,7 +279,7 @@ async fn with_case_control<F: Future<Output = ()> + Send + 'static>(
         .unwrap()
         .into_plan()
         .unwrap();
-    let id = plan.scope().unwrap().id();
+    let id = plan.scope().id();
     eprintln!("Native daemon test scope: {id}");
     // Only the verified image ID resolves to a local image.
     let verified = vec![
@@ -329,7 +325,7 @@ async fn with_case_control<F: Future<Output = ()> + Send + 'static>(
     let outcome = tokio::spawn(async move {
         timeout(Duration::from_secs(60), async {
             let run = run(
-                plan.participants().unwrap(),
+                plan.participants(),
                 &[&Fixture(false), &Fixture(true)],
                 &inputs,
                 &control,
@@ -349,8 +345,8 @@ async fn with_case_control<F: Future<Output = ()> + Send + 'static>(
             };
             result.participants = control.observations.snapshot();
             control.observations.record_collections(&mut result);
-            let mut expected_resources = vec![format!("isolation_group:{}", plan.scope().unwrap().id())];
-            for name in plan.create_order().unwrap().iter().flatten() {
+            let mut expected_resources = vec![format!("isolation_group:{}", plan.scope().id())];
+            for name in plan.create_order().iter().flatten() {
                 if result.participants.iter().any(|participant| &participant.name == name) {
                     expected_resources.push(format!("participant:{name}"));
                 }

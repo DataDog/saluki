@@ -486,8 +486,7 @@ pub struct TestResult {
     pub issues: Vec<Issue>,
     /// Directory the test case was loaded from. Set by the runner.
     pub case_path: Option<PathBuf>,
-    /// Planned layout, set by the runner even when setup fails. Cases with a top-level `type` have one entry
-    /// without a participant; only skipped cases are reported with a null layout.
+    /// Planned layout, set by the runner even when setup fails; only skipped cases have a null layout.
     pub layout: Option<Vec<LayoutEntry>>,
     /// Native participant observations, captured by the runner before stopping background tasks.
     pub participants: Vec<ParticipantReport>,

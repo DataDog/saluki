@@ -2,7 +2,7 @@
 
 use std::{fs, path::Path};
 
-use panoramic_core::case::{CaseSchema, ProcedureNode};
+use panoramic_core::case::ProcedureNode;
 use panoramic_core::endpoint::{test_support::assert_socket_endpoint, EndpointKind, Evidence};
 use panoramic_core::layout::{Os, Realization, RealizationKind};
 use panoramic_core::participant::ParticipantType;
@@ -133,10 +133,8 @@ fn default_log_file_references_plan_on_linux_and_windows_but_not_macos() {
             .unwrap()
             .plans;
         assert_eq!(plans.len(), 1);
-        let CaseSchema::Participants { procedure, .. } = plans[0].case().schema() else {
-            panic!("expected participant data")
-        };
-        let [ProcedureNode::Step(step)] = procedure.as_slice() else {
+        let procedure = plans[0].case().procedure();
+        let [ProcedureNode::Step(step)] = procedure else {
             panic!("expected one step")
         };
         assert_eq!(
@@ -203,10 +201,8 @@ fn agent_adp_log_steps_may_name_the_adp_and_agent_processes_only() {
             } else {
                 let cases = crate::CASE_LOADER.load_file(&path).unwrap();
                 assert_eq!(cases.len(), 1);
-                let CaseSchema::Participants { procedure, .. } = cases[0].schema() else {
-                    panic!("expected participant data");
-                };
-                let [ProcedureNode::Step(step)] = procedure.as_slice() else {
+                let procedure = cases[0].procedure();
+                let [ProcedureNode::Step(step)] = procedure else {
                     panic!("expected one built step");
                 };
                 assert_eq!(step.needs(), vec![Need::Process("adp".into(), process.into())]);
@@ -225,9 +221,7 @@ fn agent_adp_participants_accept_environment_overlays_and_only_declared_file_nam
     let path = write_case(dir.path(), "alpha", &yaml);
     let cases = crate::CASE_LOADER.load_file(&path).unwrap();
     assert_eq!(cases.len(), 1);
-    let CaseSchema::Participants { file, .. } = cases[0].schema() else {
-        panic!("expected participant data");
-    };
+    let file = cases[0].file();
     let config = &file.participants["adp"].config;
     assert_eq!(config.env["ANY_KEY"], "arbitrary");
     assert_eq!(config.os[&Os::Linux].env["ANY_KEY"], "linux");
@@ -347,7 +341,7 @@ fn intake_cases_plan_with_subject_realizations_urls_and_artifact_roles_on_every_
             );
             let plan = planner().compile(case, os).unwrap().into_plan().unwrap();
             assert_eq!(
-                plan.layout().unwrap().iter().collect::<Vec<_>>(),
+                plan.layout().iter().collect::<Vec<_>>(),
                 [("adp", Realization { os, kind }), ("intake", Realization { os, kind })],
                 "{name} on {os:?}"
             );
@@ -414,13 +408,11 @@ fn environment_only_cases_plan_natively_with_their_exit_and_api_needs_on_every_o
             );
             let plan = planner().compile(case, os).unwrap().into_plan().unwrap();
             assert_eq!(
-                plan.layout().unwrap().iter().collect::<Vec<_>>(),
+                plan.layout().iter().collect::<Vec<_>>(),
                 [("adp", Realization { os, kind })],
                 "{name} on {os:?}"
             );
-            let CaseSchema::Participants { procedure, .. } = plan.case().schema() else {
-                panic!("{name} must use native participants");
-            };
+            let procedure = plan.case().procedure();
             let steps: Vec<_> = procedure
                 .iter()
                 .flat_map(|node| match node {
@@ -533,10 +525,8 @@ fn registered_template_fields_match_step_types_and_other_fields_reject_reference
                 );
             } else if declared {
                 let cases = result.unwrap_or_else(|error| panic!("{}: {field}: {error}", factory.name()));
-                let CaseSchema::Participants { procedure, .. } = cases[0].schema() else {
-                    panic!("expected participant data");
-                };
-                let [ProcedureNode::Step(step)] = procedure.as_slice() else {
+                let procedure = cases[0].procedure();
+                let [ProcedureNode::Step(step)] = procedure else {
                     panic!("expected one built step");
                 };
                 assert!(step
@@ -794,9 +784,7 @@ fn forwarding_case_frames_and_telemetry_match_their_wire_contracts() {
         )
         .unwrap()
         .remove(0);
-    let CaseSchema::Participants { file, .. } = case.schema() else {
-        panic!("forwarding declares participants");
-    };
+    let file = case.file();
     let steps: Vec<_> = file
         .procedure
         .iter()
@@ -861,7 +849,7 @@ fn dogstatsd_top_tls_and_dns_cases_place_their_case_files_under_the_definitions_
             .unwrap()
             .remove(0);
         let plan = planner().compile(case, Os::Linux).unwrap().into_plan().unwrap();
-        assert!(plan.participants().is_some());
+        assert!(plan.case().file().participants.contains_key("adp"));
         assert_eq!(plan.fact("adp", "files_dir"), Some("/var/lib/panoramic/files"));
         if name == "otlp-tls" {
             let env = &plan.effective_config("adp").unwrap().env;
@@ -885,14 +873,14 @@ fn liveness_case_creates_adp_before_its_fixture_and_starts_the_fixture_before_ad
     let case = crate::CASE_LOADER.load_file(&path).unwrap().remove(0);
     let plan = planner().compile(case, Os::Linux).unwrap().into_plan().unwrap();
     assert_eq!(
-        plan.create_order().unwrap(),
+        plan.create_order(),
         [
             vec!["adp".to_string(), "intake".to_string()],
             vec!["docker-api".to_string()]
         ]
     );
     assert_eq!(
-        plan.start_order().unwrap(),
+        plan.start_order(),
         [
             vec!["docker-api".to_string(), "intake".to_string()],
             vec!["adp".to_string()]
@@ -957,9 +945,8 @@ fn uds_comparisons_share_one_paired_sender_and_preserve_their_configured_workloa
             .remove(0);
         let plan = planner().compile(case, Os::Linux).unwrap().into_plan().unwrap();
         assert_eq!(plan.case().suite(), "correctness");
-        let CaseSchema::Participants { file, procedure } = plan.case().schema() else {
-            panic!("comparison declares participants")
-        };
+        let file = plan.case().file();
+        let procedure = plan.case().procedure();
         assert_eq!(
             file.participants.keys().map(String::as_str).collect::<Vec<_>>(),
             ["adp", "agent", "intake-adp", "intake-agent", "load"]

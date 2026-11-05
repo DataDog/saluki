@@ -104,7 +104,7 @@ mod tests {
     use crate::{
         artifact::ArtifactRole,
         case::{
-            fixtures::{minimal_procedure, write_case, Configured, FixtureConfig, FixtureTypes, Server, STEPS},
+            fixtures::{minimal_procedure, write_case, Configured, Server, STEPS},
             CaseLoader, Registries,
         },
         endpoint::{ConsumedEndpoint, Delivery, Endpoint, EndpointKind, Port},
@@ -169,7 +169,7 @@ mod tests {
         }
     }
 
-    fn try_compile(config: &str, source: &Path) -> Result<CasePlan<FixtureConfig>, String> {
+    fn try_compile(config: &str, source: &Path) -> Result<CasePlan, String> {
         let yaml = format!(
             "timeout: 1s\nsubject_os: [linux]\nparticipants:\n  subject: {{type: file-client, subject: true, connect: {{upstream: server.api}}, config: {config}}}\n  server: {{type: server, config: {{env: {{OWN: '{{{{  self.late.ip  }}}}/{{{{server.late.ip}}}}'}}}}}}\n{}\n",
             minimal_procedure!()
@@ -177,17 +177,16 @@ mod tests {
         try_compile_case(&yaml, source)
     }
 
-    fn compile_case(yaml: &str, source: &Path) -> CasePlan<FixtureConfig> {
+    fn compile_case(yaml: &str, source: &Path) -> CasePlan {
         try_compile_case(yaml, source).unwrap()
     }
 
-    fn try_compile_case(yaml: &str, source: &Path) -> Result<CasePlan<FixtureConfig>, String> {
+    fn try_compile_case(yaml: &str, source: &Path) -> Result<CasePlan, String> {
         let registries = Registries {
             participant_types: &[&FileClient, &Server],
             steps: STEPS,
-            ..Default::default()
         };
-        let case = CaseLoader::new(registries, FixtureTypes)
+        let case = CaseLoader::new(registries)
             .load_content("cases", yaml, "alpha", source)
             .map_err(|error| error.to_string())?
             .remove(0);
@@ -197,7 +196,7 @@ mod tests {
             .map(|compiled| compiled.into_plan().unwrap())
     }
 
-    fn compile(config: &str, source: &Path) -> CasePlan<FixtureConfig> {
+    fn compile(config: &str, source: &Path) -> CasePlan {
         try_compile(config, source).unwrap()
     }
 
@@ -206,7 +205,6 @@ mod tests {
         let registries = Registries {
             participant_types: &[&Server],
             steps: STEPS,
-            ..Default::default()
         };
         for (os, kind, directory) in [
             (Os::Linux, "linux-container", "/airlock/subject"),
@@ -214,7 +212,7 @@ mod tests {
             (Os::Windows, "windows-container", r"C:\airlock\subject"),
         ] {
             let yaml = format!("timeout: 1s\nsubject_os: [{}]\nparticipants:\n  subject: {{type: server, subject: true, realization: {{kind: {kind}}}}}\n{}", os.name(), minimal_procedure!());
-            let case = CaseLoader::new(registries, FixtureTypes)
+            let case = CaseLoader::new(registries)
                 .load_content("cases", &yaml, "case", Path::new("cases/case/config.yaml"))
                 .unwrap()
                 .remove(0);
@@ -223,7 +221,7 @@ mod tests {
                 .unwrap()
                 .into_plan()
                 .unwrap();
-            let rendered = render(plan.participants().unwrap(), "subject", &BTreeMap::new()).unwrap();
+            let rendered = render(plan.participants(), "subject", &BTreeMap::new()).unwrap();
             assert_eq!(rendered.directory(), directory);
         }
     }
@@ -249,7 +247,7 @@ mod tests {
         std::fs::remove_file(template_path).unwrap();
         std::fs::remove_file(raw_path).unwrap();
         let created = BTreeMap::from([("server".into(), "created-id".into())]);
-        let rendered = render(plan.participants().unwrap(), "subject", &created).unwrap();
+        let rendered = render(plan.participants(), "subject", &created).unwrap();
         let expected = concat!(
             "created-id|/logs/output.log|http://server:8080|server|8080|",
             "http://server:8080|server|8080|/run/input.sock|unix:///run/input.sock"
@@ -294,7 +292,7 @@ mod tests {
             .unwrap();
             let plan = compile(config, &source);
             assert_eq!(
-                render(plan.participants().unwrap(), "subject", &BTreeMap::new()).err().unwrap(),
+                render(plan.participants(), "subject", &BTreeMap::new()).err().unwrap(),
                 format!("participant 'subject' {field}: internal error: no creation-time value for '{{{{server.late.container_id}}}}'")
             );
         }
@@ -336,7 +334,7 @@ mod tests {
                     .replace("{{container.late.container_id}}", "created-id"),
             ),
         ] {
-            let rendered = render(plan.participants().unwrap(), "subject", created).unwrap();
+            let rendered = render(plan.participants(), "subject", created).unwrap();
             assert_eq!(
                 rendered.files["settings.yaml"],
                 format!("{expected}|/logs/output.log|http://server:8080|server|8080").as_bytes()
@@ -355,14 +353,14 @@ mod tests {
             ),
         ] {
             let plan = compile_pods(config);
-            let rendered = render(plan.participants().unwrap(), "subject", &created).unwrap();
+            let rendered = render(plan.participants(), "subject", &created).unwrap();
             if field == "environment variable 'ID'" {
                 assert_eq!(rendered.env["ID"], "created-id");
             } else {
                 assert_eq!(rendered.params["mode"], json!([{ "nested": "created-id" }]));
             }
             assert_eq!(
-                render(plan.participants().unwrap(), "subject", &BTreeMap::new()).err().unwrap(),
+                render(plan.participants(), "subject", &BTreeMap::new()).err().unwrap(),
                 format!("participant 'subject' {field}: internal error: no creation-time value for '{{{{container.late.container_id}}}}'")
             );
         }
@@ -405,7 +403,7 @@ participants:
             );
             let plan = compile_case(&yaml, &source);
             let rendered = render(
-                plan.participants().unwrap(),
+                plan.participants(),
                 "subject",
                 &BTreeMap::from([("container".into(), "created-id".into())]),
             )
@@ -428,7 +426,7 @@ participants:
     #[test]
     fn an_own_ip_reference_in_env_stays_canonical_through_rendering() {
         let plan = compile("{}", Path::new("cases/alpha/config.yaml"));
-        let rendered = render(plan.participants().unwrap(), "server", &BTreeMap::new()).unwrap();
+        let rendered = render(plan.participants(), "server", &BTreeMap::new()).unwrap();
         assert_eq!(rendered.env["OWN"], "{{ self.late.ip }}/{{ self.late.ip }}");
         assert!(rendered.late_files.is_empty());
     }
@@ -446,7 +444,7 @@ participants:
         std::fs::write(case_dir.join("input/empty"), "").unwrap();
         std::fs::write(case_dir.join("separate"), "settings").unwrap();
         let plan = compile("{files: {files/: input, settings.yaml: separate}}", &source);
-        let rendered = render(plan.participants().unwrap(), "subject", &BTreeMap::new()).unwrap();
+        let rendered = render(plan.participants(), "subject", &BTreeMap::new()).unwrap();
         assert_eq!(plan.effective_config("subject").unwrap().files, rendered.files);
         assert_eq!(
             rendered
@@ -470,7 +468,7 @@ participants:
         let source = write_case(dir.path(), "alpha", "");
         std::fs::create_dir_all(source.parent().unwrap().join("input/nested/empty")).unwrap();
         let plan = compile("{files: {files/: input}}", &source);
-        let rendered = render(plan.participants().unwrap(), "subject", &BTreeMap::new()).unwrap();
+        let rendered = render(plan.participants(), "subject", &BTreeMap::new()).unwrap();
         assert!(rendered.files().is_empty());
     }
 
@@ -488,7 +486,7 @@ participants:
             "{files: {files/: base}, os: {linux: {files: {files/: overlay}}}}",
             &source,
         );
-        let rendered = render(plan.participants().unwrap(), "subject", &BTreeMap::new()).unwrap();
+        let rendered = render(plan.participants(), "subject", &BTreeMap::new()).unwrap();
         assert_eq!(
             rendered.files,
             BTreeMap::from([("files/shared".into(), b"overlay".to_vec())])
@@ -531,14 +529,14 @@ participants:
         std::fs::remove_file(case_dir.join("raw.txt")).unwrap();
         std::fs::remove_dir_all(case_dir.join("input")).unwrap();
         assert_eq!(
-            render(plan.participants().unwrap(), "subject", &created).unwrap().files,
+            render(plan.participants(), "subject", &created).unwrap().files,
             expected
         );
 
         std::fs::create_dir_all(case_dir.join("raw.txt")).unwrap();
         std::fs::write(case_dir.join("input"), "now a file").unwrap();
         assert_eq!(
-            render(plan.participants().unwrap(), "subject", &created).unwrap().files,
+            render(plan.participants(), "subject", &created).unwrap().files,
             expected
         );
 
@@ -546,7 +544,7 @@ participants:
         std::fs::create_dir_all(case_dir.join("input/changed")).unwrap();
         std::fs::write(case_dir.join("input/changed/data"), "changed").unwrap();
         assert_eq!(
-            render(plan.participants().unwrap(), "subject", &created).unwrap().files,
+            render(plan.participants(), "subject", &created).unwrap().files,
             expected
         );
     }
@@ -570,9 +568,7 @@ participants:
                 format!("case 'alpha' in {}: on subject OS 'linux', participant 'subject' file 'files/' ({}) is a symlink; directory sources cannot contain symlinks", source.display(), link.display()),
             );
             assert_eq!(
-                render(plan.participants().unwrap(), "subject", &BTreeMap::new())
-                    .unwrap()
-                    .files,
+                render(plan.participants(), "subject", &BTreeMap::new()).unwrap().files,
                 BTreeMap::from([("files/nested/kept".into(), b"kept".to_vec())]),
             );
             std::fs::remove_file(&link).unwrap();
@@ -594,9 +590,7 @@ participants:
             format!("case 'alpha' in {}: on subject OS 'linux', participant 'subject' file 'files/' ({}) is not a regular file or directory", source.display(), path.display()),
         );
         assert_eq!(
-            render(plan.participants().unwrap(), "subject", &BTreeMap::new())
-                .unwrap()
-                .files,
+            render(plan.participants(), "subject", &BTreeMap::new()).unwrap().files,
             BTreeMap::from([("files/kept".into(), b"kept".to_vec())]),
         );
     }
@@ -612,7 +606,7 @@ participants:
         std::os::unix::fs::symlink("../external", case_dir.join("directory")).unwrap();
         std::os::unix::fs::symlink("../external/nested/file", case_dir.join("file")).unwrap();
         let plan = compile("{files: {files/: directory, settings.yaml: file}}", &source);
-        let rendered = render(plan.participants().unwrap(), "subject", &BTreeMap::new()).unwrap();
+        let rendered = render(plan.participants(), "subject", &BTreeMap::new()).unwrap();
         assert_eq!(
             rendered.files,
             BTreeMap::from([
@@ -639,9 +633,7 @@ participants:
             .unwrap()
             .ends_with("has a non-UTF-8 name"));
         assert_eq!(
-            render(plan.participants().unwrap(), "subject", &BTreeMap::new())
-                .unwrap()
-                .files,
+            render(plan.participants(), "subject", &BTreeMap::new()).unwrap().files,
             BTreeMap::from([("files/kept".into(), b"kept".to_vec())]),
         );
     }
@@ -657,30 +649,22 @@ participants:
         assert_eq!(plan.effective_config("subject").unwrap().files["settings.yaml"], bytes);
         let planned = BTreeMap::from([("settings.yaml".to_owned(), bytes.to_vec())]);
         assert_eq!(
-            render(plan.participants().unwrap(), "subject", &BTreeMap::new())
-                .unwrap()
-                .files,
+            render(plan.participants(), "subject", &BTreeMap::new()).unwrap().files,
             planned
         );
         std::fs::write(&path, "changed").unwrap();
         assert_eq!(
-            render(plan.participants().unwrap(), "subject", &BTreeMap::new())
-                .unwrap()
-                .files,
+            render(plan.participants(), "subject", &BTreeMap::new()).unwrap().files,
             planned
         );
         std::fs::remove_file(&path).unwrap();
         assert_eq!(
-            render(plan.participants().unwrap(), "subject", &BTreeMap::new())
-                .unwrap()
-                .files,
+            render(plan.participants(), "subject", &BTreeMap::new()).unwrap().files,
             planned
         );
         std::fs::create_dir(&path).unwrap();
         assert_eq!(
-            render(plan.participants().unwrap(), "subject", &BTreeMap::new())
-                .unwrap()
-                .files,
+            render(plan.participants(), "subject", &BTreeMap::new()).unwrap().files,
             planned
         );
     }

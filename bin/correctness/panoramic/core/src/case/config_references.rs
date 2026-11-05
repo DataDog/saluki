@@ -237,10 +237,7 @@ pub(super) fn check_param_keys(params: &BTreeMap<String, Value>, field: &str) ->
 mod tests {
     use std::path::Path;
 
-    use crate::case::{
-        fixtures::{minimal_procedure, LOADER},
-        CaseSchema,
-    };
+    use crate::case::fixtures::{minimal_procedure, LOADER};
 
     fn case(config: &str) -> String {
         format!("timeout: 1s\nsubject_os: [linux, macos, windows]\nparticipants:\n  subject: {{type: server, subject: true, config: {config}, connect: {{link: other.api}}}}\n  other: {{type: server}}\n{}\n", minimal_procedure!())
@@ -286,9 +283,7 @@ mod tests {
                     .unwrap();
                 assert_eq!(cases.len(), 1);
                 assert_eq!(cases[0].name(), "alpha");
-                let CaseSchema::Participants { file, .. } = cases[0].schema() else {
-                    panic!("expected participants");
-                };
+                let file = cases[0].file();
                 let config = &file.participants["subject"].config;
                 let expected_env = std::collections::BTreeMap::from([("KEY".into(), format!("prefix/{reference}"))]);
                 let expected_params = std::collections::BTreeMap::from([(

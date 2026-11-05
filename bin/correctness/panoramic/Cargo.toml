@@ -20,14 +20,11 @@ clap = { workspace = true, features = ["derive", "env", "error-context", "help",
 colored = { workspace = true }
 crossterm = { workspace = true, features = ["events", "windows"] }
 futures = { workspace = true }
-k8s-openapi = { workspace = true }
-kube = { workspace = true, features = ["client", "http-proxy", "rustls-tls", "ws"] }
 panoramic-core = { workspace = true }
 panoramic-participants = { workspace = true }
 panoramic-steps = { workspace = true }
 rand = { workspace = true, features = ["std", "std_rng", "thread_rng"] }
 regex = { workspace = true, features = ["std"] }
-reqwest = { workspace = true, features = ["json", "zstd", "rustls-no-provider", "query"] }
 rustls = { workspace = true }
 saluki-common = { workspace = true }
 saluki-error = { workspace = true }

@@ -19,16 +19,12 @@ mod artifact_commands;
 mod cli;
 mod collector;
 
-mod correctness;
 use self::cli::{Cli, Command, LogLevel};
 
 mod config;
 mod console;
 mod discovery;
 mod list_command;
-use self::config::typed_case::TypedConfigLoader;
-
-mod image_override;
 
 #[cfg(test)]
 mod case_loader_tests;
@@ -37,15 +33,14 @@ mod crate_dependencies_tests;
 #[cfg(test)]
 mod source_boundary_tests;
 
-/// Participant types, steps and typed-schema artifact roles available to loading and compilation.
+/// Participant types and steps available to loading and compilation.
 pub(crate) const REGISTRIES: Registries<'static> = Registries {
     participant_types: panoramic_participants::REGISTERED_TYPES,
     steps: panoramic_steps::REGISTERED_STEPS,
-    typed_case_roles: &[panoramic_participants::TOOLS_LINUX_IMAGE],
 };
 
 /// Loads case files with the participant types and steps this binary registers.
-pub(crate) const CASE_LOADER: CaseLoader<'static, TypedConfigLoader> = CaseLoader::new(REGISTRIES, TypedConfigLoader);
+pub(crate) const CASE_LOADER: CaseLoader<'static> = CaseLoader::new(REGISTRIES);
 
 mod text_output;
 use self::text_output::OutputFormat;

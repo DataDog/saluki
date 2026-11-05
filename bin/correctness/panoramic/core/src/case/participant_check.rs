@@ -307,8 +307,8 @@ mod tests {
     use crate::{
         artifact::ArtifactRole,
         case::{
-            fixtures::{minimal_procedure, write_case, FixtureTypes, STEPS},
-            CaseLoader, CaseSchema, Registries,
+            fixtures::{minimal_procedure, write_case, STEPS},
+            CaseLoader, Registries,
         },
         layout::Realization,
     };
@@ -494,9 +494,7 @@ mod tests {
                 .load_content("cases", &yaml, "alpha", Path::new("config.yaml"))
                 .unwrap();
             assert_eq!(cases.len(), 1);
-            let CaseSchema::Participants { file, .. } = cases[0].schema() else {
-                panic!("expected participants");
-            };
+            let file = cases[0].file();
             let realization = file.participants["subject"].realization.as_ref().unwrap();
             assert_eq!(
                 realization.options,
@@ -624,14 +622,10 @@ mod tests {
         }
     }
 
-    const FILE_LOADER: CaseLoader<'static, FixtureTypes> = CaseLoader::new(
-        Registries {
-            participant_types: TYPES,
-            steps: STEPS,
-            ..crate::case::fixtures::REGISTRIES
-        },
-        FixtureTypes,
-    );
+    const FILE_LOADER: CaseLoader<'static> = CaseLoader::new(Registries {
+        participant_types: TYPES,
+        steps: STEPS,
+    });
 
     fn file_case(name: &str, from: &Path, template: bool, overlay: bool) -> String {
         let config = format!(
@@ -1112,15 +1106,11 @@ mod tests {
         check(&yaml.replace("missing.api", "z.typo")).unwrap();
     }
 
-    fn loader() -> CaseLoader<'static, FixtureTypes> {
-        CaseLoader::new(
-            Registries {
-                participant_types: TYPES,
-                steps: STEPS,
-                ..crate::case::fixtures::REGISTRIES
-            },
-            FixtureTypes,
-        )
+    fn loader() -> CaseLoader<'static> {
+        CaseLoader::new(Registries {
+            participant_types: TYPES,
+            steps: STEPS,
+        })
     }
 
     fn template_case(config: &str) -> String {

@@ -150,7 +150,7 @@ mod tests {
     use super::*;
     use crate::config::{
         discover_in_scope,
-        tests::{planner, write_case, CORRECTNESS_FIELDS, PARTICIPANT_FIELDS},
+        tests::{planner, write_case, PARTICIPANT_FIELDS},
     };
 
     #[derive(Clone, Copy)]
@@ -267,7 +267,7 @@ mod tests {
     }
 
     #[test]
-    fn artifacts_render_accepts_the_tools_role_declared_by_typed_schemas() {
+    fn artifacts_render_accepts_the_tools_role_declared_by_participant_types() {
         let dir = tempfile::tempdir().unwrap();
         let output = dir.path().join("artifacts.toml");
         let (exit, log) = render_with_logs(RenderCommand {
@@ -429,63 +429,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn artifacts_verify_reports_typed_integration_host_roles_like_participant_cases() {
-        let dir = tempfile::tempdir().unwrap();
-        let participants = dir.path().join("participants");
-        let typed = dir.path().join("typed");
-        for name in ["first", "second"] {
-            write_case(&participants, name, &PARTICIPANT_FIELDS.replace("[linux]", "[macos]"));
-            write_case(
-                &typed,
-                name,
-                &format!("name: {name}\ntimeout: 1s\nsubject_os: [macos]\nparticipants: {{adp: {{type: agent-adp, subject: true}}}}\nprocedure: [{{step: log_contains, on: adp, pattern: ready, timeout: 5s}}]\n"),
-            );
-        }
-        let binary = dir.path().join("tool");
-        let install = dir.path().join("install");
-        write_executable(&binary);
-        write_executable(&install.join("bin/agent/agent"));
-        let manifest = dir.path().join("artifacts.toml");
-        std::fs::write(
-            &manifest,
-            ArtifactManifest::new(
-                "test",
-                BTreeMap::from([
-                    ("adp-host-binary".into(), binary.to_str().unwrap().to_string()),
-                    ("agent-host-install".into(), install.to_str().unwrap().to_string()),
-                ]),
-            )
-            .unwrap()
-            .render(),
-        )
-        .unwrap();
-        for missing in 0..=2 {
-            match missing {
-                1 => std::fs::remove_file(&binary).unwrap(),
-                2 => std::fs::remove_file(install.join("bin/agent/agent")).unwrap(),
-                _ => {}
-            }
-            let (participant_exit, participant_report, participant_log) =
-                artifact_command_with_logs(vec![participants.clone()], Some(manifest.clone()), Subcommand::Verify)
-                    .await;
-            let (typed_exit, typed_report, typed_log) =
-                artifact_command_with_logs(vec![typed.clone()], Some(manifest.clone()), Subcommand::Verify).await;
-            let expected_exit = if missing == 0 {
-                ExitCode::SUCCESS
-            } else {
-                ExitCode::from(2)
-            };
-            assert_eq!(participant_exit, expected_exit, "{participant_log}");
-            assert_eq!(typed_exit, expected_exit, "{typed_log}");
-            assert_eq!(typed_report, participant_report);
-            assert_eq!(typed_report.lines().count(), 3, "{typed_report}");
-            assert!(typed_report.contains("adp-host-binary"), "{typed_report}");
-            assert!(typed_report.contains("agent-host-install"), "{typed_report}");
-            assert_eq!(typed_report.matches("FAILED:").count(), missing, "{typed_report}");
-        }
-    }
-
-    #[tokio::test]
     async fn artifacts_verify_validates_manifests_before_discovery_even_without_cases() {
         let dir = tempfile::tempdir().unwrap();
         let cases = dir.path().join("cases");
@@ -543,7 +486,7 @@ mod tests {
         write_case(
             dir.path(),
             "correctness",
-            &format!("type: correctness\n{CORRECTNESS_FIELDS}"),
+            &PARTICIPANT_FIELDS.replace("participants:", "participants:\n  intake: {type: datadog-intake}"),
         );
         for os in [Os::MacOs, Os::Windows] {
             let cmd = ArtifactCasesCommand {
@@ -572,12 +515,12 @@ mod tests {
     }
 
     #[test]
-    fn artifacts_selection_includes_typed_roles_only_for_the_selected_os() {
+    fn artifacts_selection_includes_tools_roles_only_for_the_selected_os() {
         let dir = tempfile::tempdir().unwrap();
         write_case(
             dir.path(),
             "correctness",
-            &format!("type: correctness\n{CORRECTNESS_FIELDS}"),
+            &PARTICIPANT_FIELDS.replace("participants:", "participants:\n  intake: {type: datadog-intake}"),
         );
         write_case(
             dir.path(),

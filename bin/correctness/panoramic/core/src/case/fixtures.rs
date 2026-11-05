@@ -1,4 +1,4 @@
-//! Participant types and typed-case declarations for loader tests.
+//! Participant types and steps for loader tests.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -7,14 +7,11 @@ use std::{
 };
 
 use async_trait::async_trait;
-use saluki_error::{generic_error, GenericError};
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::time::Instant;
 
-use super::{
-    case_name, CaseDuration, CaseLoader, ConnectionTarget, Registries, StepTemplate, TypedCase, TypedCaseLoader,
-};
+use super::{CaseDuration, CaseLoader, ConnectionTarget, Registries, StepTemplate};
 use crate::{
     artifact::ArtifactRole,
     backend::LateFact,
@@ -668,65 +665,9 @@ pub(crate) const TYPES: &[&dyn ParticipantType] = &[&Client, &Server];
 pub(crate) const REGISTRIES: Registries<'static> = Registries {
     participant_types: TYPES,
     steps: STEPS,
-    typed_case_roles: &[],
 };
 
-pub(crate) struct FixtureTypes;
-
-pub(crate) struct FixtureConfig {
-    pub(super) case_type: Value,
-    pub(super) content: String,
-    pub(super) directory: String,
-    pub(super) source: PathBuf,
-}
-
-impl TypedCaseLoader for FixtureTypes {
-    type Config = FixtureConfig;
-
-    fn load(
-        &self, case_type: &Value, content: &str, directory: &str, source: &Path,
-    ) -> Result<Vec<TypedCase<Self::Config>>, GenericError> {
-        if case_type == "empty" {
-            return Ok(Vec::new());
-        }
-        if case_type != "fixture" {
-            return Err(generic_error!("Unsupported fixture type: {}", case_type));
-        }
-        Ok(vec![TypedCase {
-            name: case_name(None, directory, source)?,
-            description: Some(format!("{directory} fixture")),
-            suite: "fixture-typed".to_string(),
-            timeout: Duration::from_secs(3),
-            subject_os: BTreeSet::from([Os::MacOs, Os::Windows]),
-            artifact_roles: BTreeMap::from([(Os::MacOs, vec![]), (Os::Windows, vec![])]),
-            disabled: true,
-            config: FixtureConfig {
-                case_type: case_type.clone(),
-                content: content.into(),
-                directory: directory.into(),
-                source: source.into(),
-            },
-        }])
-    }
-}
-
-pub(crate) struct FixtureTypesWithRoles(pub(crate) BTreeMap<Os, Vec<ArtifactRole>>);
-
-impl TypedCaseLoader for FixtureTypesWithRoles {
-    type Config = FixtureConfig;
-
-    fn load(
-        &self, case_type: &Value, content: &str, directory: &str, source: &Path,
-    ) -> Result<Vec<TypedCase<Self::Config>>, GenericError> {
-        let mut cases = FixtureTypes.load(case_type, content, directory, source)?;
-        for case in &mut cases {
-            case.artifact_roles = self.0.clone();
-        }
-        Ok(cases)
-    }
-}
-
-pub(crate) const LOADER: CaseLoader<'static, FixtureTypes> = CaseLoader::new(REGISTRIES, FixtureTypes);
+pub(crate) const LOADER: CaseLoader<'static> = CaseLoader::new(REGISTRIES);
 
 /// Expands to a one-step procedure line for participant cases whose procedure isn't under test.
 ///

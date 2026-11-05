@@ -172,8 +172,7 @@ pub struct TestReport {
     /// Why the case was skipped, present only when the outcome is `skipped`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) skip_reason: Option<String>,
-    /// Planned layout, including when setup failed. Cases with a top-level `type` have one entry without
-    /// a participant; skipped cases have `null`.
+    /// Planned layout, including when setup failed; skipped cases have `null`.
     pub(crate) layout: Option<Vec<LayoutEntry>>,
     /// Native participants whose creation was attempted and their observed processes.
     pub(crate) participants: Vec<ParticipantReport>,
@@ -774,8 +773,8 @@ mod tests {
             Some(&serde_json::Value::Null)
         );
         result.layout = Some(vec![LayoutEntry {
-            participant: Some("subject".into()),
-            participant_type: Some("fixture".into()),
+            participant: "subject".into(),
+            participant_type: "fixture".into(),
             os: Os::Linux,
             realization: crate::layout::RealizationKind::LinuxContainer,
         }]);

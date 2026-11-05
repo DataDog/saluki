@@ -447,7 +447,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        case::fixtures::{self, FixtureConfig},
+        case::fixtures,
         case::ProcedureNode,
         endpoint::ResolvedAddress,
         layout::Os,
@@ -459,7 +459,7 @@ mod tests {
 
     const FACT_CASE: &str = "timeout: 30s\nsubject_os: [linux]\nparticipants:\n  subject: {type: server, subject: true}\nprocedure: [{step: probe, on: subject, path: '{{ subject.facts.file }}'}]";
 
-    fn compile(yaml: &str) -> CasePlan<FixtureConfig> {
+    fn compile(yaml: &str) -> CasePlan {
         let case = fixtures::LOADER
             .load_content("cases", yaml, "case", std::path::Path::new("case/config.yaml"))
             .unwrap()
@@ -531,7 +531,7 @@ mod tests {
 
         let plan = compile(crate::case::fixtures::PARTICIPANT_FIELDS);
         let root = tempfile::tempdir().unwrap();
-        let cx = StepContext::new(plan.participants().unwrap(), BTreeMap::new(), root.path());
+        let cx = StepContext::new(plan.participants(), BTreeMap::new(), root.path());
         for name in [
             "",
             ".",
@@ -559,7 +559,7 @@ mod tests {
         );
         let blocked = root.path().join("blocked");
         std::fs::write(&blocked, b"not a directory").unwrap();
-        let cx = StepContext::new(plan.participants().unwrap(), BTreeMap::new(), &blocked);
+        let cx = StepContext::new(plan.participants(), BTreeMap::new(), &blocked);
         assert!(matches!(
             cx.traffic_file("records.bin"),
             Err(HandleError::Harness { .. })
@@ -573,7 +573,7 @@ mod tests {
         let (_capture, capture_rx) = watch::channel(Capture::Following);
         let observation = ParticipantObservation::new(exit_rx, capture_rx, Default::default(), Default::default());
         let cx = StepContext::new(
-            plan.participants().unwrap(),
+            plan.participants(),
             BTreeMap::from([(
                 "subject",
                 StepParticipant {
@@ -625,15 +625,14 @@ mod tests {
     #[tokio::test]
     async fn a_handle_runs_a_planned_operation_with_its_arguments_and_limit() {
         use crate::case::{
-            fixtures::{CallFactory, FixtureTypes, OperationServer},
+            fixtures::{CallFactory, OperationServer},
             CaseLoader, Registries,
         };
         let registries = Registries {
             participant_types: &[&OperationServer],
             steps: &[&CallFactory],
-            typed_case_roles: &[],
         };
-        let case = CaseLoader::new(registries, FixtureTypes).load_content("cases",
+        let case = CaseLoader::new(registries).load_content("cases",
             "timeout: 30s\nsubject_os: [linux]\nparticipants:\n  subject: {type: server, subject: true}\nprocedure: [{step: call, on: subject, operation: config_dump}]", "case", std::path::Path::new("case/config.yaml"),
         ).unwrap().remove(0);
         let plan = Planner::new(registries, Default::default())
@@ -646,7 +645,7 @@ mod tests {
         let (_capture, capture_rx) = watch::channel(Capture::Following);
         let observation = ParticipantObservation::new(exit_rx, capture_rx, Default::default(), Default::default());
         let cx = StepContext::new(
-            plan.participants().unwrap(),
+            plan.participants(),
             BTreeMap::from([(
                 "subject",
                 StepParticipant {
@@ -684,7 +683,7 @@ mod tests {
         };
 
         use crate::case::{
-            fixtures::{CallFactory, FixtureTypes, HttpOperationServer, STEPS},
+            fixtures::{CallFactory, HttpOperationServer, STEPS},
             CaseLoader, Registries,
         };
 
@@ -698,9 +697,8 @@ mod tests {
         let registries = Registries {
             participant_types: &[&HttpOperationServer(&["api", "other"])],
             steps: &factories,
-            typed_case_roles: &[],
         };
-        let case = CaseLoader::new(registries, FixtureTypes)
+        let case = CaseLoader::new(registries)
             .load_content("cases",
                 "timeout: 30s\nsubject_os: [linux]\nparticipants:\n  subject: {type: server, subject: true}\nprocedure: [{step: reach, endpoint: subject.other, operation: request}, {step: call, on: subject, operation: http_dump}]",
                 "case",
@@ -715,7 +713,7 @@ mod tests {
             .unwrap()
             .into_plan()
             .unwrap();
-        let plan = plan.participants().unwrap();
+        let plan = plan.participants();
         assert!(plan
             .runner_host_route("subject", "other", EndpointOperation::Request)
             .is_some());
@@ -806,7 +804,7 @@ mod tests {
             .processes
             .insert("server", ProcessObservation::Container(exit_rx));
         let cx = StepContext::new(
-            plan.participants().unwrap(),
+            plan.participants(),
             BTreeMap::from([(
                 "subject",
                 StepParticipant {
@@ -839,7 +837,7 @@ mod tests {
             "{{ subject.facts.file }}/{{ subject.late.container_id }}/{{ subject.late.ip }}",
         );
         let plan = compile(&yaml);
-        let plan = plan.participants().unwrap();
+        let plan = plan.participants();
         let ProcedureNode::Step(step) = &plan.procedure()[0] else {
             panic!("one probe step");
         };
@@ -951,7 +949,7 @@ mod tests {
         let (_capture, capture_rx) = watch::channel(Capture::Following);
         let observation = ParticipantObservation::new(exit_rx, capture_rx, Default::default(), Default::default());
         let cx = StepContext::new(
-            plan.participants().unwrap(),
+            plan.participants(),
             BTreeMap::from([(
                 "subject",
                 StepParticipant {

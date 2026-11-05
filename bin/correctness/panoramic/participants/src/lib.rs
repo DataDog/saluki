@@ -65,7 +65,6 @@ mod tests {
         Planner::new(
             Registries {
                 participant_types: REGISTERED_TYPES,
-                typed_case_roles: &[TOOLS_LINUX_IMAGE],
                 ..Default::default()
             },
             ArtifactManifest::default(),

@@ -295,7 +295,7 @@ mod tests {
     use crate::{
         artifact::ArtifactRole,
         case::{
-            fixtures::{minimal_procedure, write_case, Client, FixtureTypes, Server, PARTICIPANT_FIELDS, STEPS},
+            fixtures::{minimal_procedure, write_case, Client, Server, PARTICIPANT_FIELDS, STEPS},
             CaseLoader, Registries,
         },
         plan::{
@@ -340,7 +340,7 @@ mod tests {
                 plan.effective_config("client").unwrap().env["UPSTREAM_URL"],
                 format!("http://127.0.0.1:{port}")
             );
-            assert!(plan.participants.as_ref().unwrap().planned.runner_host_ports.is_empty());
+            assert!(plan.participants.planned.runner_host_ports.is_empty());
         }
         assert_eq!(planner.ports.allocate(), Ok(20004));
     }
@@ -410,7 +410,7 @@ participants:
             "http://127.0.0.1:20004"
         );
         assert_eq!(
-            plan.participants.as_ref().unwrap().planned.runner_host_ports,
+            plan.participants.planned.runner_host_ports,
             BTreeMap::from([
                 (("container".into(), "api".into()), 20004),
                 (("container".into(), "metrics".into()), 20005),
@@ -627,9 +627,8 @@ participants:
         let registries = Registries {
             participant_types: &[&hooks, &Server],
             steps: STEPS,
-            ..Default::default()
         };
-        let loader = CaseLoader::new(registries, FixtureTypes);
+        let loader = CaseLoader::new(registries);
         let yaml = CONNECTION_CASE.replace("type: client", "type: hooks, config: {env: {CASE: value}}");
         let case = loader
             .load_content("cases", &yaml, "alpha", Path::new("cases/alpha/config.yaml"))
@@ -981,9 +980,8 @@ participants:
         let registries = Registries {
             participant_types: &[&Minimal, &Client],
             steps: STEPS,
-            ..Default::default()
         };
-        let loader = CaseLoader::new(registries, FixtureTypes);
+        let loader = CaseLoader::new(registries);
         for (participants, expected) in [
             (
                 "  subject: {type: minimal, subject: true, config: {endpoints: {api: {port: 80}}}}",

@@ -1,18 +1,12 @@
-use std::{borrow::Borrow, collections::BTreeMap, fmt::Write as _, process::ExitCode};
+use std::{collections::BTreeMap, fmt::Write as _, process::ExitCode};
 
-use panoramic_core::{layout::Os, machine_output::skip_reason};
-use saluki_error::GenericError;
+use panoramic_core::{case::CaseConfig, layout::Os, machine_output::skip_reason, plan::CasePlan};
 use tracing::info;
 
 use crate::{
     cli,
-    config::{
-        build_runners,
-        runner_artifacts::RunnerArtifacts,
-        typed_case::{layout_entries, LoadedCase, LoadedPlan},
-        BuiltCase, Discovered,
-    },
-    console::{Console, SetupFailure},
+    config::Discovered,
+    console::Console,
     discovery::{prepare_discovery, Selection},
 };
 
@@ -29,10 +23,7 @@ pub(crate) async fn list_tests(cmd: cli::ListCommand) -> ExitCode {
     };
 
     if cmd.json {
-        let entries = match json_listing(&plans, &excluded, subject_os) {
-            Ok(entries) => entries,
-            Err(error) => return SetupFailure::discovery(error).report(&console),
-        };
+        let entries = listing(&plans, &excluded, subject_os);
         println!(
             "{}",
             serde_json::to_string_pretty(&entries).expect("Unable to serialize a map of the tests")
@@ -59,8 +50,8 @@ pub(crate) async fn list_tests(cmd: cli::ListCommand) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Formats every enabled case in name order under a total count.
-fn listing_report(plans: &[LoadedPlan], excluded: &[LoadedCase]) -> String {
+/// Formats every discovered case in name order under a total count.
+fn listing_report(plans: &[CasePlan], excluded: &[CaseConfig]) -> String {
     let count = plans.len() + excluded.len();
     let mut text = format!("\nAvailable tests ({count}):\n\n");
     let mut entries: Vec<_> = plans
@@ -76,7 +67,7 @@ fn listing_report(plans: &[LoadedPlan], excluded: &[LoadedCase]) -> String {
 }
 
 /// Formats a case's name, description, timeout and status.
-fn listing_header(case: &LoadedCase, status: &str) -> String {
+fn listing_header(case: &CaseConfig, status: &str) -> String {
     let mut text = format!("  {}\n", case.name());
     if let Some(description) = case.description() {
         writeln!(text, "    {description}").unwrap();
@@ -87,15 +78,14 @@ fn listing_header(case: &LoadedCase, status: &str) -> String {
 }
 
 /// Formats one case's text listing, including its layout and resolved artifact references with their sources.
-fn listing_text(plan: &LoadedPlan) -> String {
+fn listing_text(plan: &CasePlan) -> String {
     let mut text = listing_header(plan.case(), "runnable");
-    if let Some(layout) = plan.layout() {
-        let participants: Vec<_> = layout
-            .iter()
-            .map(|(name, realization)| format!("{name} on {} as {}", realization.os.name(), realization.kind.name()))
-            .collect();
-        writeln!(text, "    Layout: {}", participants.join("; ")).unwrap();
-    }
+    let participants: Vec<_> = plan
+        .layout()
+        .iter()
+        .map(|(name, realization)| format!("{name} on {} as {}", realization.os.name(), realization.kind.name()))
+        .collect();
+    writeln!(text, "    Layout: {}", participants.join("; ")).unwrap();
     let artifacts = plan.artifacts();
     if artifacts.is_empty() {
         writeln!(text, "    Artifact roles: none").unwrap();
@@ -106,45 +96,28 @@ fn listing_text(plan: &LoadedPlan) -> String {
             writeln!(text, "      {} = {} ({source})", binding.role.name, binding.reference).unwrap();
         }
     }
-    if plan.layout().is_some() {
-        for (label, order) in [("Create", plan.create_order()), ("Start", plan.start_order())] {
-            let levels = order
-                .expect("participant layouts have dependency orders")
-                .iter()
-                .map(|level| level.join(", "))
-                .collect::<Vec<_>>();
-            writeln!(text, "    {label} order: {}", levels.join(" then ")).unwrap();
-        }
+    for (label, order) in [("Create", plan.create_order()), ("Start", plan.start_order())] {
+        let levels = order.iter().map(|level| level.join(", ")).collect::<Vec<_>>();
+        writeln!(text, "    {label} order: {}", levels.join(" then ")).unwrap();
     }
     text.push('\n');
     text
 }
 
 /// Formats an excluded case's metadata and skip status.
-fn excluded_listing_text(case: &LoadedCase) -> String {
+fn excluded_listing_text(case: &CaseConfig) -> String {
     let mut text = listing_header(case, "skipped (subject_os)");
     text.push('\n');
     text
 }
 
-fn json_listing(
-    plans: &[LoadedPlan], excluded: &[LoadedCase], subject_os: Os,
-) -> Result<BTreeMap<String, serde_json::Value>, GenericError> {
-    let built = build_runners(plans, &RunnerArtifacts::Overrides(&[]))?;
-    Ok(listing(&built, excluded, subject_os))
-}
-
-/// Lists every enabled case's status, layout and roles, with runtime and images for cases using runners.
-pub(crate) fn listing<P>(
-    built: &[BuiltCase<P>], excluded: &[LoadedCase], subject_os: Os,
-) -> BTreeMap<String, serde_json::Value>
-where
-    P: Borrow<LoadedPlan>,
-{
-    built
+/// Lists every discovered case's status, layout and artifact roles.
+pub(crate) fn listing(
+    plans: &[CasePlan], excluded: &[CaseConfig], subject_os: Os,
+) -> BTreeMap<String, serde_json::Value> {
+    plans
         .iter()
-        .map(|built| {
-            let plan = built.plan.borrow();
+        .map(|plan| {
             let case = plan.case();
             let roles: Vec<_> = plan
                 .artifacts()
@@ -158,17 +131,13 @@ where
                     })
                 })
                 .collect();
-            let mut row = serde_json::json!({
+            let row = serde_json::json!({
                 "type": case.suite(),
                 "timeout": case.timeout(),
                 "status": "runnable",
-                "layout": layout_entries(plan),
+                "layout": plan.layout_entries(),
                 "roles": roles,
             });
-            if let Some(runner) = built.runner() {
-                row["runtime"] = serde_json::json!(runner.runtime());
-                row["images"] = serde_json::json!(runner.images());
-            }
             (case.name().to_string(), row)
         })
         .chain(excluded.iter().map(|case| {
@@ -198,77 +167,56 @@ mod tests {
         collector::EXIT_HARNESS_ERROR,
         config::{
             discover_in_scope, load_planner,
-            tests::{build_case_runners, planner, write_case, CORRECTNESS_FIELDS, PARTICIPANT_FIELDS},
+            tests::{planner, write_case, PARTICIPANT_FIELDS},
         },
         REGISTRIES,
     };
 
     #[test]
     fn listing_json_reports_status_layout_and_roles_for_runnable_cases() {
-        let participant = crate::config::tests::plan(PARTICIPANT_FIELDS, Os::Linux);
-        let typed = crate::config::tests::plan(&format!("type: correctness\n{CORRECTNESS_FIELDS}"), Os::Linux);
-        for (plan, expected_layout, expected_keys) in [
-            (
-                participant,
-                serde_json::json!([{
-                    "participant": "adp", "type": "agent-adp", "os": "linux", "realization": "linux-container",
-                }]),
-                vec!["layout", "roles", "status", "timeout", "type"],
-            ),
-            (
-                typed,
-                serde_json::json!([{
-                    "participant": null, "type": null, "os": "linux", "realization": "linux-container",
-                }]),
-                vec!["images", "layout", "roles", "runtime", "status", "timeout", "type"],
-            ),
-        ] {
-            let built = build_runners([&plan], &RunnerArtifacts::Overrides(&[])).unwrap();
-            let entries = listing(&built, &[], Os::Linux);
-            let entry = &entries["case"];
-            assert_eq!(entry["status"], "runnable");
-            assert_eq!(entry["layout"], expected_layout);
-            assert_eq!(
-                entry
-                    .as_object()
-                    .unwrap()
-                    .keys()
-                    .map(String::as_str)
-                    .collect::<Vec<_>>(),
-                expected_keys
-            );
-            let mut expected_roles = serde_json::json!([
-                {
-                    "role": "agent-adp-linux-image",
-                    "kind": "image",
-                    "reference": "saluki-images/datadog-agent:testing-devel",
-                    "source": "local_default",
+        let plan = crate::config::tests::plan(PARTICIPANT_FIELDS, Os::Linux);
+        let expected_layout = serde_json::json!([{
+            "participant": "adp", "type": "agent-adp", "os": "linux", "realization": "linux-container",
+        }]);
+        let expected_keys = vec!["layout", "roles", "status", "timeout", "type"];
+        let entries = listing(&[plan], &[], Os::Linux);
+        let entry = &entries["case"];
+        assert_eq!(entry["status"], "runnable");
+        assert_eq!(entry["layout"], expected_layout);
+        assert_eq!(
+            entry
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            expected_keys
+        );
+        let expected_roles = serde_json::json!([
+            {
+                "role": "agent-adp-linux-image",
+                "kind": "image",
+                "reference": "saluki-images/datadog-agent:testing-devel",
+                "source": "local_default",
+            },
+            {
+                "role": "courier-linux-binary",
+                "kind": "binary",
+                "reference": match std::env::consts::ARCH {
+                    "aarch64" => "target/aarch64-unknown-linux-musl/release/panoramic-courier",
+                    "x86_64" => "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+                    _ => "",
                 },
-                {
-                    "role": "courier-linux-binary",
-                    "kind": "binary",
-                    "reference": match std::env::consts::ARCH {
-                        "aarch64" => "target/aarch64-unknown-linux-musl/release/panoramic-courier",
-                        "x86_64" => "target/x86_64-unknown-linux-musl/release/panoramic-courier",
-                        _ => "",
-                    },
-                    "source": "local_default",
-                },
-                {
-                    "role": "fixup-image",
-                    "kind": "image",
-                    "reference": "alpine:latest",
-                    "source": "local_default",
-                },
-            ]);
-            if plan.case().suite() == "correctness" {
-                expected_roles.as_array_mut().unwrap().push(serde_json::json!({
-                    "role": "tools-linux-image", "kind": "image",
-                    "reference": "saluki-images/correctness-tools:latest", "source": "local_default",
-                }));
-            }
-            assert_eq!(entry["roles"], expected_roles);
-        }
+                "source": "local_default",
+            },
+            {
+                "role": "fixup-image",
+                "kind": "image",
+                "reference": "alpine:latest",
+                "source": "local_default",
+            },
+        ]);
+        assert_eq!(entry["roles"], expected_roles);
     }
 
     #[test]
@@ -281,7 +229,7 @@ mod tests {
             ),
             crate::config::tests::plan(PARTICIPANT_FIELDS, Os::Linux),
         ];
-        let entries = json_listing(&plans, &[], Os::Linux).unwrap();
+        let entries = listing(&plans, &[], Os::Linux);
         assert_eq!(entries.len(), 2);
         assert!(entries["case"].get("runtime").is_none());
         assert!(entries["case"].get("images").is_none());
@@ -319,16 +267,11 @@ mod tests {
     fn listing_json_reports_skipped_cases_with_their_reason_and_without_runtime_or_images() {
         let dir = tempfile::tempdir().unwrap();
         write_case(dir.path(), "participant", PARTICIPANT_FIELDS);
-        write_case(
-            dir.path(),
-            "correctness",
-            &format!("type: correctness\n{CORRECTNESS_FIELDS}"),
-        );
+        write_case(dir.path(), "correctness", PARTICIPANT_FIELDS);
         let Discovered { plans, excluded } =
             discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], Os::MacOs).unwrap();
         assert!(plans.is_empty());
-        let built = build_runners(&plans, &RunnerArtifacts::Overrides(&[])).unwrap();
-        let entries = listing(&built, &excluded, Os::MacOs);
+        let entries = listing(&plans, &excluded, Os::MacOs);
         assert_eq!(entries.len(), 2);
         for case in &excluded {
             assert_eq!(
@@ -346,18 +289,14 @@ mod tests {
     }
 
     #[test]
-    fn listing_json_images_ignore_artifact_bindings_while_roles_follow_them() {
+    fn listing_json_roles_follow_artifact_bindings() {
         let dir = tempfile::tempdir().unwrap();
         write_case(
             dir.path(),
             "integration",
             "name: integration\ntimeout: 1s\nsubject_os: [linux, windows, macos]\nparticipants: {adp: {type: agent-adp, subject: true}}\nprocedure: [{step: log_contains, on: adp, pattern: ready, timeout: 5s}]\n",
         );
-        write_case(
-            dir.path(),
-            "correctness",
-            &format!("type: correctness\n{CORRECTNESS_FIELDS}"),
-        );
+        write_case(dir.path(), "correctness", PARTICIPANT_FIELDS);
         let bindings = BTreeMap::from([
             ("agent-adp-linux-image".into(), "changed:linux".into()),
             ("agent-adp-windows-image".into(), "changed:windows".into()),
@@ -378,8 +317,7 @@ mod tests {
                     let Discovered { plans, excluded } =
                         discover_in_scope(&mut load_planner(manifest).unwrap(), &[dir.path().to_path_buf()], os)
                             .unwrap();
-                    let built = build_runners(&plans, &RunnerArtifacts::Overrides(&[])).unwrap();
-                    listing(&built, &excluded, os)
+                    listing(&plans, &excluded, os)
                 })
                 .collect();
             for (name, before) in &listings[0] {
@@ -410,10 +348,6 @@ mod tests {
                 }
                 assert!(manifest_roles > 0);
             }
-            assert_eq!(
-                listings[0]["correctness"]["images"]["baseline"] == "base:file",
-                os == Os::Linux
-            );
         }
     }
 
@@ -596,26 +530,6 @@ mod tests {
              Start order: adp, alpha, zebra\n\n"
             )
         );
-        let case = crate::CASE_LOADER
-            .load_content(
-                "cases",
-                &format!("type: correctness\n{CORRECTNESS_FIELDS}"),
-                "typed",
-                std::path::Path::new("config.yaml"),
-            )
-            .unwrap()
-            .remove(0);
-        let plan = planner().compile(case, Os::Linux).unwrap().into_plan().unwrap();
-        assert_eq!(
-            listing_text(&plan),
-            format!(
-                "  typed\n    Timeout: 1200s\n    Status: runnable\n    Artifact roles:\n      \
-             agent-adp-linux-image = saluki-images/datadog-agent:testing-devel (local default)\n      \
-             courier-linux-binary = {courier} (local default)\n      \
-             fixup-image = alpine:latest (local default)\n      \
-             tools-linux-image = saluki-images/correctness-tools:latest (local default)\n\n"
-            )
-        );
     }
 
     #[tokio::test]
@@ -623,7 +537,7 @@ mod tests {
         use tracing::instrument::WithSubscriber as _;
 
         let dir = tempfile::tempdir().unwrap();
-        write_case(dir.path(), "typed", &format!("type: correctness\n{CORRECTNESS_FIELDS}"));
+        write_case(dir.path(), "linux-only", PARTICIPANT_FIELDS);
         write_case(
             dir.path(),
             "participant",
@@ -638,8 +552,8 @@ mod tests {
             ),
         );
         for (os, runnable, skipped) in [
-            (Os::MacOs, vec!["participant"], vec!["integration", "typed"]),
-            (Os::Windows, vec!["integration", "participant"], vec!["typed"]),
+            (Os::MacOs, vec!["participant"], vec!["integration", "linux-only"]),
+            (Os::Windows, vec!["integration", "participant"], vec!["linux-only"]),
         ] {
             let Discovered { plans, excluded } =
                 discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], os).unwrap();
@@ -647,7 +561,7 @@ mod tests {
                 plans.iter().map(|plan| plan.case().name()).collect::<Vec<_>>(),
                 runnable
             );
-            assert_eq!(excluded.iter().map(LoadedCase::name).collect::<Vec<_>>(), skipped);
+            assert_eq!(excluded.iter().map(CaseConfig::name).collect::<Vec<_>>(), skipped);
             for plan in &plans {
                 assert!(listing_text(plan).contains("    Status: runnable\n"));
             }
@@ -656,7 +570,7 @@ mod tests {
                     "integration" => {
                         "  integration\n    Windows only\n    Timeout: 7s\n    Status: skipped (subject_os)\n\n"
                     }
-                    "typed" => "  typed\n    Timeout: 1200s\n    Status: skipped (subject_os)\n\n",
+                    "linux-only" => "  linux-only\n    Timeout: 1s\n    Status: skipped (subject_os)\n\n",
                     name => panic!("unexpected skipped case: {name}"),
                 };
                 assert_eq!(excluded_listing_text(case), expected);
@@ -667,20 +581,20 @@ mod tests {
                 .lines()
                 .filter_map(|line| line.strip_prefix("  ").filter(|line| !line.starts_with(' ')))
                 .collect::<Vec<_>>();
-            assert_eq!(names, ["integration", "participant", "typed"]);
+            assert_eq!(names, ["integration", "linux-only", "participant"]);
             if os == Os::MacOs {
                 assert_eq!(
                     report,
                     concat!(
                         "\nAvailable tests (3):\n\n",
                         "  integration\n    Windows only\n    Timeout: 7s\n    Status: skipped (subject_os)\n\n",
+                        "  linux-only\n    Timeout: 1s\n    Status: skipped (subject_os)\n\n",
                         "  participant\n    Timeout: 1s\n    Status: runnable\n",
                         "    Layout: adp on macos as host-process-group\n",
                         "    Artifact roles:\n",
                         "      adp-host-binary = target/release/agent-data-plane (local default)\n",
                         "      agent-host-install = /tmp/saluki-dda/datadog-agent (local default)\n",
                         "    Create order: adp\n    Start order: adp\n\n",
-                        "  typed\n    Timeout: 1200s\n    Status: skipped (subject_os)\n\n",
                     )
                 );
             }
@@ -717,31 +631,19 @@ mod tests {
     }
 
     #[test]
-    fn listing_reports_suite_runtime_timeout_and_declared_images() {
+    fn listing_reports_suite_timeout_and_windows_artifact_roles() {
         let dir = tempfile::tempdir().unwrap();
-        let path = write_case(
-            dir.path(),
-            "correctness",
-            &format!("type: correctness\n{CORRECTNESS_FIELDS}"),
-        );
-        let cases = crate::CASE_LOADER.load_file(&path).unwrap();
-        let runners = build_case_runners(cases, Os::Linux, &[]).unwrap();
-        let entries = listing(&runners, &[], Os::Linux);
-        assert_eq!(entries.len(), 1);
-        let entry = &entries["correctness"];
-        assert_eq!(entry["type"], "correctness");
-        assert_eq!(entry["runtime"], "docker");
-        assert_eq!(entry["timeout"], serde_json::json!({"secs": 1200, "nanos": 0}));
-        assert_eq!(entry["images"]["baseline"], "base:file");
-
         let path = write_case(
             &dir.path().join("integration/cases"),
             "participant",
             &PARTICIPANT_FIELDS.replace("1s", "9s").replace("[linux]", "[windows]"),
         );
         let cases = crate::CASE_LOADER.load_file(&path).unwrap();
-        let runners = build_case_runners(cases, Os::Windows, &[]).unwrap();
-        let entries = listing(&runners, &[], Os::Windows);
+        let plans = cases
+            .into_iter()
+            .map(|case| planner().compile(case, Os::Windows).unwrap().into_plan().unwrap())
+            .collect::<Vec<_>>();
+        let entries = listing(&plans, &[], Os::Windows);
         assert_eq!(entries.len(), 1);
         let entry = &entries["participant"];
         assert_eq!(entry["type"], "integration");

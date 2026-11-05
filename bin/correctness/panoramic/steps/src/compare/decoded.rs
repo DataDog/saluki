@@ -1,4 +1,4 @@
-//! Decoded traffic streams and sidecars shared by comparison runners.
+//! Decoded traffic streams and sidecars for comparisons.
 
 use std::{fs::File, io::BufWriter};
 

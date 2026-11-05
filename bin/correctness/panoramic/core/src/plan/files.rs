@@ -70,7 +70,7 @@ mod tests {
     use crate::{
         artifact::ArtifactRole,
         case::{
-            fixtures::{minimal_procedure, write_case, Client, FixtureConfig, FixtureTypes, Server, STEPS},
+            fixtures::{minimal_procedure, write_case, Client, Server, STEPS},
             CaseLoader, Registries,
         },
         endpoint::{ConsumedEndpoint, Endpoint, Evidence, Port},
@@ -169,17 +169,16 @@ mod tests {
         "identity: '{{  peer.late.container_id  }}'\n"
     );
 
-    fn compile(config: &str, source: &Path, os: Os) -> Result<CasePlan<FixtureConfig>, String> {
+    fn compile(config: &str, source: &Path, os: Os) -> Result<CasePlan, String> {
         let registries = Registries {
             participant_types: &[&FileServer, &Server],
             steps: STEPS,
-            ..Default::default()
         };
         let yaml = format!(
             "timeout: 1s\nsubject_os: [{}]\nparticipants:\n  subject: {{type: file-server, subject: true, connect: {{upstream: peer.api}}, config: {config}}}\n  peer: {{type: server}}\n{}",
             os.name(), minimal_procedure!()
         );
-        let case = CaseLoader::new(registries, FixtureTypes)
+        let case = CaseLoader::new(registries)
             .load_content("cases", &yaml, "alpha", source)
             .map_err(|error| error.to_string())?
             .remove(0);
@@ -230,7 +229,7 @@ mod tests {
             ])
         );
         assert_eq!(
-            plan.create_order().unwrap(),
+            plan.create_order(),
             &[vec!["peer".to_string()], vec!["subject".to_string()]]
         );
     }
