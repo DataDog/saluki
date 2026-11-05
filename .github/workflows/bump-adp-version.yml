@@ -83,6 +83,20 @@ jobs:
           echo "Creating $RELEASE_BRANCH from ${{ github.sha }}"
           git push "$REMOTE" "HEAD:refs/heads/$RELEASE_BRANCH"
 
+      - name: Create the backport label for the release branch
+        env:
+          GH_TOKEN: ${{ steps.octo-sts.outputs.token }}
+          RELEASE_BRANCH: ${{ needs.release-info.outputs.new_release_branch }}
+        run: |
+          # The release branch is `releases/X.Y.x`, and the label that triggers the Backport workflow is
+          # `backport/X.Y.x`. `--force` makes this idempotent if the label already exists.
+          VERSION_LINE="${RELEASE_BRANCH#releases/}"
+          gh label create "backport/${VERSION_LINE}" \
+            --repo "${{ github.repository }}" \
+            --description "Automatically create a backport PR to ${RELEASE_BRANCH} once merged" \
+            --color "5319e7" \
+            --force
+
   bump-version:
     needs: [release-info, create-release-branch]
     if: |

@@ -29,6 +29,7 @@ use crate::internal::logging::get_translated_logging_config;
 mod cli;
 use self::cli::*;
 
+mod component_inputs;
 mod components;
 mod config;
 mod dogstatsd_contexts;
@@ -37,12 +38,12 @@ mod remote_config;
 
 pub(crate) mod state;
 
-#[cfg(all(target_os = "linux", not(system_allocator)))]
+#[cfg(all(any(target_os = "linux", target_os = "aix"), not(system_allocator)))]
 #[global_allocator]
 static ALLOC: saluki_common::resource_tracking::TrackingAllocator<tikv_jemallocator::Jemalloc> =
     saluki_common::resource_tracking::TrackingAllocator::new(tikv_jemallocator::Jemalloc);
 
-#[cfg(any(not(target_os = "linux"), system_allocator))]
+#[cfg(any(not(any(target_os = "linux", target_os = "aix")), system_allocator))]
 #[global_allocator]
 static ALLOC: saluki_common::resource_tracking::TrackingAllocator<std::alloc::System> =
     saluki_common::resource_tracking::TrackingAllocator::new(std::alloc::System);
@@ -117,6 +118,15 @@ async fn async_main(started: Instant) -> Result<(), GenericError> {
         .bootstrap()
         .await
         .error_context("Failed to complete bootstrap phase.")?;
+
+    if let Some(error) = &local_config.yaml_fallback_error {
+        warn!(
+            error = %error,
+            path = %bootstrap_config_path.display(),
+            "Datadog-style YAML key resolution failed; reading every key as written for the entire file. \
+             Dotted and differently cased Datadog settings may be ignored. Use nested lowercase setting names."
+        );
+    }
 
     // Bootstrap-integration probe: proves the Antithesis SDK is linked, cataloging works, and the
     // instrumentation path is wired.

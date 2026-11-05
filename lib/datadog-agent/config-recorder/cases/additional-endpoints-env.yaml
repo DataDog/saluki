@@ -1,0 +1,8 @@
+# Sets additional_endpoints from JSON in an environment variable.
+# Checks that a map from the environment streams as a raw string rather than a map.
+name: additional-endpoints-env
+group: behavior
+why: [env-map-raw-string]
+env:
+  DD_ADDITIONAL_ENDPOINTS: '{"https://x.test": ["k"]}'
+keys: [additional_endpoints]

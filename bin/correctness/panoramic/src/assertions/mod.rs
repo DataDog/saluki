@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fmt;
-use std::path::PathBuf;
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
 
@@ -12,7 +13,7 @@ use std::time::Duration;
 pub type DockerExitCodeCell = Arc<OnceLock<i64>>;
 
 use futures::future;
-use saluki_error::GenericError;
+use saluki_error::{ErrorContext as _, GenericError};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error};
@@ -148,6 +149,23 @@ pub struct LogBuffer {
 }
 
 impl LogBuffer {
+    /// Writes captured stdout and stderr to `log_dir`. Call from a blocking thread.
+    pub(crate) fn write_to(&self, log_dir: &Path) -> Result<(), GenericError> {
+        for (name, lines) in [("stdout.log", &self.stdout), ("stderr.log", &self.stderr)] {
+            let path = log_dir.join(name);
+            let file = std::fs::File::create(&path)
+                .with_error_context(|| format!("Failed to create log file at '{}'.", path.display()))?;
+            let mut file = std::io::BufWriter::new(file);
+            for line in lines {
+                writeln!(file, "{}", line)
+                    .with_error_context(|| format!("Failed to write log line to '{}'.", path.display()))?;
+            }
+            file.flush()
+                .with_error_context(|| format!("Failed to flush log file at '{}'.", path.display()))?;
+        }
+        Ok(())
+    }
+
     /// Check if any line matches the given pattern.
     pub fn contains_match(&self, pattern: &str, is_regex: bool, stream: &LogStream) -> bool {
         let lines: Vec<&str> = match stream {
@@ -1088,7 +1106,8 @@ mod tests {
         let auth_token = dir.path().join("auth_token");
         std::fs::write(&auth_token, "token").expect("the auth token should be writable");
         let missing = dir.path().join("missing");
-        let closed = closed_port();
+        let reserved = closed_port();
+        let closed = reserved.port();
         let cancel = CancellationToken::new();
         let mut ctx = context(&cancel, None);
         ctx.port_mappings.insert("1234/tcp".to_string(), closed);
@@ -1140,7 +1159,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir should be creatable");
         let directory = dir.path().display().to_string();
         let missing = dir.path().join("missing");
-        let closed = closed_port();
+        let reserved = closed_port();
+        let closed = reserved.port();
         let context_with = |configure: &dyn Fn(&mut AssertionContext)| {
             let mut ctx = context(&CancellationToken::new(), None);
             configure(&mut ctx);

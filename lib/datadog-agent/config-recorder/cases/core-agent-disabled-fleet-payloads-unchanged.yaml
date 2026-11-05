@@ -1,0 +1,14 @@
+# Disables core_agent through a fleet policy and reads the four payload switches.
+# Shows that the load-time switch-off runs before the policy merge and is not rerun.
+name: core-agent-disabled-fleet-payloads-unchanged
+group: behavior
+why: [core-agent-disabled-forces-payloads-off, load-fixup-skips-fleet-policy]
+fleet_policy: |
+  core_agent:
+    enabled: false
+keys:
+  - core_agent.enabled
+  - enable_payloads.events
+  - enable_payloads.series
+  - enable_payloads.service_checks
+  - enable_payloads.sketches

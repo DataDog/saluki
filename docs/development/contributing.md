@@ -197,4 +197,42 @@ Once reviews are complete, merge to `main` with either:
   Always edit the commit message for the squash to concisely describe the change, without extraneous "address review
   comments" text.
 - the **rebase-merge** option, after manually rewriting the PR's commit history and force-pushing to the branch. When
-  using this option, the branch must have a clean history.
+  using this option, the branch must have a clean history. PRs merged this way can't be backported automatically (see
+  [Backporting a change](#backporting-a-change)).
+
+## Backporting a change
+
+To ship a fix on an older release line, backport the change to that line's `releases/X.Y.x` branch. Label the PR with
+`backport/X.Y.x`, for example `backport/1.8.x`, and the **Backport** workflow opens a PR against `releases/1.8.x` for
+you. You can apply the label before or after the PR merges to `main`, and you can apply several labels to backport to
+several release lines. Removing a label before the merge cancels that backport.
+
+The workflow cherry-picks the squash commit of the original PR, so it only supports squash-merged PRs. It refuses
+PRs that look rebase-merged, rather than backporting only part of the change. If the original PR includes a release
+note, the note comes along with the cherry-pick.
+
+Stacked PRs work too. The workflow checks that the PR's own commit is on `main`, not which branch the PR targeted, so
+every PR in a stack whose commit lands on `main` can be labeled. If a PR in a stack was merged into its parent's
+branch instead, its change reaches `main` inside the parent's commit. The workflow refuses it and says so, so label the
+PR that was merged to `main`.
+
+The new PR is titled `<original title> (backport X.Y.x)`, and the original PR gets a comment linking to it. Review and
+merge it like any other PR. A clean cherry-pick can still fail to compile on an older branch if the change depends on
+something that only exists on `main`, so wait for CI before you merge.
+
+### When the backport fails
+
+If the cherry-pick has conflicts, the workflow doesn't open a PR. Instead, it comments on the original PR with the
+commands to backport the change by hand. The comment also appears if `releases/X.Y.x` no longer exists. In that case,
+the release line is no longer maintained, so remove the label.
+
+After you push your manual backport branch (named `backport-<pr number>-to-X.Y.x`) and open a PR, the workflow treats
+the backport as done.
+
+To retry after a failure or a closed backport PR, remove the label and apply it again, or run the **Backport** workflow
+from the Actions tab with the original PR number and the release line, for example `1.8.x`.
+
+### Release lines
+
+The `backport/X.Y.x` label for a release line is created automatically when its `releases/X.Y.x` branch is cut. When
+a release line is no longer maintained, delete its label.

@@ -9,9 +9,6 @@ mod duration_de;
 pub mod env_decode;
 mod list_de;
 
-/// A Figment provider that reads the schema's environment variables into their canonical shape.
-pub mod env_provider;
-
 /// Builds the typed configuration base by reading environment variables directly and decoding them
 /// into the nested configuration shape.
 pub mod env_reader;
@@ -34,9 +31,8 @@ mod translate_error;
 pub use cast_de::cast_to_f64;
 pub use cast_de::cast_to_string;
 pub use env_decode::EnvDecode;
-pub use env_provider::DatadogEnvProvider;
 pub use env_reader::{apply_datadog_env, apply_datadog_env_vars, apply_env_at_path, datadog_leaf_paths, EnvKey};
-pub use generated::{drive, DatadogConfigWitness, DatadogConfiguration};
+pub use generated::{drive, DatadogConfigWitness, DatadogConfiguration, Leaf, LeafValue, LEAVES};
 pub use platform_default::is_containerized;
 pub use size_in_bytes::parse_size_in_bytes;
 pub use translate_error::{TranslateError, TranslateErrors};
@@ -330,5 +326,88 @@ mod null_collection_tests {
         assert_eq!(config.apm_config.replace_tags.len(), 2);
         assert!(config.apm_config.replace_tags[0].is_empty());
         assert_eq!(config.apm_config.replace_tags[1]["name"], "*");
+    }
+}
+
+#[cfg(test)]
+mod leaves_tests {
+    use serde_json::json;
+
+    use super::generated::env_keys::DATADOG_ENV_KEYS;
+    use super::{DatadogConfiguration, LeafValue, LEAVES};
+
+    // `LEAVES` and `DATADOG_ENV_KEYS` are independently generated (by `witness_gen.rs` and
+    // `env_reader_gen.rs` respectively) from the same overlay key set, so comparing them catches a
+    // divergence between the two generators rather than just a generator agreeing with itself.
+    #[test]
+    fn leaves_has_one_entry_per_supported_key() {
+        assert_eq!(LEAVES.len(), DATADOG_ENV_KEYS.len());
+        for env_key in DATADOG_ENV_KEYS {
+            let dotted = env_key.path.join(".");
+            assert!(
+                LEAVES.iter().any(|leaf| leaf.key == dotted),
+                "no LEAVES entry for supported key `{dotted}`"
+            );
+        }
+    }
+
+    #[test]
+    fn leaves_are_sorted_and_unique_by_key() {
+        for pair in LEAVES.windows(2) {
+            assert!(
+                pair[0].key < pair[1].key,
+                "LEAVES is not sorted (or has a duplicate) between `{}` and `{}`",
+                pair[0].key,
+                pair[1].key
+            );
+        }
+    }
+
+    #[test]
+    fn leaves_read_typed_values_of_several_kinds() {
+        let config: DatadogConfiguration = serde_json::from_value(json!({
+            "dogstatsd_non_local_traffic": true,
+            "dogstatsd_port": 9999,
+            "dogstatsd_tags": ["env:prod", "team:core"],
+            "additional_endpoints": { "https://x.": ["k1", "k2"] },
+            "apm_config": { "obfuscation": { "credit_cards": { "enabled": true } } },
+        }))
+        .expect("small configuration deserializes");
+
+        let leaf = |key: &str| {
+            LEAVES
+                .iter()
+                .find(|l| l.key == key)
+                .unwrap_or_else(|| panic!("no leaf `{key}`"))
+        };
+
+        assert!(matches!(
+            (leaf("dogstatsd_non_local_traffic").get)(&config),
+            LeafValue::Bool(true)
+        ));
+        assert!(matches!((leaf("dogstatsd_port").get)(&config), LeafValue::I64(9999)));
+
+        match (leaf("dogstatsd_tags").get)(&config) {
+            LeafValue::StringList(tags) => assert_eq!(tags, ["env:prod", "team:core"]),
+            other => panic!("unexpected leaf value: {other:?}"),
+        }
+
+        match (leaf("additional_endpoints").get)(&config) {
+            LeafValue::StringListMap(map) => {
+                assert_eq!(map["https://x."], vec!["k1".to_string(), "k2".to_string()]);
+            }
+            other => panic!("unexpected leaf value: {other:?}"),
+        }
+
+        assert!(matches!(
+            (leaf("apm_config.obfuscation.credit_cards.enabled").get)(&config),
+            LeafValue::Bool(true)
+        ));
+
+        // A key the JSON above never set reads back as the leaf's serde default.
+        match (leaf("syslog_rfc").get)(&config) {
+            LeafValue::Bool(value) => assert_eq!(value, DatadogConfiguration::default().syslog_rfc),
+            other => panic!("unexpected leaf value: {other:?}"),
+        }
     }
 }

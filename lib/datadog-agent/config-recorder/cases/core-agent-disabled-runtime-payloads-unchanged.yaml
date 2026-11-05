@@ -1,0 +1,8 @@
+# Disables core_agent with a runtime update, then reads the series and sketches switches.
+# Shows that the load-time payload adjustment is not recomputed after this update.
+name: core-agent-disabled-runtime-payloads-unchanged
+group: behavior
+why: [core-agent-disabled-forces-payloads-off, derived-value-not-recomputed-after-update]
+updates:
+  - {key: core_agent.enabled, value: false, source: remote-config}
+keys: [core_agent.enabled, enable_payloads.series, enable_payloads.sketches]

@@ -15,15 +15,17 @@ use datadog_agent_runtime::{
     facade::{AuthoritativeConfiguration, LocalConfiguration, RemoteAgentSpecification},
     logging::LoggingSettings,
 };
+use datadog_protos::agent::command::v1::remote_command_provider_server::RemoteCommandProviderServer;
 use saluki_app::accounting::{MemoryBoundsConfiguration, MemoryMode as AppMemoryMode};
 use saluki_config::dynamic::ConfigUpdate;
 use saluki_error::GenericError;
 use saluki_io::net::ListenAddress;
 use tokio::sync::mpsc;
+use tonic::server::NamedService;
 
 use crate::{
     config::{host_settings, remote_agent_client_configuration, workload_settings, DataPlaneConfiguration},
-    internal::logging::get_logging_settings,
+    internal::{logging::get_logging_settings, remote_command::RemoteCommandProviderImpl},
 };
 
 /// ADP as a remote agent.
@@ -33,6 +35,9 @@ impl RemoteAgentSpecification for AgentDataPlane {
     type LocalConfiguration = AdpLocalConfig;
     type AuthoritativeConfiguration = AdpConfig;
     type ConfigurationUpdates = AdpConfigUpdates;
+
+    const ADDITIONAL_SERVICE_NAMES: &'static [&'static str] =
+        &[<RemoteCommandProviderServer<RemoteCommandProviderImpl> as NamedService>::NAME];
 }
 
 /// ADP's local configuration, loaded from the configuration file and the environment.

@@ -14,7 +14,6 @@ fips = ["saluki-io/fips"]
 test-util = []
 
 [dependencies]
-agent-data-plane-config = { workspace = true }
 arc-swap = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true }
@@ -109,3 +108,4 @@ saluki-tls = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
 test-strategy = { workspace = true }
 tokio = { workspace = true, features = ["time", "io-util", "net", "rt", "test-util"] }
+tracing-subscriber = { workspace = true, features = ["fmt"] }

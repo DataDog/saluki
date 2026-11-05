@@ -1,5 +1,5 @@
 use saluki_error::GenericError;
-use stele::{ClientStatisticsAggregator, Event, Metric, ServiceCheck, Span};
+use stele::{ClientStatisticsAggregator, Event, Log, LogsRequest, Metric, ServiceCheck, Span};
 
 use super::IntakeClient;
 
@@ -9,6 +9,7 @@ use super::IntakeClient;
 #[cfg_attr(test, derive(Default))]
 pub struct CollectedData {
     events: Vec<Event>,
+    log_requests: Vec<LogsRequest>,
     metrics: Vec<Metric>,
     service_checks: Vec<ServiceCheck>,
     spans: Vec<Span>,
@@ -27,6 +28,7 @@ impl CollectedData {
     /// If any endpoint's data can't be retrieved from the `datadog-intake` server, an error is returned.
     pub async fn collect(client: &IntakeClient) -> Result<Self, GenericError> {
         let events = client.events().await?;
+        let log_requests = client.logs().await?;
         let metrics = client.metrics().await?;
         let service_checks = client.service_checks().await?;
         let spans = client.spans().await?;
@@ -35,6 +37,7 @@ impl CollectedData {
 
         Ok(Self {
             events,
+            log_requests,
             metrics,
             service_checks,
             spans,
@@ -43,9 +46,28 @@ impl CollectedData {
         })
     }
 
+    /// Creates collected data holding only the given logs requests.
+    #[cfg(test)]
+    pub fn with_logs(log_requests: Vec<LogsRequest>) -> Self {
+        Self {
+            log_requests,
+            ..Self::default()
+        }
+    }
+
     /// Returns a reference to the collected events.
     pub fn events(&self) -> &[Event] {
         &self.events
+    }
+
+    /// Returns a reference to the collected logs requests.
+    pub fn log_requests(&self) -> &[LogsRequest] {
+        &self.log_requests
+    }
+
+    /// Returns the collected logs from every request, in the order they were received.
+    pub fn logs(&self) -> impl Iterator<Item = &Log> {
+        self.log_requests.iter().flat_map(LogsRequest::logs)
     }
 
     /// Returns a reference to the collected metrics.

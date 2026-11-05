@@ -2,6 +2,7 @@ use std::error::Error;
 use std::fmt;
 #[cfg(unix)]
 use std::fs;
+#[cfg(any(unix, test))]
 use std::fs::File;
 #[cfg(unix)]
 use std::io;
@@ -301,9 +302,19 @@ impl Error for ArtifactError {
     }
 }
 
-pub(crate) fn for_each_record(path: &Path, mut consume: impl FnMut(AgentContextRecord)) -> Result<(), ArtifactError> {
+#[cfg(test)]
+pub(crate) fn for_each_record(path: &Path, consume: impl FnMut(AgentContextRecord)) -> Result<(), ArtifactError> {
     let file = File::open(path).map_err(|error| ArtifactError::new(path, "open", 0, error))?;
-    let mut compressed_input = BufReader::new(file);
+    for_each_record_from_reader(path, file, consume)
+}
+
+/// Decodes each record from an already-open artifact, such as a file descriptor.
+///
+/// `path` is used only in error messages.
+pub(crate) fn for_each_record_from_reader(
+    path: &Path, reader: impl Read, mut consume: impl FnMut(AgentContextRecord),
+) -> Result<(), ArtifactError> {
+    let mut compressed_input = BufReader::new(reader);
     let is_compressed = compressed_input
         .fill_buf()
         .map_err(|error| ArtifactError::new(path, "inspect compression magic for", 0, error))?

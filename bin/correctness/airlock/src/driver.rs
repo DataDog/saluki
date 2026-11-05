@@ -15,7 +15,10 @@ use bollard::{
         ContainerCreateBody, ContainerStateStatusEnum, EndpointSettings, HealthConfig, HealthStatusEnum, HostConfig,
         HostConfigCgroupnsModeEnum, Ipam, NetworkConnectRequest, NetworkCreateRequest, VolumeCreateRequest,
     },
-    query_parameters::{CreateContainerOptionsBuilder, CreateImageOptions, ListContainersOptionsBuilder, LogsOptions},
+    query_parameters::{
+        CreateContainerOptionsBuilder, CreateImageOptions, ListContainersOptionsBuilder, LogsOptions,
+        RemoveContainerOptionsBuilder,
+    },
     Docker,
 };
 use futures::{StreamExt as _, TryStreamExt as _};
@@ -532,83 +535,70 @@ impl Driver {
         self.config.driver_id
     }
 
-    /// Clean up any containers, networks, and volumes related to the given isolation group ID.
+    /// Removes the containers, shared volume, and network of the given isolation group.
     ///
-    /// This is a free function to facilitate cleaning up resources after a number of drivers are run.
+    /// Force-removes containers, killing any that are running. Attempts every removal despite failures and treats
+    /// missing resources as removed.
     ///
     /// # Errors
     ///
-    /// If the Docker client can't be created/configured, or there is an error when finding or removing any of the
-    /// related resources, an error will be returned.
+    /// Returns a Docker client creation error, or a combined error listing all resource-listing and removal failures.
     pub async fn clean_related_resources(isolation_group_id: String) -> Result<(), GenericError> {
         let docker = crate::docker::connect()?;
+        Self::remove_isolation_group(&docker, &isolation_group_id).await
+    }
 
+    async fn remove_isolation_group(docker: &Docker, isolation_group_id: &str) -> Result<(), GenericError> {
         let isolation_group_name = format!("airlock-{}", isolation_group_id);
         let isolation_group_label = format!("airlock-isolation-group={}", isolation_group_id);
+        let mut failures = Vec::new();
 
-        // Remove any containers related to the isolation group. We do so forcefully.
         let list_filters: HashMap<&str, Vec<&str>> =
             [("label", vec!["created_by=airlock", isolation_group_label.as_str()])]
                 .into_iter()
                 .collect();
-        let list_options = Some(
-            ListContainersOptionsBuilder::default()
-                .all(true)
-                .filters(&list_filters)
-                .build(),
-        );
-        let containers = docker.list_containers(list_options).await.with_error_context(|| {
-            format!(
-                "Failed to list containers attached to isolation group '{}'.",
-                isolation_group_id
-            )
-        })?;
-
-        for container in containers {
-            let container_name = match container.id {
-                Some(id) => id,
-                None => {
-                    debug!("Listed container had no ID. Skipping removal.");
-                    continue;
+        let list_options = ListContainersOptionsBuilder::default()
+            .all(true)
+            .filters(&list_filters)
+            .build();
+        match docker.list_containers(Some(list_options)).await {
+            Ok(containers) => {
+                for container_id in containers.into_iter().filter_map(|container| container.id) {
+                    let remove_options = RemoveContainerOptionsBuilder::default().force(true).build();
+                    match docker.remove_container(&container_id, Some(remove_options)).await {
+                        Err(e) if !is_not_found(&e) => failures.push(format!("container '{}': {}", container_id, e)),
+                        _ => debug!("Removed container '{}'.", container_id),
+                    }
                 }
-            };
-
-            if let Err(e) = docker.stop_container(container_name.as_str(), None).await {
-                error!(error = %e, "Failed to stop container '{}'.", container_name);
-                continue;
-            } else {
-                debug!("Stopped container '{}'.", container_name);
             }
-
-            if let Err(e) = docker.remove_container(container_name.as_str(), None).await {
-                error!(error = %e, "Failed to remove container '{}'.", container_name);
-                continue;
-            } else {
-                debug!("Removed container '{}'.", container_name);
-            }
+            Err(e) => failures.push(format!("container list: {}", e)),
         }
 
-        // Remove the shared volume.
-        if let Err(e) = docker
+        match docker
             .remove_volume(
-                isolation_group_name.as_str(),
+                &isolation_group_name,
                 None::<bollard::query_parameters::RemoveVolumeOptions>,
             )
             .await
         {
-            error!(error = %e, "Failed to remove shared volume '{}'.", isolation_group_name);
-        } else {
-            debug!("Removed shared volume '{}'.", isolation_group_name);
+            Err(e) if !is_not_found(&e) => failures.push(format!("volume '{}': {}", isolation_group_name, e)),
+            _ => debug!("Removed shared volume '{}'.", isolation_group_name),
         }
 
-        // Remove the network.
-        if let Err(e) = docker.remove_network(isolation_group_name.as_str()).await {
-            error!(error = %e, "Failed to remove shared network '{}'.", isolation_group_name);
-        } else {
-            debug!("Removed shared network '{}'.", isolation_group_name);
+        match docker.remove_network(&isolation_group_name).await {
+            Err(e) if !is_not_found(&e) => failures.push(format!("network '{}': {}", isolation_group_name, e)),
+            _ => debug!("Removed shared network '{}'.", isolation_group_name),
         }
 
-        Ok(())
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(generic_error!(
+                "Failed to remove isolation group '{}': {}",
+                isolation_group_id,
+                failures.join("; ")
+            ))
+        }
     }
 
     async fn create_network_if_missing(&self) -> Result<(), GenericError> {
@@ -917,7 +907,13 @@ impl Driver {
         Ok(details)
     }
 
-    async fn start_container(&self) -> Result<DriverDetails, GenericError> {
+    /// Starts the container that [`Driver::create`] created.
+    ///
+    /// # Errors
+    ///
+    /// If there is an error while starting or inspecting the container, or while preparing its log files, it will be
+    /// returned.
+    pub async fn start_container(&self) -> Result<DriverDetails, GenericError> {
         debug!(
             driver_id = self.config.driver_id,
             isolation_group = self.isolation_group_id,
@@ -982,6 +978,20 @@ impl Driver {
     /// If there is an error while creating the network or shared volume, while pulling the container image, or while
     /// creating or starting the container, it will be returned.
     pub async fn start(&mut self) -> Result<DriverDetails, GenericError> {
+        self.create().await?;
+        self.start_container().await
+    }
+
+    /// Creates the container and the resources it needs, without starting it.
+    ///
+    /// This makes every request that creates something in the isolation group, so once it returns, starting the
+    /// container creates nothing more.
+    ///
+    /// # Errors
+    ///
+    /// If there is an error while creating the network or shared volume, while pulling the container image, or while
+    /// creating the container, it will be returned.
+    pub async fn create(&self) -> Result<(), GenericError> {
         self.create_network_if_missing().await?;
         self.create_image_if_missing().await?;
         self.create_volume_if_missing().await?;
@@ -990,8 +1000,7 @@ impl Driver {
         }
 
         self.create_container().await?;
-        self.connect_to_additional_networks().await?;
-        self.start_container().await
+        self.connect_to_additional_networks().await
     }
 
     /// Waits until the container is marked as healthy.
@@ -1313,6 +1322,11 @@ fn strip_ansi_codes(input: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Returns whether Docker reported a missing resource.
+fn is_not_found(error: &Error) -> bool {
+    matches!(error, Error::DockerResponseServerError { status_code: 404, .. })
+}
+
 /// Returns `true` if `error` is a transient error that can be retried.
 fn is_transient_error(error: &GenericError) -> bool {
     is_transient_hns_error(error)
@@ -1405,6 +1419,10 @@ fn get_default_airlock_labels(isolation_group_id: &str) -> HashMap<String, Strin
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
     use super::*;
 
     fn docker_server_error(status_code: u16, message: &str) -> GenericError {
@@ -1655,5 +1673,210 @@ mod tests {
         let config = DriverConfig::from_image("target", "example:latest".to_string());
 
         assert_eq!(config.network_driver(), "bridge");
+    }
+
+    /// Isolation group ID used against the fake daemon.
+    const GROUP: &str = "ab12cd34";
+
+    /// Bounds isolation-group cleanup through the fake daemon.
+    const BOUND: Duration = Duration::from_secs(5);
+
+    /// A fake Docker daemon with configurable responses and recorded requests.
+    struct FakeDaemon {
+        docker: Docker,
+        /// Each request's method and path.
+        requests: Arc<Mutex<Vec<String>>>,
+        server: tokio::task::JoinHandle<()>,
+    }
+
+    impl FakeDaemon {
+        /// Starts a daemon using `respond` to map request methods and paths to HTTP statuses and JSON bodies.
+        async fn start(respond: fn(&str, &str) -> (u16, &'static str)) -> Self {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("the fake daemon should bind");
+            let address = listener.local_addr().expect("the listener should have an address");
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let recorded = requests.clone();
+            let server = tokio::spawn(async move {
+                loop {
+                    let (mut stream, _) = listener.accept().await.expect("the fake daemon should accept");
+                    let mut head = Vec::new();
+                    let mut buf = [0; 1024];
+                    while !head.windows(4).any(|window| window == b"\r\n\r\n") {
+                        let read = stream.read(&mut buf).await.expect("the request should be readable");
+                        if read == 0 {
+                            break;
+                        }
+                        head.extend_from_slice(&buf[..read]);
+                    }
+                    let head = String::from_utf8_lossy(&head);
+                    let mut request_line = head.lines().next().unwrap_or_default().split(' ');
+                    let method = request_line.next().unwrap_or_default().to_string();
+                    let path = request_line.next().unwrap_or_default().to_string();
+                    let (status, body) = respond(&method, &path);
+                    recorded.lock().unwrap().push(format!("{} {}", method, path));
+                    let response = format!(
+                        "HTTP/1.1 {} Fake\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+                         Connection: close\r\n\r\n{}",
+                        status,
+                        body.len(),
+                        body
+                    );
+                    let _ = stream.write_all(response.as_bytes()).await;
+                    let _ = stream.shutdown().await;
+                }
+            });
+            let docker = Docker::connect_with_http(&format!("http://{}", address), 5, bollard::API_DEFAULT_VERSION)
+                .expect("bollard should accept the fake daemon's address");
+            Self {
+                docker,
+                requests,
+                server,
+            }
+        }
+
+        /// Runs isolation-group cleanup and returns its result and recorded requests.
+        async fn remove_isolation_group(&self) -> (Result<(), GenericError>, Vec<String>) {
+            let removed = tokio::time::timeout(BOUND, Driver::remove_isolation_group(&self.docker, GROUP))
+                .await
+                .expect("removal should finish within the bound");
+            (removed, self.requests.lock().unwrap().clone())
+        }
+    }
+
+    impl Drop for FakeDaemon {
+        fn drop(&mut self) {
+            self.server.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn removing_an_isolation_group_attempts_everything_and_reports_every_failure() {
+        let daemon = FakeDaemon::start(
+            |method, path| match (method, path.split('?').next().unwrap_or_default()) {
+                ("GET", "/containers/json") => (200, r#"[{"Id": "c1"}, {"Id": "c2"}]"#),
+                ("POST", stop) if stop.ends_with("/stop") => (500, r#"{"message": "stop failed"}"#),
+                ("DELETE", "/containers/c1") if path.contains("force=true") => (500, r#"{"message": "boom"}"#),
+                ("DELETE", "/containers/c1") => (409, r#"{"message": "container is running"}"#),
+                ("DELETE", "/containers/c2") => (204, ""),
+                ("DELETE", "/volumes/airlock-ab12cd34") => (409, r#"{"message": "in use"}"#),
+                ("DELETE", "/networks/airlock-ab12cd34") => (204, ""),
+                _ => (500, r#"{"message": "unexpected request"}"#),
+            },
+        )
+        .await;
+
+        let (removed, requests) = daemon.remove_isolation_group().await;
+
+        let error = removed.expect_err("the failed removals should be reported").to_string();
+        assert!(error.contains("container 'c1'") && error.contains("boom"), "{error}");
+        assert!(
+            error.contains("volume 'airlock-ab12cd34'") && error.contains("in use"),
+            "{error}"
+        );
+        assert!(!error.contains("c2") && !error.contains("network"), "{error}");
+        let paths: Vec<&str> = requests
+            .iter()
+            .map(|request| request.split('?').next().unwrap_or_default())
+            .collect();
+        assert_eq!(
+            paths,
+            [
+                "GET /containers/json",
+                "DELETE /containers/c1",
+                "DELETE /containers/c2",
+                "DELETE /volumes/airlock-ab12cd34",
+                "DELETE /networks/airlock-ab12cd34",
+            ]
+        );
+        for container_removal in &requests[1..3] {
+            assert!(container_removal.contains("force=true"), "{container_removal}");
+        }
+    }
+
+    #[tokio::test]
+    async fn creating_a_container_does_not_start_it() {
+        // Callers treat only a cancelled `create` as able to leave resources behind, so creating must not start the
+        // container and starting must create nothing.
+        let daemon = FakeDaemon::start(
+            |method, path| match (method, path.split('?').next().unwrap_or_default()) {
+                ("GET", "/networks") => (200, r#"[{"Name": "airlock-ab12cd34"}]"#),
+                ("POST", "/images/create") => (200, "{}"),
+                ("GET", "/volumes") => (200, r#"{"Volumes": [], "Warnings": []}"#),
+                ("POST", "/volumes/create") => (
+                    201,
+                    r#"{"Name": "airlock-ab12cd34", "Driver": "local", "Mountpoint": "/x", "Labels": {},
+                        "Options": {}, "Scope": "local"}"#,
+                ),
+                ("POST", "/containers/create") => (201, r#"{"Id": "c1", "Warnings": []}"#),
+                ("POST", "/containers/airlock-ab12cd34-target/start") => (204, ""),
+                ("GET", "/containers/airlock-ab12cd34-target/json") => (200, "{}"),
+                _ => (500, r#"{"message": "unexpected request"}"#),
+            },
+        )
+        .await;
+        // A Windows container skips the shared volume fix-up, which starts a helper container of its own.
+        let driver = Driver {
+            isolation_group_id: GROUP.to_string(),
+            isolation_group_name: format!("airlock-{GROUP}"),
+            container_name: format!("airlock-{GROUP}-target"),
+            config: DriverConfig::from_image("target", "example:latest".to_string())
+                .with_container_os(ContainerOs::Windows),
+            docker: daemon.docker.clone(),
+            log_dir: None,
+        };
+        let paths = || -> Vec<String> {
+            let requests = daemon.requests.lock().unwrap();
+            requests
+                .iter()
+                .map(|request| request.split('?').next().unwrap_or_default().to_string())
+                .collect()
+        };
+
+        tokio::time::timeout(BOUND, driver.create())
+            .await
+            .expect("creation should finish within the bound")
+            .expect("creation should succeed");
+
+        let created = paths();
+        assert_eq!(
+            created.last().map(String::as_str),
+            Some("POST /containers/create"),
+            "{created:?}"
+        );
+        assert!(!created.iter().any(|path| path.ends_with("/start")), "{created:?}");
+
+        let details = tokio::time::timeout(BOUND, driver.start_container())
+            .await
+            .expect("starting should finish within the bound")
+            .expect("starting should succeed");
+
+        assert_eq!(details.container_name(), "airlock-ab12cd34-target");
+        assert_eq!(
+            paths()[created.len()..],
+            [
+                "POST /containers/airlock-ab12cd34-target/start",
+                "GET /containers/airlock-ab12cd34-target/json",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn isolation_group_resources_that_are_already_gone_count_as_removed() {
+        let daemon = FakeDaemon::start(
+            |method, path| match (method, path.split('?').next().unwrap_or_default()) {
+                ("GET", "/containers/json") => (200, "[]"),
+                ("DELETE", "/volumes/airlock-ab12cd34") => (404, r#"{"message": "no such volume"}"#),
+                ("DELETE", "/networks/airlock-ab12cd34") => (404, r#"{"message": "no such network"}"#),
+                _ => (500, r#"{"message": "unexpected request"}"#),
+            },
+        )
+        .await;
+
+        let (removed, requests) = daemon.remove_isolation_group().await;
+
+        removed.expect("missing resources should count as removed");
+        assert_eq!(requests.len(), 3, "{requests:?}");
     }
 }

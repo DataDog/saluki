@@ -46,6 +46,9 @@ const HANDLED_ENTITY_ID_PREFIXES: &[&str] = &[
 /// - `gpu`: keyed by GPU device UUID, which never arrives as origin information.
 /// - `kueue_workload`, `kubernetes_kueue_queue`, `kueue_resource_flavor`: the Agent folds these same Kueue tags into
 ///   the pod and container entities, which we do handle, so consuming them here would be redundant.
+/// - `kubernetes_autoscaled_workload`: keyed by workload kind, namespace, and name, for the KSM check's
+///   cluster-level metrics. The Agent folds the same `kube_autoscaler_kind` tags into the entities of the dependent
+///   pods, which we do handle.
 /// - `crd`, `kubernetes_capabilities`: describe cluster-level objects rather than workloads, and carry no identifier
 ///   that origin detection can resolve.
 /// - `host`, `kubelet`: no tagger entity is ever published for these today, so they're listed only for completeness
@@ -55,6 +58,7 @@ const IGNORED_ENTITY_ID_PREFIXES: &[&str] = &[
     "kueue_workload",
     "kubernetes_kueue_queue",
     "kueue_resource_flavor",
+    "kubernetes_autoscaled_workload",
     "crd",
     "kubernetes_capabilities",
     "host",

@@ -689,9 +689,28 @@ pub struct AutoscalingFailover {
 
 #[cfg(test)]
 mod tests {
-    use super::{Compression, Endpoints, Forwarder, V3SeriesMode};
+    use super::{Compression, Endpoints, Forwarder, Secrets, V3SeriesMode};
     use crate::defaults::DEFAULT_ZSTD_COMPRESSOR_LEVEL;
     use crate::ConfigValue;
+
+    #[test]
+    fn secrets_are_in_use_with_a_backend_command_or_a_refresh_interval() {
+        let cases = [
+            ("neither", None, 0, false),
+            ("backend command", Some("/bin/true"), 0, true),
+            ("refresh interval", None, 5, true),
+            ("both", Some("/bin/true"), 5, true),
+        ];
+
+        for (name, backend_command, refresh_on_api_key_failure_interval, expected) in cases {
+            let secrets = Secrets {
+                backend_command: backend_command.map(str::to_string),
+                refresh_on_api_key_failure_interval,
+            };
+
+            assert_eq!(expected, secrets.in_use(), "{name}");
+        }
+    }
 
     #[test]
     fn v3_series_mode_parses_every_form_the_agent_interprets() {

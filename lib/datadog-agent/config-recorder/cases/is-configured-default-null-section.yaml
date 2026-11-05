@@ -1,0 +1,16 @@
+# Sets site to its default, leaves dd_url null, and configures an APM subsection.
+# Shows that Agent choices can depend on whether a key or section was set, not its value.
+name: is-configured-default-null-section
+group: behavior
+why: [is-configured-gates-behavior]
+yaml: |
+  site: datadoghq.com
+  dd_url:
+  apm_config:
+    obfuscation:
+      http:
+        remove_query_string: true
+keys:
+  - {key: apm_config.obfuscation.http, getters: [IsConfigured, GetStringMap]}
+  - {key: dd_url, getters: [IsConfigured, GetString]}
+  - {key: site, getters: [IsConfigured, GetString]}
