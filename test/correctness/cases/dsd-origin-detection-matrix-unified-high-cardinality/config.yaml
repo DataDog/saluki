@@ -61,6 +61,7 @@ procedure:
   - step: wait
     duration: 30s
   - step: compare
+    # Require image_name and container_id together to prove discovery at high cardinality.
     required_metric_tag_keys: [image_name, container_id]
     kind: metrics
     subject: intake-adp

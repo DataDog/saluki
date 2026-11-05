@@ -1,4 +1,4 @@
-//! Test runner for running integration tests.
+//! Participant-based correctness and integration test runner.
 
 #![deny(warnings)]
 #![deny(missing_docs)]

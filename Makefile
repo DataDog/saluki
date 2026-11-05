@@ -477,9 +477,8 @@ endif
 
 ##@ Kind (Correctness Testing)
 
-# kind cluster lifecycle (create, load, delete) is managed by panoramic automatically
-# when running kind-runtime tests. Use --no-delete-cluster to keep the cluster alive
-# between local runs.
+# Panoramic manages kind when a selected case has pod participants.
+# Use --no-delete-kind-cluster to keep the cluster between local runs.
 
 .PHONY: check-kind-tools
 check-kind-tools:
@@ -664,7 +663,7 @@ test-correctness-case: ## Runs a single correctness test case by name (usage: ma
 
 .PHONY: build-panoramic
 build-panoramic: check-rust-build-tools
-build-panoramic: ## Builds the panoramic binary (ADP integration test runner)
+build-panoramic: ## Builds the panoramic binary (correctness and integration test runner)
 	@echo "[*] Building panoramic..."
 	@cargo build --profile release --package panoramic
 

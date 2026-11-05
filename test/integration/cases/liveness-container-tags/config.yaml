@@ -9,6 +9,7 @@ subject_os: [linux]
 participants:
   intake:
     type: datadog-intake
+  # ADP is created first to supply its ID, then waits for this fixture's socket before starting.
   docker-api:
     type: fixture
     config:
@@ -44,6 +45,7 @@ procedure:
     value: 1
     tags: ["host:integration-test-liveness-container-tags", "docker_image:example/adp-liveness:1.0", "env:liveness-fake"]
     tag_patterns: ["^version:.+"]
+    # Value and freshness must come from the same latest gauge point, without excessive future skew.
     max_age: 30s
     timeout: 60s
   - step: intake_has_service_check

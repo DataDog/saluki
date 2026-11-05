@@ -26,6 +26,7 @@ procedure:
   - step: dogstatsd_replay
     on: adp
     endpoint: dogstatsd_pipe
+    # Cover two newline-delimited metrics in one named-pipe write.
     payloads:
       - data: "integration.replay.windows.one:1|c\nintegration.replay.windows.two:1|c\n"
     capture_duration: 3s

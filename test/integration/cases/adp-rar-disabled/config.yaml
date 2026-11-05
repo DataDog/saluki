@@ -18,6 +18,7 @@ participants:
         DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
 
 procedure:
+  # The registration warning precedes the bootstrap failure and supervised restart.
   - step: log_contains
     on: adp
     process: adp

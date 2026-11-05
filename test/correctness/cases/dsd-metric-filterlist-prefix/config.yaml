@@ -53,4 +53,5 @@ procedure:
     kind: metrics
     subject: intake-adp
     baseline: intake-agent
+    # Filtering may strip tags from some contexts; require one enriched workload context per side.
     required_metric_tag_keys: [image_name]

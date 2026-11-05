@@ -18,6 +18,8 @@ participants:
         DD_DOGSTATSD_PIPE_NAME: "datadog-dogstatsd-integration"
         DD_DOGSTATSD_EOL_REQUIRED: "named_pipe"
 
+# Each send opens a connection. Retries may duplicate input, so assertions check distinct
+# strings for presence or absence rather than counting deliveries.
 procedure:
   - step: log_contains
     on: adp

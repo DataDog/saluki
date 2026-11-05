@@ -40,7 +40,7 @@ The daemon suite runs separately from the Linux integration cases.
 
 ### Panoramic daemon tests
 
-Panoramic's daemon tests exercise native case creation and the Linux container backend against a real Docker daemon:
+Panoramic's daemon tests exercise case creation and the Linux container backend against a real Docker daemon:
 scope preparation and removal, creating participants from recipes with files, the courier and host mounts, command
 execution, file reads and status, courier probes and sends, and readiness gates before consumers start. They check
 container exit and output observation, incremental stdout and stderr files, readiness waits ending when a server exits,
@@ -50,12 +50,12 @@ Output readiness tests check that consumers wait for a matching line from the de
 responses through published TCP ports, courier probes of published ports with no listener, explicit loopback bindings,
 held-port startup failures, and courier routes to exited participants. Container probes and raw sends run inside the
 server because port proxies can accept connections even when the server has no listener.
-Native procedure tests cover `passed`, `failed` and `errored` steps, fail-fast, endpoint routes, late-fact resolution,
+Procedure tests cover `passed`, `failed` and `errored` steps, fail-fast, endpoint routes, late-fact resolution,
 missing process exit records, capture failures, cancellation and case deadlines. Reclaim tests check individual
 participant entries, concurrent graceful stops, and interrupted creation that leaves both a participant and its scope
 unconfirmed. Runner tests exercise creation and startup failures, removal during a procedure, output overflow,
-interruption and case deadlines through artifact verification and the native runner. They check `result.json` and that
-no container, volume or network with the case's scope label remains. Report tests also check native process reports
+interruption and case deadlines through artifact verification and the runner. They check `result.json` and that
+no container, volume or network with the case's scope label remains. Report tests also check process reports
 and snapshots after a case body exceeds its cancellation grace.
 They are ignored by default. Run them with `make test-panoramic-daemon`, which builds the Linux courier first.
 `PANORAMIC_TEST_IMAGE` defaults to `alpine:latest`; load it first, because these tests never pull images.
@@ -85,7 +85,7 @@ sets both and runs them before the integration cases. `make test-panoramic-daemo
 
 `make test-panoramic-kind` runs the ignored `backend::pod::kind_tests` suite in a cluster it creates and deletes.
 It covers Service routing, node-backed files, courier execution, TCP port-forwards, late files, exit and output
-observation, and reclaim after successful, failed, timed-out and cancelled native scenarios.
+observation, and reclaim after successful, failed, timed-out and cancelled scenarios.
 
 Install `kind` and `docker`, set `DOCKER_HOST` to the daemon kind uses, and load a local `PANORAMIC_TEST_IMAGE`
 (default `alpine:latest`). The target builds the static musl courier with `make build-courier-linux` before testing.
@@ -93,10 +93,10 @@ The suite runs locally only; it has no dedicated CI job.
 
 ### Panoramic host process tests
 
-The `panoramic-core` unit tests run host process groups through the native lifecycle on Unix hosts, using `/bin/sh`.
+The `panoramic-core` unit tests run host process groups through the participant lifecycle on Unix hosts, using `/bin/sh`.
 They cover per-process exit and output observation, readiness, clean environments, file and command primitives,
 and bounded process-group cleanup. Run them with `cargo nextest run -p panoramic-core`.
-The macOS `agent-adp` participant cases use this native lifecycle.
+The macOS `agent-adp` participant cases use this participant lifecycle.
 
 Host participants run in a planned per-case state directory under `/tmp`, which must not already exist. Each process
 inherits only `PATH`, `HOME` and `TMPDIR` from the runner when set, then receives the participant's environment and its
@@ -108,7 +108,7 @@ including background processes started by a successful command.
 
 ### Panoramic product tests
 
-Run `make test-panoramic-products` to exercise real product images through the native runner. These ignored tests
+Run `make test-panoramic-products` to exercise real product images through the runner. These ignored tests
 run locally, separately from the Alpine daemon suite.
 The target builds the Linux courier and requires a Docker daemon with the images already loaded.
 Image bindings come from:
@@ -125,15 +125,14 @@ Agent tests deliver DogStatsD metrics to a connected intake, kill ADP and check 
 supervised restart, and compare the image's shipped service scripts and listener environment with the definition's
 sources and defaults.
 The target runs tests serially because each runner invocation allocates host ports from the same pool. Tests check
-native participant reports and confirm that the scope's containers, volume and network are removed.
+participant reports and confirm that the scope's containers, volume and network are removed.
 
 ## Correctness tests (panoramic)
 
 These tests serve to answer the question: *Does ADP produce the same output as the Datadog Agent for a given workload?*
 
-To answer this question, a correctness test runs ADP and the Datadog Agent side-by-side in containers and compares their
-output for a given input. The output comparison is semantic, not a simple byte-by-byte comparison, thus heuristics are
-used to assert correctness.
+Cases compare metrics, traces, events or service checks from a deterministic workload. Comparisons normalize telemetry
+before checking it rather than comparing serialized bytes.
 
 **Terminology Note:** Correctness tests ***are integration tests*** in the sense that they run the entire system.
 However, in our repository, *integration tests* refer to a specific set of smoke tests [below](#integration-tests-panoramic).
@@ -143,19 +142,21 @@ Files under `test/correctness/disabled/` are ordinary cases that CI does not sel
 targets select only `test/correctness/cases/`. `panoramic list -d test/correctness/disabled --subject-os linux`
 compiles the disabled cases without running them.
 
-### Binaries and program flow
+### Tools
 
-All binaries live under `bin/correctness/`:
+The tools and libraries live under `bin/correctness/`:
 
-| Binary                | Purpose                                                                                                                                    |
+| Tool                  | Purpose                                                                                                                                    |
 |-----------------------|--------------------------------------------------------------------------------------------------------------------------------------------|
 | **panoramic**         | Unified test runner for both correctness and integration tests.                                                                            |
 | **millstone**         | Deterministic load generator.                                                                                                              |
 | **datadog-intake**    | Mock Datadog API: receives test output                                                                                                     |
+| **stele**             | Library with the shared telemetry representation `datadog-intake` dumps and `compare` reads.                                               |
 | **airlock**           | Library for running containers in isolated groups.                                                                                         |
 | **panoramic-courier** | Sends to and probes TCP, UDP and Unix socket endpoints. Panoramic calls its library for direct access from the runner host, or its binary inside a participant's container. |
 
-Test case configs live in `test/correctness/cases/` (for example, `test/correctness/cases/dsd-plain/config.yaml`).
+`make build-panoramic` builds the runner. `make build-correctness-tools-image` builds the image containing
+`datadog-intake` and `millstone`; [artifact manifests](#artifact-manifests) cover the courier and other prerequisites.
 
 ### Program flow
 
@@ -174,10 +175,14 @@ make test-correctness
 make test-correctness-case CASE=dsd-plain
 ```
 
+Local correctness runs must use release ADP. Debug ADP can miss flushes or split histogram-derived gauges across
+buckets, causing comparison mismatches.
+
 Both targets build the prerequisites and render `target/panoramic-artifacts-correctness.toml`, binding
 `agent-adp-linux-image` to `saluki-images/datadog-agent:testing-release`. Set `CORRECTNESS_TEST_ARTIFACTS` to change
 the rendered manifest's path. Pass `PANORAMIC_ARTIFACTS=<file>` on the make command line to run with your own
-manifest instead. Integration keeps the `testing-devel` default.
+manifest instead. Integration keeps the `testing-devel` default. A direct `panoramic run` also uses that default unless
+its manifest binds the release image.
 
 The seven `dsd-origin-detection-matrix-<variant>` cases run as Kubernetes pods in kind. Each has its own directory
 under `test/correctness/cases/`, with relative `from` paths to the configuration and workload files in
@@ -192,7 +197,7 @@ Correctness tests are run in the `e2e` stage in CI (`.gitlab/e2e.yml`).
 
 ## Integration tests (panoramic)
 
-Integration tests run a containerized ADP instance and assert high-level invariants: process stability, expected log
+Integration tests run ADP with its dependencies and assert high-level invariants: process stability, expected log
 output, port availability, exit behavior. They catch regressions from enabling new features or settings that cause
 crashes or early exits. They don't test output correctness. This type of test is often known as a "smoke test." For
 integration tests that check system output, see [correctness tests](#correctness-tests-panoramic) above.
@@ -238,11 +243,16 @@ by default but can also run in `parallel`.
 CI: `test-integration` in `.gitlab/e2e.yml` runs in the `e2e` stage with a 15 min timeout and retry 2. It uses the
 panoramic and courier binaries from `build-panoramic-binary`.
 
-### Participant cases
+## Participant cases
 
-A case file declares **participants**: named instances of a participant type. The case states what runs, how it's
-configured and what the procedure checks. The participant type knows how its product is
-installed and where it writes. Every case in `test/integration/cases/` uses this schema;
+Both suites use `config.yaml` files declaring **participants**, their connections and a procedure. Participant types
+own product installation, configuration and observation. Start with a case in the same suite, then check it with
+`panoramic list -d <cases> --subject-os <os>` before running it.
+
+Use the [step reference](#procedure-steps), [participant definitions](#participant-definitions),
+[configuration and templates](#configuration-and-templates), [connections](#connections-and-layout) and
+[artifact manifests](#artifact-manifests) below. To add a type or step, see [Extending Panoramic](#extending-panoramic).
+
 `adp-logging-default-path` looks like this:
 
 ```yaml
@@ -272,10 +282,22 @@ procedure:   # Required; at least one step.
     timeout: 30s
 ```
 
-A participant case's reporting suite is the directory above its discovery root: both `test/correctness/cases/`
+Every case needs a positive `timeout`, a nonempty `subject_os` list, participants with exactly one `subject: true`,
+and a nonempty procedure. Unknown fields are rejected. The optional `name` must match the directory name.
+Environment values are strings; durations need units, such as `30s`.
+
+A participant entry takes `type`, optional `subject`, `os` (non-subject participants only; defaults to the subject's
+OS), `realization: {kind, options}`, `config` (`env`, `files`, `params`, `endpoints`, `os` overlays) and `connect`.
+
+The subject uses the selected OS, defaulting to a Linux container, Windows container or macOS host process group.
+Other participants inherit its OS and realization unless overridden; if their OS differs, they use that OS's default
+realization. Set `realization: {kind: kubernetes-pod}` to select pods. Each type must support its OS and realization.
+
+A case's reporting suite is the directory above its discovery root: both `test/correctness/cases/`
 and `test/correctness/disabled/` report `correctness`; `test/integration/cases/` reports `integration`.
 
-Participant cases use native execution on every subject OS, including `agent-adp` in Windows containers.
+### Execution and observation
+
 Panoramic prepares each case's scope, creates participants in create order
 from verified artifacts, and starts each level once the readiness evidence of the servers it connects to is observed. A
 readiness wait fails as soon as its server's container exit is observed. Each started container's exit and output are
@@ -288,17 +310,29 @@ Readiness and step readers share a 64 MiB line-text bound per participant across
 the buffer drops new lines, preserving existing cursors. Readers can consume the retained prefix, then get a capture
 error naming the bound and the output files. Empty lines count as one byte; unterminated lines are also bounded.
 Capture still writes every byte to disk, so the files remain the full output source.
-After the start levels, native cases run their procedure in the `steps` phase, with step
+After the start levels, cases run their procedure in the `steps` phase, with step
 budgets, case deadline, parallel blocks and fail-fast behavior. Steps receive the started
 participants through borrowed handles. File paths and literal log patterns resolve early and late facts when the step runs.
 A `parallel` block accepts only assertions. Actions, such as `exec` and `send`, must be sequential steps; discovery rejects an
 action in a parallel block before building its fields.
 
+The `observe` phase gives exited participants up to five seconds to finish
+capturing output; it also runs after a setup failure if any participant started. Running participants are skipped, and
+case cancellation ends the wait. The runner snapshots observations, stops observation tasks, then reclaims resources.
+
+### Procedure steps
+
+Most steps use `on` to name their participant. `compare` names two intakes through `subject` and `baseline`;
+`wait` has no participant. The step's `needs()` declaration determines which processes, operations and endpoints
+planning checks.
+
 The `wait` action pauses for its required, positive `duration`, such as `30s`. It names no participant and takes no
 `on` field. Its step budget is that duration, and case cancellation interrupts the pause. As an action, it cannot
 appear inside `parallel`.
 
-The native log and file steps accept `on`, `pattern` and an optional `regex` flag (default false):
+#### Logs and files
+
+The log and file steps accept `on`, `pattern` and an optional `regex` flag (default false):
 
 - `log_contains` searches output from the participant's start, optionally narrowed by `process`, until `timeout`.
   Without `process`, it searches every process's output together. On a Windows `agent-adp` container that includes the
@@ -320,7 +354,9 @@ that uses container output also observes failures of that capture. Without `proc
 the participant errors the step. The shared line-buffer bound applies to every cursor, even when narrowed to one
 process.
 
-Native process and endpoint steps also require `on`:
+#### Processes, endpoints and commands
+
+Process and endpoint steps require `on`:
 
 - `process_stable_for` requires `duration` and optionally accepts `process`. It checks the named process, or every
   declared process when `process` is omitted. The participant must declare at least one process. Every checked
@@ -356,14 +392,16 @@ Native process and endpoint steps also require `on`:
   output. UDP selects the first IPv4 address from hostname resolution, or the first address if none is IPv4.
   The send report includes every resolved address and the selected destination; an IPv6 literal selects IPv6.
 
-Three native actions use participant operations:
+#### Participant operations
+
+Three actions use participant operations:
 
 - `cli` requires `on`, `process`, `args` (a list of strings, which may be empty) and a positive `timeout`.
   It calls `cli_<process>` once. Planning rejects a process whose CLI operation is unavailable.
   Optional `output_contains` requires a literal substring in the complete output. Success passes; a missing
   substring or product error fails. A harness error, including an abandoned command at timeout, errors the step.
-  This differs from the integration runner's CLI timeout, which fails. Successful calls and substring mismatches
-  quote trimmed output; messages are capped at 4096 bytes without splitting UTF-8 characters.
+  Successful calls and substring mismatches quote trimmed output; messages are capped at 4096 bytes without splitting
+  UTF-8 characters.
 - `config_set` requires `on`, a nonempty `key`, `value` (any JSON value) and a positive `timeout`.
   It sends strings unchanged and other values as JSON text to `config_set`. It retries every 500 ms until accepted,
   giving each call the remaining budget. At timeout, any product error makes the step fail; only harness errors
@@ -399,14 +437,16 @@ An operation can request only the HTTP endpoints it declares.
 Argument and mechanism problems are harness errors; a product answer that does not satisfy the operation is a
 product error.
 
-The native `config_key_equals` step requires `on`, `key` (a dotted path), `value` (any JSON value), `view` (`source`
+The `config_key_equals` step requires `on`, `key` (a dotted path), `value` (any JSON value), `view` (`source`
 or `runtime`) and `timeout`. It calls the participant's `config_dump` operation with the requested view until the key's
 JSON value equals `value`. Each call receives the whole remaining step budget. Mismatches, missing keys and product
 or harness errors are retried; at timeout, any product observation makes the step fail, while only harness errors
 make it error. A participant exit does not end the retry window early. The timeout message includes the last
 observed value, or `<missing>` for an absent key.
 
-The native `intake_has_metric` step polls the intake participant named by `on` until it holds a metric matching
+#### Intake assertions
+
+The `intake_has_metric` step polls the intake participant named by `on` until it holds a metric matching
 every criterion given, or until `timeout` elapses. Polling, rather than a single check, absorbs the target's
 aggregation and flush window without a fixed sleep.
 
@@ -459,14 +499,14 @@ instead.
 A timeout fails if any poll returned a valid metrics snapshot; otherwise it errors with the last poll error.
 The step keeps polling until its timeout even if the subject exits.
 
-The native `intake_has_forwarded_packets` assertion requires `on`, a nonempty `contains` list of strings, and
+The `intake_has_forwarded_packets` assertion requires `on`, a nonempty `contains` list of strings, and
 `timeout`. It polls `dump` with `{"kind": "dogstatsd_forwarded"}` until every string's UTF-8 bytes equal a whole
 forwarded packet. Partial packet contents do not match. One packet can satisfy repeated identical entries; this
 assertion does not count packets. If any dump returned a valid snapshot, a timeout fails and lists the missing
 entries and up to ten observed packets as escaped, lossy UTF-8. Otherwise it errors with the last dump error.
 Diagnostics are capped at 4096 bytes, as for `intake_has_metric`.
 
-The native `intake_has_service_check` assertion requires `on`, an exact `name`, and a positive `timeout`.
+The `intake_has_service_check` assertion requires `on`, an exact `name`, and a positive `timeout`.
 Optional `status` is an integer from 0 through 255, `hostname` matches exactly, and `tags` is a subset list that
 allows extra tags. Omitted criteria accept any value; `tags` defaults to empty. It polls `dump` with
 `{"kind": "service_checks"}` until one service check satisfies every criterion, without combining checks.
@@ -474,9 +514,50 @@ At timeout, any decoded snapshot makes the assertion fail; otherwise it errors w
 messages list up to ten checks with the expected name and each one's first failed criterion, or up to ten other
 observed names. Messages are capped at 4096 bytes. A subject exit does not end polling early.
 
-The `observe` phase gives exited participants up to five seconds to finish
-capturing output; it also runs after a setup failure if any participant started. Running participants are skipped, and
-case cancellation ends the wait. The runner snapshots observations, stops observation tasks, then reclaims resources.
+#### Comparing outputs
+
+The `compare` step reads each dump once from two distinct participants offering `dump`.
+Both snapshots are fetched concurrently; decoded captures
+identify the participants and the dump operation, without assuming which products they run:
+
+```yaml
+- step: compare
+  kind: metrics
+  subject: intake-adp
+  baseline: intake-agent
+  require_forwarded_packets: false
+```
+
+`kind` is `metrics`, `events`, `service_checks`, or `traces`. Trace comparisons also accept `otlp_direct` (default
+false) and `ignore_fields` (default empty). Forwarded packets are compared for every kind; `require_forwarded_packets`
+(default false) additionally requires nonempty captures. Mismatches and invalid product responses fail the step;
+transport and other harness failures error it. Capture-write failures are recorded in the traffic manifest without
+changing the comparison verdict.
+
+Wait for both senders to finish and allow the subject and baseline participants to flush before comparing: the step
+takes one snapshot per side, not a polling window. See the [Millstone participant](#millstone) and
+`test/correctness/cases/dsd-plain/`.
+
+For metrics, `required_metric_tag_keys` (default empty) requires at least one workload context on each side with
+nonempty values for every listed tag key. Internal telemetry doesn't satisfy this check, nor do tags split across
+contexts. The origin-detection cases require `image_name`, a low-cardinality tag from container discovery that their
+workloads don't send. Equal but unenriched outputs therefore fail. High-cardinality variants also require `container_id`.
+
+#### Step deadlines
+
+Each step uses its `timeout`, `duration`, or `during` as its budget. The driver allows 10 seconds beyond that budget
+for the step to report its result, then stops it as `errored`. This makes the test a harness error (exit code 2), unless a parallel
+member failed. Case timeout or run cancellation interrupts unfinished steps and preserves completed results.
+
+Polling HTTP requests, endpoint probes and intake polls are limited to the shorter of 10 seconds or the step's
+remaining time. The `config_key_equals` step gives each `config_dump` call the whole remaining budget for
+its exec. Timed-out probes are retried while the step has time left. A step is `errored` if harness failures
+(such as Docker API or intake participant dump errors) prevent evaluation, or its configuration is invalid.
+An unmet expectation remains `failed` after any product observation, even if later probes encounter harness errors.
+
+## Participant definitions
+
+### Datadog intake
 
 The `datadog-intake` participant runs one process named `intake`:
 
@@ -512,6 +593,8 @@ are harness errors before any request. Non-success HTTP status, invalid JSON and
 errors; messages omit response bodies. The operation is offered on every realization. Through a courier route,
 the HTTP request runs inside the server participant, including in Windows containers.
 
+### Fixture
+
 The `fixture` participant runs a case-supplied command in a Linux container from `tools-linux-image`, which includes
 Python 3. Its one process, `fixture`, uses the container's exit and output. It accepts the `files/` directory name;
 regular files land under `/var/lib/panoramic/files` with mode 0644, available through its `files_dir` fact.
@@ -521,8 +604,12 @@ container IDs are resolved before creation. Optional `config.params.endpoints` m
 must lie beneath the serving participant's `shared_dir`. Other parameters and endpoint fields are rejected.
 The `liveness-container-tags` case shows a fixture created after its subject but started before it.
 
-The `agent-adp` Linux container definition uses `agent-adp-linux-image`. Its environment defaults match the legacy
-runner's port isolation: command API 55001, expvar 55000, APM 58126, process command API 56062, Agent IPC 55004,
+### Agent and ADP
+
+The `agent-adp` definition declares `default_log_file` for its Linux and Windows containers only, so a case that
+runs on macOS writes the path out or uses its core-provided `shared_dir` fact.
+
+The `agent-adp` Linux container definition uses `agent-adp-linux-image`. It isolates listener ports with these defaults: command API 55001, expvar 55000, APM 58126, process command API 56062, Agent IPC 55004,
 DogStatsD UDP 58125, ADP APIs 55100/55101 and Agent OTLP 54317/54318. The GUI is disabled. Case environment values
 replace those defaults. A supplied `datadog.yaml` also suppresses defaults for keys it sets: explicit environment
 values win over the file, and file values win over type defaults. A file's zero DogStatsD port disables UDP rather
@@ -555,16 +642,6 @@ Both types accept `config.params.host_view: true` on Linux. In containers this m
 and the Docker socket read-only and sets the corresponding Agent host paths. Rootless Docker can reject file placement
 with a `remount-ro /host/proc: operation not permitted` error. Removing host view can diagnose other behavior, but cannot
 prove container-origin enrichment.
-
-The Linux-only `millstone` type runs `baseline` and `subject` senders in one container from `tools-linux-image`.
-Both use the seed in the required `millstone.yaml` template. Its target is a reference to the `target` connection's
-URL, optionally followed by a literal path starting with `/`, such as an OTLP service path. The baseline uses the
-`baseline_target` URL with the same suffix. Both connections are required; suffixes cannot contain references.
-In Linux containers, senders stay alive after `Millstone finished sending` so their container identity remains
-available through flushing. Each has its own exit record and log. The baseline capture is collected into `traffic/`;
-the subject capture manifest is kept under `load/collected/` when the participant is named `load`, allowing
-payload-digest comparison without retaining a second payload stream. `dsd-plain` and `dsd-origin-detection`
-demonstrate this composition.
 
 In Linux containers, `agent-adp` accepts the directory configuration names `files/` and `cont-init.d/`.
 Files under `files/` land beneath `/var/lib/panoramic/files`, available through the `files_dir` fact, with mode 0644.
@@ -641,7 +718,8 @@ disablement after a clean exit. Each run script merges stderr into stdout, and i
 These merged process logs include the run and finish scripts' own messages. Container stdout and stderr are also
 captured separately. The default ten-second stop grace covers the measured roughly 2.6-second supervisor shutdown.
 
-The `agent-adp` definition offers the same seven operations on all three realizations:
+The `agent-adp` definition offers these seven operations in Linux containers, Windows containers and macOS host
+process groups:
 
 | Realization | ADP program | Agent program |
 | --- | --- | --- |
@@ -675,17 +753,30 @@ sockets: their paths default to empty, and nonempty paths are rejected. Windows 
 listeners use the `DD_` keys. The named-pipe name must contain no slash, backslash or NUL.
 Loopback filtering and the DogStatsD non-local-traffic/bind-host rule match Linux.
 
+On macOS, the `agent-adp` definition declares every listener and lets core assign its port unless the case sets
+its environment key. Agent-internal listeners have macOS-only endpoint declarations so they also receive assigned
+ports. When ADP OTLP proxying is enabled, the Agent's proxy gRPC endpoint replaces its normal OTLP gRPC endpoint.
+The recipe keeps the gRPC protocol configured using ADP's gRPC address unless the case supplies that setting.
+The definition rejects `ADP_DD_` variables, which require Linux service scripts, and the definition-owned
+keys `DD_AUTH_TOKEN_FILE_PATH`, `DD_RUN_PATH` and `DD_DATA_PLANE_FORCE_ENABLE`. It rejects case configuration files.
+The Agent and ADP start together in the participant directory, which holds an empty `datadog.yaml` and their shared
+authentication token. ADP retries the token read while the Agent starts. Only the Agent receives the run path and,
+when ADP is enabled, the macOS force-enable switch. Each process's output goes to `<process>.stdout.log` and
+`<process>.stderr.log` under the participant's log directory.
+
+### Container and pod lifecycle
+
 The `PANORAMIC_` environment-variable prefix is reserved. Plan compilation rejects keys with this prefix in the
 case's effective environment after OS overlays, in type defaults, and in connection deliveries. Errors identify
 whether the case, type default or connection set the key.
 
-Every native Linux container receives three reserved variables: `PANORAMIC_PARTICIPANT` names the participant,
+Every Linux container receives three reserved variables: `PANORAMIC_PARTICIPANT` names the participant,
 `PANORAMIC_EXIT_DIR` names its exit-record directory, and `PANORAMIC_LOG_DIR` names its process-log directory.
 Recipes that set any of these variables fail creation. The backend prepares the directories before start. The
 Linux backend always shares the host PID namespace. Its cgroup namespace is private unless
 `realization.options.host_cgroup_namespace` is true.
 
-Every native Windows container receives the same three reserved variables. The backend creates each participant's
+Every Windows container receives the same three reserved variables. The backend creates each participant's
 `C:\airlock\<participant>\{exit,log,shared}` directories in its container's own filesystem before start; `shared_dir`
 resolves to that container-local `shared` directory. Recipes that set reserved variables, declare host mounts or
 publish runner-host ports are rejected. The courier occupies the reserved path `C:\panoramic\courier.exe`.
@@ -699,29 +790,39 @@ socket read-only. Host view defaults to false. Pod host view requires `realizati
 credential PIDs refer to the mounted node process tree. Planning rejects missing or false `host_pid` and names the
 participant. `host_pid` and `cri_socket` remain realization options; they do not add mounts.
 
-Both millstone senders share one container named `millstone`, so they have the same container identity. Their
-configuration files are written after start, once the pod's identities exist. Unlike Linux-container senders, pod
-senders exit after sending; use `exits_with` followed by `wait` for the targets' flush window. Pods collect no input
-capture.
-
 Pod commands wait for their late files before running. The backend writes those files once all referenced
 identities exist. Shared files and exit records remain readable through the kind node after a pod exits. Container
 output is merged into `<log_dir>/<participant>/containers/<container>.log`; named process files keep their usual
 paths.
 
-For any selected pod case, native or legacy, `panoramic run` creates or reuses the cluster named by
-`--kind-cluster-name` (default `saluki-correctness`) and loads its image references. Native pods use the `kubeconfig`
-context `kind-<cluster-name>`, regardless of the current context. Cluster setup failure errors pod cases before
-participant creation. Use `--no-delete-kind-cluster` to retain the cluster after the run.
+When the host can provide a selected pod case, `panoramic run` creates or reuses the cluster named by
+`--kind-cluster-name` (default `saluki-correctness`) and loads its verified images. Pods use the `kubeconfig` context
+`kind-<cluster-name>`, regardless of the current context. Cluster setup failure errors pod cases before participant creation. Use `--no-delete-kind-cluster` to retain the cluster after the run.
 
-The `agent-adp` definition declares `default_log_file` for its Linux and Windows containers only, so a case that
-runs on macOS writes the path out or uses its core-provided `shared_dir` fact.
+### Millstone
+
+The Linux-only `millstone` type runs `baseline` and `subject` senders in one container from `tools-linux-image`.
+Both use the seed in the required `millstone.yaml` template. Its target is a reference to the `target` connection's
+URL, optionally followed by a literal path starting with `/`, such as an OTLP service path. The baseline uses the
+`baseline_target` URL with the same suffix. Both connections are required; suffixes cannot contain references.
+In Linux containers, senders stay alive after `Millstone finished sending` so their container identity remains
+available through flushing. Each has its own exit record and log. The baseline capture is collected into `traffic/`;
+the subject capture manifest is kept under `load/collected/` when the participant is named `load`, allowing
+payload-digest comparison without retaining a second payload stream. `dsd-plain` and `dsd-origin-detection`
+demonstrate this composition.
+
+In pods, both senders share one container named `millstone`, so they have the same container identity. Their
+configuration files are written after start, once the pod's identities exist. Unlike Linux-container senders, pod
+senders exit after sending; use `exits_with` followed by `wait` for the subject and baseline participants to flush.
+Pods collect no input capture.
+
+## Configuration and templates
 
 Step fields can also reference a participant's late facts as `<participant>.late.<fact>`: `ip` on every realization,
 `container_id` on containers and pods, and `pod_uid` on pods only. They exist once the participant is created or running.
 Step fields accept only facts and late facts of explicitly named participants.
 
-Environment values must be YAML strings. Optional `config.os` overlays replace base values on the selected OS.
+Optional `config.os` overlays replace base values on the selected OS.
 Environment variable values and string parameters, at any depth, can also contain references, including to the
 participant itself as `self`. Variable names and parameter keys can't. On every OS in `subject_os`, a fact must exist
 for the referenced participant's realization, and panoramic substitutes it before the participant type reads the
@@ -785,46 +886,17 @@ may reference any late fact the referenced participant has, including the pod's 
 `ip`, which only participants on that host process group's realization can use. On other realizations, a template
 file may not reference the participant's own late facts, except for a host process group's fixed `ip`.
 
-Panoramic orders participants before running a case. A participant is created after every other Linux or Windows container
-whose `container_id` its configuration references. It starts after every participant it connects to. A Kubernetes pod
-also starts after every other container or pod whose `ip` its template files reference, and after every other pod whose
-`container_id` or `pod_uid` they reference. Own late facts are supplied by init hooks or late files; a host process
-group's fixed `ip`, facts and endpoint addresses are available before creation, and steps run after all participants
-start. Use `connect` when a participant needs another running first. A cycle in either order on any OS in `subject_os`
-fails the case. `panoramic list` prints both orders, grouping independent participants.
-
-Durations in a participant case need a unit: write `30s`, not `30`.
-
-Steps name the participant they act on with `on`; `wait` names none. Step fields differ from the integration schema:
-steps use `step:` instead of `assertion:`, and `file_contains` requires `pattern`.
-Each backend declares its accepted `realization.options`. The loader rejects unknown options and non-boolean
-values, naming the participant, realization kind, and option. Linux containers accept `host_cgroup_namespace`
-(default false); true exposes the host's cgroup paths to the participant. Pods accept `host_pid` and `cri_socket`,
-both defaulting to false. `host_pid` shares the node's PID namespace. `cri_socket` requires the node's containerd
-socket to be mounted by the recipe; it adds no mount. Before creating a pod, the backend checks every recipe host-mount
-source on the node and rejects missing sources. HostPath volumes pin the observed file, directory or socket type;
-`cri_socket` requires a socket. Participant recipes own host mounts and their destination paths. Host process groups
-and Windows containers accept no options.
 A `config.files` source must be a nonempty path relative to the case directory that exists when the case loads.
 Cases under `test/<suite>/` can reference shared files within that suite, such as
 `../../shared/workload.yaml`. Neither parent traversal nor symlink targets may escape the suite tree.
 Standalone cases keep parent traversal within the case directory, but may follow symlinks outside it.
 Tracked files under `test/` must not be symlinks: Windows checkouts can materialize them as link-target text.
 
-`panoramic list` shows each participant case's layout. A case whose layout is invalid on any OS it lists in
-`subject_os` fails discovery for `list` and `run`, whatever subject OS is selected.
-Plan compilation checks fact availability for both steps and configuration on every OS in `subject_os`.
-A referenced fact missing for a participant's realization fails planning and therefore discovery.
-It also checks every declared process name: it must be a plain file name, not empty, `.` or `..`, and contain no
-`/` or `\`. When a type declares process specifications for a realization, planning validates its exit and output
-channels too: specifications must name declared processes, every process needs exactly one specification, record
-and output file names must be plain and unique, and only one process may own each container channel. Output files
-must not collide with host capture paths.
-A realization with no specifications can still plan, but native preparation requires them.
+## Artifact manifests
 
-`panoramic list` also prints each artifact role a case needs on the selected subject OS, with the
+`panoramic list` prints each artifact role a case needs on the selected subject OS, with the
 reference it resolves to and whether it comes from a manifest or the role's local default. Roles are stable names
-for the images, binaries and installs its runner uses. Use `--artifacts <file>` to
+for the images, binaries and installs its participants and backends use. Use `--artifacts <file>` to
 read a TOML manifest:
 
 ```toml
@@ -865,13 +937,15 @@ main binary for installs. `reference` is preserved as written. Roles needed only
 can't provide aren't verified and don't appear. The field is always an array, empty (`[]`) when no bindings need
 verification, including an empty selection.
 
-`--artifacts` has no environment fallback.
+`--artifacts` has no environment fallback. Both `agent` and `agent-adp` use `agent-adp-linux-image`, so baseline
+and subject share one image binding. A comparison against a different published image needs a distinct artifact
+role in its participant definition.
 
 `adp-host-binary` supplies the host ADP executable;
 `agent-host-install` supplies the Core Agent executable at `bin/agent/agent` beneath that directory. `fixup-image`
 supplies the shared-volume permission fix-up container. `courier-linux-binary` supplies the static courier executable
 for Linux containers. Kind loads the participants' bound images into its cluster.
-Kind options, `-l` and TUI options remain available. In `list --json`, `roles` shows the bound references and their sources.
+In [`list --json`](#selection-and-host-availability), `roles` shows the bound references and their sources.
 
 Use `panoramic artifacts render --set <role>=<reference> … -o <file>` to write a manifest, replacing an existing
 file. Repeat `--set` to bind more roles; omitting it writes a manifest binding nothing. Rendering checks bindings
@@ -904,7 +978,7 @@ role once, sorted by name, with its reference, source and identity or failure:
 File checks follow symlinks. Verification never pulls images or creates containers, and contacts the Docker daemon
 only when an image or a container binary is needed. It reports every verification failure and exits 2 if any fails,
 or if no test directory is given, the manifest is invalid or cases fail discovery or planning. It exits 0 when all
-artifacts verify, including when none are needed. Participant and correctness cases contribute artifact roles.
+artifacts verify, including when none are needed.
 
 Use `panoramic artifacts pull -d <cases> [--subject-os linux|macos|windows] [--artifacts <file>]` to fetch only the
 images those cases need, in role-name order. Check binary and install roles with `verify`;
@@ -919,6 +993,37 @@ each reference and role before starting, and prints each role's reference, sourc
 Successful pulls exit 0; any failed pull or inspection, invalid selection or manifest, or discovery or planning
 error exits 2. Registry access is unauthenticated, and platform selection follows the daemon rather than
 `--subject-os`. Test runs never pull: a missing image fails verification before any case starts.
+Only `artifacts pull` fetches participant and backend images.
+
+## Connections and layout
+
+Panoramic orders participants before running a case. A participant is created after every other Linux or Windows container
+whose `container_id` its configuration references. It starts after every participant it connects to. A Kubernetes pod
+also starts after every other container or pod whose `ip` its template files reference, and after every other pod whose
+`container_id` or `pod_uid` they reference. Own late facts are supplied by init hooks or late files; a host process
+group's fixed `ip`, facts and endpoint addresses are available before creation, and steps run after all participants
+start. Use `connect` when a participant needs another running first. A cycle in either order on any OS in `subject_os`
+fails the case. `panoramic list` prints both orders, grouping independent participants.
+
+Each backend declares its accepted `realization.options`. The loader rejects unknown options and non-boolean
+values, naming the participant, realization kind, and option. Linux containers accept `host_cgroup_namespace`
+(default false); true exposes the host's cgroup paths to the participant. Pods accept `host_pid` and `cri_socket`,
+both defaulting to false. `host_pid` shares the node's PID namespace. `cri_socket` requires the node's containerd
+socket to be mounted by the recipe; it adds no mount. Before creating a pod, the backend checks every recipe host-mount
+source on the node and rejects missing sources. HostPath volumes pin the observed file, directory or socket type;
+`cri_socket` requires a socket. Participant recipes own host mounts and their destination paths. Host process groups
+and Windows containers accept no options.
+
+`panoramic list` shows each participant case's layout. A case whose layout is invalid on any OS it lists in
+`subject_os` fails discovery for `list` and `run`, whatever subject OS is selected.
+Plan compilation checks fact availability for both steps and configuration on every OS in `subject_os`.
+A referenced fact missing for a participant's realization fails planning and therefore discovery.
+It also checks every declared process name: it must be a plain file name, not empty, `.` or `..`, and contain no
+`/` or `\`. When a type declares process specifications for a realization, planning validates its exit and output
+channels too: specifications must name declared processes, every process needs exactly one specification, record
+and output file names must be plain and unique, and only one process may own each container channel. Output files
+must not collide with host capture paths.
+A realization with no specifications can still plan, but preparation requires them.
 
 Connections and endpoint overrides are checked the same way: on every OS in `subject_os`, each `connect` key
 must be an endpoint the participant consumes, the target must serve the named endpoint with its configuration,
@@ -960,8 +1065,8 @@ Run one panoramic invocation per runner host and Docker daemon at a time: each i
 deterministically from 20000. Linux container participants publish exactly their planned ports on `127.0.0.1`.
 If a port is held on the daemon, startup fails with a message naming the participant's ports.
 On a VM-backed daemon, a port held on the runner host isn't detected; the runner host may reach the process
-holding it. Each CI job has its own Docker-in-Docker daemon. Drivers built from an isolation group require
-explicit host ports; drivers built with `Driver::from_config` also support ephemeral publication.
+holding it. Each CI job has its own Docker-in-Docker daemon. Container creation publishes only the ports the plan
+assigned.
 
 A Unix socket is reached at the path its server listens on. Every served socket path must be absolute for its
 participant's OS, even when nobody consumes it. It may use fact references, but not references resolved later,
@@ -976,16 +1081,81 @@ Every required consumed endpoint must be connected, and each `config.endpoints` 
 the participant serves. The `agent-adp` definition derives listener ports from its environment and Linux configuration file; configure those
 ports through the listener's environment key.
 
-On macOS, the `agent-adp` definition declares every listener and lets core assign its port unless the case sets
-its environment key. Agent-internal listeners have macOS-only endpoint declarations so they also receive assigned
-ports. When ADP OTLP proxying is enabled, the Agent's proxy gRPC endpoint replaces its normal OTLP gRPC endpoint.
-The recipe keeps the gRPC protocol configured using ADP's gRPC address unless the case supplies that setting.
-The definition rejects `ADP_DD_` variables, which require Linux service scripts, and the definition-owned
-keys `DD_AUTH_TOKEN_FILE_PATH`, `DD_RUN_PATH` and `DD_DATA_PLANE_FORCE_ENABLE`. It rejects case configuration files.
-The Agent and ADP start together in the participant directory, which holds an empty `datadog.yaml` and their shared
-authentication token. ADP retries the token read while the Agent starts. Only the Agent receives the run path and,
-when ADP is enabled, the macOS force-enable switch. Each process's output goes to `<process>.stdout.log` and
-`<process>.stderr.log` under the participant's log directory.
+## Extending Panoramic
+
+Under `bin/correctness/panoramic/`, responsibilities are split by crate:
+
+| Crate | Owns |
+| --- | --- |
+| `panoramic-core` | Case loading, plans, connections, lifecycle, realization backends, handles and report types. |
+| `panoramic-participants` | Product configuration, recipes, process observation declarations and operations. |
+| `panoramic-steps` | Assertions and actions against handles and named operations. |
+| `panoramic` | Registry composition, CLI, scheduling, kind setup, traffic retention, TUI and `RunCollector` report writing. |
+
+Source references, relative to `bin/correctness/panoramic/`:
+
+- `core/src/case/file.rs`: case fields and defaults.
+- `core/src/artifact.rs`: artifact roles and manifests.
+- `core/src/artifact/verify.rs`: artifact verification and identities.
+- `core/src/artifact/pull.rs`: image pulling and identities.
+- `core/src/backend/run.rs`: host availability, verification and pulls over one Docker connection.
+- `core/src/layout.rs`: participant OS and realization placement.
+- `participants/src/agent_adp/mod.rs`: `agent-adp` declarations, including facts and artifact roles.
+- `steps/src/`: each step's fields.
+
+### Adding a participant type
+
+1. Add a module under `participants/src/` implementing `ParticipantType` from `core/src/participant.rs`, then add
+   the type to `REGISTERED_TYPES` in name order. `fixture.rs` and `datadog_intake.rs` are examples.
+2. Declare supported OS/realization pairs and artifact roles. `recipe()` consumes `RenderedConfig` and names those
+   roles; it owns commands, destination paths, modes, host mounts and supervisor assets. Cases supply configuration.
+3. Declare accepted file names and parameters, and validate their values before deriving endpoints, defaults and
+   readiness. Hooks see early facts, then assigned ports; connection deliveries arrive later. Use
+   `require_early_config_value` for file keys read during planning. `CaseValues`, `EffectiveConfig` and
+   `RenderedConfig` document each stage's inputs.
+4. Declare served and consumed endpoints, their delivery keys, readiness evidence and any early facts. Planning owns
+   port assignment and the per-case state directory; recipes use `RenderedConfig::directory()`.
+   A deferred pod file uses `PodRecipe::with_late_file(destination, configuration_name)` to retain its source name.
+   Creation rejects a configuration file with deferred late references that the recipe doesn't place this way.
+5. Name processes and supply a `ProcessSpec` for each realization: exit comes from a wait, container or first exit
+   record; output comes from pipes, container streams or files. A supervisor must record the first exit before
+   restarting a process. Declare `collect()` artifacts and a stop grace if the default ten seconds is insufficient.
+6. Put product CLI forms and parsing in named `Operation` implementations. Declare any HTTP endpoints they use;
+   `OpContext` supplies exec and planned request routes. Host operations use `exec_process` with the declared
+   program's environment and working directory.
+
+Test supported realizations, configuration precedence, invalid inputs, recipe role declarations, readiness and process
+observation. Shared fixtures live behind `test-util`; see [Testing patterns](./testing-patterns.md).
+
+### Adding a step
+
+1. Add a module under `steps/src/`, implement `Step` and `StepFactory` from `core/src/step.rs`, and register its
+   factory in `REGISTERED_STEPS` in name order. `process_stable_for.rs` is an assertion example; `wait.rs` is an action.
+2. Decode fields with `decode_fields` and `#[serde(deny_unknown_fields)]`. Use `CaseDuration` for positive durations,
+   declare template-enabled fields, and validate values when building the step. Actions must report `StepKind::Action`
+   so the loader rejects them inside parallel blocks.
+3. Declare every dependency in `needs()`: handles, processes, operations, facts, late facts and endpoint operations.
+   Implement a finite `budget()` and use borrowed handles from `StepContext` to observe or act. Keep product commands
+   in participant operations and execution mechanisms in backends.
+4. Return `StepReport`: unmet product expectations fail; inability to evaluate them errors. Cancellation may drop the
+   step future, so release owned resources on drop. Test parsing, declared needs, success, failure, errors and cancellation.
+   Add representative fields to `steps::test_support::valid_fields` for the registry-wide contract tests.
+
+Binary tests scan every file in each crate directory except `target/`, including tests and comments: core names no
+products; steps name no realizations, host mechanisms or product paths. Neither depends on the participants crate,
+and core's only panoramic dependency is `panoramic-courier`, for endpoint execution.
+
+## Panoramic CLI and environment
+
+Both suites run through the same `panoramic` binary.
+
+```bash
+cargo run --release --bin panoramic -- --help
+```
+
+The `panoramic` skill walks LLM agents through choosing and running a suite non-interactively.
+
+### Selection and host availability
 
 `--subject-os linux|macos|windows` selects which cases run. It defaults to the host's OS. Correctness cases run only
 for subject OS `linux` and are reported as `skipped` for other subject OSes. Pass `--subject-os linux` to run them
@@ -996,8 +1166,8 @@ A case whose `subject_os` omits the selected OS appears in `run.json` with outco
 `result.json`. The exit code follows the runnable cases; an all-skipped selection writes `run.json` and exits 3.
 Text listings show every enabled case's status: `runnable` or `skipped (subject_os)`.
 
-`list --json` includes every enabled case, keyed by name. Every row has `type`, `timeout` and `status`, which is
-`runnable` or `skipped`. Skipped rows have `skip_reason`. Each row also has:
+`list --json` includes every enabled case, keyed by name. Every row has `type` (the reporting
+suite), `timeout` and `status`, which is `runnable` or `skipped`. Skipped rows have `skip_reason`. Each row also has:
 
 - `layout`: a list of `{participant, type, os, realization}` in participant-name order. `type` names the participant
   type, `os` is `linux`, `macos` or `windows`, and `realization` is `linux-container`, `windows-container`,
@@ -1025,44 +1195,6 @@ that needs the daemon.
 A case whose realization the host can't provide is `errored` with error kind `setup`, appears in `run.json`, and
 makes the run exit 2. `list` never checks host availability.
 
-The source documents each part:
-
-- `bin/correctness/panoramic/core/src/case/file.rs`: the case file's fields and their defaults.
-- `bin/correctness/panoramic/core/src/artifact.rs`: artifact roles and the manifest.
-- `bin/correctness/panoramic/core/src/artifact/verify.rs`: artifact verification and identities.
-- `bin/correctness/panoramic/core/src/artifact/pull.rs`: image pulling and identities.
-- `bin/correctness/panoramic/core/src/backend/run.rs`: host availability checks, artifact verification and image pulls over one Docker connection.
-- `bin/correctness/panoramic/core/src/layout.rs`: how participants are placed on an OS and realization.
-- `bin/correctness/panoramic/participants/src/agent_adp/mod.rs`: what `agent-adp` declares, including its facts and artifact roles.
-- `bin/correctness/panoramic/steps/src/`: each step's fields.
-
-Tests in the `panoramic` binary scan every file in each crate directory recursively, excluding `target/`, to check
-that `panoramic-core` names no product and that `panoramic-steps` names no realization, host mechanism, or product path.
-The crate dependency test keeps core and steps independent of `panoramic-participants`. Core's only panoramic
-dependency is `panoramic-courier`, for shared endpoint execution and its calling contract.
-
-### Step deadlines
-
-Each step uses its `timeout`, `duration`, or `during` as its budget. The driver allows 10 seconds beyond that budget
-for the step to report its result, then stops it as `errored`. This makes the test a harness error (exit code 2), unless a parallel
-member failed. Case timeout or run cancellation interrupts unfinished steps and preserves completed results.
-
-Polling HTTP requests, endpoint probes and intake polls are limited to the shorter of 10 seconds or the step's
-remaining time. The native `config_key_equals` step gives each `config_dump` call the whole remaining budget for
-its exec. Timed-out probes are retried while the step has time left. A step is `errored` if harness failures
-(such as Docker API or intake sidecar errors) prevent evaluation, or its configuration is invalid. An unmet expectation
-remains `failed` after any product observation, even if later probes encounter harness errors.
-
-## Panoramic CLI and environment
-
-Both suites run through the same `panoramic` binary.
-
-```bash
-cargo run --release --bin panoramic -- --help
-```
-
-The `panoramic` skill walks LLM agents through choosing and running a suite non-interactively.
-
 ### Reading panoramic results
 
 The Make targets write artifacts beneath `target/test-output/panoramic/` by default. Set `SALUKI_TEST_OUTPUT_DIR` to
@@ -1080,6 +1212,14 @@ Exit codes distinguish the run-level result:
 | 3 | Empty selection, unmatched test name, or every selected test skipped (`run.json` is written) |
 
 An `errored` step couldn't be evaluated. Inspect test `error`, `timeout`, `cause`, and step `message` fields.
+Diagnose by stage:
+
+- Before `run.json` exists: read stderr for YAML, path, template, plan or artifact-verification errors. `list` checks
+  case plans without starting participants; `artifacts verify` checks their bindings without pulling images.
+- Setup: inspect `phase_timings`, the named participant's output and its consumed endpoints' readiness evidence.
+- Procedure: read each assertion's message. For output mismatches, inspect the
+  [traffic manifest](#reading-traffic-artifacts); for exits, distinguish `exited` from `undetermined` observation.
+- Cleanup: inspect `issues` and `reclaim` even when assertions passed. Remove only resources belonging to your run.
 
 Check `run.json` first: it's updated during execution, so passing entries don't prove the run finished. Inspect
 completeness before individual results, and treat unknown states, outcomes, or statuses as non-passing:
@@ -1129,7 +1269,7 @@ On Unix, send SIGINT or SIGTERM to stop a run with cleanup. A second signal may 
 ### Resource cleanup
 
 After every test, the runner attempts cleanup and records each resource as `reclaimed`, `leaked`, or `unsettled` under
-`reclaim` in `result.json`. Native participants have separate `participant:<name>` entries with a `participant` field.
+`reclaim` in `result.json`. Participants have separate `participant:<name>` entries with a `participant` field.
 Each stops with its type's grace, ten seconds by default, before removal. Host participants receive SIGTERM in each
 process group, then SIGKILL after the grace for groups still running, including descendants of an exited leader.
 Child reapers remain active after case tasks stop. The host scope has a `directory:<path>` entry, removed after
@@ -1155,28 +1295,7 @@ zstd -dc traffic/<file-name> | head -5
 ```
 
 The module docs in `bin/correctness/panoramic/src/traffic.rs` explain each artifact, its retention, and record ordering.
-Native intake assertions read the intake through its participant operations. The `compare` step reads each dump
-once from two distinct participants offering `dump`. Both snapshots are fetched concurrently; decoded captures
-identify the participants and the dump operation, without assuming which products they run:
-
-```yaml
-- step: compare
-  kind: metrics
-  subject: intake-adp
-  baseline: intake-agent
-  require_forwarded_packets: false
-```
-
-`kind` is `metrics`, `events`, `service_checks`, or `traces`. Trace comparisons also accept `otlp_direct` (default
-false) and `ignore_fields` (default empty). Forwarded packets are compared for every kind; `require_forwarded_packets`
-(default false) additionally requires nonempty captures. Mismatches and invalid product responses fail the step;
-transport and other harness failures error it. Capture-write failures are recorded in the traffic manifest without
-changing the comparison verdict.
-
-For metrics, `required_metric_tag_keys` (default empty) requires at least one workload context on each side with
-nonempty values for every listed tag key. Internal telemetry doesn't satisfy this check, nor do tags split across
-contexts. The origin-detection cases require `image_name`, a low-cardinality tag from container discovery that their
-workloads don't send. Equal but unenriched outputs therefore fail.
+For comparison options and error classification, see [Comparing outputs](#comparing-outputs).
 
 ## Benchmark tests: Single Machine Performance (SMP)
 
@@ -1228,7 +1347,7 @@ agents drive runs there.
 
 ## Directory index
 
-```
+```text
 .gitlab/
 ├── test.yml               unit tests
 ├── e2e.yml                correctness + integration

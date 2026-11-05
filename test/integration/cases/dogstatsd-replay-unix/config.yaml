@@ -25,6 +25,7 @@ procedure:
   - step: dogstatsd_replay
     on: adp
     endpoint: dogstatsd_uds
+    # Separate sends exercise capture across connections, with a one-second gap.
     payloads:
       - data: "integration.replay.unix.one:1|c"
       - data: "integration.replay.unix.two:1|c"

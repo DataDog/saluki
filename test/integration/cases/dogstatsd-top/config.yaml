@@ -20,6 +20,7 @@ participants:
 
 procedure:
   - parallel:
+      # The log proves UDP bound successfully; a UDP connect alone cannot.
       - step: log_contains
         on: adp
         pattern: 'listen_addr:"udp://[^"]+:58125" \| DogStatsD listener started\.'

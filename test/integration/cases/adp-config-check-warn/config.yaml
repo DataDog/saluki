@@ -25,6 +25,7 @@ participants:
 procedure:
   - step: log_contains
     on: adp
+    # Match the key and warning in one record; the pipe is a literal log separator.
     pattern: 'key:"dogstatsd_telemetry_enabled_listener_id" \| Unsupported configuration key. Proceeding.'
     regex: true
     timeout: 60s

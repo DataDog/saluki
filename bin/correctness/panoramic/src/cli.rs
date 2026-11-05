@@ -98,7 +98,7 @@ impl LogLevel {
 // first-party libraries. The canonical RUST_LOG overrides this and feeds the logging library
 // directly.
 //
-/// Panoramic: Integration test runner for Agent Data Plane.
+/// Panoramic: Correctness and integration test runner for Agent Data Plane.
 #[derive(Parser)]
 #[command(
     name = "panoramic",
@@ -133,10 +133,10 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Run integration tests.
+    /// Run discovered cases.
     Run(Box<RunCommand>),
 
-    /// List available integration tests.
+    /// List discovered cases.
     List(ListCommand),
 
     /// Manage the artifacts cases need.
@@ -202,7 +202,7 @@ pub struct ArtifactCasesCommand {
 
 // We build clap without its `wrap_help` feature, so help text is never reflowed. Descriptions that
 // need more than one line carry `verbatim_doc_comment` and are wrapped where they're written.
-/// Run integration tests.
+/// Run discovered cases.
 #[derive(Args)]
 #[command(args_override_self = true, after_help = ENV_HELP)]
 pub struct RunCommand {
@@ -275,7 +275,7 @@ impl RunCommand {
     }
 }
 
-/// List available integration tests.
+/// List discovered cases.
 #[derive(Args)]
 #[command(args_override_self = true)]
 pub struct ListCommand {

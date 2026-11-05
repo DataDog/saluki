@@ -27,6 +27,7 @@ participants:
       os:
         macos:
           env:
+            # macOS otherwise assigns the port; pin it to match the complete listen-address assertion.
             DD_DOGSTATSD_PORT: "58125"
 
 procedure:

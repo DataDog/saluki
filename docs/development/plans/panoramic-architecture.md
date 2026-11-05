@@ -7,30 +7,28 @@ configuration. Use it to check coverage when changing case schemas or runners.
 
 ## Columns
 
-- **Case:** the discovered name, including the variant suffix for a matrix.
+- **Case:** the discovered directory name.
 - **Suite:** integration or correctness.
 - **Subject OS:** Linux, macOS or Windows; independent of the host running the inventory test.
   A participant case must declare `subject_os`.
-- **Runtime:** the typed correctness runner's identifier (`docker` or `kubernetes_in_docker`),
-  or the native subject participant's realization kind.
+- **Runtime:** the subject participant's realization kind.
 - **Status:** selected by CI discovery, or disabled. Participant rows take their status from their directory:
-  `test/correctness/disabled/` is compiled but not selected by CI. Typed cases also require `disabled: true`
-  there. The inventory requires each case's directory to match its suite and status.
+  `test/correctness/disabled/` is compiled but not selected by CI. The inventory requires each case's directory
+  to match its suite and status.
 - **CI job:** the job that selects this row. Correctness jobs belong to the `run-correctness-tests` child pipeline.
   Disabled rows have no job. macOS rows list both architectures.
-- **Schema:** the file's `type` value, or `participants` for a file that declares participants.
-- **Execution:** `old` identifies typed runners; `native` identifies the participant lifecycle.
+- **Schema:** `participants`.
+- **Execution:** `native`, the participant lifecycle.
 - **Steps:** assertions and actions, including assertions inside parallel blocks, or the correctness comparison mode.
 - **Ignored:** number of key paths the loader drops without error. The probe loads each modified file through the
   case loader and planner. Replacing each value with either a map or a string must
   leave the recorded configuration unchanged. Paths are listed in the JSON.
 
-The [JSON inventory](./panoramic-architecture-inventory.json) also records source paths, timeouts, images before CLI
-image overrides, correctness CI mixins, and a `cases` map keyed by `<suite>/<name>`. Each case contains the effective
+The [JSON inventory](./panoramic-architecture-inventory.json) also records source paths, timeouts, artifact references,
+correctness CI mixins, and a `cases` map keyed by `<suite>/<name>`. Each case contains the effective
 configuration, integration step counts by kind or correctness comparison options, and ignored key paths. Integration
-OS rows share one case entry; participant configurations are keyed by subject OS, and matrix variants have separate
-entries. Native rows record artifact references by role name using local defaults, with the courier path normalized
-to `x86_64` for a host-independent snapshot. Totals count files once and steps per selected OS row; disabled rows are
+OS rows share one case entry; configurations are keyed by subject OS. Rows record artifact references by role name
+using local defaults, with the courier path normalized to `x86_64` for a host-independent snapshot. Totals count files once and steps per selected OS row; disabled rows are
 separate from selected totals.
 
 ## Regenerating
@@ -78,29 +76,19 @@ equivalence, and migration proofs: their rows, CI links and comparison commit.
 - The ignored `datadog_intake.config_path` entries were removed from both probabilistic trace cases and both
   disabled trace cases. Workloads now declare `millstone.yaml` through the load participant's configuration files.
 
-## Pod host-view contract
+## Authoring guidance
 
-Pod host mounts belong to participant definitions, matching the container recipe model. Realization options control
-runtime behavior rather than product filesystem paths:
-
-| Setting | Owner | Effect |
-| --- | --- | --- |
-| `realization.options.host_pid` | Pod backend | Shares the node PID namespace; adds no mounts. |
-| `realization.options.cri_socket` | Pod backend | Requires a recipe mount of the node containerd socket; adds no mounts. |
-| `config.params.host_view` | `agent-adp` and `agent` pod definitions | Adds the image's read-only proc, cgroup and CRI socket mounts. |
-
-Origin-sensitive pod cases require `host_view: true`. Pod host view requires `host_pid: true`; planning rejects a
-mismatch and names the participant. This replaces the earlier behavior where enabling realization options implicitly
-mounted product-specific paths. Pod template files retain their
-configuration names when rendering defers late references; creation rejects a deferred file unless its recipe
-places it as a late file.
+The [testing guide](../testing.md#participant-cases) covers case configuration,
+[host view and pod lifecycle](../testing.md#container-and-pod-lifecycle),
+[connections](../testing.md#connections-and-layout) and [operations](../testing.md#participant-operations).
+Per-case rationale lives beside the relevant assertions and settings in each case's YAML comments.
+The migration notes and proofs below retain historical comparisons, not authoring instructions.
 
 ## Effective configuration scope
 
-The JSON records the loader's configuration with defaults and matrix environments applied, before CLI image
-overrides. For each subject OS, participant cases record participants' names, types, subject flags, realization kinds,
-and planned case environment after OS overlays. Procedures retain their fields as written, including unresolved paths.
-Use product `config_dump` output from CI runs to compare effective product configurations.
+The JSON records the loader's configuration after subject-OS overlays, before connection deliveries.
+It records participants' names, types, subject flags, realization kinds and case environment. Procedures retain
+fields as written, including unresolved paths. Use product `config_dump` output to compare effective product configurations.
 
 <!-- coverage-inventory:begin -->
 
@@ -326,11 +314,6 @@ plus the container log on Linux; the listener-started check names ADP.
 
 Log steps omit `process` to search every process's output plus the container log.
 
-`adp-rar-disabled` runs natively on Linux with Remote Agent Registry disabled on the Agent. ADP's registration
-failure and supervised restarts are expected. ADP logs the registration-failure warning before its bootstrap failure
-with `remote agent registry not enabled`. The case matches the registration warning, requires the Agent alone to
-stay running for 10 seconds, and checks the participant's logs for panics over the same window.
-
 ## Case migration notes
 
 `dogstatsd-host-tag` and `dogstatsd-intake-metric` use the participant schema and native execution on Linux,
@@ -374,18 +357,16 @@ criteria; a failed execution mechanism now errors instead of failing. Stability 
 exit records. Assertion/action counts and timeouts are unchanged.
 
 `dogstatsd-top` uses native Linux execution. Its Python script and fixtures are supplied through `files/`, and the
-script locates fixtures next to itself. A listener-log regex replaces the UDP port probe, which could not prove a
-bind; non-local traffic remains disabled and the unused exposed UDP port is removed. The script uses `exec`, with
+script locates fixtures next to itself. A listener-log regex replaces the UDP port probe; non-local traffic remains
+disabled and the unused exposed UDP port is removed. The script uses `exec`, with
 the same exit-code and timeout criteria; execution-mechanism failures now error instead of failing. Stability
 watches both ADP's and the Agent's exit records. Assertion/action counts and timeouts are unchanged.
 
 `liveness-container-tags` uses native Linux execution with three participants. A Linux `fixture` serves the fake
-Docker API instead of wrapping the Agent entrypoint. It receives ADP's container ID after ADP is created; ADP starts
-only after the fixture's Unix socket and the real mock intake are ready. The fake API's three Python tests run through
+Docker API instead of wrapping the Agent entrypoint. The fake API's three Python tests run through
 `exec` on the fixture. Execution-mechanism failures now error instead of failing. The marker-file assertions become
 `intake_has_metric` and `intake_has_service_check`, preserving the hostname, value/status, image and label tags, and
-nonempty version-tag criteria. `max_age: 30s` preserves timestamp freshness, including rejecting excessive future
-skew; the gauge's latest point supplies both value and timestamp. ADP still sends v1-series payloads with gzip.
+nonempty version-tag criteria. `max_age: 30s` preserves timestamp freshness. ADP still sends v1-series payloads with gzip.
 Stability now observes both ADP and Agent exit records. The case timeout rises from 120 to 180 seconds for ordered
 participant startup. ADP shares the host cgroup namespace to discover its own container ID, with no host binds.
 Assertion and action counts remain four and one.
@@ -399,16 +380,8 @@ Stability observes both ADP and Agent processes. The OTLP ports under test are p
 including on macOS.
 
 `dogstatsd-replay-unix` uses native execution on Linux and macOS; `dogstatsd-replay-windows` uses it on Windows.
-The Unix socket lives in the participant's shared directory. Endpoint sends carry the payload bytes, with a
-one-second delay between Unix sends. Capture, replay and statistics use participant operations. Unix payloads
-use one connection per send; Windows sends its two newline-terminated metrics together. Mechanism failures
-error, product failures fail, and stability watches both processes.
-
-## Host operation execution
-
-With `OpContext::exec_process`, host operations run a declared process's
-artifact-bound program with replacement arguments, in its environment and participant directory. Other realizations
-return a harness error. This keeps host artifact paths inside the backend and product CLI forms inside the type.
+The Unix socket lives in the participant's shared directory. Capture, replay and statistics use participant
+operations. Mechanism failures error, product failures fail, and stability watches both processes.
 
 ## Environment-only case migration notes
 
@@ -436,9 +409,6 @@ The following cases use native participants on Linux, macOS and Windows:
 case's error-exit contract. It runs natively on Linux, macOS and Windows. The exit assertion has a 60-second
 timeout; the case has a 120-second timeout.
 
-`adp-config-check-warn` escapes the log separator in its regex: the intended line contains both the named key and
-its unsupported-key warning, separated by a literal pipe.
-
 ### Bind addresses and Windows payloads
 
 `dogstatsd-bind-host`, `dogstatsd-bind-custom-hostname` and `apm-bind-custom-hostname` assert listener addresses
@@ -446,12 +416,9 @@ on Linux and Windows. Own-IP substitution and `extra_hosts` configure the bind a
 backend's IP late fact. Stability watches both declared processes. The cases cover the issue-#1331 bind-host behavior.
 
 `dogstatsd-named-pipe-windows` uses six `send` actions and nine assertions. The oversize payload uses `repeat: 10000`.
-Each send opens one connection. Retries can duplicate delivery, but the assertions check presence or absence of
-distinct strings, not counts.
 
 `dogstatsd-top-windows` runs `files/run_dogstatsd_top_test.ps1` with `exec` through `files_dir` and checks its result
-file. Its listener-log regex, shared with `dogstatsd-top`, proves that a UDP listener started.
-Stability watches both processes.
+file. Stability watches both processes.
 
 `dogstatsd-default-bind` and `dogstatsd-non-local-overrides-bind-host` assert fixed `:58125` listener patterns and
 pin `DD_DOGSTATSD_PORT` to that value in the macOS overlay. The port is product configuration under test, and CI runs

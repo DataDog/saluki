@@ -61,6 +61,7 @@ procedure:
   - step: wait
     duration: 30s
   - step: compare
+    # image_name comes from container discovery; equal but unenriched outputs must fail.
     required_metric_tag_keys: [image_name]
     kind: metrics
     subject: intake-adp
