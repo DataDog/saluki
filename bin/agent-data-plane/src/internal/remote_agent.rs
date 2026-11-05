@@ -50,8 +50,13 @@ use tracing::{debug, error, info, warn};
 use crate::config::DataPlaneConfiguration;
 use crate::state::metrics::get_datadog_agent_remappings;
 
+mod forwarder_status;
+
 const DEFAULT_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 const REFRESH_FAILED_RETRY_INTERVAL: Duration = Duration::from_secs(5);
+
+// RAR sessions can change without restarting the process. Keep this identity for the entire process lifetime.
+static PROCESS_INSTANCE_ID: OnceLock<String> = OnceLock::new();
 
 const EVENTS_RECEIVED: &str = "adp.component_events_received_total";
 const PACKETS_RECEIVED: &str = "adp.component_packets_received_total";
@@ -193,6 +198,7 @@ impl RemoteAgentBootstrap {
 
 struct RemoteAgentState {
     pid: u32,
+    process_instance_id: &'static str,
     display_name: String,
     flavor: String,
     api_listen_addr: String,
@@ -213,6 +219,9 @@ impl RemoteAgentState {
 
         let state = Self {
             pid: std::process::id(),
+            process_instance_id: PROCESS_INSTANCE_ID
+                .get_or_init(|| uuid::Uuid::new_v4().to_string())
+                .as_str(),
             display_name,
             flavor,
             api_listen_addr: api_listen_addr.to_string(),
@@ -250,6 +259,7 @@ async fn run_remote_agent_registration_loop(mut client: RemoteAgentClient, mut s
                 match client
                     .register_remote_agent(
                         state.pid,
+                        state.process_instance_id,
                         &state.display_name,
                         &state.flavor,
                         &state.api_listen_addr,
@@ -268,7 +278,12 @@ async fn run_remote_agent_registration_loop(mut client: RemoteAgentClient, mut s
                             }
                         };
                         let new_refresh_interval = resp.recommended_refresh_interval_secs;
-                        info!(session_id = %new_session_id, "Successfully registered with the Datadog Agent. Refreshing every {} seconds.", new_refresh_interval);
+                        info!(
+                            session_id = %new_session_id,
+                            process_instance_id = %state.process_instance_id,
+                            "Successfully registered with the Datadog Agent. Refreshing every {} seconds.",
+                            new_refresh_interval
+                        );
 
                         state.session_id.update(Some(new_session_id));
                         loop_timer.reset_after(Duration::from_secs(new_refresh_interval as u64));
@@ -502,6 +517,7 @@ impl StatusProvider for RemoteAgentImpl {
                 }
 
                 self.write_dsd_metrics(&mut builder);
+                forwarder_status::write_forwarder_section(&mut builder, self.internal_metrics.state());
 
                 Ok(tonic::Response::new(builder.into_response()))
             })
@@ -863,6 +879,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn remote_agent_process_instance_id_is_shared_across_states() {
+        let address = || GrpcTargetAddress::Tcp("127.0.0.1:1234".parse().unwrap());
+        let (first, _) = RemoteAgentState::new(address(), vec![]);
+        assert!(uuid::Uuid::parse_str(first.process_instance_id).is_ok());
+        assert_eq!(first.pid, std::process::id());
+
+        // Each bootstrap creates a fresh state, but all states share one process identity.
+        let (second, _) = RemoteAgentState::new(address(), vec![]);
+        assert_eq!(second.pid, first.pid);
+        assert_eq!(second.process_instance_id, first.process_instance_id);
+    }
+
+    #[test]
     fn cap_artifact_data_leaves_small_payloads_unchanged() {
         let input = b"hello world".to_vec();
         let output = cap_artifact_data(input.clone());
@@ -901,6 +930,7 @@ mod tests {
             value: Some(prost_types::Value {
                 kind: Some(Kind::StringValue(value.to_string())),
             }),
+            ..Default::default()
         }
     }
 
@@ -923,6 +953,7 @@ mod tests {
             source: "schema".to_string(),
             key: "api_key".to_string(),
             value: None,
+            ..Default::default()
         });
 
         assert_eq!(setting.value, Value::Null);
@@ -938,6 +969,7 @@ mod tests {
                 value: Some(prost_types::Value {
                     kind: Some(Kind::NullValue(0)),
                 }),
+                ..Default::default()
             });
 
             let expected_provenance = if [AGENT_DEFAULT_SOURCE, "schema"].contains(&source) {
