@@ -753,6 +753,27 @@ mod tests {
     }
 
     #[test]
+    fn configured_headers_replace_the_defaults() {
+        let options: LogsAnalysisOptions =
+            serde_saphyr::from_str("headers: [{name: X-Custom, check: exact}]").expect("options should parse");
+        assert_eq!(
+            options.headers,
+            vec![HeaderRule {
+                name: "X-Custom".to_string(),
+                check: headers::HeaderCheck::Exact,
+            }]
+        );
+
+        let options: LogsAnalysisOptions = serde_saphyr::from_str("headers: []").expect("options should parse");
+        assert!(options.headers.is_empty());
+
+        let options: LogsAnalysisOptions = serde_saphyr::from_str("min_count: 1").expect("options should parse");
+        assert_eq!(options.headers, default_header_rules());
+
+        assert!(serde_saphyr::from_str::<LogsAnalysisOptions>("header: []").is_err());
+    }
+
+    #[test]
     fn identity_fields_are_configurable() {
         let baseline = agent_log(json!({"message": "a", "otel.timestamp": "1"}));
         let comparison = agent_log(json!({"message": "a", "otel.timestamp": "2"}));
