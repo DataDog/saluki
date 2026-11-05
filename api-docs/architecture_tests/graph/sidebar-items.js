@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["Links"],"fn":["direct_links_to_target_or_its_dependents"],"struct":["Dependencies","LinkKinds","Route","Workspace"]};
