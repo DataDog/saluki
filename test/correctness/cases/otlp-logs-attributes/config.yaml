@@ -44,6 +44,8 @@ logs:
     - gap: gap/non-string-message
       paths: ["content.message"]
       kinds: [value]
+      when:
+        fixture_id: [message-int, message-map]
       reason: ADP only honors string `message`/`log` attributes, and uses the body instead.
     - gap: gap/event-name
       paths: ["content.otel.event_name"]
