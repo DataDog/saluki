@@ -4,7 +4,6 @@
 //! `remote_agent` leaves that module focused on registration and the shared remote-agent lifecycle.
 
 use std::pin::Pin;
-use std::sync::Arc;
 use std::time::Duration;
 
 use agent_data_plane_config::SalukiConfiguration;
@@ -16,6 +15,7 @@ use datadog_protos::agent::command::v1::{
 };
 use futures::Stream;
 use prost_types::Struct;
+use saluki_common::sync::live::LiveSource;
 use saluki_error::{generic_error, GenericError};
 use tokio::{
     sync::mpsc,
@@ -62,13 +62,11 @@ fn dogstatsd_command_provider() -> CommandProvider {
 
 pub(crate) struct RemoteCommandProviderImpl {
     session_id: SessionIdHandle,
-    current_config: Arc<arc_swap::ArcSwap<SalukiConfiguration>>,
+    current_config: LiveSource<SalukiConfiguration>,
 }
 
 impl RemoteCommandProviderImpl {
-    pub(crate) fn new(
-        session_id: SessionIdHandle, current_config: Arc<arc_swap::ArcSwap<SalukiConfiguration>>,
-    ) -> Self {
+    pub(crate) fn new(session_id: SessionIdHandle, current_config: LiveSource<SalukiConfiguration>) -> Self {
         Self {
             session_id,
             current_config,
@@ -272,7 +270,7 @@ impl RemoteCommandProvider for RemoteCommandProviderImpl {
             )
         };
 
-        let current_config = Arc::clone(&self.current_config);
+        let current_config = self.current_config.clone();
         tokio::spawn(async move {
             let exit_code = match command {
                 Ok(command) => {
@@ -284,7 +282,7 @@ impl RemoteCommandProvider for RemoteCommandProviderImpl {
                     ));
                     let mut output = RemoteCommandOutput::new(output_sender);
                     let result =
-                        run_dogstatsd_command(&current_config.load_full(), command, &mut output, &cancellation).await;
+                        run_dogstatsd_command(&current_config.load(), command, &mut output, &cancellation).await;
                     drop(output);
                     let _ = output_task.await;
 
@@ -322,7 +320,6 @@ async fn send_error(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
     use std::time::Duration;
 
     use datadog_agent_commons::ipc::session::SessionId;
@@ -369,9 +366,7 @@ mod tests {
         let session_id = datadog_agent_commons::ipc::session::SessionIdHandle::empty();
         let service = RemoteCommandProviderImpl::new(
             session_id.clone(),
-            Arc::new(arc_swap::ArcSwap::from_pointee(
-                agent_data_plane_config::SalukiConfiguration::default(),
-            )),
+            saluki_common::sync::live::channel(agent_data_plane_config::SalukiConfiguration::default()).1,
         );
         let mut client =
             RemoteCommandProviderClient::new(tonic::service::Routes::new(RemoteCommandProviderServer::new(service)));
@@ -544,9 +539,7 @@ mod tests {
         ));
         let service = RemoteCommandProviderImpl::new(
             session_id,
-            Arc::new(arc_swap::ArcSwap::from_pointee(
-                agent_data_plane_config::SalukiConfiguration::default(),
-            )),
+            saluki_common::sync::live::channel(agent_data_plane_config::SalukiConfiguration::default()).1,
         );
 
         let response = service
