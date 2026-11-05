@@ -4120,7 +4120,6 @@ dependencies = [
  "hyper",
  "hyper-util",
  "lading-payload",
- "otlp-protos",
  "prost",
  "rand 0.10.3",
  "saluki-common",
@@ -4445,6 +4444,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f59006ce1e204c30956638535b74d317bca99477b9356dfaec54c37f6f600ab"
 dependencies = [
  "num-traits",
+]
+
+[[package]]
+name = "otlp-fixtures"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "otlp-protos",
+ "prost",
 ]
 
 [[package]]

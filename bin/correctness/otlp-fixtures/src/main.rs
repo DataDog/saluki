@@ -1,17 +1,22 @@
 //! Builds the `static_base64` OTLP logs corpora used by the `otlp-logs-*` correctness cases.
 //!
-//! Each corpus is built here from readable Rust, and the test checks that the encoded request matches the
-//! `static_base64` payload in the case's `millstone.yaml`. To regenerate the payloads after changing a fixture, run:
+//! Each corpus is built here from readable Rust and written into the `static_base64` payload of the case's
+//! `millstone.yaml`. After changing a fixture, regenerate the payloads with:
 //!
 //! ```text
-//! UPDATE_OTLP_FIXTURES=1 cargo nextest run -p millstone otlp_logs_fixtures_match_their_sources
+//! make generate-correctness-fixtures
 //! ```
+//!
+//! CI runs the same target and fails if it changes any committed payload.
 //!
 //! Every log record carries a `fixture_id` attribute, which the cases use as their identity field, so that records
 //! still pair when a gap changes their message or timestamp. Comments name the gaps from the OTLP logs parity plan
 //! (DataDog/saluki#2966) that each record exercises.
 
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    process::ExitCode,
+};
 
 use base64::Engine as _;
 use otlp_protos::opentelemetry::proto::{
@@ -260,8 +265,8 @@ fn case_millstone_config(case: &str) -> PathBuf {
         .join("millstone.yaml")
 }
 
-/// Checks that the case's `static_base64` payload matches `payload`, or rewrites it when `UPDATE_OTLP_FIXTURES` is set.
-fn check_fixture(case: &str, payload: &[u8]) -> Result<(), String> {
+/// Writes `payload` into the case's `static_base64` payload, returning whether the file changed.
+fn write_fixture(case: &str, payload: &[u8]) -> Result<bool, String> {
     let path = case_millstone_config(case);
     let config = std::fs::read_to_string(&path).map_err(|e| format!("{}: {}", path.display(), e))?;
     let expected = base64::engine::general_purpose::STANDARD.encode(payload);
@@ -277,29 +282,33 @@ fn check_fixture(case: &str, payload: &[u8]) -> Result<(), String> {
             .ok_or_else(|| format!("{}: unterminated `static_base64` payload", path.display()))?;
 
     if config[start..end] == expected {
-        return Ok(());
+        return Ok(false);
     }
-    if std::env::var_os("UPDATE_OTLP_FIXTURES").is_some() {
-        let updated = format!("{}{}{}", &config[..start], expected, &config[end..]);
-        std::fs::write(&path, updated).map_err(|e| format!("{}: {}", path.display(), e))?;
-        return Ok(());
-    }
-    Err(format!(
-        "{}: `static_base64` doesn't match the fixture; rerun with UPDATE_OTLP_FIXTURES=1 to regenerate it",
-        path.display()
-    ))
+    let updated = format!("{}{}{}", &config[..start], expected, &config[end..]);
+    std::fs::write(&path, updated).map_err(|e| format!("{}: {}", path.display(), e))?;
+    Ok(true)
 }
 
 /// Builds the encoded request for a fixture.
 type FixtureBuilder = fn() -> Vec<u8>;
 
-#[test]
-fn otlp_logs_fixtures_match_their_sources() {
+fn main() -> ExitCode {
     let fixtures: &[(&str, FixtureBuilder)] = &[("otlp-logs-attributes", attributes_fixture)];
 
-    let errors = fixtures
-        .iter()
-        .filter_map(|(case, build)| check_fixture(case, &build()).err())
-        .collect::<Vec<_>>();
-    assert!(errors.is_empty(), "{}", errors.join("\n"));
+    let mut failed = false;
+    for (case, build) in fixtures {
+        match write_fixture(case, &build()) {
+            Ok(true) => println!("updated {}", case),
+            Ok(false) => {}
+            Err(e) => {
+                eprintln!("{}", e);
+                failed = true;
+            }
+        }
+    }
+    if failed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
 }

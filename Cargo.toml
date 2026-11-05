@@ -4,6 +4,7 @@ members = [
   "bin/correctness/airlock",
   "bin/correctness/datadog-intake",
   "bin/correctness/millstone",
+  "bin/correctness/otlp-fixtures",
   "bin/correctness/panoramic",
   "bin/correctness/stele",
   "lib/agent-data-plane-config",
