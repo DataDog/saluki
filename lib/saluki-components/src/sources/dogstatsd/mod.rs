@@ -2350,13 +2350,15 @@ const fn get_adjusted_buffer_size(buffer_size: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::sync::Arc;
     use std::{
         collections::HashMap,
         net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
         path::PathBuf,
         sync::{
             atomic::{AtomicUsize, Ordering},
-            Arc, Mutex as StdMutex,
+            Mutex as StdMutex,
         },
         time::{Duration, Instant},
     };
@@ -2400,12 +2402,11 @@ mod tests {
         build_io_buffer_pool, capture_named_pipe_frame, default_decoder_worker_count, filters::EnablePayloadsFilter,
         handle_frame, handle_metric_packet, metrics::build_metrics, origin_detection_error_for_telemetry,
         resolve_process_origin, resolve_process_origin_if_needed, BufferDecodeContext, BufferDecodeMode,
-        ContextResolvers, DatagramSocketContext, DecodeOutcome, DecoderContext, DogStatsDConfiguration,
-        DogStatsDDecoder, OriginEnrichmentConfiguration, ProcessOrigin, ReceivedBuffer, TrafficCapture,
-        TrafficCaptureReader,
+        ContextResolvers, DecodeOutcome, DecoderContext, DogStatsDConfiguration, DogStatsDDecoder,
+        OriginEnrichmentConfiguration, ProcessOrigin, ReceivedBuffer, TrafficCapture, TrafficCaptureReader,
     };
     #[cfg(unix)]
-    use super::{receive_connected_stream, receive_connectionless_stream, received_payload};
+    use super::{receive_connected_stream, receive_connectionless_stream, received_payload, DatagramSocketContext};
     #[cfg(target_os = "linux")]
     use super::{DogStatsDOriginTagResolver, Listener};
     use crate::sources::dogstatsd::PacketForwarder;
@@ -2417,6 +2418,7 @@ mod tests {
         ComponentContext::test_source("dogstatsd_test")
     }
 
+    #[cfg(target_os = "linux")]
     fn test_datagram_socket_context(listen_addr: ListenAddress) -> Arc<DatagramSocketContext> {
         Arc::new(DatagramSocketContext {
             metrics: build_metrics(&listen_addr, &test_component_context(), false),
