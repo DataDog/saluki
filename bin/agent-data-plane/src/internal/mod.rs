@@ -2,7 +2,7 @@ mod control_plane;
 pub use self::control_plane::create_control_plane_supervisor;
 
 mod control_surfaces;
-pub use self::control_surfaces::{DogStatsDControlSurface, TopologyControlSurfaces};
+pub use self::control_surfaces::DogStatsDAPIWorker;
 
 pub mod logging;
 
