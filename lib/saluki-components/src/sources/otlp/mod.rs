@@ -590,7 +590,7 @@ mod tests {
     }
 
     /// Returns source settings carrying the configuration defaults.
-    fn source_configuration() -> OtlpConfiguration {
+    pub(super) fn source_configuration() -> OtlpConfiguration {
         OtlpConfiguration {
             default_hostname: MetaString::default(),
             receiver: receiver(),

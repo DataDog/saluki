@@ -23,7 +23,6 @@ use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use agent_data_plane_config::domains;
 use chrono::DateTime;
 use http_body_util::BodyExt as _;
 use otlp_protos::opentelemetry::proto::collector::logs::v1::logs_service_client::LogsServiceClient;
@@ -36,7 +35,7 @@ use stele::Log;
 use tonic::transport::Channel;
 
 use crate::encoders::{BufferedIncrementalConfiguration, DatadogLogsConfiguration};
-use crate::sources::OtlpConfiguration;
+use crate::sources::otlp::tests::source_configuration;
 
 mod manifest;
 use self::manifest::{DiffKind, KnownGap, KNOWN_GAPS};
@@ -79,15 +78,14 @@ async fn start_source() -> (
     Output<EventsBuffer>,
     LogsServiceClient<Channel>,
 ) {
-    let mut otlp = domains::otlp::Domain::default();
-    otlp.receiver.logs_enabled = true;
-    otlp.receiver.grpc.endpoint = "127.0.0.1:0".to_string();
-    otlp.receiver.grpc.max_recv_msg_size_mib = 4;
+    let mut config = source_configuration();
+    config.receiver.logs_enabled = true;
+    config.receiver.grpc.endpoint = "127.0.0.1:0".to_string();
+    config.receiver.grpc.max_recv_msg_size_mib = 4;
     // The configuration translator resolves a zero keepalive to these defaults.
-    otlp.receiver.grpc.keepalive.time = Duration::from_secs(2 * 60 * 60);
-    otlp.receiver.grpc.keepalive.timeout = Duration::from_secs(20);
-    otlp.receiver.http.endpoint = "127.0.0.1:0".to_string();
-    let config = OtlpConfiguration::from_configuration(&otlp, saluki_env::workload::providers::NoopWorkloadProvider);
+    config.receiver.grpc.keepalive.time = Duration::from_secs(2 * 60 * 60);
+    config.receiver.grpc.keepalive.timeout = Duration::from_secs(20);
+    config.receiver.http.endpoint = "127.0.0.1:0".to_string();
 
     let (control, mut outputs) = TestComponentDriver::options()
         .with_interconnect_capacity(NonZeroUsize::MIN)
@@ -141,8 +139,9 @@ async fn current_output(
         vector.name
     );
 
-    // The topology connects the encoder like this, with the same compression settings by default.
-    let encoder = BufferedIncrementalConfiguration::from_encoder_builder(DatadogLogsConfiguration::new("zstd", 3));
+    // The topology connects the encoder like this, with the same compression settings and flush timeout by default.
+    let encoder =
+        BufferedIncrementalConfiguration::new(DatadogLogsConfiguration::new("zstd", 3), Duration::from_secs(2));
     let encode_start_ms = unix_millis();
     let (encoder, mut payloads) = TestComponentDriver::encoder(encoder)
         .await
