@@ -4,4 +4,5 @@ fixes:
     Fix the aggregator flush telemetry that Agent Data Plane reports for events and service checks counting items that
     were never sent. When a payload exceeded the size limit and could not be split, it was discarded, but the events or
     service checks it held were still counted as flushed. Only the events and service checks in payloads that were
-    actually sent are now counted.
+    actually sent are now counted. The events, service checks, and logs in a discarded payload are now reported in
+    ``component_events_dropped_total`` with ``drop_reason:encoder_failure``, so the loss is visible.

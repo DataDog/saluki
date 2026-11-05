@@ -340,10 +340,21 @@ mod tests {
         assert_eq!(recorder.gauge("encoder_last_flush_events"), Some(3.0));
     }
 
+    // The labels on the encoder's "dropped because the payload couldn't be built" counter.
+    fn encoder_dropped_events_labels(component_id: &'static str) -> [(&'static str, &'static str); 4] {
+        [
+            ("component_id", component_id),
+            ("component_type", "encoder"),
+            ("intentional", "false"),
+            ("drop_reason", "encoder_failure"),
+        ]
+    }
+
     #[tokio::test]
     async fn flush_does_not_record_events_in_discarded_payloads() {
         // A compressed payload that exceeds the size limit and can't be split is discarded and logged, but the flush
-        // itself succeeds. The events it held were never flushed, so they must not be counted as flushed.
+        // itself succeeds. The events it held were never flushed, so they must not be counted as flushed. They were
+        // lost, though, so they are counted as dropped.
         let recorder = TestRecorder::default();
         let _recorder_guard = metrics::set_default_local_recorder(&recorder);
         let context = BuildContext::test_encoder("flush_telemetry_discarded");
@@ -357,6 +368,35 @@ mod tests {
         assert_eq!(dispatched_payloads(&mut rx), 0);
         assert_eq!(recorder.counter("encoder_flushed_events_total"), Some(0));
         assert_eq!(recorder.gauge("encoder_last_flush_events"), Some(0.0));
+        assert_eq!(
+            recorder.counter((
+                "component_events_dropped_total",
+                &encoder_dropped_events_labels("flush_telemetry_discarded")[..]
+            )),
+            Some(1)
+        );
+    }
+
+    #[tokio::test]
+    async fn flush_does_not_report_dropped_events_when_everything_is_dispatched() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let context = BuildContext::test_encoder("flush_no_drops");
+        let (dispatcher, mut rx) = dispatcher_with_receiver(&context);
+        let telemetry = ComponentTelemetry::from_builder(&MetricsBuilder::default());
+        let mut encoder = events_encoder(context, PAYLOAD_SIZE_LIMIT).await;
+
+        accept_events(&mut encoder, 3).await;
+        flush_encoder(&mut encoder, &dispatcher, &telemetry).await.unwrap();
+
+        assert_eq!(dispatched_payloads(&mut rx), 1);
+        assert_eq!(
+            recorder.counter((
+                "component_events_dropped_total",
+                &encoder_dropped_events_labels("flush_no_drops")[..]
+            )),
+            Some(0)
+        );
     }
 
     #[tokio::test]

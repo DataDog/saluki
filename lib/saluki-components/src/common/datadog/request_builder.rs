@@ -245,6 +245,11 @@ where
         })
     }
 
+    /// Returns the number of inputs encoded into the current payload that haven't been flushed yet.
+    pub fn pending_inputs(&self) -> usize {
+        self.encoded_inputs.len()
+    }
+
     /// Sets the maximum number of inputs that can be encoded in a single payload.
     pub fn with_max_inputs_per_payload(&mut self, max_inputs_per_payload: usize) -> &mut Self {
         self.max_inputs_per_payload = max_inputs_per_payload;
