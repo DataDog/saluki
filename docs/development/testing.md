@@ -159,14 +159,10 @@ Test case configs live in `test/correctness/cases/` (for example, `test/correctn
 
 ### Program flow
 
-**panoramic** is the entry-point for running a test. When given a correctness test config, it orchestrates the
-containers using the `airlock` library (which talks to the Docker Engine API) and asserts the correctness of the output.
-It:
-- reads the test configuration files
-- starts two sets of containers
-  - `millstone` -> ADP -> `datadog-intake`
-  - `millstone` -> Datadog Agent -> `datadog-intake`
-- takes the output from `datadog-intake` and asserts that ADP and Datadog Agent behavior were equivalent
+Panoramic loads each case's participants, connections and procedure, then runs the participants as Linux containers
+or Kubernetes pods. One load participant sends the same workload to the Agent and ADP, each connected to its own
+intake. The `compare` step compares the subject and baseline intakes using the case's telemetry kind and analysis
+options.
 
 ### Running
 

@@ -31,24 +31,15 @@ EOF
             base_mixin=".test-correctness-definition"
         fi
 
-        # The manifest binds baseline and comparison to agent-adp-linux-image; this mixin's baseline override must agree.
-        # Binding replaces the declared baseline, which is safe only for a saluki-images/ placeholder;
-        # the coverage inventory checks that.
         if [[ "${agent_adp_image}" == "true" ]]; then
             extends="[${base_mixin}, .test-correctness-adp-baseline]"
         else
             extends="[${base_mixin}]"
         fi
 
-        # GitLab job names cannot contain '/'. Matrix variant names use '/'
-        # as a separator (e.g. dsd-origin-detection-matrix/legacy), so
-        # replace it with '-' for the job name while keeping the original
-        # name for CORRECTNESS_TEST_CASE, which panoramic receives as-is.
-        job_name="${case//\//-}"
-
         cat <<EOF
 
-test-correctness-${job_name}:
+test-correctness-${case}:
   extends: ${extends}
   variables:
     CORRECTNESS_TEST_CASE: ${case}

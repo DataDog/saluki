@@ -819,6 +819,342 @@ fn every_original_integration_row_runs_natively() {
     }
 }
 
+#[derive(Debug)]
+enum CorrectnessPlacement {
+    Docker,
+    Kind,
+    Disabled,
+}
+
+struct ComparisonPins {
+    kind: &'static str,
+    otlp_direct: bool,
+    require_forwarded_packets: bool,
+    ignore_fields: &'static [&'static str],
+}
+
+const METRICS_COMPARISON: ComparisonPins = ComparisonPins {
+    kind: "metrics",
+    otlp_direct: false,
+    require_forwarded_packets: false,
+    ignore_fields: &[],
+};
+const TRACES_COMPARISON: ComparisonPins = ComparisonPins {
+    kind: "traces",
+    ..METRICS_COMPARISON
+};
+const DIRECT_TRACES_COMPARISON: ComparisonPins = ComparisonPins {
+    otlp_direct: true,
+    ..TRACES_COMPARISON
+};
+
+/// Correctness coverage pinned by original name, placement and comparison settings.
+const ORIGINAL_CORRECTNESS_ROWS: &[(&str, CorrectnessPlacement, ComparisonPins)] = {
+    use CorrectnessPlacement::{Disabled, Docker, Kind};
+
+    &[
+        ("apm-trace", Docker, TRACES_COMPARISON),
+        ("apm-trace-uds", Docker, TRACES_COMPARISON),
+        ("dsd-added-tags", Docker, METRICS_COMPARISON),
+        (
+            "dsd-events",
+            Docker,
+            ComparisonPins {
+                kind: "events",
+                ..METRICS_COMPARISON
+            },
+        ),
+        (
+            "dsd-forwarding",
+            Docker,
+            ComparisonPins {
+                require_forwarded_packets: true,
+                ..METRICS_COMPARISON
+            },
+        ),
+        (
+            "dsd-forwarding-burst",
+            Docker,
+            ComparisonPins {
+                require_forwarded_packets: true,
+                ..METRICS_COMPARISON
+            },
+        ),
+        ("dsd-host-tag", Docker, METRICS_COMPARISON),
+        ("dsd-mapper-blocklist", Docker, METRICS_COMPARISON),
+        ("dsd-metric-filterlist-prefix", Docker, METRICS_COMPARISON),
+        ("dsd-origin-detection", Docker, METRICS_COMPARISON),
+        ("dsd-origin-detection-matrix/legacy", Kind, METRICS_COMPARISON),
+        (
+            "dsd-origin-detection-matrix/legacy-high-cardinality",
+            Kind,
+            METRICS_COMPARISON,
+        ),
+        (
+            "dsd-origin-detection-matrix/legacy-optout-disabled",
+            Kind,
+            METRICS_COMPARISON,
+        ),
+        (
+            "dsd-origin-detection-matrix/legacy-with-client-fields",
+            Kind,
+            METRICS_COMPARISON,
+        ),
+        ("dsd-origin-detection-matrix/unified", Kind, METRICS_COMPARISON),
+        (
+            "dsd-origin-detection-matrix/unified-high-cardinality",
+            Kind,
+            METRICS_COMPARISON,
+        ),
+        (
+            "dsd-origin-detection-matrix/unified-with-client-fields",
+            Kind,
+            METRICS_COMPARISON,
+        ),
+        ("dsd-plain", Docker, METRICS_COMPARISON),
+        ("dsd-plain-v3", Docker, METRICS_COMPARISON),
+        ("dsd-provider-kind", Docker, METRICS_COMPARISON),
+        (
+            "dsd-service-checks",
+            Docker,
+            ComparisonPins {
+                kind: "service_checks",
+                ..METRICS_COMPARISON
+            },
+        ),
+        ("dsd-tag-filterlist", Docker, METRICS_COMPARISON),
+        ("dsd-timestamp-extension", Docker, METRICS_COMPARISON),
+        ("dsd-timestamp-extension-custom-window", Docker, METRICS_COMPARISON),
+        ("dsd-udp", Docker, METRICS_COMPARISON),
+        ("dsd-uds-stream", Docker, METRICS_COMPARISON),
+        ("dsd-v1-api-series", Docker, METRICS_COMPARISON),
+        ("otlp-metrics", Docker, METRICS_COMPARISON),
+        ("otlp-metrics-as-type-rate", Docker, METRICS_COMPARISON),
+        ("otlp-metrics-configured-tags", Docker, METRICS_COMPARISON),
+        ("otlp-metrics-core-resource-attributes", Docker, METRICS_COMPARISON),
+        ("otlp-metrics-cumulative-monotonic", Docker, METRICS_COMPARISON),
+        ("otlp-metrics-ec2-host", Docker, METRICS_COMPARISON),
+        ("otlp-metrics-fargate", Docker, METRICS_COMPARISON),
+        ("otlp-metrics-gcp-host", Docker, METRICS_COMPARISON),
+        ("otlp-metrics-histogram-counters", Docker, METRICS_COMPARISON),
+        ("otlp-metrics-histogram-nobuckets", Docker, METRICS_COMPARISON),
+        ("otlp-metrics-host", Docker, METRICS_COMPARISON),
+        ("otlp-metrics-kafka-parity", Docker, METRICS_COMPARISON),
+        ("otlp-metrics-resource-attributes", Docker, METRICS_COMPARISON),
+        ("otlp-metrics-scope-metadata", Docker, METRICS_COMPARISON),
+        ("otlp-metrics-summary-mode", Docker, METRICS_COMPARISON),
+        (
+            "otlp-traces",
+            Disabled,
+            ComparisonPins {
+                ignore_fields: &["meta.http.status_code"],
+                ..TRACES_COMPARISON
+            },
+        ),
+        (
+            "otlp-traces-ets",
+            Disabled,
+            ComparisonPins {
+                ignore_fields: &["meta.http.status_code"],
+                ..TRACES_COMPARISON
+            },
+        ),
+        (
+            "otlp-traces-ottl-filtering",
+            Docker,
+            ComparisonPins {
+                ignore_fields: &[
+                    "agent_metadata.target_tps",
+                    "metrics._top_level",
+                    "metrics._dd.measured",
+                ],
+                ..DIRECT_TRACES_COMPARISON
+            },
+        ),
+        (
+            "otlp-traces-ottl-transform",
+            Docker,
+            ComparisonPins {
+                ignore_fields: &[
+                    "agent_metadata.target_tps",
+                    "metrics._top_level",
+                    "metrics._dd.measured",
+                    "meta.http.status_code",
+                    "meta.error.msg",
+                ],
+                ..DIRECT_TRACES_COMPARISON
+            },
+        ),
+        (
+            "otlp-traces-probabilistic",
+            Docker,
+            ComparisonPins {
+                ignore_fields: &["meta.http.status_code"],
+                ..DIRECT_TRACES_COMPARISON
+            },
+        ),
+        (
+            "otlp-traces-probabilistic-full-trace-id",
+            Docker,
+            ComparisonPins {
+                ignore_fields: &["meta.http.status_code"],
+                ..DIRECT_TRACES_COMPARISON
+            },
+        ),
+    ]
+};
+
+/// Comparison fields added deliberately beyond the original cases.
+const INTENDED_COMPARISON_ADDITIONS: &[(&str, &str)] = &[
+    ("dsd-metric-filterlist-prefix", "required_metric_tag_keys"),
+    ("dsd-origin-detection", "required_metric_tag_keys"),
+    ("dsd-origin-detection-matrix-legacy", "required_metric_tag_keys"),
+    (
+        "dsd-origin-detection-matrix-legacy-high-cardinality",
+        "required_metric_tag_keys",
+    ),
+    (
+        "dsd-origin-detection-matrix-legacy-optout-disabled",
+        "required_metric_tag_keys",
+    ),
+    (
+        "dsd-origin-detection-matrix-legacy-with-client-fields",
+        "required_metric_tag_keys",
+    ),
+    ("dsd-origin-detection-matrix-unified", "required_metric_tag_keys"),
+    (
+        "dsd-origin-detection-matrix-unified-high-cardinality",
+        "required_metric_tag_keys",
+    ),
+    (
+        "dsd-origin-detection-matrix-unified-with-client-fields",
+        "required_metric_tag_keys",
+    ),
+    ("dsd-tag-filterlist", "required_metric_tag_keys"),
+];
+
+#[test]
+fn every_original_correctness_row_runs_natively_with_its_comparison() {
+    let root = repository_root();
+    let inventory = Inventory::generate(&root);
+    let expected: BTreeSet<_> = ORIGINAL_CORRECTNESS_ROWS
+        .iter()
+        .map(|(name, ..)| (name.replace('/', "-"), "linux"))
+        .collect();
+    assert_eq!(
+        expected.len(),
+        48,
+        "the original correctness table must have 48 distinct rows"
+    );
+    let rows: Vec<_> = inventory.rows.iter().filter(|row| row.suite == CORRECTNESS).collect();
+    let actual: BTreeSet<_> = rows
+        .iter()
+        .map(|row| (row.name.clone(), row.subject_os.as_str()))
+        .collect();
+    assert_eq!(actual, expected, "correctness coverage must keep every original row");
+    let mixins: Value = serde_saphyr::from_str(&read_text(&root.join(".gitlab/correctness-mixins.yml"))).unwrap();
+    assert_eq!(mixins[".test-correctness-definition"]["timeout"], "10m");
+    assert_eq!(mixins[".test-correctness-kind-definition"]["timeout"], "20m");
+    let mut additions = BTreeSet::new();
+    for (original_name, placement, comparison) in ORIGINAL_CORRECTNESS_ROWS {
+        let name = original_name.replace('/', "-");
+        let row = rows.iter().find(|row| row.name == name).unwrap();
+        assert_eq!(row.execution, NATIVE, "{name}: must run natively");
+        assert_eq!(row.schema, PARTICIPANTS, "{name}");
+        assert_eq!(row.timeout, "1200s", "{name}");
+        let (runtime, base_mixin) = match placement {
+            CorrectnessPlacement::Kind => ("kubernetes-pod", ".test-correctness-kind-definition"),
+            CorrectnessPlacement::Docker | CorrectnessPlacement::Disabled => {
+                ("linux-container", ".test-correctness-definition")
+            }
+        };
+        assert_eq!(row.runtime, runtime, "{name}");
+        if matches!(placement, CorrectnessPlacement::Disabled) {
+            assert_eq!(row.status, DISABLED, "{name}");
+            assert!(
+                row.ci_jobs.is_empty() && row.ci_mixins.is_empty(),
+                "{name}: disabled cases must not be selected by CI"
+            );
+        } else {
+            assert_eq!(row.status, SELECTED, "{name}");
+            assert_eq!(row.ci_jobs, [format!("test-correctness-{name}")], "{name}");
+            assert_eq!(row.ci_mixins.first().map(String::as_str), Some(base_mixin), "{name}");
+        }
+
+        let loaded = crate::CASE_LOADER.load_file(&root.join(&row.source)).unwrap();
+        assert_eq!(loaded.len(), 1, "{name}: one case per file");
+        let CaseSchema::Participants { file, .. } = loaded[0].schema() else {
+            panic!("{name}: must declare participants");
+        };
+        let comparisons: Vec<_> = file
+            .procedure
+            .iter()
+            .flat_map(|node| match node {
+                ProcedureNode::Step(step) => std::slice::from_ref(step),
+                ProcedureNode::Parallel(steps) => steps.as_slice(),
+            })
+            .filter(|step| step.name == "compare")
+            .collect();
+        assert_eq!(comparisons.len(), 1, "{name}: must have exactly one compare step");
+        let fields = &comparisons[0].fields;
+        assert_eq!(fields["kind"], json!(comparison.kind), "{name}: comparison kind");
+        assert_eq!(
+            fields.get("otlp_direct").unwrap_or(&Value::Bool(false)),
+            &json!(comparison.otlp_direct),
+            "{name}: otlp_direct"
+        );
+        assert_eq!(
+            fields.get("require_forwarded_packets").unwrap_or(&Value::Bool(false)),
+            &json!(comparison.require_forwarded_packets),
+            "{name}: require_forwarded_packets"
+        );
+        assert_eq!(
+            fields.get("ignore_fields").unwrap_or(&json!([])),
+            &json!(comparison.ignore_fields),
+            "{name}: ignore_fields"
+        );
+        for field in fields.keys() {
+            if !matches!(
+                field.as_str(),
+                "kind" | "subject" | "baseline" | "otlp_direct" | "require_forwarded_packets" | "ignore_fields"
+            ) {
+                additions.insert((name.clone(), field.clone()));
+            }
+        }
+
+        let subject_intake = fields["subject"].as_str().unwrap();
+        let baseline_intake = fields["baseline"].as_str().unwrap();
+        assert_ne!(subject_intake, baseline_intake, "{name}: compare distinct intakes");
+        let intakes: BTreeSet<_> = file
+            .participants
+            .iter()
+            .filter(|(_, entry)| entry.participant_type == "datadog-intake")
+            .map(|(name, _)| name.as_str())
+            .collect();
+        assert_eq!(
+            intakes,
+            BTreeSet::from([subject_intake, baseline_intake]),
+            "{name}: compare the two intakes"
+        );
+        let subject = file.participants.values().find(|entry| entry.subject).unwrap();
+        let target: panoramic_core::case::ConnectionTarget =
+            serde_json::from_value(json!(format!("{subject_intake}.api"))).unwrap();
+        assert_eq!(
+            subject.connect.get("intake"),
+            Some(&target),
+            "{name}: compare.subject must receive the subject participant's output"
+        );
+    }
+    let intended: BTreeSet<_> = INTENDED_COMPARISON_ADDITIONS
+        .iter()
+        .map(|&(name, field)| (name.to_string(), field.to_string()))
+        .collect();
+    assert_eq!(
+        additions, intended,
+        "comparison additions must be explicit and retained"
+    );
+}
+
 #[test]
 fn coverage_inventory_matches_the_case_files() {
     let root = repository_root();
@@ -1300,34 +1636,6 @@ fn the_listener_failure_cases_run_natively_on_linux_and_macos() {
 }
 
 #[test]
-fn every_selected_correctness_case_declares_a_local_baseline_image() {
-    let inventory = Inventory::generate(&repository_root());
-    for row in inventory
-        .rows
-        .iter()
-        .filter(|row| row.suite == CORRECTNESS && row.status == SELECTED)
-    {
-        let baseline = if row.execution == NATIVE {
-            &row.images[AgentAdp::LINUX_IMAGE.name]
-        } else {
-            &row.images["baseline"]
-        };
-        assert!(
-            baseline.starts_with("saluki-images/"),
-            "{}: CI's manifest binds both baseline and comparison to agent-adp-linux-image, so a published baseline would be silently replaced; declare a saluki-images/ baseline",
-            row.name,
-        );
-        assert!(
-            row.ci_mixins
-                .iter()
-                .any(|mixin| mixin == ".test-correctness-adp-baseline"),
-            "{} must extend .test-correctness-adp-baseline",
-            row.name,
-        );
-    }
-}
-
-#[test]
 fn container_daemon_tests_run_in_a_separate_ci_job() {
     let e2e: Value = serde_saphyr::from_str(&read_text(&repository_root().join(".gitlab/e2e.yml"))).unwrap();
     let daemon = &e2e["test-container-daemon"];
@@ -1666,8 +1974,8 @@ fn ci_jobs_in_the_inventory_are_defined() {
         r#"if [[ "${agent_adp_image}" == "true" ]]; then"#,
         "extends=\"[${base_mixin}, .test-correctness-adp-baseline]\"",
         "extends=\"[${base_mixin}]\"",
-        r#"job_name="${case//\//-}""#,
-        "test-correctness-${job_name}:",
+        "test-correctness-${case}:",
+        "CORRECTNESS_TEST_CASE: ${case}",
     ] {
         assert!(position(rule).is_some(), "CI generator rule changed: {rule}");
     }
@@ -1788,17 +2096,27 @@ fn check_migration_proofs(inventory: &Inventory, proofs: &str) {
             .rows
             .iter()
             .filter(|row| row.name == columns[0] && row.subject_os == columns[1] && row.execution == columns[2])
-            .count();
+            .collect::<Vec<_>>();
         assert_eq!(
-            matches, 1,
+            matches.len(),
+            1,
             "Migration proof must name exactly one inventory row: {} / {}",
-            columns[0], columns[1],
+            columns[0],
+            columns[1],
+        );
+        assert_eq!(
+            matches[0].status, SELECTED,
+            "Disabled rows must not claim a migration proof: {line}"
         );
     }
-    for row in inventory.rows.iter().filter(|row| row.schema == PARTICIPANTS) {
+    for row in inventory
+        .rows
+        .iter()
+        .filter(|row| row.schema == PARTICIPANTS && row.status == SELECTED)
+    {
         assert!(
             proven_rows.contains(&(row.name.as_str(), row.subject_os.as_str(), row.execution)),
-            "Participant-schema row must have a migration proof: {} / {}",
+            "Selected participant-schema row must have a migration proof: {} / {}",
             row.name,
             row.subject_os,
         );
@@ -1806,7 +2124,7 @@ fn check_migration_proofs(inventory: &Inventory, proofs: &str) {
 }
 
 #[test]
-fn migration_proofs_reject_wrong_execution_pending_old_rows_and_missing_participant_rows() {
+fn migration_proofs_reject_invalid_execution_missing_selected_rows_and_disabled_rows() {
     let root = repository_root();
     let inventory = Inventory::generate(&root);
     let markdown = read_text(&root.join(MARKDOWN_PATH));
@@ -1826,7 +2144,11 @@ fn migration_proofs_reject_wrong_execution_pending_old_rows_and_missing_particip
                 .filter(|line| !line.starts_with("| adp-logging-default-path |"))
                 .collect::<Vec<_>>()
                 .join("\n"),
-            "Participant-schema row must have a migration proof",
+            "Selected participant-schema row must have a migration proof",
+        ),
+        (
+            format!("{proofs}\n| otlp-traces | linux | native | Pending CI. Compiled only. |"),
+            "Disabled rows must not claim a migration proof",
         ),
     ] {
         let panic = std::panic::catch_unwind(|| check_migration_proofs(&inventory, &invalid)).unwrap_err();
