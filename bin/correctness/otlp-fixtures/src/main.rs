@@ -1,6 +1,6 @@
 //! Builds the `static_base64` OTLP logs corpora used by the `otlp-logs-*` correctness cases.
 //!
-//! Each corpus is built here from readable Rust and written into the `static_base64` payload of the case's
+//! Each corpus is built here and written into the `static_base64` payload of the case's
 //! `millstone.yaml`. After changing a fixture, regenerate the payloads with:
 //!
 //! ```text
