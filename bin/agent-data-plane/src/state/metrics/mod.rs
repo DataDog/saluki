@@ -552,6 +552,10 @@ mod tests {
             Some("Count the number of dogstatsd contexts in the aggregator, by metric type")
         );
         assert_eq!(
+            find("aggregator.dogstatsd_contexts_by_origin"),
+            Some("Count the number of dogstatsd contexts in the aggregator, by origin")
+        );
+        assert_eq!(
             find("aggregator.flush"),
             Some("Number of metrics/service checks/events flushed")
         );
@@ -566,6 +570,18 @@ mod tests {
         assert_eq!(
             find("aggregator.processed"),
             Some("Amount of metrics/services_checks/events processed by the aggregator")
+        );
+        assert_eq!(
+            find("aggregator.number_of_flush"),
+            Some("Number of flushes done by the aggregator")
+        );
+        assert_eq!(
+            find("aggregator.flush_count"),
+            Some("Number of items handled by the last flush, by flush type")
+        );
+        assert_eq!(
+            find("aggregator.flush_time"),
+            Some("Duration in nanoseconds of the last flush, by flush type")
         );
         assert_eq!(find("filterlist.size"), Some("Metric filter list size"));
         assert_eq!(
@@ -603,11 +619,61 @@ mod tests {
         );
         assert_eq!(find("transactions.retries"), Some("Transaction retry count"));
         assert_eq!(find("transactions.requeued"), Some("Transaction requeue count"));
-        assert_eq!(find("transactions.retry_queue_size"), Some("Retry queue size"));
+        assert_eq!(
+            find("transactions.retry_queue_size"),
+            Some("Current transaction retry queue size")
+        );
         assert_eq!(
             find("dogstatsd.uds_origin_detection_error"),
             Some("Dogstatsd UDS origin detection error count")
         );
+    }
+
+    #[test]
+    fn rar_rules_preserve_dynamic_origin_tags_for_aggregator_contexts() {
+        let rules = get_datadog_agent_remappings();
+        let context = Context::from_static_parts(
+            "adp.aggregate_active_contexts_by_origin",
+            &[
+                "component_id:dsd_agg",
+                "component_type:transform",
+                "container_id:abc",
+                "kube_namespace:default",
+            ],
+        );
+        let remapped = rules
+            .iter()
+            .find_map(|rule| rule.try_match_no_context(&context))
+            .expect("origin context gauge should have a remapping");
+
+        assert_eq!(remapped.name, "aggregator.dogstatsd_contexts_by_origin");
+        let tags: Vec<_> = remapped.tags.iter().map(|tag| tag.as_ref()).collect();
+        assert_eq!(tags.len(), 2);
+        assert!(tags.contains(&"container_id:abc"));
+        assert!(tags.contains(&"kube_namespace:default"));
+        assert!(!tags.contains(&"component_type:transform"));
+    }
+
+    #[test]
+    fn rar_telemetry_renders_dynamic_origin_labels_safely() {
+        let context = Context::from_static_parts(
+            "adp.aggregate_active_contexts_by_origin",
+            &[
+                "component_id:dsd_agg",
+                "component_type:transform",
+                "kube_service:api,worker",
+                "U__team_2e_name:platform\"ops\nline",
+            ],
+        );
+        let output = render_with(
+            get_datadog_agent_remappings(),
+            vec![Event::Metric(Metric::gauge(context, 1.0))],
+        );
+
+        assert!(output.contains(
+            "aggregator__dogstatsd_contexts_by_origin{U__team_2e_name=\"platform\\\"ops\\nline\",kube_service=\"api,worker\"} 1"
+        ));
+        assert!(!output.contains("component_type"));
     }
 
     #[test]
@@ -649,6 +715,127 @@ mod tests {
             remapped_name("adp.component_events_received_total", "component_id:dsd_agg"),
             Some("aggregator.processed")
         );
+    }
+
+    #[test]
+    fn render_rar_telemetry_remaps_aggregator_processed_and_flush_count() {
+        // Events and service checks bypass the aggregator in ADP, so the events received by their encoders stand in
+        // for the Core Agent aggregator's processed counts.
+        let metrics = vec![
+            Event::Metric(Metric::counter(
+                Context::from_static_parts("adp.component_events_received_total", &["component_id:dsd_agg"]),
+                10.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.component_events_received_total",
+                    &["component_id:dd_events_encode"],
+                ),
+                3.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.component_events_received_total",
+                    &["component_id:dd_service_checks_encode"],
+                ),
+                4.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts("adp.aggregate_flushes_total", &["component_id:dsd_agg"]),
+                7.0,
+            )),
+        ];
+
+        let output = render_with(get_datadog_agent_remappings(), metrics);
+
+        assert!(output.contains("aggregator__processed{data_type=\"dogstatsd_metrics\"} 10"));
+        assert!(output.contains("aggregator__processed{data_type=\"events\"} 3"));
+        assert!(output.contains("aggregator__processed{data_type=\"service_checks\"} 4"));
+        assert!(output.contains("aggregator__number_of_flush 7"));
+        assert!(output.contains("# TYPE aggregator__number_of_flush counter"));
+    }
+
+    #[test]
+    fn render_rar_telemetry_remaps_aggregator_flush_telemetry() {
+        let metrics = vec![
+            Event::Metric(Metric::gauge(
+                Context::from_static_parts(
+                    "adp.aggregate_last_flush_count",
+                    &["component_id:dsd_agg", "data_type:series"],
+                ),
+                11.0,
+            )),
+            Event::Metric(Metric::gauge(
+                Context::from_static_parts(
+                    "adp.aggregate_last_flush_count",
+                    &["component_id:dsd_agg", "data_type:sketches"],
+                ),
+                12.0,
+            )),
+            Event::Metric(Metric::gauge(
+                Context::from_static_parts(
+                    "adp.aggregate_last_flush_duration_nanoseconds",
+                    &["component_id:dsd_agg"],
+                ),
+                1000.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts("adp.encoder_flushed_events_total", &["component_id:dd_events_encode"]),
+                5.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.encoder_flushed_events_total",
+                    &["component_id:dd_service_checks_encode"],
+                ),
+                6.0,
+            )),
+            Event::Metric(Metric::gauge(
+                Context::from_static_parts("adp.encoder_last_flush_events", &["component_id:dd_events_encode"]),
+                2.0,
+            )),
+            Event::Metric(Metric::gauge(
+                Context::from_static_parts(
+                    "adp.encoder_last_flush_events",
+                    &["component_id:dd_service_checks_encode"],
+                ),
+                3.0,
+            )),
+            Event::Metric(Metric::gauge(
+                Context::from_static_parts(
+                    "adp.encoder_last_flush_duration_nanoseconds",
+                    &["component_id:dd_events_encode"],
+                ),
+                2000.0,
+            )),
+            Event::Metric(Metric::gauge(
+                Context::from_static_parts(
+                    "adp.encoder_last_flush_duration_nanoseconds",
+                    &["component_id:dd_service_checks_encode"],
+                ),
+                3000.0,
+            )),
+            // The logs encoder shares the same encoder telemetry, but has no Core Agent aggregator counterpart.
+            Event::Metric(Metric::counter(
+                Context::from_static_parts("adp.encoder_flushed_events_total", &["component_id:dd_logs_encode"]),
+                99.0,
+            )),
+        ];
+
+        let output = render_with(get_datadog_agent_remappings(), metrics);
+
+        assert!(output.contains("aggregator__flush_count{flush_type=\"series\"} 11"));
+        assert!(output.contains("aggregator__flush_count{flush_type=\"sketches\"} 12"));
+        assert!(output.contains("aggregator__flush_count{flush_type=\"events\"} 2"));
+        assert!(output.contains("aggregator__flush_count{flush_type=\"service_checks\"} 3"));
+        assert!(output.contains("aggregator__flush_time{flush_type=\"main\"} 1000"));
+        assert!(output.contains("aggregator__flush_time{flush_type=\"event\"} 2000"));
+        assert!(output.contains("aggregator__flush_time{flush_type=\"service_check\"} 3000"));
+        assert!(output.contains("aggregator__flush{data_type=\"events\"} 5"));
+        assert!(output.contains("aggregator__flush{data_type=\"service_checks\"} 6"));
+        assert!(!output.contains(" 99"));
+        assert!(output.contains("# TYPE aggregator__flush_count gauge"));
+        assert!(output.contains("# TYPE aggregator__flush_time gauge"));
     }
 
     #[test]
