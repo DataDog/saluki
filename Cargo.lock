@@ -4453,6 +4453,7 @@ dependencies = [
  "base64 0.23.1",
  "otlp-protos",
  "prost",
+ "saluki-error",
 ]
 
 [[package]]

@@ -12,3 +12,4 @@ workspace = true
 base64 = { workspace = true }
 otlp-protos = { workspace = true }
 prost = { workspace = true }
+saluki-error = { workspace = true }

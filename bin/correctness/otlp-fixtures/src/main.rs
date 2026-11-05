@@ -26,6 +26,7 @@ use otlp_protos::opentelemetry::proto::{
     resource::v1::Resource,
 };
 use prost::Message as _;
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
 
 /// 2026-10-29T10:00:00Z, in nanoseconds.
 const BASE_TIME_NANOS: u64 = 1_793_268_000_000_000_000;
@@ -266,26 +267,26 @@ fn case_millstone_config(case: &str) -> PathBuf {
 }
 
 /// Writes `payload` into the case's `static_base64` payload, returning whether the file changed.
-fn write_fixture(case: &str, payload: &[u8]) -> Result<bool, String> {
+fn write_fixture(case: &str, payload: &[u8]) -> Result<bool, GenericError> {
     let path = case_millstone_config(case);
-    let config = std::fs::read_to_string(&path).map_err(|e| format!("{}: {}", path.display(), e))?;
+    let config = std::fs::read_to_string(&path).with_error_context(|| format!("reading {}", path.display()))?;
     let expected = base64::engine::general_purpose::STANDARD.encode(payload);
 
     let prefix = "static_base64: \"";
     let start = config
         .find(prefix)
         .map(|idx| idx + prefix.len())
-        .ok_or_else(|| format!("{}: no `static_base64` payload", path.display()))?;
+        .ok_or_else(|| generic_error!("{}: no `static_base64` payload", path.display()))?;
     let end = start
         + config[start..]
             .find('"')
-            .ok_or_else(|| format!("{}: unterminated `static_base64` payload", path.display()))?;
+            .ok_or_else(|| generic_error!("{}: unterminated `static_base64` payload", path.display()))?;
 
     if config[start..end] == expected {
         return Ok(false);
     }
     let updated = format!("{}{}{}", &config[..start], expected, &config[end..]);
-    std::fs::write(&path, updated).map_err(|e| format!("{}: {}", path.display(), e))?;
+    std::fs::write(&path, updated).with_error_context(|| format!("writing {}", path.display()))?;
     Ok(true)
 }
 
@@ -301,7 +302,7 @@ fn main() -> ExitCode {
             Ok(true) => println!("updated {}", case),
             Ok(false) => {}
             Err(e) => {
-                eprintln!("{}", e);
+                eprintln!("{:#}", e);
                 failed = true;
             }
         }
