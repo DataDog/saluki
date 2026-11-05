@@ -269,6 +269,88 @@ fn intake_cases_plan_with_subject_realizations_urls_and_artifact_roles_on_every_
 }
 
 #[test]
+fn environment_only_cases_plan_natively_with_their_exit_and_api_needs_on_every_os() {
+    use panoramic_core::endpoint::EndpointOperation;
+
+    let cases_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../test/integration/cases");
+    for (name, exits, requests, probes) in [
+        ("adp-cmd-port", 0, 0, 0),
+        ("adp-config-check-exit", 1, 0, 0),
+        ("adp-config-check-no-warn", 0, 0, 0),
+        ("adp-config-check-warn", 0, 0, 0),
+        ("adp-disabled-exit", 1, 0, 0),
+        ("adp-memory-mode-disabled", 0, 0, 0),
+        ("adp-memory-mode-permissive-exceeds-limit", 0, 0, 0),
+        ("adp-memory-mode-permissive-within-limit", 0, 0, 0),
+        ("adp-memory-mode-strict-exceeds-limit", 1, 0, 0),
+        ("adp-memory-mode-strict-within-limit", 0, 0, 0),
+        ("basic-startup", 0, 0, 0),
+        ("dogstatsd-autoscale-udp", 0, 0, 0),
+        ("dogstatsd-enabled", 0, 0, 0),
+        ("telemetry-endpoint", 0, 2, 1),
+        ("unprivileged-api-endpoints", 0, 3, 0),
+    ] {
+        for (os, kind) in [
+            (Os::Linux, RealizationKind::LinuxContainer),
+            (Os::MacOs, RealizationKind::HostProcessGroup),
+            (Os::Windows, RealizationKind::WindowsContainer),
+        ] {
+            let case = crate::CASE_LOADER
+                .load_file(&cases_dir.join(name).join("config.yaml"))
+                .unwrap()
+                .remove(0);
+            assert_eq!(
+                case.subject_os().iter().copied().collect::<Vec<_>>(),
+                [Os::Linux, Os::MacOs, Os::Windows],
+                "{name}"
+            );
+            let plan = planner().compile(case, os).unwrap().into_plan().unwrap();
+            assert_eq!(
+                plan.layout().unwrap().iter().collect::<Vec<_>>(),
+                [("adp", Realization { os, kind })],
+                "{name} on {os:?}"
+            );
+            let CaseSchema::Participants { procedure, .. } = plan.case().schema() else {
+                panic!("{name} must use native participants");
+            };
+            let steps: Vec<_> = procedure
+                .iter()
+                .flat_map(|node| match node {
+                    ProcedureNode::Step(step) => std::slice::from_ref(step),
+                    ProcedureNode::Parallel(steps) => steps.as_slice(),
+                })
+                .collect();
+            for (step_name, count, need) in [
+                ("exits_with", exits, Need::Process("adp".into(), "adp".into())),
+                (
+                    "http_check",
+                    requests,
+                    Need::Endpoint("adp".into(), "api".into(), EndpointOperation::Request),
+                ),
+                (
+                    "port_listening",
+                    probes,
+                    Need::Endpoint("adp".into(), "api".into(), EndpointOperation::Probe),
+                ),
+            ] {
+                let matching: Vec<_> = steps.iter().filter(|step| step.name() == step_name).collect();
+                assert_eq!(matching.len(), count, "{name} on {os:?}: {step_name}");
+                for step in matching {
+                    assert_eq!(
+                        step.needs().as_slice(),
+                        std::slice::from_ref(&need),
+                        "{name} on {os:?}: {step_name}"
+                    );
+                }
+            }
+            if name == "adp-cmd-port" {
+                assert_eq!(plan.effective_config("adp").unwrap().env["DD_CMD_PORT"], "7777");
+            }
+        }
+    }
+}
+
+#[test]
 fn registered_template_fields_match_step_types_and_other_fields_reject_references() {
     for factory in REGISTERED_STEPS {
         let mut fields = valid_fields(factory.name());

@@ -1,18 +1,27 @@
-type: integration
 name: "adp-disabled-exit"
 description: "Verify ADP exits cleanly when data plane is not enabled"
 timeout: 120s
-runtimes: [linux, mac, windows]
+subject_os: [linux, macos, windows]
 
-env:
-  DD_API_KEY: "00000000000000000000000000000000"
-  DD_HOSTNAME: "integration-test"
-  DD_DATA_PLANE_ENABLED: "false"
-  DD_DATA_PLANE_STANDALONE_MODE: "false"
-
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    config:
+      env:
+        DD_API_KEY: "00000000000000000000000000000000"
+        DD_HOSTNAME: "integration-test"
+        DD_DATA_PLANE_ENABLED: "false"
+        DD_DATA_PLANE_STANDALONE_MODE: "false"
 
 procedure:
   # ADP should log that it's not enabled and exit.
-  - assertion: log_contains
+  - step: log_contains
+    on: adp
     pattern: "Agent Data Plane is not enabled. Exiting."
+    timeout: 60s
+  - step: exits_with
+    on: adp
+    process: adp
+    code: 0
     timeout: 60s

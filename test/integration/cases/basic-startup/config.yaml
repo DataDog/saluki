@@ -1,27 +1,33 @@
-type: integration
 name: "basic-startup"
 description: "Verifies ADP starts successfully and remains stable"
 timeout: 120s
-runtimes: [linux, mac, windows]
+subject_os: [linux, macos, windows]
 
-env:
-  DD_API_KEY: "test-api-key"
-  DD_HOSTNAME: "integration-test"
-  DD_DATA_PLANE_ENABLED: "true"
-  DD_DATA_PLANE_STANDALONE_MODE: "true"
-
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    config:
+      env:
+        DD_API_KEY: "test-api-key"
+        DD_HOSTNAME: "integration-test"
+        DD_DATA_PLANE_ENABLED: "true"
+        DD_DATA_PLANE_STANDALONE_MODE: "true"
 
 procedure:
   # Make sure we always emit our initial startup log, which contains relevant information
   # about the build version, architecture, and other details.
-  - assertion: log_contains
+  - step: log_contains
+    on: adp
     pattern: "Agent Data Plane starting"
     timeout: 60s
   # Make sure the process becomes healthy, and stays up without errors, for ~10 seconds after.
   - parallel:
-      - assertion: process_stable_for
+      - step: process_stable_for
+        on: adp
         duration: 10s
-      - assertion: log_not_contains
+      - step: log_not_contains
+        on: adp
         pattern: "panic|PANIC"
         regex: true
         during: 10s

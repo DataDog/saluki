@@ -6,32 +6,37 @@
 # If `heroku_dyno` is implemented in the future, replace this key with another
 # high-severity incompatible key, or delete this test if no suitable key remains.
 
-type: integration
 name: "adp-config-check-exit"
 description: "Verify config check exits ADP on high-severity incompatible key"
 timeout: 120s
-runtimes: [linux, mac, windows]
+subject_os: [linux, macos, windows]
 
-env:
-  DD_API_KEY: "00000000000000000000000000000000"
-  DD_HOSTNAME: "integration-test-config-exit"
-  DD_DATA_PLANE_ENABLED: "true"
-  DD_DATA_PLANE_STANDALONE_MODE: "false"
-  DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
-  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-  DD_HEROKU_DYNO: "true" # Incompatible(High) - triggers error and exit
-
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    config:
+      env:
+        DD_API_KEY: "00000000000000000000000000000000"
+        DD_HOSTNAME: "integration-test-config-exit"
+        DD_DATA_PLANE_ENABLED: "true"
+        DD_DATA_PLANE_STANDALONE_MODE: "false"
+        DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
+        DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+        DD_HEROKU_DYNO: "true" # Incompatible(High) - triggers error and exit
 
 procedure:
-  - assertion: log_contains
+  - step: log_contains
+    on: adp
     pattern: "Unsupported configuration key with non-default value"
     timeout: 60s
-  - assertion: log_contains
+  - step: log_contains
+    on: adp
     pattern: "incompatible configuration detected"
     timeout: 60s
-  # Verify ADP actually exited (not just logged the error and continued). On docker this
-  # observes the s6 supervisor's exit log; on mac it observes the process exit code
-  # directly. Expected code is 1 because the high-severity check returns a non-zero status.
-  - assertion: adp_exits_with
-    expected_code: 1
+  # Verify ADP actually exited. Expected code is 1 because the high-severity check returns an error.
+  - step: exits_with
+    on: adp
+    process: adp
+    code: 1
     timeout: 60s

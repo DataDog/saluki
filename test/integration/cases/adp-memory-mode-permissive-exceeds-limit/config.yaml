@@ -1,29 +1,35 @@
-type: integration
 name: "adp-memory-mode-permissive-exceeds-limit"
 description: "Verifies that permissive mode emits a best-effort warning when the calculated bounds exceed the configured limit, but the process still starts"
 timeout: 120s
-runtimes: [linux, mac, windows]
+subject_os: [linux, macos, windows]
 
-env:
-  DD_API_KEY: "test-api-key"
-  DD_HOSTNAME: "integration-test"
-  DD_DATA_PLANE_ENABLED: "true"
-  DD_DATA_PLANE_STANDALONE_MODE: "true"
-  DD_MEMORY_MODE: "permissive"
-  DD_MEMORY_LIMIT: "256mb"
-  # Bumped well above the default of 1,000,000 to drive the firm bound for the aggregate
-  # transform far past the configured memory limit.
-  DD_AGGREGATE_CONTEXT_LIMIT: "10000000"
-
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    config:
+      env:
+        DD_API_KEY: "test-api-key"
+        DD_HOSTNAME: "integration-test"
+        DD_DATA_PLANE_ENABLED: "true"
+        DD_DATA_PLANE_STANDALONE_MODE: "true"
+        DD_MEMORY_MODE: "permissive"
+        DD_MEMORY_LIMIT: "256mb"
+        # Bumped well above the default of 1,000,000 to drive the firm bound for the aggregate
+        # transform far past the configured memory limit.
+        DD_AGGREGATE_CONTEXT_LIMIT: "10000000"
 
 procedure:
-  - assertion: log_contains
+  - step: log_contains
+    on: adp
     pattern: "Memory limiting behavior will be best effort."
     timeout: 60s
   - parallel:
-      - assertion: process_stable_for
+      - step: process_stable_for
+        on: adp
         duration: 10s
-      - assertion: log_not_contains
+      - step: log_not_contains
+        on: adp
         pattern: "panic|PANIC"
         regex: true
         during: 10s

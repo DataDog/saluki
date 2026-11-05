@@ -1,40 +1,48 @@
-type: integration
 name: "unprivileged-api-endpoints"
 description: "Verifies the /ready, /live, and /memory/status endpoints are accessible on the unprivileged API"
 timeout: 120s
-runtimes: [linux, mac, windows]
+subject_os: [linux, macos, windows]
 
-env:
-  DD_API_KEY: "00000000000000000000000000000000"
-  DD_HOSTNAME: "integration-test-health"
-  DD_DATA_PLANE_ENABLED: "true"
-  DD_DATA_PLANE_STANDALONE_MODE: "false"
-  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-
-container:
-  exposed_ports:
-    - "55100/tcp"
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    config:
+      env:
+        DD_API_KEY: "00000000000000000000000000000000"
+        DD_HOSTNAME: "integration-test-health"
+        DD_DATA_PLANE_ENABLED: "true"
+        DD_DATA_PLANE_STANDALONE_MODE: "false"
+        DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
 
 procedure:
   - parallel:
-      - assertion: process_stable_for
+      - step: process_stable_for
+        on: adp
         duration: 10s
-      - assertion: http_check
-        endpoint: "http://localhost:55100/ready"
+      - step: http_check
+        on: adp
+        endpoint: api
+        path: /ready
         status:
           equal: 200
         timeout: 60s
-      - assertion: http_check
-        endpoint: "http://localhost:55100/live"
+      - step: http_check
+        on: adp
+        endpoint: api
+        path: /live
         status:
           equal: 200
         timeout: 60s
-      - assertion: http_check
-        endpoint: "http://localhost:55100/memory/status"
+      - step: http_check
+        on: adp
+        endpoint: api
+        path: /memory/status
         status:
           equal: 200
         timeout: 60s
-      - assertion: log_not_contains
+      - step: log_not_contains
+        on: adp
         pattern: "panic|PANIC"
         regex: true
         during: 10s

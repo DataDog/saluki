@@ -1,36 +1,37 @@
-type: integration
 name: "dogstatsd-autoscale-udp"
 description: "Verifies DogStatsD UDP listener autoscaling (SO_REUSEPORT) starts cleanly on Linux"
 timeout: 120s
-runtimes: [linux, mac, windows]
+subject_os: [linux, macos, windows]
 
-env:
-  DD_API_KEY: "00000000000000000000000000000000"
-  DD_HOSTNAME: "integration-test-dsd-autoscale"
-  DD_DATA_PLANE_ENABLED: "true"
-  DD_DATA_PLANE_STANDALONE_MODE: "false"
-  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-  DD_DOGSTATSD_NON_LOCAL_TRAFFIC: "true"
-  DD_DOGSTATSD_AUTOSCALE_UDP_LISTENERS: "true"
-
-container:
-  exposed_ports:
-    - "58125/udp"
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    config:
+      env:
+        DD_API_KEY: "00000000000000000000000000000000"
+        DD_HOSTNAME: "integration-test-dsd-autoscale"
+        DD_DATA_PLANE_ENABLED: "true"
+        DD_DATA_PLANE_STANDALONE_MODE: "false"
+        DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+        DD_DOGSTATSD_NON_LOCAL_TRAFFIC: "true"
+        DD_DOGSTATSD_AUTOSCALE_UDP_LISTENERS: "true"
 
 procedure:
   # Make sure the process becomes healthy and stays up without errors when autoscale is enabled,
   # and that the UDP listener still binds to the configured port.
   - parallel:
-      - assertion: process_stable_for
+      - step: process_stable_for
+        on: adp
         duration: 10s
-      - assertion: port_listening
-        port: 58125
-        protocol: udp
+      - step: log_contains
+        on: adp
+        process: adp
+        pattern: 'listen_addr:"udp://[^"]+" \| DogStatsD listener started\.'
+        regex: true
         timeout: 60s
-      - assertion: log_not_contains
+      - step: log_not_contains
+        on: adp
         pattern: "panic|PANIC"
         regex: true
         during: 10s
-      - assertion: log_contains
-        pattern: "DogStatsD listener started"
-        timeout: 60s

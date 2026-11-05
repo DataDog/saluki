@@ -1,41 +1,47 @@
-type: integration
 name: "telemetry-endpoint"
 description: "Verifies the internal telemetry routes are exposed on the unprivileged API endpoint"
 timeout: 120s
-runtimes: [linux, mac, windows]
+subject_os: [linux, macos, windows]
 
-env:
-  DD_API_KEY: "00000000000000000000000000000000"
-  DD_HOSTNAME: "integration-test-telemetry"
-  DD_DATA_PLANE_ENABLED: "true"
-  DD_DATA_PLANE_STANDALONE_MODE: "false"
-  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-
-container:
-  exposed_ports:
-    - "55100/tcp"
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    config:
+      env:
+        DD_API_KEY: "00000000000000000000000000000000"
+        DD_HOSTNAME: "integration-test-telemetry"
+        DD_DATA_PLANE_ENABLED: "true"
+        DD_DATA_PLANE_STANDALONE_MODE: "false"
+        DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
 
 procedure:
   # Make sure the process becomes healthy, and stays up without errors, with the telemetry routes
   # served on the unprivileged API endpoint.
   - parallel:
-      - assertion: process_stable_for
+      - step: process_stable_for
+        on: adp
         duration: 10s
-      - assertion: port_listening
-        port: 55100
-        protocol: tcp
+      - step: port_listening
+        on: adp
+        endpoint: api
         timeout: 60s
-      - assertion: http_check
-        endpoint: "http://localhost:55100/metrics"
+      - step: http_check
+        on: adp
+        endpoint: api
+        path: /metrics
         status:
           equal: 200
         timeout: 60s
-      - assertion: http_check
-        endpoint: "http://localhost:55100/compat/metrics"
+      - step: http_check
+        on: adp
+        endpoint: api
+        path: /compat/metrics
         status:
           equal: 200
         timeout: 60s
-      - assertion: log_not_contains
+      - step: log_not_contains
+        on: adp
         pattern: "panic|PANIC"
         regex: true
         during: 10s

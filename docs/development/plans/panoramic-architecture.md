@@ -94,7 +94,7 @@ Use product `config_dump` output from CI runs to compare effective product confi
 
 | Suite | Files | Selected rows (subject OS / runtime) | Disabled rows | Assertions (subject OS) | Actions (subject OS) |
 | --- | --- | --- | --- | --- | --- |
-| integration | 52 | linux / linux: 23; linux / linux-container: 22; macos / host-process-group: 14; macos / mac: 19; windows / windows: 24; windows / windows-container: 12 | 0 | linux: 192; macos: 140; windows: 154 | linux: 25; macos: 17; windows: 19 |
+| integration | 52 | linux / linux: 8; linux / linux-container: 37; macos / host-process-group: 29; macos / mac: 4; windows / windows: 9; windows / windows-container: 27 | 0 | linux: 192; macos: 140; windows: 154 | linux: 25; macos: 17; windows: 19 |
 | correctness | 42 | linux / docker: 39; linux / kubernetes_in_docker: 7 | 2 | — | — |
 
 Total: 162 rows.
@@ -151,18 +151,18 @@ Total: 162 rows.
 | otlp-traces-ottl-transform | correctness | linux | docker | selected | test-correctness-otlp-traces-ottl-transform | correctness | old | compare traces | 0 |
 | otlp-traces-probabilistic | correctness | linux | docker | selected | test-correctness-otlp-traces-probabilistic | correctness | old | compare traces | 1 |
 | otlp-traces-probabilistic-full-trace-id | correctness | linux | docker | selected | test-correctness-otlp-traces-probabilistic-full-trace-id | correctness | old | compare traces | 1 |
-| adp-cmd-port | integration | linux | linux | selected | test-integration | integration | old | assertions: 6, actions: 0 | 0 |
-| adp-cmd-port | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 6, actions: 0 | 0 |
-| adp-cmd-port | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 6, actions: 0 | 0 |
-| adp-config-check-exit | integration | linux | linux | selected | test-integration | integration | old | assertions: 3, actions: 0 | 0 |
-| adp-config-check-exit | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 3, actions: 0 | 0 |
-| adp-config-check-exit | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 3, actions: 0 | 0 |
-| adp-config-check-no-warn | integration | linux | linux | selected | test-integration | integration | old | assertions: 3, actions: 0 | 0 |
-| adp-config-check-no-warn | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 3, actions: 0 | 0 |
-| adp-config-check-no-warn | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 3, actions: 0 | 0 |
-| adp-config-check-warn | integration | linux | linux | selected | test-integration | integration | old | assertions: 3, actions: 0 | 0 |
-| adp-config-check-warn | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 3, actions: 0 | 0 |
-| adp-config-check-warn | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 3, actions: 0 | 0 |
+| adp-cmd-port | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 6, actions: 0 | 0 |
+| adp-cmd-port | integration | macos | host-process-group | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | native | assertions: 6, actions: 0 | 0 |
+| adp-cmd-port | integration | windows | windows-container | selected | test-integration-windows-amd64 | participants | native | assertions: 6, actions: 0 | 0 |
+| adp-config-check-exit | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 3, actions: 0 | 0 |
+| adp-config-check-exit | integration | macos | host-process-group | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | native | assertions: 3, actions: 0 | 0 |
+| adp-config-check-exit | integration | windows | windows-container | selected | test-integration-windows-amd64 | participants | native | assertions: 3, actions: 0 | 0 |
+| adp-config-check-no-warn | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 3, actions: 0 | 0 |
+| adp-config-check-no-warn | integration | macos | host-process-group | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | native | assertions: 3, actions: 0 | 0 |
+| adp-config-check-no-warn | integration | windows | windows-container | selected | test-integration-windows-amd64 | participants | native | assertions: 3, actions: 0 | 0 |
+| adp-config-check-warn | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 3, actions: 0 | 0 |
+| adp-config-check-warn | integration | macos | host-process-group | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | native | assertions: 3, actions: 0 | 0 |
+| adp-config-check-warn | integration | windows | windows-container | selected | test-integration-windows-amd64 | participants | native | assertions: 3, actions: 0 | 0 |
 | adp-config-dynamic-basic | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 5, actions: 1 | 0 |
 | adp-config-dynamic-basic | integration | macos | host-process-group | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | native | assertions: 5, actions: 1 | 0 |
 | adp-config-dynamic-basic | integration | windows | windows-container | selected | test-integration-windows-amd64 | participants | native | assertions: 5, actions: 1 | 0 |
@@ -175,9 +175,9 @@ Total: 162 rows.
 | adp-config-stream | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 9, actions: 0 | 0 |
 | adp-config-stream | integration | macos | host-process-group | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | native | assertions: 9, actions: 0 | 0 |
 | adp-config-stream | integration | windows | windows-container | selected | test-integration-windows-amd64 | participants | native | assertions: 9, actions: 0 | 0 |
-| adp-disabled-exit | integration | linux | linux | selected | test-integration | integration | old | assertions: 1, actions: 0 | 0 |
-| adp-disabled-exit | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 1, actions: 0 | 0 |
-| adp-disabled-exit | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 1, actions: 0 | 0 |
+| adp-disabled-exit | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 2, actions: 0 | 0 |
+| adp-disabled-exit | integration | macos | host-process-group | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | native | assertions: 2, actions: 0 | 0 |
+| adp-disabled-exit | integration | windows | windows-container | selected | test-integration-windows-amd64 | participants | native | assertions: 2, actions: 0 | 0 |
 | adp-ipc-no-dns | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 4, actions: 0 | 0 |
 | adp-logging-default-path | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 2, actions: 0 | 0 |
 | adp-logging-ignores-core-agent-log-file | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 3, actions: 0 | 0 |
@@ -187,21 +187,21 @@ Total: 162 rows.
 | adp-logging-windows-default-path | integration | windows | windows-container | selected | test-integration-windows-amd64 | participants | native | assertions: 2, actions: 0 | 0 |
 | adp-logging-windows-ignores-core-agent-log-file | integration | windows | windows-container | selected | test-integration-windows-amd64 | participants | native | assertions: 3, actions: 0 | 0 |
 | adp-logging-windows-respects-data-plane-log-file | integration | windows | windows-container | selected | test-integration-windows-amd64 | participants | native | assertions: 2, actions: 0 | 0 |
-| adp-memory-mode-disabled | integration | linux | linux | selected | test-integration | integration | old | assertions: 3, actions: 0 | 0 |
-| adp-memory-mode-disabled | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 3, actions: 0 | 0 |
-| adp-memory-mode-disabled | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 3, actions: 0 | 0 |
-| adp-memory-mode-permissive-exceeds-limit | integration | linux | linux | selected | test-integration | integration | old | assertions: 3, actions: 0 | 0 |
-| adp-memory-mode-permissive-exceeds-limit | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 3, actions: 0 | 0 |
-| adp-memory-mode-permissive-exceeds-limit | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 3, actions: 0 | 0 |
-| adp-memory-mode-permissive-within-limit | integration | linux | linux | selected | test-integration | integration | old | assertions: 3, actions: 0 | 0 |
-| adp-memory-mode-permissive-within-limit | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 3, actions: 0 | 0 |
-| adp-memory-mode-permissive-within-limit | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 3, actions: 0 | 0 |
-| adp-memory-mode-strict-exceeds-limit | integration | linux | linux | selected | test-integration | integration | old | assertions: 1, actions: 0 | 0 |
-| adp-memory-mode-strict-exceeds-limit | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 1, actions: 0 | 0 |
-| adp-memory-mode-strict-exceeds-limit | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 1, actions: 0 | 0 |
-| adp-memory-mode-strict-within-limit | integration | linux | linux | selected | test-integration | integration | old | assertions: 3, actions: 0 | 0 |
-| adp-memory-mode-strict-within-limit | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 3, actions: 0 | 0 |
-| adp-memory-mode-strict-within-limit | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 3, actions: 0 | 0 |
+| adp-memory-mode-disabled | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 3, actions: 0 | 0 |
+| adp-memory-mode-disabled | integration | macos | host-process-group | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | native | assertions: 3, actions: 0 | 0 |
+| adp-memory-mode-disabled | integration | windows | windows-container | selected | test-integration-windows-amd64 | participants | native | assertions: 3, actions: 0 | 0 |
+| adp-memory-mode-permissive-exceeds-limit | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 3, actions: 0 | 0 |
+| adp-memory-mode-permissive-exceeds-limit | integration | macos | host-process-group | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | native | assertions: 3, actions: 0 | 0 |
+| adp-memory-mode-permissive-exceeds-limit | integration | windows | windows-container | selected | test-integration-windows-amd64 | participants | native | assertions: 3, actions: 0 | 0 |
+| adp-memory-mode-permissive-within-limit | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 3, actions: 0 | 0 |
+| adp-memory-mode-permissive-within-limit | integration | macos | host-process-group | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | native | assertions: 3, actions: 0 | 0 |
+| adp-memory-mode-permissive-within-limit | integration | windows | windows-container | selected | test-integration-windows-amd64 | participants | native | assertions: 3, actions: 0 | 0 |
+| adp-memory-mode-strict-exceeds-limit | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 1, actions: 0 | 0 |
+| adp-memory-mode-strict-exceeds-limit | integration | macos | host-process-group | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | native | assertions: 1, actions: 0 | 0 |
+| adp-memory-mode-strict-exceeds-limit | integration | windows | windows-container | selected | test-integration-windows-amd64 | participants | native | assertions: 1, actions: 0 | 0 |
+| adp-memory-mode-strict-within-limit | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 3, actions: 0 | 0 |
+| adp-memory-mode-strict-within-limit | integration | macos | host-process-group | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | native | assertions: 3, actions: 0 | 0 |
+| adp-memory-mode-strict-within-limit | integration | windows | windows-container | selected | test-integration-windows-amd64 | participants | native | assertions: 3, actions: 0 | 0 |
 | adp-no-pipelines-exit | integration | linux | linux | selected | test-integration | integration | old | assertions: 1, actions: 0 | 0 |
 | adp-no-pipelines-exit | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 1, actions: 0 | 0 |
 | adp-no-pipelines-exit | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 1, actions: 0 | 0 |
@@ -213,12 +213,12 @@ Total: 162 rows.
 | adp-rc-no-products | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 4, actions: 0 | 0 |
 | apm-bind-custom-hostname | integration | linux | linux | selected | test-integration | integration | old | assertions: 3, actions: 0 | 0 |
 | apm-bind-custom-hostname | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 3, actions: 0 | 0 |
-| basic-startup | integration | linux | linux | selected | test-integration | integration | old | assertions: 3, actions: 0 | 0 |
-| basic-startup | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 3, actions: 0 | 0 |
-| basic-startup | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 3, actions: 0 | 0 |
-| dogstatsd-autoscale-udp | integration | linux | linux | selected | test-integration | integration | old | assertions: 4, actions: 0 | 0 |
-| dogstatsd-autoscale-udp | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 4, actions: 0 | 0 |
-| dogstatsd-autoscale-udp | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 4, actions: 0 | 0 |
+| basic-startup | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 3, actions: 0 | 0 |
+| basic-startup | integration | macos | host-process-group | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | native | assertions: 3, actions: 0 | 0 |
+| basic-startup | integration | windows | windows-container | selected | test-integration-windows-amd64 | participants | native | assertions: 3, actions: 0 | 0 |
+| dogstatsd-autoscale-udp | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 3, actions: 0 | 0 |
+| dogstatsd-autoscale-udp | integration | macos | host-process-group | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | native | assertions: 3, actions: 0 | 0 |
+| dogstatsd-autoscale-udp | integration | windows | windows-container | selected | test-integration-windows-amd64 | participants | native | assertions: 3, actions: 0 | 0 |
 | dogstatsd-bind-custom-hostname | integration | linux | linux | selected | test-integration | integration | old | assertions: 3, actions: 0 | 0 |
 | dogstatsd-bind-custom-hostname | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 3, actions: 0 | 0 |
 | dogstatsd-bind-host | integration | linux | linux | selected | test-integration | integration | old | assertions: 3, actions: 0 | 0 |
@@ -226,9 +226,9 @@ Total: 162 rows.
 | dogstatsd-default-bind | integration | linux | linux | selected | test-integration | integration | old | assertions: 3, actions: 0 | 0 |
 | dogstatsd-default-bind | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 3, actions: 0 | 0 |
 | dogstatsd-default-bind | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 3, actions: 0 | 0 |
-| dogstatsd-enabled | integration | linux | linux | selected | test-integration | integration | old | assertions: 3, actions: 0 | 0 |
-| dogstatsd-enabled | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 3, actions: 0 | 0 |
-| dogstatsd-enabled | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 3, actions: 0 | 0 |
+| dogstatsd-enabled | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 3, actions: 0 | 0 |
+| dogstatsd-enabled | integration | macos | host-process-group | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | native | assertions: 3, actions: 0 | 0 |
+| dogstatsd-enabled | integration | windows | windows-container | selected | test-integration-windows-amd64 | participants | native | assertions: 3, actions: 0 | 0 |
 | dogstatsd-forwarding | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 13, actions: 5 | 0 |
 | dogstatsd-host-tag | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 6, actions: 1 | 0 |
 | dogstatsd-host-tag | integration | macos | host-process-group | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | native | assertions: 6, actions: 1 | 0 |
@@ -259,12 +259,12 @@ Total: 162 rows.
 | privileged-api-endpoints | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 3, actions: 10 | 0 |
 | privileged-api-endpoints | integration | macos | host-process-group | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | native | assertions: 3, actions: 10 | 0 |
 | privileged-api-endpoints | integration | windows | windows-container | selected | test-integration-windows-amd64 | participants | native | assertions: 3, actions: 10 | 0 |
-| telemetry-endpoint | integration | linux | linux | selected | test-integration | integration | old | assertions: 5, actions: 0 | 0 |
-| telemetry-endpoint | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 5, actions: 0 | 0 |
-| telemetry-endpoint | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 5, actions: 0 | 0 |
-| unprivileged-api-endpoints | integration | linux | linux | selected | test-integration | integration | old | assertions: 5, actions: 0 | 0 |
-| unprivileged-api-endpoints | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 5, actions: 0 | 0 |
-| unprivileged-api-endpoints | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 5, actions: 0 | 0 |
+| telemetry-endpoint | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 5, actions: 0 | 0 |
+| telemetry-endpoint | integration | macos | host-process-group | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | native | assertions: 5, actions: 0 | 0 |
+| telemetry-endpoint | integration | windows | windows-container | selected | test-integration-windows-amd64 | participants | native | assertions: 5, actions: 0 | 0 |
+| unprivileged-api-endpoints | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 5, actions: 0 | 0 |
+| unprivileged-api-endpoints | integration | macos | host-process-group | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | native | assertions: 5, actions: 0 | 0 |
+| unprivileged-api-endpoints | integration | windows | windows-container | selected | test-integration-windows-amd64 | participants | native | assertions: 5, actions: 0 | 0 |
 
 <!-- coverage-inventory:end -->
 
@@ -393,6 +393,31 @@ With `OpContext::exec_process`, host operations run a declared process's
 artifact-bound program with replacement arguments, in its environment and participant directory. Other realizations
 return a harness error. This keeps host artifact paths inside the backend and product CLI forms inside the type.
 
+## Environment-only case migration notes
+
+The following cases use native participants on Linux, macOS and Windows:
+`adp-cmd-port`, `adp-config-check-exit`, `adp-config-check-no-warn`, `adp-config-check-warn`,
+`adp-disabled-exit`, `adp-memory-mode-disabled`, `adp-memory-mode-permissive-exceeds-limit`,
+`adp-memory-mode-permissive-within-limit`, `adp-memory-mode-strict-exceeds-limit`,
+`adp-memory-mode-strict-within-limit`, `basic-startup`, `dogstatsd-autoscale-udp`, `dogstatsd-enabled`,
+`telemetry-endpoint` and `unprivileged-api-endpoints`. Their environments, descriptions and timeouts are unchanged.
+`adp-cmd-port` still pins `DD_CMD_PORT` to 7777.
+
+- Stability watches both Agent and ADP processes on every OS. Legacy execution watched the container on Linux
+  and only ADP on macOS.
+- `exits_with` reads ADP's first exit record in Linux and Windows containers, or its waited status on macOS,
+  rather than a supervisor log line. `adp-disabled-exit` gains an explicit exit-code-0 assertion after its existing
+  log check, increasing coverage.
+- API checks name `api` instead of a published localhost port. Exposed-port declarations are removed.
+- `dogstatsd-enabled` and `dogstatsd-autoscale-udp` replace a UDP probe that could not fail with ADP's UDP
+  listener-started log line. Autoscale keeps one listener gate instead of also checking a generic listener line.
+  This fixes coverage of whether the UDP listener actually bound.
+- Log steps search both processes' output, preserving Linux coverage and widening Windows coverage to the Agent.
+  The two listener gates explicitly name ADP.
+
+`adp-no-pipelines-exit` retains its legacy schema and log assertion. Native Linux validation observed ADP exit 1
+with `No data pipelines are enabled. Exiting.`, rather than the assumed exit 0. No exit assertion is added.
+
 ## Migration proofs
 
 When changing a case's schema or runner, add CI evidence per (case, subject OS, execution). Native rows may say
@@ -452,6 +477,51 @@ Link CI runs; don't copy their logs into the repository.
 | dogstatsd-replay-unix | linux | native | Pending CI. Compared with the inventory at `4e9948b5ed` (execution `old`). |
 | dogstatsd-replay-unix | macos | native | Pending CI. Compared with the inventory at `4e9948b5ed` (execution `old`). |
 | dogstatsd-replay-windows | windows | native | Pending CI. Compared with the inventory at `4e9948b5ed` (execution `old`). |
+| adp-cmd-port | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `4e9948b5ed`. |
+| adp-cmd-port | macos | native | Pending CI. Before: passed with execution `old` in the last green `test-integration-macos-arm64` and `test-integration-macos-amd64` run before this change. Compared with the inventory at `4e9948b5ed`. |
+| adp-cmd-port | windows | native | Pending CI. Before: passed with execution `old` in the last green `test-integration-windows-amd64` run before this change. Compared with the inventory at `4e9948b5ed`. |
+| adp-config-check-exit | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `4e9948b5ed`. |
+| adp-config-check-exit | macos | native | Pending CI. Before: passed with execution `old` in the last green `test-integration-macos-arm64` and `test-integration-macos-amd64` run before this change. Compared with the inventory at `4e9948b5ed`. |
+| adp-config-check-exit | windows | native | Pending CI. Before: passed with execution `old` in the last green `test-integration-windows-amd64` run before this change. Compared with the inventory at `4e9948b5ed`. |
+| adp-config-check-no-warn | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `4e9948b5ed`. |
+| adp-config-check-no-warn | macos | native | Pending CI. Before: passed with execution `old` in the last green `test-integration-macos-arm64` and `test-integration-macos-amd64` run before this change. Compared with the inventory at `4e9948b5ed`. |
+| adp-config-check-no-warn | windows | native | Pending CI. Before: passed with execution `old` in the last green `test-integration-windows-amd64` run before this change. Compared with the inventory at `4e9948b5ed`. |
+| adp-config-check-warn | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `4e9948b5ed`. |
+| adp-config-check-warn | macos | native | Pending CI. Before: passed with execution `old` in the last green `test-integration-macos-arm64` and `test-integration-macos-amd64` run before this change. Compared with the inventory at `4e9948b5ed`. |
+| adp-config-check-warn | windows | native | Pending CI. Before: passed with execution `old` in the last green `test-integration-windows-amd64` run before this change. Compared with the inventory at `4e9948b5ed`. |
+| adp-disabled-exit | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `4e9948b5ed`. |
+| adp-disabled-exit | macos | native | Pending CI. Before: passed with execution `old` in the last green `test-integration-macos-arm64` and `test-integration-macos-amd64` run before this change. Compared with the inventory at `4e9948b5ed`. |
+| adp-disabled-exit | windows | native | Pending CI. Before: passed with execution `old` in the last green `test-integration-windows-amd64` run before this change. Compared with the inventory at `4e9948b5ed`. |
+| adp-memory-mode-disabled | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `4e9948b5ed`. |
+| adp-memory-mode-disabled | macos | native | Pending CI. Before: passed with execution `old` in the last green `test-integration-macos-arm64` and `test-integration-macos-amd64` run before this change. Compared with the inventory at `4e9948b5ed`. |
+| adp-memory-mode-disabled | windows | native | Pending CI. Before: passed with execution `old` in the last green `test-integration-windows-amd64` run before this change. Compared with the inventory at `4e9948b5ed`. |
+| adp-memory-mode-permissive-exceeds-limit | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `4e9948b5ed`. |
+| adp-memory-mode-permissive-exceeds-limit | macos | native | Pending CI. Before: passed with execution `old` in the last green `test-integration-macos-arm64` and `test-integration-macos-amd64` run before this change. Compared with the inventory at `4e9948b5ed`. |
+| adp-memory-mode-permissive-exceeds-limit | windows | native | Pending CI. Before: passed with execution `old` in the last green `test-integration-windows-amd64` run before this change. Compared with the inventory at `4e9948b5ed`. |
+| adp-memory-mode-permissive-within-limit | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `4e9948b5ed`. |
+| adp-memory-mode-permissive-within-limit | macos | native | Pending CI. Before: passed with execution `old` in the last green `test-integration-macos-arm64` and `test-integration-macos-amd64` run before this change. Compared with the inventory at `4e9948b5ed`. |
+| adp-memory-mode-permissive-within-limit | windows | native | Pending CI. Before: passed with execution `old` in the last green `test-integration-windows-amd64` run before this change. Compared with the inventory at `4e9948b5ed`. |
+| adp-memory-mode-strict-exceeds-limit | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `4e9948b5ed`. |
+| adp-memory-mode-strict-exceeds-limit | macos | native | Pending CI. Before: passed with execution `old` in the last green `test-integration-macos-arm64` and `test-integration-macos-amd64` run before this change. Compared with the inventory at `4e9948b5ed`. |
+| adp-memory-mode-strict-exceeds-limit | windows | native | Pending CI. Before: passed with execution `old` in the last green `test-integration-windows-amd64` run before this change. Compared with the inventory at `4e9948b5ed`. |
+| adp-memory-mode-strict-within-limit | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `4e9948b5ed`. |
+| adp-memory-mode-strict-within-limit | macos | native | Pending CI. Before: passed with execution `old` in the last green `test-integration-macos-arm64` and `test-integration-macos-amd64` run before this change. Compared with the inventory at `4e9948b5ed`. |
+| adp-memory-mode-strict-within-limit | windows | native | Pending CI. Before: passed with execution `old` in the last green `test-integration-windows-amd64` run before this change. Compared with the inventory at `4e9948b5ed`. |
+| basic-startup | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `4e9948b5ed`. |
+| basic-startup | macos | native | Pending CI. Before: passed with execution `old` in the last green `test-integration-macos-arm64` and `test-integration-macos-amd64` run before this change. Compared with the inventory at `4e9948b5ed`. |
+| basic-startup | windows | native | Pending CI. Before: passed with execution `old` in the last green `test-integration-windows-amd64` run before this change. Compared with the inventory at `4e9948b5ed`. |
+| dogstatsd-autoscale-udp | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `4e9948b5ed`. |
+| dogstatsd-autoscale-udp | macos | native | Pending CI. Before: passed with execution `old` in the last green `test-integration-macos-arm64` and `test-integration-macos-amd64` run before this change. Compared with the inventory at `4e9948b5ed`. |
+| dogstatsd-autoscale-udp | windows | native | Pending CI. Before: passed with execution `old` in the last green `test-integration-windows-amd64` run before this change. Compared with the inventory at `4e9948b5ed`. |
+| dogstatsd-enabled | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `4e9948b5ed`. |
+| dogstatsd-enabled | macos | native | Pending CI. Before: passed with execution `old` in the last green `test-integration-macos-arm64` and `test-integration-macos-amd64` run before this change. Compared with the inventory at `4e9948b5ed`. |
+| dogstatsd-enabled | windows | native | Pending CI. Before: passed with execution `old` in the last green `test-integration-windows-amd64` run before this change. Compared with the inventory at `4e9948b5ed`. |
+| telemetry-endpoint | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `4e9948b5ed`. |
+| telemetry-endpoint | macos | native | Pending CI. Before: passed with execution `old` in the last green `test-integration-macos-arm64` and `test-integration-macos-amd64` run before this change. Compared with the inventory at `4e9948b5ed`. |
+| telemetry-endpoint | windows | native | Pending CI. Before: passed with execution `old` in the last green `test-integration-windows-amd64` run before this change. Compared with the inventory at `4e9948b5ed`. |
+| unprivileged-api-endpoints | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `4e9948b5ed`. |
+| unprivileged-api-endpoints | macos | native | Pending CI. Before: passed with execution `old` in the last green `test-integration-macos-arm64` and `test-integration-macos-amd64` run before this change. Compared with the inventory at `4e9948b5ed`. |
+| unprivileged-api-endpoints | windows | native | Pending CI. Before: passed with execution `old` in the last green `test-integration-windows-amd64` run before this change. Compared with the inventory at `4e9948b5ed`. |
 <!-- migration-proofs:end -->
 
 Native runs use fresh participant directories and reclaim them after each case.

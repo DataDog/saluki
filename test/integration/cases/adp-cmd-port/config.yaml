@@ -7,47 +7,55 @@
 # When cmd_port is set to a non-default value (7777 in this test), ADP
 # must read cmd_port and connect to the correct port. Without this fix,
 # ADP tries to connect to its hardcoded default and crash-loops.
-# This test explicitly overrides the framework-level cmd_port default
-# (see panoramic::unix_runner::test_port_isolation_env) to validate the
-# non-default path end-to-end.
+# This test pins cmd_port instead of using the participant's default or assigned port
+# to validate the non-default path end-to-end.
 
-type: integration
 name: "adp-cmd-port"
 description: "Verifies ADP connects to the correct port when cmd_port is set"
 timeout: 120s
-runtimes: [linux, mac, windows]
+subject_os: [linux, macos, windows]
 
-env:
-  DD_API_KEY: "00000000000000000000000000000000"
-  DD_HOSTNAME: "integration-test-cmd-port"
-  DD_DATA_PLANE_ENABLED: "true"
-  DD_DATA_PLANE_STANDALONE_MODE: "false"
-  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-  DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
-  DD_CMD_PORT: "7777"
-
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    config:
+      env:
+        DD_API_KEY: "00000000000000000000000000000000"
+        DD_HOSTNAME: "integration-test-cmd-port"
+        DD_DATA_PLANE_ENABLED: "true"
+        DD_DATA_PLANE_STANDALONE_MODE: "false"
+        DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+        DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
+        DD_CMD_PORT: "7777"
 
 procedure:
   # ADP should reach out for config from the core agent on the correct port.
-  - assertion: log_contains
+  - step: log_contains
+    on: adp
     pattern: "Waiting for initial configuration from Datadog Agent"
     timeout: 60s
   # The core agent should start its CMD API server on the non-default port.
-  - assertion: log_contains
+  - step: log_contains
+    on: adp
     pattern: "Started HTTP server 'CMD API Server' on 127.0.0.1:7777"
     timeout: 60s
   # ADP should successfully register with the core agent on that port.
-  - assertion: log_contains
+  - step: log_contains
+    on: adp
     pattern: "Successfully registered with the Datadog Agent."
     timeout: 60s
   # ADP should become healthy and stay up.
   - parallel:
-      - assertion: process_stable_for
+      - step: process_stable_for
+        on: adp
         duration: 10s
-      - assertion: log_contains
+      - step: log_contains
+        on: adp
         pattern: "Topology healthy"
         timeout: 60s
-      - assertion: log_not_contains
+      - step: log_not_contains
+        on: adp
         pattern: "panic|PANIC"
         regex: true
         during: 10s

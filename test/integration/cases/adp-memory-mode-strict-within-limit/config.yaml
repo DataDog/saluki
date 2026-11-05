@@ -1,27 +1,33 @@
-type: integration
 name: "adp-memory-mode-strict-within-limit"
 description: "Verifies that strict mode succeeds and verifies bounds when the calculated bounds fit within the configured limit"
 timeout: 120s
-runtimes: [linux, mac, windows]
+subject_os: [linux, macos, windows]
 
-env:
-  DD_API_KEY: "test-api-key"
-  DD_HOSTNAME: "integration-test"
-  DD_DATA_PLANE_ENABLED: "true"
-  DD_DATA_PLANE_STANDALONE_MODE: "true"
-  DD_MEMORY_MODE: "strict"
-  # Generous enough to comfortably fit the default calculated bounds.
-  DD_MEMORY_LIMIT: "2gb"
-
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    config:
+      env:
+        DD_API_KEY: "test-api-key"
+        DD_HOSTNAME: "integration-test"
+        DD_DATA_PLANE_ENABLED: "true"
+        DD_DATA_PLANE_STANDALONE_MODE: "true"
+        DD_MEMORY_MODE: "strict"
+        # Generous enough to comfortably fit the default calculated bounds.
+        DD_MEMORY_LIMIT: "2gb"
 
 procedure:
-  - assertion: log_contains
+  - step: log_contains
+    on: adp
     pattern: "Verified memory bounds."
     timeout: 60s
   - parallel:
-      - assertion: process_stable_for
+      - step: process_stable_for
+        on: adp
         duration: 10s
-      - assertion: log_not_contains
+      - step: log_not_contains
+        on: adp
         pattern: "panic|PANIC"
         regex: true
         during: 10s

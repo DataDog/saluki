@@ -1194,14 +1194,16 @@
       "name": "adp-cmd-port",
       "suite": "integration",
       "subject_os": "linux",
-      "runtime": "linux",
+      "runtime": "linux-container",
       "source": "test/integration/cases/adp-cmd-port/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/datadog-agent:testing-devel"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest"
       },
       "ci_jobs": [
         "test-integration"
@@ -1213,13 +1215,16 @@
       "name": "adp-cmd-port",
       "suite": "integration",
       "subject_os": "macos",
-      "runtime": "mac",
+      "runtime": "host-process-group",
       "source": "test/integration/cases/adp-cmd-port/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
-      "images": {},
+      "images": {
+        "adp-host-binary": "target/release/agent-data-plane",
+        "agent-host-install": "/tmp/saluki-dda/datadog-agent"
+      },
       "ci_jobs": [
         "test-integration-macos-arm64",
         "test-integration-macos-amd64"
@@ -1231,14 +1236,15 @@
       "name": "adp-cmd-port",
       "suite": "integration",
       "subject_os": "windows",
-      "runtime": "windows",
+      "runtime": "windows-container",
       "source": "test/integration/cases/adp-cmd-port/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/agent-data-plane:testing-windows"
+        "agent-adp-windows-image": "saluki-images/agent-data-plane:testing-windows",
+        "courier-windows-binary": "target/release/panoramic-courier.exe"
       },
       "ci_jobs": [
         "test-integration-windows-amd64"
@@ -1250,14 +1256,16 @@
       "name": "adp-config-check-exit",
       "suite": "integration",
       "subject_os": "linux",
-      "runtime": "linux",
+      "runtime": "linux-container",
       "source": "test/integration/cases/adp-config-check-exit/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/datadog-agent:testing-devel"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest"
       },
       "ci_jobs": [
         "test-integration"
@@ -1269,13 +1277,16 @@
       "name": "adp-config-check-exit",
       "suite": "integration",
       "subject_os": "macos",
-      "runtime": "mac",
+      "runtime": "host-process-group",
       "source": "test/integration/cases/adp-config-check-exit/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
-      "images": {},
+      "images": {
+        "adp-host-binary": "target/release/agent-data-plane",
+        "agent-host-install": "/tmp/saluki-dda/datadog-agent"
+      },
       "ci_jobs": [
         "test-integration-macos-arm64",
         "test-integration-macos-amd64"
@@ -1287,14 +1298,15 @@
       "name": "adp-config-check-exit",
       "suite": "integration",
       "subject_os": "windows",
-      "runtime": "windows",
+      "runtime": "windows-container",
       "source": "test/integration/cases/adp-config-check-exit/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/agent-data-plane:testing-windows"
+        "agent-adp-windows-image": "saluki-images/agent-data-plane:testing-windows",
+        "courier-windows-binary": "target/release/panoramic-courier.exe"
       },
       "ci_jobs": [
         "test-integration-windows-amd64"
@@ -1306,14 +1318,16 @@
       "name": "adp-config-check-no-warn",
       "suite": "integration",
       "subject_os": "linux",
-      "runtime": "linux",
+      "runtime": "linux-container",
       "source": "test/integration/cases/adp-config-check-no-warn/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/datadog-agent:testing-devel"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest"
       },
       "ci_jobs": [
         "test-integration"
@@ -1325,13 +1339,16 @@
       "name": "adp-config-check-no-warn",
       "suite": "integration",
       "subject_os": "macos",
-      "runtime": "mac",
+      "runtime": "host-process-group",
       "source": "test/integration/cases/adp-config-check-no-warn/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
-      "images": {},
+      "images": {
+        "adp-host-binary": "target/release/agent-data-plane",
+        "agent-host-install": "/tmp/saluki-dda/datadog-agent"
+      },
       "ci_jobs": [
         "test-integration-macos-arm64",
         "test-integration-macos-amd64"
@@ -1343,14 +1360,15 @@
       "name": "adp-config-check-no-warn",
       "suite": "integration",
       "subject_os": "windows",
-      "runtime": "windows",
+      "runtime": "windows-container",
       "source": "test/integration/cases/adp-config-check-no-warn/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/agent-data-plane:testing-windows"
+        "agent-adp-windows-image": "saluki-images/agent-data-plane:testing-windows",
+        "courier-windows-binary": "target/release/panoramic-courier.exe"
       },
       "ci_jobs": [
         "test-integration-windows-amd64"
@@ -1362,14 +1380,16 @@
       "name": "adp-config-check-warn",
       "suite": "integration",
       "subject_os": "linux",
-      "runtime": "linux",
+      "runtime": "linux-container",
       "source": "test/integration/cases/adp-config-check-warn/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/datadog-agent:testing-devel"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest"
       },
       "ci_jobs": [
         "test-integration"
@@ -1381,13 +1401,16 @@
       "name": "adp-config-check-warn",
       "suite": "integration",
       "subject_os": "macos",
-      "runtime": "mac",
+      "runtime": "host-process-group",
       "source": "test/integration/cases/adp-config-check-warn/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
-      "images": {},
+      "images": {
+        "adp-host-binary": "target/release/agent-data-plane",
+        "agent-host-install": "/tmp/saluki-dda/datadog-agent"
+      },
       "ci_jobs": [
         "test-integration-macos-arm64",
         "test-integration-macos-amd64"
@@ -1399,14 +1422,15 @@
       "name": "adp-config-check-warn",
       "suite": "integration",
       "subject_os": "windows",
-      "runtime": "windows",
+      "runtime": "windows-container",
       "source": "test/integration/cases/adp-config-check-warn/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/agent-data-plane:testing-windows"
+        "agent-adp-windows-image": "saluki-images/agent-data-plane:testing-windows",
+        "courier-windows-binary": "target/release/panoramic-courier.exe"
       },
       "ci_jobs": [
         "test-integration-windows-amd64"
@@ -1666,14 +1690,16 @@
       "name": "adp-disabled-exit",
       "suite": "integration",
       "subject_os": "linux",
-      "runtime": "linux",
+      "runtime": "linux-container",
       "source": "test/integration/cases/adp-disabled-exit/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/datadog-agent:testing-devel"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest"
       },
       "ci_jobs": [
         "test-integration"
@@ -1685,13 +1711,16 @@
       "name": "adp-disabled-exit",
       "suite": "integration",
       "subject_os": "macos",
-      "runtime": "mac",
+      "runtime": "host-process-group",
       "source": "test/integration/cases/adp-disabled-exit/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
-      "images": {},
+      "images": {
+        "adp-host-binary": "target/release/agent-data-plane",
+        "agent-host-install": "/tmp/saluki-dda/datadog-agent"
+      },
       "ci_jobs": [
         "test-integration-macos-arm64",
         "test-integration-macos-amd64"
@@ -1703,14 +1732,15 @@
       "name": "adp-disabled-exit",
       "suite": "integration",
       "subject_os": "windows",
-      "runtime": "windows",
+      "runtime": "windows-container",
       "source": "test/integration/cases/adp-disabled-exit/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/agent-data-plane:testing-windows"
+        "agent-adp-windows-image": "saluki-images/agent-data-plane:testing-windows",
+        "courier-windows-binary": "target/release/panoramic-courier.exe"
       },
       "ci_jobs": [
         "test-integration-windows-amd64"
@@ -1908,14 +1938,16 @@
       "name": "adp-memory-mode-disabled",
       "suite": "integration",
       "subject_os": "linux",
-      "runtime": "linux",
+      "runtime": "linux-container",
       "source": "test/integration/cases/adp-memory-mode-disabled/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/datadog-agent:testing-devel"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest"
       },
       "ci_jobs": [
         "test-integration"
@@ -1927,13 +1959,16 @@
       "name": "adp-memory-mode-disabled",
       "suite": "integration",
       "subject_os": "macos",
-      "runtime": "mac",
+      "runtime": "host-process-group",
       "source": "test/integration/cases/adp-memory-mode-disabled/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
-      "images": {},
+      "images": {
+        "adp-host-binary": "target/release/agent-data-plane",
+        "agent-host-install": "/tmp/saluki-dda/datadog-agent"
+      },
       "ci_jobs": [
         "test-integration-macos-arm64",
         "test-integration-macos-amd64"
@@ -1945,14 +1980,15 @@
       "name": "adp-memory-mode-disabled",
       "suite": "integration",
       "subject_os": "windows",
-      "runtime": "windows",
+      "runtime": "windows-container",
       "source": "test/integration/cases/adp-memory-mode-disabled/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/agent-data-plane:testing-windows"
+        "agent-adp-windows-image": "saluki-images/agent-data-plane:testing-windows",
+        "courier-windows-binary": "target/release/panoramic-courier.exe"
       },
       "ci_jobs": [
         "test-integration-windows-amd64"
@@ -1964,14 +2000,16 @@
       "name": "adp-memory-mode-permissive-exceeds-limit",
       "suite": "integration",
       "subject_os": "linux",
-      "runtime": "linux",
+      "runtime": "linux-container",
       "source": "test/integration/cases/adp-memory-mode-permissive-exceeds-limit/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/datadog-agent:testing-devel"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest"
       },
       "ci_jobs": [
         "test-integration"
@@ -1983,13 +2021,16 @@
       "name": "adp-memory-mode-permissive-exceeds-limit",
       "suite": "integration",
       "subject_os": "macos",
-      "runtime": "mac",
+      "runtime": "host-process-group",
       "source": "test/integration/cases/adp-memory-mode-permissive-exceeds-limit/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
-      "images": {},
+      "images": {
+        "adp-host-binary": "target/release/agent-data-plane",
+        "agent-host-install": "/tmp/saluki-dda/datadog-agent"
+      },
       "ci_jobs": [
         "test-integration-macos-arm64",
         "test-integration-macos-amd64"
@@ -2001,14 +2042,15 @@
       "name": "adp-memory-mode-permissive-exceeds-limit",
       "suite": "integration",
       "subject_os": "windows",
-      "runtime": "windows",
+      "runtime": "windows-container",
       "source": "test/integration/cases/adp-memory-mode-permissive-exceeds-limit/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/agent-data-plane:testing-windows"
+        "agent-adp-windows-image": "saluki-images/agent-data-plane:testing-windows",
+        "courier-windows-binary": "target/release/panoramic-courier.exe"
       },
       "ci_jobs": [
         "test-integration-windows-amd64"
@@ -2020,14 +2062,16 @@
       "name": "adp-memory-mode-permissive-within-limit",
       "suite": "integration",
       "subject_os": "linux",
-      "runtime": "linux",
+      "runtime": "linux-container",
       "source": "test/integration/cases/adp-memory-mode-permissive-within-limit/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/datadog-agent:testing-devel"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest"
       },
       "ci_jobs": [
         "test-integration"
@@ -2039,13 +2083,16 @@
       "name": "adp-memory-mode-permissive-within-limit",
       "suite": "integration",
       "subject_os": "macos",
-      "runtime": "mac",
+      "runtime": "host-process-group",
       "source": "test/integration/cases/adp-memory-mode-permissive-within-limit/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
-      "images": {},
+      "images": {
+        "adp-host-binary": "target/release/agent-data-plane",
+        "agent-host-install": "/tmp/saluki-dda/datadog-agent"
+      },
       "ci_jobs": [
         "test-integration-macos-arm64",
         "test-integration-macos-amd64"
@@ -2057,14 +2104,15 @@
       "name": "adp-memory-mode-permissive-within-limit",
       "suite": "integration",
       "subject_os": "windows",
-      "runtime": "windows",
+      "runtime": "windows-container",
       "source": "test/integration/cases/adp-memory-mode-permissive-within-limit/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/agent-data-plane:testing-windows"
+        "agent-adp-windows-image": "saluki-images/agent-data-plane:testing-windows",
+        "courier-windows-binary": "target/release/panoramic-courier.exe"
       },
       "ci_jobs": [
         "test-integration-windows-amd64"
@@ -2076,14 +2124,16 @@
       "name": "adp-memory-mode-strict-exceeds-limit",
       "suite": "integration",
       "subject_os": "linux",
-      "runtime": "linux",
+      "runtime": "linux-container",
       "source": "test/integration/cases/adp-memory-mode-strict-exceeds-limit/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/datadog-agent:testing-devel"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest"
       },
       "ci_jobs": [
         "test-integration"
@@ -2095,13 +2145,16 @@
       "name": "adp-memory-mode-strict-exceeds-limit",
       "suite": "integration",
       "subject_os": "macos",
-      "runtime": "mac",
+      "runtime": "host-process-group",
       "source": "test/integration/cases/adp-memory-mode-strict-exceeds-limit/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
-      "images": {},
+      "images": {
+        "adp-host-binary": "target/release/agent-data-plane",
+        "agent-host-install": "/tmp/saluki-dda/datadog-agent"
+      },
       "ci_jobs": [
         "test-integration-macos-arm64",
         "test-integration-macos-amd64"
@@ -2113,14 +2166,15 @@
       "name": "adp-memory-mode-strict-exceeds-limit",
       "suite": "integration",
       "subject_os": "windows",
-      "runtime": "windows",
+      "runtime": "windows-container",
       "source": "test/integration/cases/adp-memory-mode-strict-exceeds-limit/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/agent-data-plane:testing-windows"
+        "agent-adp-windows-image": "saluki-images/agent-data-plane:testing-windows",
+        "courier-windows-binary": "target/release/panoramic-courier.exe"
       },
       "ci_jobs": [
         "test-integration-windows-amd64"
@@ -2132,14 +2186,16 @@
       "name": "adp-memory-mode-strict-within-limit",
       "suite": "integration",
       "subject_os": "linux",
-      "runtime": "linux",
+      "runtime": "linux-container",
       "source": "test/integration/cases/adp-memory-mode-strict-within-limit/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/datadog-agent:testing-devel"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest"
       },
       "ci_jobs": [
         "test-integration"
@@ -2151,13 +2207,16 @@
       "name": "adp-memory-mode-strict-within-limit",
       "suite": "integration",
       "subject_os": "macos",
-      "runtime": "mac",
+      "runtime": "host-process-group",
       "source": "test/integration/cases/adp-memory-mode-strict-within-limit/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
-      "images": {},
+      "images": {
+        "adp-host-binary": "target/release/agent-data-plane",
+        "agent-host-install": "/tmp/saluki-dda/datadog-agent"
+      },
       "ci_jobs": [
         "test-integration-macos-arm64",
         "test-integration-macos-amd64"
@@ -2169,14 +2228,15 @@
       "name": "adp-memory-mode-strict-within-limit",
       "suite": "integration",
       "subject_os": "windows",
-      "runtime": "windows",
+      "runtime": "windows-container",
       "source": "test/integration/cases/adp-memory-mode-strict-within-limit/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/agent-data-plane:testing-windows"
+        "agent-adp-windows-image": "saluki-images/agent-data-plane:testing-windows",
+        "courier-windows-binary": "target/release/panoramic-courier.exe"
       },
       "ci_jobs": [
         "test-integration-windows-amd64"
@@ -2405,14 +2465,16 @@
       "name": "basic-startup",
       "suite": "integration",
       "subject_os": "linux",
-      "runtime": "linux",
+      "runtime": "linux-container",
       "source": "test/integration/cases/basic-startup/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/datadog-agent:testing-devel"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest"
       },
       "ci_jobs": [
         "test-integration"
@@ -2424,13 +2486,16 @@
       "name": "basic-startup",
       "suite": "integration",
       "subject_os": "macos",
-      "runtime": "mac",
+      "runtime": "host-process-group",
       "source": "test/integration/cases/basic-startup/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
-      "images": {},
+      "images": {
+        "adp-host-binary": "target/release/agent-data-plane",
+        "agent-host-install": "/tmp/saluki-dda/datadog-agent"
+      },
       "ci_jobs": [
         "test-integration-macos-arm64",
         "test-integration-macos-amd64"
@@ -2442,14 +2507,15 @@
       "name": "basic-startup",
       "suite": "integration",
       "subject_os": "windows",
-      "runtime": "windows",
+      "runtime": "windows-container",
       "source": "test/integration/cases/basic-startup/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/agent-data-plane:testing-windows"
+        "agent-adp-windows-image": "saluki-images/agent-data-plane:testing-windows",
+        "courier-windows-binary": "target/release/panoramic-courier.exe"
       },
       "ci_jobs": [
         "test-integration-windows-amd64"
@@ -2461,14 +2527,16 @@
       "name": "dogstatsd-autoscale-udp",
       "suite": "integration",
       "subject_os": "linux",
-      "runtime": "linux",
+      "runtime": "linux-container",
       "source": "test/integration/cases/dogstatsd-autoscale-udp/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/datadog-agent:testing-devel"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest"
       },
       "ci_jobs": [
         "test-integration"
@@ -2480,13 +2548,16 @@
       "name": "dogstatsd-autoscale-udp",
       "suite": "integration",
       "subject_os": "macos",
-      "runtime": "mac",
+      "runtime": "host-process-group",
       "source": "test/integration/cases/dogstatsd-autoscale-udp/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
-      "images": {},
+      "images": {
+        "adp-host-binary": "target/release/agent-data-plane",
+        "agent-host-install": "/tmp/saluki-dda/datadog-agent"
+      },
       "ci_jobs": [
         "test-integration-macos-arm64",
         "test-integration-macos-amd64"
@@ -2498,14 +2569,15 @@
       "name": "dogstatsd-autoscale-udp",
       "suite": "integration",
       "subject_os": "windows",
-      "runtime": "windows",
+      "runtime": "windows-container",
       "source": "test/integration/cases/dogstatsd-autoscale-udp/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/agent-data-plane:testing-windows"
+        "agent-adp-windows-image": "saluki-images/agent-data-plane:testing-windows",
+        "courier-windows-binary": "target/release/panoramic-courier.exe"
       },
       "ci_jobs": [
         "test-integration-windows-amd64"
@@ -2649,14 +2721,16 @@
       "name": "dogstatsd-enabled",
       "suite": "integration",
       "subject_os": "linux",
-      "runtime": "linux",
+      "runtime": "linux-container",
       "source": "test/integration/cases/dogstatsd-enabled/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/datadog-agent:testing-devel"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest"
       },
       "ci_jobs": [
         "test-integration"
@@ -2668,13 +2742,16 @@
       "name": "dogstatsd-enabled",
       "suite": "integration",
       "subject_os": "macos",
-      "runtime": "mac",
+      "runtime": "host-process-group",
       "source": "test/integration/cases/dogstatsd-enabled/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
-      "images": {},
+      "images": {
+        "adp-host-binary": "target/release/agent-data-plane",
+        "agent-host-install": "/tmp/saluki-dda/datadog-agent"
+      },
       "ci_jobs": [
         "test-integration-macos-arm64",
         "test-integration-macos-amd64"
@@ -2686,14 +2763,15 @@
       "name": "dogstatsd-enabled",
       "suite": "integration",
       "subject_os": "windows",
-      "runtime": "windows",
+      "runtime": "windows-container",
       "source": "test/integration/cases/dogstatsd-enabled/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/agent-data-plane:testing-windows"
+        "agent-adp-windows-image": "saluki-images/agent-data-plane:testing-windows",
+        "courier-windows-binary": "target/release/panoramic-courier.exe"
       },
       "ci_jobs": [
         "test-integration-windows-amd64"
@@ -3321,14 +3399,16 @@
       "name": "telemetry-endpoint",
       "suite": "integration",
       "subject_os": "linux",
-      "runtime": "linux",
+      "runtime": "linux-container",
       "source": "test/integration/cases/telemetry-endpoint/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/datadog-agent:testing-devel"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest"
       },
       "ci_jobs": [
         "test-integration"
@@ -3340,13 +3420,16 @@
       "name": "telemetry-endpoint",
       "suite": "integration",
       "subject_os": "macos",
-      "runtime": "mac",
+      "runtime": "host-process-group",
       "source": "test/integration/cases/telemetry-endpoint/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
-      "images": {},
+      "images": {
+        "adp-host-binary": "target/release/agent-data-plane",
+        "agent-host-install": "/tmp/saluki-dda/datadog-agent"
+      },
       "ci_jobs": [
         "test-integration-macos-arm64",
         "test-integration-macos-amd64"
@@ -3358,14 +3441,15 @@
       "name": "telemetry-endpoint",
       "suite": "integration",
       "subject_os": "windows",
-      "runtime": "windows",
+      "runtime": "windows-container",
       "source": "test/integration/cases/telemetry-endpoint/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/agent-data-plane:testing-windows"
+        "agent-adp-windows-image": "saluki-images/agent-data-plane:testing-windows",
+        "courier-windows-binary": "target/release/panoramic-courier.exe"
       },
       "ci_jobs": [
         "test-integration-windows-amd64"
@@ -3377,14 +3461,16 @@
       "name": "unprivileged-api-endpoints",
       "suite": "integration",
       "subject_os": "linux",
-      "runtime": "linux",
+      "runtime": "linux-container",
       "source": "test/integration/cases/unprivileged-api-endpoints/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/datadog-agent:testing-devel"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest"
       },
       "ci_jobs": [
         "test-integration"
@@ -3396,13 +3482,16 @@
       "name": "unprivileged-api-endpoints",
       "suite": "integration",
       "subject_os": "macos",
-      "runtime": "mac",
+      "runtime": "host-process-group",
       "source": "test/integration/cases/unprivileged-api-endpoints/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
-      "images": {},
+      "images": {
+        "adp-host-binary": "target/release/agent-data-plane",
+        "agent-host-install": "/tmp/saluki-dda/datadog-agent"
+      },
       "ci_jobs": [
         "test-integration-macos-arm64",
         "test-integration-macos-amd64"
@@ -3414,14 +3503,15 @@
       "name": "unprivileged-api-endpoints",
       "suite": "integration",
       "subject_os": "windows",
-      "runtime": "windows",
+      "runtime": "windows-container",
       "source": "test/integration/cases/unprivileged-api-endpoints/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/agent-data-plane:testing-windows"
+        "agent-adp-windows-image": "saluki-images/agent-data-plane:testing-windows",
+        "courier-windows-binary": "target/release/panoramic-courier.exe"
       },
       "ci_jobs": [
         "test-integration-windows-amd64"
@@ -6024,78 +6114,186 @@
     },
     "integration/adp-cmd-port": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [],
-          "exposed_ports": [],
-          "files": [],
-          "host_cgroup_namespace": false
-        },
-        "description": "Verifies ADP connects to the correct port when cmd_port is set",
-        "env": {
-          "DD_API_KEY": "00000000000000000000000000000000",
-          "DD_CMD_PORT": "7777",
-          "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_STANDALONE_MODE": "false",
-          "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT": "true",
-          "DD_HOSTNAME": "integration-test-cmd-port"
-        },
-        "intake": {
-          "enabled": false
-        },
-        "name": "adp-cmd-port",
-        "procedure": [
-          {
-            "assertion": "log_contains",
-            "pattern": "Waiting for initial configuration from Datadog Agent",
-            "regex": false,
-            "stream": "both",
-            "timeout": "60s"
-          },
-          {
-            "assertion": "log_contains",
-            "pattern": "Started HTTP server 'CMD API Server' on 127.0.0.1:7777",
-            "regex": false,
-            "stream": "both",
-            "timeout": "60s"
-          },
-          {
-            "assertion": "log_contains",
-            "pattern": "Successfully registered with the Datadog Agent.",
-            "regex": false,
-            "stream": "both",
-            "timeout": "60s"
-          },
-          {
-            "parallel": [
-              {
-                "assertion": "process_stable_for",
-                "duration": "10s"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_CMD_PORT": "7777",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT": "true",
+                "DD_HOSTNAME": "integration-test-cmd-port"
               },
-              {
-                "assertion": "log_contains",
-                "pattern": "Topology healthy",
-                "regex": false,
-                "stream": "both",
-                "timeout": "60s"
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "Waiting for initial configuration from Datadog Agent",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "on": "adp",
+              "pattern": "Started HTTP server 'CMD API Server' on 127.0.0.1:7777",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "on": "adp",
+              "pattern": "Successfully registered with the Datadog Agent.",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "on": "adp",
+                  "pattern": "Topology healthy",
+                  "step": "log_contains",
+                  "timeout": "60s"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        },
+        "macos": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_CMD_PORT": "7777",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT": "true",
+                "DD_HOSTNAME": "integration-test-cmd-port"
               },
-              {
-                "assertion": "log_not_contains",
-                "during": "10s",
-                "pattern": "panic|PANIC",
-                "regex": true,
-                "stream": "both"
-              }
-            ]
-          }
-        ],
-        "runtimes": [
-          "linux",
-          "mac",
-          "windows"
-        ],
-        "timeout": "120s"
+              "realization": "host-process-group",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "Waiting for initial configuration from Datadog Agent",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "on": "adp",
+              "pattern": "Started HTTP server 'CMD API Server' on 127.0.0.1:7777",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "on": "adp",
+              "pattern": "Successfully registered with the Datadog Agent.",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "on": "adp",
+                  "pattern": "Topology healthy",
+                  "step": "log_contains",
+                  "timeout": "60s"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        },
+        "windows": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_CMD_PORT": "7777",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT": "true",
+                "DD_HOSTNAME": "integration-test-cmd-port"
+              },
+              "realization": "windows-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "Waiting for initial configuration from Datadog Agent",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "on": "adp",
+              "pattern": "Started HTTP server 'CMD API Server' on 127.0.0.1:7777",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "on": "adp",
+              "pattern": "Successfully registered with the Datadog Agent.",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "on": "adp",
+                  "pattern": "Topology healthy",
+                  "step": "log_contains",
+                  "timeout": "60s"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        }
       },
       "steps": {
         "single_assertions": 3,
@@ -6112,54 +6310,123 @@
     },
     "integration/adp-config-check-exit": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [],
-          "exposed_ports": [],
-          "files": [],
-          "host_cgroup_namespace": false
-        },
-        "description": "Verify config check exits ADP on high-severity incompatible key",
-        "env": {
-          "DD_API_KEY": "00000000000000000000000000000000",
-          "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_STANDALONE_MODE": "false",
-          "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT": "true",
-          "DD_HEROKU_DYNO": "true",
-          "DD_HOSTNAME": "integration-test-config-exit"
-        },
-        "intake": {
-          "enabled": false
-        },
-        "name": "adp-config-check-exit",
-        "procedure": [
-          {
-            "assertion": "log_contains",
-            "pattern": "Unsupported configuration key with non-default value",
-            "regex": false,
-            "stream": "both",
-            "timeout": "60s"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT": "true",
+                "DD_HEROKU_DYNO": "true",
+                "DD_HOSTNAME": "integration-test-config-exit"
+              },
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
           },
-          {
-            "assertion": "log_contains",
-            "pattern": "incompatible configuration detected",
-            "regex": false,
-            "stream": "both",
-            "timeout": "60s"
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "Unsupported configuration key with non-default value",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "on": "adp",
+              "pattern": "incompatible configuration detected",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "code": 1,
+              "on": "adp",
+              "process": "adp",
+              "step": "exits_with",
+              "timeout": "60s"
+            }
+          ]
+        },
+        "macos": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT": "true",
+                "DD_HEROKU_DYNO": "true",
+                "DD_HOSTNAME": "integration-test-config-exit"
+              },
+              "realization": "host-process-group",
+              "subject": true,
+              "type": "agent-adp"
+            }
           },
-          {
-            "assertion": "adp_exits_with",
-            "expected_code": 1,
-            "timeout": "60s"
-          }
-        ],
-        "runtimes": [
-          "linux",
-          "mac",
-          "windows"
-        ],
-        "timeout": "120s"
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "Unsupported configuration key with non-default value",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "on": "adp",
+              "pattern": "incompatible configuration detected",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "code": 1,
+              "on": "adp",
+              "process": "adp",
+              "step": "exits_with",
+              "timeout": "60s"
+            }
+          ]
+        },
+        "windows": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT": "true",
+                "DD_HEROKU_DYNO": "true",
+                "DD_HOSTNAME": "integration-test-config-exit"
+              },
+              "realization": "windows-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "Unsupported configuration key with non-default value",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "on": "adp",
+              "pattern": "incompatible configuration detected",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "code": 1,
+              "on": "adp",
+              "process": "adp",
+              "step": "exits_with",
+              "timeout": "60s"
+            }
+          ]
+        }
       },
       "steps": {
         "single_assertions": 3,
@@ -6167,7 +6434,7 @@
         "parallel_assertions": 0,
         "actions": 0,
         "by_kind": {
-          "adp_exits_with": 1,
+          "exits_with": 1,
           "log_contains": 2
         }
       },
@@ -6175,58 +6442,135 @@
     },
     "integration/adp-config-check-no-warn": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [],
-          "exposed_ports": [],
-          "files": [],
-          "host_cgroup_namespace": false
-        },
-        "description": "Verify config check suppresses warnings for incompatible keys whose pipeline is inactive",
-        "env": {
-          "DD_API_KEY": "00000000000000000000000000000000",
-          "DD_DATA_PLANE_DOGSTATSD_ENABLED": "false",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_OTLP_ENABLED": "true",
-          "DD_DATA_PLANE_STANDALONE_MODE": "false",
-          "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT": "true",
-          "DD_DOGSTATSD_TELEMETRY_ENABLED_LISTENER_ID": "true",
-          "DD_HOSTNAME": "integration-test-config-no-warn"
-        },
-        "intake": {
-          "enabled": false
-        },
-        "name": "adp-config-check-no-warn",
-        "procedure": [
-          {
-            "parallel": [
-              {
-                "assertion": "process_stable_for",
-                "duration": "10s"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "false",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_OTLP_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT": "true",
+                "DD_DOGSTATSD_TELEMETRY_ENABLED_LISTENER_ID": "true",
+                "DD_HOSTNAME": "integration-test-config-no-warn"
               },
-              {
-                "assertion": "log_not_contains",
-                "during": "10s",
-                "pattern": "Unsupported configuration key",
-                "regex": false,
-                "stream": "both"
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "Unsupported configuration key",
+                  "step": "log_not_contains"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        },
+        "macos": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "false",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_OTLP_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT": "true",
+                "DD_DOGSTATSD_TELEMETRY_ENABLED_LISTENER_ID": "true",
+                "DD_HOSTNAME": "integration-test-config-no-warn"
               },
-              {
-                "assertion": "log_not_contains",
-                "during": "10s",
-                "pattern": "panic|PANIC",
-                "regex": true,
-                "stream": "both"
-              }
-            ]
-          }
-        ],
-        "runtimes": [
-          "linux",
-          "mac",
-          "windows"
-        ],
-        "timeout": "120s"
+              "realization": "host-process-group",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "Unsupported configuration key",
+                  "step": "log_not_contains"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        },
+        "windows": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "false",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_OTLP_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT": "true",
+                "DD_DOGSTATSD_TELEMETRY_ENABLED_LISTENER_ID": "true",
+                "DD_HOSTNAME": "integration-test-config-no-warn"
+              },
+              "realization": "windows-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "Unsupported configuration key",
+                  "step": "log_not_contains"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        }
       },
       "steps": {
         "single_assertions": 0,
@@ -6242,57 +6586,135 @@
     },
     "integration/adp-config-check-warn": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [],
-          "exposed_ports": [],
-          "files": [],
-          "host_cgroup_namespace": false
-        },
-        "description": "Verify config check warns on medium-severity incompatible keys without exiting",
-        "env": {
-          "DD_API_KEY": "00000000000000000000000000000000",
-          "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_STANDALONE_MODE": "false",
-          "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT": "true",
-          "DD_DOGSTATSD_TELEMETRY_ENABLED_LISTENER_ID": "true",
-          "DD_HOSTNAME": "integration-test-config-warn"
-        },
-        "intake": {
-          "enabled": false
-        },
-        "name": "adp-config-check-warn",
-        "procedure": [
-          {
-            "assertion": "log_contains",
-            "pattern": "key:\"dogstatsd_telemetry_enabled_listener_id\" | Unsupported configuration key. Proceeding.",
-            "regex": true,
-            "stream": "both",
-            "timeout": "60s"
-          },
-          {
-            "parallel": [
-              {
-                "assertion": "process_stable_for",
-                "duration": "10s"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT": "true",
+                "DD_DOGSTATSD_TELEMETRY_ENABLED_LISTENER_ID": "true",
+                "DD_HOSTNAME": "integration-test-config-warn"
               },
-              {
-                "assertion": "log_not_contains",
-                "during": "10s",
-                "pattern": "panic|PANIC",
-                "regex": true,
-                "stream": "both"
-              }
-            ]
-          }
-        ],
-        "runtimes": [
-          "linux",
-          "mac",
-          "windows"
-        ],
-        "timeout": "120s"
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "key:\"dogstatsd_telemetry_enabled_listener_id\" | Unsupported configuration key. Proceeding.",
+              "regex": true,
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        },
+        "macos": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT": "true",
+                "DD_DOGSTATSD_TELEMETRY_ENABLED_LISTENER_ID": "true",
+                "DD_HOSTNAME": "integration-test-config-warn"
+              },
+              "realization": "host-process-group",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "key:\"dogstatsd_telemetry_enabled_listener_id\" | Unsupported configuration key. Proceeding.",
+              "regex": true,
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        },
+        "windows": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT": "true",
+                "DD_DOGSTATSD_TELEMETRY_ENABLED_LISTENER_ID": "true",
+                "DD_HOSTNAME": "integration-test-config-warn"
+              },
+              "realization": "windows-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "key:\"dogstatsd_telemetry_enabled_listener_id\" | Unsupported configuration key. Proceeding.",
+              "regex": true,
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        }
       },
       "steps": {
         "single_assertions": 1,
@@ -7777,46 +8199,104 @@
     },
     "integration/adp-disabled-exit": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [],
-          "exposed_ports": [],
-          "files": [],
-          "host_cgroup_namespace": false
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_ENABLED": "false",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_HOSTNAME": "integration-test"
+              },
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "Agent Data Plane is not enabled. Exiting.",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "code": 0,
+              "on": "adp",
+              "process": "adp",
+              "step": "exits_with",
+              "timeout": "60s"
+            }
+          ]
         },
-        "description": "Verify ADP exits cleanly when data plane is not enabled",
-        "env": {
-          "DD_API_KEY": "00000000000000000000000000000000",
-          "DD_DATA_PLANE_ENABLED": "false",
-          "DD_DATA_PLANE_STANDALONE_MODE": "false",
-          "DD_HOSTNAME": "integration-test"
+        "macos": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_ENABLED": "false",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_HOSTNAME": "integration-test"
+              },
+              "realization": "host-process-group",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "Agent Data Plane is not enabled. Exiting.",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "code": 0,
+              "on": "adp",
+              "process": "adp",
+              "step": "exits_with",
+              "timeout": "60s"
+            }
+          ]
         },
-        "intake": {
-          "enabled": false
-        },
-        "name": "adp-disabled-exit",
-        "procedure": [
-          {
-            "assertion": "log_contains",
-            "pattern": "Agent Data Plane is not enabled. Exiting.",
-            "regex": false,
-            "stream": "both",
-            "timeout": "60s"
-          }
-        ],
-        "runtimes": [
-          "linux",
-          "mac",
-          "windows"
-        ],
-        "timeout": "120s"
+        "windows": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_ENABLED": "false",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_HOSTNAME": "integration-test"
+              },
+              "realization": "windows-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "Agent Data Plane is not enabled. Exiting.",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "code": 0,
+              "on": "adp",
+              "process": "adp",
+              "step": "exits_with",
+              "timeout": "60s"
+            }
+          ]
+        }
       },
       "steps": {
-        "single_assertions": 1,
+        "single_assertions": 2,
         "parallel_blocks": 0,
         "parallel_assertions": 0,
         "actions": 0,
         "by_kind": {
+          "exits_with": 1,
           "log_contains": 1
         }
       },
@@ -8270,55 +8750,126 @@
     },
     "integration/adp-memory-mode-disabled": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [],
-          "exposed_ports": [],
-          "files": [],
-          "host_cgroup_namespace": false
-        },
-        "description": "Verifies that memory limiting is disabled by default and bounds verification is skipped",
-        "env": {
-          "DD_API_KEY": "test-api-key",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_STANDALONE_MODE": "true",
-          "DD_HOSTNAME": "integration-test",
-          "DD_MEMORY_LIMIT": "1"
-        },
-        "intake": {
-          "enabled": false
-        },
-        "name": "adp-memory-mode-disabled",
-        "procedure": [
-          {
-            "assertion": "log_contains",
-            "pattern": "Memory limiting disabled.",
-            "regex": false,
-            "stream": "both",
-            "timeout": "60s"
-          },
-          {
-            "parallel": [
-              {
-                "assertion": "process_stable_for",
-                "duration": "10s"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "test-api-key",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "true",
+                "DD_HOSTNAME": "integration-test",
+                "DD_MEMORY_LIMIT": "1"
               },
-              {
-                "assertion": "log_not_contains",
-                "during": "10s",
-                "pattern": "panic|PANIC",
-                "regex": true,
-                "stream": "both"
-              }
-            ]
-          }
-        ],
-        "runtimes": [
-          "linux",
-          "mac",
-          "windows"
-        ],
-        "timeout": "120s"
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "Memory limiting disabled.",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        },
+        "macos": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "test-api-key",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "true",
+                "DD_HOSTNAME": "integration-test",
+                "DD_MEMORY_LIMIT": "1"
+              },
+              "realization": "host-process-group",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "Memory limiting disabled.",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        },
+        "windows": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "test-api-key",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "true",
+                "DD_HOSTNAME": "integration-test",
+                "DD_MEMORY_LIMIT": "1"
+              },
+              "realization": "windows-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "Memory limiting disabled.",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        }
       },
       "steps": {
         "single_assertions": 1,
@@ -8335,57 +8886,132 @@
     },
     "integration/adp-memory-mode-permissive-exceeds-limit": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [],
-          "exposed_ports": [],
-          "files": [],
-          "host_cgroup_namespace": false
-        },
-        "description": "Verifies that permissive mode emits a best-effort warning when the calculated bounds exceed the configured limit, but the process still starts",
-        "env": {
-          "DD_AGGREGATE_CONTEXT_LIMIT": "10000000",
-          "DD_API_KEY": "test-api-key",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_STANDALONE_MODE": "true",
-          "DD_HOSTNAME": "integration-test",
-          "DD_MEMORY_LIMIT": "256mb",
-          "DD_MEMORY_MODE": "permissive"
-        },
-        "intake": {
-          "enabled": false
-        },
-        "name": "adp-memory-mode-permissive-exceeds-limit",
-        "procedure": [
-          {
-            "assertion": "log_contains",
-            "pattern": "Memory limiting behavior will be best effort.",
-            "regex": false,
-            "stream": "both",
-            "timeout": "60s"
-          },
-          {
-            "parallel": [
-              {
-                "assertion": "process_stable_for",
-                "duration": "10s"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_AGGREGATE_CONTEXT_LIMIT": "10000000",
+                "DD_API_KEY": "test-api-key",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "true",
+                "DD_HOSTNAME": "integration-test",
+                "DD_MEMORY_LIMIT": "256mb",
+                "DD_MEMORY_MODE": "permissive"
               },
-              {
-                "assertion": "log_not_contains",
-                "during": "10s",
-                "pattern": "panic|PANIC",
-                "regex": true,
-                "stream": "both"
-              }
-            ]
-          }
-        ],
-        "runtimes": [
-          "linux",
-          "mac",
-          "windows"
-        ],
-        "timeout": "120s"
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "Memory limiting behavior will be best effort.",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        },
+        "macos": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_AGGREGATE_CONTEXT_LIMIT": "10000000",
+                "DD_API_KEY": "test-api-key",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "true",
+                "DD_HOSTNAME": "integration-test",
+                "DD_MEMORY_LIMIT": "256mb",
+                "DD_MEMORY_MODE": "permissive"
+              },
+              "realization": "host-process-group",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "Memory limiting behavior will be best effort.",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        },
+        "windows": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_AGGREGATE_CONTEXT_LIMIT": "10000000",
+                "DD_API_KEY": "test-api-key",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "true",
+                "DD_HOSTNAME": "integration-test",
+                "DD_MEMORY_LIMIT": "256mb",
+                "DD_MEMORY_MODE": "permissive"
+              },
+              "realization": "windows-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "Memory limiting behavior will be best effort.",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        }
       },
       "steps": {
         "single_assertions": 1,
@@ -8402,56 +9028,129 @@
     },
     "integration/adp-memory-mode-permissive-within-limit": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [],
-          "exposed_ports": [],
-          "files": [],
-          "host_cgroup_namespace": false
-        },
-        "description": "Verifies that permissive mode succeeds and verifies bounds when the calculated bounds fit within the configured limit",
-        "env": {
-          "DD_API_KEY": "test-api-key",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_STANDALONE_MODE": "true",
-          "DD_HOSTNAME": "integration-test",
-          "DD_MEMORY_LIMIT": "2gb",
-          "DD_MEMORY_MODE": "permissive"
-        },
-        "intake": {
-          "enabled": false
-        },
-        "name": "adp-memory-mode-permissive-within-limit",
-        "procedure": [
-          {
-            "assertion": "log_contains",
-            "pattern": "Verified memory bounds.",
-            "regex": false,
-            "stream": "both",
-            "timeout": "60s"
-          },
-          {
-            "parallel": [
-              {
-                "assertion": "process_stable_for",
-                "duration": "10s"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "test-api-key",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "true",
+                "DD_HOSTNAME": "integration-test",
+                "DD_MEMORY_LIMIT": "2gb",
+                "DD_MEMORY_MODE": "permissive"
               },
-              {
-                "assertion": "log_not_contains",
-                "during": "10s",
-                "pattern": "panic|PANIC",
-                "regex": true,
-                "stream": "both"
-              }
-            ]
-          }
-        ],
-        "runtimes": [
-          "linux",
-          "mac",
-          "windows"
-        ],
-        "timeout": "120s"
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "Verified memory bounds.",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        },
+        "macos": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "test-api-key",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "true",
+                "DD_HOSTNAME": "integration-test",
+                "DD_MEMORY_LIMIT": "2gb",
+                "DD_MEMORY_MODE": "permissive"
+              },
+              "realization": "host-process-group",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "Verified memory bounds.",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        },
+        "windows": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "test-api-key",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "true",
+                "DD_HOSTNAME": "integration-test",
+                "DD_MEMORY_LIMIT": "2gb",
+                "DD_MEMORY_MODE": "permissive"
+              },
+              "realization": "windows-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "Verified memory bounds.",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        }
       },
       "steps": {
         "single_assertions": 1,
@@ -8468,40 +9167,87 @@
     },
     "integration/adp-memory-mode-strict-exceeds-limit": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [],
-          "exposed_ports": [],
-          "files": [],
-          "host_cgroup_namespace": false
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_AGGREGATE_CONTEXT_LIMIT": "10000000",
+                "DD_API_KEY": "test-api-key",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "true",
+                "DD_HOSTNAME": "integration-test",
+                "DD_MEMORY_LIMIT": "256mb",
+                "DD_MEMORY_MODE": "strict"
+              },
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "code": 1,
+              "on": "adp",
+              "process": "adp",
+              "step": "exits_with",
+              "timeout": "60s"
+            }
+          ]
         },
-        "description": "Verifies that strict mode causes ADP to exit with code 1 when the calculated bounds exceed the configured limit",
-        "env": {
-          "DD_AGGREGATE_CONTEXT_LIMIT": "10000000",
-          "DD_API_KEY": "test-api-key",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_STANDALONE_MODE": "true",
-          "DD_HOSTNAME": "integration-test",
-          "DD_MEMORY_LIMIT": "256mb",
-          "DD_MEMORY_MODE": "strict"
+        "macos": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_AGGREGATE_CONTEXT_LIMIT": "10000000",
+                "DD_API_KEY": "test-api-key",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "true",
+                "DD_HOSTNAME": "integration-test",
+                "DD_MEMORY_LIMIT": "256mb",
+                "DD_MEMORY_MODE": "strict"
+              },
+              "realization": "host-process-group",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "code": 1,
+              "on": "adp",
+              "process": "adp",
+              "step": "exits_with",
+              "timeout": "60s"
+            }
+          ]
         },
-        "intake": {
-          "enabled": false
-        },
-        "name": "adp-memory-mode-strict-exceeds-limit",
-        "procedure": [
-          {
-            "assertion": "adp_exits_with",
-            "expected_code": 1,
-            "timeout": "60s"
-          }
-        ],
-        "runtimes": [
-          "linux",
-          "mac",
-          "windows"
-        ],
-        "timeout": "120s"
+        "windows": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_AGGREGATE_CONTEXT_LIMIT": "10000000",
+                "DD_API_KEY": "test-api-key",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "true",
+                "DD_HOSTNAME": "integration-test",
+                "DD_MEMORY_LIMIT": "256mb",
+                "DD_MEMORY_MODE": "strict"
+              },
+              "realization": "windows-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "code": 1,
+              "on": "adp",
+              "process": "adp",
+              "step": "exits_with",
+              "timeout": "60s"
+            }
+          ]
+        }
       },
       "steps": {
         "single_assertions": 1,
@@ -8509,63 +9255,136 @@
         "parallel_assertions": 0,
         "actions": 0,
         "by_kind": {
-          "adp_exits_with": 1
+          "exits_with": 1
         }
       },
       "ignored_fields": []
     },
     "integration/adp-memory-mode-strict-within-limit": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [],
-          "exposed_ports": [],
-          "files": [],
-          "host_cgroup_namespace": false
-        },
-        "description": "Verifies that strict mode succeeds and verifies bounds when the calculated bounds fit within the configured limit",
-        "env": {
-          "DD_API_KEY": "test-api-key",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_STANDALONE_MODE": "true",
-          "DD_HOSTNAME": "integration-test",
-          "DD_MEMORY_LIMIT": "2gb",
-          "DD_MEMORY_MODE": "strict"
-        },
-        "intake": {
-          "enabled": false
-        },
-        "name": "adp-memory-mode-strict-within-limit",
-        "procedure": [
-          {
-            "assertion": "log_contains",
-            "pattern": "Verified memory bounds.",
-            "regex": false,
-            "stream": "both",
-            "timeout": "60s"
-          },
-          {
-            "parallel": [
-              {
-                "assertion": "process_stable_for",
-                "duration": "10s"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "test-api-key",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "true",
+                "DD_HOSTNAME": "integration-test",
+                "DD_MEMORY_LIMIT": "2gb",
+                "DD_MEMORY_MODE": "strict"
               },
-              {
-                "assertion": "log_not_contains",
-                "during": "10s",
-                "pattern": "panic|PANIC",
-                "regex": true,
-                "stream": "both"
-              }
-            ]
-          }
-        ],
-        "runtimes": [
-          "linux",
-          "mac",
-          "windows"
-        ],
-        "timeout": "120s"
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "Verified memory bounds.",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        },
+        "macos": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "test-api-key",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "true",
+                "DD_HOSTNAME": "integration-test",
+                "DD_MEMORY_LIMIT": "2gb",
+                "DD_MEMORY_MODE": "strict"
+              },
+              "realization": "host-process-group",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "Verified memory bounds.",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        },
+        "windows": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "test-api-key",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "true",
+                "DD_HOSTNAME": "integration-test",
+                "DD_MEMORY_LIMIT": "2gb",
+                "DD_MEMORY_MODE": "strict"
+              },
+              "realization": "windows-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "Verified memory bounds.",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        }
       },
       "steps": {
         "single_assertions": 1,
@@ -9084,54 +9903,123 @@
     },
     "integration/basic-startup": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [],
-          "exposed_ports": [],
-          "files": [],
-          "host_cgroup_namespace": false
-        },
-        "description": "Verifies ADP starts successfully and remains stable",
-        "env": {
-          "DD_API_KEY": "test-api-key",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_STANDALONE_MODE": "true",
-          "DD_HOSTNAME": "integration-test"
-        },
-        "intake": {
-          "enabled": false
-        },
-        "name": "basic-startup",
-        "procedure": [
-          {
-            "assertion": "log_contains",
-            "pattern": "Agent Data Plane starting",
-            "regex": false,
-            "stream": "both",
-            "timeout": "60s"
-          },
-          {
-            "parallel": [
-              {
-                "assertion": "process_stable_for",
-                "duration": "10s"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "test-api-key",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "true",
+                "DD_HOSTNAME": "integration-test"
               },
-              {
-                "assertion": "log_not_contains",
-                "during": "10s",
-                "pattern": "panic|PANIC",
-                "regex": true,
-                "stream": "both"
-              }
-            ]
-          }
-        ],
-        "runtimes": [
-          "linux",
-          "mac",
-          "windows"
-        ],
-        "timeout": "120s"
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "Agent Data Plane starting",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        },
+        "macos": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "test-api-key",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "true",
+                "DD_HOSTNAME": "integration-test"
+              },
+              "realization": "host-process-group",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "Agent Data Plane starting",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        },
+        "windows": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "test-api-key",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "true",
+                "DD_HOSTNAME": "integration-test"
+              },
+              "realization": "windows-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "Agent Data Plane starting",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        }
       },
       "steps": {
         "single_assertions": 1,
@@ -9148,75 +10036,147 @@
     },
     "integration/dogstatsd-autoscale-udp": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [],
-          "exposed_ports": [
-            "58125/udp"
-          ],
-          "files": [],
-          "host_cgroup_namespace": false
-        },
-        "description": "Verifies DogStatsD UDP listener autoscaling (SO_REUSEPORT) starts cleanly on Linux",
-        "env": {
-          "DD_API_KEY": "00000000000000000000000000000000",
-          "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_STANDALONE_MODE": "false",
-          "DD_DOGSTATSD_AUTOSCALE_UDP_LISTENERS": "true",
-          "DD_DOGSTATSD_NON_LOCAL_TRAFFIC": "true",
-          "DD_HOSTNAME": "integration-test-dsd-autoscale"
-        },
-        "intake": {
-          "enabled": false
-        },
-        "name": "dogstatsd-autoscale-udp",
-        "procedure": [
-          {
-            "parallel": [
-              {
-                "assertion": "process_stable_for",
-                "duration": "10s"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DOGSTATSD_AUTOSCALE_UDP_LISTENERS": "true",
+                "DD_DOGSTATSD_NON_LOCAL_TRAFFIC": "true",
+                "DD_HOSTNAME": "integration-test-dsd-autoscale"
               },
-              {
-                "assertion": "port_listening",
-                "port": 58125,
-                "protocol": "udp",
-                "timeout": "60s"
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "on": "adp",
+                  "pattern": "listen_addr:\"udp://[^\"]+\" \\| DogStatsD listener started\\.",
+                  "process": "adp",
+                  "regex": true,
+                  "step": "log_contains",
+                  "timeout": "60s"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        },
+        "macos": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DOGSTATSD_AUTOSCALE_UDP_LISTENERS": "true",
+                "DD_DOGSTATSD_NON_LOCAL_TRAFFIC": "true",
+                "DD_HOSTNAME": "integration-test-dsd-autoscale"
               },
-              {
-                "assertion": "log_not_contains",
-                "during": "10s",
-                "pattern": "panic|PANIC",
-                "regex": true,
-                "stream": "both"
+              "realization": "host-process-group",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "on": "adp",
+                  "pattern": "listen_addr:\"udp://[^\"]+\" \\| DogStatsD listener started\\.",
+                  "process": "adp",
+                  "regex": true,
+                  "step": "log_contains",
+                  "timeout": "60s"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        },
+        "windows": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DOGSTATSD_AUTOSCALE_UDP_LISTENERS": "true",
+                "DD_DOGSTATSD_NON_LOCAL_TRAFFIC": "true",
+                "DD_HOSTNAME": "integration-test-dsd-autoscale"
               },
-              {
-                "assertion": "log_contains",
-                "pattern": "DogStatsD listener started",
-                "regex": false,
-                "stream": "both",
-                "timeout": "60s"
-              }
-            ]
-          }
-        ],
-        "runtimes": [
-          "linux",
-          "mac",
-          "windows"
-        ],
-        "timeout": "120s"
+              "realization": "windows-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "on": "adp",
+                  "pattern": "listen_addr:\"udp://[^\"]+\" \\| DogStatsD listener started\\.",
+                  "process": "adp",
+                  "regex": true,
+                  "step": "log_contains",
+                  "timeout": "60s"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        }
       },
       "steps": {
         "single_assertions": 0,
         "parallel_blocks": 1,
-        "parallel_assertions": 4,
+        "parallel_assertions": 3,
         "actions": 0,
         "by_kind": {
           "log_contains": 1,
           "log_not_contains": 1,
-          "port_listening": 1,
           "process_stable_for": 1
         }
       },
@@ -9422,59 +10382,141 @@
     },
     "integration/dogstatsd-enabled": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [],
-          "exposed_ports": [
-            "58125/udp"
-          ],
-          "files": [],
-          "host_cgroup_namespace": false
-        },
-        "description": "Verifies DogStatsD pipeline starts and listens on UDP port, and that a fatal OTLP TLS config does not crash ADP when OTLP is disabled",
-        "env": {
-          "DD_API_KEY": "00000000000000000000000000000000",
-          "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_STANDALONE_MODE": "false",
-          "DD_DOGSTATSD_NON_LOCAL_TRAFFIC": "true",
-          "DD_HOSTNAME": "integration-test-dsd",
-          "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CERT_FILE": "/nonexistent/cert.pem",
-          "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_TPM_OWNER_AUTH": "unused-test-value"
-        },
-        "intake": {
-          "enabled": false
-        },
-        "name": "dogstatsd-enabled",
-        "procedure": [
-          {
-            "parallel": [
-              {
-                "assertion": "process_stable_for",
-                "duration": "10s"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DOGSTATSD_NON_LOCAL_TRAFFIC": "true",
+                "DD_HOSTNAME": "integration-test-dsd",
+                "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CERT_FILE": "/nonexistent/cert.pem",
+                "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_TPM_OWNER_AUTH": "unused-test-value"
               },
-              {
-                "assertion": "port_listening",
-                "port": 58125,
-                "protocol": "udp",
-                "timeout": "60s"
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "on": "adp",
+                  "pattern": "listen_addr:\"udp://[^\"]+\" \\| DogStatsD listener started\\.",
+                  "process": "adp",
+                  "regex": true,
+                  "step": "log_contains",
+                  "timeout": "60s"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        },
+        "macos": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DOGSTATSD_NON_LOCAL_TRAFFIC": "true",
+                "DD_HOSTNAME": "integration-test-dsd",
+                "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CERT_FILE": "/nonexistent/cert.pem",
+                "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_TPM_OWNER_AUTH": "unused-test-value"
               },
-              {
-                "assertion": "log_not_contains",
-                "during": "10s",
-                "pattern": "panic|PANIC",
-                "regex": true,
-                "stream": "both"
-              }
-            ]
-          }
-        ],
-        "runtimes": [
-          "linux",
-          "mac",
-          "windows"
-        ],
-        "timeout": "120s"
+              "realization": "host-process-group",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "on": "adp",
+                  "pattern": "listen_addr:\"udp://[^\"]+\" \\| DogStatsD listener started\\.",
+                  "process": "adp",
+                  "regex": true,
+                  "step": "log_contains",
+                  "timeout": "60s"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        },
+        "windows": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DOGSTATSD_NON_LOCAL_TRAFFIC": "true",
+                "DD_HOSTNAME": "integration-test-dsd",
+                "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CERT_FILE": "/nonexistent/cert.pem",
+                "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_TPM_OWNER_AUTH": "unused-test-value"
+              },
+              "realization": "windows-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "on": "adp",
+                  "pattern": "listen_addr:\"udp://[^\"]+\" \\| DogStatsD listener started\\.",
+                  "process": "adp",
+                  "regex": true,
+                  "step": "log_contains",
+                  "timeout": "60s"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        }
       },
       "steps": {
         "single_assertions": 0,
@@ -9482,8 +10524,8 @@
         "parallel_assertions": 3,
         "actions": 0,
         "by_kind": {
+          "log_contains": 1,
           "log_not_contains": 1,
-          "port_listening": 1,
           "process_stable_for": 1
         }
       },
@@ -11875,74 +12917,186 @@
     },
     "integration/telemetry-endpoint": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [],
-          "exposed_ports": [
-            "55100/tcp"
-          ],
-          "files": [],
-          "host_cgroup_namespace": false
-        },
-        "description": "Verifies the internal telemetry routes are exposed on the unprivileged API endpoint",
-        "env": {
-          "DD_API_KEY": "00000000000000000000000000000000",
-          "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_STANDALONE_MODE": "false",
-          "DD_HOSTNAME": "integration-test-telemetry"
-        },
-        "intake": {
-          "enabled": false
-        },
-        "name": "telemetry-endpoint",
-        "procedure": [
-          {
-            "parallel": [
-              {
-                "assertion": "process_stable_for",
-                "duration": "10s"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_HOSTNAME": "integration-test-telemetry"
               },
-              {
-                "assertion": "port_listening",
-                "port": 55100,
-                "protocol": "tcp",
-                "timeout": "60s"
-              },
-              {
-                "assertion": "http_check",
-                "endpoint": "http://localhost:55100/metrics",
-                "insecure_skip_verify": false,
-                "status": {
-                  "equal": 200
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
                 },
-                "timeout": "60s"
-              },
-              {
-                "assertion": "http_check",
-                "endpoint": "http://localhost:55100/compat/metrics",
-                "insecure_skip_verify": false,
-                "status": {
-                  "equal": 200
+                {
+                  "endpoint": "api",
+                  "on": "adp",
+                  "step": "port_listening",
+                  "timeout": "60s"
                 },
-                "timeout": "60s"
+                {
+                  "endpoint": "api",
+                  "on": "adp",
+                  "path": "/metrics",
+                  "status": {
+                    "equal": 200
+                  },
+                  "step": "http_check",
+                  "timeout": "60s"
+                },
+                {
+                  "endpoint": "api",
+                  "on": "adp",
+                  "path": "/compat/metrics",
+                  "status": {
+                    "equal": 200
+                  },
+                  "step": "http_check",
+                  "timeout": "60s"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        },
+        "macos": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_HOSTNAME": "integration-test-telemetry"
               },
-              {
-                "assertion": "log_not_contains",
-                "during": "10s",
-                "pattern": "panic|PANIC",
-                "regex": true,
-                "stream": "both"
-              }
-            ]
-          }
-        ],
-        "runtimes": [
-          "linux",
-          "mac",
-          "windows"
-        ],
-        "timeout": "120s"
+              "realization": "host-process-group",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "endpoint": "api",
+                  "on": "adp",
+                  "step": "port_listening",
+                  "timeout": "60s"
+                },
+                {
+                  "endpoint": "api",
+                  "on": "adp",
+                  "path": "/metrics",
+                  "status": {
+                    "equal": 200
+                  },
+                  "step": "http_check",
+                  "timeout": "60s"
+                },
+                {
+                  "endpoint": "api",
+                  "on": "adp",
+                  "path": "/compat/metrics",
+                  "status": {
+                    "equal": 200
+                  },
+                  "step": "http_check",
+                  "timeout": "60s"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        },
+        "windows": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_HOSTNAME": "integration-test-telemetry"
+              },
+              "realization": "windows-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "endpoint": "api",
+                  "on": "adp",
+                  "step": "port_listening",
+                  "timeout": "60s"
+                },
+                {
+                  "endpoint": "api",
+                  "on": "adp",
+                  "path": "/metrics",
+                  "status": {
+                    "equal": 200
+                  },
+                  "step": "http_check",
+                  "timeout": "60s"
+                },
+                {
+                  "endpoint": "api",
+                  "on": "adp",
+                  "path": "/compat/metrics",
+                  "status": {
+                    "equal": 200
+                  },
+                  "step": "http_check",
+                  "timeout": "60s"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        }
       },
       "steps": {
         "single_assertions": 0,
@@ -11960,77 +13114,198 @@
     },
     "integration/unprivileged-api-endpoints": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [],
-          "exposed_ports": [
-            "55100/tcp"
-          ],
-          "files": [],
-          "host_cgroup_namespace": false
-        },
-        "description": "Verifies the /ready, /live, and /memory/status endpoints are accessible on the unprivileged API",
-        "env": {
-          "DD_API_KEY": "00000000000000000000000000000000",
-          "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_STANDALONE_MODE": "false",
-          "DD_HOSTNAME": "integration-test-health"
-        },
-        "intake": {
-          "enabled": false
-        },
-        "name": "unprivileged-api-endpoints",
-        "procedure": [
-          {
-            "parallel": [
-              {
-                "assertion": "process_stable_for",
-                "duration": "10s"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_HOSTNAME": "integration-test-health"
               },
-              {
-                "assertion": "http_check",
-                "endpoint": "http://localhost:55100/ready",
-                "insecure_skip_verify": false,
-                "status": {
-                  "equal": 200
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
                 },
-                "timeout": "60s"
-              },
-              {
-                "assertion": "http_check",
-                "endpoint": "http://localhost:55100/live",
-                "insecure_skip_verify": false,
-                "status": {
-                  "equal": 200
+                {
+                  "endpoint": "api",
+                  "on": "adp",
+                  "path": "/ready",
+                  "status": {
+                    "equal": 200
+                  },
+                  "step": "http_check",
+                  "timeout": "60s"
                 },
-                "timeout": "60s"
-              },
-              {
-                "assertion": "http_check",
-                "endpoint": "http://localhost:55100/memory/status",
-                "insecure_skip_verify": false,
-                "status": {
-                  "equal": 200
+                {
+                  "endpoint": "api",
+                  "on": "adp",
+                  "path": "/live",
+                  "status": {
+                    "equal": 200
+                  },
+                  "step": "http_check",
+                  "timeout": "60s"
                 },
-                "timeout": "60s"
+                {
+                  "endpoint": "api",
+                  "on": "adp",
+                  "path": "/memory/status",
+                  "status": {
+                    "equal": 200
+                  },
+                  "step": "http_check",
+                  "timeout": "60s"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        },
+        "macos": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_HOSTNAME": "integration-test-health"
               },
-              {
-                "assertion": "log_not_contains",
-                "during": "10s",
-                "pattern": "panic|PANIC",
-                "regex": true,
-                "stream": "both"
-              }
-            ]
-          }
-        ],
-        "runtimes": [
-          "linux",
-          "mac",
-          "windows"
-        ],
-        "timeout": "120s"
+              "realization": "host-process-group",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "endpoint": "api",
+                  "on": "adp",
+                  "path": "/ready",
+                  "status": {
+                    "equal": 200
+                  },
+                  "step": "http_check",
+                  "timeout": "60s"
+                },
+                {
+                  "endpoint": "api",
+                  "on": "adp",
+                  "path": "/live",
+                  "status": {
+                    "equal": 200
+                  },
+                  "step": "http_check",
+                  "timeout": "60s"
+                },
+                {
+                  "endpoint": "api",
+                  "on": "adp",
+                  "path": "/memory/status",
+                  "status": {
+                    "equal": 200
+                  },
+                  "step": "http_check",
+                  "timeout": "60s"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        },
+        "windows": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_HOSTNAME": "integration-test-health"
+              },
+              "realization": "windows-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "endpoint": "api",
+                  "on": "adp",
+                  "path": "/ready",
+                  "status": {
+                    "equal": 200
+                  },
+                  "step": "http_check",
+                  "timeout": "60s"
+                },
+                {
+                  "endpoint": "api",
+                  "on": "adp",
+                  "path": "/live",
+                  "status": {
+                    "equal": 200
+                  },
+                  "step": "http_check",
+                  "timeout": "60s"
+                },
+                {
+                  "endpoint": "api",
+                  "on": "adp",
+                  "path": "/memory/status",
+                  "status": {
+                    "equal": 200
+                  },
+                  "step": "http_check",
+                  "timeout": "60s"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        }
       },
       "steps": {
         "single_assertions": 0,

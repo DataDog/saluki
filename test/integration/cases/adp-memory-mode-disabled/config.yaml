@@ -1,28 +1,34 @@
-type: integration
 name: "adp-memory-mode-disabled"
 description: "Verifies that memory limiting is disabled by default and bounds verification is skipped"
 timeout: 120s
-runtimes: [linux, mac, windows]
+subject_os: [linux, macos, windows]
 
-env:
-  DD_API_KEY: "test-api-key"
-  DD_HOSTNAME: "integration-test"
-  DD_DATA_PLANE_ENABLED: "true"
-  DD_DATA_PLANE_STANDALONE_MODE: "true"
-  # An unrealistically small limit. With memory mode defaulted to "disabled", verification is
-  # skipped entirely and ADP uses an unbounded grant for the global limiter, so this value is
-  # intentionally ignored.
-  DD_MEMORY_LIMIT: "1"
-
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    config:
+      env:
+        DD_API_KEY: "test-api-key"
+        DD_HOSTNAME: "integration-test"
+        DD_DATA_PLANE_ENABLED: "true"
+        DD_DATA_PLANE_STANDALONE_MODE: "true"
+        # An unrealistically small limit. With memory mode defaulted to "disabled", verification is
+        # skipped entirely and ADP uses an unbounded grant for the global limiter, so this value is
+        # intentionally ignored.
+        DD_MEMORY_LIMIT: "1"
 
 procedure:
-  - assertion: log_contains
+  - step: log_contains
+    on: adp
     pattern: "Memory limiting disabled."
     timeout: 60s
   - parallel:
-      - assertion: process_stable_for
+      - step: process_stable_for
+        on: adp
         duration: 10s
-      - assertion: log_not_contains
+      - step: log_not_contains
+        on: adp
         pattern: "panic|PANIC"
         regex: true
         during: 10s
