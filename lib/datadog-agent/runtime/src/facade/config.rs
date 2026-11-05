@@ -28,6 +28,9 @@ pub trait RemoteAgentSpecification: Sized + 'static {
 
     /// Applies the configuration updates that the Datadog Agent sends after its initial snapshot.
     type ConfigurationUpdates: ConfigUpdatesRunner;
+
+    /// Additional gRPC services advertised during registration and served on the privileged API endpoint.
+    const ADDITIONAL_SERVICE_NAMES: &'static [&'static str] = &[];
 }
 
 /// A remote agent's local configuration, loaded before it connects to the Datadog Agent.
