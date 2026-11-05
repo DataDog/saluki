@@ -7,11 +7,16 @@
 
 use panoramic_core::participant::ParticipantType;
 
+mod agent;
 mod agent_adp;
 mod datadog_intake;
 mod fixture;
+mod millstone;
 mod tools;
-pub use self::{agent_adp::AgentAdp, datadog_intake::DatadogIntake, fixture::Fixture, tools::TOOLS_LINUX_IMAGE};
+pub use self::{
+    agent::Agent, agent_adp::AgentAdp, datadog_intake::DatadogIntake, fixture::Fixture, millstone::Millstone,
+    tools::TOOLS_LINUX_IMAGE,
+};
 
 /// Directory for case-supplied files in Linux containers.
 pub(crate) const CASE_FILES_DIR: &str = "/var/lib/panoramic/files";
@@ -19,7 +24,7 @@ pub(crate) const CASE_FILES_DIR: &str = "/var/lib/panoramic/files";
 pub(crate) const WINDOWS_CASE_FILES_DIR: &str = r"C:\panoramic\files";
 
 /// Participant types available to case files.
-pub const REGISTERED_TYPES: &[&dyn ParticipantType] = &[&AgentAdp, &DatadogIntake, &Fixture];
+pub const REGISTERED_TYPES: &[&dyn ParticipantType] = &[&Agent, &AgentAdp, &DatadogIntake, &Fixture, &Millstone];
 
 #[cfg(test)]
 mod tests {
@@ -40,11 +45,19 @@ mod tests {
                 .iter()
                 .map(|participant_type| participant_type.name())
                 .collect::<Vec<_>>(),
-            [AgentAdp::NAME, DatadogIntake::NAME, Fixture::NAME]
+            [
+                Agent::NAME,
+                AgentAdp::NAME,
+                DatadogIntake::NAME,
+                Fixture::NAME,
+                Millstone::NAME
+            ]
         );
+        assert_eq!(Agent::NAME, "agent");
         assert_eq!(AgentAdp::NAME, "agent-adp");
         assert_eq!(DatadogIntake::NAME, "datadog-intake");
         assert_eq!(Fixture::NAME, "fixture");
+        assert_eq!(Millstone::NAME, "millstone");
     }
 
     #[test]

@@ -134,6 +134,18 @@ impl ContainerRecipe {
         self
     }
 
+    /// Mounts a path from the container daemon's host at an absolute container path.
+    pub fn with_host_mount(
+        mut self, host_path: impl Into<String>, container_path: impl Into<String>, read_only: bool,
+    ) -> Self {
+        self.mounts.push(HostMount {
+            host_path: host_path.into(),
+            container_path: container_path.into(),
+            read_only,
+        });
+        self
+    }
+
     /// Sets the rendered environment, overriding matching image defaults.
     pub fn with_env(mut self, env: BTreeMap<String, String>) -> Self {
         self.env = env;
@@ -214,6 +226,22 @@ pub mod test_support {
         assert_eq!(recipe.command.as_deref().unwrap(), command);
         assert_eq!(&recipe.env, env);
         assert!(recipe.mounts.is_empty());
+    }
+
+    /// Returns each container mount's host path, container path and read-only setting.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the recipe is not a container recipe.
+    pub fn host_mounts(recipe: &Recipe) -> Vec<(&str, &str, bool)> {
+        let Recipe::Container(recipe) = recipe else {
+            panic!("expected a container recipe")
+        };
+        recipe
+            .mounts
+            .iter()
+            .map(|mount| (mount.host_path.as_str(), mount.container_path.as_str(), mount.read_only))
+            .collect()
     }
 
     /// Returns each placed file's path, permission bits and contents.

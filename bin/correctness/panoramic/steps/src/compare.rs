@@ -35,6 +35,8 @@ pub(crate) struct Compare {
     ignore_fields: Vec<String>,
     #[serde(default)]
     require_forwarded_packets: bool,
+    #[serde(default)]
+    required_metric_tag_keys: Vec<String>,
 }
 
 impl Compare {
@@ -123,6 +125,7 @@ impl Step for Compare {
         };
         match AnalysisRunner::new(self.kind.clone(), baseline, subject, Some(options))
             .with_dogstatsd_forwarding_requirement(self.require_forwarded_packets)
+            .with_required_metric_tag_keys(self.required_metric_tag_keys.clone())
             .run_analysis()
         {
             Ok(()) => StepReport::new(started, AssertionStatus::Passed, "Telemetry matches the baseline."),
@@ -152,6 +155,16 @@ impl StepFactory for CompareFactory {
         }
         if !matches!(step.kind, AnalysisMode::Traces) && (step.otlp_direct || !step.ignore_fields.is_empty()) {
             return Err("compare otlp_direct and ignore_fields require kind: traces".into());
+        }
+        if !step.required_metric_tag_keys.is_empty() && !matches!(step.kind, AnalysisMode::Metrics) {
+            return Err("compare required_metric_tag_keys requires kind: metrics".into());
+        }
+        if step
+            .required_metric_tag_keys
+            .iter()
+            .any(|key| key.is_empty() || key.contains(':') || key.trim() != key)
+        {
+            return Err("compare required_metric_tag_keys must contain nonempty tag keys without colons or surrounding whitespace".into());
         }
         Ok(Box::new(step))
     }

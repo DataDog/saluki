@@ -34,11 +34,12 @@ impl MetricsAnalyzer {
     }
 
     /// Analyzes the raw metrics from both the baseline and comparison targets, comparing them to one another.
+    /// Each side must contain a workload context with nonempty values for every `required_tag_keys` entry.
     ///
     /// # Errors
     ///
     /// If analysis fails, an error will be returned with specific details and the full list of mismatches.
-    pub fn run_analysis(self) -> Result<(), (GenericError, Vec<String>)> {
+    pub fn run_analysis(self, required_tag_keys: &[String]) -> Result<(), (GenericError, Vec<String>)> {
         let mut baseline_metrics = self.baseline_metrics;
         let mut comparison_metrics = self.comparison_metrics;
 
@@ -50,6 +51,29 @@ impl MetricsAnalyzer {
 
         // Filter out internal telemetry metrics.
         filter_internal_telemetry_metrics(&mut baseline_metrics, &mut comparison_metrics);
+
+        if !required_tag_keys.is_empty() {
+            let mut missing = Vec::new();
+            for (side, metrics) in [("baseline", &baseline_metrics), ("comparison", &comparison_metrics)] {
+                let has_required_tags = metrics.metrics().iter().any(|metric| {
+                    required_tag_keys.iter().all(|key| {
+                        metric.context().tags().iter().any(|tag| {
+                            tag.split_once(':')
+                                .is_some_and(|(name, value)| name == key && !value.is_empty())
+                        })
+                    })
+                });
+                if !has_required_tags {
+                    missing.push(format!(
+                        "{side} has no workload metric context with nonempty tags: {}",
+                        required_tag_keys.join(", ")
+                    ));
+                }
+            }
+            if !missing.is_empty() {
+                return Err((generic_error!("Missing required metric tags."), missing));
+            }
+        }
 
         // Make sure both the baseline and comparison targets emitted the same unique set of metrics.
         //

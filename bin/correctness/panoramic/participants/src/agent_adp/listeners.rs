@@ -1,11 +1,13 @@
 //! Listener ownership, configuration precedence and port delivery for the Agent and ADP.
 
-use std::{collections::BTreeMap, net::IpAddr};
+use std::{borrow::Cow, collections::BTreeMap, net::IpAddr};
 
 use panoramic_core::{
     endpoint::{Endpoint, EndpointKind, Evidence, Port},
     layout::{Os, Realization, RealizationKind},
 };
+
+use super::config_file::ConfigFile;
 
 #[derive(Clone, Copy)]
 enum Owner {
@@ -239,23 +241,29 @@ enum Platform {
 struct Environment<'a> {
     values: &'a BTreeMap<String, String>,
     platform: Platform,
+    file: Option<&'a ConfigFile>,
 }
 
 impl<'a> Environment<'a> {
-    fn value(&self, owner: Owner, key: &str, default: &'a str) -> (String, &'a str) {
+    fn value(&self, owner: Owner, key: &str, default: &'a str) -> Result<(String, Cow<'a, str>), String> {
         if self.platform == Platform::LinuxContainer && matches!(owner, Owner::Adp) {
             let key = format!("ADP_DD_{key}");
             if let Some(value) = self.values.get(&key) {
-                return (key, value);
+                return Ok((key, Cow::Borrowed(value)));
             }
         }
-        let key = format!("DD_{key}");
-        let value = self.values.get(&key).map_or(default, String::as_str);
-        (key, value)
+        let env_key = format!("DD_{key}");
+        if let Some(value) = self.values.get(&env_key) {
+            return Ok((env_key, Cow::Borrowed(value)));
+        }
+        if let Some(value) = self.file.map(|file| file.value(key)).transpose()?.flatten() {
+            return Ok(value);
+        }
+        Ok((env_key, Cow::Borrowed(default)))
     }
 
     fn enabled(&self, owner: Owner, key: &str, default: &'a str) -> Result<bool, String> {
-        let (key, value) = self.value(owner, key, default);
+        let (key, value) = self.value(owner, key, default)?;
         value
             .parse()
             .map_err(|error| format!("{key}='{value}' must be true or false: {error}"))
@@ -266,14 +274,15 @@ pub(super) fn otlp_proxy_enabled(env: &BTreeMap<String, String>) -> Result<bool,
     let env = Environment {
         values: env,
         platform: Platform::MacOsHost,
+        file: None,
     };
     Ok(env.enabled(Owner::Agent, "DATA_PLANE_ENABLED", "false")?
         && env.enabled(Owner::Agent, "DATA_PLANE_OTLP_ENABLED", "false")?
         && env.enabled(Owner::Agent, "DATA_PLANE_OTLP_PROXY_ENABLED", "false")?)
 }
 
-pub(super) fn endpoints(
-    realization: Realization, env: &BTreeMap<String, String>,
+pub(crate) fn endpoints(
+    realization: Realization, env: &BTreeMap<String, String>, file: Option<&ConfigFile>,
 ) -> Result<BTreeMap<String, Endpoint>, String> {
     let platform = match (realization.os, realization.kind) {
         (Os::Linux, RealizationKind::LinuxContainer) => Platform::LinuxContainer,
@@ -281,7 +290,11 @@ pub(super) fn endpoints(
         (Os::MacOs, RealizationKind::HostProcessGroup) => Platform::MacOsHost,
         _ => unreachable!("agent-adp dispatches listener configuration only for supported realizations"),
     };
-    let env = Environment { values: env, platform };
+    let env = Environment {
+        values: env,
+        platform,
+        file,
+    };
     let adp = env.enabled(Owner::Agent, "DATA_PLANE_ENABLED", "false")?;
     let dogstatsd = env.enabled(Owner::Agent, "USE_DOGSTATSD", "true")?;
     let adp_dogstatsd = adp && env.enabled(Owner::Agent, "DATA_PLANE_DOGSTATSD_ENABLED", "true")?;
@@ -290,7 +303,7 @@ pub(super) fn endpoints(
     let mut endpoints = BTreeMap::new();
     for listener in LISTENERS {
         if platform == Platform::WindowsContainer && matches!(listener.value, ValueKind::Path) {
-            let (key, value) = env.value(Owner::Agent, listener.key, "");
+            let (key, value) = env.value(Owner::Agent, listener.key, "")?;
             if !value.is_empty() {
                 return Err(format!(
                     "{key}='{value}' is unsupported on windows-container; unix socket listeners need a Linux container or macOS host"
@@ -327,8 +340,8 @@ pub(super) fn endpoints(
             owner => owner,
         };
         let tls = if listener.name == "otlp_http" {
-            let (cert_key, cert) = env.value(owner, "OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CERT_FILE", "");
-            let (key_key, key) = env.value(owner, "OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_KEY_FILE", "");
+            let (cert_key, cert) = env.value(owner, "OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CERT_FILE", "")?;
+            let (key_key, key) = env.value(owner, "OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_KEY_FILE", "")?;
             if cert.is_empty() != key.is_empty() {
                 return Err(format!(
                     "{cert_key} and {key_key} must both be nonempty to enable OTLP HTTP TLS, or both empty"
@@ -343,7 +356,7 @@ pub(super) fn endpoints(
         } else {
             listener.default
         };
-        let (key, value) = env.value(owner, listener.key, default);
+        let (key, value) = env.value(owner, listener.key, default)?;
         let invalid = |reason: &str| format!("{key}='{value}' {reason}");
         let endpoint = match listener.value {
             ValueKind::Pipe => {
@@ -353,18 +366,18 @@ pub(super) fn endpoints(
                 if value.contains(['\\', '/', '\0']) {
                     return Err(invalid("must be a pipe name without separators or NUL"));
                 }
-                Endpoint::named_pipe(value)
+                Endpoint::named_pipe(value.as_ref())
             }
             ValueKind::Path => {
                 if value.is_empty() {
                     continue;
                 }
-                if !value.starts_with('/') {
-                    return Err(invalid("must be an absolute socket path"));
+                if !value.starts_with('/') || value.contains('\0') {
+                    return Err(invalid("must be an absolute socket path without NUL"));
                 }
                 match listener.kind {
-                    EndpointKind::UnixDatagram => Endpoint::unix_datagram(value),
-                    EndpointKind::UnixStream => Endpoint::unix_stream(value),
+                    EndpointKind::UnixDatagram => Endpoint::unix_datagram(value.as_ref()),
+                    EndpointKind::UnixStream => Endpoint::unix_stream(value.as_ref()),
                     _ => unreachable!("path listeners are sockets"),
                 }
                 .with_ready(Evidence::socket_exists(listener.name))
@@ -400,7 +413,7 @@ pub(super) fn endpoints(
                             port
                         }
                         ValueKind::Address(_) => {
-                            let address = url::Url::parse(value)
+                            let address = url::Url::parse(&value)
                                 .map_err(|error| invalid(&format!("must be tcp://host:port: {error}")))?;
                             if address.scheme() != "tcp"
                                 || address.host_str().is_none()
@@ -441,8 +454,8 @@ pub(super) fn endpoints(
                     && (listener.kind == EndpointKind::Udp || matches!(listener.owner, Owner::AdpDogStatsD))
                     && !env.enabled(owner, "DOGSTATSD_NON_LOCAL_TRAFFIC", "false")?
                 {
-                    let (_, host) = env.value(owner, "BIND_HOST", "");
-                    if host.is_empty() || loopback_host(host) {
+                    let (_, host) = env.value(owner, "BIND_HOST", "")?;
+                    if host.is_empty() || loopback_host(&host) {
                         continue;
                     }
                 }

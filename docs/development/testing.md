@@ -501,7 +501,32 @@ The `liveness-container-tags` case shows a fixture created after its subject but
 The `agent-adp` Linux container definition uses `agent-adp-linux-image`. Its environment defaults match the legacy
 runner's port isolation: command API 55001, expvar 55000, APM 58126, process command API 56062, Agent IPC 55004,
 DogStatsD UDP 58125, ADP APIs 55100/55101 and Agent OTLP 54317/54318. The GUI is disabled. Case environment values
-replace those defaults.
+replace those defaults. A supplied `datadog.yaml` also suppresses defaults for keys it sets: explicit environment
+values win over the file, and file values win over type defaults. A file's zero DogStatsD port disables UDP rather
+than being replaced by a default.
+
+Linux `agent-adp` and `agent` accept `config.files.datadog.yaml`, placed at `/etc/datadog-agent/datadog.yaml`.
+Use `template: true` for early facts and connection references. Definitions read the file's listener keys while
+planning; endpoint, connection, or late references in a key they read are errors naming the file and key.
+Other late references remain valid.
+
+The Linux-only `agent` type uses `agent-adp-linux-image` with ADP disabled and observes only the Agent process.
+It retains the image's defaults and shares file handling and connections with `agent-adp`. Its operations are
+`cli_agent` and `config_dump`. The `runtime` dump view returns `agent config`, decoded from YAML to JSON.
+The Agent rejects the `source` view before execution; it offers only runtime configuration.
+
+Both types accept `config.params.host_view: true` on Linux. This mounts `/proc`, `/sys/fs/cgroup`, and the Docker
+socket read-only and sets the corresponding Agent host paths. Rootless Docker can reject file placement with a
+`remount-ro /host/proc: operation not permitted` error. Removing host view can diagnose other behavior, but cannot
+prove container-origin enrichment.
+
+The Linux-only `millstone` type runs `baseline` and `subject` senders in one container from `tools-linux-image`.
+Both use the seed in the required `millstone.yaml` template; its target is the `target` connection's URL, and the
+baseline configuration changes only that field to `baseline_target`. Both connections are required. Senders stay
+alive after `Millstone finished sending` so their container identity remains available through flushing. Each has
+its own exit record and log. The baseline capture is collected into `traffic/`; the subject capture manifest is kept
+under `load/collected/` when the participant is named `load`, allowing payload-digest comparison without retaining
+a second payload stream. `dsd-plain` and `dsd-origin-detection` demonstrate this composition.
 
 In Linux containers, `agent-adp` accepts the directory configuration names `files/` and `cont-init.d/`.
 Files under `files/` land beneath `/var/lib/panoramic/files`, available through the `files_dir` fact, with mode 0644.
@@ -511,7 +536,7 @@ Windows containers accept `files/`, placing regular files under `C:\panoramic\fi
 paths. The Windows `files_dir` fact names that directory. `cont-init.d/` is Linux-only.
 macOS host process groups reject case files, including files in OS overlays.
 
-The definition derives these endpoints from the effective environment:
+The definition derives these endpoints from the effective environment and, on Linux, the supplied configuration file:
 
 | Endpoint | Kind | Environment key | Conditions and readiness |
 | --- | --- | --- | --- |
@@ -898,7 +923,7 @@ A case must not set, in `config.env` or the overlay for that OS, an environment 
 connections delivers. Two connections of one participant must not deliver the same variable, and a connection
 must not deliver a variable carrying an assigned listener port.
 Every required consumed endpoint must be connected, and each `config.endpoints` key must name an endpoint
-the participant serves. The `agent-adp` definition derives its listener ports from the environment; configure those
+the participant serves. The `agent-adp` definition derives listener ports from its environment and Linux configuration file; configure those
 ports through the listener's environment key.
 
 On macOS, the `agent-adp` definition declares every listener and lets core assign its port unless the case sets
@@ -1102,6 +1127,11 @@ false) and `ignore_fields` (default empty). Forwarded packets are compared for e
 (default false) additionally requires nonempty captures. Mismatches and invalid product responses fail the step;
 transport and other harness failures error it. Capture-write failures are recorded in the traffic manifest without
 changing the comparison verdict.
+
+For metrics, `required_metric_tag_keys` (default empty) requires at least one workload context on each side with
+nonempty values for every listed tag key. Internal telemetry doesn't satisfy this check, nor do tags split across
+contexts. The origin-detection cases require `image_name`, a low-cardinality tag from container discovery that their
+workloads don't send. Equal but unenriched outputs therefore fail.
 
 ## Benchmark tests: Single Machine Performance (SMP)
 

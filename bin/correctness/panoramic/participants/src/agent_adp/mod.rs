@@ -14,11 +14,12 @@ use panoramic_core::participant::{
 };
 use panoramic_core::recipe::Recipe;
 
+pub(crate) mod config_file;
 mod late;
-mod linux;
-mod listeners;
+pub(crate) mod linux;
+pub(crate) mod listeners;
 mod macos;
-mod operations;
+pub(crate) mod operations;
 mod windows;
 
 /// The Core Agent and ADP running together.
@@ -84,7 +85,7 @@ impl ParticipantType for AgentAdp {
 
     fn recipe(&self, realization: Realization, config: &RenderedConfig) -> Result<Recipe, String> {
         match (realization.os, realization.kind) {
-            (Os::Linux, RealizationKind::LinuxContainer) => linux::recipe(config),
+            (Os::Linux, RealizationKind::LinuxContainer) => linux::recipe(config, true),
             (Os::MacOs, RealizationKind::HostProcessGroup) => macos::recipe(config),
             (Os::Windows, RealizationKind::WindowsContainer) => windows::recipe(config),
             _ => Err(format!(
@@ -97,14 +98,22 @@ impl ParticipantType for AgentAdp {
     }
 
     fn config_files(&self) -> &'static [&'static str] {
-        &["cont-init.d/", "files/"]
+        &["datadog.yaml", "cont-init.d/", "files/"]
     }
 
     fn params(&self) -> &'static [&'static str] {
-        &["extra_hosts"]
+        &["extra_hosts", "host_view"]
     }
 
     fn validate_config(&self, realization: Realization, config: &CaseValues) -> Result<(), String> {
+        if (realization.os, realization.kind) != (Os::Linux, RealizationKind::LinuxContainer) {
+            if linux::host_view(&config.params)? {
+                return Err("host_view is supported in Linux containers only".into());
+            }
+            if config.files.contains_key("datadog.yaml") || config.file_contents.contains_key("datadog.yaml") {
+                return Err("agent-adp datadog.yaml is supported in Linux containers only".into());
+            }
+        }
         if !matches!(
             (realization.os, realization.kind),
             (Os::Linux, RealizationKind::LinuxContainer) | (Os::Windows, RealizationKind::WindowsContainer)
@@ -122,10 +131,11 @@ impl ParticipantType for AgentAdp {
         }
         match (realization.os, realization.kind) {
             (Os::Linux, RealizationKind::LinuxContainer) => {
-                late::validate(&config.env, &config.params)?;
-                let mut env = container_default_env();
+                linux::validate_config(config)?;
+                let file = config_file::ConfigFile::parse(&config.file_contents)?;
+                let mut env = self.default_env(realization, config);
                 env.extend(config.env.clone());
-                listeners::endpoints(realization, &env)?;
+                listeners::endpoints(realization, &env, Some(&file))?;
             }
             (Os::MacOs, RealizationKind::HostProcessGroup) => macos::validate_config(realization, config)?,
             (Os::Windows, RealizationKind::WindowsContainer) => {
@@ -133,18 +143,17 @@ impl ParticipantType for AgentAdp {
                 late::validate(&config.env, &config.params)?;
                 let mut env = container_default_env();
                 env.extend(config.env.clone());
-                listeners::endpoints(realization, &env)?;
+                listeners::endpoints(realization, &env, None)?;
             }
             _ => {}
         }
         Ok(())
     }
 
-    fn default_env(&self, realization: Realization, _: &CaseValues) -> BTreeMap<String, String> {
+    fn default_env(&self, realization: Realization, config: &CaseValues) -> BTreeMap<String, String> {
         match (realization.os, realization.kind) {
-            (Os::Linux, RealizationKind::LinuxContainer) | (Os::Windows, RealizationKind::WindowsContainer) => {
-                container_default_env()
-            }
+            (Os::Linux, RealizationKind::LinuxContainer) => linux::default_env(config, container_default_env()),
+            (Os::Windows, RealizationKind::WindowsContainer) => container_default_env(),
             (Os::MacOs, RealizationKind::HostProcessGroup) => macos::default_env(),
             _ => BTreeMap::new(),
         }
@@ -154,9 +163,13 @@ impl ParticipantType for AgentAdp {
         &self, realization: Realization, config: &EffectiveConfig,
     ) -> Result<BTreeMap<String, Endpoint>, String> {
         match (realization.os, realization.kind) {
-            (Os::Linux, RealizationKind::LinuxContainer)
-            | (Os::MacOs, RealizationKind::HostProcessGroup)
-            | (Os::Windows, RealizationKind::WindowsContainer) => listeners::endpoints(realization, &config.env),
+            (Os::Linux, RealizationKind::LinuxContainer) => {
+                let file = config_file::ConfigFile::parse(&config.files)?;
+                listeners::endpoints(realization, &config.env, Some(&file))
+            }
+            (Os::MacOs, RealizationKind::HostProcessGroup) | (Os::Windows, RealizationKind::WindowsContainer) => {
+                listeners::endpoints(realization, &config.env, None)
+            }
             _ => Ok(BTreeMap::new()),
         }
     }
@@ -312,7 +325,7 @@ mod tests {
 
     #[test]
     fn extra_hosts_are_rejected_on_macos_host_process_groups() {
-        assert_eq!(AgentAdp.params(), &["extra_hosts"]);
+        assert_eq!(AgentAdp.params(), &["extra_hosts", "host_view"]);
         for &(os, kind) in AgentAdp
             .supports()
             .iter()

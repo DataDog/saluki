@@ -405,3 +405,74 @@ async fn both_snapshots_are_fetched_concurrently() {
     assert_fetched_once(&subject);
     assert_fetched_once(&baseline);
 }
+
+#[tokio::test]
+async fn required_metric_tag_keys_need_one_enriched_workload_context_on_each_side() {
+    let mut enriched = metric(1.0);
+    enriched[0]["context"]["tags"] = json!(["env:test", "origin:sender", "image:tools"]);
+    let mut empty = enriched.clone();
+    empty[0]["context"]["tags"] = json!(["origin:", "image:tools"]);
+    let mut telemetry = enriched.clone();
+    telemetry[0]["context"]["name"] = json!("system.cpu");
+    let mut split = json!([metric(1.0)[0].clone(), metric(1.0)[0].clone()]);
+    split[0]["context"]["tags"] = json!(["origin:sender"]);
+    split[1]["context"]["tags"] = json!(["image:tools"]);
+    for (baseline_metrics, subject_metrics, missing) in [
+        (enriched.clone(), enriched.clone(), vec![]),
+        (metric(1.0), metric(1.0), vec!["baseline", "comparison"]),
+        (metric(1.0), enriched.clone(), vec!["baseline"]),
+        (enriched.clone(), metric(1.0), vec!["comparison"]),
+        (empty.clone(), empty, vec!["baseline", "comparison"]),
+        (telemetry.clone(), telemetry, vec!["baseline", "comparison"]),
+        (split.clone(), split, vec!["baseline", "comparison"]),
+    ] {
+        let subject = FakeParticipant::default();
+        let baseline = FakeParticipant::default();
+        snapshots(&subject, subject_metrics, &[]);
+        snapshots(&baseline, baseline_metrics, &[]);
+        let mut fields = valid_fields(Compare::NAME);
+        fields.insert("required_metric_tag_keys".into(), json!(["origin", "image"]));
+        let dir = tempfile::tempdir().unwrap();
+        let report = compare(&fields, &subject, &baseline, dir.path()).await;
+        if missing.is_empty() {
+            assert_eq!(report.status, AssertionStatus::Passed, "{}", report.message);
+        } else {
+            assert_eq!(report.status, AssertionStatus::Failed, "{}", report.message);
+            let mut message = "Missing required metric tags.".to_string();
+            for side in missing {
+                message.push_str(&format!(
+                    "\n{side} has no workload metric context with nonempty tags: origin, image"
+                ));
+            }
+            assert_eq!(report.message, message);
+        }
+        for side in Side::ALL {
+            assert!(dir.path().join("traffic").join(side.records_file_name()).is_file());
+        }
+    }
+}
+
+#[test]
+fn required_metric_tag_keys_accept_only_bare_keys_for_metrics() {
+    let mut fields = valid_fields(Compare::NAME);
+    for value in [
+        json!(true),
+        json!("origin"),
+        json!([false]),
+        json!([""]),
+        json!(["origin:sender"]),
+        json!([" origin"]),
+    ] {
+        fields.insert("required_metric_tag_keys".into(), value.clone());
+        assert!(CompareFactory.build(&fields).is_err(), "{value}");
+    }
+    fields.insert("required_metric_tag_keys".into(), json!(["origin"]));
+    assert!(CompareFactory.build(&fields).is_ok());
+    for kind in ["events", "service_checks", "traces"] {
+        fields.insert("kind".into(), json!(kind));
+        assert_eq!(
+            CompareFactory.build(&fields).unwrap_err(),
+            "compare required_metric_tag_keys requires kind: metrics"
+        );
+    }
+}

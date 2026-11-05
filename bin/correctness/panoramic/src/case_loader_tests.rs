@@ -127,16 +127,16 @@ fn agent_adp_participants_accept_environment_overlays_and_only_declared_file_nam
     for (fields, expected) in [
         (
             "config: {files: {settings.yaml: missing.yaml}}",
-            "it declares cont-init.d/, files/",
+            "it declares datadog.yaml, cont-init.d/, files/",
         ),
-        ("config: {params: {mode: fast}}", "it accepts extra_hosts"),
+        ("config: {params: {mode: fast}}", "it accepts extra_hosts, host_view"),
         (
             "config: {os: {linux: {files: {settings.yaml: missing.yaml}}}}",
-            "it declares cont-init.d/, files/",
+            "it declares datadog.yaml, cont-init.d/, files/",
         ),
         (
             "config: {os: {linux: {params: {mode: fast}}}}",
-            "it accepts extra_hosts",
+            "it accepts extra_hosts, host_view",
         ),
     ] {
         let yaml = PARTICIPANT_FIELDS.replace("subject: true", &format!("subject: true, {fields}"));
@@ -832,5 +832,78 @@ fn realization_options_are_checked_against_the_backend() {
         } else {
             assert_eq!(loaded.unwrap().len(), 1);
         }
+    }
+}
+
+#[test]
+fn uds_comparisons_share_one_paired_sender_and_preserve_their_configured_workload() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../test/correctness/cases");
+    let expected_seed = serde_json::json!([
+        2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107,
+        109, 113, 127, 131
+    ]);
+    for (name, origin) in [("dsd-plain", false), ("dsd-origin-detection", true)] {
+        let case = crate::CASE_LOADER
+            .load_file(&root.join(name).join("config.yaml"))
+            .unwrap()
+            .remove(0);
+        let plan = planner().compile(case, Os::Linux).unwrap().into_plan().unwrap();
+        assert_eq!(plan.case().suite(), "correctness");
+        let CaseSchema::Participants { file, procedure } = plan.case().schema() else {
+            panic!("comparison declares participants")
+        };
+        assert_eq!(
+            file.participants.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["adp", "agent", "intake-adp", "intake-agent", "load"]
+        );
+        assert_eq!(file.participants["load"].participant_type, "millstone");
+        assert_eq!(file.participants["agent"].participant_type, "agent");
+        for participant in ["adp", "agent"] {
+            let config = plan.effective_config(participant).unwrap();
+            let settings: Value = serde_saphyr::from_str(
+                String::from_utf8(config.files["datadog.yaml"].clone())
+                    .unwrap()
+                    .as_str(),
+            )
+            .unwrap();
+            assert_eq!(settings["hostname"], "correctness-testing");
+            assert_eq!(settings["dogstatsd_port"], 0);
+            assert_eq!(settings["dogstatsd_workers_count"], 1);
+            assert_eq!(settings["dogstatsd_origin_detection"], origin);
+            assert_eq!(
+                settings["dogstatsd_socket"],
+                format!("/airlock/{participant}/shared/metrics.sock")
+            );
+            assert!(settings.get("dd_url").is_none());
+            assert!(!config.env.contains_key("DD_DOGSTATSD_PORT"));
+            assert_eq!(
+                config.params.get("host_view").and_then(Value::as_bool).unwrap_or(false),
+                origin
+            );
+        }
+        let load = plan.effective_config("load").unwrap();
+        assert_ne!(load.env["MILLSTONE_TARGET"], load.env["MILLSTONE_BASELINE_TARGET"]);
+        let workload: Value = serde_saphyr::from_str(
+            String::from_utf8(load.files["millstone.yaml"].clone())
+                .unwrap()
+                .as_str(),
+        )
+        .unwrap();
+        assert_eq!(workload["seed"], expected_seed);
+        assert_eq!(workload["target"], load.env["MILLSTONE_TARGET"]);
+        assert_eq!(workload["volume"], 10000);
+        assert_eq!(workload["corpus"]["payload"]["dogstatsd"]["contexts"]["constant"], 3000);
+        let names = procedure
+            .iter()
+            .map(|node| match node {
+                ProcedureNode::Step(step) => step.name(),
+                ProcedureNode::Parallel(_) => panic!("senders finish before the stability window"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["log_contains", "log_contains", "process_stable_for", "compare"]);
+        let ProcedureNode::Step(window) = &procedure[2] else {
+            unreachable!()
+        };
+        assert_eq!(window.budget(), std::time::Duration::from_secs(32));
     }
 }

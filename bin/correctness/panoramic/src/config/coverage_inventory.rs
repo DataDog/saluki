@@ -1227,8 +1227,13 @@ fn every_selected_correctness_case_declares_a_local_baseline_image() {
         .iter()
         .filter(|row| row.suite == CORRECTNESS && row.status == SELECTED)
     {
+        let baseline = if row.execution == NATIVE {
+            &row.images[AgentAdp::LINUX_IMAGE.name]
+        } else {
+            &row.images["baseline"]
+        };
         assert!(
-            row.images["baseline"].starts_with("saluki-images/"),
+            baseline.starts_with("saluki-images/"),
             "{}: CI's manifest binds both baseline and comparison to agent-adp-linux-image, so a published baseline would be silently replaced; declare a saluki-images/ baseline",
             row.name,
         );

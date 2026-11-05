@@ -61,7 +61,7 @@ struct AgentAdpOperation {
 enum Command {
     CliAdp,
     CliAgent,
-    ConfigDump,
+    ConfigDump(Program),
     ConfigSet,
     DogstatsdCapture,
     DogstatsdReplay,
@@ -80,7 +80,7 @@ macro_rules! operations {
                 programs: $programs,
             },
             &AgentAdpOperation {
-                command: Command::ConfigDump,
+                command: Command::ConfigDump(Program::Adp),
                 programs: $programs,
             },
             &AgentAdpOperation {
@@ -106,6 +106,16 @@ macro_rules! operations {
 pub(super) const LINUX_OPERATIONS: &[&dyn Operation] = operations!(LINUX);
 pub(super) const MACOS_OPERATIONS: &[&dyn Operation] = operations!(Programs::HostProcesses);
 pub(super) const WINDOWS_OPERATIONS: &[&dyn Operation] = operations!(WINDOWS);
+pub(crate) const AGENT_OPERATIONS: &[&dyn Operation] = &[
+    &AgentAdpOperation {
+        command: Command::CliAgent,
+        programs: LINUX,
+    },
+    &AgentAdpOperation {
+        command: Command::ConfigDump(Program::Agent),
+        programs: LINUX,
+    },
+];
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -150,7 +160,7 @@ impl Operation for AgentAdpOperation {
         match self.command {
             Command::CliAdp => "cli_adp",
             Command::CliAgent => "cli_agent",
-            Command::ConfigDump => "config_dump",
+            Command::ConfigDump(_) => "config_dump",
             Command::ConfigSet => "config_set",
             Command::DogstatsdCapture => "dogstatsd_capture",
             Command::DogstatsdReplay => "dogstatsd_replay",
@@ -168,7 +178,7 @@ impl Operation for AgentAdpOperation {
                 };
                 (program, args.args, label)
             }
-            Command::ConfigDump => {
+            Command::ConfigDump(program) => {
                 let view = args
                     .as_object()
                     .filter(|args| args.len() == 1)
@@ -178,11 +188,24 @@ impl Operation for AgentAdpOperation {
                     .ok_or_else(|| HandleError::Harness {
                         message: "config_dump requires exactly {\"view\": \"source\"|\"runtime\"}".into(),
                     })?;
-                let mut argv = vec!["config".into(), "--json".into()];
-                if view == "runtime" {
-                    argv.push("--runtime".into());
+                if matches!(program, Program::Agent) && view == "source" {
+                    return Err(HandleError::Harness {
+                        message: "the Agent offers only the runtime configuration view".into(),
+                    });
                 }
-                (Program::Adp, argv, "ADP configuration CLI")
+                let mut argv = vec!["config".into()];
+                let label = match program {
+                    Program::Adp => {
+                        argv.push("--json".into());
+                        if view == "runtime" {
+                            argv.push("--runtime".into());
+                        }
+                        "ADP configuration CLI"
+                    }
+                    // The Agent exposes only its runtime configuration view, in YAML.
+                    Program::Agent => "Agent configuration CLI",
+                };
+                (program, argv, label)
             }
             Command::ConfigSet => {
                 let args: ConfigSetArgs = decode(args, "{\"key\": string, \"value\": string}")?;
@@ -253,9 +276,22 @@ impl Operation for AgentAdpOperation {
         }
         match self.command {
             Command::CliAdp | Command::CliAgent => Ok(json!({"output": combined_output(&output)})),
-            Command::ConfigDump => serde_json::from_slice(&output.stdout).map_err(|_| HandleError::Product {
-                message: "ADP configuration CLI returned invalid JSON".into(),
-            }),
+            Command::ConfigDump(Program::Adp) => {
+                serde_json::from_slice(&output.stdout).map_err(|_| HandleError::Product {
+                    message: "ADP configuration CLI returned invalid JSON".into(),
+                })
+            }
+            Command::ConfigDump(Program::Agent) => {
+                let invalid = || HandleError::Product {
+                    message: "Agent configuration CLI returned invalid YAML configuration".into(),
+                };
+                let text = simdutf8::basic::from_utf8(&output.stdout).map_err(|_| invalid())?;
+                let value: Value = serde_saphyr::from_str(text).map_err(|_| invalid())?;
+                if !value.is_object() {
+                    return Err(invalid());
+                }
+                Ok(value)
+            }
             Command::ConfigSet | Command::DogstatsdReplay => Ok(json!({})),
             Command::DogstatsdCapture => Ok(json!({"path": capture_path_from_output(&combined_output(&output))?})),
             Command::DogstatsdStats => Ok(json!({"metrics": metric_names(&combined_output(&output))?})),
@@ -311,6 +347,113 @@ mod tests {
 
     const ADP: &str = "/opt/datadog-agent/embedded/bin/agent-data-plane";
     const AGENT: &str = "/opt/datadog-agent/bin/agent/agent";
+
+    #[tokio::test]
+    async fn agent_config_dump_parses_the_runtime_yaml_and_rejects_the_source_view_without_running_anything() {
+        assert_eq!(
+            AGENT_OPERATIONS
+                .iter()
+                .map(|operation| operation.name())
+                .collect::<Vec<_>>(),
+            ["cli_agent", "config_dump"]
+        );
+        let result = run_operation(
+            operation(AGENT_OPERATIONS, "config_dump"),
+            json!({"view": "runtime"}),
+            |command| {
+                assert_eq!(command.argv, [AGENT, "config"]);
+                assert!(command.env.is_empty() && command.stdin.is_none());
+                Ok(output(
+                    0,
+                    b"dogstatsd_port: 0\ndata_plane:\n  enabled: false\ntags: [a, b]\n",
+                    b"",
+                ))
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            result,
+            json!({"dogstatsd_port": 0, "data_plane": {"enabled": false}, "tags": ["a", "b"]})
+        );
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let error = run_operation(
+            operation(AGENT_OPERATIONS, "config_dump"),
+            json!({"view": "source"}),
+            |_| {
+                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(output(0, b"dogstatsd_port: 0\n", b""))
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            error,
+            HandleError::Harness {
+                message: "the Agent offers only the runtime configuration view".into()
+            }
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        let result = run_operation(
+            operation(AGENT_OPERATIONS, "cli_agent"),
+            json!({"args": ["status"]}),
+            |command| {
+                assert_eq!(command.argv, [AGENT, "status"]);
+                Ok(output(0, b"agent status", b""))
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(result, json!({"output": "agent status"}));
+    }
+
+    #[tokio::test]
+    async fn agent_config_dump_validates_arguments_output_and_error_classification() {
+        let operation = operation(AGENT_OPERATIONS, "config_dump");
+        for args in [
+            Value::Null,
+            json!({}),
+            json!({"view": "unknown"}),
+            json!({"view": "source", "extra": true}),
+        ] {
+            let error = run_operation(operation, args, |_| panic!("invalid arguments must not exec"))
+                .await
+                .unwrap_err();
+            assert!(matches!(error, HandleError::Harness { .. }));
+        }
+        for text in [b"\xff".as_slice(), b"", b"secret output", b"[secret]", b"key: ["] {
+            let error = run_operation(operation, json!({"view": "runtime"}), |_| {
+                Ok(output(0, text, b"stderr-secret"))
+            })
+            .await
+            .unwrap_err();
+            assert_eq!(
+                error,
+                HandleError::Product {
+                    message: "Agent configuration CLI returned invalid YAML configuration".into()
+                }
+            );
+        }
+        for code in [1, 3, 126, 127] {
+            let error = run_operation(operation, json!({"view": "runtime"}), |_| {
+                Ok(output(code, b"secret output", b"stderr-secret"))
+            })
+            .await
+            .unwrap_err();
+            assert_eq!(matches!(error, HandleError::Harness { .. }), code == 126 || code == 127);
+            assert!(error.to_string().contains("Agent configuration CLI"));
+            assert!(!error.to_string().contains("secret"));
+        }
+        let expected = HandleError::Harness {
+            message: "execution unavailable".into(),
+        };
+        assert_eq!(
+            run_operation(operation, json!({"view": "runtime"}), |_| Err(expected.clone()))
+                .await
+                .unwrap_err(),
+            expected
+        );
+    }
 
     #[tokio::test]
     async fn operations_use_absolute_container_paths_or_declared_host_programs_with_relative_config() {

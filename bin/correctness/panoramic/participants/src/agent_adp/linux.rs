@@ -4,14 +4,15 @@ use std::collections::BTreeMap;
 
 use panoramic_core::{
     endpoint::{ConsumedEndpoint, Delivery, EndpointKind},
-    participant::{ExitChannel, OutputChannel, OutputStream, ProcessSpec, RenderedConfig},
+    participant::{CaseValues, ExitChannel, OutputChannel, OutputStream, ProcessSpec, RenderedConfig},
     recipe::{ContainerRecipe, Recipe},
 };
+use serde_json::Value;
 
-use super::AgentAdp;
+use super::{config_file::ConfigFile, AgentAdp};
 use crate::CASE_FILES_DIR;
 
-pub(super) fn consumes() -> BTreeMap<String, ConsumedEndpoint> {
+pub(crate) fn consumes() -> BTreeMap<String, ConsumedEndpoint> {
     BTreeMap::from([
         (
             "docker_api".into(),
@@ -88,15 +89,50 @@ const SERVICES: [Service; 2] = [
     },
 ];
 
-pub(super) const PROCESS_SPECS: [ProcessSpec; 2] = [SERVICES[0].process_spec(), SERVICES[1].process_spec()];
+pub(crate) const PROCESS_SPECS: [ProcessSpec; 2] = [SERVICES[0].process_spec(), SERVICES[1].process_spec()];
 
-pub(super) fn recipe(config: &RenderedConfig) -> Result<Recipe, String> {
+pub(crate) const AGENT_PROCESS_SPECS: [ProcessSpec; 1] = [SERVICES[1].process_spec()];
+
+pub(crate) fn host_view(params: &BTreeMap<String, Value>) -> Result<bool, String> {
+    params.get("host_view").map_or(Ok(false), |value| {
+        value.as_bool().ok_or_else(|| "host_view must be a boolean".into())
+    })
+}
+
+pub(crate) fn validate_config(config: &CaseValues) -> Result<(), String> {
+    host_view(&config.params)?;
+    super::late::validate(&config.env, &config.params)
+}
+
+pub(crate) fn default_env(config: &CaseValues, mut env: BTreeMap<String, String>) -> BTreeMap<String, String> {
+    if host_view(&config.params).expect("host_view was validated") {
+        env.extend([
+            ("DD_PROC_ROOT".into(), "/host/proc".into()),
+            ("DD_CGROUP_ROOT".into(), "/host/sys/fs/cgroup".into()),
+            ("DOCKER_HOST".into(), "unix:///var/run/docker.sock".into()),
+        ]);
+    }
+    ConfigFile::parse(&config.file_contents)
+        .expect("datadog.yaml was validated")
+        .omit_defaults(&mut env);
+    env
+}
+
+pub(crate) fn recipe(config: &RenderedConfig, with_adp: bool) -> Result<Recipe, String> {
     let mut recipe = ContainerRecipe::new(AgentAdp::LINUX_IMAGE).with_env(config.env().clone());
+    if host_view(config.params())? {
+        recipe = recipe
+            .with_host_mount("/proc", "/host/proc", true)
+            .with_host_mount("/sys/fs/cgroup", "/host/sys/fs/cgroup", true)
+            .with_host_mount("/var/run/docker.sock", "/var/run/docker.sock", true);
+    }
     if let Some(hook) = super::late::hook(config.env(), config.params()) {
         recipe = recipe.with_file("/etc/cont-init.d/10-panoramic-late-substitution.sh", 0o755, hook);
     }
     for (name, contents) in config.files() {
-        let (path, mode) = if let Some(relative) = name.strip_prefix("files/") {
+        let (path, mode) = if name == "datadog.yaml" {
+            ("/etc/datadog-agent/datadog.yaml".into(), 0o644)
+        } else if let Some(relative) = name.strip_prefix("files/") {
             (format!("{CASE_FILES_DIR}/{relative}"), 0o644)
         } else if let Some(hook) = name.strip_prefix("cont-init.d/") {
             if hook.contains('/') {
@@ -110,7 +146,7 @@ pub(super) fn recipe(config: &RenderedConfig) -> Result<Recipe, String> {
         };
         recipe = recipe.with_file(path, mode, contents.clone());
     }
-    for service in &SERVICES {
+    for service in SERVICES.iter().filter(|service| with_adp || service.process == "agent") {
         let prefix = format!(
             r"#!/usr/bin/execlineb -S1
 foreground {{
@@ -205,6 +241,113 @@ mod tests {
             .env
             .extend(overrides.iter().map(|(key, value)| ((*key).into(), (*value).into())));
         config
+    }
+
+    #[test]
+    fn host_view_is_opt_in_and_mounts_the_legacy_host_paths_read_only() {
+        use panoramic_core::recipe::test_support::{host_mounts, rendered_with_params};
+
+        use crate::Agent;
+
+        for participant in [&Agent as &dyn ParticipantType, &AgentAdp] {
+            for enabled in [None, Some(false), Some(true)] {
+                let values = CaseValues {
+                    params: enabled
+                        .map(|value| ("host_view".into(), Value::Bool(value)))
+                        .into_iter()
+                        .collect(),
+                    ..Default::default()
+                };
+                participant.validate_config(LINUX, &values).unwrap();
+                let env = participant.default_env(LINUX, &values);
+                for (key, expected) in [
+                    ("DD_PROC_ROOT", "/host/proc"),
+                    ("DD_CGROUP_ROOT", "/host/sys/fs/cgroup"),
+                    ("DOCKER_HOST", "unix:///var/run/docker.sock"),
+                ] {
+                    assert_eq!(
+                        env.get(key).map(String::as_str),
+                        (enabled == Some(true)).then_some(expected)
+                    );
+                }
+                let recipe = participant
+                    .recipe(LINUX, &rendered_with_params(env, values.params, BTreeMap::new()))
+                    .unwrap();
+                assert_eq!(
+                    host_mounts(&recipe),
+                    if enabled == Some(true) {
+                        vec![
+                            ("/proc", "/host/proc", true),
+                            ("/sys/fs/cgroup", "/host/sys/fs/cgroup", true),
+                            ("/var/run/docker.sock", "/var/run/docker.sock", true),
+                        ]
+                    } else {
+                        vec![]
+                    }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn host_view_validates_its_boolean_and_is_linux_only() {
+        use crate::Agent;
+        for participant in [&Agent as &dyn ParticipantType, &AgentAdp] {
+            for value in [
+                Value::Null,
+                Value::String("true".into()),
+                serde_json::json!(1),
+                serde_json::json!({}),
+            ] {
+                let values = CaseValues {
+                    params: BTreeMap::from([("host_view".into(), value)]),
+                    ..Default::default()
+                };
+                assert_eq!(
+                    participant.validate_config(LINUX, &values).unwrap_err(),
+                    "host_view must be a boolean"
+                );
+            }
+        }
+        for (os, kind) in [
+            (Os::MacOs, RealizationKind::HostProcessGroup),
+            (Os::Windows, RealizationKind::WindowsContainer),
+        ] {
+            let values = CaseValues {
+                params: BTreeMap::from([("host_view".into(), Value::Bool(true))]),
+                ..Default::default()
+            };
+            assert_eq!(
+                AgentAdp.validate_config(Realization { os, kind }, &values).unwrap_err(),
+                "host_view is supported in Linux containers only"
+            );
+        }
+    }
+
+    #[test]
+    fn host_view_defaults_do_not_mask_file_or_environment_roots() {
+        use crate::Agent;
+        for participant in [&Agent as &dyn ParticipantType, &AgentAdp] {
+            let mut values = CaseValues {
+                params: BTreeMap::from([("host_view".into(), Value::Bool(true))]),
+                file_contents: BTreeMap::from([(
+                    "datadog.yaml".into(),
+                    b"proc_root: /file/proc\ncgroup_root: /file/cgroup".to_vec(),
+                )]),
+                ..Default::default()
+            };
+            participant.validate_config(LINUX, &values).unwrap();
+            let defaults = participant.default_env(LINUX, &values);
+            assert!(!defaults.contains_key("DD_PROC_ROOT"));
+            assert!(!defaults.contains_key("DD_CGROUP_ROOT"));
+            values.env.insert("DD_PROC_ROOT".into(), "/env/proc".into());
+            values.env.insert("DOCKER_HOST".into(), "unix:///override.sock".into());
+            participant.validate_config(LINUX, &values).unwrap();
+            let mut env = participant.default_env(LINUX, &values);
+            env.extend(values.env);
+            assert_eq!(env["DD_PROC_ROOT"], "/env/proc");
+            assert_eq!(env["DOCKER_HOST"], "unix:///override.sock");
+        }
     }
 
     #[test]
@@ -1200,7 +1343,7 @@ ifthenelse
 "#
         );
         assert_eq!(AgentAdp.artifacts(LINUX), &[AgentAdp::LINUX_IMAGE]);
-        assert_eq!(AgentAdp.config_files(), ["cont-init.d/", "files/"]);
+        assert_eq!(AgentAdp.config_files(), ["datadog.yaml", "cont-init.d/", "files/"]);
         assert_eq!(AgentAdp.processes(), ["adp", "agent"]);
         for (service, spec) in SERVICES.iter().zip(AgentAdp.process_specs(LINUX)) {
             assert_eq!(spec.name, service.process);

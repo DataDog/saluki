@@ -44,6 +44,7 @@ pub struct AnalysisRunner {
     comparison_data: CollectedData,
     traces_options: Option<TracesAnalysisOptions>,
     require_dogstatsd_forwarded_packets: bool,
+    required_metric_tag_keys: Vec<String>,
 }
 
 impl AnalysisRunner {
@@ -60,12 +61,21 @@ impl AnalysisRunner {
             comparison_data,
             traces_options,
             require_dogstatsd_forwarded_packets: false,
+            required_metric_tag_keys: Vec::new(),
         }
     }
 
     /// Sets whether forwarded DogStatsD packets are required for this analysis run.
     pub const fn with_dogstatsd_forwarding_requirement(mut self, require_packets: bool) -> Self {
         self.require_dogstatsd_forwarded_packets = require_packets;
+        self
+    }
+
+    /// Requires a workload metric context with all named tags, with nonempty values, on each side.
+    ///
+    /// Applies only to metrics analysis. An empty list adds no requirement.
+    pub fn with_required_metric_tag_keys(mut self, keys: Vec<String>) -> Self {
+        self.required_metric_tag_keys = keys;
         self
     }
 
@@ -84,7 +94,7 @@ impl AnalysisRunner {
             AnalysisMode::Metrics => {
                 let analyzer = metrics::MetricsAnalyzer::new(&self.baseline_data, &self.comparison_data)
                     .map_err(|e| (e, vec![]))?;
-                analyzer.run_analysis()
+                analyzer.run_analysis(&self.required_metric_tag_keys)
             }
             AnalysisMode::ServiceChecks => {
                 let analyzer = service_checks::ServiceChecksAnalyzer::new(&self.baseline_data, &self.comparison_data);

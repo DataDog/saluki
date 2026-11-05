@@ -94,7 +94,7 @@ Use product `config_dump` output from CI runs to compare effective product confi
 | Suite | Files | Selected rows (subject OS / runtime) | Disabled rows | Assertions (subject OS) | Actions (subject OS) |
 | --- | --- | --- | --- | --- | --- |
 | integration | 52 | linux / linux-container: 45; macos / host-process-group: 33; windows / windows-container: 36 | 0 | linux: 193; macos: 141; windows: 155 | linux: 25; macos: 17; windows: 24 |
-| correctness | 42 | linux / docker: 39; linux / kubernetes_in_docker: 7 | 2 | — | — |
+| correctness | 42 | linux / docker: 37; linux / kubernetes_in_docker: 7; linux / linux-container: 2 | 2 | linux: 8 | linux: 0 |
 
 Total: 162 rows.
 
@@ -111,7 +111,7 @@ Total: 162 rows.
 | dsd-host-tag | correctness | linux | docker | selected | test-correctness-dsd-host-tag | correctness | old | compare metrics | 0 |
 | dsd-mapper-blocklist | correctness | linux | docker | selected | test-correctness-dsd-mapper-blocklist | correctness | old | compare metrics | 0 |
 | dsd-metric-filterlist-prefix | correctness | linux | docker | selected | test-correctness-dsd-metric-filterlist-prefix | correctness | old | compare metrics | 0 |
-| dsd-origin-detection | correctness | linux | docker | selected | test-correctness-dsd-origin-detection | correctness | old | compare metrics | 0 |
+| dsd-origin-detection | correctness | linux | linux-container | selected | test-correctness-dsd-origin-detection | participants | native | assertions: 4, actions: 0 | 0 |
 | dsd-origin-detection-matrix/legacy | correctness | linux | kubernetes_in_docker | selected | test-correctness-dsd-origin-detection-matrix-legacy | correctness_matrix | old | compare metrics | 0 |
 | dsd-origin-detection-matrix/legacy-high-cardinality | correctness | linux | kubernetes_in_docker | selected | test-correctness-dsd-origin-detection-matrix-legacy-high-cardinality | correctness_matrix | old | compare metrics | 0 |
 | dsd-origin-detection-matrix/legacy-optout-disabled | correctness | linux | kubernetes_in_docker | selected | test-correctness-dsd-origin-detection-matrix-legacy-optout-disabled | correctness_matrix | old | compare metrics | 0 |
@@ -119,7 +119,7 @@ Total: 162 rows.
 | dsd-origin-detection-matrix/unified | correctness | linux | kubernetes_in_docker | selected | test-correctness-dsd-origin-detection-matrix-unified | correctness_matrix | old | compare metrics | 0 |
 | dsd-origin-detection-matrix/unified-high-cardinality | correctness | linux | kubernetes_in_docker | selected | test-correctness-dsd-origin-detection-matrix-unified-high-cardinality | correctness_matrix | old | compare metrics | 0 |
 | dsd-origin-detection-matrix/unified-with-client-fields | correctness | linux | kubernetes_in_docker | selected | test-correctness-dsd-origin-detection-matrix-unified-with-client-fields | correctness_matrix | old | compare metrics | 0 |
-| dsd-plain | correctness | linux | docker | selected | test-correctness-dsd-plain | correctness | old | compare metrics | 0 |
+| dsd-plain | correctness | linux | linux-container | selected | test-correctness-dsd-plain | participants | native | assertions: 4, actions: 0 | 0 |
 | dsd-plain-v3 | correctness | linux | docker | selected | test-correctness-dsd-plain-v3 | correctness | old | compare metrics | 0 |
 | dsd-provider-kind | correctness | linux | docker | selected | test-correctness-dsd-provider-kind | correctness | old | compare metrics | 0 |
 | dsd-service-checks | correctness | linux | docker | selected | test-correctness-dsd-service-checks | correctness | old | compare service_checks | 0 |
@@ -576,6 +576,45 @@ Link CI runs; don't copy their logs into the repository.
 | adp-no-pipelines-exit | macos | native | Pending CI. Compared with the inventory at `36f1a365cf`. |
 | adp-no-pipelines-exit | windows | native | Pending CI. Compared with the inventory at `36f1a365cf`. |
 | adp-rar-disabled | linux | native | Pending CI. Two native Linux/lima runs passed: ADP logged registration failure and restarted after exit 1 while the Agent stayed running for 10 seconds; no panic matched. Compared with the inventory at `26f84fe969`. |
+| dsd-plain | linux | native | Pending CI. Legacy and native Linux/lima runs passed against the same image; paired captures contain 10,000 identical payloads. Compared with `778c155cee`. |
+| dsd-origin-detection | linux | native | Pending CI. Legacy passed; native host-view file placement fails on rootless lima with `remount-ro /host/proc: operation not permitted`. With the required origin-tag assertion, a scratch run without host view fails on both sides for missing `image_name` (42.786 s case elapsed). Legacy Docker metadata collection was also unavailable; host view and actual enrichment remain unproven locally. Compared with `778c155cee`. |
 <!-- migration-proofs:end -->
 
+### Linux comparison evidence
+
+Compared with `778c155cee` on rootless lima, using the same `testing-devel` image (`d1b1efc01354`) and tools image
+(`c6b554d2d05b`). Runner-reported elapsed times include cleanup: `dsd-plain` 67.990 s legacy → 42.317 s native;
+`dsd-origin-detection` 63.971 s legacy → 49.888 s for a scratch native run without host view. The checked-in origin
+case keeps host view: Docker file placement rejects its read-only `/host/proc` mount with `remount-ro`, flags
+`0x5021`, `operation not permitted`. Both failed and successful runs reclaimed all registered resources.
+
+All four captures per case (legacy/native × baseline/subject), after the analyzer's telemetry filter, have the same
+3,028 metric contexts and tags. None has container/image origin tags: legacy already reports the Docker socket
+unreachable and disables its Docker metadata collector. This establishes workload/tag preservation, not successful
+container enrichment. Both native senders and the legacy baseline have 10,000 payloads, 81,111,860 payload bytes,
+and the same framed-payload FNV-1a digest `2f49534daf07d378`.
+
+Agent configuration dumps differ in four baseline leaves and fourteen subject leaves: delivered intake/socket
+addresses, explicit ADP disablement on the baseline, and existing native listener defaults on the subject. ADP runtime
+dumps differ in six leaves for plain: intake URL, socket path, command port 5001→55001, API ports 5100/5101→55100/55101,
+and APM port 8126→58126. The scratch origin run adds two host-root differences because host view was disabled.
+After accounting for those addresses, listener defaults and scratch host roots, no runtime difference remains;
+hostname, DogStatsD port 0, worker count 1, origin detection mode and workload are preserved.
+
+
 Native runs use fresh participant directories and reclaim them after each case.
+
+### Required origin tags
+
+The metrics compare option `required_metric_tag_keys` requires a workload context on each side with nonempty
+values for all listed keys. It runs after internal-telemetry filtering, never combines tags across contexts, and
+writes both decoded captures before checking. An empty list preserves ordinary comparison. Unit tests exercise
+both enriched sides, neither side, either side alone, empty values, telemetry-only tags and tags split across
+contexts, plus malformed options and non-metrics rejection.
+
+`dsd-origin-detection` requires `image_name`, a low-cardinality tag supplied by container discovery and absent
+from its generated payloads. The production host mounts remain enabled. A rootless-lima scratch copy differing
+only by omission of the two `host_view` parameters failed with exit 1: both sides lacked this tag on all 3,028
+workload contexts. Case elapsed was 42.786 s (43.278 s wrapper wall). Both decoded captures and the input payload
+were retained, every reported collection path existed, and all five observed containers were reclaimed. This is a
+negative assertion proof, not proof of host view or successful enrichment; the rootful/CI proof remains pending.
