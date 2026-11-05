@@ -168,12 +168,11 @@ run-benchmarks-adp:
     expire_in: 1 weeks
     paths:
       - submission_metadata # for provenance, debugging
-      - outputs/report.md # for debugging, also on S3
-      - outputs/report.json # for debugging, also on S3
+      - outputs/report.v1.json # input of the condensed report, also on S3
     when: always
   script:
     # Do some pre-flight steps like creating directories, installing helper utilities, setting credentials, and so on.
-    - mkdir outputs && touch outputs/report.md outputs/report.html
+    - mkdir -p outputs
     - ./ci/tooling/configure-smp-aws-credentials.sh
     # Download the SMP binary.
     - aws --profile ${AWS_NAMED_PROFILE} s3 cp s3://smp-cli-releases/v${SMP_VERSION}/x86_64-unknown-linux-musl/smp smp && chmod +x smp
@@ -209,7 +208,7 @@ run-benchmarks-adp:
 
 report-benchmarks-adp:
   stage: benchmark
-  # Build a condensed report from run-benchmarks-adp's report.json and post it
+  # Build a condensed report from run-benchmarks-adp's report.v1.json and post it
   # to the linked PR. Runs whether or not `run-benchmarks-adp` succeeded so a
   # comment is posted even when SMP signals a regression (and the parent job
   # exits non-zero).
@@ -228,10 +227,18 @@ report-benchmarks-adp:
     paths:
       - outputs/condensed-report.md
     when: always
+  before_script:
+    - *setup-smp-env
   script:
+    # Do some pre-flight steps like creating directories, installing helper utilities, setting credentials, and so on.
+    - mkdir -p outputs
+    - ./ci/tooling/configure-smp-aws-credentials.sh
+    # Download the SMP binary.
+    - aws --profile ${AWS_NAMED_PROFILE} s3 cp s3://smp-cli-releases/v${SMP_VERSION}/x86_64-unknown-linux-musl/smp smp && chmod +x smp
     - python3 ./ci/tooling/build-smp-report.py
-      --report-json outputs/report.json
+      --report-json outputs/report.v1.json
       --output-report outputs/condensed-report.md
+      --smp-binary ./smp
     - cat outputs/condensed-report.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Regression Detector (Agent Data Plane)"
 
 run-benchmarks-adp-full:
@@ -258,13 +265,12 @@ run-benchmarks-adp-full:
     expire_in: 1 weeks
     paths:
       - submission_metadata # for provenance, debugging
-      - outputs/report.md # for debugging, also on S3
-      - outputs/report.json # for debugging, also on S3
+      - outputs/report.v1.json # input of the condensed report, also on S3
       - outputs/condensed-report.md # the posted report, for debugging
     when: always
   script:
     # Do some pre-flight steps like creating directories, installing helper utilities, setting credentials, and so on.
-    - mkdir outputs && touch outputs/report.md outputs/report.html
+    - mkdir -p outputs
     - ./ci/tooling/configure-smp-aws-credentials.sh
     # Download the SMP binary.
     - aws --profile ${AWS_NAMED_PROFILE} s3 cp s3://smp-cli-releases/v${SMP_VERSION}/x86_64-unknown-linux-musl/smp smp && chmod +x smp
@@ -296,8 +302,9 @@ run-benchmarks-adp-full:
     # job would run even when the manual job is not triggered, since GitLab does not block
     # dependents on an un-triggered `allow_failure` manual job.
     - python3 ./ci/tooling/build-smp-report.py
-      --report-json outputs/report.json
+      --report-v1-json outputs/report.v1.json
       --output-report outputs/condensed-report.md
+      --smp-binary ./smp
     - |
       if [ "$CI_PIPELINE_SOURCE" = "schedule" ]; then
         ./ci/tooling/report-smp-to-slack.sh outputs/condensed-report.md
