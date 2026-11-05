@@ -47,7 +47,7 @@ pub async fn create_control_plane_supervisor(
 
     supervisor.add_worker(health_registry.worker());
     supervisor.add_worker(ResourceTelemetryWorker::new(component_registry));
-    supervisor.add_worker(InternalTelemetryAPIWorker);
+    supervisor.add_worker(InternalTelemetryAPIWorker::new());
     supervisor.add_worker(DynamicLogLevelWorker::new(
         config_system.live(|config| &config.control.logging.level),
         logging_controller,
