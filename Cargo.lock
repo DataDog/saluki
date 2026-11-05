@@ -4559,6 +4559,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "otlp-fixtures"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "otlp-protos",
+ "prost",
+ "saluki-error",
+]
+
+[[package]]
 name = "otlp-protos"
 version = "0.1.0"
 dependencies = [
