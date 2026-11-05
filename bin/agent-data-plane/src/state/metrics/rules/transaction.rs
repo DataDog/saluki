@@ -1,11 +1,4 @@
-use super::RemapperRule;
-
-/// The tag the API key validation HTTP client puts on all of its telemetry.
-///
-/// Validation requests aren't forwarder transactions, and the Core Agent doesn't count them as such. The client emits
-/// the same HTTP metrics as the forwarder's client, distinguished only by this tag, so the transaction rules must
-/// reject it. See `API_KEY_VALIDATION_PURPOSE` in `saluki-components`.
-const API_KEY_VALIDATION_TAG: &str = "purpose:api_key_validation";
+use super::{RemapperRule, API_KEY_VALIDATION_TAG};
 
 pub fn get_transaction_remappings() -> Vec<RemapperRule> {
     let rules = vec![

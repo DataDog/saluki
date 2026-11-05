@@ -1,5 +1,6 @@
 mod rules;
 pub use self::rules::get_datadog_agent_remappings;
+pub(crate) use self::rules::API_KEY_VALIDATION_TAG;
 
 #[cfg(test)]
 mod tests {

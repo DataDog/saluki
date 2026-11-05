@@ -164,7 +164,7 @@ impl IncrementalEncoder for DatadogServiceChecks {
         }
     }
 
-    async fn flush(&mut self, dispatcher: &PayloadsDispatcher) -> Result<usize, GenericError> {
+    async fn flush(&mut self, dispatcher: &PayloadsDispatcher) -> Result<usize, FlushError> {
         let mut dispatched_events = 0;
 
         let maybe_requests = self.request_builder.flush().await;
@@ -175,7 +175,10 @@ impl IncrementalEncoder for DatadogServiceChecks {
                     let http_payload = HttpPayload::new(payload_meta, request);
                     let payload = Payload::Http(http_payload);
 
-                    dispatcher.dispatch(payload).await?;
+                    dispatcher
+                        .dispatch(payload)
+                        .await
+                        .map_err(|source| FlushError::new(dispatched_events, source))?;
                     dispatched_events += events;
                 }
                 Err(e) => error!(error = %e, "Failed to build Datadog service checks payload. Continuing..."),

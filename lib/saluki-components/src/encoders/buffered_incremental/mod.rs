@@ -243,8 +243,8 @@ where
 ///
 /// The telemetry counts the events in the payloads the encoder actually dispatched, not the events it accepted: an
 /// encoder can discard a payload it can't build, such as one that exceeds its size limit and can't be split, and those
-/// events were never flushed. Flushes that dispatch nothing aren't recorded, so the last-flush telemetry always
-/// describes a flush that sent something.
+/// events were never flushed. Events dispatched before a flush fails are still counted. Flushes that dispatch nothing
+/// aren't recorded, so the last-flush telemetry always describes a flush that sent something.
 async fn flush_encoder<E>(
     encoder: &mut E, dispatcher: &PayloadsDispatcher, telemetry: &ComponentTelemetry,
 ) -> Result<(), GenericError>
@@ -252,13 +252,17 @@ where
     E: IncrementalEncoder,
 {
     let flush_start = Instant::now();
-    let dispatched_events = encoder.flush(dispatcher).await?;
+    let result = encoder.flush(dispatcher).await;
 
+    let dispatched_events = match &result {
+        Ok(dispatched_events) => *dispatched_events,
+        Err(e) => e.dispatched_events(),
+    };
     if dispatched_events > 0 {
         telemetry.record_flush(dispatched_events as u64, flush_start.elapsed());
     }
 
-    Ok(())
+    result.map(|_| ()).map_err(FlushError::into_source)
 }
 
 #[cfg(test)]
@@ -271,6 +275,7 @@ mod tests {
         },
         topology::{OutputName, PayloadsBuffer},
     };
+    use saluki_error::generic_error;
     use saluki_metrics::test::TestRecorder;
     use tokio::sync::mpsc;
 
@@ -351,7 +356,7 @@ mod tests {
 
         assert_eq!(dispatched_payloads(&mut rx), 0);
         assert_eq!(recorder.counter("encoder_flushed_events_total"), Some(0));
-        assert_eq!(recorder.gauge("encoder_last_flush_events").unwrap_or(0.0), 0.0);
+        assert_eq!(recorder.gauge("encoder_last_flush_events"), Some(0.0));
     }
 
     #[tokio::test]
@@ -385,5 +390,80 @@ mod tests {
         // An empty encoder has nothing to dispatch.
         assert_eq!(service_checks.flush(&dispatcher).await.unwrap(), 0);
         assert_eq!(dispatched_payloads(&mut rx), 2);
+    }
+
+    // An encoder whose flush dispatches some events and then fails, as when a later payload can't be dispatched.
+    struct FailingFlushEncoder {
+        dispatched_before_failure: usize,
+    }
+
+    #[async_trait]
+    impl IncrementalEncoder for FailingFlushEncoder {
+        async fn process_event(&mut self, _event: Event) -> Result<ProcessResult, GenericError> {
+            Ok(ProcessResult::Continue)
+        }
+
+        async fn flush(&mut self, _dispatcher: &PayloadsDispatcher) -> Result<usize, FlushError> {
+            Err(FlushError::new(
+                self.dispatched_before_failure,
+                generic_error!("output closed"),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_flush_still_records_the_events_it_dispatched() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let context = BuildContext::test_encoder("flush_failure");
+        let (dispatcher, _rx) = dispatcher_with_receiver(&context);
+        let telemetry = ComponentTelemetry::from_builder(&MetricsBuilder::default());
+        let mut encoder = FailingFlushEncoder {
+            dispatched_before_failure: 3,
+        };
+
+        let error = flush_encoder(&mut encoder, &dispatcher, &telemetry)
+            .await
+            .expect_err("the flush should fail");
+
+        assert_eq!(error.to_string(), "output closed");
+        assert_eq!(recorder.counter("encoder_flushed_events_total"), Some(3));
+        assert_eq!(recorder.gauge("encoder_last_flush_events"), Some(3.0));
+    }
+
+    #[tokio::test]
+    async fn failed_flush_that_dispatched_nothing_records_nothing() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let context = BuildContext::test_encoder("flush_failure_empty");
+        let (dispatcher, _rx) = dispatcher_with_receiver(&context);
+        let telemetry = ComponentTelemetry::from_builder(&MetricsBuilder::default());
+        let mut encoder = FailingFlushEncoder {
+            dispatched_before_failure: 0,
+        };
+
+        flush_encoder(&mut encoder, &dispatcher, &telemetry)
+            .await
+            .expect_err("the flush should fail");
+
+        assert_eq!(recorder.counter("encoder_flushed_events_total"), Some(0));
+        assert_eq!(recorder.gauge("encoder_last_flush_events"), Some(0.0));
+    }
+
+    #[tokio::test]
+    async fn events_encoder_reports_an_error_when_its_output_is_closed() {
+        let context = BuildContext::test_encoder("flush_closed_output");
+        let (dispatcher, rx) = dispatcher_with_receiver(&context);
+        drop(rx);
+        let mut encoder = events_encoder(context, PAYLOAD_SIZE_LIMIT).await;
+
+        accept_events(&mut encoder, 1).await;
+        let error = encoder
+            .flush(&dispatcher)
+            .await
+            .expect_err("dispatching to a closed output should fail");
+
+        // Nothing was dispatched before the failure, so there is nothing to account for.
+        assert_eq!(error.dispatched_events(), 0);
     }
 }

@@ -1,5 +1,7 @@
 //! Encoder component basics.
 
+use std::{error::Error, fmt};
+
 use async_trait::async_trait;
 use saluki_error::GenericError;
 
@@ -21,6 +23,48 @@ pub enum ProcessResult {
     ///
     /// The caller should flush the encoder and try again to process the event.
     FlushRequired(Event),
+}
+
+/// An error that interrupted flushing an incremental encoder.
+///
+/// A flush can dispatch several payloads before one of them fails, so the error reports how many events had already
+/// been dispatched, letting the caller account for them even though the flush failed.
+#[derive(Debug)]
+pub struct FlushError {
+    dispatched_events: usize,
+    source: GenericError,
+}
+
+impl FlushError {
+    /// Creates a new `FlushError` for an error that occurred after `dispatched_events` events had been dispatched.
+    pub fn new(dispatched_events: usize, source: GenericError) -> Self {
+        Self {
+            dispatched_events,
+            source,
+        }
+    }
+
+    /// Returns the number of events that were dispatched before the error occurred.
+    pub fn dispatched_events(&self) -> usize {
+        self.dispatched_events
+    }
+
+    /// Consumes the error, returning the underlying error.
+    pub fn into_source(self) -> GenericError {
+        self.source
+    }
+}
+
+impl fmt::Display for FlushError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.source)
+    }
+}
+
+impl Error for FlushError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(self.source.as_ref())
+    }
 }
 
 /// An encoder.
@@ -78,6 +122,7 @@ pub trait IncrementalEncoder {
     ///
     /// # Errors
     ///
-    /// If the encoder can't flush the payloads, an error is returned.
-    async fn flush(&mut self, dispatcher: &PayloadsDispatcher) -> Result<usize, GenericError>;
+    /// If the encoder can't dispatch a payload, an error is returned. It reports the number of events that were
+    /// dispatched earlier in the same flush, so they can still be accounted for.
+    async fn flush(&mut self, dispatcher: &PayloadsDispatcher) -> Result<usize, FlushError>;
 }
