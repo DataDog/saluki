@@ -12,6 +12,7 @@ use std::{collections::BTreeSet, ops::RangeInclusive};
 use serde::Deserialize;
 use serde_json::Value;
 use stele::LogsRequest;
+use tracing::warn;
 
 use super::{DiffKind, FieldDiff};
 
@@ -95,11 +96,18 @@ pub fn compare_headers(
     for rule in rules {
         let baseline_shapes = header_shapes(baseline, rule, timestamp_range);
         let comparison_shapes = header_shapes(comparison, rule, timestamp_range);
+        let never_sent = |shapes: &BTreeSet<Option<String>>| shapes.iter().all(Option::is_none);
         if baseline_shapes == comparison_shapes {
+            // A misspelled or obsolete rule would otherwise pass silently.
+            if never_sent(&baseline_shapes) && !baseline.is_empty() {
+                warn!(
+                    header = rule.name,
+                    "Neither side sent a compared logs request header. Check the name in `logs.headers`."
+                );
+            }
             continue;
         }
 
-        let never_sent = |shapes: &BTreeSet<Option<String>>| shapes.iter().all(Option::is_none);
         let (kind, baseline_value, comparison_value) = if never_sent(&comparison_shapes) {
             (DiffKind::Missing, Some(shapes_value(baseline_shapes)), None)
         } else if never_sent(&baseline_shapes) {
