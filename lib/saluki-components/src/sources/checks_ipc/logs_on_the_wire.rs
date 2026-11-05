@@ -7,7 +7,8 @@
 //! status, and gets an `@timestamp` from the encoder's clock. Check logs have no hostname, service, or source, so
 //! those keys are absent.
 
-use agent_data_plane_config::SharedConfiguration;
+use std::time::Duration;
+
 use chrono::{DateTime, Utc};
 use datadog_protos::checks::{check_data::Data, log::Log as ProtoLog, log::LogLevel};
 use http_body_util::BodyExt as _;
@@ -42,18 +43,19 @@ fn log_data(level: i32, message: &str) -> Data {
     })
 }
 
-/// Converts `data` the way the Checks IPC source does, and runs the resulting logs through the logs encoder, built as
-/// the topology builds it from a default configuration.
+/// Converts `data` the way the Checks IPC source does, and runs the resulting logs through the logs encoder.
+///
+/// The encoder compresses with zstd, as it does by default. Its flush timeout is long enough that it flushes only when
+/// it stops, so the logs from one call share a request unless they exceed a payload limit.
 async fn encode_check_data(data: impl IntoIterator<Item = Data>) -> Vec<WireRequest> {
     let events = data
         .into_iter()
         .filter_map(|data| check_data_to_event(data, &MetaString::from_static("default-host")))
         .collect::<Vec<_>>();
 
-    let compression = SharedConfiguration::default().endpoints.compression;
-    let encoder = BufferedIncrementalConfiguration::from_encoder_builder(
-        DatadogLogsConfiguration::new(&compression.compressor_kind, compression.effective_zstd_level())
-            .with_clock(fixed_clock),
+    let encoder = BufferedIncrementalConfiguration::new(
+        DatadogLogsConfiguration::new("zstd", 3).with_clock(fixed_clock),
+        Duration::from_secs(60),
     );
     let (control, mut payloads) = TestComponentDriver::encoder(encoder)
         .await
