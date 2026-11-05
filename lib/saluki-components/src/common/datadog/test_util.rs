@@ -8,6 +8,11 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use http_body_util::BodyExt as _;
+use rand::{
+    distr::{Alphanumeric, SampleString as _},
+    rngs::StdRng,
+    SeedableRng as _,
+};
 use saluki_common::sync::live::{self, LivePublisher, LiveSource};
 use saluki_core::data_model::payload::Payload;
 
@@ -158,22 +163,12 @@ impl LiveConfiguration {
     }
 }
 
-/// Returns a string of `len` pseudo-random characters, which barely compresses.
+/// Returns a string of `len` random alphanumeric characters, which compresses far less than repeated characters do.
 ///
-/// The characters come from a pseudo-random generator seeded with `seed`, so every run produces the same string.
+/// The characters come from a random number generator seeded with `seed`, so every run produces the same string.
 pub(crate) fn incompressible_string(len: usize, seed: u64) -> String {
-    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-    // Spread the seed so that nearby seeds give unrelated strings, and keep the state non-zero, as xorshift needs.
-    let mut state = (seed.wrapping_add(1).wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ 0x2545_f491_4f6c_dd1d).max(1);
-    (0..len)
-        .map(|_| {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            ALPHABET[(state % ALPHABET.len() as u64) as usize] as char
-        })
-        .collect()
+    let mut rng = StdRng::seed_from_u64(seed);
+    Alphanumeric.sample_string(&mut rng, len)
 }
 
 /// Returns the event count and decompressed body of each zstd-compressed HTTP payload, in order.
