@@ -72,8 +72,12 @@ pub trait IncrementalEncoder {
 
     /// Flush the encoder, finalizing all current payloads and sending them to the dispatcher.
     ///
+    /// Returns the number of events contained in the payloads that were dispatched. An encoder can discard events it
+    /// has accepted but can't send, such as when a payload exceeds its size limit and can't be split, and those aren't
+    /// included in the count.
+    ///
     /// # Errors
     ///
     /// If the encoder can't flush the payloads, an error is returned.
-    async fn flush(&mut self, dispatcher: &PayloadsDispatcher) -> Result<(), GenericError>;
+    async fn flush(&mut self, dispatcher: &PayloadsDispatcher) -> Result<usize, GenericError>;
 }

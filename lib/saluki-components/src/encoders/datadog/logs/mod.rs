@@ -118,7 +118,9 @@ impl IncrementalEncoder for DatadogLogs {
         }
     }
 
-    async fn flush(&mut self, dispatcher: &PayloadsDispatcher) -> Result<(), GenericError> {
+    async fn flush(&mut self, dispatcher: &PayloadsDispatcher) -> Result<usize, GenericError> {
+        let mut dispatched_events = 0;
+
         let maybe_requests = self.request_builder.flush().await;
         for maybe_request in maybe_requests {
             match maybe_request {
@@ -127,12 +129,13 @@ impl IncrementalEncoder for DatadogLogs {
                     let http_payload = HttpPayload::new(payload_meta, request);
                     let payload = Payload::Http(http_payload);
                     dispatcher.dispatch(payload).await?;
+                    dispatched_events += events;
                 }
                 Err(e) => error!(error = %e, "Failed to build Datadog logs payload. Continuing..."),
             }
         }
 
-        Ok(())
+        Ok(dispatched_events)
     }
 }
 
