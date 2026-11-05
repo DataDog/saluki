@@ -1071,8 +1071,6 @@ The source documents each part:
 
 Tests in the `panoramic` binary scan every file in each crate directory recursively, excluding `target/`, to check
 that `panoramic-core` names no product and that `panoramic-steps` names no realization, host mechanism, or product path.
-To exempt an unavoidable core line, add `// north-star: <reason>` on that line with a non-empty reason; markers on lines
-without a match fail the check. Steps have no exemptions.
 The crate dependency test keeps core and steps independent of `panoramic-participants`. Core's only panoramic
 dependency is `panoramic-courier`, for shared endpoint execution and its calling contract.
 

@@ -7,7 +7,6 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use airlock::driver::{ContainerRef, Driver, DriverDetails};
-use airlock::unix::UnixProcess;
 use futures::future::join_all;
 use k8s_openapi::api::core::v1::Namespace;
 use kube::api::{Api, DeleteParams};
@@ -68,8 +67,6 @@ enum Resource {
         scope: ScopeLayout,
         os: crate::layout::Os,
     },
-    /// A host process and its process group.
-    Process(UnixProcess),
     /// A Kubernetes namespace, removed through the client that created it.
     Namespace { name: String, client: Client },
     /// Node storage removed after its namespace is gone.
@@ -133,7 +130,6 @@ impl Resource {
                 backends.remove_container_scope(os, &scope).await.map(|()| None)
             }
             Self::IsolationGroup(id) => Driver::clean_related_resources(id).await.map(|()| None),
-            Self::Process(process) => process.cleanup().await.map(|()| None),
             Self::Namespace { name, client } => {
                 let api = Api::<Namespace>::all(client);
                 match api.delete(&name, &DeleteParams::default()).await {
@@ -198,7 +194,6 @@ impl fmt::Debug for Resource {
             Self::Participant { name, .. } => f.debug_tuple("Participant").field(name).finish(),
             Self::ContainerScope { scope, .. } => f.debug_tuple("ContainerScope").field(scope).finish(),
             Self::IsolationGroup(id) => f.debug_tuple("IsolationGroup").field(id).finish(),
-            Self::Process(process) => f.debug_tuple("Process").field(process).finish(),
             Self::Namespace { name, .. } => f.debug_struct("Namespace").field("name", name).finish_non_exhaustive(),
             Self::Directory(path) => f.debug_tuple("Directory").field(path).finish(),
             Self::HostScope(path) => f.debug_tuple("HostScope").field(path).finish(),
@@ -214,7 +209,6 @@ impl fmt::Display for Resource {
             Self::Participant { name, .. } => write!(f, "participant:{name}"),
             Self::ContainerScope { scope, .. } => write!(f, "isolation_group:{}", scope.id()),
             Self::IsolationGroup(id) => write!(f, "isolation_group:{}", id),
-            Self::Process(process) => write!(f, "process:{}", process.name()),
             Self::Namespace { name, .. } => write!(f, "namespace:{}", name),
             Self::Directory(path) | Self::HostScope(path) => write!(f, "directory:{}", path.display()),
             Self::PodDirectory { node, path, .. } => write!(f, "node_directory:{}:{path}", node.container),
@@ -345,11 +339,6 @@ impl ResourceLedger {
         self.lock().iter().map(|entry| entry.resource.to_string()).collect()
     }
 
-    /// Takes ownership of a spawned process.
-    pub fn process(&self, process: UnixProcess) {
-        self.register(Resource::Process(process));
-    }
-
     /// Registers a namespace, which reclaim deletes through `client`. Call it before creating the namespace.
     pub fn namespace(&self, client: Client, name: String) {
         self.register(Resource::Namespace { name, client });
@@ -381,7 +370,7 @@ impl ResourceLedger {
                 Resource::Namespace { name: namespace, .. } | Resource::PodDirectory { namespace, .. } => {
                     namespace == name
                 }
-                Resource::Process(_) | Resource::Directory(_) | Resource::HostScope(_) => false,
+                Resource::Directory(_) | Resource::HostScope(_) => false,
             };
             if named {
                 entry.unsettled = true;

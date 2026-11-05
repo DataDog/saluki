@@ -10,7 +10,6 @@ use std::{
 use bollard::{
     container::{LogOutput, NetworkingConfig as ContainerNetworkingConfig},
     errors::Error,
-    exec::{CreateExecOptions, StartExecResults},
     models::{
         ContainerCreateBody, ContainerStateStatusEnum, EndpointSettings, HealthConfig, HealthStatusEnum, HostConfig,
         HostConfigCgroupnsModeEnum, Ipam, NetworkConnectRequest, NetworkCreateRequest, PortBinding, PortMap,
@@ -19,7 +18,7 @@ use bollard::{
     query_parameters::{CreateContainerOptionsBuilder, CreateImageOptions, LogsOptions},
     Docker,
 };
-use futures::{StreamExt as _, TryStreamExt as _};
+use futures::StreamExt as _;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tokio::{
     io::{AsyncWriteExt as _, BufWriter},
@@ -1378,66 +1377,6 @@ impl Driver {
     /// through its output and exit code.
     pub async fn exec_stream(&self, request: ExecRequest) -> Result<ExecStream, GenericError> {
         exec::start(&self.docker, &self.container_name, request).await
-    }
-
-    /// Executes a command inside the running container and returns its stdout.
-    ///
-    /// The command runs as root with no TTY. Stderr is discarded, and only stdout is returned. If the command exits with a
-    /// nonzero status, an error is returned.
-    ///
-    /// # Errors
-    ///
-    /// If the exec creation, start, output collection, or command exit code indicates failure, an error is returned.
-    pub async fn exec_in_container(&self, cmd: Vec<String>) -> Result<String, GenericError> {
-        let exec_opts = CreateExecOptions {
-            attach_stdout: Some(true),
-            attach_stderr: Some(false),
-            cmd: Some(cmd.clone()),
-            ..Default::default()
-        };
-
-        let exec = self
-            .docker
-            .create_exec(&self.container_name, exec_opts)
-            .await
-            .with_error_context(|| format!("Failed to create exec instance for container {}.", self.container_name))?;
-
-        let exec_id = exec.id.clone();
-
-        let output = self
-            .docker
-            .start_exec(&exec.id, None)
-            .await
-            .with_error_context(|| format!("Failed to start exec for container {}.", self.container_name))?;
-
-        let mut stdout = String::new();
-        if let StartExecResults::Attached { mut output, .. } = output {
-            while let Some(chunk) = output.try_next().await? {
-                if let LogOutput::StdOut { message } = chunk {
-                    stdout.push_str(&String::from_utf8_lossy(&message));
-                }
-            }
-        }
-
-        // Check the command's exit code.
-        let inspect = self
-            .docker
-            .inspect_exec(&exec_id)
-            .await
-            .error_context("Failed to inspect exec result.")?;
-
-        if let Some(code) = inspect.exit_code {
-            if code != 0 {
-                return Err(generic_error!(
-                    "Command {:?} exited with code {} in container {}.",
-                    cmd,
-                    code,
-                    self.container_name
-                ));
-            }
-        }
-
-        Ok(stdout)
     }
 
     async fn cleanup_inner(&self, container_name: &str) -> Result<(), GenericError> {

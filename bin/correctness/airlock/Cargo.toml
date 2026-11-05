@@ -19,18 +19,12 @@ tokio = { workspace = true, features = [
   "fs",
   "io-util",
   "macros",
-  "process",
   "rt",
   "rt-multi-thread",
   "sync",
   "time",
 ] }
-tokio-util = { workspace = true }
 tracing = { workspace = true }
-
-# Unix process-group signaling via killpg.
-[target.'cfg(unix)'.dependencies]
-libc = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["net"] }

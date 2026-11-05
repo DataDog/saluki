@@ -133,11 +133,9 @@ dependencies = [
  "bytes",
  "futures",
  "home",
- "libc",
  "saluki-error",
  "tar",
  "tokio",
- "tokio-util",
  "tracing",
 ]
 
