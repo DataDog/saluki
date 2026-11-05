@@ -1826,7 +1826,7 @@
 <a href=#1826 id=1826 data-nosnippet>1826</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
 <a href=#1827 id=1827 data-nosnippet>1827</a>    <span class="kw">use </span><span class="kw">crate</span>::common::datadog::{
 <a href=#1828 id=1828 data-nosnippet>1828</a>        config::OpwMetricsSettings,
-<a href=#1829 id=1829 data-nosnippet>1829</a>        test_util::{datadog_metrics_configuration, default_series_config},
+<a href=#1829 id=1829 data-nosnippet>1829</a>        test_util::{datadog_metrics_configuration, decompressed_bodies, default_series_config, incompressible_string},
 <a href=#1830 id=1830 data-nosnippet>1830</a>    };
 <a href=#1831 id=1831 data-nosnippet>1831</a>
 <a href=#1832 id=1832 data-nosnippet>1832</a>    <span class="doccomment">/// Returns a catalog built from the endpoints of `config`, the way the topology builds the one it shares.
@@ -3164,46 +3164,145 @@
 <a href=#3164 id=3164 data-nosnippet>3164</a>            <span class="string">"all points should be emitted across the split payloads"
 <a href=#3165 id=3165 data-nosnippet>3165</a>        </span>);
 <a href=#3166 id=3166 data-nosnippet>3166</a>    }
-<a href=#3167 id=3167 data-nosnippet>3167</a>}
-<a href=#3168 id=3168 data-nosnippet>3168</a>
-<a href=#3169 id=3169 data-nosnippet>3169</a><span class="attr">#[cfg(test)]
-<a href=#3170 id=3170 data-nosnippet>3170</a></span><span class="kw">mod </span>payload_limits {
-<a href=#3171 id=3171 data-nosnippet>3171</a>    <span class="kw">use </span><span class="kw">super</span>::v2;
-<a href=#3172 id=3172 data-nosnippet>3172</a>    <span class="kw">use </span><span class="kw">crate</span>::common::datadog::{clamp_payload_limits, test_util::datadog_metrics_configuration};
-<a href=#3173 id=3173 data-nosnippet>3173</a>
-<a href=#3174 id=3174 data-nosnippet>3174</a>    <span class="attr">#[test]
-<a href=#3175 id=3175 data-nosnippet>3175</a>    </span><span class="kw">fn </span>v3_payload_limits_come_from_the_series_limits() {
-<a href=#3176 id=3176 data-nosnippet>3176</a>        <span class="kw">let </span><span class="kw-2">mut </span>config = datadog_metrics_configuration();
-<a href=#3177 id=3177 data-nosnippet>3177</a>        config.max_series_payload_size = <span class="number">1234</span>;
-<a href=#3178 id=3178 data-nosnippet>3178</a>        config.max_series_uncompressed_payload_size = <span class="number">5678</span>;
-<a href=#3179 id=3179 data-nosnippet>3179</a>        config.max_series_points_per_payload = <span class="number">500</span>;
+<a href=#3167 id=3167 data-nosnippet>3167</a>
+<a href=#3168 id=3168 data-nosnippet>3168</a>    <span class="doccomment">/// Encodes `metrics` with the encoder set up for the V1 series endpoint, and returns the decompressed request
+<a href=#3169 id=3169 data-nosnippet>3169</a>    /// bodies.
+<a href=#3170 id=3170 data-nosnippet>3170</a>    </span><span class="kw">async fn </span>encode_series_v1(metrics: Vec&lt;Metric&gt;) -&gt; Vec&lt;(usize, Vec&lt;u8&gt;)&gt; {
+<a href=#3171 id=3171 data-nosnippet>3171</a>        <span class="kw">let </span><span class="kw-2">mut </span>config = datadog_metrics_configuration();
+<a href=#3172 id=3172 data-nosnippet>3172</a>        config.use_v2_series_api = <span class="bool-val">false</span>;
+<a href=#3173 id=3173 data-nosnippet>3173</a>        <span class="macro">assert!</span>(!config.requires_v3_series(<span class="bool-val">false</span>).expect(<span class="string">"endpoints should resolve"</span>));
+<a href=#3174 id=3174 data-nosnippet>3174</a>
+<a href=#3175 id=3175 data-nosnippet>3175</a>        <span class="kw">let </span>(control, <span class="kw-2">mut </span>payloads) = TestComponentDriver::encoder(config)
+<a href=#3176 id=3176 data-nosnippet>3176</a>            .<span class="kw">await
+<a href=#3177 id=3177 data-nosnippet>3177</a>            </span>.expect(<span class="string">"metrics encoder should build"</span>);
+<a href=#3178 id=3178 data-nosnippet>3178</a>        control.send_events(metrics.into_iter().map(Event::Metric)).<span class="kw">await</span>;
+<a href=#3179 id=3179 data-nosnippet>3179</a>        control.shutdown().<span class="kw">await</span>.expect(<span class="string">"metrics encoder should stop cleanly"</span>);
 <a href=#3180 id=3180 data-nosnippet>3180</a>
-<a href=#3181 id=3181 data-nosnippet>3181</a>        <span class="kw">let </span>limits = config.v3_payload_limits();
-<a href=#3182 id=3182 data-nosnippet>3182</a>
-<a href=#3183 id=3183 data-nosnippet>3183</a>        <span class="macro">assert_eq!</span>(<span class="number">1234</span>, limits.max_compressed_size);
-<a href=#3184 id=3184 data-nosnippet>3184</a>        <span class="macro">assert_eq!</span>(<span class="number">5678</span>, limits.max_uncompressed_size);
-<a href=#3185 id=3185 data-nosnippet>3185</a>        <span class="macro">assert_eq!</span>(<span class="number">500</span>, limits.max_points_per_payload);
-<a href=#3186 id=3186 data-nosnippet>3186</a>    }
-<a href=#3187 id=3187 data-nosnippet>3187</a>
-<a href=#3188 id=3188 data-nosnippet>3188</a>    <span class="attr">#[test]
-<a href=#3189 id=3189 data-nosnippet>3189</a>    </span><span class="kw">fn </span>clamps_series_payload_limit_keys_to_api_limits() {
-<a href=#3190 id=3190 data-nosnippet>3190</a>        <span class="kw">let </span>(uncompressed_limit, compressed_limit) = clamp_payload_limits(
-<a href=#3191 id=3191 data-nosnippet>3191</a>            v2::SERIES_V2_UNCOMPRESSED_SIZE_LIMIT + <span class="number">1</span>,
-<a href=#3192 id=3192 data-nosnippet>3192</a>            v2::SERIES_V2_COMPRESSED_SIZE_LIMIT + <span class="number">1</span>,
-<a href=#3193 id=3193 data-nosnippet>3193</a>            v2::SERIES_V2_UNCOMPRESSED_SIZE_LIMIT,
-<a href=#3194 id=3194 data-nosnippet>3194</a>            v2::SERIES_V2_COMPRESSED_SIZE_LIMIT,
-<a href=#3195 id=3195 data-nosnippet>3195</a>        );
-<a href=#3196 id=3196 data-nosnippet>3196</a>        <span class="macro">assert_eq!</span>(uncompressed_limit, v2::SERIES_V2_UNCOMPRESSED_SIZE_LIMIT);
-<a href=#3197 id=3197 data-nosnippet>3197</a>        <span class="macro">assert_eq!</span>(compressed_limit, v2::SERIES_V2_COMPRESSED_SIZE_LIMIT);
-<a href=#3198 id=3198 data-nosnippet>3198</a>
-<a href=#3199 id=3199 data-nosnippet>3199</a>        <span class="kw">let </span>(uncompressed_limit, compressed_limit) = clamp_payload_limits(
-<a href=#3200 id=3200 data-nosnippet>3200</a>            <span class="number">5678</span>,
-<a href=#3201 id=3201 data-nosnippet>3201</a>            <span class="number">1234</span>,
-<a href=#3202 id=3202 data-nosnippet>3202</a>            v2::SERIES_V2_UNCOMPRESSED_SIZE_LIMIT,
-<a href=#3203 id=3203 data-nosnippet>3203</a>            v2::SERIES_V2_COMPRESSED_SIZE_LIMIT,
-<a href=#3204 id=3204 data-nosnippet>3204</a>        );
-<a href=#3205 id=3205 data-nosnippet>3205</a>        <span class="macro">assert_eq!</span>(uncompressed_limit, <span class="number">5678</span>);
-<a href=#3206 id=3206 data-nosnippet>3206</a>        <span class="macro">assert_eq!</span>(compressed_limit, <span class="number">1234</span>);
-<a href=#3207 id=3207 data-nosnippet>3207</a>    }
-<a href=#3208 id=3208 data-nosnippet>3208</a>}
+<a href=#3181 id=3181 data-nosnippet>3181</a>        decompressed_bodies(payloads.collect().<span class="kw">await</span>).<span class="kw">await
+<a href=#3182 id=3182 data-nosnippet>3182</a>    </span>}
+<a href=#3183 id=3183 data-nosnippet>3183</a>
+<a href=#3184 id=3184 data-nosnippet>3184</a>    <span class="doccomment">/// Returns a gauge with a single tag whose value is `tag_value`.
+<a href=#3185 id=3185 data-nosnippet>3185</a>    </span><span class="kw">fn </span>gauge_with_tag(index: usize, tag_value: String) -&gt; Metric {
+<a href=#3186 id=3186 data-nosnippet>3186</a>        <span class="kw">let </span>tags = [Tag::from(<span class="macro">format!</span>(<span class="string">"big:{}"</span>, tag_value))]
+<a href=#3187 id=3187 data-nosnippet>3187</a>            .into_iter()
+<a href=#3188 id=3188 data-nosnippet>3188</a>            .collect::&lt;TagSet&gt;();
+<a href=#3189 id=3189 data-nosnippet>3189</a>        Metric::gauge(
+<a href=#3190 id=3190 data-nosnippet>3190</a>            Context::from_parts(MetaString::from(<span class="macro">format!</span>(<span class="string">"series.v1.{:04}"</span>, index)), tags),
+<a href=#3191 id=3191 data-nosnippet>3191</a>            [(<span class="number">1u64</span>, <span class="number">1.0</span>)],
+<a href=#3192 id=3192 data-nosnippet>3192</a>        )
+<a href=#3193 id=3193 data-nosnippet>3193</a>    }
+<a href=#3194 id=3194 data-nosnippet>3194</a>
+<a href=#3195 id=3195 data-nosnippet>3195</a>    <span class="doccomment">/// Asserts that every request body is a V1 series JSON object holding as many metrics as its metadata counts, and
+<a href=#3196 id=3196 data-nosnippet>3196</a>    /// that the requests hold `expected_metrics` metrics in total.
+<a href=#3197 id=3197 data-nosnippet>3197</a>    </span><span class="kw">fn </span>assert_valid_series_v1_requests(requests: <span class="kw-2">&amp;</span>[(usize, Vec&lt;u8&gt;)], expected_metrics: usize) {
+<a href=#3198 id=3198 data-nosnippet>3198</a>        <span class="kw">for </span>(index, (event_count, body)) <span class="kw">in </span>requests.iter().enumerate() {
+<a href=#3199 id=3199 data-nosnippet>3199</a>            <span class="kw">let </span>tail = String::from_utf8_lossy(<span class="kw-2">&amp;</span>body[body.len().saturating_sub(<span class="number">16</span>)..]);
+<a href=#3200 id=3200 data-nosnippet>3200</a>            <span class="kw">let </span>payload = serde_json::from_slice::&lt;serde_json::Value&gt;(body)
+<a href=#3201 id=3201 data-nosnippet>3201</a>                .unwrap_or_else(|e| <span class="macro">panic!</span>(<span class="string">"request {} isn't valid JSON ({}), it ends with {:?}"</span>, index, e, tail));
+<a href=#3202 id=3202 data-nosnippet>3202</a>            <span class="kw">let </span>series = payload[<span class="string">"series"</span>]
+<a href=#3203 id=3203 data-nosnippet>3203</a>                .as_array()
+<a href=#3204 id=3204 data-nosnippet>3204</a>                .expect(<span class="string">"payload should hold a series array"</span>);
+<a href=#3205 id=3205 data-nosnippet>3205</a>            <span class="macro">assert_eq!</span>(
+<a href=#3206 id=3206 data-nosnippet>3206</a>                <span class="kw-2">*</span>event_count,
+<a href=#3207 id=3207 data-nosnippet>3207</a>                series.len(),
+<a href=#3208 id=3208 data-nosnippet>3208</a>                <span class="string">"request {} metadata should count its metrics"</span>,
+<a href=#3209 id=3209 data-nosnippet>3209</a>                index
+<a href=#3210 id=3210 data-nosnippet>3210</a>            );
+<a href=#3211 id=3211 data-nosnippet>3211</a>        }
+<a href=#3212 id=3212 data-nosnippet>3212</a>        <span class="macro">assert_eq!</span>(requests.iter().map(|(count, <span class="kw">_</span>)| count).sum::&lt;usize&gt;(), expected_metrics);
+<a href=#3213 id=3213 data-nosnippet>3213</a>    }
+<a href=#3214 id=3214 data-nosnippet>3214</a>
+<a href=#3215 id=3215 data-nosnippet>3215</a>    <span class="attr">#[tokio::test]
+<a href=#3216 id=3216 data-nosnippet>3216</a>    </span><span class="kw">async fn </span>series_v1_requests_split_at_compressed_size_estimate_are_valid_json() {
+<a href=#3217 id=3217 data-nosnippet>3217</a>        <span class="comment">// About 4 MB of tags that barely compress, so the compressed size estimate rejects a metric before the
+<a href=#3218 id=3218 data-nosnippet>3218</a>        // 4 MiB uncompressed limit is reached.
+<a href=#3219 id=3219 data-nosnippet>3219</a>        </span><span class="kw">let </span>metrics = (<span class="number">0</span>..<span class="number">240</span>)
+<a href=#3220 id=3220 data-nosnippet>3220</a>            .map(|index| gauge_with_tag(index, incompressible_string(<span class="number">16 </span>* <span class="number">1024</span>, index <span class="kw">as </span>u64)))
+<a href=#3221 id=3221 data-nosnippet>3221</a>            .collect::&lt;Vec&lt;<span class="kw">_</span>&gt;&gt;();
+<a href=#3222 id=3222 data-nosnippet>3222</a>
+<a href=#3223 id=3223 data-nosnippet>3223</a>        <span class="kw">let </span>requests = encode_series_v1(metrics).<span class="kw">await</span>;
+<a href=#3224 id=3224 data-nosnippet>3224</a>        <span class="macro">assert!</span>(requests.len() &gt; <span class="number">1</span>, <span class="string">"the metrics should be split across requests"</span>);
+<a href=#3225 id=3225 data-nosnippet>3225</a>        assert_valid_series_v1_requests(<span class="kw-2">&amp;</span>requests, <span class="number">240</span>);
+<a href=#3226 id=3226 data-nosnippet>3226</a>    }
+<a href=#3227 id=3227 data-nosnippet>3227</a>
+<a href=#3228 id=3228 data-nosnippet>3228</a>    <span class="attr">#[tokio::test]
+<a href=#3229 id=3229 data-nosnippet>3229</a>    </span><span class="kw">async fn </span>series_v1_requests_split_at_uncompressed_size_limit_are_valid_json() {
+<a href=#3230 id=3230 data-nosnippet>3230</a>        <span class="comment">// About 6 MB of tags that compress to almost nothing, so the 4 MiB uncompressed limit rejects a metric before
+<a href=#3231 id=3231 data-nosnippet>3231</a>        // the compressed size estimate does.
+<a href=#3232 id=3232 data-nosnippet>3232</a>        </span><span class="kw">let </span>metrics = (<span class="number">0</span>..<span class="number">120</span>)
+<a href=#3233 id=3233 data-nosnippet>3233</a>            .map(|index| gauge_with_tag(index, <span class="string">"a"</span>.repeat(<span class="number">50_000</span>)))
+<a href=#3234 id=3234 data-nosnippet>3234</a>            .collect::&lt;Vec&lt;<span class="kw">_</span>&gt;&gt;();
+<a href=#3235 id=3235 data-nosnippet>3235</a>
+<a href=#3236 id=3236 data-nosnippet>3236</a>        <span class="kw">let </span>requests = encode_series_v1(metrics).<span class="kw">await</span>;
+<a href=#3237 id=3237 data-nosnippet>3237</a>        <span class="macro">assert!</span>(requests.len() &gt; <span class="number">1</span>, <span class="string">"the metrics should be split across requests"</span>);
+<a href=#3238 id=3238 data-nosnippet>3238</a>        assert_valid_series_v1_requests(<span class="kw-2">&amp;</span>requests, <span class="number">120</span>);
+<a href=#3239 id=3239 data-nosnippet>3239</a>    }
+<a href=#3240 id=3240 data-nosnippet>3240</a>
+<a href=#3241 id=3241 data-nosnippet>3241</a>    <span class="attr">#[tokio::test]
+<a href=#3242 id=3242 data-nosnippet>3242</a>    </span><span class="kw">async fn </span>series_v1_request_with_a_metric_over_the_uncompressed_limit_between_others_is_valid_json() {
+<a href=#3243 id=3243 data-nosnippet>3243</a>        <span class="comment">// The encoder drops a metric that's over the uncompressed limit by itself, and carries on with the next one.
+<a href=#3244 id=3244 data-nosnippet>3244</a>        </span><span class="kw">let </span>limit = datadog_metrics_configuration().max_uncompressed_payload_size;
+<a href=#3245 id=3245 data-nosnippet>3245</a>        <span class="kw">let </span>metrics = <span class="macro">vec!</span>[
+<a href=#3246 id=3246 data-nosnippet>3246</a>            gauge_with_tag(<span class="number">0</span>, <span class="string">"before"</span>.to_string()),
+<a href=#3247 id=3247 data-nosnippet>3247</a>            gauge_with_tag(<span class="number">1</span>, <span class="string">"a"</span>.repeat(limit)),
+<a href=#3248 id=3248 data-nosnippet>3248</a>            gauge_with_tag(<span class="number">2</span>, <span class="string">"after"</span>.to_string()),
+<a href=#3249 id=3249 data-nosnippet>3249</a>        ];
+<a href=#3250 id=3250 data-nosnippet>3250</a>
+<a href=#3251 id=3251 data-nosnippet>3251</a>        <span class="kw">let </span>requests = encode_series_v1(metrics).<span class="kw">await</span>;
+<a href=#3252 id=3252 data-nosnippet>3252</a>        assert_valid_series_v1_requests(<span class="kw-2">&amp;</span>requests, <span class="number">2</span>);
+<a href=#3253 id=3253 data-nosnippet>3253</a>    }
+<a href=#3254 id=3254 data-nosnippet>3254</a>
+<a href=#3255 id=3255 data-nosnippet>3255</a>    <span class="attr">#[tokio::test]
+<a href=#3256 id=3256 data-nosnippet>3256</a>    </span><span class="kw">async fn </span>series_v1_request_after_a_first_metric_over_the_uncompressed_limit_is_valid_json() {
+<a href=#3257 id=3257 data-nosnippet>3257</a>        <span class="kw">let </span>limit = datadog_metrics_configuration().max_uncompressed_payload_size;
+<a href=#3258 id=3258 data-nosnippet>3258</a>        <span class="kw">let </span>metrics = <span class="macro">vec!</span>[
+<a href=#3259 id=3259 data-nosnippet>3259</a>            gauge_with_tag(<span class="number">0</span>, <span class="string">"a"</span>.repeat(limit)),
+<a href=#3260 id=3260 data-nosnippet>3260</a>            gauge_with_tag(<span class="number">1</span>, <span class="string">"after"</span>.to_string()),
+<a href=#3261 id=3261 data-nosnippet>3261</a>        ];
+<a href=#3262 id=3262 data-nosnippet>3262</a>
+<a href=#3263 id=3263 data-nosnippet>3263</a>        <span class="kw">let </span>requests = encode_series_v1(metrics).<span class="kw">await</span>;
+<a href=#3264 id=3264 data-nosnippet>3264</a>        assert_valid_series_v1_requests(<span class="kw-2">&amp;</span>requests, <span class="number">1</span>);
+<a href=#3265 id=3265 data-nosnippet>3265</a>    }
+<a href=#3266 id=3266 data-nosnippet>3266</a>}
+<a href=#3267 id=3267 data-nosnippet>3267</a>
+<a href=#3268 id=3268 data-nosnippet>3268</a><span class="attr">#[cfg(test)]
+<a href=#3269 id=3269 data-nosnippet>3269</a></span><span class="kw">mod </span>payload_limits {
+<a href=#3270 id=3270 data-nosnippet>3270</a>    <span class="kw">use </span><span class="kw">super</span>::v2;
+<a href=#3271 id=3271 data-nosnippet>3271</a>    <span class="kw">use </span><span class="kw">crate</span>::common::datadog::{clamp_payload_limits, test_util::datadog_metrics_configuration};
+<a href=#3272 id=3272 data-nosnippet>3272</a>
+<a href=#3273 id=3273 data-nosnippet>3273</a>    <span class="attr">#[test]
+<a href=#3274 id=3274 data-nosnippet>3274</a>    </span><span class="kw">fn </span>v3_payload_limits_come_from_the_series_limits() {
+<a href=#3275 id=3275 data-nosnippet>3275</a>        <span class="kw">let </span><span class="kw-2">mut </span>config = datadog_metrics_configuration();
+<a href=#3276 id=3276 data-nosnippet>3276</a>        config.max_series_payload_size = <span class="number">1234</span>;
+<a href=#3277 id=3277 data-nosnippet>3277</a>        config.max_series_uncompressed_payload_size = <span class="number">5678</span>;
+<a href=#3278 id=3278 data-nosnippet>3278</a>        config.max_series_points_per_payload = <span class="number">500</span>;
+<a href=#3279 id=3279 data-nosnippet>3279</a>
+<a href=#3280 id=3280 data-nosnippet>3280</a>        <span class="kw">let </span>limits = config.v3_payload_limits();
+<a href=#3281 id=3281 data-nosnippet>3281</a>
+<a href=#3282 id=3282 data-nosnippet>3282</a>        <span class="macro">assert_eq!</span>(<span class="number">1234</span>, limits.max_compressed_size);
+<a href=#3283 id=3283 data-nosnippet>3283</a>        <span class="macro">assert_eq!</span>(<span class="number">5678</span>, limits.max_uncompressed_size);
+<a href=#3284 id=3284 data-nosnippet>3284</a>        <span class="macro">assert_eq!</span>(<span class="number">500</span>, limits.max_points_per_payload);
+<a href=#3285 id=3285 data-nosnippet>3285</a>    }
+<a href=#3286 id=3286 data-nosnippet>3286</a>
+<a href=#3287 id=3287 data-nosnippet>3287</a>    <span class="attr">#[test]
+<a href=#3288 id=3288 data-nosnippet>3288</a>    </span><span class="kw">fn </span>clamps_series_payload_limit_keys_to_api_limits() {
+<a href=#3289 id=3289 data-nosnippet>3289</a>        <span class="kw">let </span>(uncompressed_limit, compressed_limit) = clamp_payload_limits(
+<a href=#3290 id=3290 data-nosnippet>3290</a>            v2::SERIES_V2_UNCOMPRESSED_SIZE_LIMIT + <span class="number">1</span>,
+<a href=#3291 id=3291 data-nosnippet>3291</a>            v2::SERIES_V2_COMPRESSED_SIZE_LIMIT + <span class="number">1</span>,
+<a href=#3292 id=3292 data-nosnippet>3292</a>            v2::SERIES_V2_UNCOMPRESSED_SIZE_LIMIT,
+<a href=#3293 id=3293 data-nosnippet>3293</a>            v2::SERIES_V2_COMPRESSED_SIZE_LIMIT,
+<a href=#3294 id=3294 data-nosnippet>3294</a>        );
+<a href=#3295 id=3295 data-nosnippet>3295</a>        <span class="macro">assert_eq!</span>(uncompressed_limit, v2::SERIES_V2_UNCOMPRESSED_SIZE_LIMIT);
+<a href=#3296 id=3296 data-nosnippet>3296</a>        <span class="macro">assert_eq!</span>(compressed_limit, v2::SERIES_V2_COMPRESSED_SIZE_LIMIT);
+<a href=#3297 id=3297 data-nosnippet>3297</a>
+<a href=#3298 id=3298 data-nosnippet>3298</a>        <span class="kw">let </span>(uncompressed_limit, compressed_limit) = clamp_payload_limits(
+<a href=#3299 id=3299 data-nosnippet>3299</a>            <span class="number">5678</span>,
+<a href=#3300 id=3300 data-nosnippet>3300</a>            <span class="number">1234</span>,
+<a href=#3301 id=3301 data-nosnippet>3301</a>            v2::SERIES_V2_UNCOMPRESSED_SIZE_LIMIT,
+<a href=#3302 id=3302 data-nosnippet>3302</a>            v2::SERIES_V2_COMPRESSED_SIZE_LIMIT,
+<a href=#3303 id=3303 data-nosnippet>3303</a>        );
+<a href=#3304 id=3304 data-nosnippet>3304</a>        <span class="macro">assert_eq!</span>(uncompressed_limit, <span class="number">5678</span>);
+<a href=#3305 id=3305 data-nosnippet>3305</a>        <span class="macro">assert_eq!</span>(compressed_limit, <span class="number">1234</span>);
+<a href=#3306 id=3306 data-nosnippet>3306</a>    }
+<a href=#3307 id=3307 data-nosnippet>3307</a>}
 </code></pre></div></section></main></body></html>
