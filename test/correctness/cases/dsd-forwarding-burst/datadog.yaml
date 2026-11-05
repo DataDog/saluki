@@ -19,11 +19,8 @@ process_config:
     enabled: false
 
 # Disable preflight_mode to avoid probe metric from entering datadog-intake, which is not essential to assess correct forwarding behavior
-data_plane: 
+data_plane:
   preflight_mode: false
-
-# Point ourselves at the datadog-intake service.
-dd_url: "http://datadog-intake:2049"
 
 # Listen on UDP port 8125. Millstone runs in a separate container, so we must accept non-local
 # traffic by binding to all interfaces.
@@ -33,10 +30,6 @@ dogstatsd_non_local_traffic: true
 # Disable UDS listeners so only UDP is active.
 dogstatsd_socket: ""
 dogstatsd_stream_socket: ""
-
-# Forward DogStatsD messages to the fake intake capture socket.
-statsd_forward_host: "datadog-intake"
-statsd_forward_port: 9125
 
 # Ensure origin detection is disabled since we can't support it with ADP in standalone mode.
 dogstatsd_origin_detection: false

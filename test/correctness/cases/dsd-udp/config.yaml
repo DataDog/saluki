@@ -1,19 +1,54 @@
-type: correctness
-runtime: docker
-analysis_mode: metrics
-baseline:
-  image: saluki-images/datadog-agent:testing-release
-  files:
-    - datadog.yaml:/etc/datadog-agent/datadog.yaml
-  env:
-    DD_API_KEY: correctness-test
-comparison:
-  image: saluki-images/datadog-agent:testing-release
-  files:
-    - datadog.yaml:/etc/datadog-agent/datadog.yaml
-  env:
-    DD_API_KEY: correctness-test
-    DD_DATA_PLANE_ENABLED: "true"
-    DD_DATA_PLANE_STANDALONE_MODE: "true"
-    DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-    DD_AGGREGATE_CONTEXT_LIMIT: "500000"
+timeout: 20m
+subject_os: [linux]
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    connect: {intake: intake-adp.api}
+    config:
+      files:
+        datadog.yaml: {from: datadog.yaml, template: true}
+      env:
+        DD_API_KEY: correctness-test
+        DD_DATA_PLANE_ENABLED: "true"
+        DD_DATA_PLANE_STANDALONE_MODE: "true"
+        DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+        DD_AGGREGATE_CONTEXT_LIMIT: "500000"
+  agent:
+    type: agent
+    connect: {intake: intake-agent.api}
+    config:
+      files:
+        datadog.yaml: {from: datadog.yaml, template: true}
+      env:
+        DD_API_KEY: correctness-test
+  intake-adp:
+    type: datadog-intake
+  intake-agent:
+    type: datadog-intake
+  load:
+    type: millstone
+    connect:
+      target: adp.dogstatsd_udp
+      baseline_target: agent.dogstatsd_udp
+    config:
+      files:
+        millstone.yaml: {from: millstone.yaml, template: true}
+procedure:
+  - step: log_contains
+    on: load
+    process: baseline
+    pattern: Millstone finished sending
+    timeout: 15m
+  - step: log_contains
+    on: load
+    process: subject
+    pattern: Millstone finished sending
+    timeout: 15m
+  - step: process_stable_for
+    on: load
+    duration: 32s
+  - step: compare
+    kind: metrics
+    subject: intake-adp
+    baseline: intake-agent

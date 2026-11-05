@@ -54,17 +54,17 @@
       "name": "dsd-added-tags",
       "suite": "correctness",
       "subject_os": "linux",
-      "runtime": "docker",
+      "runtime": "linux-container",
       "source": "test/correctness/cases/dsd-added-tags/config.yaml",
-      "schema": "correctness",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "1200s",
       "images": {
-        "baseline": "saluki-images/datadog-agent:testing-release",
-        "comparison": "saluki-images/datadog-agent:testing-release",
-        "datadog-intake": "saluki-images/correctness-tools:latest",
-        "millstone": "saluki-images/correctness-tools:latest"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest",
+        "tools-linux-image": "saluki-images/correctness-tools:latest"
       },
       "ci_jobs": [
         "test-correctness-dsd-added-tags"
@@ -79,17 +79,17 @@
       "name": "dsd-events",
       "suite": "correctness",
       "subject_os": "linux",
-      "runtime": "docker",
+      "runtime": "linux-container",
       "source": "test/correctness/cases/dsd-events/config.yaml",
-      "schema": "correctness",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "1200s",
       "images": {
-        "baseline": "saluki-images/datadog-agent:testing-release",
-        "comparison": "saluki-images/datadog-agent:testing-release",
-        "datadog-intake": "saluki-images/correctness-tools:latest",
-        "millstone": "saluki-images/correctness-tools:latest"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest",
+        "tools-linux-image": "saluki-images/correctness-tools:latest"
       },
       "ci_jobs": [
         "test-correctness-dsd-events"
@@ -104,17 +104,17 @@
       "name": "dsd-forwarding",
       "suite": "correctness",
       "subject_os": "linux",
-      "runtime": "docker",
+      "runtime": "linux-container",
       "source": "test/correctness/cases/dsd-forwarding/config.yaml",
-      "schema": "correctness",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "1200s",
       "images": {
-        "baseline": "saluki-images/datadog-agent:testing-release",
-        "comparison": "saluki-images/datadog-agent:testing-release",
-        "datadog-intake": "saluki-images/correctness-tools:latest",
-        "millstone": "saluki-images/correctness-tools:latest"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest",
+        "tools-linux-image": "saluki-images/correctness-tools:latest"
       },
       "ci_jobs": [
         "test-correctness-dsd-forwarding"
@@ -129,17 +129,17 @@
       "name": "dsd-forwarding-burst",
       "suite": "correctness",
       "subject_os": "linux",
-      "runtime": "docker",
+      "runtime": "linux-container",
       "source": "test/correctness/cases/dsd-forwarding-burst/config.yaml",
-      "schema": "correctness",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "1200s",
       "images": {
-        "baseline": "saluki-images/datadog-agent:testing-release",
-        "comparison": "saluki-images/datadog-agent:testing-release",
-        "datadog-intake": "saluki-images/correctness-tools:latest",
-        "millstone": "saluki-images/correctness-tools:latest"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest",
+        "tools-linux-image": "saluki-images/correctness-tools:latest"
       },
       "ci_jobs": [
         "test-correctness-dsd-forwarding-burst"
@@ -154,17 +154,17 @@
       "name": "dsd-host-tag",
       "suite": "correctness",
       "subject_os": "linux",
-      "runtime": "docker",
+      "runtime": "linux-container",
       "source": "test/correctness/cases/dsd-host-tag/config.yaml",
-      "schema": "correctness",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "1200s",
       "images": {
-        "baseline": "saluki-images/datadog-agent:testing-release",
-        "comparison": "saluki-images/datadog-agent:testing-release",
-        "datadog-intake": "saluki-images/correctness-tools:latest",
-        "millstone": "saluki-images/correctness-tools:latest"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest",
+        "tools-linux-image": "saluki-images/correctness-tools:latest"
       },
       "ci_jobs": [
         "test-correctness-dsd-host-tag"
@@ -179,17 +179,17 @@
       "name": "dsd-mapper-blocklist",
       "suite": "correctness",
       "subject_os": "linux",
-      "runtime": "docker",
+      "runtime": "linux-container",
       "source": "test/correctness/cases/dsd-mapper-blocklist/config.yaml",
-      "schema": "correctness",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "1200s",
       "images": {
-        "baseline": "saluki-images/datadog-agent:testing-release",
-        "comparison": "saluki-images/datadog-agent:testing-release",
-        "datadog-intake": "saluki-images/correctness-tools:latest",
-        "millstone": "saluki-images/correctness-tools:latest"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest",
+        "tools-linux-image": "saluki-images/correctness-tools:latest"
       },
       "ci_jobs": [
         "test-correctness-dsd-mapper-blocklist"
@@ -204,17 +204,17 @@
       "name": "dsd-metric-filterlist-prefix",
       "suite": "correctness",
       "subject_os": "linux",
-      "runtime": "docker",
+      "runtime": "linux-container",
       "source": "test/correctness/cases/dsd-metric-filterlist-prefix/config.yaml",
-      "schema": "correctness",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "1200s",
       "images": {
-        "baseline": "saluki-images/datadog-agent:testing-release",
-        "comparison": "saluki-images/datadog-agent:testing-release",
-        "datadog-intake": "saluki-images/correctness-tools:latest",
-        "millstone": "saluki-images/correctness-tools:latest"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest",
+        "tools-linux-image": "saluki-images/correctness-tools:latest"
       },
       "ci_jobs": [
         "test-correctness-dsd-metric-filterlist-prefix"
@@ -454,17 +454,17 @@
       "name": "dsd-plain-v3",
       "suite": "correctness",
       "subject_os": "linux",
-      "runtime": "docker",
+      "runtime": "linux-container",
       "source": "test/correctness/cases/dsd-plain-v3/config.yaml",
-      "schema": "correctness",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "1200s",
       "images": {
-        "baseline": "saluki-images/datadog-agent:testing-release",
-        "comparison": "saluki-images/datadog-agent:testing-release",
-        "datadog-intake": "saluki-images/correctness-tools:latest",
-        "millstone": "saluki-images/correctness-tools:latest"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest",
+        "tools-linux-image": "saluki-images/correctness-tools:latest"
       },
       "ci_jobs": [
         "test-correctness-dsd-plain-v3"
@@ -479,17 +479,17 @@
       "name": "dsd-provider-kind",
       "suite": "correctness",
       "subject_os": "linux",
-      "runtime": "docker",
+      "runtime": "linux-container",
       "source": "test/correctness/cases/dsd-provider-kind/config.yaml",
-      "schema": "correctness",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "1200s",
       "images": {
-        "baseline": "saluki-images/datadog-agent:testing-release",
-        "comparison": "saluki-images/datadog-agent:testing-release",
-        "datadog-intake": "saluki-images/correctness-tools:latest",
-        "millstone": "saluki-images/correctness-tools:latest"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest",
+        "tools-linux-image": "saluki-images/correctness-tools:latest"
       },
       "ci_jobs": [
         "test-correctness-dsd-provider-kind"
@@ -504,17 +504,17 @@
       "name": "dsd-service-checks",
       "suite": "correctness",
       "subject_os": "linux",
-      "runtime": "docker",
+      "runtime": "linux-container",
       "source": "test/correctness/cases/dsd-service-checks/config.yaml",
-      "schema": "correctness",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "1200s",
       "images": {
-        "baseline": "saluki-images/datadog-agent:testing-release",
-        "comparison": "saluki-images/datadog-agent:testing-release",
-        "datadog-intake": "saluki-images/correctness-tools:latest",
-        "millstone": "saluki-images/correctness-tools:latest"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest",
+        "tools-linux-image": "saluki-images/correctness-tools:latest"
       },
       "ci_jobs": [
         "test-correctness-dsd-service-checks"
@@ -529,17 +529,17 @@
       "name": "dsd-tag-filterlist",
       "suite": "correctness",
       "subject_os": "linux",
-      "runtime": "docker",
+      "runtime": "linux-container",
       "source": "test/correctness/cases/dsd-tag-filterlist/config.yaml",
-      "schema": "correctness",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "1200s",
       "images": {
-        "baseline": "saluki-images/datadog-agent:testing-release",
-        "comparison": "saluki-images/datadog-agent:testing-release",
-        "datadog-intake": "saluki-images/correctness-tools:latest",
-        "millstone": "saluki-images/correctness-tools:latest"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest",
+        "tools-linux-image": "saluki-images/correctness-tools:latest"
       },
       "ci_jobs": [
         "test-correctness-dsd-tag-filterlist"
@@ -554,17 +554,17 @@
       "name": "dsd-timestamp-extension",
       "suite": "correctness",
       "subject_os": "linux",
-      "runtime": "docker",
+      "runtime": "linux-container",
       "source": "test/correctness/cases/dsd-timestamp-extension/config.yaml",
-      "schema": "correctness",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "1200s",
       "images": {
-        "baseline": "saluki-images/datadog-agent:testing-release",
-        "comparison": "saluki-images/datadog-agent:testing-release",
-        "datadog-intake": "saluki-images/correctness-tools:latest",
-        "millstone": "saluki-images/correctness-tools:latest"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest",
+        "tools-linux-image": "saluki-images/correctness-tools:latest"
       },
       "ci_jobs": [
         "test-correctness-dsd-timestamp-extension"
@@ -579,17 +579,17 @@
       "name": "dsd-timestamp-extension-custom-window",
       "suite": "correctness",
       "subject_os": "linux",
-      "runtime": "docker",
+      "runtime": "linux-container",
       "source": "test/correctness/cases/dsd-timestamp-extension-custom-window/config.yaml",
-      "schema": "correctness",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "1200s",
       "images": {
-        "baseline": "saluki-images/datadog-agent:testing-release",
-        "comparison": "saluki-images/datadog-agent:testing-release",
-        "datadog-intake": "saluki-images/correctness-tools:latest",
-        "millstone": "saluki-images/correctness-tools:latest"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest",
+        "tools-linux-image": "saluki-images/correctness-tools:latest"
       },
       "ci_jobs": [
         "test-correctness-dsd-timestamp-extension-custom-window"
@@ -604,17 +604,17 @@
       "name": "dsd-udp",
       "suite": "correctness",
       "subject_os": "linux",
-      "runtime": "docker",
+      "runtime": "linux-container",
       "source": "test/correctness/cases/dsd-udp/config.yaml",
-      "schema": "correctness",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "1200s",
       "images": {
-        "baseline": "saluki-images/datadog-agent:testing-release",
-        "comparison": "saluki-images/datadog-agent:testing-release",
-        "datadog-intake": "saluki-images/correctness-tools:latest",
-        "millstone": "saluki-images/correctness-tools:latest"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest",
+        "tools-linux-image": "saluki-images/correctness-tools:latest"
       },
       "ci_jobs": [
         "test-correctness-dsd-udp"
@@ -629,17 +629,17 @@
       "name": "dsd-uds-stream",
       "suite": "correctness",
       "subject_os": "linux",
-      "runtime": "docker",
+      "runtime": "linux-container",
       "source": "test/correctness/cases/dsd-uds-stream/config.yaml",
-      "schema": "correctness",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "1200s",
       "images": {
-        "baseline": "saluki-images/datadog-agent:testing-release",
-        "comparison": "saluki-images/datadog-agent:testing-release",
-        "datadog-intake": "saluki-images/correctness-tools:latest",
-        "millstone": "saluki-images/correctness-tools:latest"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest",
+        "tools-linux-image": "saluki-images/correctness-tools:latest"
       },
       "ci_jobs": [
         "test-correctness-dsd-uds-stream"
@@ -654,17 +654,17 @@
       "name": "dsd-v1-api-series",
       "suite": "correctness",
       "subject_os": "linux",
-      "runtime": "docker",
+      "runtime": "linux-container",
       "source": "test/correctness/cases/dsd-v1-api-series/config.yaml",
-      "schema": "correctness",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "1200s",
       "images": {
-        "baseline": "saluki-images/datadog-agent:testing-release",
-        "comparison": "saluki-images/datadog-agent:testing-release",
-        "datadog-intake": "saluki-images/correctness-tools:latest",
-        "millstone": "saluki-images/correctness-tools:latest"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest",
+        "tools-linux-image": "saluki-images/correctness-tools:latest"
       },
       "ci_jobs": [
         "test-correctness-dsd-v1-api-series"
@@ -3671,363 +3671,599 @@
     },
     "correctness/dsd-added-tags": {
       "config": {
-        "additional_span_ignore_fields": [],
-        "analysis_mode": "metrics",
-        "baseline": {
-          "command": [],
-          "entrypoint": [],
-          "env": {
-            "DD_API_KEY": "correctness-test"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "correctness-test",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_REMOTE_AGENT_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false"
+              },
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            },
+            "agent": {
+              "env": {
+                "DD_API_KEY": "correctness-test"
+              },
+              "realization": "linux-container",
+              "subject": false,
+              "type": "agent"
+            },
+            "intake-adp": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "datadog-intake"
+            },
+            "intake-agent": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "datadog-intake"
+            },
+            "load": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "millstone"
+            }
           },
-          "files": [
-            "datadog.yaml:/etc/datadog-agent/datadog.yaml"
-          ],
-          "image": "saluki-images/datadog-agent:testing-release"
-        },
-        "comparison": {
-          "command": [],
-          "entrypoint": [],
-          "env": {
-            "DD_API_KEY": "correctness-test",
-            "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-            "DD_DATA_PLANE_ENABLED": "true",
-            "DD_DATA_PLANE_REMOTE_AGENT_ENABLED": "true",
-            "DD_DATA_PLANE_STANDALONE_MODE": "false"
-          },
-          "files": [
-            "datadog.yaml:/etc/datadog-agent/datadog.yaml"
-          ],
-          "image": "saluki-images/datadog-agent:testing-release"
-        },
-        "datadog_intake": {
-          "binary_path": "/usr/local/bin/datadog-intake",
-          "image": "saluki-images/correctness-tools:latest"
-        },
-        "disabled": false,
-        "millstone": {
-          "binary_path": "/usr/local/bin/millstone",
-          "config_path": "millstone.yaml",
-          "image": "saluki-images/correctness-tools:latest"
-        },
-        "otlp_direct_analysis_mode": false,
-        "require_dogstatsd_forwarded_packets": false,
-        "runtime": "docker"
+          "procedure": [
+            {
+              "on": "load",
+              "pattern": "Millstone finished sending",
+              "process": "baseline",
+              "step": "log_contains",
+              "timeout": "15m"
+            },
+            {
+              "on": "load",
+              "pattern": "Millstone finished sending",
+              "process": "subject",
+              "step": "log_contains",
+              "timeout": "15m"
+            },
+            {
+              "duration": "32s",
+              "on": "load",
+              "step": "process_stable_for"
+            },
+            {
+              "baseline": "intake-agent",
+              "kind": "metrics",
+              "step": "compare",
+              "subject": "intake-adp"
+            }
+          ]
+        }
       },
-      "comparison": {
-        "additional_span_ignore_fields": 0,
-        "analysis_mode": "metrics",
-        "otlp_direct_analysis_mode": false,
-        "require_dogstatsd_forwarded_packets": false
+      "steps": {
+        "single_assertions": 4,
+        "parallel_blocks": 0,
+        "parallel_assertions": 0,
+        "actions": 0,
+        "by_kind": {
+          "compare": 1,
+          "log_contains": 2,
+          "process_stable_for": 1
+        }
       },
       "ignored_fields": []
     },
     "correctness/dsd-events": {
       "config": {
-        "additional_span_ignore_fields": [],
-        "analysis_mode": "events",
-        "baseline": {
-          "command": [],
-          "entrypoint": [],
-          "env": {
-            "DD_API_KEY": "correctness-test"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "correctness-test",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "true"
+              },
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            },
+            "agent": {
+              "env": {
+                "DD_API_KEY": "correctness-test"
+              },
+              "realization": "linux-container",
+              "subject": false,
+              "type": "agent"
+            },
+            "intake-adp": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "datadog-intake"
+            },
+            "intake-agent": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "datadog-intake"
+            },
+            "load": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "millstone"
+            }
           },
-          "files": [
-            "datadog.yaml:/etc/datadog-agent/datadog.yaml"
-          ],
-          "image": "saluki-images/datadog-agent:testing-release"
-        },
-        "comparison": {
-          "command": [],
-          "entrypoint": [],
-          "env": {
-            "DD_API_KEY": "correctness-test",
-            "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-            "DD_DATA_PLANE_ENABLED": "true",
-            "DD_DATA_PLANE_STANDALONE_MODE": "true"
-          },
-          "files": [
-            "datadog.yaml:/etc/datadog-agent/datadog.yaml"
-          ],
-          "image": "saluki-images/datadog-agent:testing-release"
-        },
-        "datadog_intake": {
-          "binary_path": "/usr/local/bin/datadog-intake",
-          "image": "saluki-images/correctness-tools:latest"
-        },
-        "disabled": false,
-        "millstone": {
-          "binary_path": "/usr/local/bin/millstone",
-          "config_path": "millstone.yaml",
-          "image": "saluki-images/correctness-tools:latest"
-        },
-        "otlp_direct_analysis_mode": false,
-        "require_dogstatsd_forwarded_packets": false,
-        "runtime": "docker"
+          "procedure": [
+            {
+              "on": "load",
+              "pattern": "Millstone finished sending",
+              "process": "baseline",
+              "step": "log_contains",
+              "timeout": "15m"
+            },
+            {
+              "on": "load",
+              "pattern": "Millstone finished sending",
+              "process": "subject",
+              "step": "log_contains",
+              "timeout": "15m"
+            },
+            {
+              "duration": "32s",
+              "on": "load",
+              "step": "process_stable_for"
+            },
+            {
+              "baseline": "intake-agent",
+              "kind": "events",
+              "step": "compare",
+              "subject": "intake-adp"
+            }
+          ]
+        }
       },
-      "comparison": {
-        "additional_span_ignore_fields": 0,
-        "analysis_mode": "events",
-        "otlp_direct_analysis_mode": false,
-        "require_dogstatsd_forwarded_packets": false
+      "steps": {
+        "single_assertions": 4,
+        "parallel_blocks": 0,
+        "parallel_assertions": 0,
+        "actions": 0,
+        "by_kind": {
+          "compare": 1,
+          "log_contains": 2,
+          "process_stable_for": 1
+        }
       },
       "ignored_fields": []
     },
     "correctness/dsd-forwarding": {
       "config": {
-        "additional_span_ignore_fields": [],
-        "analysis_mode": "metrics",
-        "baseline": {
-          "command": [],
-          "entrypoint": [],
-          "env": {
-            "DD_API_KEY": "correctness-test"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_AGGREGATE_CONTEXT_LIMIT": "500000",
+                "DD_API_KEY": "correctness-test",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "true"
+              },
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            },
+            "agent": {
+              "env": {
+                "DD_API_KEY": "correctness-test"
+              },
+              "realization": "linux-container",
+              "subject": false,
+              "type": "agent"
+            },
+            "intake-adp": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "datadog-intake"
+            },
+            "intake-agent": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "datadog-intake"
+            },
+            "load": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "millstone"
+            }
           },
-          "files": [
-            "datadog.yaml:/etc/datadog-agent/datadog.yaml"
-          ],
-          "image": "saluki-images/datadog-agent:testing-release"
-        },
-        "comparison": {
-          "command": [],
-          "entrypoint": [],
-          "env": {
-            "DD_AGGREGATE_CONTEXT_LIMIT": "500000",
-            "DD_API_KEY": "correctness-test",
-            "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-            "DD_DATA_PLANE_ENABLED": "true",
-            "DD_DATA_PLANE_STANDALONE_MODE": "true"
-          },
-          "files": [
-            "datadog.yaml:/etc/datadog-agent/datadog.yaml"
-          ],
-          "image": "saluki-images/datadog-agent:testing-release"
-        },
-        "datadog_intake": {
-          "binary_path": "/usr/local/bin/datadog-intake",
-          "image": "saluki-images/correctness-tools:latest"
-        },
-        "disabled": false,
-        "millstone": {
-          "binary_path": "/usr/local/bin/millstone",
-          "config_path": "millstone.yaml",
-          "image": "saluki-images/correctness-tools:latest"
-        },
-        "otlp_direct_analysis_mode": false,
-        "require_dogstatsd_forwarded_packets": true,
-        "runtime": "docker"
+          "procedure": [
+            {
+              "on": "load",
+              "pattern": "Millstone finished sending",
+              "process": "baseline",
+              "step": "log_contains",
+              "timeout": "15m"
+            },
+            {
+              "on": "load",
+              "pattern": "Millstone finished sending",
+              "process": "subject",
+              "step": "log_contains",
+              "timeout": "15m"
+            },
+            {
+              "duration": "32s",
+              "on": "load",
+              "step": "process_stable_for"
+            },
+            {
+              "baseline": "intake-agent",
+              "kind": "metrics",
+              "require_forwarded_packets": true,
+              "step": "compare",
+              "subject": "intake-adp"
+            }
+          ]
+        }
       },
-      "comparison": {
-        "additional_span_ignore_fields": 0,
-        "analysis_mode": "metrics",
-        "otlp_direct_analysis_mode": false,
-        "require_dogstatsd_forwarded_packets": true
+      "steps": {
+        "single_assertions": 4,
+        "parallel_blocks": 0,
+        "parallel_assertions": 0,
+        "actions": 0,
+        "by_kind": {
+          "compare": 1,
+          "log_contains": 2,
+          "process_stable_for": 1
+        }
       },
       "ignored_fields": []
     },
     "correctness/dsd-forwarding-burst": {
       "config": {
-        "additional_span_ignore_fields": [],
-        "analysis_mode": "metrics",
-        "baseline": {
-          "command": [],
-          "entrypoint": [],
-          "env": {
-            "DD_API_KEY": "correctness-test"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_AGGREGATE_CONTEXT_LIMIT": "500000",
+                "DD_API_KEY": "correctness-test",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "true"
+              },
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            },
+            "agent": {
+              "env": {
+                "DD_API_KEY": "correctness-test"
+              },
+              "realization": "linux-container",
+              "subject": false,
+              "type": "agent"
+            },
+            "intake-adp": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "datadog-intake"
+            },
+            "intake-agent": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "datadog-intake"
+            },
+            "load": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "millstone"
+            }
           },
-          "files": [
-            "datadog.yaml:/etc/datadog-agent/datadog.yaml"
-          ],
-          "image": "saluki-images/datadog-agent:testing-release"
-        },
-        "comparison": {
-          "command": [],
-          "entrypoint": [],
-          "env": {
-            "DD_AGGREGATE_CONTEXT_LIMIT": "500000",
-            "DD_API_KEY": "correctness-test",
-            "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-            "DD_DATA_PLANE_ENABLED": "true",
-            "DD_DATA_PLANE_STANDALONE_MODE": "true"
-          },
-          "files": [
-            "datadog.yaml:/etc/datadog-agent/datadog.yaml"
-          ],
-          "image": "saluki-images/datadog-agent:testing-release"
-        },
-        "datadog_intake": {
-          "binary_path": "/usr/local/bin/datadog-intake",
-          "image": "saluki-images/correctness-tools:latest"
-        },
-        "disabled": false,
-        "millstone": {
-          "binary_path": "/usr/local/bin/millstone",
-          "config_path": "millstone.yaml",
-          "image": "saluki-images/correctness-tools:latest"
-        },
-        "otlp_direct_analysis_mode": false,
-        "require_dogstatsd_forwarded_packets": true,
-        "runtime": "docker"
+          "procedure": [
+            {
+              "on": "load",
+              "pattern": "Millstone finished sending",
+              "process": "baseline",
+              "step": "log_contains",
+              "timeout": "15m"
+            },
+            {
+              "on": "load",
+              "pattern": "Millstone finished sending",
+              "process": "subject",
+              "step": "log_contains",
+              "timeout": "15m"
+            },
+            {
+              "duration": "32s",
+              "on": "load",
+              "step": "process_stable_for"
+            },
+            {
+              "baseline": "intake-agent",
+              "kind": "metrics",
+              "require_forwarded_packets": true,
+              "step": "compare",
+              "subject": "intake-adp"
+            }
+          ]
+        }
       },
-      "comparison": {
-        "additional_span_ignore_fields": 0,
-        "analysis_mode": "metrics",
-        "otlp_direct_analysis_mode": false,
-        "require_dogstatsd_forwarded_packets": true
+      "steps": {
+        "single_assertions": 4,
+        "parallel_blocks": 0,
+        "parallel_assertions": 0,
+        "actions": 0,
+        "by_kind": {
+          "compare": 1,
+          "log_contains": 2,
+          "process_stable_for": 1
+        }
       },
       "ignored_fields": []
     },
     "correctness/dsd-host-tag": {
       "config": {
-        "additional_span_ignore_fields": [],
-        "analysis_mode": "metrics",
-        "baseline": {
-          "command": [],
-          "entrypoint": [],
-          "env": {
-            "DD_API_KEY": "correctness-test"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_AGGREGATE_CONTEXT_LIMIT": "500000",
+                "DD_API_KEY": "correctness-test",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "true"
+              },
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            },
+            "agent": {
+              "env": {
+                "DD_API_KEY": "correctness-test"
+              },
+              "realization": "linux-container",
+              "subject": false,
+              "type": "agent"
+            },
+            "intake-adp": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "datadog-intake"
+            },
+            "intake-agent": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "datadog-intake"
+            },
+            "load": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "millstone"
+            }
           },
-          "files": [
-            "datadog.yaml:/etc/datadog-agent/datadog.yaml"
-          ],
-          "image": "saluki-images/datadog-agent:testing-release"
-        },
-        "comparison": {
-          "command": [],
-          "entrypoint": [],
-          "env": {
-            "DD_AGGREGATE_CONTEXT_LIMIT": "500000",
-            "DD_API_KEY": "correctness-test",
-            "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-            "DD_DATA_PLANE_ENABLED": "true",
-            "DD_DATA_PLANE_STANDALONE_MODE": "true"
-          },
-          "files": [
-            "datadog.yaml:/etc/datadog-agent/datadog.yaml"
-          ],
-          "image": "saluki-images/datadog-agent:testing-release"
-        },
-        "datadog_intake": {
-          "binary_path": "/usr/local/bin/datadog-intake",
-          "image": "saluki-images/correctness-tools:latest"
-        },
-        "disabled": false,
-        "millstone": {
-          "binary_path": "/usr/local/bin/millstone",
-          "config_path": "millstone.yaml",
-          "image": "saluki-images/correctness-tools:latest"
-        },
-        "otlp_direct_analysis_mode": false,
-        "require_dogstatsd_forwarded_packets": false,
-        "runtime": "docker"
+          "procedure": [
+            {
+              "on": "load",
+              "pattern": "Millstone finished sending",
+              "process": "baseline",
+              "step": "log_contains",
+              "timeout": "15m"
+            },
+            {
+              "on": "load",
+              "pattern": "Millstone finished sending",
+              "process": "subject",
+              "step": "log_contains",
+              "timeout": "15m"
+            },
+            {
+              "duration": "32s",
+              "on": "load",
+              "step": "process_stable_for"
+            },
+            {
+              "baseline": "intake-agent",
+              "kind": "metrics",
+              "step": "compare",
+              "subject": "intake-adp"
+            }
+          ]
+        }
       },
-      "comparison": {
-        "additional_span_ignore_fields": 0,
-        "analysis_mode": "metrics",
-        "otlp_direct_analysis_mode": false,
-        "require_dogstatsd_forwarded_packets": false
+      "steps": {
+        "single_assertions": 4,
+        "parallel_blocks": 0,
+        "parallel_assertions": 0,
+        "actions": 0,
+        "by_kind": {
+          "compare": 1,
+          "log_contains": 2,
+          "process_stable_for": 1
+        }
       },
       "ignored_fields": []
     },
     "correctness/dsd-mapper-blocklist": {
       "config": {
-        "additional_span_ignore_fields": [],
-        "analysis_mode": "metrics",
-        "baseline": {
-          "command": [],
-          "entrypoint": [],
-          "env": {
-            "DD_API_KEY": "correctness-test"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_AGGREGATE_CONTEXT_LIMIT": "500000",
+                "DD_API_KEY": "correctness-test",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "true"
+              },
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            },
+            "agent": {
+              "env": {
+                "DD_API_KEY": "correctness-test"
+              },
+              "realization": "linux-container",
+              "subject": false,
+              "type": "agent"
+            },
+            "intake-adp": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "datadog-intake"
+            },
+            "intake-agent": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "datadog-intake"
+            },
+            "load": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "millstone"
+            }
           },
-          "files": [
-            "datadog.yaml:/etc/datadog-agent/datadog.yaml"
-          ],
-          "image": "saluki-images/datadog-agent:testing-release"
-        },
-        "comparison": {
-          "command": [],
-          "entrypoint": [],
-          "env": {
-            "DD_AGGREGATE_CONTEXT_LIMIT": "500000",
-            "DD_API_KEY": "correctness-test",
-            "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-            "DD_DATA_PLANE_ENABLED": "true",
-            "DD_DATA_PLANE_STANDALONE_MODE": "true"
-          },
-          "files": [
-            "datadog.yaml:/etc/datadog-agent/datadog.yaml"
-          ],
-          "image": "saluki-images/datadog-agent:testing-release"
-        },
-        "datadog_intake": {
-          "binary_path": "/usr/local/bin/datadog-intake",
-          "image": "saluki-images/correctness-tools:latest"
-        },
-        "disabled": false,
-        "millstone": {
-          "binary_path": "/usr/local/bin/millstone",
-          "config_path": "millstone.yaml",
-          "image": "saluki-images/correctness-tools:latest"
-        },
-        "otlp_direct_analysis_mode": false,
-        "require_dogstatsd_forwarded_packets": false,
-        "runtime": "docker"
+          "procedure": [
+            {
+              "on": "load",
+              "pattern": "Millstone finished sending",
+              "process": "baseline",
+              "step": "log_contains",
+              "timeout": "15m"
+            },
+            {
+              "on": "load",
+              "pattern": "Millstone finished sending",
+              "process": "subject",
+              "step": "log_contains",
+              "timeout": "15m"
+            },
+            {
+              "duration": "32s",
+              "on": "load",
+              "step": "process_stable_for"
+            },
+            {
+              "baseline": "intake-agent",
+              "kind": "metrics",
+              "step": "compare",
+              "subject": "intake-adp"
+            }
+          ]
+        }
       },
-      "comparison": {
-        "additional_span_ignore_fields": 0,
-        "analysis_mode": "metrics",
-        "otlp_direct_analysis_mode": false,
-        "require_dogstatsd_forwarded_packets": false
+      "steps": {
+        "single_assertions": 4,
+        "parallel_blocks": 0,
+        "parallel_assertions": 0,
+        "actions": 0,
+        "by_kind": {
+          "compare": 1,
+          "log_contains": 2,
+          "process_stable_for": 1
+        }
       },
       "ignored_fields": []
     },
     "correctness/dsd-metric-filterlist-prefix": {
       "config": {
-        "additional_span_ignore_fields": [],
-        "analysis_mode": "metrics",
-        "baseline": {
-          "command": [],
-          "entrypoint": [],
-          "env": {
-            "DD_API_KEY": "correctness-test"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_AGGREGATE_CONTEXT_LIMIT": "500000",
+                "DD_API_KEY": "correctness-test",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true"
+              },
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            },
+            "agent": {
+              "env": {
+                "DD_API_KEY": "correctness-test"
+              },
+              "realization": "linux-container",
+              "subject": false,
+              "type": "agent"
+            },
+            "intake-adp": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "datadog-intake"
+            },
+            "intake-agent": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "datadog-intake"
+            },
+            "load": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "millstone"
+            }
           },
-          "files": [
-            "datadog.yaml:/etc/datadog-agent/datadog.yaml"
-          ],
-          "image": "saluki-images/datadog-agent:testing-release"
-        },
-        "comparison": {
-          "command": [],
-          "entrypoint": [],
-          "env": {
-            "DD_AGGREGATE_CONTEXT_LIMIT": "500000",
-            "DD_API_KEY": "correctness-test",
-            "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-            "DD_DATA_PLANE_ENABLED": "true"
-          },
-          "files": [
-            "datadog.yaml:/etc/datadog-agent/datadog.yaml"
-          ],
-          "image": "saluki-images/datadog-agent:testing-release"
-        },
-        "datadog_intake": {
-          "binary_path": "/usr/local/bin/datadog-intake",
-          "image": "saluki-images/correctness-tools:latest"
-        },
-        "disabled": false,
-        "millstone": {
-          "binary_path": "/usr/local/bin/millstone",
-          "config_path": "millstone.yaml",
-          "image": "saluki-images/correctness-tools:latest"
-        },
-        "otlp_direct_analysis_mode": false,
-        "require_dogstatsd_forwarded_packets": false,
-        "runtime": "docker"
+          "procedure": [
+            {
+              "on": "load",
+              "pattern": "Millstone finished sending",
+              "process": "baseline",
+              "step": "log_contains",
+              "timeout": "15m"
+            },
+            {
+              "on": "load",
+              "pattern": "Millstone finished sending",
+              "process": "subject",
+              "step": "log_contains",
+              "timeout": "15m"
+            },
+            {
+              "duration": "32s",
+              "on": "load",
+              "step": "process_stable_for"
+            },
+            {
+              "baseline": "intake-agent",
+              "kind": "metrics",
+              "required_metric_tag_keys": [
+                "image_name"
+              ],
+              "step": "compare",
+              "subject": "intake-adp"
+            }
+          ]
+        }
       },
-      "comparison": {
-        "additional_span_ignore_fields": 0,
-        "analysis_mode": "metrics",
-        "otlp_direct_analysis_mode": false,
-        "require_dogstatsd_forwarded_packets": false
+      "steps": {
+        "single_assertions": 4,
+        "parallel_blocks": 0,
+        "parallel_assertions": 0,
+        "actions": 0,
+        "by_kind": {
+          "compare": 1,
+          "log_contains": 2,
+          "process_stable_for": 1
+        }
       },
       "ignored_fields": []
     },
@@ -4601,468 +4837,768 @@
     },
     "correctness/dsd-plain-v3": {
       "config": {
-        "additional_span_ignore_fields": [],
-        "analysis_mode": "metrics",
-        "baseline": {
-          "command": [],
-          "entrypoint": [],
-          "env": {
-            "DD_API_KEY": "correctness-test"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_AGGREGATE_CONTEXT_LIMIT": "500000",
+                "DD_API_KEY": "correctness-test",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "true"
+              },
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            },
+            "agent": {
+              "env": {
+                "DD_API_KEY": "correctness-test"
+              },
+              "realization": "linux-container",
+              "subject": false,
+              "type": "agent"
+            },
+            "intake-adp": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "datadog-intake"
+            },
+            "intake-agent": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "datadog-intake"
+            },
+            "load": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "millstone"
+            }
           },
-          "files": [
-            "datadog.yaml:/etc/datadog-agent/datadog.yaml"
-          ],
-          "image": "saluki-images/datadog-agent:testing-release"
-        },
-        "comparison": {
-          "command": [],
-          "entrypoint": [],
-          "env": {
-            "DD_AGGREGATE_CONTEXT_LIMIT": "500000",
-            "DD_API_KEY": "correctness-test",
-            "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-            "DD_DATA_PLANE_ENABLED": "true",
-            "DD_DATA_PLANE_STANDALONE_MODE": "true"
-          },
-          "files": [
-            "datadog.yaml:/etc/datadog-agent/datadog.yaml"
-          ],
-          "image": "saluki-images/datadog-agent:testing-release"
-        },
-        "datadog_intake": {
-          "binary_path": "/usr/local/bin/datadog-intake",
-          "image": "saluki-images/correctness-tools:latest"
-        },
-        "disabled": false,
-        "millstone": {
-          "binary_path": "/usr/local/bin/millstone",
-          "config_path": "millstone.yaml",
-          "image": "saluki-images/correctness-tools:latest"
-        },
-        "otlp_direct_analysis_mode": false,
-        "require_dogstatsd_forwarded_packets": false,
-        "runtime": "docker"
+          "procedure": [
+            {
+              "on": "load",
+              "pattern": "Millstone finished sending",
+              "process": "baseline",
+              "step": "log_contains",
+              "timeout": "15m"
+            },
+            {
+              "on": "load",
+              "pattern": "Millstone finished sending",
+              "process": "subject",
+              "step": "log_contains",
+              "timeout": "15m"
+            },
+            {
+              "duration": "32s",
+              "on": "load",
+              "step": "process_stable_for"
+            },
+            {
+              "baseline": "intake-agent",
+              "kind": "metrics",
+              "step": "compare",
+              "subject": "intake-adp"
+            }
+          ]
+        }
       },
-      "comparison": {
-        "additional_span_ignore_fields": 0,
-        "analysis_mode": "metrics",
-        "otlp_direct_analysis_mode": false,
-        "require_dogstatsd_forwarded_packets": false
+      "steps": {
+        "single_assertions": 4,
+        "parallel_blocks": 0,
+        "parallel_assertions": 0,
+        "actions": 0,
+        "by_kind": {
+          "compare": 1,
+          "log_contains": 2,
+          "process_stable_for": 1
+        }
       },
       "ignored_fields": []
     },
     "correctness/dsd-provider-kind": {
       "config": {
-        "additional_span_ignore_fields": [],
-        "analysis_mode": "metrics",
-        "baseline": {
-          "command": [],
-          "entrypoint": [],
-          "env": {
-            "DD_API_KEY": "correctness-test",
-            "DD_PROVIDER_KIND": "gke-autopilot"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "correctness-test",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_REMOTE_AGENT_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_PROVIDER_KIND": "gke-autopilot"
+              },
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            },
+            "agent": {
+              "env": {
+                "DD_API_KEY": "correctness-test",
+                "DD_PROVIDER_KIND": "gke-autopilot"
+              },
+              "realization": "linux-container",
+              "subject": false,
+              "type": "agent"
+            },
+            "intake-adp": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "datadog-intake"
+            },
+            "intake-agent": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "datadog-intake"
+            },
+            "load": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "millstone"
+            }
           },
-          "files": [
-            "datadog.yaml:/etc/datadog-agent/datadog.yaml"
-          ],
-          "image": "saluki-images/datadog-agent:testing-release"
-        },
-        "comparison": {
-          "command": [],
-          "entrypoint": [],
-          "env": {
-            "DD_API_KEY": "correctness-test",
-            "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-            "DD_DATA_PLANE_ENABLED": "true",
-            "DD_DATA_PLANE_REMOTE_AGENT_ENABLED": "true",
-            "DD_DATA_PLANE_STANDALONE_MODE": "false",
-            "DD_PROVIDER_KIND": "gke-autopilot"
-          },
-          "files": [
-            "datadog.yaml:/etc/datadog-agent/datadog.yaml"
-          ],
-          "image": "saluki-images/datadog-agent:testing-release"
-        },
-        "datadog_intake": {
-          "binary_path": "/usr/local/bin/datadog-intake",
-          "image": "saluki-images/correctness-tools:latest"
-        },
-        "disabled": false,
-        "millstone": {
-          "binary_path": "/usr/local/bin/millstone",
-          "config_path": "millstone.yaml",
-          "image": "saluki-images/correctness-tools:latest"
-        },
-        "otlp_direct_analysis_mode": false,
-        "require_dogstatsd_forwarded_packets": false,
-        "runtime": "docker"
+          "procedure": [
+            {
+              "on": "load",
+              "pattern": "Millstone finished sending",
+              "process": "baseline",
+              "step": "log_contains",
+              "timeout": "15m"
+            },
+            {
+              "on": "load",
+              "pattern": "Millstone finished sending",
+              "process": "subject",
+              "step": "log_contains",
+              "timeout": "15m"
+            },
+            {
+              "duration": "32s",
+              "on": "load",
+              "step": "process_stable_for"
+            },
+            {
+              "baseline": "intake-agent",
+              "kind": "metrics",
+              "step": "compare",
+              "subject": "intake-adp"
+            }
+          ]
+        }
       },
-      "comparison": {
-        "additional_span_ignore_fields": 0,
-        "analysis_mode": "metrics",
-        "otlp_direct_analysis_mode": false,
-        "require_dogstatsd_forwarded_packets": false
+      "steps": {
+        "single_assertions": 4,
+        "parallel_blocks": 0,
+        "parallel_assertions": 0,
+        "actions": 0,
+        "by_kind": {
+          "compare": 1,
+          "log_contains": 2,
+          "process_stable_for": 1
+        }
       },
       "ignored_fields": []
     },
     "correctness/dsd-service-checks": {
       "config": {
-        "additional_span_ignore_fields": [],
-        "analysis_mode": "service_checks",
-        "baseline": {
-          "command": [],
-          "entrypoint": [],
-          "env": {
-            "DD_API_KEY": "correctness-test"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "correctness-test",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "true"
+              },
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            },
+            "agent": {
+              "env": {
+                "DD_API_KEY": "correctness-test"
+              },
+              "realization": "linux-container",
+              "subject": false,
+              "type": "agent"
+            },
+            "intake-adp": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "datadog-intake"
+            },
+            "intake-agent": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "datadog-intake"
+            },
+            "load": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "millstone"
+            }
           },
-          "files": [
-            "datadog.yaml:/etc/datadog-agent/datadog.yaml"
-          ],
-          "image": "saluki-images/datadog-agent:testing-release"
-        },
-        "comparison": {
-          "command": [],
-          "entrypoint": [],
-          "env": {
-            "DD_API_KEY": "correctness-test",
-            "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-            "DD_DATA_PLANE_ENABLED": "true",
-            "DD_DATA_PLANE_STANDALONE_MODE": "true"
-          },
-          "files": [
-            "datadog.yaml:/etc/datadog-agent/datadog.yaml"
-          ],
-          "image": "saluki-images/datadog-agent:testing-release"
-        },
-        "datadog_intake": {
-          "binary_path": "/usr/local/bin/datadog-intake",
-          "image": "saluki-images/correctness-tools:latest"
-        },
-        "disabled": false,
-        "millstone": {
-          "binary_path": "/usr/local/bin/millstone",
-          "config_path": "millstone.yaml",
-          "image": "saluki-images/correctness-tools:latest"
-        },
-        "otlp_direct_analysis_mode": false,
-        "require_dogstatsd_forwarded_packets": false,
-        "runtime": "docker"
+          "procedure": [
+            {
+              "on": "load",
+              "pattern": "Millstone finished sending",
+              "process": "baseline",
+              "step": "log_contains",
+              "timeout": "15m"
+            },
+            {
+              "on": "load",
+              "pattern": "Millstone finished sending",
+              "process": "subject",
+              "step": "log_contains",
+              "timeout": "15m"
+            },
+            {
+              "duration": "32s",
+              "on": "load",
+              "step": "process_stable_for"
+            },
+            {
+              "baseline": "intake-agent",
+              "kind": "service_checks",
+              "step": "compare",
+              "subject": "intake-adp"
+            }
+          ]
+        }
       },
-      "comparison": {
-        "additional_span_ignore_fields": 0,
-        "analysis_mode": "service_checks",
-        "otlp_direct_analysis_mode": false,
-        "require_dogstatsd_forwarded_packets": false
+      "steps": {
+        "single_assertions": 4,
+        "parallel_blocks": 0,
+        "parallel_assertions": 0,
+        "actions": 0,
+        "by_kind": {
+          "compare": 1,
+          "log_contains": 2,
+          "process_stable_for": 1
+        }
       },
       "ignored_fields": []
     },
     "correctness/dsd-tag-filterlist": {
       "config": {
-        "additional_span_ignore_fields": [],
-        "analysis_mode": "metrics",
-        "baseline": {
-          "command": [],
-          "entrypoint": [],
-          "env": {
-            "DD_API_KEY": "correctness-test"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_AGGREGATE_CONTEXT_LIMIT": "500000",
+                "DD_API_KEY": "correctness-test",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true"
+              },
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            },
+            "agent": {
+              "env": {
+                "DD_API_KEY": "correctness-test"
+              },
+              "realization": "linux-container",
+              "subject": false,
+              "type": "agent"
+            },
+            "intake-adp": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "datadog-intake"
+            },
+            "intake-agent": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "datadog-intake"
+            },
+            "load": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "millstone"
+            }
           },
-          "files": [
-            "datadog.yaml:/etc/datadog-agent/datadog.yaml"
-          ],
-          "image": "saluki-images/datadog-agent:testing-release"
-        },
-        "comparison": {
-          "command": [],
-          "entrypoint": [],
-          "env": {
-            "DD_AGGREGATE_CONTEXT_LIMIT": "500000",
-            "DD_API_KEY": "correctness-test",
-            "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-            "DD_DATA_PLANE_ENABLED": "true"
-          },
-          "files": [
-            "datadog.yaml:/etc/datadog-agent/datadog.yaml"
-          ],
-          "image": "saluki-images/datadog-agent:testing-release"
-        },
-        "datadog_intake": {
-          "binary_path": "/usr/local/bin/datadog-intake",
-          "image": "saluki-images/correctness-tools:latest"
-        },
-        "disabled": false,
-        "millstone": {
-          "binary_path": "/usr/local/bin/millstone",
-          "config_path": "millstone.yaml",
-          "image": "saluki-images/correctness-tools:latest"
-        },
-        "otlp_direct_analysis_mode": false,
-        "require_dogstatsd_forwarded_packets": false,
-        "runtime": "docker"
+          "procedure": [
+            {
+              "on": "load",
+              "pattern": "Millstone finished sending",
+              "process": "baseline",
+              "step": "log_contains",
+              "timeout": "15m"
+            },
+            {
+              "on": "load",
+              "pattern": "Millstone finished sending",
+              "process": "subject",
+              "step": "log_contains",
+              "timeout": "15m"
+            },
+            {
+              "duration": "32s",
+              "on": "load",
+              "step": "process_stable_for"
+            },
+            {
+              "baseline": "intake-agent",
+              "kind": "metrics",
+              "required_metric_tag_keys": [
+                "image_name"
+              ],
+              "step": "compare",
+              "subject": "intake-adp"
+            }
+          ]
+        }
       },
-      "comparison": {
-        "additional_span_ignore_fields": 0,
-        "analysis_mode": "metrics",
-        "otlp_direct_analysis_mode": false,
-        "require_dogstatsd_forwarded_packets": false
+      "steps": {
+        "single_assertions": 4,
+        "parallel_blocks": 0,
+        "parallel_assertions": 0,
+        "actions": 0,
+        "by_kind": {
+          "compare": 1,
+          "log_contains": 2,
+          "process_stable_for": 1
+        }
       },
       "ignored_fields": []
     },
     "correctness/dsd-timestamp-extension": {
       "config": {
-        "additional_span_ignore_fields": [],
-        "analysis_mode": "metrics",
-        "baseline": {
-          "command": [],
-          "entrypoint": [],
-          "env": {
-            "DD_API_KEY": "correctness-test"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_AGGREGATE_CONTEXT_LIMIT": "500000",
+                "DD_API_KEY": "correctness-test",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "true"
+              },
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            },
+            "agent": {
+              "env": {
+                "DD_API_KEY": "correctness-test"
+              },
+              "realization": "linux-container",
+              "subject": false,
+              "type": "agent"
+            },
+            "intake-adp": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "datadog-intake"
+            },
+            "intake-agent": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "datadog-intake"
+            },
+            "load": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "millstone"
+            }
           },
-          "files": [
-            "datadog.yaml:/etc/datadog-agent/datadog.yaml"
-          ],
-          "image": "saluki-images/datadog-agent:testing-release"
-        },
-        "comparison": {
-          "command": [],
-          "entrypoint": [],
-          "env": {
-            "DD_AGGREGATE_CONTEXT_LIMIT": "500000",
-            "DD_API_KEY": "correctness-test",
-            "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-            "DD_DATA_PLANE_ENABLED": "true",
-            "DD_DATA_PLANE_STANDALONE_MODE": "true"
-          },
-          "files": [
-            "datadog.yaml:/etc/datadog-agent/datadog.yaml"
-          ],
-          "image": "saluki-images/datadog-agent:testing-release"
-        },
-        "datadog_intake": {
-          "binary_path": "/usr/local/bin/datadog-intake",
-          "image": "saluki-images/correctness-tools:latest"
-        },
-        "disabled": false,
-        "millstone": {
-          "binary_path": "/usr/local/bin/millstone",
-          "config_path": "millstone.yaml",
-          "image": "saluki-images/correctness-tools:latest"
-        },
-        "otlp_direct_analysis_mode": false,
-        "require_dogstatsd_forwarded_packets": false,
-        "runtime": "docker"
+          "procedure": [
+            {
+              "on": "load",
+              "pattern": "Millstone finished sending",
+              "process": "baseline",
+              "step": "log_contains",
+              "timeout": "15m"
+            },
+            {
+              "on": "load",
+              "pattern": "Millstone finished sending",
+              "process": "subject",
+              "step": "log_contains",
+              "timeout": "15m"
+            },
+            {
+              "duration": "32s",
+              "on": "load",
+              "step": "process_stable_for"
+            },
+            {
+              "baseline": "intake-agent",
+              "kind": "metrics",
+              "step": "compare",
+              "subject": "intake-adp"
+            }
+          ]
+        }
       },
-      "comparison": {
-        "additional_span_ignore_fields": 0,
-        "analysis_mode": "metrics",
-        "otlp_direct_analysis_mode": false,
-        "require_dogstatsd_forwarded_packets": false
+      "steps": {
+        "single_assertions": 4,
+        "parallel_blocks": 0,
+        "parallel_assertions": 0,
+        "actions": 0,
+        "by_kind": {
+          "compare": 1,
+          "log_contains": 2,
+          "process_stable_for": 1
+        }
       },
       "ignored_fields": []
     },
     "correctness/dsd-timestamp-extension-custom-window": {
       "config": {
-        "additional_span_ignore_fields": [],
-        "analysis_mode": "metrics",
-        "baseline": {
-          "command": [],
-          "entrypoint": [],
-          "env": {
-            "DD_API_KEY": "correctness-test"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_AGGREGATE_CONTEXT_LIMIT": "500000",
+                "DD_AGGREGATE_WINDOW_DURATION_SECONDS": "60",
+                "DD_API_KEY": "correctness-test",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "true"
+              },
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            },
+            "agent": {
+              "env": {
+                "DD_API_KEY": "correctness-test"
+              },
+              "realization": "linux-container",
+              "subject": false,
+              "type": "agent"
+            },
+            "intake-adp": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "datadog-intake"
+            },
+            "intake-agent": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "datadog-intake"
+            },
+            "load": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "millstone"
+            }
           },
-          "files": [
-            "datadog.yaml:/etc/datadog-agent/datadog.yaml"
-          ],
-          "image": "saluki-images/datadog-agent:testing-release"
-        },
-        "comparison": {
-          "command": [],
-          "entrypoint": [],
-          "env": {
-            "DD_AGGREGATE_CONTEXT_LIMIT": "500000",
-            "DD_AGGREGATE_WINDOW_DURATION_SECONDS": "60",
-            "DD_API_KEY": "correctness-test",
-            "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-            "DD_DATA_PLANE_ENABLED": "true",
-            "DD_DATA_PLANE_STANDALONE_MODE": "true"
-          },
-          "files": [
-            "datadog.yaml:/etc/datadog-agent/datadog.yaml"
-          ],
-          "image": "saluki-images/datadog-agent:testing-release"
-        },
-        "datadog_intake": {
-          "binary_path": "/usr/local/bin/datadog-intake",
-          "image": "saluki-images/correctness-tools:latest"
-        },
-        "disabled": false,
-        "millstone": {
-          "binary_path": "/usr/local/bin/millstone",
-          "config_path": "millstone.yaml",
-          "image": "saluki-images/correctness-tools:latest"
-        },
-        "otlp_direct_analysis_mode": false,
-        "require_dogstatsd_forwarded_packets": false,
-        "runtime": "docker"
+          "procedure": [
+            {
+              "on": "load",
+              "pattern": "Millstone finished sending",
+              "process": "baseline",
+              "step": "log_contains",
+              "timeout": "15m"
+            },
+            {
+              "on": "load",
+              "pattern": "Millstone finished sending",
+              "process": "subject",
+              "step": "log_contains",
+              "timeout": "15m"
+            },
+            {
+              "duration": "32s",
+              "on": "load",
+              "step": "process_stable_for"
+            },
+            {
+              "baseline": "intake-agent",
+              "kind": "metrics",
+              "step": "compare",
+              "subject": "intake-adp"
+            }
+          ]
+        }
       },
-      "comparison": {
-        "additional_span_ignore_fields": 0,
-        "analysis_mode": "metrics",
-        "otlp_direct_analysis_mode": false,
-        "require_dogstatsd_forwarded_packets": false
+      "steps": {
+        "single_assertions": 4,
+        "parallel_blocks": 0,
+        "parallel_assertions": 0,
+        "actions": 0,
+        "by_kind": {
+          "compare": 1,
+          "log_contains": 2,
+          "process_stable_for": 1
+        }
       },
       "ignored_fields": []
     },
     "correctness/dsd-udp": {
       "config": {
-        "additional_span_ignore_fields": [],
-        "analysis_mode": "metrics",
-        "baseline": {
-          "command": [],
-          "entrypoint": [],
-          "env": {
-            "DD_API_KEY": "correctness-test"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_AGGREGATE_CONTEXT_LIMIT": "500000",
+                "DD_API_KEY": "correctness-test",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "true"
+              },
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            },
+            "agent": {
+              "env": {
+                "DD_API_KEY": "correctness-test"
+              },
+              "realization": "linux-container",
+              "subject": false,
+              "type": "agent"
+            },
+            "intake-adp": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "datadog-intake"
+            },
+            "intake-agent": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "datadog-intake"
+            },
+            "load": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "millstone"
+            }
           },
-          "files": [
-            "datadog.yaml:/etc/datadog-agent/datadog.yaml"
-          ],
-          "image": "saluki-images/datadog-agent:testing-release"
-        },
-        "comparison": {
-          "command": [],
-          "entrypoint": [],
-          "env": {
-            "DD_AGGREGATE_CONTEXT_LIMIT": "500000",
-            "DD_API_KEY": "correctness-test",
-            "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-            "DD_DATA_PLANE_ENABLED": "true",
-            "DD_DATA_PLANE_STANDALONE_MODE": "true"
-          },
-          "files": [
-            "datadog.yaml:/etc/datadog-agent/datadog.yaml"
-          ],
-          "image": "saluki-images/datadog-agent:testing-release"
-        },
-        "datadog_intake": {
-          "binary_path": "/usr/local/bin/datadog-intake",
-          "image": "saluki-images/correctness-tools:latest"
-        },
-        "disabled": false,
-        "millstone": {
-          "binary_path": "/usr/local/bin/millstone",
-          "config_path": "millstone.yaml",
-          "image": "saluki-images/correctness-tools:latest"
-        },
-        "otlp_direct_analysis_mode": false,
-        "require_dogstatsd_forwarded_packets": false,
-        "runtime": "docker"
+          "procedure": [
+            {
+              "on": "load",
+              "pattern": "Millstone finished sending",
+              "process": "baseline",
+              "step": "log_contains",
+              "timeout": "15m"
+            },
+            {
+              "on": "load",
+              "pattern": "Millstone finished sending",
+              "process": "subject",
+              "step": "log_contains",
+              "timeout": "15m"
+            },
+            {
+              "duration": "32s",
+              "on": "load",
+              "step": "process_stable_for"
+            },
+            {
+              "baseline": "intake-agent",
+              "kind": "metrics",
+              "step": "compare",
+              "subject": "intake-adp"
+            }
+          ]
+        }
       },
-      "comparison": {
-        "additional_span_ignore_fields": 0,
-        "analysis_mode": "metrics",
-        "otlp_direct_analysis_mode": false,
-        "require_dogstatsd_forwarded_packets": false
+      "steps": {
+        "single_assertions": 4,
+        "parallel_blocks": 0,
+        "parallel_assertions": 0,
+        "actions": 0,
+        "by_kind": {
+          "compare": 1,
+          "log_contains": 2,
+          "process_stable_for": 1
+        }
       },
       "ignored_fields": []
     },
     "correctness/dsd-uds-stream": {
       "config": {
-        "additional_span_ignore_fields": [],
-        "analysis_mode": "metrics",
-        "baseline": {
-          "command": [],
-          "entrypoint": [],
-          "env": {
-            "DD_API_KEY": "correctness-test"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_AGGREGATE_CONTEXT_LIMIT": "500000",
+                "DD_API_KEY": "correctness-test",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "true"
+              },
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            },
+            "agent": {
+              "env": {
+                "DD_API_KEY": "correctness-test"
+              },
+              "realization": "linux-container",
+              "subject": false,
+              "type": "agent"
+            },
+            "intake-adp": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "datadog-intake"
+            },
+            "intake-agent": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "datadog-intake"
+            },
+            "load": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "millstone"
+            }
           },
-          "files": [
-            "datadog.yaml:/etc/datadog-agent/datadog.yaml"
-          ],
-          "image": "saluki-images/datadog-agent:testing-release"
-        },
-        "comparison": {
-          "command": [],
-          "entrypoint": [],
-          "env": {
-            "DD_AGGREGATE_CONTEXT_LIMIT": "500000",
-            "DD_API_KEY": "correctness-test",
-            "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-            "DD_DATA_PLANE_ENABLED": "true",
-            "DD_DATA_PLANE_STANDALONE_MODE": "true"
-          },
-          "files": [
-            "datadog.yaml:/etc/datadog-agent/datadog.yaml"
-          ],
-          "image": "saluki-images/datadog-agent:testing-release"
-        },
-        "datadog_intake": {
-          "binary_path": "/usr/local/bin/datadog-intake",
-          "image": "saluki-images/correctness-tools:latest"
-        },
-        "disabled": false,
-        "millstone": {
-          "binary_path": "/usr/local/bin/millstone",
-          "config_path": "millstone.yaml",
-          "image": "saluki-images/correctness-tools:latest"
-        },
-        "otlp_direct_analysis_mode": false,
-        "require_dogstatsd_forwarded_packets": false,
-        "runtime": "docker"
+          "procedure": [
+            {
+              "on": "load",
+              "pattern": "Millstone finished sending",
+              "process": "baseline",
+              "step": "log_contains",
+              "timeout": "15m"
+            },
+            {
+              "on": "load",
+              "pattern": "Millstone finished sending",
+              "process": "subject",
+              "step": "log_contains",
+              "timeout": "15m"
+            },
+            {
+              "duration": "32s",
+              "on": "load",
+              "step": "process_stable_for"
+            },
+            {
+              "baseline": "intake-agent",
+              "kind": "metrics",
+              "step": "compare",
+              "subject": "intake-adp"
+            }
+          ]
+        }
       },
-      "comparison": {
-        "additional_span_ignore_fields": 0,
-        "analysis_mode": "metrics",
-        "otlp_direct_analysis_mode": false,
-        "require_dogstatsd_forwarded_packets": false
+      "steps": {
+        "single_assertions": 4,
+        "parallel_blocks": 0,
+        "parallel_assertions": 0,
+        "actions": 0,
+        "by_kind": {
+          "compare": 1,
+          "log_contains": 2,
+          "process_stable_for": 1
+        }
       },
       "ignored_fields": []
     },
     "correctness/dsd-v1-api-series": {
       "config": {
-        "additional_span_ignore_fields": [],
-        "analysis_mode": "metrics",
-        "baseline": {
-          "command": [],
-          "entrypoint": [],
-          "env": {
-            "DD_API_KEY": "correctness-test"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "correctness-test",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true"
+              },
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            },
+            "agent": {
+              "env": {
+                "DD_API_KEY": "correctness-test"
+              },
+              "realization": "linux-container",
+              "subject": false,
+              "type": "agent"
+            },
+            "intake-adp": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "datadog-intake"
+            },
+            "intake-agent": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "datadog-intake"
+            },
+            "load": {
+              "env": {},
+              "realization": "linux-container",
+              "subject": false,
+              "type": "millstone"
+            }
           },
-          "files": [
-            "datadog.yaml:/etc/datadog-agent/datadog.yaml"
-          ],
-          "image": "saluki-images/datadog-agent:testing-release"
-        },
-        "comparison": {
-          "command": [],
-          "entrypoint": [],
-          "env": {
-            "DD_API_KEY": "correctness-test",
-            "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-            "DD_DATA_PLANE_ENABLED": "true"
-          },
-          "files": [
-            "datadog.yaml:/etc/datadog-agent/datadog.yaml"
-          ],
-          "image": "saluki-images/datadog-agent:testing-release"
-        },
-        "datadog_intake": {
-          "binary_path": "/usr/local/bin/datadog-intake",
-          "image": "saluki-images/correctness-tools:latest"
-        },
-        "disabled": false,
-        "millstone": {
-          "binary_path": "/usr/local/bin/millstone",
-          "config_path": "millstone.yaml",
-          "image": "saluki-images/correctness-tools:latest"
-        },
-        "otlp_direct_analysis_mode": false,
-        "require_dogstatsd_forwarded_packets": false,
-        "runtime": "docker"
+          "procedure": [
+            {
+              "on": "load",
+              "pattern": "Millstone finished sending",
+              "process": "baseline",
+              "step": "log_contains",
+              "timeout": "15m"
+            },
+            {
+              "on": "load",
+              "pattern": "Millstone finished sending",
+              "process": "subject",
+              "step": "log_contains",
+              "timeout": "15m"
+            },
+            {
+              "duration": "32s",
+              "on": "load",
+              "step": "process_stable_for"
+            },
+            {
+              "baseline": "intake-agent",
+              "kind": "metrics",
+              "step": "compare",
+              "subject": "intake-adp"
+            }
+          ]
+        }
       },
-      "comparison": {
-        "additional_span_ignore_fields": 0,
-        "analysis_mode": "metrics",
-        "otlp_direct_analysis_mode": false,
-        "require_dogstatsd_forwarded_packets": false
+      "steps": {
+        "single_assertions": 4,
+        "parallel_blocks": 0,
+        "parallel_assertions": 0,
+        "actions": 0,
+        "by_kind": {
+          "compare": 1,
+          "log_contains": 2,
+          "process_stable_for": 1
+        }
       },
       "ignored_fields": []
     },

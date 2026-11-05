@@ -8,18 +8,11 @@ api_key: dummy-api-key-correctness-testing
 # We have to specifically configure the health port to use.
 health_port: 5555
 
-# Point ourselves at the datadog-intake service.
-dd_url: "http://datadog-intake:2049"
-
 # Turn off UDP and listen on a UDS socket instead.
 dogstatsd_port: 0
-dogstatsd_socket: /airlock/metrics.sock
+dogstatsd_socket: "{{ self.facts.shared_dir }}/metrics.sock"
 
-# Keep origin detection enabled to stay closer to real DogStatsD behavior.
-#
-# Note: the current corpus still primarily exercises instrumented-tag filtering;
-# enabling origin detection did not change the final comparable metric set in the
-# latest parity run.
+# Exercise filtering with both discovered origin tags and instrumented tags.
 dogstatsd_origin_detection: true
 
 # Gauges can be processed out-of-order when multiple workers are used, while ADP

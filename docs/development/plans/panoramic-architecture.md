@@ -94,7 +94,7 @@ Use product `config_dump` output from CI runs to compare effective product confi
 | Suite | Files | Selected rows (subject OS / runtime) | Disabled rows | Assertions (subject OS) | Actions (subject OS) |
 | --- | --- | --- | --- | --- | --- |
 | integration | 52 | linux / linux-container: 45; macos / host-process-group: 33; windows / windows-container: 36 | 0 | linux: 193; macos: 141; windows: 155 | linux: 25; macos: 17; windows: 24 |
-| correctness | 42 | linux / docker: 37; linux / kubernetes_in_docker: 7; linux / linux-container: 2 | 2 | linux: 8 | linux: 0 |
+| correctness | 42 | linux / docker: 21; linux / kubernetes_in_docker: 7; linux / linux-container: 18 | 2 | linux: 72 | linux: 0 |
 
 Total: 162 rows.
 
@@ -104,13 +104,13 @@ Total: 162 rows.
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | apm-trace | correctness | linux | docker | selected | test-correctness-apm-trace | correctness | old | compare traces | 0 |
 | apm-trace-uds | correctness | linux | docker | selected | test-correctness-apm-trace-uds | correctness | old | compare traces | 0 |
-| dsd-added-tags | correctness | linux | docker | selected | test-correctness-dsd-added-tags | correctness | old | compare metrics | 0 |
-| dsd-events | correctness | linux | docker | selected | test-correctness-dsd-events | correctness | old | compare events | 0 |
-| dsd-forwarding | correctness | linux | docker | selected | test-correctness-dsd-forwarding | correctness | old | compare metrics, forwarded packets | 0 |
-| dsd-forwarding-burst | correctness | linux | docker | selected | test-correctness-dsd-forwarding-burst | correctness | old | compare metrics, forwarded packets | 0 |
-| dsd-host-tag | correctness | linux | docker | selected | test-correctness-dsd-host-tag | correctness | old | compare metrics | 0 |
-| dsd-mapper-blocklist | correctness | linux | docker | selected | test-correctness-dsd-mapper-blocklist | correctness | old | compare metrics | 0 |
-| dsd-metric-filterlist-prefix | correctness | linux | docker | selected | test-correctness-dsd-metric-filterlist-prefix | correctness | old | compare metrics | 0 |
+| dsd-added-tags | correctness | linux | linux-container | selected | test-correctness-dsd-added-tags | participants | native | assertions: 4, actions: 0 | 0 |
+| dsd-events | correctness | linux | linux-container | selected | test-correctness-dsd-events | participants | native | assertions: 4, actions: 0 | 0 |
+| dsd-forwarding | correctness | linux | linux-container | selected | test-correctness-dsd-forwarding | participants | native | assertions: 4, actions: 0 | 0 |
+| dsd-forwarding-burst | correctness | linux | linux-container | selected | test-correctness-dsd-forwarding-burst | participants | native | assertions: 4, actions: 0 | 0 |
+| dsd-host-tag | correctness | linux | linux-container | selected | test-correctness-dsd-host-tag | participants | native | assertions: 4, actions: 0 | 0 |
+| dsd-mapper-blocklist | correctness | linux | linux-container | selected | test-correctness-dsd-mapper-blocklist | participants | native | assertions: 4, actions: 0 | 0 |
+| dsd-metric-filterlist-prefix | correctness | linux | linux-container | selected | test-correctness-dsd-metric-filterlist-prefix | participants | native | assertions: 4, actions: 0 | 0 |
 | dsd-origin-detection | correctness | linux | linux-container | selected | test-correctness-dsd-origin-detection | participants | native | assertions: 4, actions: 0 | 0 |
 | dsd-origin-detection-matrix/legacy | correctness | linux | kubernetes_in_docker | selected | test-correctness-dsd-origin-detection-matrix-legacy | correctness_matrix | old | compare metrics | 0 |
 | dsd-origin-detection-matrix/legacy-high-cardinality | correctness | linux | kubernetes_in_docker | selected | test-correctness-dsd-origin-detection-matrix-legacy-high-cardinality | correctness_matrix | old | compare metrics | 0 |
@@ -120,15 +120,15 @@ Total: 162 rows.
 | dsd-origin-detection-matrix/unified-high-cardinality | correctness | linux | kubernetes_in_docker | selected | test-correctness-dsd-origin-detection-matrix-unified-high-cardinality | correctness_matrix | old | compare metrics | 0 |
 | dsd-origin-detection-matrix/unified-with-client-fields | correctness | linux | kubernetes_in_docker | selected | test-correctness-dsd-origin-detection-matrix-unified-with-client-fields | correctness_matrix | old | compare metrics | 0 |
 | dsd-plain | correctness | linux | linux-container | selected | test-correctness-dsd-plain | participants | native | assertions: 4, actions: 0 | 0 |
-| dsd-plain-v3 | correctness | linux | docker | selected | test-correctness-dsd-plain-v3 | correctness | old | compare metrics | 0 |
-| dsd-provider-kind | correctness | linux | docker | selected | test-correctness-dsd-provider-kind | correctness | old | compare metrics | 0 |
-| dsd-service-checks | correctness | linux | docker | selected | test-correctness-dsd-service-checks | correctness | old | compare service_checks | 0 |
-| dsd-tag-filterlist | correctness | linux | docker | selected | test-correctness-dsd-tag-filterlist | correctness | old | compare metrics | 0 |
-| dsd-timestamp-extension | correctness | linux | docker | selected | test-correctness-dsd-timestamp-extension | correctness | old | compare metrics | 0 |
-| dsd-timestamp-extension-custom-window | correctness | linux | docker | selected | test-correctness-dsd-timestamp-extension-custom-window | correctness | old | compare metrics | 0 |
-| dsd-udp | correctness | linux | docker | selected | test-correctness-dsd-udp | correctness | old | compare metrics | 0 |
-| dsd-uds-stream | correctness | linux | docker | selected | test-correctness-dsd-uds-stream | correctness | old | compare metrics | 0 |
-| dsd-v1-api-series | correctness | linux | docker | selected | test-correctness-dsd-v1-api-series | correctness | old | compare metrics | 0 |
+| dsd-plain-v3 | correctness | linux | linux-container | selected | test-correctness-dsd-plain-v3 | participants | native | assertions: 4, actions: 0 | 0 |
+| dsd-provider-kind | correctness | linux | linux-container | selected | test-correctness-dsd-provider-kind | participants | native | assertions: 4, actions: 0 | 0 |
+| dsd-service-checks | correctness | linux | linux-container | selected | test-correctness-dsd-service-checks | participants | native | assertions: 4, actions: 0 | 0 |
+| dsd-tag-filterlist | correctness | linux | linux-container | selected | test-correctness-dsd-tag-filterlist | participants | native | assertions: 4, actions: 0 | 0 |
+| dsd-timestamp-extension | correctness | linux | linux-container | selected | test-correctness-dsd-timestamp-extension | participants | native | assertions: 4, actions: 0 | 0 |
+| dsd-timestamp-extension-custom-window | correctness | linux | linux-container | selected | test-correctness-dsd-timestamp-extension-custom-window | participants | native | assertions: 4, actions: 0 | 0 |
+| dsd-udp | correctness | linux | linux-container | selected | test-correctness-dsd-udp | participants | native | assertions: 4, actions: 0 | 0 |
+| dsd-uds-stream | correctness | linux | linux-container | selected | test-correctness-dsd-uds-stream | participants | native | assertions: 4, actions: 0 | 0 |
+| dsd-v1-api-series | correctness | linux | linux-container | selected | test-correctness-dsd-v1-api-series | participants | native | assertions: 4, actions: 0 | 0 |
 | otlp-metrics | correctness | linux | docker | selected | test-correctness-otlp-metrics | correctness | old | compare metrics | 0 |
 | otlp-metrics-as-type-rate | correctness | linux | docker | selected | test-correctness-otlp-metrics-as-type-rate | correctness | old | compare metrics | 0 |
 | otlp-metrics-configured-tags | correctness | linux | docker | selected | test-correctness-otlp-metrics-configured-tags | correctness | old | compare metrics | 0 |
@@ -578,7 +578,34 @@ Link CI runs; don't copy their logs into the repository.
 | adp-rar-disabled | linux | native | Pending CI. Two native Linux/lima runs passed: ADP logged registration failure and restarted after exit 1 while the Agent stayed running for 10 seconds; no panic matched. Compared with the inventory at `26f84fe969`. |
 | dsd-plain | linux | native | Pending CI. Legacy and native Linux/lima runs passed against the same image; paired captures contain 10,000 identical payloads. Compared with `778c155cee`. |
 | dsd-origin-detection | linux | native | Pending CI. Legacy passed; native host-view file placement fails on rootless lima with `remount-ro /host/proc: operation not permitted`. With the required origin-tag assertion, a scratch run without host view fails on both sides for missing `image_name` (42.786 s case elapsed). Legacy Docker metadata collection was also unavailable; host view and actual enrichment remain unproven locally. Compared with `778c155cee`. |
+| dsd-added-tags | linux | native | Pending CI. Legacy Linux/lima passed (68.228 s wall); native at `a18ec636c4` passed (55.457 s wall). Earlier paired captures have matching input digests and only documented config differences. Compared with `5003c5f6d6`. |
+| dsd-events | linux | native | Pending CI. Native Linux/lima at `a18ec636c4` passed (46.500 s wall); env, product files and workload match the mechanical conversion. Compared with `5003c5f6d6`. |
+| dsd-host-tag | linux | native | Pending CI. Native Linux/lima at `a18ec636c4` passed (53.995 s wall); env, product files and workload match the mechanical conversion. Compared with `5003c5f6d6`. |
+| dsd-mapper-blocklist | linux | native | Pending CI. Native Linux/lima at `a18ec636c4` passed (44.090 s wall); env, product files and workload match the mechanical conversion. Compared with `5003c5f6d6`. |
+| dsd-metric-filterlist-prefix | linux | native | Pending CI. Legacy passed (62.719 s wall); native host-view placement fails with `remount-ro /host/proc: operation not permitted`. Before the origin assertion, scratch without host view passed (48.825 s), with 176 matching contexts/tag keys per side, matching input digest and only documented config differences. Requiring `image_name` now makes that scratch fail on both sides (48.694 s case elapsed). Host view and enrichment remain unproven locally. Compared with `5003c5f6d6`. |
+| dsd-plain-v3 | linux | native | Pending CI. Legacy Linux/lima passed (68.408 s wall); native at `a18ec636c4` failed comparison (52.955 s wall; 3025 metric mismatches); an unchanged rerun failed (52.778 s wall; 28 metric mismatches). Earlier paired captures have matching input digests and only documented config differences. Compared with `5003c5f6d6`. |
+| dsd-provider-kind | linux | native | Pending CI. Native Linux/lima at `a18ec636c4` failed comparison (49.341 s wall; 28 metric mismatches); an unchanged rerun passed (53.955 s wall); env, product files and workload match the mechanical conversion. Compared with `5003c5f6d6`. |
+| dsd-service-checks | linux | native | Pending CI. Native Linux/lima at `a18ec636c4` passed (56.350 s wall); env, product files and workload match the mechanical conversion. Compared with `5003c5f6d6`. |
+| dsd-tag-filterlist | linux | native | Pending CI. Legacy passed (66.420 s wall); native host-view placement fails with `remount-ro /host/proc: operation not permitted`. Before the origin assertion, scratch without host view passed (54.403 s), with 178 matching contexts/tag keys per side, matching input digest and only documented config differences. Requiring `image_name` now makes that scratch fail on both sides (48.708 s case elapsed). Host view and enrichment remain unproven locally. Compared with `5003c5f6d6`. |
+| dsd-timestamp-extension | linux | native | Pending CI. Native Linux/lima at `a18ec636c4` passed (95.092 s wall); env, product files and workload match the mechanical conversion. Compared with `5003c5f6d6`. |
+| dsd-timestamp-extension-custom-window | linux | native | Pending CI. Native Linux/lima at `a18ec636c4` passed (111.201 s wall); env, product files and workload match the mechanical conversion. Compared with `5003c5f6d6`. |
+| dsd-v1-api-series | linux | native | Pending CI. Native Linux/lima at `a18ec636c4` failed comparison (48.738 s wall; 3026 metric mismatches); an unchanged rerun passed (49.764 s wall); env, product files and workload match the mechanical conversion. Compared with `5003c5f6d6`. |
+| dsd-uds-stream | linux | native | Pending CI. Legacy Linux/lima passed (74.538 s wall); native at `a18ec636c4` failed comparison (58.298 s wall; 11 metric mismatches); an unchanged rerun passed (55.605 s wall). Earlier paired captures have matching input digests and only documented config differences. Compared with `5003c5f6d6`. |
+| dsd-udp | linux | native | Pending CI. Legacy Linux/lima passed (78.216 s wall); native at `a18ec636c4` failed comparison (57.952 s wall; 672 metric mismatches); an unchanged rerun passed (50.661 s wall). Earlier paired captures have matching input digests and only documented config differences. Compared with `5003c5f6d6`. |
+| dsd-forwarding | linux | native | Pending CI. Legacy Linux/lima passed (72.205 s wall); native at `a18ec636c4` passed (49.683 s wall). Earlier paired captures have matching input digests and only documented config differences. Those captures contain 100/6897 Agent/ADP packets with the same 6897 messages per side. Compared with `5003c5f6d6`. |
+| dsd-forwarding-burst | linux | native | Pending CI. Legacy Linux/lima passed (68.668 s wall); native at `a18ec636c4` passed (48.843 s wall). Earlier paired captures have matching input digests and only documented config differences. Those captures contain 10/2447 Agent/ADP packets with the same 2447 messages per side. Compared with `5003c5f6d6`. |
 <!-- migration-proofs:end -->
+
+### DogStatsD discovery and configuration evidence
+
+Compared with `5003c5f6d6`, all 46 discovered correctness names remain runnable and their artifact-role arrays are
+unchanged. The sixteen DogStatsD cases now use five named Linux-container participants. All 162 inventory rows keep
+their CI jobs and mixins byte-for-byte. All fourteen cases without host view were rerun on `a18ec636c4`, one per
+invocation: 9 passed initially; 4 of the 5 comparison failures passed on unchanged reruns. `dsd-plain-v3` still fails
+comparison. Their rows retain both attempts and the new wall times. Every sender pair has matching input counts and digests.
+The two host-view rows retain their earlier negative origin-tag proof; host view and enrichment remain pending CI.
+Earlier captures from eight legacy/native pairs match input digests and have no configuration differences beyond
+the documented addresses, listener defaults, baseline ADP disablement and host roots.
 
 ### Linux comparison evidence
 
@@ -618,3 +645,11 @@ only by omission of the two `host_view` parameters failed with exit 1: both side
 workload contexts. Case elapsed was 42.786 s (43.278 s wrapper wall). Both decoded captures and the input payload
 were retained, every reported collection path existed, and all five observed containers were reclaimed. This is a
 negative assertion proof, not proof of host view or successful enrichment; the rootful/CI proof remains pending.
+
+The other two host-view cases, `dsd-tag-filterlist` and `dsd-metric-filterlist-prefix`, require the same tag. Their
+scratch copies also differ only by omission of the two `host_view` parameters. Both fail for missing `image_name`
+on both sides, retaining all captures with no collection issues or stale reported paths. The tag-filterlist run
+has 178 workload contexts per side and takes 48.708 s case elapsed (49.246 s wall); metric-filterlist-prefix has
+176 per side and takes 48.694 s (49.231 s wall). All ten observed containers were reclaimed. Their include/drop
+policies can remove origin tags from some contexts, so the assertion requires one fully tagged workload context
+per side rather than requiring tags on every context.
