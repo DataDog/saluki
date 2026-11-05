@@ -171,21 +171,41 @@
       "status": "info",
       "properties": {
         "bool": true,
-        "fraction": 0.1,
+        "fraction": {
+          "f64": "3fb999999999999a"
+        },
         "int": 1,
         "int64-max": 9223372036854775807,
         "int64-min": -9223372036854775808,
-        "integral": 3,
-        "large": 1e+21,
-        "large-edge": 100000000000000000000,
-        "max-float": 1.7976931348623157e+308,
-        "min-positive": 5e-324,
+        "integral": {
+          "f64": "4008000000000000"
+        },
+        "large": {
+          "f64": "444b1ae4d6e2ef50"
+        },
+        "large-edge": {
+          "f64": "4415af1d78b58c40"
+        },
+        "max-float": {
+          "f64": "7fefffffffffffff"
+        },
+        "min-positive": {
+          "f64": "0000000000000001"
+        },
         "negative": -42,
         "null": null,
-        "small": 1e-7,
-        "small-edge": 0.000001,
-        "third": 0.3333333333333333,
-        "zero-float": 0
+        "small": {
+          "f64": "3e7ad7f29abcaf48"
+        },
+        "small-edge": {
+          "f64": "3eb0c6f7a0b5ed8d"
+        },
+        "third": {
+          "f64": "3fd5555555555555"
+        },
+        "zero-float": {
+          "f64": "0000000000000000"
+        }
       }
     },
     "content": "{\"bool\":true,\"fraction\":0.1,\"int\":1,\"int64-max\":9223372036854775807,\"int64-min\":-9223372036854775808,\"integral\":3,\"large\":1e+21,\"large-edge\":100000000000000000000,\"max-float\":1.7976931348623157e+308,\"message\":\"m\",\"min-positive\":5e-324,\"negative\":-42,\"null\":null,\"small\":1e-7,\"small-edge\":0.000001,\"status\":\"info\",\"third\":0.3333333333333333,\"zero-float\":0}"
@@ -199,7 +219,9 @@
         "array": [
           "value1",
           2,
-          3.5,
+          {
+            "f64": "400c000000000000"
+          },
           false,
           null
         ],

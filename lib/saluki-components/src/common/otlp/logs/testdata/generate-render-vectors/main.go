@@ -2,7 +2,8 @@
 //
 // Each vector is a translated OTLP log, and the message content for it: the `datadogV2.HTTPLogItem` without its
 // `ddtags`, serialized by its own MarshalJSON. The status is set as the last additional property, as the reference
-// translator (`transform.go`) sets it.
+// translator (`transform.go`) sets it. In the input, each float is written as {"f64": "<16 hex digits of its IEEE 754
+// bits>"}, so that it keeps its type and exact value even when it's a whole number.
 //
 // The Go version and the datadog-api-client-go version are pinned in go.mod, and should match the versions that the
 // reference implementation builds with. Regenerate the vectors from the repository root with:
@@ -37,6 +38,32 @@ type vector struct {
 	Name    string `json:"name"`
 	Input   input  `json:"input"`
 	Content string `json:"content"`
+}
+
+// tagFloats replaces every float in a property value with {"f64": "<16 hex digits of its IEEE 754 bits>"}, so that a
+// float keeps its type and exact value in the input, even when it's a whole number that JSON would write as an integer.
+func tagFloats(value any) any {
+	switch v := value.(type) {
+	case float64:
+		return map[string]any{"f64": fmt.Sprintf("%016x", math.Float64bits(v))}
+	case map[string]any:
+		if v == nil {
+			return v
+		}
+		tagged := make(map[string]any, len(v))
+		for key, item := range v {
+			tagged[key] = tagFloats(item)
+		}
+		return tagged
+	case []any:
+		tagged := make([]any, len(v))
+		for i, item := range v {
+			tagged[i] = tagFloats(item)
+		}
+		return tagged
+	default:
+		return v
+	}
 }
 
 func render(in input) (string, error) {
@@ -128,7 +155,9 @@ func main() {
 			fmt.Fprintf(os.Stderr, "%s: %v\n", entry.name, err)
 			os.Exit(1)
 		}
-		vectors = append(vectors, vector{Name: entry.name, Input: entry.in, Content: content})
+		in := entry.in
+		in.Properties = tagFloats(in.Properties).(map[string]any)
+		vectors = append(vectors, vector{Name: entry.name, Input: in, Content: content})
 	}
 
 	encoder := json.NewEncoder(os.Stdout)

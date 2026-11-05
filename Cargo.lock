@@ -5796,7 +5796,6 @@ dependencies = [
  "fnv",
  "foldhash 0.2.0",
  "futures",
- "go-json",
  "hashbrown 0.17.1",
  "headers",
  "http",
