@@ -78,8 +78,8 @@ async fn prepare_run(cmd: &cli::RunCommand, console: &Console) -> Result<Prepare
         discovered: Discovered { plans, mut excluded },
     } = prepare_discovery(&cmd.test_dirs, cmd.subject_os.resolve(), cmd.artifacts.as_deref())?
         .discover_selection(console, false)?;
-    let (mut built, settings, artifacts) = build_cases(cmd, subject_os, plans)?;
-    check_legacy_inputs(cmd, subject_os, &built, &settings, &artifacts)?;
+    let (mut built, settings, artifacts) = build_cases(cmd, plans)?;
+    check_legacy_inputs(cmd, &built, &settings, &artifacts)?;
     select_cases(cmd, console, subject_os, &mut built, &mut excluded)?;
     let backends = Arc::new(RunBackends::default());
     let unprovidable = check_providability(&backends, console, &mut built).await?;
@@ -96,7 +96,7 @@ async fn prepare_run(cmd: &cli::RunCommand, console: &Console) -> Result<Prepare
 
 /// Builds runners with settings and artifacts resolved from the command.
 fn build_cases(
-    cmd: &cli::RunCommand, subject_os: Os, plans: Vec<LoadedPlan>,
+    cmd: &cli::RunCommand, plans: Vec<LoadedPlan>,
 ) -> Result<(Vec<BuiltCase>, RunnerSettings, RunnerArtifacts<'_>), SetupFailure> {
     let mut settings = cmd.runner_settings();
     let artifacts = if cmd.artifacts.is_some() {
@@ -106,25 +106,21 @@ fn build_cases(
     } else {
         RunnerArtifacts::Overrides(&cmd.image_overrides)
     };
-    let built = build_runners(plans, subject_os, &artifacts).map_err(SetupFailure::discovery)?;
+    let built = build_runners(plans, &artifacts).map_err(SetupFailure::discovery)?;
     Ok((built, settings, artifacts))
 }
 
-/// Checks explicit image and binary inputs against artifact bindings and logs resolved settings.
+/// Checks explicit image inputs against artifact bindings and logs resolved settings.
 fn check_legacy_inputs(
-    cmd: &cli::RunCommand, subject_os: Os, built: &[BuiltCase], settings: &RunnerSettings,
-    artifacts: &RunnerArtifacts<'_>,
+    cmd: &cli::RunCommand, built: &[BuiltCase], settings: &RunnerSettings, artifacts: &RunnerArtifacts<'_>,
 ) -> Result<(), SetupFailure> {
     if let RunnerArtifacts::Bound(bound) = artifacts {
         let runners: Vec<_> = built.iter().filter_map(BuiltCase::runner).collect();
         bound
-            .check_legacy_inputs(&cmd.legacy_artifact_inputs(), subject_os, &runners)
+            .check_legacy_inputs(&cmd.legacy_artifact_inputs(), &runners)
             .map_err(SetupFailure::discovery)?;
     }
     debug!(
-        adp_binary_path = %settings.adp_binary_path.display(),
-        core_agent_binary_path = %settings.core_agent_binary_path.display(),
-        mounts_dir = %settings.mounts_dir.display(),
         alpine_image = %settings.alpine_image,
         "Resolved runner settings."
     );
@@ -497,7 +493,6 @@ fn build_revision() -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
 
     use clap::Parser as _;
     use panoramic_core::{artifact::ArtifactManifest, layout::Os, plan::Planner};
@@ -523,7 +518,7 @@ mod tests {
         write_case(
             &cases,
             "windows",
-            "type: integration\nname: windows\ntimeout: 1s\nruntimes: [windows]\nprocedure: []\n",
+            "name: windows\ntimeout: 1s\nsubject_os: [windows]\nparticipants: {adp: {type: agent-adp, subject: true}}\nprocedure: [{step: log_contains, on: adp, pattern: ready, timeout: 5s}]\n",
         );
         write_case(
             &cases,
@@ -650,7 +645,7 @@ mod tests {
         write_case(
             dir.path(),
             "available",
-            "type: integration\nname: available\ntimeout: 1s\nruntimes: [mac]\nprocedure: []\n",
+            "name: available\ntimeout: 1s\nsubject_os: [macos]\nparticipants: {adp: {type: agent-adp, subject: true}}\nprocedure: [{step: log_contains, on: adp, pattern: ready, timeout: 5s}]\n",
         );
         let logs = dir.path().join("logs");
         let Command::Run(cmd) = Cli::try_parse_from([
@@ -760,7 +755,7 @@ mod tests {
         write_case(
             dir.path(),
             "host",
-            "type: integration\nname: host\ntimeout: 1s\nruntimes: [mac]\nprocedure: []\n",
+            "name: host\ntimeout: 1s\nsubject_os: [macos]\nparticipants: {adp: {type: agent-adp, subject: true}}\nprocedure: [{step: log_contains, on: adp, pattern: ready, timeout: 5s}]\n",
         );
         let host = Realization {
             os: Os::MacOs,
@@ -783,7 +778,7 @@ mod tests {
                 excluded.iter().map(LoadedCase::name).collect::<Vec<_>>(),
                 ["correctness"]
             );
-            let mut built = build_runners(plans, Os::MacOs, &RunnerArtifacts::Overrides(&[])).unwrap();
+            let mut built = build_runners(plans, &RunnerArtifacts::Overrides(&[])).unwrap();
             let names: Vec<_> = built
                 .iter()
                 .map(|built| built.plan.case().name())
@@ -818,18 +813,14 @@ mod tests {
         let plans = [
             plan_with_plain(&native, "native", Os::Linux),
             plan_with_plain(&unavailable, "unavailable", Os::Linux),
-            plan_with_plain(
-                "type: integration\nname: typed\ntimeout: 1s\nruntimes: [linux]\nprocedure: []\n",
-                "typed",
-                Os::Linux,
-            ),
+            plan_with_plain(&format!("type: correctness\n{CORRECTNESS_FIELDS}"), "typed", Os::Linux),
             plan_with_plain(
                 &format!("type: correctness\n{CORRECTNESS_FIELDS}"),
                 "unselected",
                 Os::Linux,
             ),
         ];
-        let mut built = build_runners(plans, Os::Linux, &RunnerArtifacts::Overrides(&[])).unwrap();
+        let mut built = build_runners(plans, &RunnerArtifacts::Overrides(&[])).unwrap();
         let selected = ["native".into(), "unavailable".into(), "typed".into()];
         retain_selected(&mut built, Some(&selected), |built| built.plan.case().name());
         let unprovidable = BTreeMap::from([(
@@ -844,7 +835,12 @@ mod tests {
             (false, vec!["courier-linux-binary", "fixup-image"]),
             (
                 true,
-                vec!["agent-adp-linux-image", "courier-linux-binary", "fixup-image"],
+                vec![
+                    "agent-adp-linux-image",
+                    "courier-linux-binary",
+                    "fixup-image",
+                    "tools-linux-image",
+                ],
             ),
         ] {
             let bindings = run_artifacts(&built, &unprovidable, with_manifest);
@@ -866,7 +862,7 @@ mod tests {
         assert_eq!(verification_bindings(&[], &unprovidable, true), Some(vec![]));
 
         let plan = plan_with_plain(&PARTICIPANT_FIELDS.replace("agent-adp", "plain"), "native", Os::Linux);
-        let built = build_runners([plan], Os::Linux, &RunnerArtifacts::Overrides(&[])).unwrap();
+        let built = build_runners([plan], &RunnerArtifacts::Overrides(&[])).unwrap();
         let bindings = verification_bindings(&built, &unprovidable, false).expect("native bindings must be verified");
         assert_eq!(
             bindings.iter().map(|binding| binding.role.name).collect::<Vec<_>>(),
@@ -953,7 +949,7 @@ mod tests {
             .unwrap()
             .into_plan()
             .unwrap();
-        let built = build_runners([plan], os, &RunnerArtifacts::Overrides(&[])).unwrap();
+        let built = build_runners([plan], &RunnerArtifacts::Overrides(&[])).unwrap();
         assert!(matches!(built[0].execution, Execution::Native));
         let logs = dir.join("logs");
         let Command::Run(cmd) = Cli::try_parse_from([
@@ -1217,7 +1213,7 @@ mod tests {
         write_case(
             &cases,
             "host",
-            "type: integration\nname: host\ntimeout: 1s\nruntimes: [mac]\nprocedure: []\n",
+            "name: host\ntimeout: 1s\nsubject_os: [macos]\nparticipants: {adp: {type: agent-adp, subject: true}}\nprocedure: [{step: log_contains, on: adp, pattern: ready, timeout: 5s}]\n",
         );
         let manifest = dir.path().join("artifacts.toml");
         let missing = dir.path().join("missing");
@@ -1289,51 +1285,6 @@ mod tests {
         }
     }
 
-    async fn run_with_legacy_host_path(dir: &Path, agrees: bool) -> (ExitCode, String, PathBuf) {
-        let cases = dir.join("cases");
-        write_case(
-            &cases,
-            "host",
-            "type: integration\nname: host\ntimeout: 1s\nruntimes: [mac]\nprocedure: []\n",
-        );
-        let manifest = dir.join("artifacts.toml");
-        let missing = dir.join("missing");
-        std::fs::write(
-            &manifest,
-            format!(
-                "schema = 1\n[roles]\nadp-host-binary = '{}'\nagent-host-install = '{}'\n",
-                missing.display(),
-                missing.display()
-            ),
-        )
-        .unwrap();
-        let legacy = if agrees { missing } else { dir.join("different") };
-        let logs = dir.join("logs");
-        let Command::Run(cmd) = Cli::try_parse_from([
-            "panoramic",
-            "run",
-            "-d",
-            cases.to_str().unwrap(),
-            "--subject-os",
-            "macos",
-            "--artifacts",
-            manifest.to_str().unwrap(),
-            "--adp-binary-path",
-            legacy.to_str().unwrap(),
-            "--no-tui",
-            "-l",
-            logs.to_str().unwrap(),
-        ])
-        .unwrap()
-        .command
-        else {
-            panic!("expected run")
-        };
-        let run_json = cmd.log_dir().join("run.json");
-        let (exit, diagnostic) = run_with_diagnostics(*cmd, dir).await;
-        (exit, diagnostic, run_json)
-    }
-
     async fn run_with_diagnostics(cmd: cli::RunCommand, dir: &Path) -> (ExitCode, String) {
         use tracing::instrument::WithSubscriber as _;
 
@@ -1348,45 +1299,57 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_run_whose_legacy_inputs_disagree_with_its_artifacts_exits_2_before_verifying_or_creating_any_log_directory(
-    ) {
+    async fn legacy_image_inputs_must_agree_before_verification_or_log_creation() {
         let dir = tempfile::tempdir().unwrap();
-        let (exit, diagnostic, run_json) = run_with_legacy_host_path(dir.path(), false).await;
-        assert_eq!(exit, ExitCode::from(2));
-        assert!(!dir.path().join("logs").exists());
-        assert!(!run_json.exists());
-        assert!(
-            diagnostic.contains("Legacy artifact inputs disagree with the --artifacts bindings:"),
-            "{diagnostic}"
+        let cases = dir.path().join("cases");
+        write_case(
+            &cases,
+            "correctness",
+            &format!("type: correctness\n{CORRECTNESS_FIELDS}"),
         );
-        assert!(diagnostic.contains(&format!(
-            "--adp-binary-path (PANORAMIC_ADP_BINARY_PATH) names '{}' for role 'adp-host-binary', bound to '{}' (manifest)",
-            dir.path().join("different").display(), dir.path().join("missing").display()
-        )), "{diagnostic}");
-        assert!(!diagnostic.contains("Verifying the artifacts"), "{diagnostic}");
-        assert!(!diagnostic.contains("Checking that this host"), "{diagnostic}");
-    }
-
-    #[tokio::test]
-    async fn a_run_whose_legacy_inputs_agree_with_its_artifacts_proceeds_to_verification() {
-        let dir = tempfile::tempdir().unwrap();
-        let (exit, diagnostic, run_json) = run_with_legacy_host_path(dir.path(), true).await;
-        assert_eq!(exit, ExitCode::from(2));
-        assert!(diagnostic.contains("Verifying the artifacts"), "{diagnostic}");
-        assert!(!diagnostic.contains("Legacy artifact inputs disagree"), "{diagnostic}");
-        if Os::host() == Os::MacOs {
-            assert!(
-                diagnostic.contains("2 of 2 artifact(s) failed verification."),
-                "{diagnostic}"
-            );
-            assert!(!dir.path().join("logs").exists());
-            assert!(!run_json.exists());
-        } else {
-            let report: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(run_json).unwrap()).unwrap();
-            assert_eq!(report["artifacts"], serde_json::json!([]));
-            assert_eq!(report["tests"][0]["outcome"], "errored");
-            assert_eq!(report["tests"][0]["error"]["kind"], "setup");
-            assert!(diagnostic.contains("No artifacts needed on macos."), "{diagnostic}");
+        let manifest = dir.path().join("artifacts.toml");
+        std::fs::write(&manifest, "schema = 1\n[roles]\nfixup-image = 'fixup:bound'\n").unwrap();
+        let logs = dir.path().join("logs");
+        for image in ["fixup:bound", "fixup:different"] {
+            let Command::Run(cmd) = Cli::try_parse_from([
+                "panoramic",
+                "run",
+                "-d",
+                cases.to_str().unwrap(),
+                "--subject-os",
+                "linux",
+                "--artifacts",
+                manifest.to_str().unwrap(),
+                "--alpine-image",
+                image,
+                "--no-tui",
+                "-l",
+                logs.to_str().unwrap(),
+            ])
+            .unwrap()
+            .command
+            else {
+                panic!("expected run")
+            };
+            if image == "fixup:bound" {
+                let plans = discover_in_scope(
+                    &mut crate::config::load_planner(Some(&manifest)).unwrap(),
+                    std::slice::from_ref(&cases),
+                    Os::Linux,
+                )
+                .unwrap()
+                .plans;
+                let (built, settings, artifacts) = build_cases(&cmd, plans).unwrap();
+                check_legacy_inputs(&cmd, &built, &settings, &artifacts).unwrap();
+                assert_eq!(settings.alpine_image, "fixup:bound");
+            } else {
+                let (exit, diagnostic) = run_with_diagnostics(*cmd, dir.path()).await;
+                assert_eq!(exit, ExitCode::from(2));
+                assert!(diagnostic.contains("--alpine-image (PANORAMIC_ALPINE_IMAGE) names 'fixup:different' for role 'fixup-image', bound to 'fixup:bound' (manifest)"), "{diagnostic}");
+                assert!(!diagnostic.contains("Verifying the artifacts"), "{diagnostic}");
+                assert!(!diagnostic.contains("Checking that this host"), "{diagnostic}");
+            }
+            assert!(!logs.exists());
         }
     }
 
@@ -1394,17 +1357,13 @@ mod tests {
     async fn image_override_name_errors_have_the_same_prefix_with_or_without_artifacts() {
         let dir = tempfile::tempdir().unwrap();
         let cases = dir.path().join("cases");
-        write_case(
-            &cases,
-            "linux",
-            "type: integration\nname: linux\ntimeout: 1s\nruntimes: [linux]\nprocedure: []\n",
-        );
+        write_case(&cases, "linux", &format!("type: correctness\n{CORRECTNESS_FIELDS}"));
         let manifest = dir.path().join("artifacts.toml");
         std::fs::write(&manifest, "schema = 1\n[roles]\n").unwrap();
         let logs = dir.path().join("logs");
         for (overrides, expected) in [
-            ("container=x,container=y", "Failed to discover tests: Image override 'container' is given more than once. Name each container at most once."),
-            ("unknown=x", "Failed to discover tests: No test in this run uses a container named 'unknown'. Available: container."),
+            ("baseline=x,baseline=y", "Failed to discover tests: Image override 'baseline' is given more than once. Name each container at most once."),
+            ("unknown=x", "Failed to discover tests: No test in this run uses a container named 'unknown'. Available: baseline, comparison, datadog-intake, millstone."),
         ] {
             for use_artifacts in [false, true] {
                 let mut args = vec![
@@ -1432,7 +1391,7 @@ mod tests {
         write_case(
             dir.path(),
             "integration",
-            "type: integration\nname: integration\ntimeout: 1s\nruntimes: [linux, windows]\nprocedure: []\n",
+            "name: integration\ntimeout: 1s\nsubject_os: [linux, windows]\nparticipants: {adp: {type: agent-adp, subject: true}}\nprocedure: [{step: log_contains, on: adp, pattern: ready, timeout: 5s}]\n",
         );
         for (name, runtime) in [("docker", "docker"), ("kind", "kubernetes_in_docker")] {
             write_case(
@@ -1444,7 +1403,7 @@ mod tests {
                 ),
             );
         }
-        for (os, target) in [(Os::Linux, "linux:bound"), (Os::Windows, "windows:bound")] {
+        for os in [Os::Linux, Os::Windows] {
             let manifest = ArtifactManifest::new(
                 "test",
                 BTreeMap::from([
@@ -1462,11 +1421,16 @@ mod tests {
             .unwrap()
             .plans;
             let artifacts = RunnerArtifacts::Bound(BoundArtifacts::new(needed_artifacts(&plans)));
-            let built = build_runners(plans, os, &artifacts).unwrap();
+            let built = build_runners(plans, &artifacts).unwrap();
             let listing = listing(&built, &[], os);
+            assert!(listing["integration"].get("images").is_none());
             assert_eq!(
-                listing["integration"]["images"],
-                serde_json::json!({"container": target})
+                listing["integration"]["roles"][0]["reference"],
+                if os == Os::Linux {
+                    "linux:bound"
+                } else {
+                    "windows:bound"
+                }
             );
             for name in ["docker", "kind"] {
                 if os != Os::Linux {
@@ -1595,7 +1559,7 @@ mod tests {
         let plans = discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], Os::Linux)
             .unwrap()
             .plans;
-        let mut built: Vec<_> = build_runners(plans, Os::Linux, &RunnerArtifacts::Overrides(&[]))
+        let mut built: Vec<_> = build_runners(plans, &RunnerArtifacts::Overrides(&[]))
             .unwrap()
             .into_iter()
             .map(|BuiltCase { plan, execution }| {
@@ -1689,7 +1653,7 @@ comparison: {image: comp}
         write_case(
             dir.path(),
             "good",
-            "type: integration\nname: good\ntimeout: 1s\nruntimes: [linux]\nprocedure: []\n",
+            "name: good\ntimeout: 1s\nsubject_os: [linux]\nparticipants: {adp: {type: agent-adp, subject: true}}\nprocedure: [{step: log_contains, on: adp, pattern: ready, timeout: 5s}]\n",
         );
         let bad = write_case(dir.path(), "bad", "type: bogus\n");
         let error = discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], Os::Linux)
@@ -1730,7 +1694,7 @@ comparison: {image: comp}
         write_case(
             dir.path(),
             "integration",
-            "type: integration\nname: integration\ntimeout: 7s\nruntimes: [linux]\nprocedure: []\n",
+            "name: integration\ntimeout: 7s\nsubject_os: [linux]\nparticipants: {adp: {type: agent-adp, subject: true}}\nprocedure: [{step: log_contains, on: adp, pattern: ready, timeout: 5s}]\n",
         );
         write_case(
             dir.path(),
@@ -1752,12 +1716,12 @@ comparison: {image: comp}
         write_case(
             dir.path(),
             "windows-only",
-            "type: integration\nname: windows-only\ntimeout: 7s\nruntimes: [windows]\nprocedure: []\n",
+            "name: windows-only\ntimeout: 7s\nsubject_os: [windows]\nparticipants: {adp: {type: agent-adp, subject: true}}\nprocedure: [{step: log_contains, on: adp, pattern: ready, timeout: 5s}]\n",
         );
         write_case(
             dir.path(),
             "linux-only",
-            "type: integration\nname: linux-only\ntimeout: 7s\nruntimes: [linux]\nprocedure: []\n",
+            "name: linux-only\ntimeout: 7s\nsubject_os: [linux]\nparticipants: {adp: {type: agent-adp, subject: true}}\nprocedure: [{step: log_contains, on: adp, pattern: ready, timeout: 5s}]\n",
         );
         write_case(
             dir.path(),

@@ -37,19 +37,6 @@ impl TestSuite {
 /// Settings shared by every test in a run.
 #[derive(Debug, Clone)]
 pub(crate) struct RunnerSettings {
-    /// A directory from which files should be mounted into one or more of the domain-specific containers used in a
-    /// test.
-    // TODO: this is a hack introduced to support the PANORAMIC_DYNAMIC feature. Consider generalizing if needed.
-    // For example: this could become runtime_config: HashMap<String, String> for shuttling domain specific items from
-    // runtime to a test.
-    pub(crate) mounts_dir: PathBuf,
-
-    /// The `agent-data-plane` binary that host-process tests spawn.
-    pub(crate) adp_binary_path: PathBuf,
-
-    /// The Datadog Agent binary that converged host-process tests spawn.
-    pub(crate) core_agent_binary_path: PathBuf,
-
     /// The Alpine image used for the short-lived shared-volume permission fix-up container.
     pub(crate) alpine_image: String,
 }
@@ -120,10 +107,6 @@ impl TestContext {
 
     pub(crate) fn log_dir(&self) -> &Path {
         &self.log_dir
-    }
-
-    pub(crate) fn mounts_dir(&self) -> &Path {
-        &self.settings.mounts_dir
     }
 }
 

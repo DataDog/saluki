@@ -438,7 +438,7 @@ mod tests {
             write_case(
                 &typed,
                 name,
-                &format!("type: integration\nname: {name}\ntimeout: 1s\nruntimes: [mac]\nprocedure: []\n"),
+                &format!("name: {name}\ntimeout: 1s\nsubject_os: [macos]\nparticipants: {{adp: {{type: agent-adp, subject: true}}}}\nprocedure: [{{step: log_contains, on: adp, pattern: ready, timeout: 5s}}]\n"),
             );
         }
         let binary = dir.path().join("tool");
@@ -582,7 +582,7 @@ mod tests {
         write_case(
             dir.path(),
             "integration",
-            "type: integration\nname: integration\ntimeout: 1s\nruntimes: [linux, mac, windows]\nprocedure: []\n",
+            "name: integration\ntimeout: 1s\nsubject_os: [linux, macos, windows]\nparticipants: {adp: {type: agent-adp, subject: true}}\nprocedure: [{step: log_contains, on: adp, pattern: ready, timeout: 5s}]\n",
         );
         for (os, expected) in [
             (

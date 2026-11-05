@@ -16,35 +16,28 @@ use panoramic_core::{
 use panoramic_participants::{AgentAdp, TOOLS_LINUX_IMAGE};
 use saluki_error::{generic_error, GenericError};
 
-use super::{
-    os_for_runtime, parse_case, IntegrationConfig, MatrixVariants, LINUX_RUNTIME, MAC_RUNTIME, WINDOWS_RUNTIME,
-};
+use super::{parse_case, MatrixVariants};
 use crate::{
     config::runner_artifacts::RunnerArtifacts,
     correctness::{
         case::CorrectnessTestCase,
         config::{Config as CorrectnessConfig, Runtime},
     },
-    integration::{IntegrationSettings, IntegrationTestCase},
     test::{Test, TestSuite},
 };
 
 /// Time budget for correctness cases, which run two isolation groups of several containers each.
 pub(crate) const CORRECTNESS_TIMEOUT: Duration = Duration::from_mins(20);
 
-/// Parsed integration or correctness case data.
+/// Parsed correctness case data.
 pub(crate) enum TypedConfig {
-    Integration(IntegrationConfig),
     Correctness(CorrectnessConfig),
 }
 
 impl TypedConfig {
     /// Builds a typed runner from a copy of its configuration, applying artifact choices to that copy.
-    pub(crate) fn build_test(
-        &self, name: &str, settings: &IntegrationSettings, artifacts: &RunnerArtifacts<'_>,
-    ) -> Box<dyn Test> {
+    pub(crate) fn build_test(&self, name: &str, artifacts: &RunnerArtifacts<'_>) -> Box<dyn Test> {
         match self {
-            Self::Integration(config) => Box::new(IntegrationTestCase::new(config.clone(), settings)),
             Self::Correctness(config) => {
                 let mut config = config.clone();
                 artifacts.apply_correctness(&mut config);
@@ -53,15 +46,9 @@ impl TypedConfig {
         }
     }
 
-    /// Returns the realization this case's runner creates: integration cases follow the subject OS,
-    /// correctness cases their configured runtime.
-    pub(crate) fn realization(&self, subject_os: Os) -> Realization {
+    /// Returns the realization selected by the correctness runtime.
+    pub(crate) fn realization(&self) -> Realization {
         let (os, kind) = match self {
-            Self::Integration(_) => match subject_os {
-                Os::Linux => (Os::Linux, RealizationKind::LinuxContainer),
-                Os::MacOs => (Os::MacOs, RealizationKind::HostProcessGroup),
-                Os::Windows => (Os::Windows, RealizationKind::WindowsContainer),
-            },
             Self::Correctness(config) => match config.runtime {
                 Runtime::Docker => (Os::Linux, RealizationKind::LinuxContainer),
                 Runtime::KubernetesInDocker => (Os::Linux, RealizationKind::KubernetesPod),
@@ -70,23 +57,12 @@ impl TypedConfig {
         Realization { os, kind }
     }
 
-    /// Maps the runner's containers and host processes to roles, including backend artifacts.
-    fn artifact_roles(&self, os: Os) -> Vec<ArtifactRole> {
+    /// Maps the runner's containers to roles, including backend artifacts.
+    fn artifact_roles(&self) -> Vec<ArtifactRole> {
         let mut roles = match self {
-            Self::Integration(config) => match os {
-                Os::Linux => {
-                    let mut roles = vec![AgentAdp::LINUX_IMAGE];
-                    if config.intake.enabled {
-                        roles.push(TOOLS_LINUX_IMAGE);
-                    }
-                    roles
-                }
-                Os::Windows => vec![AgentAdp::WINDOWS_IMAGE],
-                Os::MacOs => vec![AgentAdp::ADP_HOST_BINARY, AgentAdp::AGENT_HOST_INSTALL],
-            },
             Self::Correctness(_) => vec![AgentAdp::LINUX_IMAGE, TOOLS_LINUX_IMAGE],
         };
-        roles.extend_from_slice(backend::artifacts(self.realization(os).kind));
+        roles.extend_from_slice(backend::artifacts(self.realization().kind));
         roles
     }
 }
@@ -111,7 +87,7 @@ pub(crate) fn realizations(plan: &LoadedPlan) -> Vec<(Option<&str>, Realization)
             .iter()
             .map(|(name, realization)| (Some(name), realization))
             .collect(),
-        CaseSchema::Typed(config) => vec![(None, config.realization(plan.subject_os()))],
+        CaseSchema::Typed(config) => vec![(None, config.realization())],
     }
 }
 
@@ -138,7 +114,7 @@ pub(crate) fn needs_pod(plan: &LoadedPlan) -> bool {
         .any(|(_, realization)| realization.kind == RealizationKind::KubernetesPod)
 }
 
-/// Loads integration, correctness and correctness-matrix files.
+/// Loads correctness and correctness-matrix files.
 pub(crate) struct TypedConfigLoader;
 
 impl TypedCaseLoader for TypedConfigLoader {
@@ -149,54 +125,12 @@ impl TypedCaseLoader for TypedConfigLoader {
     ) -> Result<Vec<TypedCase<Self::Config>>, GenericError> {
         let serde_json::Value::String(test_type) = case_type else {
             return Err(generic_error!(
-                "'type' in {} must be a string: 'integration', 'correctness' or 'correctness_matrix'; \
+                "'type' in {} must be a string: 'correctness' or 'correctness_matrix'; \
                  a case that declares participants has no top-level 'type'",
                 source.display()
             ));
         };
         match test_type.as_str() {
-            "integration" => {
-                let config: IntegrationConfig = parse_case(content, source)?;
-                let name = case_name(Some(&config.name), directory, source)?;
-                if config.runtimes.is_empty() {
-                    return Err(generic_error!(
-                        "integration test '{}' in {} has empty runtimes list",
-                        config.name,
-                        source.display()
-                    ));
-                }
-                let subject_os = config
-                    .runtimes
-                    .iter()
-                    .map(|runtime| {
-                        os_for_runtime(runtime).ok_or_else(|| {
-                            generic_error!(
-                                "integration test '{}' in {} declares unknown runtime '{}' (expected '{}', '{}', or '{}')",
-                                config.name,
-                                source.display(),
-                                runtime,
-                                LINUX_RUNTIME,
-                                MAC_RUNTIME,
-                                WINDOWS_RUNTIME
-                            )
-                        })
-                    })
-                    .collect::<Result<BTreeSet<_>, _>>()?;
-                let description = config.description.clone();
-                let timeout = config.timeout.0;
-                let config = TypedConfig::Integration(config);
-                let artifact_roles = subject_os.iter().map(|&os| (os, config.artifact_roles(os))).collect();
-                Ok(vec![TypedCase {
-                    name,
-                    description,
-                    suite: TestSuite::Integration.name().to_string(),
-                    timeout,
-                    subject_os,
-                    artifact_roles,
-                    disabled: false,
-                    config,
-                }])
-            }
             "correctness" => {
                 let config = parse_case(content, source)?;
                 let name = case_name(None, directory, source)?;
@@ -221,7 +155,7 @@ impl TypedCaseLoader for TypedConfigLoader {
                     .collect())
             }
             other => Err(generic_error!(
-                "Unknown test type '{}' in {} (expected 'integration', 'correctness', or 'correctness_matrix'; \
+                "Unknown test type '{}' in {} (expected 'correctness' or 'correctness_matrix'; \
                  a case that declares participants has no top-level 'type')",
                 other,
                 source.display()
@@ -233,7 +167,7 @@ impl TypedCaseLoader for TypedConfigLoader {
 fn from_correctness(name: String, config: CorrectnessConfig) -> TypedCase<TypedConfig> {
     let disabled = config.disabled;
     let config = TypedConfig::Correctness(config);
-    let artifact_roles = BTreeMap::from([(Os::Linux, config.artifact_roles(Os::Linux))]);
+    let artifact_roles = BTreeMap::from([(Os::Linux, config.artifact_roles())]);
     TypedCase {
         name,
         description: None,
@@ -294,18 +228,6 @@ mod tests {
 
     #[test]
     fn typed_cases_need_the_realization_their_runner_creates() {
-        for (os, kind) in [
-            (Os::Linux, RealizationKind::LinuxContainer),
-            (Os::MacOs, RealizationKind::HostProcessGroup),
-            (Os::Windows, RealizationKind::WindowsContainer),
-        ] {
-            let plan = plan(
-                "type: integration\nname: case\ntimeout: 1s\nruntimes: [linux, mac, windows]\nprocedure: []\n",
-                os,
-            );
-            assert_eq!(realizations(&plan), [(None, Realization { os, kind })]);
-            assert!(!needs_pod(&plan));
-        }
         for (runtime, kind) in [
             ("docker", RealizationKind::LinuxContainer),
             ("kubernetes_in_docker", RealizationKind::KubernetesPod),
@@ -324,14 +246,9 @@ mod tests {
 
     #[test]
     fn a_typed_case_reports_one_unnamed_layout_entry_with_its_runner_realization() {
-        let integration =
-            "type: integration\nname: case\ntimeout: 1s\nruntimes: [linux, mac, windows]\nprocedure: []\n";
         let correctness = format!("type: correctness\n{CORRECTNESS_FIELDS}");
         let pod = correctness.replace("runtime: docker", "runtime: kubernetes_in_docker");
         for (yaml, os, realization) in [
-            (integration, Os::Linux, RealizationKind::LinuxContainer),
-            (integration, Os::MacOs, RealizationKind::HostProcessGroup),
-            (integration, Os::Windows, RealizationKind::WindowsContainer),
             (correctness.as_str(), Os::Linux, RealizationKind::LinuxContainer),
             (pod.as_str(), Os::Linux, RealizationKind::KubernetesPod),
         ] {
@@ -382,38 +299,6 @@ mod tests {
     }
 
     #[test]
-    fn typed_integration_artifact_roles_follow_the_subject_os_and_linux_intake() {
-        let yaml = "type: integration\nname: case\ntimeout: 1s\nruntimes: [linux, mac, windows]\nprocedure: []\n";
-        for intake in [false, true] {
-            for (os, mut expected) in [
-                (Os::Linux, vec![AgentAdp::LINUX_IMAGE]),
-                (Os::MacOs, vec![AgentAdp::ADP_HOST_BINARY, AgentAdp::AGENT_HOST_INSTALL]),
-                (Os::Windows, vec![AgentAdp::WINDOWS_IMAGE]),
-            ] {
-                if os == Os::Windows {
-                    expected.extend_from_slice(backend::artifacts(RealizationKind::WindowsContainer));
-                }
-                if os == Os::Linux {
-                    expected.extend_from_slice(backend::artifacts(RealizationKind::LinuxContainer));
-                    if intake {
-                        expected.push(TOOLS_LINUX_IMAGE);
-                    }
-                }
-                expected.sort_by_key(|role| role.name);
-                let plan = plan(&format!("{yaml}intake: {{enabled: {intake}}}\n"), os);
-                assert_eq!(
-                    plan.artifacts().iter().map(|binding| binding.role).collect::<Vec<_>>(),
-                    expected
-                );
-                for binding in plan.artifacts() {
-                    assert_eq!(binding.reference, binding.role.local_default);
-                    assert_eq!(binding.source, BindingSource::LocalDefault);
-                }
-            }
-        }
-    }
-
-    #[test]
     fn typed_correctness_artifact_roles_map_containers_independently_of_their_file_images() {
         for (runtime, backend_roles) in [
             ("docker", backend::artifacts(RealizationKind::LinuxContainer)),
@@ -447,61 +332,6 @@ mod tests {
                     assert_eq!(binding.reference, binding.role.local_default);
                     assert_eq!(binding.source, BindingSource::LocalDefault);
                 }
-            }
-        }
-    }
-
-    #[test]
-    fn integration_case_records_its_declared_name_description_timeout_and_subject_os() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_case(
-            dir.path(),
-            "alpha",
-            "type: integration\nname: alpha\ndescription: A portable case\ntimeout: 7s\nruntimes: [linux, mac]\nprocedure: []\n",
-        );
-        let cases = crate::CASE_LOADER.load_file(&path).unwrap();
-        assert_eq!(cases.len(), 1);
-        let case = &cases[0];
-        assert_eq!(case.name(), "alpha");
-        assert_eq!(case.description(), Some("A portable case"));
-        assert_eq!(case.timeout(), Duration::from_secs(7));
-        assert_eq!(case.suite(), TestSuite::Integration.name());
-        assert_eq!(*case.subject_os(), BTreeSet::from([Os::Linux, Os::MacOs]));
-        assert!(!case.is_disabled());
-        let canonical = path.canonicalize().unwrap();
-        assert_eq!(case.source(), canonical);
-        assert_eq!(case.source().parent().unwrap(), canonical.parent().unwrap());
-    }
-
-    #[test]
-    fn selection_plans_participant_and_integration_cases_only_for_their_subject_os() {
-        let dir = tempfile::tempdir().unwrap();
-        write_case(
-            dir.path(),
-            "participant",
-            &PARTICIPANT_FIELDS.replace("[linux]", "[linux, windows]"),
-        );
-        write_case(
-            dir.path(),
-            "integration",
-            "type: integration\nname: integration\ntimeout: 1s\nruntimes: [linux, windows]\nprocedure: []\n",
-        );
-        for os in [Os::Linux, Os::MacOs, Os::Windows] {
-            let plans = discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], os)
-                .unwrap()
-                .plans;
-            let names: Vec<_> = plans.iter().map(|plan| plan.case().name()).collect();
-            assert_eq!(
-                names,
-                if os == Os::MacOs {
-                    vec![]
-                } else {
-                    vec!["integration", "participant"]
-                }
-            );
-            for plan in plans {
-                assert_eq!(plan.subject_os(), os);
-                assert_eq!(plan.layout().is_some(), plan.case().name() == "participant");
             }
         }
     }
@@ -627,7 +457,7 @@ mod tests {
                     assert_eq!(plan.subject_os(), os);
                     assert!(plan.layout().is_none());
                 }
-                let runners = build_runners(discovered.plans, os, &RunnerArtifacts::Overrides(&[])).unwrap();
+                let runners = build_runners(discovered.plans, &RunnerArtifacts::Overrides(&[])).unwrap();
                 assert!(runners
                     .iter()
                     .all(|built| built.runner().unwrap().runtime() == "docker"));
@@ -644,6 +474,13 @@ mod tests {
             ("type: true\n".to_string(), vec!["'type' in", "must be a string"]),
             ("type: []\n".to_string(), vec!["'type' in", "must be a string"]),
             ("type: {}\n".to_string(), vec!["'type' in", "must be a string"]),
+            (
+                "type: integration\n".to_string(),
+                vec![
+                    "Unknown test type 'integration'",
+                    "a case that declares participants has no top-level 'type'",
+                ],
+            ),
             (
                 "type: bogus\n".to_string(),
                 vec!["Unknown test type 'bogus'", "has no top-level 'type'"],
@@ -665,27 +502,6 @@ mod tests {
     }
 
     #[test]
-    fn an_integration_name_must_match_its_directory() {
-        let dir = tempfile::tempdir().unwrap();
-        let yaml = "type: integration\nname: alpha\ntimeout: 1s\nruntimes: [linux]\nprocedure: []\n";
-        let path = write_case(dir.path(), "directory", yaml);
-        let error = crate::CASE_LOADER
-            .load_file(&path)
-            .err()
-            .expect("mismatched name must fail");
-        let message = error.to_string();
-        assert!(message.contains("name 'alpha'"), "{message}");
-        assert!(
-            message.contains("does not match its directory 'directory'"),
-            "{message}"
-        );
-
-        let path = write_case(dir.path(), "alpha", yaml);
-        let cases = crate::CASE_LOADER.load_file(&path).unwrap();
-        assert_eq!(cases.iter().map(CaseConfig::name).collect::<Vec<_>>(), ["alpha"]);
-    }
-
-    #[test]
     fn image_overrides_change_the_built_runner_but_not_the_loaded_case() {
         let dir = tempfile::tempdir().unwrap();
         let path = write_case(dir.path(), "case", &format!("type: correctness\n{CORRECTNESS_FIELDS}"));
@@ -696,8 +512,8 @@ mod tests {
             .into_iter()
             .map(|case| planner().compile(case, Os::Linux).unwrap().into_plan().unwrap())
             .collect();
-        let overridden = build_runners(&plans, Os::Linux, &RunnerArtifacts::Overrides(&entries)).unwrap();
-        let declared = build_runners(&plans, Os::Linux, &RunnerArtifacts::Overrides(&[])).unwrap();
+        let overridden = build_runners(&plans, &RunnerArtifacts::Overrides(&entries)).unwrap();
+        let declared = build_runners(&plans, &RunnerArtifacts::Overrides(&[])).unwrap();
         assert_eq!(overridden[0].runner().unwrap().images()["baseline"], "base:override");
         assert_eq!(declared[0].runner().unwrap().images()["baseline"], "base:file");
     }
@@ -799,24 +615,8 @@ mod tests {
                 "unknown field `intake`",
             ),
             (
-                "type: integration\nname: alpha\ntimeout: nope\nprocedure: []\n".to_string(),
-                "Failed to parse configuration file",
-            ),
-            (
-                "type: integration\nname: alpha\ntimeout: 1s\nruntimes: []\nprocedure: []\n".to_string(),
-                "empty runtimes list",
-            ),
-            (
-                "type: integration\nname: alpha\ntimeout: 1s\nruntimes: [typo]\nprocedure: []\n".to_string(),
-                "unknown runtime 'typo'",
-            ),
-            (
                 format!("type: correctness_matrix\n{CORRECTNESS_FIELDS}variants: []\n"),
                 "has no variants defined",
-            ),
-            (
-                "type: integration\nname: mismatch\ntimeout: 1s\nprocedure: []\n".to_string(),
-                "does not match its directory",
             ),
         ] {
             let path = write_case(dir.path(), "alpha", &yaml);

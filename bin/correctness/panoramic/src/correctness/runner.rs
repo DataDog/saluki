@@ -171,14 +171,8 @@ pub struct CorrectnessRunner {
 
 impl CorrectnessRunner {
     pub async fn from_case(case: &CorrectnessTestCase, tctx: TestContext) -> Result<Self, GenericError> {
-        let baseline = crate::mounts::apply_target_mounts(
-            case.target_driver_config(&case.config.baseline).await?,
-            tctx.mounts_dir(),
-        )?;
-        let comparison = crate::mounts::apply_target_mounts(
-            case.target_driver_config(&case.config.comparison).await?,
-            tctx.mounts_dir(),
-        )?;
+        let baseline = case.target_driver_config(&case.config.baseline).await?;
+        let comparison = case.target_driver_config(&case.config.comparison).await?;
         Ok(Self {
             datadog_intake_config: case.datadog_intake_config(),
             millstone_config: case.millstone_config(),

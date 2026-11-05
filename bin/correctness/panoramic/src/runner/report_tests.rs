@@ -1,6 +1,7 @@
 //! Native participant reporting through the runner, including a dropped case body.
 
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 
 use async_trait::async_trait;
 use panoramic_core::{
@@ -167,7 +168,7 @@ async fn run_report_case(stall: bool) {
     let verified = verified_artifacts(&verified).expect("daemon, image and built Linux courier must be available");
     let inputs = NativeInputs::new(backends, &verified, Path::new(".")).unwrap();
     let logs = tempfile::tempdir().unwrap();
-    let mut runner = Runner::new(logs.path(), test_runner_settings(logs.path()));
+    let mut runner = Runner::new(logs.path(), test_runner_settings());
     let cancel = CancellationToken::new();
     let built = if stall {
         BuiltCase {

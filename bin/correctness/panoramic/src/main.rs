@@ -15,9 +15,7 @@ use crate::{list_command::list_tests, run_command::run_tests};
 
 mod kind;
 
-mod actions;
 mod artifact_commands;
-mod assertions;
 mod cli;
 mod collector;
 
@@ -27,10 +25,7 @@ use self::cli::{Cli, Command, LogLevel};
 mod config;
 mod console;
 mod discovery;
-mod dynamic_vars;
-mod integration;
 mod list_command;
-mod mounts;
 use self::config::typed_case::TypedConfigLoader;
 
 mod image_override;
@@ -61,10 +56,8 @@ mod providability;
 mod run_command;
 mod runner;
 mod test;
-mod test_env;
 mod traffic;
 mod tui;
-mod unix_runner;
 mod utils;
 
 #[cfg(not(windows))]
@@ -237,7 +230,7 @@ mod tests {
         write_case(
             &cases,
             "case",
-            "type: integration\nname: case\ntimeout: 1s\nruntimes: [linux, windows]\nprocedure: []\n",
+            "name: case\ntimeout: 1s\nsubject_os: [linux, windows]\nparticipants: {adp: {type: agent-adp, subject: true}}\nprocedure: [{step: log_contains, on: adp, pattern: ready, timeout: 5s}]\n",
         );
         write_case(&cases, "bad", "type: bogus\n");
         let logs = dir.path().join("logs");
@@ -318,7 +311,7 @@ mod tests {
         write_case(
             dir.path(),
             "good",
-            "type: integration\nname: good\ntimeout: 1s\nruntimes: [windows]\nprocedure: []\n",
+            "name: good\ntimeout: 1s\nsubject_os: [windows]\nparticipants: {adp: {type: agent-adp, subject: true}}\nprocedure: [{step: log_contains, on: adp, pattern: ready, timeout: 5s}]\n",
         );
         let cases = discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], Os::Windows)
             .unwrap()

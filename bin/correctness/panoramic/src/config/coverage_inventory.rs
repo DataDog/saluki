@@ -28,7 +28,7 @@ use super::{
     runner_artifacts::RunnerArtifacts,
     tests::{planner, write_case, LOGGING_PARTICIPANT, PARTICIPANT_FIELDS},
     typed_case::{LoadedCase, LoadedPlan, TypedConfig},
-    AssertionStep, BuiltCase, IntegrationConfig,
+    BuiltCase,
 };
 use crate::{correctness::analysis::AnalysisMode, test::TestSuite};
 
@@ -110,34 +110,6 @@ struct Steps {
     parallel_assertions: usize,
     actions: usize,
     by_kind: BTreeMap<String, usize>,
-}
-
-impl Steps {
-    fn from_config(config: &IntegrationConfig) -> Self {
-        let mut steps = Self::default();
-        for step in &config.procedure {
-            let tagged = match step {
-                AssertionStep::Single(assertion) => {
-                    steps.single_assertions += 1;
-                    vec![serde_json::to_value(assertion).unwrap()]
-                }
-                AssertionStep::Action(action) => {
-                    steps.actions += 1;
-                    vec![serde_json::to_value(action).unwrap()]
-                }
-                AssertionStep::Parallel { parallel } => {
-                    steps.parallel_blocks += 1;
-                    steps.parallel_assertions += parallel.len();
-                    parallel.iter().map(|a| serde_json::to_value(a).unwrap()).collect()
-                }
-            };
-            for value in tagged {
-                let kind = value.get("assertion").or_else(|| value.get("action")).unwrap();
-                *steps.by_kind.entry(kind.as_str().unwrap().to_string()).or_default() += 1;
-            }
-        }
-        steps
-    }
 }
 
 impl Row {
@@ -260,12 +232,6 @@ impl Inventory {
                 let text = read_text(&path);
                 let doc: Value = serde_saphyr::from_str(&text).unwrap();
                 if let Some(schema) = doc.get("type").and_then(Value::as_str) {
-                    if suite_dir == "test/integration/cases" {
-                        assert!(
-                            doc.get("runtimes").is_some(),
-                            "{source} must declare runtimes: the loader default depends on the host OS",
-                        );
-                    }
                     schemas.insert(source, schema.to_string());
                 }
             }
@@ -282,7 +248,7 @@ impl Inventory {
                     Compiled::Excluded(_) => None,
                 })
                 .collect();
-            let built = build_runners(plans, os, &RunnerArtifacts::Overrides(&[])).unwrap();
+            let built = build_runners(plans, &RunnerArtifacts::Overrides(&[])).unwrap();
             let listed = crate::list_command::listing(&built, &[], os);
             for built in built {
                 let case = built.plan.case();
@@ -473,12 +439,6 @@ fn record_cases(cases: &[LoadedCase], content: &str, directory: &str) -> Result<
     let mut recorded = Vec::new();
     for case in cases {
         let effective = match case.schema() {
-            CaseSchema::Typed(TypedConfig::Integration(config)) => Case {
-                config: serde_json::to_value(config)?,
-                steps: Some(Steps::from_config(config)),
-                comparison: None,
-                ignored_fields: Vec::new(),
-            },
             CaseSchema::Typed(TypedConfig::Correctness(config)) => Case {
                 config: serde_json::to_value(config)?,
                 steps: None,
@@ -1004,7 +964,7 @@ fn inventory_rejects_a_case_name_used_in_both_suites() {
     write_case(
         &root.path().join("test/integration/cases"),
         "shared",
-        "type: integration\nname: shared\ntimeout: 1s\nruntimes: [linux]\nprocedure: []\n",
+        "name: shared\ntimeout: 1s\nsubject_os: [linux]\nparticipants: {adp: {type: agent-adp, subject: true}}\nprocedure: [{step: log_contains, on: adp, pattern: ready, timeout: 5s}]\n",
     );
     write_case(
         &root.path().join("test/correctness/cases"),
@@ -1069,7 +1029,7 @@ fn inventory_rejects_an_integration_case_in_a_correctness_directory() {
     write_case(
         &root.path().join("test/correctness/cases"),
         "alpha",
-        "type: integration\nname: alpha\ntimeout: 1s\nruntimes: [linux]\nprocedure: []\n",
+        "name: alpha\ntimeout: 1s\nsubject_os: [linux]\nparticipants: {adp: {type: agent-adp, subject: true}}\nprocedure: [{step: log_contains, on: adp, pattern: ready, timeout: 5s}]\n",
     );
     Inventory::generate(&root.path().canonicalize().unwrap());
 }
@@ -1093,7 +1053,7 @@ fn inventory_rejects_a_case_name_used_in_the_selected_and_disabled_correctness_d
 }
 
 #[test]
-#[should_panic(expected = "must be a string: 'integration', 'correctness' or 'correctness_matrix'")]
+#[should_panic(expected = "must be a string: 'correctness' or 'correctness_matrix'")]
 fn inventory_reports_the_loader_error_for_a_non_string_type() {
     let root = tempfile::tempdir().unwrap();
     create_case_dirs(root.path());
@@ -1527,7 +1487,7 @@ fn ci_jobs_in_the_inventory_are_defined() {
         "Makefile",
         &makefile,
         &[
-            r#"test-integration-macos-run: BUILD_PROFILE ?= release"#,
+            r#"test-integration-macos-run: ## Runs macOS cases with already-built binaries and the artifact manifest; narrow with CASE=<name>."#,
             r#"@target/release/panoramic run -d "$(CURDIR)/test/integration/cases""#,
             r#"--subject-os macos"#,
             r#"$(PANORAMIC_ARTIFACTS_ARG)"#,
@@ -1575,6 +1535,12 @@ fn ci_jobs_in_the_inventory_are_defined() {
             r#"Invoke-Native -FilePath $Panoramic -Arguments $PanoramicArgs"#,
         ],
     );
+    for file in ["agent-data-plane.exe", "auth_token", "ipc_cert.pem"] {
+        assert!(
+            windows_script.contains(&format!("COPY {file} ")),
+            "Windows image must contain {file}"
+        );
+    }
     let script = read_text(&root.join("ci/tooling/generate-correctness-pipeline.sh"));
     let position = |rule: &str| {
         script
@@ -1607,39 +1573,6 @@ fn ci_jobs_in_the_inventory_are_defined() {
 
 #[test]
 fn ignored_key_probe_reports_only_keys_the_loader_drops() {
-    let integration: Value = serde_saphyr::from_str(
-        r#"
-type: integration
-name: probe
-timeout: 30s
-runtimes: [linux]
-container: {host_cgroup_namespace: false}
-intake: {enabled: false}
-env: {DD_API_KEY: test}
-extra: {nested: 1}
-procedure:
-  - action: adp_cli
-    args: [status]
-    output_contains: healthy
-  - assertion: log_contains
-    pattern: ready
-    regex: false
-    timeout: 1s
-  - assertion: adp_config_key_equals
-    key: example
-    value: {nested: [{key: expected}]}
-    timeout: 1s
-"#,
-    )
-    .unwrap();
-    assert_eq!(
-        ignored_fields(
-            &integration,
-            &|doc| loaded_view(&doc, "probe", Path::new("probe/config.yaml")),
-            Path::new("probe/config.yaml"),
-        ),
-        ["extra", "extra.nested", "procedure[0].output_contains"],
-    );
     let mut correctness: Value = serde_saphyr::from_str(
         r#"
 type: correctness

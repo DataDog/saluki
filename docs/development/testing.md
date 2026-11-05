@@ -202,7 +202,7 @@ make test-integration-quick PANORAMIC_ARTIFACTS=artifacts.toml
 `test-integration`, `test-integration-quick`, `run-integration-quick`, `test-integration-macos-run`,
 `test-correctness` and `test-correctness-case` accept this variable only on the command line; they reject values
 from the environment, including empty values. For `test-integration-macos-run`, the manifest must bind
-`adp-host-binary` and `agent-host-install` to the paths the target passes as flags, and `intake-host-binary` to the
+`adp-host-binary` to the ADP build, `agent-host-install` to the Agent install, and `intake-host-binary` to the
 host intake built by `make build-intake-host`. `make render-macos-test-artifacts` writes a matching manifest to
 `MACOS_TEST_ARTIFACTS` (default: `target/panoramic-artifacts-macos.toml`). Use the same `BUILD_PROFILE` and
 `MACOS_TEST_AGENT_INSTALL_DIR` values for rendering and running.
@@ -213,9 +213,8 @@ host intake built by `make build-intake-host`. `make render-macos-test-artifacts
 Test cases live in `test/integration/cases/` as `config.yaml` files. The runner is **panoramic**
 (`bin/correctness/panoramic/`). A case file must be named `config.yaml`; discovery rejects `config.yml`.
 
-A case file either sets `type: integration`, defining a container and a list of high-level assertions, or declares
-participants; see [Participant cases](#participant-cases). Assertions run sequentially by default but can also be
-configured to run in `parallel`.
+Integration cases declare participants; see [Participant cases](#participant-cases). Assertions run sequentially
+by default but can also run in `parallel`.
 
 CI: `test-integration` in `.gitlab/e2e.yml` runs in the `e2e` stage with a 15 min timeout and retry 2. It uses the
 panoramic and courier binaries from `build-panoramic-binary`.
@@ -224,7 +223,7 @@ panoramic and courier binaries from `build-panoramic-binary`.
 
 A case file without a top-level `type` declares **participants**: named instances of a participant type. The case
 states what runs, how it's configured and what the procedure checks. The participant type knows how its product is
-installed and where it writes. The `adp-logging-*` cases in `test/integration/cases/` use this schema;
+installed and where it writes. Every case in `test/integration/cases/` uses this schema;
 `adp-logging-default-path` looks like this:
 
 ```yaml
@@ -267,8 +266,8 @@ Readiness and step readers share a 64 MiB line-text bound per participant across
 the buffer drops new lines, preserving existing cursors. Readers can consume the retained prefix, then get a capture
 error naming the bound and the output files. Empty lines count as one byte; unterminated lines are also bounded.
 Capture still writes every byte to disk, so the files remain the full output source.
-After the start levels, native cases run their procedure in the `steps` phase, using the same step
-budgets, case deadline, parallel blocks and fail-fast behavior as the integration runner. Steps receive the started
+After the start levels, native cases run their procedure in the `steps` phase, with step
+budgets, case deadline, parallel blocks and fail-fast behavior. Steps receive the started
 participants through borrowed handles. File paths and literal log patterns resolve early and late facts when the step runs.
 A `parallel` block accepts only assertions. Actions, such as `exec` and `send`, must be sequential steps; discovery rejects an
 action in a parallel block before building its fields.
@@ -687,8 +686,8 @@ fails the case. `panoramic list` prints both orders, grouping independent partic
 
 Durations in a participant case need a unit: write `30s`, not `30`.
 
-Every step names the participant it acts on with `on`. Step fields differ from the integration schema: steps use
-`step:` instead of `assertion:`, and `file_contains` requires `pattern`.
+Every step names the participant it acts on with `on` and its kind with `step`. The `file_contains` step requires
+`pattern`.
 Each backend declares its accepted `realization.options`. The loader rejects unknown options and non-boolean
 values, naming the participant, realization kind, and option. Linux containers accept `host_cgroup_namespace`
 (default false); true exposes the host's cgroup paths to the participant. Other realization kinds accept no options.
@@ -724,16 +723,12 @@ Omitted roles use their local defaults: for example, `agent-adp-linux-image` def
 a declared role the selected cases don't need is ignored. Relative binary and install paths resolve against the
 working directory, whether supplied by a manifest or a local default. Native execution always verifies and uses
 these bindings. With `run --artifacts <file>`, typed runners also verify and use them; without the flag,
-those runners use case files, harness defaults and the image and binary flags or their environment variables.
+those runners use case files, harness defaults and image flags or their environment variables.
 
-Typed integration and correctness cases map their containers and host processes to these roles:
+Typed correctness cases map their containers to these roles:
 
 | Case and subject OS | Container or process | Artifact roles |
 | --- | --- | --- |
-| Integration, Linux | Target container | `agent-adp-linux-image` |
-| Integration, Linux, intake enabled | Intake sidecar | `tools-linux-image` |
-| Integration, Windows | Target container | `agent-adp-windows-image` |
-| Integration, macOS | ADP and Core Agent host processes | `adp-host-binary`, `agent-host-install` |
 | Correctness, Linux, Docker or Kubernetes-in-Docker | Baseline and comparison | `agent-adp-linux-image` |
 | Correctness, Linux, Docker or Kubernetes-in-Docker | Datadog intake and millstone | `tools-linux-image` |
 
@@ -746,9 +741,8 @@ The `test-integration`, `test-integration-quick`, `test-correctness` and `test-c
 For a Docker daemon of another architecture, build with `COURIER_LINUX_TARGET=<arch>-unknown-linux-musl` and bind
 `courier-linux-binary` to that build in a manifest.
 
-Typed integration cases need the intake role only on Linux, where their sidecar runs. Correctness cases run only
-for subject OS `linux`; their roles appear in text listings, `artifacts verify`/`pull`, and `run --artifacts`
-verification only when you select Linux. Only runnable cases contribute artifact roles.
+Correctness cases run only for subject OS `linux`; their roles appear in text listings, `artifacts verify`/`pull`,
+and `run --artifacts` verification only when you select Linux. Only runnable cases contribute artifact roles.
 
 Both correctness targets bind to `agent-adp-linux-image`, as CI supplies the same bundled image to both sides.
 Locally, correctness files declare `saluki-images/datadog-agent:testing-release`, while that role defaults to the
@@ -774,21 +768,16 @@ but each explicit value must name the same reference as the binding of the role 
 
 | Flag | Environment variable | Artifact role |
 | --- | --- | --- |
-| `--image-override container=IMAGE` | `PANORAMIC_IMAGE_OVERRIDES` | `agent-adp-linux-image` on Linux, `agent-adp-windows-image` on Windows; no role on macOS |
-| `--image-override intake=IMAGE` | `PANORAMIC_IMAGE_OVERRIDES` | `tools-linux-image` |
 | `--image-override datadog-intake=IMAGE` | `PANORAMIC_IMAGE_OVERRIDES` | `tools-linux-image` |
 | `--image-override millstone=IMAGE` | `PANORAMIC_IMAGE_OVERRIDES` | `tools-linux-image` |
 | `--image-override baseline=IMAGE` | `PANORAMIC_IMAGE_OVERRIDES` | `agent-adp-linux-image` |
 | `--image-override comparison=IMAGE` | `PANORAMIC_IMAGE_OVERRIDES` | `agent-adp-linux-image` |
-| `--adp-binary-path` | `PANORAMIC_ADP_BINARY_PATH` | `adp-host-binary` |
-| `--core-agent-binary-path` | `PANORAMIC_CORE_AGENT_BINARY_PATH` | `agent-host-install`, joined with `bin/agent/agent` |
 | `--alpine-image` | `PANORAMIC_ALPINE_IMAGE` | `fixup-image` |
 
 Only values explicitly supplied by a flag or environment variable are compared; defaults don't count as inputs.
-Images are compared as strings and paths as paths, without canonicalization (trailing and repeated separators and
-non-leading `.` components are ignored): `alpine` differs from `alpine:latest`, and `./x` differs from `x`.
+Images are compared as strings: `alpine` differs from `alpine:latest`.
 The comparison uses every planned case in scope, before `-t` selection, and ignores inputs for roles no case needs.
-Image override names must be unique and match a container in scope; for example, `container` is unmatched on macOS.
+Image override names must be unique and match a correctness container in scope.
 Several names feeding one role must all agree with its binding.
 
 Panoramic reports every disagreement, including the role, bound reference and whether it came from the manifest or
@@ -800,7 +789,7 @@ The image roles feed the containers listed in the case table above. `adp-host-bi
 `agent-host-install` supplies the Core Agent executable at `bin/agent/agent` beneath that directory. `fixup-image`
 supplies the shared-volume permission fix-up container. `courier-linux-binary` supplies the static courier executable
 for Linux containers. Kind loads the runners' bound images into its cluster.
-`--mounts-dir`, kind options, `-l` and TUI options remain available. In `list --json`, `images` and `runtime` report
+Kind options, `-l` and TUI options remain available. In `list --json`, `images` and `runtime` report
 the case files' images and runtime regardless of `--artifacts`, while `roles` shows the bound references and their sources.
 
 Use `panoramic artifacts render --set <role>=<reference> … -o <file>` to write a manifest, replacing an existing
@@ -818,7 +807,7 @@ Linux integration and correctness jobs bind `courier-linux-binary` to the courie
 `ci/tooling/windows-integration-tests.ps1` binds the ADP and tools images and courier binary it builds.
 Both Windows images use `WINDOWS_ADP_BASE_IMAGE`, the Agent LTSC image already pulled by the job; local invocations
 without that variable fall back to `mcr.microsoft.com/windows/servercore:ltsc2022`.
-Image and binary overrides must agree with the manifest. Every selected correctness case must use a `saluki-images/`
+Image overrides must agree with the manifest. Every selected correctness case must use a `saluki-images/`
 baseline, because both sides take `agent-adp-linux-image`.
 
 Use `panoramic artifacts verify -d <cases> [--subject-os linux|macos|windows] [--artifacts <file>]` to check every
@@ -836,8 +825,7 @@ role once, sorted by name, with its reference, source and identity or failure:
 File checks follow symlinks. Verification never pulls images or creates containers, and contacts the Docker daemon
 only when an image or a container binary is needed. It reports every verification failure and exits 2 if any fails,
 or if no test directory is given, the manifest is invalid or cases fail discovery or planning. It exits 0 when all
-artifacts verify, including when none are needed. Participant, integration and correctness cases contribute
-artifact roles.
+artifacts verify, including when none are needed. Participant and correctness cases contribute artifact roles.
 
 Use `panoramic artifacts pull -d <cases> [--subject-os linux|macos|windows] [--artifacts <file>]` to fetch only the
 images those cases need, in role-name order. Check binary and install roles with `verify`;
@@ -980,9 +968,8 @@ dependency is `panoramic-courier`, for shared endpoint execution and its calling
 
 ### Step deadlines
 
-Each step uses its `timeout`, `duration`, or `during` as its budget. The `dogstatsd_replay` action uses a whole-action
-budget of `4 × timeout + capture_duration + 50ms`. The driver allows 10 seconds beyond that budget for the step to
-report its result, then stops it as `errored`. This makes the test a harness error (exit code 2), unless a parallel
+Each step uses its `timeout`, `duration`, or `during` as its budget. The driver allows 10 seconds beyond that budget
+for the step to report its result, then stops it as `errored`. This makes the test a harness error (exit code 2), unless a parallel
 member failed. Case timeout or run cancellation interrupts unfinished steps and preserves completed results.
 
 Polling HTTP requests, endpoint probes and intake polls are limited to the shorter of 10 seconds or the step's
@@ -1069,10 +1056,8 @@ for diagnosis. Consecutive participant entries stop concurrently; a container sc
 through the run's Docker connection. An interrupted creation marks both its participant and scope `unsettled`, because
 creation might finish after removal. The `details` and `traffic` artifact directories are reserved participant names.
 
-Legacy Docker containers, their shared volume, and network share one isolation-group entry; host processes and the
-state directory have separate entries. Correctness tests have one isolation-group entry per container
-group, or one `namespace:` entry per kind namespace, and the runner stops their background tasks first. Failed or
-skipped removal adds a `resource_leaked` issue; unconfirmed removal adds `resource_unsettled`. These issues leave the
+Correctness tests have one isolation-group entry per container group, or one `namespace:` entry per kind namespace.
+The runner stops their background tasks first. Failed or skipped removal adds a `resource_leaked` issue; unconfirmed removal adds `resource_unsettled`. These issues leave the
 test outcome unchanged. A background task still tracked after the five-second stop budget adds a
 `tasks_still_running` issue without changing the outcome; resource cleanup still runs.
 
@@ -1088,7 +1073,7 @@ zstd -dc traffic/<file-name> | head -5
 ```
 
 The module docs in `bin/correctness/panoramic/src/traffic.rs` explain each artifact, its retention, and record ordering.
-For intake sidecar captures, see "Intake artifacts" in `test/integration/README.md`.
+Native intake assertions read the intake through its participant operations.
 
 ## Benchmark tests: Single Machine Performance (SMP)
 

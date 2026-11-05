@@ -724,18 +724,11 @@ package-adp-host: ## Packages agent-data-plane into a release tarball under targ
 		$(CURDIR)/ci/tooling/package-adp-tarball.sh
 
 .PHONY: test-integration-macos-run
-# ADP path tracks $$BUILD_PROFILE so a tagged release pipeline (BUILD_PROFILE=optimized-release
-# in .gitlab-ci.yml workflow rules) tests the same binary it's about to ship — mirroring how the
-# linux flow builds and tests build-adp-image with whatever BUILD_PROFILE the pipeline sets.
-# panoramic stays at target/release/ unconditionally because it's the test harness, not the SUT;
-# build-panoramic always builds with --profile release, same as linux's build-panoramic-binary.
-test-integration-macos-run: BUILD_PROFILE ?= release
-test-integration-macos-run: ## Runs the macOS host-process integration tests using already-built binaries (assumes target/$$BUILD_PROFILE/agent-data-plane and target/release/panoramic exist). Defaults to all `mac`-runtime-eligible tests; narrow with CASE=<name>.
+# The artifact manifest selects the host binaries; the harness is always built in release mode.
+test-integration-macos-run: ## Runs macOS cases with already-built binaries and the artifact manifest; narrow with CASE=<name>.
 	@echo "[*] Running macOS host-process integration tests..."
 	@target/release/panoramic run -d "$(CURDIR)/test/integration/cases" \
 		--subject-os macos \
-		--adp-binary-path "$(CURDIR)/target/$(BUILD_PROFILE)/agent-data-plane" \
-		--core-agent-binary-path "$(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent" \
 		$(PANORAMIC_ARTIFACTS_ARG) \
 		$(if $(CASE),-t $(CASE)) --no-tui -p 1 \
 		$(if $(PANORAMIC_LOG_DIR),-l $(PANORAMIC_LOG_DIR))

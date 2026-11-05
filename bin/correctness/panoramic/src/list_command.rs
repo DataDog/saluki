@@ -130,7 +130,7 @@ fn excluded_listing_text(case: &LoadedCase) -> String {
 fn json_listing(
     plans: &[LoadedPlan], excluded: &[LoadedCase], subject_os: Os,
 ) -> Result<BTreeMap<String, serde_json::Value>, GenericError> {
-    let built = build_runners(plans, subject_os, &RunnerArtifacts::Overrides(&[]))?;
+    let built = build_runners(plans, &RunnerArtifacts::Overrides(&[]))?;
     Ok(listing(&built, excluded, subject_os))
 }
 
@@ -206,10 +206,7 @@ mod tests {
     #[test]
     fn listing_json_reports_status_layout_and_roles_for_runnable_cases() {
         let participant = crate::config::tests::plan(PARTICIPANT_FIELDS, Os::Linux);
-        let typed = crate::config::tests::plan(
-            "type: integration\nname: case\ntimeout: 1s\nruntimes: [linux]\nprocedure: []\n",
-            Os::Linux,
-        );
+        let typed = crate::config::tests::plan(&format!("type: correctness\n{CORRECTNESS_FIELDS}"), Os::Linux);
         for (plan, expected_layout, expected_keys) in [
             (
                 participant,
@@ -226,7 +223,7 @@ mod tests {
                 vec!["images", "layout", "roles", "runtime", "status", "timeout", "type"],
             ),
         ] {
-            let built = build_runners([&plan], Os::Linux, &RunnerArtifacts::Overrides(&[])).unwrap();
+            let built = build_runners([&plan], &RunnerArtifacts::Overrides(&[])).unwrap();
             let entries = listing(&built, &[], Os::Linux);
             let entry = &entries["case"];
             assert_eq!(entry["status"], "runnable");
@@ -240,33 +237,37 @@ mod tests {
                     .collect::<Vec<_>>(),
                 expected_keys
             );
-            assert_eq!(
-                entry["roles"],
-                serde_json::json!([
-                    {
-                        "role": "agent-adp-linux-image",
-                        "kind": "image",
-                        "reference": "saluki-images/datadog-agent:testing-devel",
-                        "source": "local_default",
+            let mut expected_roles = serde_json::json!([
+                {
+                    "role": "agent-adp-linux-image",
+                    "kind": "image",
+                    "reference": "saluki-images/datadog-agent:testing-devel",
+                    "source": "local_default",
+                },
+                {
+                    "role": "courier-linux-binary",
+                    "kind": "binary",
+                    "reference": match std::env::consts::ARCH {
+                        "aarch64" => "target/aarch64-unknown-linux-musl/release/panoramic-courier",
+                        "x86_64" => "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+                        _ => "",
                     },
-                    {
-                        "role": "courier-linux-binary",
-                        "kind": "binary",
-                        "reference": match std::env::consts::ARCH {
-                            "aarch64" => "target/aarch64-unknown-linux-musl/release/panoramic-courier",
-                            "x86_64" => "target/x86_64-unknown-linux-musl/release/panoramic-courier",
-                            _ => "",
-                        },
-                        "source": "local_default",
-                    },
-                    {
-                        "role": "fixup-image",
-                        "kind": "image",
-                        "reference": "alpine:latest",
-                        "source": "local_default",
-                    },
-                ])
-            );
+                    "source": "local_default",
+                },
+                {
+                    "role": "fixup-image",
+                    "kind": "image",
+                    "reference": "alpine:latest",
+                    "source": "local_default",
+                },
+            ]);
+            if plan.case().suite() == "correctness" {
+                expected_roles.as_array_mut().unwrap().push(serde_json::json!({
+                    "role": "tools-linux-image", "kind": "image",
+                    "reference": "saluki-images/correctness-tools:latest", "source": "local_default",
+                }));
+            }
+            assert_eq!(entry["roles"], expected_roles);
         }
     }
 
@@ -326,7 +327,7 @@ mod tests {
         let Discovered { plans, excluded } =
             discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], Os::MacOs).unwrap();
         assert!(plans.is_empty());
-        let built = build_runners(&plans, Os::MacOs, &RunnerArtifacts::Overrides(&[])).unwrap();
+        let built = build_runners(&plans, &RunnerArtifacts::Overrides(&[])).unwrap();
         let entries = listing(&built, &excluded, Os::MacOs);
         assert_eq!(entries.len(), 2);
         for case in &excluded {
@@ -350,7 +351,7 @@ mod tests {
         write_case(
             dir.path(),
             "integration",
-            "type: integration\nname: integration\ntimeout: 1s\nruntimes: [linux, windows, mac]\nprocedure: []\n",
+            "name: integration\ntimeout: 1s\nsubject_os: [linux, windows, macos]\nparticipants: {adp: {type: agent-adp, subject: true}}\nprocedure: [{step: log_contains, on: adp, pattern: ready, timeout: 5s}]\n",
         );
         write_case(
             dir.path(),
@@ -377,7 +378,7 @@ mod tests {
                     let Discovered { plans, excluded } =
                         discover_in_scope(&mut load_planner(manifest).unwrap(), &[dir.path().to_path_buf()], os)
                             .unwrap();
-                    let built = build_runners(&plans, os, &RunnerArtifacts::Overrides(&[])).unwrap();
+                    let built = build_runners(&plans, &RunnerArtifacts::Overrides(&[])).unwrap();
                     listing(&built, &excluded, os)
                 })
                 .collect();
@@ -605,36 +606,25 @@ mod tests {
              Start order: adp, alpha, zebra\n\n"
             )
         );
-        for (yaml, expected) in [
-            (
-                "type: integration\nname: typed\ndescription: A typed case\n\
-                 timeout: 7s\nruntimes: [linux]\nprocedure: []\n"
-                    .to_string(),
-                format!(
-                    "  typed\n    A typed case\n    Timeout: 7s\n    Status: runnable\n    Artifact roles:\n      \
-                 agent-adp-linux-image = saluki-images/datadog-agent:testing-devel (local default)\n      \
-                 courier-linux-binary = {courier} (local default)\n      \
-                 fixup-image = alpine:latest (local default)\n\n"
-                ),
-            ),
-            (
-                format!("type: correctness\n{CORRECTNESS_FIELDS}"),
-                format!(
-                    "  typed\n    Timeout: 1200s\n    Status: runnable\n    Artifact roles:\n      \
-                 agent-adp-linux-image = saluki-images/datadog-agent:testing-devel (local default)\n      \
-                 courier-linux-binary = {courier} (local default)\n      \
-                 fixup-image = alpine:latest (local default)\n      \
-                 tools-linux-image = saluki-images/correctness-tools:latest (local default)\n\n"
-                ),
-            ),
-        ] {
-            let case = crate::CASE_LOADER
-                .load_content(&yaml, "typed", std::path::Path::new("config.yaml"))
-                .unwrap()
-                .remove(0);
-            let plan = planner().compile(case, Os::Linux).unwrap().into_plan().unwrap();
-            assert_eq!(listing_text(&plan), expected);
-        }
+        let case = crate::CASE_LOADER
+            .load_content(
+                &format!("type: correctness\n{CORRECTNESS_FIELDS}"),
+                "typed",
+                std::path::Path::new("config.yaml"),
+            )
+            .unwrap()
+            .remove(0);
+        let plan = planner().compile(case, Os::Linux).unwrap().into_plan().unwrap();
+        assert_eq!(
+            listing_text(&plan),
+            format!(
+                "  typed\n    Timeout: 1200s\n    Status: runnable\n    Artifact roles:\n      \
+             agent-adp-linux-image = saluki-images/datadog-agent:testing-devel (local default)\n      \
+             courier-linux-binary = {courier} (local default)\n      \
+             fixup-image = alpine:latest (local default)\n      \
+             tools-linux-image = saluki-images/correctness-tools:latest (local default)\n\n"
+            )
+        );
     }
 
     #[tokio::test]
@@ -651,8 +641,10 @@ mod tests {
         write_case(
             dir.path(),
             "integration",
-            "type: integration\nname: integration\ndescription: Windows only\n\
-             timeout: 7s\nruntimes: [windows]\nprocedure: []\n",
+            &format!(
+                "description: Windows only\n{}",
+                PARTICIPANT_FIELDS.replace("1s", "7s").replace("[linux]", "[windows]")
+            ),
         );
         for (os, runnable, skipped) in [
             (Os::MacOs, vec!["participant"], vec!["integration", "typed"]),
@@ -750,24 +742,6 @@ mod tests {
         assert_eq!(entry["runtime"], "docker");
         assert_eq!(entry["timeout"], serde_json::json!({"secs": 1200, "nanos": 0}));
         assert_eq!(entry["images"]["baseline"], "base:file");
-
-        let path = write_case(
-            dir.path(),
-            "integration",
-            "type: integration\nname: integration\ntimeout: 7s\nruntimes: [windows]\nprocedure: []\n",
-        );
-        let cases = crate::CASE_LOADER.load_file(&path).unwrap();
-        let runners = build_case_runners(cases, Os::Windows, &[]).unwrap();
-        let entries = listing(&runners, &[], Os::Windows);
-        assert_eq!(entries.len(), 1);
-        let entry = &entries["integration"];
-        assert_eq!(entry["type"], "integration");
-        assert_eq!(entry["runtime"], "windows");
-        assert_eq!(entry["timeout"], serde_json::json!({"secs": 7, "nanos": 0}));
-        assert_eq!(
-            entry["images"]["container"],
-            "saluki-images/agent-data-plane:testing-windows"
-        );
 
         let path = write_case(
             dir.path(),

@@ -9,10 +9,9 @@ configuration. Use it to check coverage when changing case schemas or runners.
 
 - **Case:** the discovered name, including the variant suffix for a matrix.
 - **Suite:** integration or correctness.
-- **Subject OS:** Linux, macOS or Windows; independent of the host running the inventory test. A file with
-  `type: integration` must declare `runtimes` explicitly because the loader's default depends on the host OS.
+- **Subject OS:** Linux, macOS or Windows; independent of the host running the inventory test.
   A participant case must declare `subject_os`.
-- **Runtime:** the typed runner's identifier (`mac` means macOS; correctness uses `docker` or `kubernetes_in_docker`),
+- **Runtime:** the typed correctness runner's identifier (`docker` or `kubernetes_in_docker`),
   or the native subject participant's realization kind.
 - **Status:** selected by CI discovery, or disabled: the file sets `disabled: true` and lives in
   `test/correctness/disabled/`, which CI does not list. The inventory requires each case's directory to match
@@ -71,7 +70,7 @@ equivalence, and migration proofs: their rows, CI links and comparison commit.
   (release). Artifact commands, text listings and `run --artifacts` use the role binding; without that flag,
   runners use the files' images, subject to image overrides.
 - Integration uses `saluki-images/datadog-agent:testing-devel` on Linux and
-  `saluki-images/agent-data-plane:testing-windows` on Windows (overridden in CI by `--image-override container=$ImageTag`).
+  `saluki-images/agent-data-plane:testing-windows` on Windows (bound in CI through `agent-adp-windows-image`).
   macOS uses host processes. `dogstatsd-forwarding`, `dogstatsd-host-tag` and `dogstatsd-intake-metric` declare a
   `datadog-intake` participant using `saluki-images/correctness-tools:latest` on Linux. The two intake metric cases
   also run on macOS with `intake-host-binary` and on Windows with `saluki-images/correctness-tools:testing-windows`

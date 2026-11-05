@@ -148,7 +148,7 @@ mod tests {
         for (built, expected) in built.iter().zip([Some(participant_message), Some(typed_message), None]) {
             let result = run_with_settings(
                 built,
-                test_runner_settings(logs.path()),
+                test_runner_settings(),
                 logs.path(),
                 &CancellationToken::new(),
                 Duration::from_secs(5),
@@ -188,7 +188,7 @@ mod tests {
         let logs = tempfile::tempdir().unwrap();
         let result = run_with_settings(
             &built[0],
-            test_runner_settings(logs.path()),
+            test_runner_settings(),
             logs.path(),
             &CancellationToken::new(),
             Duration::from_secs(5),

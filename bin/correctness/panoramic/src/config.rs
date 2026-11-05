@@ -1,12 +1,7 @@
 use std::borrow::Borrow;
 use std::collections::BTreeMap;
-use std::{
-    collections::HashMap,
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use std::path::{Path, PathBuf};
 
-use airlock::driver::Protocol;
 use panoramic_core::case::{deserialize_case, deserialize_env_map, CaseSchema};
 use panoramic_core::{
     artifact::ArtifactManifest,
@@ -15,157 +10,12 @@ use panoramic_core::{
 };
 use saluki_error::{generic_error, GenericError};
 use serde::{de::DeserializeOwned, Deserialize};
-use serde_json::Value;
 
 use self::runner_artifacts::RunnerArtifacts;
 use self::typed_case::{LoadedCase, LoadedPlan};
 use crate::correctness::config::Config as CorrectnessConfig;
 use crate::image_override::ImageOverrides;
 use crate::test::Test;
-
-/// A duration that can be parsed from human-readable strings like `10s`, `1m`, `500ms`.
-#[derive(Clone, Debug)]
-pub struct HumanDuration(pub Duration);
-
-impl<'de> Deserialize<'de> for HumanDuration {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        parse_duration(&s).map(HumanDuration).map_err(serde::de::Error::custom)
-    }
-}
-
-#[cfg(test)]
-impl serde::Serialize for HumanDuration {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&format!("{:?}", self.0))
-    }
-}
-
-fn parse_duration(s: &str) -> Result<Duration, String> {
-    let s = s.trim();
-    if s.is_empty() {
-        return Err("empty duration string".to_string());
-    }
-
-    let mut total = Duration::ZERO;
-    let mut current_num = String::new();
-    let mut chars = s.chars().peekable();
-
-    while let Some(c) = chars.next() {
-        if c.is_ascii_digit() {
-            current_num.push(c);
-        } else if c.is_alphabetic() {
-            if current_num.is_empty() {
-                return Err(format!("unexpected unit '{}' without a number", c));
-            }
-
-            let num: u64 = current_num
-                .parse()
-                .map_err(|_| format!("invalid number: {}", current_num))?;
-            current_num.clear();
-
-            // Collect the full unit string
-            let mut unit = String::from(c);
-            while chars.peek().map(|c| c.is_alphabetic()).unwrap_or(false) {
-                unit.push(chars.next().unwrap());
-            }
-
-            let duration = match unit.as_str() {
-                "ns" => Duration::from_nanos(num),
-                "us" | "µs" => Duration::from_micros(num),
-                "ms" => Duration::from_millis(num),
-                "s" => Duration::from_secs(num),
-                "m" => Duration::from_secs(num * 60),
-                "h" => Duration::from_secs(num * 3600),
-                _ => return Err(format!("unknown duration unit: {}", unit)),
-            };
-
-            total += duration;
-        } else if c.is_whitespace() {
-            // Skip whitespace
-        } else {
-            return Err(format!("unexpected character: {}", c));
-        }
-    }
-
-    // Handle trailing number without unit (assume seconds)
-    if !current_num.is_empty() {
-        let num: u64 = current_num
-            .parse()
-            .map_err(|_| format!("invalid number: {}", current_num))?;
-        total += Duration::from_secs(num);
-    }
-
-    if total.is_zero() {
-        return Err("duration must be greater than zero".to_string());
-    }
-
-    Ok(total)
-}
-
-/// The deserializable configuration struct that defines an integration test. Not to be confused with
-/// `CorrectnessConfig` which is a different testing modality.
-#[cfg_attr(test, derive(serde::Serialize))]
-#[derive(Clone, Debug, Deserialize)]
-pub struct IntegrationConfig {
-    /// Name of the test case.
-    pub name: String,
-
-    /// Optional description of what the test verifies.
-    #[serde(default)]
-    pub description: Option<String>,
-
-    /// Overall timeout for the test case.
-    pub timeout: HumanDuration,
-
-    /// Container configuration. Optional; defaults to an empty configuration. The container
-    /// image is selected by the active runtime, not the test case.
-    #[serde(default)]
-    pub container: ContainerConfig,
-
-    /// Datadog intake sidecar configuration. Optional; disabled by default.
-    #[serde(default)]
-    pub intake: IntakeConfig,
-
-    /// Environment variables to set on the target process(es).
-    ///
-    /// Top-level (not under `container`) because both the linux and `mac` runtimes apply
-    /// these the same way: docker injects them as container env, the Unix runner passes them
-    /// to the spawned ADP / Core Agent processes.
-    ///
-    /// Keys are variable names, values are the string the process receives. Values must be YAML
-    /// strings, so quote anything that would otherwise parse as a boolean or a number (`"true"`,
-    /// `"8125"`).
-    #[serde(default, deserialize_with = "deserialize_env_map")]
-    pub env: HashMap<String, String>,
-
-    /// Ordered list of steps (assertions and actions) to execute.
-    pub procedure: Vec<AssertionStep>,
-
-    /// Runtimes under which this test is eligible to run.
-    ///
-    /// Each value must be `"linux"` (the default), `"mac"`, or `"windows"`. The active
-    /// runtime for any given panoramic invocation is chosen at the CLI level (`--runtime`,
-    /// defaulting to the host's native runtime); a test discovers only when this list contains
-    /// that active runtime. Tests with multiple entries are portable across runtimes, but still
-    /// execute only once per invocation, in the active runtime.
-    #[serde(default = "default_integration_runtimes")]
-    pub runtimes: Vec<String>,
-
-    /// Canonical configuration file path, recorded by the loader.
-    #[serde(skip)]
-    pub(crate) loaded_from: PathBuf,
-}
-
-fn default_integration_runtimes() -> Vec<String> {
-    vec![default_host_runtime().to_string()]
-}
 
 /// Runtime identifier for integration tests that run as host processes on macOS (no Docker, no
 /// virtualization). Validated on macOS only today; future host-process runtimes for other Unix
@@ -194,352 +44,6 @@ pub(crate) fn os_for_runtime(runtime: &str) -> Option<Os> {
         MAC_RUNTIME => Some(Os::MacOs),
         WINDOWS_RUNTIME => Some(Os::Windows),
         _ => None,
-    }
-}
-
-/// Returns the host's integration runtime, used when a typed integration case omits `runtimes`.
-pub fn default_host_runtime() -> &'static str {
-    runtime_for_os(Os::host())
-}
-
-/// Container name the integration-test target carries in [`Test::images`] and image overrides.
-pub(crate) const TARGET_IMAGE_NAME: &str = "container";
-
-/// Container name the intake sidecar carries in [`Test::images`] and image overrides.
-pub(crate) const INTAKE_IMAGE_NAME: &str = "intake";
-
-/// Datadog intake sidecar configuration for a test case.
-///
-/// When enabled, the runner starts a `datadog-intake` container in the test's isolation group,
-/// reachable from the target under a fixed network alias. Tests point the target's intake URL at
-/// that alias and assert on what the intake received.
-///
-/// Only the `linux` runtime can host the sidecar: the `mac` runtime runs the target as a host
-/// process with no container network, and the `windows` runtime needs a `nat` network that the
-/// sidecar's Linux container cannot share. Runners reject the combination rather than skip it, so a
-/// test that needs the sidecar must declare `runtimes: [linux]`.
-#[cfg_attr(test, derive(serde::Serialize))]
-#[derive(Clone, Debug, Default, Deserialize)]
-pub struct IntakeConfig {
-    /// Whether to start the intake sidecar.
-    #[serde(default)]
-    pub enabled: bool,
-}
-
-/// Docker network alias under which the target reaches the intake sidecar.
-pub const INTAKE_NETWORK_ALIAS: &str = "datadog-intake";
-
-/// Container-side HTTP port of the intake sidecar.
-pub const INTAKE_HTTP_PORT: u16 = 2049;
-
-/// Container configuration for a test case.
-#[cfg_attr(test, derive(serde::Serialize))]
-#[derive(Clone, Debug, Default, Deserialize)]
-pub struct ContainerConfig {
-    /// Optional entrypoint override.
-    #[serde(default)]
-    pub entrypoint: Vec<String>,
-
-    /// Optional command override.
-    #[serde(default)]
-    pub command: Vec<String>,
-
-    /// Files to mount (host_path:container_path format).
-    #[serde(default)]
-    pub files: Vec<String>,
-
-    /// Ports to expose (port/protocol format, for example, "8125/udp").
-    #[serde(default)]
-    pub exposed_ports: Vec<String>,
-
-    /// Whether the Linux target joins the Docker host's cgroup namespace.
-    ///
-    /// Defaults to `false` to preserve cgroup namespace isolation. Enable this only when a test
-    /// needs the target's local cgroup path to expose its Docker container ID.
-    #[serde(default)]
-    pub host_cgroup_namespace: bool,
-}
-
-/// A single step in the assertion pipeline.
-///
-/// Each step is either a single assertion, a parallel block of assertions, or a sequential action.
-#[cfg_attr(test, derive(serde::Serialize))]
-#[derive(Clone, Debug, Deserialize)]
-#[serde(untagged)]
-pub enum AssertionStep {
-    /// A block of assertions that run concurrently.
-    Parallel {
-        /// The assertions to run in parallel.
-        parallel: Vec<AssertionConfig>,
-    },
-    /// A single action that runs on its own.
-    Action(ActionConfig),
-    /// A single assertion that runs on its own.
-    Single(AssertionConfig),
-}
-
-/// Configuration for a single action.
-#[cfg_attr(test, derive(serde::Serialize))]
-#[derive(Clone, Debug, Deserialize)]
-#[serde(tag = "action", rename_all = "snake_case")]
-pub enum ActionConfig {
-    /// Set a runtime configuration value through the Core Agent command API.
-    CoreAgentConfigSet {
-        /// Runtime configuration key to set.
-        key: String,
-        /// Value to set. Strings are sent without JSON quoting; other values are serialized as JSON.
-        value: Value,
-        /// Core Agent runtime config endpoint template. `{key}` is replaced with `key`.
-        #[serde(default = "crate::actions::default_core_agent_config_endpoint_template")]
-        endpoint: String,
-        /// Timeout for waiting for the Core Agent API to accept the mutation.
-        #[serde(default = "default_action_timeout")]
-        timeout: HumanDuration,
-    },
-
-    /// Invoke the tested ADP binary as a CLI command.
-    AdpCli {
-        /// Arguments appended after the runtime-specific ADP binary and global configuration prefix.
-        args: Vec<String>,
-        /// Timeout for waiting for the command to succeed.
-        #[serde(default = "default_action_timeout")]
-        timeout: HumanDuration,
-    },
-
-    /// Capture, replay, and verify DogStatsD traffic through the tested ADP process.
-    DogstatsdReplay {
-        /// Command that sends the traffic to be captured in the target environment.
-        sender: Vec<String>,
-        /// How long the capture remains active after it starts.
-        capture_duration: HumanDuration,
-        /// Number of seconds the post-replay statistics collection runs.
-        stats_duration_secs: u64,
-        /// Metric names that must appear during the post-replay statistics collection.
-        expected_metrics: Vec<String>,
-        /// Timeout for each target command invoked by the action.
-        #[serde(default = "default_action_timeout")]
-        timeout: HumanDuration,
-    },
-
-    /// Invoke the Core Agent binary as a CLI command.
-    CoreAgentCli {
-        /// Arguments appended after the runtime-specific Core Agent binary and global configuration prefix.
-        args: Vec<String>,
-        /// Optional substring that must appear in successful command output.
-        #[serde(default)]
-        output_contains: Option<String>,
-        /// Timeout for waiting for the command to succeed.
-        #[serde(default = "default_action_timeout")]
-        timeout: HumanDuration,
-    },
-
-    /// Send one DogStatsD datagram over UDP to the target.
-    DogstatsdSend {
-        /// Datagram payload, in DogStatsD text protocol.
-        payload: String,
-        /// Container-side UDP port to send to. Must be exposed by the test case.
-        port: u16,
-        /// Timeout for the send.
-        #[serde(default = "default_action_timeout")]
-        timeout: HumanDuration,
-    },
-
-    /// Run a command inside the target environment.
-    TargetExec {
-        /// Command and arguments to run in the target environment.
-        command: Vec<String>,
-        /// Timeout for waiting for the command to succeed.
-        #[serde(default = "default_action_timeout")]
-        timeout: HumanDuration,
-    },
-}
-
-impl ActionConfig {
-    /// Returns `timeout`, or the combined command and wait budget for `dogstatsd_replay`.
-    pub(crate) fn budget(&self) -> Duration {
-        match self {
-            // Capture and sender each get `timeout`, followed by the capture wait. The retry loop gets another
-            // `timeout`, but checks its deadline before sleeping. Its final iteration can add one sleep interval
-            // and one `timeout` for the concurrent stats and replay commands.
-            Self::DogstatsdReplay {
-                capture_duration,
-                timeout,
-                ..
-            } => timeout
-                .0
-                .saturating_mul(4)
-                .saturating_add(capture_duration.0)
-                .saturating_add(Duration::from_millis(50)),
-            Self::CoreAgentConfigSet { timeout, .. }
-            | Self::AdpCli { timeout, .. }
-            | Self::CoreAgentCli { timeout, .. }
-            | Self::DogstatsdSend { timeout, .. }
-            | Self::TargetExec { timeout, .. } => timeout.0,
-        }
-    }
-}
-
-fn default_action_timeout() -> HumanDuration {
-    HumanDuration(Duration::from_secs(30))
-}
-
-/// Configuration for a single assertion.
-#[cfg_attr(test, derive(serde::Serialize))]
-#[derive(Clone, Debug, Deserialize)]
-#[serde(tag = "assertion", rename_all = "snake_case")]
-pub enum AssertionConfig {
-    /// Check that the process doesn't exit for a specified duration.
-    ProcessStableFor {
-        /// How long the process should remain stable.
-        duration: HumanDuration,
-    },
-
-    /// Check that ADP itself exits with a specific exit code, abstracting over the runtime's
-    /// observation mechanism.
-    ///
-    /// On the `linux` runtime the converged image wraps ADP under s6, which keeps the
-    /// container alive across ADP restarts and logs `agent-data-plane exited with code N` from
-    /// `docker/s6-services/agent-data-plane/finish`. This assertion greps the log buffer for
-    /// that line. On the `mac` runtime ADP is spawned directly; the assertion reads
-    /// the exit code recorded by the Unix runner when ADP's child process exited.
-    AdpExitsWith {
-        /// The expected exit code.
-        expected_code: i64,
-        /// Timeout for waiting for the exit to be observed.
-        timeout: HumanDuration,
-    },
-
-    /// Check that a port is listening.
-    PortListening {
-        /// The port number to check.
-        port: u16,
-        /// The protocol (tcp or udp).
-        protocol: String,
-        /// Timeout for waiting for the port to become available.
-        timeout: HumanDuration,
-    },
-
-    /// Check that a pattern appears in the logs.
-    LogContains {
-        /// The pattern to search for.
-        pattern: String,
-        /// Whether to interpret the pattern as a regex.
-        #[serde(default)]
-        regex: bool,
-        /// Timeout for waiting for the pattern to appear.
-        timeout: HumanDuration,
-        /// Which log stream to check (stdout, stderr, or both).
-        #[serde(default)]
-        stream: LogStream,
-    },
-
-    /// Check that a pattern doesn't appear in the logs for a duration.
-    LogNotContains {
-        /// The pattern that shouldn't appear.
-        pattern: String,
-        /// Whether to interpret the pattern as a regex.
-        #[serde(default)]
-        regex: bool,
-        /// How long to check for the pattern's absence.
-        during: HumanDuration,
-        /// Which log stream to check (stdout, stderr, or both).
-        #[serde(default)]
-        stream: LogStream,
-    },
-
-    /// Probe an HTTP/HTTPS endpoint and assert on the response status code.
-    ///
-    /// HTTPS endpoints are supported with optional certificate verification skipping. The status
-    /// matcher accepts either "must equal" or "must not equal" semantics; the latter is useful for
-    /// asserting only that a route is registered without having to know what status code the
-    /// endpoint would otherwise return.
-    HttpCheck {
-        /// The endpoint URL to check. Both `http://` and `https://` schemes are accepted.
-        endpoint: String,
-        /// Matcher applied to the response status code.
-        status: HttpStatusMatcher,
-        /// Whether to skip TLS certificate verification for `https://` endpoints.
-        ///
-        /// Defaults to `false`. Set to `true` when probing endpoints that serve self-signed
-        /// certificates (such as the ADP privileged API in integration tests).
-        #[serde(default)]
-        insecure_skip_verify: bool,
-        /// Timeout for the check to succeed.
-        timeout: HumanDuration,
-    },
-
-    /// Check that a file exists in the container, and optionally that its contents match a pattern.
-    FileContains {
-        /// Absolute path to the file inside the container.
-        path: String,
-        /// Optional pattern that must appear in the file's contents. If omitted, only file existence is checked.
-        #[serde(default)]
-        pattern: Option<String>,
-        /// Whether to interpret `pattern` as a regex.
-        #[serde(default)]
-        regex: bool,
-        /// Timeout for waiting for the file (and pattern, if any) to appear.
-        timeout: HumanDuration,
-    },
-
-    /// Poll an ADP configuration view through its authenticated CLI until one key equals the expected value.
-    AdpConfigKeyEquals {
-        /// Configuration key to compare. Dotted paths address nested objects.
-        key: String,
-        /// Expected value.
-        value: Value,
-        /// Configuration endpoint selecting `/config` or the translated runtime view at `/config/runtime`.
-        #[serde(default = "crate::assertions::default_adp_config_endpoint")]
-        endpoint: String,
-        /// Timeout for waiting for the value to appear.
-        timeout: HumanDuration,
-    },
-}
-
-impl AssertionConfig {
-    /// Returns `duration` or `during` for windowed checks, otherwise `timeout`.
-    pub(crate) fn budget(&self) -> Duration {
-        match self {
-            Self::ProcessStableFor { duration } => duration.0,
-            Self::LogNotContains { during, .. } => during.0,
-            Self::AdpExitsWith { timeout, .. }
-            | Self::PortListening { timeout, .. }
-            | Self::LogContains { timeout, .. }
-            | Self::HttpCheck { timeout, .. }
-            | Self::FileContains { timeout, .. }
-            | Self::AdpConfigKeyEquals { timeout, .. } => timeout.0,
-        }
-    }
-}
-
-/// Which log streams to check.
-#[cfg_attr(test, derive(serde::Serialize))]
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum LogStream {
-    Stdout,
-    Stderr,
-    #[default]
-    Both,
-}
-
-/// Matcher for the response status code of an [`AssertionConfig::HttpCheck`].
-///
-/// Exactly one variant is set at deserialization time, so the assertion either requires a specific
-/// status code or rejects a specific status code.
-#[cfg_attr(test, derive(serde::Serialize))]
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum HttpStatusMatcher {
-    /// Assertion passes when the response status code equals this value.
-    Equal(u16),
-    /// Assertion passes when the response status code is anything other than this value.
-    NotEqual(u16),
-}
-
-impl LoadedFrom for IntegrationConfig {
-    fn set_loaded_from(&mut self, path: PathBuf) {
-        self.loaded_from = path;
     }
 }
 
@@ -689,19 +193,16 @@ impl<P> BuiltCase<P> {
 ///
 /// Returns an error if an image override is duplicate or unmatched.
 pub(crate) fn build_runners<P>(
-    plans: impl IntoIterator<Item = P>, selected: Os, artifacts: &RunnerArtifacts<'_>,
+    plans: impl IntoIterator<Item = P>, artifacts: &RunnerArtifacts<'_>,
 ) -> Result<Vec<BuiltCase<P>>, GenericError>
 where
     P: Borrow<LoadedPlan>,
 {
-    let settings = artifacts.integration_settings(runtime_for_os(selected));
     let mut built = Vec::new();
     for plan in plans {
         let borrowed = plan.borrow();
         let execution = match borrowed.case().schema() {
-            CaseSchema::Typed(config) => {
-                Execution::Runner(config.build_test(borrowed.case().name(), &settings, artifacts))
-            }
+            CaseSchema::Typed(config) => Execution::Runner(config.build_test(borrowed.case().name(), artifacts)),
             CaseSchema::Participants { .. } => Execution::Native,
         };
         built.push(BuiltCase { plan, execution });
@@ -711,47 +212,6 @@ where
         ImageOverrides::new(entries).validate(&runners)?;
     }
     Ok(built)
-}
-
-/// Parse a port specification (for example, "8125/udp") into port number and protocol.
-pub fn parse_port_spec(spec: &str) -> Result<(u16, Protocol), GenericError> {
-    let parts: Vec<&str> = spec.split('/').collect();
-    if parts.len() != 2 {
-        return Err(generic_error!(
-            "Invalid port specification '{}': expected format 'port/protocol'",
-            spec
-        ));
-    }
-
-    let port: u16 = parts[0]
-        .parse()
-        .map_err(|_| generic_error!("Invalid port number: {}", parts[0]))?;
-
-    let protocol = match parts[1] {
-        "tcp" => Protocol::Tcp,
-        "udp" => Protocol::Udp,
-        protocol => {
-            return Err(generic_error!(
-                "Invalid protocol '{}': expected 'tcp' or 'udp'",
-                protocol
-            ));
-        }
-    };
-
-    Ok((port, protocol))
-}
-
-/// Parse a file mount specification (for example, "host_path:container_path").
-pub fn parse_file_spec(spec: &str) -> Result<(&str, &str), GenericError> {
-    let parts: Vec<&str> = spec.splitn(2, ':').collect();
-    if parts.len() != 2 {
-        return Err(generic_error!(
-            "Invalid file specification '{}': expected format 'host_path:container_path'",
-            spec
-        ));
-    }
-
-    Ok((parts[0], parts[1]))
 }
 
 pub(crate) mod runner_artifacts;
@@ -920,18 +380,13 @@ procedure:
 
     #[test]
     fn typed_cases_build_their_runner_on_every_runtime() {
-        let integration =
-            "type: integration\nname: case\ntimeout: 1s\nruntimes: [linux, mac, windows]\nprocedure: []\n";
         let correctness = format!("type: correctness\n{CORRECTNESS_FIELDS}");
         let pod = correctness.replace("runtime: docker", "runtime: kubernetes_in_docker");
         for (yaml, os, runtime) in [
-            (integration, Os::Linux, "linux"),
-            (integration, Os::MacOs, "mac"),
-            (integration, Os::Windows, "windows"),
             (correctness.as_str(), Os::Linux, "docker"),
             (pod.as_str(), Os::Linux, "kubernetes_in_docker"),
         ] {
-            let built = build_runners([plan(yaml, os)], os, &RunnerArtifacts::Overrides(&[])).unwrap();
+            let built = build_runners([plan(yaml, os)], &RunnerArtifacts::Overrides(&[])).unwrap();
             assert_eq!(built.len(), 1);
             assert!(matches!(built[0].execution, Execution::Runner(_)));
             assert_eq!(built[0].runner().unwrap().runtime(), runtime);
@@ -951,7 +406,7 @@ procedure:
                 plan_with_plain(&plain, "plain", os),
                 plan_with_plain(&mixed, "mixed", os),
             ];
-            let built = build_runners(&plans, os, &RunnerArtifacts::Overrides(&[])).unwrap();
+            let built = build_runners(&plans, &RunnerArtifacts::Overrides(&[])).unwrap();
             assert_eq!(built.len(), 4);
             for (built, name) in built.iter().zip(["single", "multiple", "plain", "mixed"]) {
                 assert_eq!(built.plan.case().name(), name);
@@ -973,7 +428,6 @@ procedure:
 
     #[test]
     fn every_subject_os_maps_to_its_runtime_and_back() {
-        assert_eq!(os_for_runtime(default_host_runtime()), Some(Os::host()));
         for (os, runtime) in [(Os::Linux, "linux"), (Os::MacOs, "mac"), (Os::Windows, "windows")] {
             assert_eq!(runtime_for_os(os), runtime);
             assert_eq!(os_for_runtime(runtime), Some(os));
@@ -981,158 +435,6 @@ procedure:
         for runtime in ["docker", "kubernetes_in_docker", "macos", ""] {
             assert_eq!(os_for_runtime(runtime), None, "{runtime}");
         }
-    }
-
-    #[test]
-    fn an_integration_case_still_accepts_a_unitless_timeout() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_case(
-            dir.path(),
-            "alpha",
-            "type: integration\nname: alpha\ntimeout: '30'\nprocedure: []\n",
-        );
-        let cases = crate::CASE_LOADER.load_file(&path).unwrap();
-        assert_eq!(cases.len(), 1);
-        assert_eq!(cases[0].timeout(), Duration::from_secs(30));
-    }
-
-    #[test]
-    fn parse_duration_handles_units_and_combinations() {
-        assert_eq!(parse_duration("10s").unwrap(), Duration::from_secs(10));
-        assert_eq!(parse_duration("1m").unwrap(), Duration::from_secs(60));
-        assert_eq!(parse_duration("500ms").unwrap(), Duration::from_millis(500));
-        assert_eq!(parse_duration("1m30s").unwrap(), Duration::from_secs(90));
-        assert_eq!(parse_duration("1h").unwrap(), Duration::from_secs(3600));
-        assert!(parse_duration("").is_err());
-        assert!(parse_duration("abc").is_err());
-    }
-
-    #[test]
-    fn parse_duration_treats_a_trailing_unitless_number_as_seconds() {
-        // Documented no-unit fallback: a trailing number with no unit is interpreted as seconds, both on
-        // its own and after a unit-qualified component.
-        assert_eq!(parse_duration("42").unwrap(), Duration::from_secs(42));
-        assert_eq!(parse_duration("1m30").unwrap(), Duration::from_secs(90));
-    }
-
-    #[test]
-    fn parse_duration_rejects_a_zero_duration() {
-        // Documented zero-duration rejection: a total of zero is an error regardless of how it is spelled.
-        let unitless = parse_duration("0").expect_err("a bare zero should be rejected");
-        assert!(unitless.contains("greater than zero"), "unexpected error: {unitless}");
-
-        let with_unit = parse_duration("0s").expect_err("an explicit zero-second duration should be rejected");
-        assert!(with_unit.contains("greater than zero"), "unexpected error: {with_unit}");
-    }
-
-    #[test]
-    fn parse_port_spec_parses_valid_specs_and_rejects_invalid_ones() {
-        let (port, protocol) = parse_port_spec("8125/udp").unwrap();
-        assert_eq!(port, 8125);
-        assert_eq!(protocol, Protocol::Udp);
-
-        let (port, protocol) = parse_port_spec("443/tcp").unwrap();
-        assert_eq!(port, 443);
-        assert_eq!(protocol, Protocol::Tcp);
-
-        assert!(parse_port_spec("invalid").is_err());
-        assert!(parse_port_spec("8125/http").is_err());
-    }
-
-    #[test]
-    fn parse_file_spec_splits_on_first_colon() {
-        let (host, container) = parse_file_spec("./config.yaml:/etc/config.yaml").unwrap();
-        assert_eq!(host, "./config.yaml");
-        assert_eq!(container, "/etc/config.yaml");
-
-        assert!(parse_file_spec("nocolon").is_err());
-    }
-
-    #[test]
-    fn each_step_kind_declares_its_budget() {
-        let assertion_budget = |yaml: &str| {
-            serde_saphyr::from_str::<AssertionConfig>(yaml)
-                .expect("assertion should parse")
-                .budget()
-        };
-        let action_budget = |yaml: &str| {
-            serde_saphyr::from_str::<ActionConfig>(yaml)
-                .expect("action should parse")
-                .budget()
-        };
-
-        assert_eq!(
-            assertion_budget("assertion: process_stable_for\nduration: 10s\n"),
-            Duration::from_secs(10)
-        );
-        assert_eq!(
-            assertion_budget("assertion: log_not_contains\npattern: x\nduring: 5s\n"),
-            Duration::from_secs(5)
-        );
-        assert_eq!(
-            assertion_budget("assertion: log_contains\npattern: x\ntimeout: 7s\n"),
-            Duration::from_secs(7)
-        );
-        assert_eq!(
-            action_budget("action: target_exec\ncommand: [echo]\n"),
-            Duration::from_secs(30)
-        );
-        assert_eq!(
-            action_budget(
-                "action: dogstatsd_replay\nsender: [echo]\ncapture_duration: 3s\nstats_duration_secs: 1\n\
-                 expected_metrics: []\ntimeout: 30s\n"
-            ),
-            Duration::from_millis(123_050)
-        );
-    }
-
-    #[test]
-    fn target_exec_action_deserializes_command() {
-        let action: ActionConfig = serde_saphyr::from_str(
-            r#"
-action: target_exec
-command: ["pwsh", "-File", "C:\\test\\send.ps1"]
-timeout: 12s
-"#,
-        )
-        .unwrap();
-
-        let ActionConfig::TargetExec { command, timeout } = action else {
-            panic!("expected target_exec action");
-        };
-        assert_eq!(command, vec!["pwsh", "-File", "C:\\test\\send.ps1"]);
-        assert_eq!(timeout.0, Duration::from_secs(12));
-    }
-
-    #[test]
-    fn dogstatsd_replay_action_deserializes_capture_and_stats_configuration() {
-        let action: ActionConfig = serde_saphyr::from_str(
-            r#"
-action: dogstatsd_replay
-sender: ["python3", "/tmp/send.py"]
-capture_duration: 2s
-stats_duration_secs: 3
-expected_metrics: ["replay.one", "replay.two"]
-timeout: 30s
-"#,
-        )
-        .unwrap();
-
-        let ActionConfig::DogstatsdReplay {
-            sender,
-            capture_duration,
-            stats_duration_secs,
-            expected_metrics,
-            timeout,
-        } = action
-        else {
-            panic!("expected dogstatsd_replay action");
-        };
-        assert_eq!(sender, vec!["python3", "/tmp/send.py"]);
-        assert_eq!(capture_duration.0, Duration::from_secs(2));
-        assert_eq!(stats_duration_secs, 3);
-        assert_eq!(expected_metrics, vec!["replay.one", "replay.two"]);
-        assert_eq!(timeout.0, Duration::from_secs(30));
     }
 
     pub(crate) fn build_case_runners(
@@ -1148,7 +450,7 @@ timeout: 30s
                     .expect("the test case declares the selected subject OS")
             })
             .collect::<Vec<_>>();
-        build_runners(plans, os, &RunnerArtifacts::Overrides(overrides))
+        build_runners(plans, &RunnerArtifacts::Overrides(overrides))
     }
 
     fn discover_runners(
@@ -1156,14 +458,14 @@ timeout: 30s
     ) -> Result<Vec<BuiltCase>, GenericError> {
         let os = os_for_runtime(runtime).unwrap();
         let plans = discover_in_scope(&mut planner(), dirs, os)?.plans;
-        build_runners(plans, os, &RunnerArtifacts::Overrides(image_overrides))
+        build_runners(plans, &RunnerArtifacts::Overrides(image_overrides))
     }
 
     #[test]
     fn discovery_reports_excluded_cases_in_name_order_beside_the_plans() {
         let windows = create_test_case_dir(
             "windows-only",
-            "type: integration\nname: windows-only\ntimeout: 1s\nruntimes: [windows]\nprocedure: []\n",
+            "name: windows-only\ntimeout: 1s\nsubject_os: [windows]\nparticipants: {adp: {type: agent-adp, subject: true}}\nprocedure: [{step: log_contains, on: adp, pattern: ready, timeout: 5s}]\n",
         );
         let disabled = create_test_case_dir(
             "disabled",
@@ -1226,7 +528,7 @@ timeout: 30s
         let good = write_case(
             dir.path(),
             "good",
-            "type: integration\nname: good\ntimeout: 1s\nruntimes: [linux]\nprocedure: []\n",
+            "name: good\ntimeout: 1s\nsubject_os: [linux]\nparticipants: {adp: {type: agent-adp, subject: true}}\nprocedure: [{step: log_contains, on: adp, pattern: ready, timeout: 5s}]\n",
         );
 
         let error = crate::CASE_LOADER
@@ -1258,7 +560,7 @@ timeout: 30s
             let yaml = write_case(
                 dir.path(),
                 "stray",
-                "type: integration\nname: stray\ntimeout: 1s\nprocedure: []\n",
+                "name: stray\ntimeout: 1s\nsubject_os: [linux]\nparticipants: {adp: {type: agent-adp, subject: true}}\nprocedure: [{step: log_contains, on: adp, pattern: ready, timeout: 5s}]\n",
             );
             let yml = yaml.with_extension("yml");
             if with_config_yaml {
@@ -1269,7 +571,7 @@ timeout: 30s
             write_case(
                 dir.path(),
                 "good",
-                "type: integration\nname: good\ntimeout: 1s\nprocedure: []\n",
+                "name: good\ntimeout: 1s\nsubject_os: [linux]\nparticipants: {adp: {type: agent-adp, subject: true}}\nprocedure: [{step: log_contains, on: adp, pattern: ready, timeout: 5s}]\n",
             );
 
             let error = crate::CASE_LOADER
@@ -1322,7 +624,7 @@ timeout: 30s
         let good = write_case(
             dir.path(),
             "good",
-            "type: integration\nname: good\ntimeout: 1s\nruntimes: [linux]\nprocedure: []\n",
+            "name: good\ntimeout: 1s\nsubject_os: [linux]\nparticipants: {adp: {type: agent-adp, subject: true}}\nprocedure: [{step: log_contains, on: adp, pattern: ready, timeout: 5s}]\n",
         );
 
         let error = crate::CASE_LOADER
@@ -1353,7 +655,7 @@ timeout: 30s
         let good = write_case(
             dir.path(),
             "good",
-            "type: integration\nname: good\ntimeout: 1s\nruntimes: [linux]\nprocedure: []\n",
+            "name: good\ntimeout: 1s\nsubject_os: [linux]\nparticipants: {adp: {type: agent-adp, subject: true}}\nprocedure: [{step: log_contains, on: adp, pattern: ready, timeout: 5s}]\n",
         );
 
         let cases = crate::CASE_LOADER.discover_cases(&[dir.path().to_path_buf()]).unwrap();
@@ -1400,7 +702,7 @@ timeout: 30s
             write_case(
                 &roots[0],
                 "shared",
-                "type: integration\nname: shared\ntimeout: 1s\nruntimes: [windows]\nprocedure: []\n",
+                "name: shared\ntimeout: 1s\nsubject_os: [windows]\nparticipants: {adp: {type: agent-adp, subject: true}}\nprocedure: [{step: log_contains, on: adp, pattern: ready, timeout: 5s}]\n",
             ).canonicalize().unwrap(),
             write_case(
                 &roots[1],
@@ -1458,7 +760,7 @@ timeout: 30s
                 write_case(
                     root,
                     name,
-                    &format!("type: integration\nname: {name}\ntimeout: 1s\nruntimes: [linux]\nprocedure: []\n"),
+                    &format!("name: {name}\ntimeout: 1s\nsubject_os: [linux]\nparticipants: {{adp: {{type: agent-adp, subject: true}}}}\nprocedure: [{{step: log_contains, on: adp, pattern: ready, timeout: 5s}}]\n"),
                 );
             }
         }
@@ -1487,7 +789,7 @@ timeout: 30s
             ),
             (
                 "integration",
-                "type: integration\nname: integration\ntimeout: 1s\nruntimes: [linux]\nprocedure: []\n".to_string(),
+                "name: integration\ntimeout: 1s\nsubject_os: [linux]\nparticipants: {adp: {type: agent-adp, subject: true}}\nprocedure: [{step: log_contains, on: adp, pattern: ready, timeout: 5s}]\n".to_string(),
             ),
             (
                 "first",
@@ -1502,21 +804,21 @@ timeout: 30s
             let case = crate::CASE_LOADER.load_file(&path).unwrap().remove(0);
             plans.push(planner().compile(case, Os::Windows).unwrap().into_plan().unwrap());
         }
-        let built = build_runners(&plans, Os::Windows, &RunnerArtifacts::Overrides(&[])).unwrap();
+        let built = build_runners(&plans, &RunnerArtifacts::Overrides(&[])).unwrap();
         assert_eq!(
             built.iter().map(|case| case.plan.case().name()).collect::<Vec<_>>(),
             ["second", "integration", "first"]
         );
         assert!(matches!(built[0].execution, Execution::Native));
-        assert!(matches!(built[1].execution, Execution::Runner(_)));
+        assert!(matches!(built[1].execution, Execution::Native));
         assert!(matches!(built[2].execution, Execution::Native));
         let overrides = ["unmatched=image:override".parse().unwrap()];
-        let error = build_runners(&plans, Os::Windows, &RunnerArtifacts::Overrides(&overrides))
+        let error = build_runners(&plans, &RunnerArtifacts::Overrides(&overrides))
             .err()
             .expect("unmatched overrides must still fail");
         assert_eq!(
             error.to_string(),
-            "No test in this run uses a container named 'unmatched'. Available: container."
+            "No test in this run uses a container named 'unmatched'. Available: no test in this run declares a container image."
         );
     }
 
@@ -1588,7 +890,7 @@ timeout: 30s
     fn runners_follow_the_order_of_the_cases_they_are_built_from() {
         let integration = create_test_case_dir(
             "integration",
-            "type: integration\nname: integration\ntimeout: 1s\nruntimes: [linux]\nprocedure: []\n",
+            "name: integration\ntimeout: 1s\nsubject_os: [linux]\nparticipants: {adp: {type: agent-adp, subject: true}}\nprocedure: [{step: log_contains, on: adp, pattern: ready, timeout: 5s}]\n",
         );
         let correctness = create_test_case_dir(
             "correctness",
@@ -1603,7 +905,7 @@ timeout: 30s
             .into_iter()
             .map(|case| planner().compile(case, Os::Linux).unwrap().into_plan().unwrap())
             .collect();
-        let runners = build_runners(&plans, Os::Linux, &RunnerArtifacts::Overrides(&entries)).unwrap();
+        let runners = build_runners(&plans, &RunnerArtifacts::Overrides(&entries)).unwrap();
         assert_eq!(runners.len(), plans.len());
         assert_eq!(
             plans.iter().map(|plan| plan.case().name()).collect::<Vec<_>>(),
@@ -1613,76 +915,9 @@ timeout: 30s
             runners.iter().map(|built| built.plan.case().name()).collect::<Vec<_>>(),
             ["integration", "correctness"]
         );
-        assert_eq!(
-            runners[0].runner().unwrap().images(),
-            BTreeMap::from([("container", "saluki-images/datadog-agent:testing-devel".to_string())])
-        );
+        assert!(matches!(runners[0].execution, Execution::Native));
         assert_eq!(runners[1].runner().unwrap().images()["baseline"], "base:override");
         assert_eq!(runners[1].runner().unwrap().images()["comparison"], "comp");
-    }
-
-    #[test]
-    fn windows_runtime_is_valid_for_integration_discovery() {
-        let base_dir = create_test_case_dir(
-            "windows-smoke",
-            r#"
-type: integration
-name: windows-smoke
-timeout: 10s
-runtimes: [windows]
-procedure: []
-"#,
-        );
-
-        let runners = discover_runners(&[base_dir.path().to_path_buf()], "windows", &[]).unwrap();
-
-        assert_eq!(runners.len(), 1);
-        assert_eq!(runners[0].plan.case().name(), "windows-smoke");
-        assert_eq!(runners[0].runner().unwrap().runtime(), "windows");
-    }
-
-    #[test]
-    fn windows_runtime_reports_harness_owned_container_image() {
-        let base_dir = create_test_case_dir(
-            "windows-smoke",
-            r#"
-type: integration
-name: windows-smoke
-timeout: 10s
-runtimes: [windows]
-procedure: []
-"#,
-        );
-
-        let runners = discover_runners(&[base_dir.path().to_path_buf()], "windows", &[]).unwrap();
-        let images = runners[0].runner().unwrap().images();
-
-        assert_eq!(
-            images.get("container"),
-            Some(&"saluki-images/agent-data-plane:testing-windows".to_string())
-        );
-    }
-
-    #[test]
-    fn linux_runtime_reports_harness_owned_container_image() {
-        let base_dir = create_test_case_dir(
-            "linux-smoke",
-            r#"
-type: integration
-name: linux-smoke
-timeout: 10s
-runtimes: [linux]
-procedure: []
-"#,
-        );
-
-        let runners = discover_runners(&[base_dir.path().to_path_buf()], "linux", &[]).unwrap();
-        let images = runners[0].runner().unwrap().images();
-
-        assert_eq!(
-            images.get("container"),
-            Some(&"saluki-images/datadog-agent:testing-devel".to_string())
-        );
     }
 
     #[test]
@@ -1793,29 +1028,6 @@ comparison:
     }
 
     #[test]
-    fn integration_case_env_rejects_an_unquoted_boolean_value() {
-        // Both suites load through one loader, so an integration case is held to the same rule as a
-        // correctness case: the value a process receives is whatever the YAML string says.
-        let yaml = r#"
-type: integration
-name: bare-bool-case
-timeout: 60s
-env:
-  DD_DATA_PLANE_ENABLED: true
-procedure:
-  - assertion: process_stable_for
-    duration: 5s
-"#;
-
-        let error = match serde_saphyr::from_str::<IntegrationConfig>(yaml) {
-            Ok(_) => panic!("an unquoted boolean env value should be rejected"),
-            Err(e) => format!("{e:?}"),
-        };
-
-        assert!(error.contains("DD_DATA_PLANE_ENABLED"), "unexpected error: {error}");
-    }
-
-    #[test]
     fn a_case_relative_path_anchors_at_the_case_directory() {
         let base_dir = create_test_case_dir(
             "dsd-paths",
@@ -1918,199 +1130,6 @@ variants:
             Some("true")
         );
         assert!(!variant.baseline.env.contains_key("DD_DATA_PLANE_ENABLED"));
-    }
-
-    fn dynamic_vars(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
-    }
-
-    #[test]
-    fn core_agent_config_set_resolves_placeholders_in_all_string_fields() {
-        let vars = dynamic_vars(&[("KEY", "resolved_key"), ("VAL", "resolved_val"), ("EP", "resolved_ep")]);
-        let mut action = ActionConfig::CoreAgentConfigSet {
-            key: "prefix.{{PANORAMIC_DYNAMIC_KEY}}".to_string(),
-            value: Value::String("{{PANORAMIC_DYNAMIC_VAL}}".to_string()),
-            endpoint: "http://agent/{{PANORAMIC_DYNAMIC_EP}}".to_string(),
-            timeout: HumanDuration(Duration::from_secs(1)),
-        };
-
-        assert!(
-            !crate::dynamic_vars::unresolved_action(&action).is_empty(),
-            "placeholders should be detected before resolution"
-        );
-        crate::dynamic_vars::resolve_action(&mut action, &vars);
-
-        let ActionConfig::CoreAgentConfigSet {
-            key, value, endpoint, ..
-        } = action
-        else {
-            panic!("expected core_agent_config_set action");
-        };
-        assert_eq!(key, "prefix.resolved_key");
-        assert_eq!(value, Value::String("resolved_val".to_string()));
-        assert_eq!(endpoint, "http://agent/resolved_ep");
-    }
-
-    #[test]
-    fn integration_case_parses_intake_and_send_step() {
-        let yaml = r#"
-type: integration
-name: intake-case
-timeout: 60s
-intake:
-  enabled: true
-procedure:
-  - action: dogstatsd_send
-    payload: "example.counter:3|c"
-    port: 58125
-"#;
-
-        let config: IntegrationConfig = serde_saphyr::from_str(yaml).expect("case should parse");
-
-        assert!(config.intake.enabled);
-        let AssertionStep::Action(ActionConfig::DogstatsdSend { payload, port, .. }) = &config.procedure[0] else {
-            panic!("first step should parse as a dogstatsd_send action");
-        };
-        assert_eq!(payload, "example.counter:3|c");
-        assert_eq!(*port, 58125);
-    }
-
-    #[test]
-    fn integration_case_without_intake_block_leaves_the_sidecar_disabled() {
-        let yaml = r#"
-type: integration
-name: no-intake-case
-timeout: 60s
-procedure:
-  - assertion: process_stable_for
-    duration: 5s
-"#;
-
-        let config: IntegrationConfig = serde_saphyr::from_str(yaml).expect("case should parse");
-
-        assert!(!config.intake.enabled);
-    }
-
-    #[test]
-    fn target_exec_resolves_placeholders_in_each_command_argument() {
-        let vars = dynamic_vars(&[("IP", "10.0.0.5")]);
-        let mut action = ActionConfig::TargetExec {
-            command: vec!["ping".to_string(), "{{PANORAMIC_DYNAMIC_IP}}".to_string()],
-            timeout: HumanDuration(Duration::from_secs(1)),
-        };
-
-        crate::dynamic_vars::resolve_action(&mut action, &vars);
-
-        let ActionConfig::TargetExec { command, .. } = action else {
-            panic!("expected target_exec action");
-        };
-        assert_eq!(command, vec!["ping".to_string(), "10.0.0.5".to_string()]);
-    }
-
-    #[test]
-    fn adp_cli_resolves_placeholders_in_each_argument() {
-        let vars = dynamic_vars(&[("LEVEL", "INFO")]);
-        let mut action = ActionConfig::AdpCli {
-            args: vec![
-                "debug".to_string(),
-                "set-metric-level".to_string(),
-                "{{PANORAMIC_DYNAMIC_LEVEL}}".to_string(),
-            ],
-            timeout: HumanDuration(Duration::from_secs(1)),
-        };
-
-        crate::dynamic_vars::resolve_action(&mut action, &vars);
-        assert!(crate::dynamic_vars::unresolved_action(&action).is_empty());
-
-        let ActionConfig::AdpCli { args, .. } = action else {
-            panic!("expected adp_cli action");
-        };
-        assert_eq!(args, vec!["debug", "set-metric-level", "INFO"]);
-    }
-
-    #[test]
-    fn core_agent_cli_resolves_placeholders_in_arguments_and_output_matcher() {
-        let vars = dynamic_vars(&[("COMMAND", "status"), ("MATCH", "Agent Version")]);
-        let mut action = ActionConfig::CoreAgentCli {
-            args: vec!["{{PANORAMIC_DYNAMIC_COMMAND}}".to_string()],
-            output_contains: Some("Built Against {{PANORAMIC_DYNAMIC_MATCH}}".to_string()),
-            timeout: HumanDuration(Duration::from_secs(1)),
-        };
-
-        assert!(!crate::dynamic_vars::unresolved_action(&action).is_empty());
-        crate::dynamic_vars::resolve_action(&mut action, &vars);
-        assert!(crate::dynamic_vars::unresolved_action(&action).is_empty());
-
-        let ActionConfig::CoreAgentCli {
-            args, output_contains, ..
-        } = action
-        else {
-            panic!("expected core_agent_cli action");
-        };
-        assert_eq!(args, vec!["status"]);
-        assert_eq!(output_contains.as_deref(), Some("Built Against Agent Version"));
-    }
-
-    #[test]
-    fn assertion_variants_resolve_placeholders_in_their_documented_fields() {
-        let vars = dynamic_vars(&[("IP", "10.0.0.5"), ("PORT", "8125")]);
-
-        let mut log = AssertionConfig::LogContains {
-            pattern: "listen:{{PANORAMIC_DYNAMIC_IP}}".to_string(),
-            regex: false,
-            timeout: HumanDuration(Duration::from_secs(1)),
-            stream: LogStream::default(),
-        };
-        crate::dynamic_vars::resolve_assertion(&mut log, &vars);
-        let AssertionConfig::LogContains { pattern, .. } = &log else {
-            panic!("expected log_contains");
-        };
-        assert_eq!(pattern, "listen:10.0.0.5");
-        assert!(crate::dynamic_vars::unresolved_assertion(&log).is_empty());
-
-        let mut http = AssertionConfig::HttpCheck {
-            endpoint: "http://{{PANORAMIC_DYNAMIC_IP}}:{{PANORAMIC_DYNAMIC_PORT}}/health".to_string(),
-            status: HttpStatusMatcher::Equal(200),
-            insecure_skip_verify: false,
-            timeout: HumanDuration(Duration::from_secs(1)),
-        };
-        crate::dynamic_vars::resolve_assertion(&mut http, &vars);
-        let AssertionConfig::HttpCheck { endpoint, .. } = &http else {
-            panic!("expected http_check");
-        };
-        assert_eq!(endpoint, "http://10.0.0.5:8125/health");
-
-        let mut file = AssertionConfig::FileContains {
-            path: "/run/{{PANORAMIC_DYNAMIC_IP}}.pid".to_string(),
-            pattern: Some("addr={{PANORAMIC_DYNAMIC_IP}}".to_string()),
-            regex: false,
-            timeout: HumanDuration(Duration::from_secs(1)),
-        };
-        crate::dynamic_vars::resolve_assertion(&mut file, &vars);
-        let AssertionConfig::FileContains { path, pattern, .. } = &file else {
-            panic!("expected file_contains");
-        };
-        assert_eq!(path, "/run/10.0.0.5.pid");
-        assert_eq!(pattern.as_deref(), Some("addr=10.0.0.5"));
-    }
-
-    #[test]
-    fn unresolved_placeholders_reports_a_reference_with_no_matching_variable() {
-        // A variant that references a variable that was never provided must still report the leftover
-        // placeholder — this is how the runner fails a test that used an undefined dynamic variable.
-        let mut assertion = AssertionConfig::LogContains {
-            pattern: "value={{PANORAMIC_DYNAMIC_MISSING}}".to_string(),
-            regex: false,
-            timeout: HumanDuration(Duration::from_secs(1)),
-            stream: LogStream::default(),
-        };
-
-        crate::dynamic_vars::resolve_assertion(&mut assertion, &dynamic_vars(&[("PRESENT", "x")]));
-
-        assert_eq!(
-            crate::dynamic_vars::unresolved_assertion(&assertion),
-            vec!["{{PANORAMIC_DYNAMIC_MISSING}}".to_string()]
-        );
     }
 
     #[test]
@@ -2369,11 +1388,6 @@ variants: [{name: one, env: {QUOTED: "true"}}]
             "[text]",
             "{key: text}",
         ] {
-            let integration = format!("name: strict\ntimeout: 1s\nprocedure: []\nenv: {{INVALID: {value}}}\n");
-            let error = serde_saphyr::from_str::<IntegrationConfig>(&integration).unwrap_err();
-            assert!(error
-                .to_string()
-                .contains("environment variable 'INVALID' must be a YAML string"));
             for (kind, section) in [
                 ("correctness", "baseline"),
                 ("correctness", "comparison"),
@@ -2413,72 +1427,6 @@ variants:
                     "{kind} {section} {value}: {error}"
                 );
             }
-        }
-    }
-
-    #[test]
-    fn discovery_scopes_integration_images_to_runtime_and_correctness_to_linux() {
-        let integration = create_test_case_dir(
-            "portable",
-            "type: integration\nname: portable\ntimeout: 1s\nruntimes: [linux, mac, windows]\nprocedure: []\n",
-        );
-        let correctness = create_test_case_dir(
-            "correctness",
-            r#"
-type: correctness
-runtime: docker
-analysis_mode: metrics
-baseline: {image: base}
-comparison: {image: comp}
-"#,
-        );
-        let dirs = [integration.path().to_path_buf(), correctness.path().to_path_buf()];
-        for (runtime, target) in [
-            (LINUX_RUNTIME, Some("saluki-images/datadog-agent:testing-devel")),
-            (WINDOWS_RUNTIME, Some("saluki-images/agent-data-plane:testing-windows")),
-            (MAC_RUNTIME, None),
-        ] {
-            let runners = discover_runners(&dirs, runtime, &[]).unwrap();
-            if runtime == LINUX_RUNTIME {
-                assert_eq!(runners[0].plan.case().name(), "correctness");
-                assert_eq!(runners[0].runner().unwrap().runtime(), "docker");
-                assert_eq!(runners.len(), 2);
-            } else {
-                assert_eq!(runners.len(), 1);
-            }
-            let integration = runners.last().unwrap();
-            assert_eq!(integration.plan.case().name(), "portable");
-            assert_eq!(integration.runner().unwrap().runtime(), runtime);
-            let expected: BTreeMap<&str, String> = target
-                .into_iter()
-                .map(|image| (TARGET_IMAGE_NAME, image.to_string()))
-                .collect();
-            assert_eq!(integration.runner().unwrap().images(), expected);
-        }
-        let override_entry = ["container=target:override".parse().unwrap()];
-        let error = discover_runners(&dirs, MAC_RUNTIME, &override_entry)
-            .err()
-            .expect("no eligible target image");
-        assert!(error
-            .to_string()
-            .contains("No test in this run uses a container named 'container'"));
-    }
-
-    #[test]
-    fn declared_runtime_validation_does_not_depend_on_the_active_runtime() {
-        for (runtimes, expected) in [
-            ("[]", "empty runtimes list"),
-            ("[linux, typo]", "unknown runtime 'typo'"),
-            ("[linux, first-typo, second-typo]", "unknown runtime 'first-typo'"),
-        ] {
-            let yaml = format!("type: integration\nname: invalid\ntimeout: 1s\nruntimes: {runtimes}\nprocedure: []\n");
-            let dir = create_test_case_dir("invalid", &yaml);
-            let case_dir = dir.path().join("invalid");
-            let error = crate::CASE_LOADER
-                .load_file(&case_dir.join("config.yaml"))
-                .err()
-                .expect("invalid declared runtime");
-            assert!(error.to_string().contains(expected), "{error}");
         }
     }
 

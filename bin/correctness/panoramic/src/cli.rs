@@ -1,7 +1,7 @@
 //! Defines Panoramic's command-line interface.
 
 use std::num::NonZeroUsize;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use airlock::driver::DEFAULT_ALPINE_IMAGE;
 use chrono::Local;
@@ -10,7 +10,6 @@ use clap::{
     Args, Parser, Subcommand, ValueEnum,
 };
 use panoramic_core::layout::Os;
-use panoramic_participants::AgentAdp;
 
 use crate::config::{
     os_for_runtime, runner_artifacts::LegacyArtifactInputs, runtime_for_os, LINUX_RUNTIME, MAC_RUNTIME, WINDOWS_RUNTIME,
@@ -29,10 +28,6 @@ Environment variables:
                  non-standard locations are probed.
   RUST_LOG       tracing-subscriber filter, for expert use. When set, it takes precedence over
                  --log-level and applies to every crate, including external dependencies.";
-
-fn default_core_agent_binary_path() -> PathBuf {
-    crate::config::runner_artifacts::core_agent_binary_path(Path::new(AgentAdp::AGENT_HOST_INSTALL.local_default))
-}
 
 /// Crates that `--log-level` applies to: Panoramic itself and the first-party libraries it links.
 ///
@@ -59,9 +54,8 @@ fn subject_os_parser() -> impl TypedValueParser<Value = Os> {
 #[derive(Args, Debug)]
 pub struct SubjectOsArgs {
     /// Subject OS selection using runtime names: `linux`, `mac` or `windows`;
-    /// `mac` selects `macos`. Integration cases run only if their `runtimes` list
-    /// contains it, and participant cases only if their `subject_os` list contains
-    /// its OS. Defaults to the host's OS. Correctness cases run only for subject OS
+    /// `mac` selects `macos`. Participant cases run only if their `subject_os` list
+    /// contains its OS. Defaults to the host's OS. Correctness cases run only for subject OS
     /// `linux`; other selections report them as skipped.
     #[arg(long, verbatim_doc_comment, value_parser = runtime_parser())]
     pub runtime: Option<Os>,
@@ -135,8 +129,8 @@ impl LogLevel {
 //
 // Panoramic-owned settings should preferably be passed by command-line argument. If an
 // environment variable is desired, it should be prefixed with PANORAMIC_. For example:
-// CLI arg: --adp-binary-path
-// ENV var: PANORAMIC_ADP_BINARY_PATH
+// CLI arg: --alpine-image
+// ENV var: PANORAMIC_ALPINE_IMAGE
 //
 // Saluki-repo-owned settings need not have a PANORAMIC_ prefix if they are shared with other
 // processes, build or CI environments. These SHOULD have an addressable command-line argument.
@@ -276,8 +270,8 @@ pub struct RunCommand {
     /// Artifact manifest (TOML) binding artifact roles to image references and paths.
     /// Roles it omits use their local defaults; a role no participant type, backend or
     /// typed case schema declares is an error. Every needed artifact is verified
-    /// before any case starts. Explicit --image-override, --adp-binary-path,
-    /// --core-agent-binary-path and --alpine-image values, including their PANORAMIC_*
+    /// before any case starts. Explicit --image-override and --alpine-image values,
+    /// including their PANORAMIC_*
     /// environment variables, must name the same reference as the role they feed,
     /// or the run exits 2.
     #[arg(long, value_name = "FILE", verbatim_doc_comment)]
@@ -308,14 +302,6 @@ pub struct RunCommand {
     #[arg(short = 'l', long, env = "PANORAMIC_LOG_DIR", verbatim_doc_comment)]
     log_dir: Option<PathBuf>,
 
-    /// Directory whose contents are read-only bind mounted into every target
-    /// container panoramic launches (not millstone or datadog-intake). The directory
-    /// is treated as the container root: `<mounts-dir>/etc/foo` maps to `/etc/foo`.
-    /// Defaults to `bin/correctness/panoramic/mounts/` in the Saluki workspace where
-    /// this binary was compiled
-    #[arg(long, default_value_os_t = default_mounts_dir(), verbatim_doc_comment)]
-    mounts_dir: PathBuf,
-
     /// Name of the kind cluster to create or reuse for kind-runtime tests.
     #[arg(long, default_value = crate::kind::DEFAULT_CLUSTER_NAME)]
     pub kind_cluster_name: String,
@@ -324,18 +310,6 @@ pub struct RunCommand {
     /// local iteration)
     #[arg(long, verbatim_doc_comment)]
     pub no_delete_kind_cluster: bool,
-
-    #[arg(long, env = "PANORAMIC_ADP_BINARY_PATH", help = format!(
-        "`agent-data-plane` binary that host-process (`runtime: mac`) tests spawn. A\nrelative path resolves against the current directory [default: {}]",
-        AgentAdp::ADP_HOST_BINARY.local_default
-    ))]
-    adp_binary_path: Option<PathBuf>,
-
-    #[arg(long, env = "PANORAMIC_CORE_AGENT_BINARY_PATH", help = format!(
-        "Datadog Agent binary that converged host-process tests spawn. Point this at\nanother install (a system-wide /opt/datadog-agent, for example) to test\nagainst it [default: {}]",
-        default_core_agent_binary_path().display()
-    ))]
-    core_agent_binary_path: Option<PathBuf>,
 
     #[arg(long, env = "PANORAMIC_ALPINE_IMAGE", help = format!(
         "Alpine image for the short-lived container that fixes up shared-volume\npermissions. CI points this at an internal registry [default: {}]",
@@ -363,15 +337,6 @@ impl RunCommand {
     /// Collects the settings that the runner hands to every test.
     pub(crate) fn runner_settings(&self) -> RunnerSettings {
         RunnerSettings {
-            mounts_dir: self.mounts_dir.clone(),
-            adp_binary_path: self
-                .adp_binary_path
-                .clone()
-                .unwrap_or_else(|| AgentAdp::ADP_HOST_BINARY.local_default.into()),
-            core_agent_binary_path: self
-                .core_agent_binary_path
-                .clone()
-                .unwrap_or_else(default_core_agent_binary_path),
             alpine_image: self.alpine_image.clone().unwrap_or_else(|| DEFAULT_ALPINE_IMAGE.into()),
         }
     }
@@ -380,8 +345,6 @@ impl RunCommand {
     pub(crate) fn legacy_artifact_inputs(&self) -> LegacyArtifactInputs<'_> {
         LegacyArtifactInputs {
             image_overrides: &self.image_overrides,
-            adp_binary_path: self.adp_binary_path.as_deref(),
-            core_agent_binary_path: self.core_agent_binary_path.as_deref(),
             alpine_image: self.alpine_image.as_deref(),
         }
     }
@@ -397,10 +360,6 @@ impl RunCommand {
         let timestamp = Local::now().format("%Y%m%d-%H%M%S");
         base.join(format!("panoramic-{}", timestamp))
     }
-}
-
-fn default_mounts_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("mounts")
 }
 
 /// List available integration tests.
@@ -430,9 +389,9 @@ pub struct ListCommand {
 #[cfg(test)]
 mod tests {
     use std::ffi::OsStr;
+    use std::path::Path;
 
     use clap::CommandFactory as _;
-    use panoramic_core::artifact::ArtifactKind;
 
     use super::*;
 
@@ -443,8 +402,6 @@ mod tests {
     /// Panoramic's own settings, each an argument on `run` with a `PANORAMIC_*` fallback that clap
     /// renders next to the flag.
     const PANORAMIC_ENV_FALLBACKS: &[(&str, &str)] = &[
-        ("adp_binary_path", "PANORAMIC_ADP_BINARY_PATH"),
-        ("core_agent_binary_path", "PANORAMIC_CORE_AGENT_BINARY_PATH"),
         ("alpine_image", "PANORAMIC_ALPINE_IMAGE"),
         ("log_dir", "PANORAMIC_LOG_DIR"),
         ("image_overrides", "PANORAMIC_IMAGE_OVERRIDES"),
@@ -697,7 +654,6 @@ mod tests {
 
         assert_eq!(cmd.parallelism.get(), 4);
         assert!(matches!(cmd.output, OutputFormat::Text));
-        assert_eq!(cmd.mounts_dir, default_mounts_dir());
         assert_eq!(cmd.kind_cluster_name, crate::kind::DEFAULT_CLUSTER_NAME);
         assert!(cmd.subject_os.runtime.is_none());
         assert!(cmd.tests.is_none());
@@ -815,30 +771,7 @@ mod tests {
         let cli = Cli::try_parse_from(["panoramic", "run", "-d", "cases"]).expect("minimal run should parse");
         let settings = run_command_of(&cli).runner_settings();
 
-        assert_eq!(settings.mounts_dir, default_mounts_dir());
-        assert_eq!(
-            settings.adp_binary_path,
-            Path::new(AgentAdp::ADP_HOST_BINARY.local_default)
-        );
-        let ArtifactKind::Install { main_binary } = AgentAdp::AGENT_HOST_INSTALL.kind else {
-            panic!("the Core Agent role must declare an install");
-        };
-        assert_eq!(
-            settings.core_agent_binary_path,
-            Path::new(AgentAdp::AGENT_HOST_INSTALL.local_default).join(main_binary)
-        );
         assert_eq!(settings.alpine_image, DEFAULT_ALPINE_IMAGE);
-    }
-
-    #[test]
-    fn run_help_shows_the_core_agent_binary_default() {
-        let help = Cli::command()
-            .find_subcommand_mut("run")
-            .unwrap()
-            .render_long_help()
-            .to_string();
-        let path = Path::new("/tmp/saluki-dda/datadog-agent").join("bin/agent/agent");
-        assert!(help.contains(&format!("[default: {}]", path.display())), "{help}");
     }
 
     #[test]
@@ -848,22 +781,13 @@ mod tests {
             "run",
             "-d",
             "cases",
-            "--adp-binary-path",
-            "/build/adp",
-            "--core-agent-binary-path",
-            "/build/agent",
             "--alpine-image",
             "registry.example/alpine:3.20",
-            "--mounts-dir",
-            "/build/mounts",
         ])
         .expect("run with explicit paths should parse");
         let settings = run_command_of(&cli).runner_settings();
 
-        assert_eq!(settings.adp_binary_path, Path::new("/build/adp"));
-        assert_eq!(settings.core_agent_binary_path, Path::new("/build/agent"));
         assert_eq!(settings.alpine_image, "registry.example/alpine:3.20");
-        assert_eq!(settings.mounts_dir, Path::new("/build/mounts"));
     }
 
     #[test]
@@ -936,113 +860,22 @@ mod tests {
     }
 
     #[test]
-    fn legacy_artifact_flags_combine_with_run_artifacts() {
-        use panoramic_core::{
-            artifact::{ArtifactBinding, BindingSource},
-            backend::FIXUP_IMAGE,
-        };
-
-        use crate::{
-            config::{
-                runner_artifacts::{BoundArtifacts, RunnerArtifacts},
-                IntegrationConfig,
-            },
-            integration::IntegrationTestCase,
-        };
-
-        let bound = BoundArtifacts::new(
-            [
-                AgentAdp::ADP_HOST_BINARY,
-                AgentAdp::AGENT_HOST_INSTALL,
-                FIXUP_IMAGE,
-                AgentAdp::LINUX_IMAGE,
-            ]
-            .map(|role| ArtifactBinding {
-                role,
-                reference: role.local_default.into(),
-                source: BindingSource::LocalDefault,
-            })
-            .into(),
-        );
-        let config: IntegrationConfig = serde_saphyr::from_str("name: case\ntimeout: 1s\nprocedure: []\n").unwrap();
-        let runner = IntegrationTestCase::new(
-            config,
-            &RunnerArtifacts::Overrides(&[]).integration_settings(LINUX_RUNTIME),
-        );
-        let mut command = Cli::command();
-        command.build();
-        let run = command.find_subcommand("run").unwrap();
-        for (id, env) in PANORAMIC_ENV_FALLBACKS.iter().filter(|(id, _)| *id != "log_dir") {
-            let arg = run.get_arguments().find(|arg| arg.get_id() == id).unwrap();
-            assert_eq!(arg.get_env(), Some(OsStr::new(env)));
-            assert!(
-                !run.get_arg_conflicts_with(arg)
-                    .iter()
-                    .any(|arg| arg.get_id() == "artifacts"),
-                "{id}"
-            );
-            assert!(arg.get_default_values().is_empty(), "{id}");
-
-            let long = arg.get_long().unwrap();
-            let env = arg.get_env().unwrap().to_str().unwrap();
-            let (name, value) = if *id == "image_overrides" {
-                (" container", "container=different")
-            } else {
-                ("", "different")
-            };
-            let Command::Run(cmd) = Cli::try_parse_from([
-                "panoramic",
-                "run",
-                "--artifacts",
-                "artifacts.toml",
-                &format!("--{long}"),
-                value,
-            ])
-            .unwrap()
-            .command
-            else {
-                panic!("expected run")
-            };
-            let error = bound
-                .check_legacy_inputs(&cmd.legacy_artifact_inputs(), Os::Linux, &[&runner])
-                .unwrap_err()
-                .to_string();
-            let label = format!("--{long}{name} ({env})");
-            assert!(
-                error.contains(&format!("\n  - {label} names 'different' for role '")),
-                "{error}"
-            );
-        }
-    }
-
-    #[test]
     fn legacy_artifact_inputs_contain_only_explicitly_given_values() {
         let cli = Cli::try_parse_from(["panoramic", "run"]).unwrap();
         let inputs = run_command_of(&cli).legacy_artifact_inputs();
         assert!(inputs.image_overrides.is_empty());
-        assert_eq!(inputs.adp_binary_path, None);
-        assert_eq!(inputs.core_agent_binary_path, None);
         assert_eq!(inputs.alpine_image, None);
 
         let cli = Cli::try_parse_from([
             "panoramic",
             "run",
-            "--adp-binary-path",
-            "./adp",
-            "--core-agent-binary-path",
-            "install/bin/agent/agent",
             "--alpine-image",
             "registry.example/alpine:latest",
             "--image-override",
-            "container=agent:bound,intake=tools:bound",
+            "comparison=agent:bound,datadog-intake=tools:bound",
         ])
         .unwrap();
         let inputs = run_command_of(&cli).legacy_artifact_inputs();
-        assert_eq!(inputs.adp_binary_path, Some(Path::new("./adp")));
-        assert_eq!(
-            inputs.core_agent_binary_path,
-            Some(Path::new("install/bin/agent/agent"))
-        );
         assert_eq!(inputs.alpine_image, Some("registry.example/alpine:latest"));
         assert_eq!(
             inputs
@@ -1050,7 +883,7 @@ mod tests {
                 .iter()
                 .map(|entry| (entry.name.as_str(), entry.image.as_str()))
                 .collect::<Vec<_>>(),
-            [("container", "agent:bound"), ("intake", "tools:bound")]
+            [("comparison", "agent:bound"), ("datadog-intake", "tools:bound")]
         );
     }
 
@@ -1061,8 +894,6 @@ mod tests {
             "run",
             "--artifacts",
             "artifacts.toml",
-            "--mounts-dir",
-            "mounts",
             "--kind-cluster-name",
             "cluster",
             "-l",
@@ -1072,7 +903,6 @@ mod tests {
         .unwrap();
         let cmd = run_command_of(&cli);
         assert_eq!(cmd.artifacts.as_deref(), Some(Path::new("artifacts.toml")));
-        assert_eq!(cmd.mounts_dir, Path::new("mounts"));
         assert_eq!(cmd.kind_cluster_name, "cluster");
         assert_eq!(cmd.log_dir.as_deref(), Some(Path::new("logs")));
         assert!(cmd.no_tui);

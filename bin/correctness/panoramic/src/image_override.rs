@@ -116,25 +116,7 @@ fn available_names(tests: &[&dyn Test]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::IntegrationConfig;
     use crate::correctness::config::Config as CorrectnessConfig;
-
-    /// An integration case scoped to the linux runtime, with the intake sidecar enabled.
-    fn integration_case(overrides: &ImageOverrides<'_>) -> Box<dyn Test> {
-        let case: IntegrationConfig = serde_saphyr::from_str(
-            r#"
-name: integration-case
-timeout: 10s
-intake:
-  enabled: true
-procedure: []
-"#,
-        )
-        .expect("integration case should parse");
-        let settings = crate::config::runner_artifacts::RunnerArtifacts::Overrides(overrides.entries)
-            .integration_settings(crate::config::LINUX_RUNTIME);
-        Box::new(crate::integration::IntegrationTestCase::new(case, &settings))
-    }
 
     fn correctness_case(overrides: &ImageOverrides<'_>) -> Box<dyn Test> {
         let mut case: CorrectnessConfig = serde_saphyr::from_str(
@@ -179,7 +161,7 @@ comparison:
     #[test]
     fn every_name_a_test_declares_can_be_overridden() {
         let defaults = ImageOverrides::new(&[]);
-        let names: Vec<String> = [integration_case(&defaults), correctness_case(&defaults)]
+        let names: Vec<String> = [correctness_case(&defaults)]
             .iter()
             .flat_map(|test| test.images().into_keys().map(str::to_string))
             .collect();
@@ -193,8 +175,8 @@ comparison:
         entries.sort_by(|a, b| a.name.cmp(&b.name));
         entries.dedup_by(|a, b| a.name == b.name);
         let overrides = ImageOverrides::new(&entries);
-        let tests = [integration_case(&overrides), correctness_case(&overrides)];
-        overrides.validate(&[tests[0].as_ref(), tests[1].as_ref()]).unwrap();
+        let tests = [correctness_case(&overrides)];
+        overrides.validate(&[tests[0].as_ref()]).unwrap();
         for test in tests {
             for image in test.images().values() {
                 assert_eq!(image, "registry.example.com/replacement:v1");
@@ -203,30 +185,23 @@ comparison:
     }
 
     #[test]
-    fn an_override_reaches_only_the_tests_declaring_its_name() {
-        let entries = [
-            "millstone=registry.example.com/tools:abc123".parse().unwrap(),
-            "container=registry.example.com/agent:abc123".parse().unwrap(),
-        ];
+    fn an_override_changes_only_the_named_image() {
+        let entries = ["millstone=registry.example.com/tools:abc123".parse().unwrap()];
         let overrides = ImageOverrides::new(&entries);
-        let tests = [integration_case(&overrides), correctness_case(&overrides)];
+        let tests = [correctness_case(&overrides)];
         overrides
-            .validate(&[tests[0].as_ref(), tests[1].as_ref()])
-            .expect("both names are declared in this run");
+            .validate(&[tests[0].as_ref()])
+            .expect("the name is declared in this run");
 
         assert_eq!(
-            tests[0].images().get("container"),
-            Some(&"registry.example.com/agent:abc123".to_string())
-        );
-        assert_eq!(
-            tests[1].images().get("millstone"),
+            tests[0].images().get("millstone"),
             Some(&"registry.example.com/tools:abc123".to_string())
         );
 
         // The correctness case keeps the image its own file declares for a container the overrides
         // did not name.
         assert_eq!(
-            tests[1].images().get("baseline"),
+            tests[0].images().get("baseline"),
             Some(&"saluki-images/datadog-agent:testing-release".to_string())
         );
     }

@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use super::{
     create_case_dirs, read_text, repository_root, Inventory, INTEGRATION, JSON_PATH, NATIVE, OLD, PARTICIPANTS,
 };
-use crate::config::{os_for_runtime, tests::write_case, ContainerConfig, IntakeConfig};
+use crate::config::{os_for_runtime, tests::write_case};
 
 const LOGGING_CASES: [&str; 7] = [
     "adp-logging-default-path",
@@ -50,12 +50,11 @@ fn participant_twin(config: &Value) -> Result<(String, bool), String> {
         .as_object_mut()
         .ok_or("container must be an object")?
         .remove("exposed_ports");
-    let mut default_container = serde_json::to_value(ContainerConfig::default()).unwrap();
-    default_container.as_object_mut().unwrap().remove("exposed_ports");
+    let default_container = json!({"entrypoint": [], "command": [], "files": [], "host_cgroup_namespace": false});
     if container != default_container {
         return Err("container settings other than exposed_ports must be default".into());
     }
-    if config["intake"] != serde_json::to_value(IntakeConfig::default()).unwrap() {
+    if config["intake"] != json!({"enabled": false}) {
         return Err("intake settings must be default".into());
     }
     let subject_os = config["runtimes"]
