@@ -21,9 +21,9 @@ use crate::tools::{INTAKE_HOST_BINARY, TOOLS_LINUX_IMAGE, TOOLS_WINDOWS_IMAGE};
 
 /// The mock Datadog intake, with independent telemetry storage per participant.
 ///
-/// The `dump` operation accepts exactly `{"kind": "metrics"}`, `{"kind": "service_checks"}` or
-/// `{"kind": "dogstatsd_forwarded"}`. Metrics and service checks retain the intake's JSON arrays.
-/// Forwarded packets are arrays of byte values, one array per packet, in receipt order.
+/// The `dump` operation accepts a `kind`: `events`, `metrics`, `service_checks`, `spans`, `trace_stats`,
+/// or `dogstatsd_forwarded`. Telemetry retains the intake's JSON shape; forwarded packets become arrays
+/// of byte values, one array per packet, in receipt order.
 pub struct DatadogIntake;
 
 impl DatadogIntake {
@@ -140,12 +140,15 @@ impl Operation for Dump {
             .and_then(|args| args.get("kind"))
             .and_then(Value::as_str);
         let path = match kind {
+            Some("events") => "/events/dump",
             Some("metrics") => "/metrics/dump",
+            Some("spans") => "/traces/dump_spans",
+            Some("trace_stats") => "/traces/dump_stats",
             Some("service_checks") => "/service_checks/dump",
             Some("dogstatsd_forwarded") => "/dogstatsd-forwarding/dump",
             _ => {
                 return Err(HandleError::Harness {
-                    message: "dump requires exactly {\"kind\": \"metrics\"|\"service_checks\"|\"dogstatsd_forwarded\"}"
+                    message: "dump requires exactly {\"kind\": \"events\"|\"metrics\"|\"service_checks\"|\"spans\"|\"trace_stats\"|\"dogstatsd_forwarded\"}"
                         .into(),
                 })
             }
@@ -155,6 +158,17 @@ impl Operation for Dump {
             return Err(HandleError::Product {
                 message: format!("intake dump at '{path}' returned HTTP {}", response.status),
             });
+        }
+        if kind == Some("trace_stats") {
+            let value: Value = serde_json::from_slice(&response.body).map_err(|_| HandleError::Product {
+                message: format!("intake dump at '{path}' returned invalid JSON"),
+            })?;
+            if !value.is_object() {
+                return Err(HandleError::Product {
+                    message: format!("intake dump at '{path}' returned an invalid JSON object"),
+                });
+            }
+            return Ok(value);
         }
         let values: Vec<Value> = serde_json::from_slice(&response.body).map_err(|_| HandleError::Product {
             message: format!("intake dump at '{path}' returned an invalid JSON array"),
@@ -380,12 +394,68 @@ mod tests {
     #[tokio::test]
     async fn dump_returns_empty_snapshots_for_every_kind() {
         for (kind, path) in [
+            ("events", "/events/dump"),
             ("metrics", "/metrics/dump"),
+            ("spans", "/traces/dump_spans"),
             ("service_checks", "/service_checks/dump"),
             ("dogstatsd_forwarded", "/dogstatsd-forwarding/dump"),
         ] {
             assert_eq!(dump_response(kind, path, 200, b"[]").await.unwrap(), json!([]));
         }
+    }
+
+    #[tokio::test]
+    async fn dump_preserves_events_spans_and_trace_statistics() {
+        for (kind, path, value) in [
+            (
+                "events",
+                "/events/dump",
+                json!([{"title": "example", "text": "payload", "tags": ["env:test"]}]),
+            ),
+            (
+                "spans",
+                "/traces/dump_spans",
+                json!([{"trace_id": 1, "span_id": 2, "meta": {"key": "value"}}]),
+            ),
+            (
+                "trace_stats",
+                "/traces/dump_stats",
+                json!({"stats": [], "extra": {"preserved": true}}),
+            ),
+        ] {
+            assert_eq!(
+                dump_response(kind, path, 200, &serde_json::to_vec(&value).unwrap())
+                    .await
+                    .unwrap(),
+                value
+            );
+        }
+        for body in [b"[]".as_slice(), b"null", b"true", b"42"] {
+            assert_eq!(
+                dump_response("trace_stats", "/traces/dump_stats", 200, body)
+                    .await
+                    .unwrap_err(),
+                HandleError::Product {
+                    message: "intake dump at '/traces/dump_stats' returned an invalid JSON object".into(),
+                }
+            );
+        }
+        assert_eq!(
+            dump_response("trace_stats", "/traces/dump_stats", 200, b"not JSON")
+                .await
+                .unwrap_err(),
+            HandleError::Product {
+                message: "intake dump at '/traces/dump_stats' returned invalid JSON".into(),
+            }
+        );
+        assert_eq!(
+            dump_response("trace_stats", "/traces/dump_stats", 503, b"body-secret")
+                .await
+                .unwrap_err(),
+            HandleError::Product {
+                message: "intake dump at '/traces/dump_stats' returned HTTP 503".into(),
+            }
+        );
     }
 
     #[tokio::test]
@@ -413,7 +483,7 @@ mod tests {
             assert_eq!(
                 error,
                 HandleError::Harness {
-                    message: "dump requires exactly {\"kind\": \"metrics\"|\"service_checks\"|\"dogstatsd_forwarded\"}"
+                    message: "dump requires exactly {\"kind\": \"events\"|\"metrics\"|\"service_checks\"|\"spans\"|\"trace_stats\"|\"dogstatsd_forwarded\"}"
                         .into(),
                 },
                 "{args}"
@@ -425,7 +495,9 @@ mod tests {
     #[tokio::test]
     async fn dump_reports_unsuccessful_statuses_without_disclosing_the_body() {
         for (kind, path) in [
+            ("events", "/events/dump"),
             ("metrics", "/metrics/dump"),
+            ("spans", "/traces/dump_spans"),
             ("service_checks", "/service_checks/dump"),
             ("dogstatsd_forwarded", "/dogstatsd-forwarding/dump"),
         ] {
@@ -444,7 +516,9 @@ mod tests {
     #[tokio::test]
     async fn dump_reports_invalid_json_arrays_without_disclosing_the_body() {
         for (kind, path) in [
+            ("events", "/events/dump"),
             ("metrics", "/metrics/dump"),
+            ("spans", "/traces/dump_spans"),
             ("service_checks", "/service_checks/dump"),
             ("dogstatsd_forwarded", "/dogstatsd-forwarding/dump"),
         ] {

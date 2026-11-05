@@ -4,6 +4,7 @@ use panoramic_core::step::StepFields;
 
 use crate::{
     cli::Cli,
+    compare::Compare,
     config_key_equals::ConfigKeyEquals,
     config_set::ConfigSet,
     dogstatsd_replay::DogstatsdReplay,
@@ -27,6 +28,7 @@ use crate::{
 /// Panics if `name` is not a registered step.
 pub fn valid_fields(name: &str) -> StepFields {
     let yaml = match name {
+        Compare::NAME => "kind: metrics\nsubject: subject\nbaseline: baseline",
         Cli::NAME => "on: subject\nprocess: main\nargs: []\ntimeout: 30s",
         ConfigSet::NAME => "on: subject\nkey: log_level\nvalue: debug\ntimeout: 30s",
         DogstatsdReplay::NAME => "on: subject\nendpoint: udp\npayloads: [{data: packet}]\ncapture_duration: 1s\nstats_duration: 1s\nexpected_metrics: [metric]\ntimeout: 30s",

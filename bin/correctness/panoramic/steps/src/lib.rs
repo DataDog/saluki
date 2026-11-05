@@ -10,6 +10,7 @@ use panoramic_core::step::StepFactory;
 
 mod attempts;
 mod cli;
+pub mod compare;
 mod config_key_equals;
 mod config_set;
 mod dogstatsd_replay;
@@ -30,6 +31,7 @@ mod send;
 /// Steps available to case files, sorted by name.
 pub const REGISTERED_STEPS: &[&dyn StepFactory] = &[
     &cli::CliFactory,
+    &compare::CompareFactory,
     &config_key_equals::ConfigKeyEqualsFactory,
     &config_set::ConfigSetFactory,
     &dogstatsd_replay::DogstatsdReplayFactory,
@@ -100,6 +102,7 @@ mod tests {
     use super::*;
     use crate::{
         cli::Cli,
+        compare::Compare,
         config_key_equals::ConfigKeyEquals,
         config_set::ConfigSet,
         dogstatsd_replay::DogstatsdReplay,
@@ -135,6 +138,9 @@ mod tests {
     #[tokio::test]
     async fn every_step_errors_when_its_participant_did_not_start() {
         for factory in REGISTERED_STEPS {
+            if factory.name() == Compare::NAME {
+                continue;
+            }
             let report = panoramic_core::step::test_support::run_step_offering(
                 *factory,
                 &valid_fields(factory.name()),
@@ -163,10 +169,14 @@ mod tests {
     fn every_registered_step_uses_its_declared_name_and_budget() {
         for factory in REGISTERED_STEPS {
             let mut fields = valid_fields(factory.name());
-            fields.insert(duration_field(factory.name()).into(), Value::String("7s".into()));
+            if factory.name() != Compare::NAME {
+                fields.insert(duration_field(factory.name()).into(), Value::String("7s".into()));
+            }
             let step = factory.build(&fields).unwrap();
             assert_eq!(step.name(), factory.name());
-            let expected = if factory.name() == DogstatsdReplay::NAME {
+            let expected = if factory.name() == Compare::NAME {
+                std::time::Duration::from_secs(180)
+            } else if factory.name() == DogstatsdReplay::NAME {
                 std::time::Duration::from_millis(29_050)
             } else {
                 std::time::Duration::from_secs(7)
@@ -182,6 +192,7 @@ mod tests {
             names,
             [
                 "cli",
+                "compare",
                 "config_key_equals",
                 "config_set",
                 "dogstatsd_replay",
@@ -211,6 +222,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             [
                 Cli::NAME,
+                Compare::NAME,
                 ConfigKeyEquals::NAME,
                 ConfigSet::NAME,
                 DogstatsdReplay::NAME,
@@ -239,6 +251,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             [
                 (Cli::NAME, StepKind::Action),
+                (Compare::NAME, StepKind::Assertion),
                 (ConfigKeyEquals::NAME, StepKind::Assertion),
                 (ConfigSet::NAME, StepKind::Action),
                 (DogstatsdReplay::NAME, StepKind::Action),
@@ -264,6 +277,10 @@ mod tests {
             let mut fields = valid_fields(factory.name());
             let step = factory.build(&fields).unwrap();
             let needs = match factory.name() {
+                Compare::NAME => vec![
+                    Need::Operation("subject".into(), "dump".into()),
+                    Need::Operation("baseline".into(), "dump".into()),
+                ],
                 Cli::NAME => vec![Need::Operation("subject".into(), "cli_main".into())],
                 ConfigKeyEquals::NAME => vec![Need::Operation("subject".into(), "config_dump".into())],
                 ConfigSet::NAME => vec![Need::Operation("subject".into(), "config_set".into())],
@@ -301,6 +318,7 @@ mod tests {
     fn string_fields_reject_yaml_booleans_and_numbers() {
         for factory in REGISTERED_STEPS {
             let string_fields: &[&str] = match factory.name() {
+                Compare::NAME => &["subject", "baseline"],
                 Cli::NAME => &["on", "process", "output_contains"],
                 ConfigKeyEquals::NAME | ConfigSet::NAME => &["on", "key"],
                 DogstatsdReplay::NAME => &["on", "endpoint"],
@@ -339,6 +357,9 @@ mod tests {
     fn durations_must_be_strings() {
         for factory in REGISTERED_STEPS {
             let mut fields = valid_fields(factory.name());
+            if factory.name() == Compare::NAME {
+                continue;
+            }
             let field = duration_field(factory.name());
             for value in ["30", "true"] {
                 fields.extend(serde_saphyr::from_str::<StepFields>(&format!("{field}: {value}")).unwrap());

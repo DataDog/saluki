@@ -1,7 +1,9 @@
+//! Telemetry normalization and comparison diagnostics.
+
 use saluki_error::GenericError;
 use serde::Deserialize;
 
-use crate::intake::CollectedData;
+use crate::compare::intake::CollectedData;
 
 mod dogstatsd_forwarding;
 mod events;
@@ -10,8 +12,7 @@ mod service_checks;
 mod traces;
 
 /// Types of analysis to perform on collected data
-#[cfg_attr(test, derive(serde::Serialize))]
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AnalysisMode {
     /// Compares events between the baseline and comparison targets.

@@ -4478,7 +4478,6 @@ version = "0.1.0"
 dependencies = [
  "airlock",
  "async-trait",
- "base64 0.23.1",
  "bollard",
  "chrono",
  "clap",
@@ -4500,15 +4499,12 @@ dependencies = [
  "serde",
  "serde-saphyr 1.3.0",
  "serde_json",
- "stele",
  "tempfile",
  "tokio",
  "tokio-util",
  "tracing",
  "tracing-subscriber",
- "treediff",
  "vergen-gix",
- "zstd",
 ]
 
 [[package]]
@@ -4539,6 +4535,7 @@ dependencies = [
  "serde_json",
  "serde_path_to_error",
  "sha2",
+ "simdutf8",
  "snafu",
  "tempfile",
  "tokio",
@@ -4583,18 +4580,25 @@ name = "panoramic-steps"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.23.1",
+ "datadog-protos",
  "futures",
  "panoramic-core",
  "regex",
  "rustls",
+ "saluki-common",
  "saluki-error",
  "saluki-tls",
  "serde",
  "serde-saphyr 1.3.0",
  "serde_json",
  "stele",
+ "tempfile",
  "tokio",
  "tokio-rustls",
+ "tracing",
+ "treediff",
+ "zstd",
 ]
 
 [[package]]

@@ -32,7 +32,7 @@ pub(super) async fn run(plan: ParticipantPlan<'_>, running: &BTreeMap<String, St
             )
         })
         .collect();
-    let cx = StepContext::new(plan, participants);
+    let cx = StepContext::new(plan, participants, &control.log_dir);
     let member = |step| -> Result<Box<dyn Member + '_>, Infallible> { Ok(Box::new(StepMember { step, cx: &cx })) };
     let nodes = plan.procedure().iter().map(|node| match node {
         ProcedureNode::Step(step) => ProcedureNode::Step(member(step.as_ref())),

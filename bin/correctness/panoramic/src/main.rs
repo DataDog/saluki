@@ -29,7 +29,6 @@ mod list_command;
 use self::config::typed_case::TypedConfigLoader;
 
 mod image_override;
-mod intake;
 
 #[cfg(test)]
 mod case_loader_tests;
@@ -46,8 +45,7 @@ pub(crate) const REGISTRIES: Registries<'static> = Registries {
 };
 
 /// Loads case files with the participant types and steps this binary registers.
-pub(crate) const CASE_LOADER: CaseLoader<'static, TypedConfigLoader> =
-    CaseLoader::new(REGISTRIES, TypedConfigLoader, test::TestSuite::Integration.name());
+pub(crate) const CASE_LOADER: CaseLoader<'static, TypedConfigLoader> = CaseLoader::new(REGISTRIES, TypedConfigLoader);
 
 mod text_output;
 use self::text_output::OutputFormat;

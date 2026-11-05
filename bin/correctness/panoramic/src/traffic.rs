@@ -21,17 +21,16 @@
 
 use std::{
     fs::File,
-    io::BufWriter,
     path::{Path, PathBuf},
 };
 
 use panoramic_core::result::TestOutcome;
-use saluki_error::{generic_error, ErrorContext as _, GenericError};
+pub(crate) use panoramic_steps::compare::decoded::Side;
+use panoramic_steps::compare::{decoded::write_decoded_records, intake::CollectedData};
+use saluki_error::{ErrorContext as _, GenericError};
 use serde::Serialize;
 use serde_json::Value;
 use tracing::warn;
-
-use crate::intake::CollectedData;
 
 const TRAFFIC_DIR_NAME: &str = "traffic";
 
@@ -52,119 +51,9 @@ const MANIFEST_FORMAT: &str = "panoramic-traffic-manifest";
 /// Bump whenever a merged manifest field changes meaning.
 const MANIFEST_FORMAT_VERSION: u32 = 1;
 
-const DECODED_FORMAT: &str = "panoramic-decoded-capture";
-
-/// Bump whenever a decoded record or manifest field changes meaning.
-const DECODED_FORMAT_VERSION: u32 = 1;
-
-const ZSTD_LEVEL: i32 = 3;
-
-/// How decoded records are ordered, as reported to a reader.
-const DECODED_ORDERING: &str = "grouped_by_kind_then_intake_dump_order";
-
-const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
-
-/// Which test target a decoded capture came from.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Side {
-    /// The core Agent alone, which the comparison side is measured against.
-    Baseline,
-
-    /// The Agent and ADP working together.
-    Comparison,
-}
-
-impl Side {
-    const ALL: [Self; 2] = [Self::Baseline, Self::Comparison];
-
-    /// Returns the side's name, used as its file-name prefix and reported in its manifest.
-    pub(crate) const fn name(&self) -> &'static str {
-        match self {
-            Self::Baseline => "baseline",
-            Self::Comparison => "comparison",
-        }
-    }
-
-    /// Returns what the side runs, so a reader doesn't have to know the convention.
-    const fn role(&self) -> &'static str {
-        match self {
-            Self::Baseline => "core Agent alone (reference side)",
-            Self::Comparison => "core Agent with ADP (side under test)",
-        }
-    }
-
-    /// Returns where and when the side's capture was collected.
-    const fn source(&self) -> &'static str {
-        match self {
-            Self::Baseline | Self::Comparison => "datadog-intake dump endpoints",
-        }
-    }
-
-    fn records_file_name(&self) -> String {
-        format!("{}-decoded.jsonl.zst", self.name())
-    }
-
-    fn manifest_file_name(&self) -> String {
-        format!("{}-decoded-manifest.json", self.name())
-    }
-
-    fn unavailable_file_name(&self) -> String {
-        format!("{}-decoded-unavailable.txt", self.name())
-    }
-}
-
 /// Returns the traffic directory for a test's log directory.
 pub(crate) fn traffic_dir(log_dir: &Path) -> PathBuf {
     log_dir.join(TRAFFIC_DIR_NAME)
-}
-
-/// A single decoded telemetry item.
-#[derive(Serialize)]
-struct DecodedRecord<'a, T> {
-    kind: &'static str,
-
-    /// Position within this kind's collection, starting at zero. Not a global receive order.
-    index: usize,
-
-    value: &'a T,
-}
-
-/// What a decoded capture holds, written alongside it and later merged into [`MANIFEST_FILE_NAME`].
-#[derive(Serialize)]
-struct DecodedManifest {
-    format: &'static str,
-    version: u32,
-    side: &'static str,
-    role: &'static str,
-    records_file: String,
-    compression: &'static str,
-    ordering: &'static str,
-    source: &'static str,
-    records: usize,
-
-    /// Number of records per kind, in the order the kinds were written.
-    records_by_kind: Vec<KindCount>,
-
-    /// Uncompressed size of the record stream, in bytes.
-    uncompressed_bytes: u64,
-
-    digest: Digest,
-}
-
-/// How many records of one kind a capture holds.
-#[derive(Serialize)]
-struct KindCount {
-    kind: &'static str,
-    count: usize,
-}
-
-/// A named, non-cryptographic digest of the record stream. It identifies a stream cheaply, so two captures can be
-/// compared without shipping both.
-#[derive(Serialize)]
-struct Digest {
-    algorithm: &'static str,
-    value: String,
 }
 
 /// The merged manifest, describing every traffic artifact a test produced.
@@ -219,7 +108,13 @@ fn try_write_decoded(dir: &Path, side: Side, data: &CollectedData) -> Result<(),
         .with_error_context(|| format!("Failed to create traffic directory '{}'.", dir.display()))?;
 
     let records_path = dir.join(side.records_file_name());
-    let manifest = match write_decoded_records(&records_path, side, data) {
+    let file = File::create(&records_path)
+        .with_error_context(|| format!("Failed to create decoded capture '{}'.", records_path.display()))?;
+    let role = match side {
+        Side::Baseline => "core Agent alone (reference side)",
+        Side::Comparison => "core Agent with ADP (side under test)",
+    };
+    let manifest = match write_decoded_records(file, side, role, "datadog-intake dump endpoints", data) {
         Ok(manifest) => manifest,
         Err(e) => {
             // A half-written file can't be read back, and leaving it would look like a complete capture.
@@ -229,52 +124,6 @@ fn try_write_decoded(dir: &Path, side: Side, data: &CollectedData) -> Result<(),
     };
 
     write_json_file(&dir.join(side.manifest_file_name()), &manifest)
-}
-
-fn write_decoded_records(path: &Path, side: Side, data: &CollectedData) -> Result<DecodedManifest, GenericError> {
-    let file =
-        File::create(path).with_error_context(|| format!("Failed to create decoded capture '{}'.", path.display()))?;
-
-    let mut writer = RecordWriter::new(
-        zstd::stream::write::Encoder::new(BufWriter::new(file), ZSTD_LEVEL)
-            .error_context("Failed to initialize zstd encoder for decoded capture.")?,
-    );
-
-    let counts = vec![
-        writer.write_kind("event", data.events())?,
-        writer.write_kind("metric", data.metrics())?,
-        writer.write_kind("service_check", data.service_checks())?,
-        writer.write_kind("span", data.spans())?,
-        writer.write_kind("trace_stats", std::slice::from_ref(data.trace_stats()))?,
-        writer.write_kind("dogstatsd_forwarded_packet", data.dogstatsd_forwarded_packets())?,
-    ];
-
-    let (records, uncompressed_bytes, digest, encoder) = writer.finish();
-    encoder
-        .finish()
-        .error_context("Failed to finalize zstd stream for decoded capture.")?
-        .into_inner()
-        .map_err(|e| generic_error!("Failed to flush decoded capture: {}", e))?
-        .sync_all()
-        .error_context("Failed to sync decoded capture.")?;
-
-    Ok(DecodedManifest {
-        format: DECODED_FORMAT,
-        version: DECODED_FORMAT_VERSION,
-        side: side.name(),
-        role: side.role(),
-        records_file: side.records_file_name(),
-        compression: "zstd",
-        ordering: DECODED_ORDERING,
-        source: side.source(),
-        records,
-        records_by_kind: counts,
-        uncompressed_bytes,
-        digest: Digest {
-            algorithm: "fnv1a64",
-            value: format!("{:016x}", digest),
-        },
-    })
 }
 
 /// Records why a runtime produced no input capture, for [`finalize`] to fold into the manifest.
@@ -467,67 +316,6 @@ fn remove_file(path: &Path) {
     }
 }
 
-/// Serializes records into a writer, one JSON object per line, tallying what it wrote.
-struct RecordWriter<W> {
-    writer: W,
-    scratch: Vec<u8>,
-    records: usize,
-    bytes: u64,
-    digest: u64,
-}
-
-impl<W: std::io::Write> RecordWriter<W> {
-    fn new(writer: W) -> Self {
-        Self {
-            writer,
-            scratch: Vec::new(),
-            records: 0,
-            bytes: 0,
-            digest: FNV_OFFSET_BASIS,
-        }
-    }
-
-    /// Writes every item in `items` as a record of `kind`.
-    ///
-    /// Each record is serialized into a reused buffer and streamed out, so a large collection never becomes a
-    /// large JSON string.
-    fn write_kind<T: Serialize>(&mut self, kind: &'static str, items: &[T]) -> Result<KindCount, GenericError> {
-        for (index, value) in items.iter().enumerate() {
-            self.scratch.clear();
-            serde_json::to_writer(&mut self.scratch, &DecodedRecord { kind, index, value })
-                .with_error_context(|| format!("Failed to serialize decoded {}.", kind))?;
-            self.scratch.push(b'\n');
-
-            self.writer
-                .write_all(&self.scratch)
-                .with_error_context(|| format!("Failed to write decoded {}.", kind))?;
-
-            self.records += 1;
-            self.bytes += self.scratch.len() as u64;
-            // The newline separator is part of what the digest covers, so record boundaries are too.
-            self.digest = fnv1a64_update(self.digest, &self.scratch);
-        }
-
-        Ok(KindCount {
-            kind,
-            count: items.len(),
-        })
-    }
-
-    /// Returns the tallies and the underlying writer, which the caller still has to finalize.
-    fn finish(self) -> (usize, u64, u64, W) {
-        (self.records, self.bytes, self.digest, self.writer)
-    }
-}
-
-fn fnv1a64_update(mut digest: u64, bytes: &[u8]) -> u64 {
-    for byte in bytes {
-        digest ^= u64::from(*byte);
-        digest = digest.wrapping_mul(FNV_PRIME);
-    }
-    digest
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -683,80 +471,6 @@ mod tests {
         finalize(log_dir.path(), TestOutcome::Failed);
 
         assert!(!traffic_dir(log_dir.path()).exists());
-    }
-
-    #[test]
-    fn decoded_records_are_grouped_by_kind_and_indexed_within_it() {
-        let mut buffer = Vec::new();
-        let mut writer = RecordWriter::new(&mut buffer);
-
-        let events = writer
-            .write_kind("event", &["first".to_string(), "second".to_string()])
-            .expect("events should be written");
-        let packets = writer
-            .write_kind("dogstatsd_forwarded_packet", &["packet".to_string()])
-            .expect("packets should be written");
-        let (records, bytes, digest, _) = writer.finish();
-
-        assert_eq!(events.count, 2);
-        assert_eq!(packets.count, 1);
-        assert_eq!(records, 3);
-        assert_eq!(bytes, buffer.len() as u64);
-        assert_ne!(digest, FNV_OFFSET_BASIS);
-
-        let text = String::from_utf8(buffer).expect("records should be valid UTF-8");
-        let parsed = text
-            .lines()
-            .map(|line| serde_json::from_str::<Value>(line).expect("record should be valid JSON"))
-            .collect::<Vec<_>>();
-
-        assert_eq!(parsed[0]["kind"], "event");
-        assert_eq!(parsed[0]["index"], 0);
-        assert_eq!(parsed[0]["value"], "first");
-        assert_eq!(parsed[1]["kind"], "event");
-        assert_eq!(parsed[1]["index"], 1);
-        assert_eq!(parsed[2]["kind"], "dogstatsd_forwarded_packet");
-        // Indexes restart per kind: they are positions within a kind, not a global receive order.
-        assert_eq!(parsed[2]["index"], 0);
-    }
-
-    #[test]
-    fn each_side_names_itself_and_its_role() {
-        assert_eq!(Side::Baseline.records_file_name(), "baseline-decoded.jsonl.zst");
-        assert_eq!(Side::Comparison.records_file_name(), "comparison-decoded.jsonl.zst");
-        assert_ne!(Side::Baseline.role(), Side::Comparison.role());
-        assert!(Side::Baseline.role().contains("reference"));
-        assert!(Side::Comparison.role().contains("ADP"));
-    }
-
-    fn read_json(path: &Path) -> Value {
-        let raw = std::fs::read_to_string(path).expect("file should be readable");
-        serde_json::from_str(&raw).expect("file should be valid JSON")
-    }
-
-    #[test]
-    fn each_side_writes_its_own_decoded_capture() {
-        let log_dir = tempfile::tempdir().expect("temp dir should be created");
-        let dir = traffic_dir(log_dir.path());
-
-        write_decoded(&dir, Side::Baseline, &CollectedData::default());
-        write_decoded(&dir, Side::Comparison, &CollectedData::default());
-
-        let baseline = read_json(&dir.join("baseline-decoded-manifest.json"));
-        assert_eq!(baseline["format"], DECODED_FORMAT);
-        assert_eq!(baseline["version"], DECODED_FORMAT_VERSION);
-        assert_eq!(baseline["side"], "baseline");
-        assert_eq!(baseline["source"], "datadog-intake dump endpoints");
-        assert!(dir.join("baseline-decoded.jsonl.zst").exists());
-
-        let target = read_json(&dir.join("comparison-decoded-manifest.json"));
-        assert_eq!(target["format"], DECODED_FORMAT);
-        assert_eq!(target["version"], DECODED_FORMAT_VERSION);
-        assert_eq!(target["side"], "comparison");
-        assert_eq!(target["role"], "core Agent with ADP (side under test)");
-        assert_eq!(target["records_file"], "comparison-decoded.jsonl.zst");
-        assert_eq!(target["source"], "datadog-intake dump endpoints");
-        assert!(dir.join("comparison-decoded.jsonl.zst").exists());
     }
 
     #[test]

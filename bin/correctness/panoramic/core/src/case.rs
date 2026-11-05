@@ -87,17 +87,12 @@ pub struct TypedCase<C> {
 pub struct CaseLoader<'a, L> {
     registries: Registries<'a>,
     typed: L,
-    participant_suite: &'a str,
 }
 
 impl<'a, L> CaseLoader<'a, L> {
-    /// Creates a loader with registries, a typed loader and the suite assigned to participant cases.
-    pub const fn new(registries: Registries<'a>, typed: L, participant_suite: &'a str) -> Self {
-        Self {
-            registries,
-            typed,
-            participant_suite,
-        }
+    /// Creates a loader with registries and a typed loader.
+    pub const fn new(registries: Registries<'a>, typed: L) -> Self {
+        Self { registries, typed }
     }
 }
 
@@ -110,6 +105,7 @@ where
     /// A `config.yaml` declares participants or selects a schema through the typed loader.
     /// A `config.yml` is rejected even alongside a `config.yaml`; discovery loads the latter to report every problem.
     /// A `config.yaml` entry that cannot be resolved or read is a load error, including a dangling symlink.
+    /// Participant cases take their suite from the directory above each discovery root, before resolving symlinks.
     ///
     /// # Errors
     ///
@@ -188,7 +184,7 @@ where
     ///
     /// # Errors
     ///
-    /// Returns path resolution and read errors, an error if the directory has no name,
+    /// Returns path resolution and read errors, an error if the directory has no name or no suite ancestor,
     /// and every error of [`Self::load_content`].
     pub fn load_file(&self, config_path: &Path) -> Result<Vec<CaseConfig<L::Config>>, GenericError> {
         let canonical_path = config_path.canonicalize().error_context(format!(
@@ -205,14 +201,16 @@ where
                     canonical_path.display()
                 )
             })?;
+        let discovery_path = std::path::absolute(config_path).error_context("Failed to resolve configuration path")?;
         let config_path = canonical_path.as_path();
         let content = std::fs::read_to_string(config_path)
             .error_context(format!("Failed to read config file: {}", config_path.display()))?;
 
-        self.load_content(&content, dir_name, config_path)
+        let suite = participant_suite(&discovery_path)?;
+        self.load_content(suite, &content, dir_name, config_path)
     }
 
-    /// Loads `content` as the `config.yaml` recorded at `source`, in directory `directory`.
+    /// Loads `content` as the `config.yaml` recorded at `source`, in directory `directory`, using `suite` for participant cases.
     ///
     /// Files without a top-level `type` declare participants; other files go to the typed loader.
     ///
@@ -232,7 +230,7 @@ where
     /// Sources marked `template: true` must be regular UTF-8 files; each is read and parsed once, and its references
     /// are checked like environment values. Other sources are not read.
     pub fn load_content(
-        &self, content: &str, directory: &str, source: &Path,
+        &self, suite: &str, content: &str, directory: &str, source: &Path,
     ) -> Result<Vec<CaseConfig<L::Config>>, GenericError> {
         let peek: serde_json::Value = serde_saphyr::from_str(content)
             .error_context(format!("Failed to parse config file as YAML: {}", source.display()))?;
@@ -252,8 +250,7 @@ where
             return Ok(vec![CaseConfig {
                 name,
                 description: file.description.clone(),
-                // TODO: derive the suite from the case's directory.
-                suite: self.participant_suite.to_string(),
+                suite: suite.into(),
                 source: source.to_path_buf(),
                 timeout: file.timeout.into(),
                 subject_os,
@@ -382,6 +379,20 @@ where
     serde_saphyr::from_str(content).error_context(format!("Failed to parse configuration file: {}", source.display()))
 }
 
+fn participant_suite(source: &Path) -> Result<&str, GenericError> {
+    source
+        .ancestors()
+        .nth(3)
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            generic_error!(
+                "Cannot name the suite for {}: expected <suite>/<discovery-root>/<case>/config.yaml",
+                source.display()
+            )
+        })
+}
+
 /// Names a case after its directory. A declared name must equal the directory name.
 pub fn case_name(declared: Option<&str>, directory: &str, source: &Path) -> Result<String, GenericError> {
     match declared {
@@ -407,7 +418,9 @@ mod tests {
     fn a_file_with_a_top_level_type_is_handed_to_the_typed_loader_with_its_text_directory_and_source() {
         let content = "# Preserve the text, including comments.\ntype: fixture\nvalue: 'true'\n";
         let source = Path::new("original/config.yaml");
-        let cases = fixtures::LOADER.load_content(content, "alias", source).unwrap();
+        let cases = fixtures::LOADER
+            .load_content("cases", content, "alias", source)
+            .unwrap();
         assert_eq!(cases.len(), 1);
         let case = &cases[0];
         assert_eq!(case.name(), "alias");
@@ -436,7 +449,7 @@ mod tests {
             ("{schema: fixture}", serde_json::json!({"schema": "fixture"})),
         ] {
             let error = fixtures::LOADER
-                .load_content(&format!("type: {yaml}\n"), "alpha", Path::new("config.yaml"))
+                .load_content("cases", &format!("type: {yaml}\n"), "alpha", Path::new("config.yaml"))
                 .err()
                 .expect("the fixture loader rejects non-string types");
             assert_eq!(error.to_string(), format!("Unsupported fixture type: {received}"));
@@ -452,7 +465,7 @@ mod tests {
             .err()
             .expect("the fixture loader rejects unknown types");
         let error = fixtures::LOADER
-            .load_content(content, "alpha", source)
+            .load_content("cases", content, "alpha", source)
             .err()
             .expect("the case loader propagates typed errors");
         assert_eq!(error.to_string(), "Unsupported fixture type: \"unknown\"");
@@ -470,10 +483,9 @@ mod tests {
             let loader = CaseLoader::new(
                 fixtures::REGISTRIES,
                 fixtures::FixtureTypesWithRoles(systems.into_iter().map(|os| (os, vec![])).collect()),
-                "fixture-participants",
             );
             let error = loader
-                .load_content("type: fixture", "alpha", Path::new("alpha/config.yaml"))
+                .load_content("cases", "type: fixture", "alpha", Path::new("alpha/config.yaml"))
                 .err()
                 .expect("typed roles must cover exactly subject_os");
             assert_eq!(
@@ -508,13 +520,20 @@ mod tests {
     fn participant_types_and_steps_come_from_the_supplied_registries() {
         let source = Path::new("alpha/config.yaml");
         let error = fixtures::LOADER
-            .load_content(&PARTICIPANT_FIELDS.replace("server", "unregistered"), "alpha", source)
+            .load_content(
+                "cases",
+                &PARTICIPANT_FIELDS.replace("server", "unregistered"),
+                "alpha",
+                source,
+            )
             .err()
             .expect("only the supplied participant types are accepted");
         assert_eq!(error.to_string(), "case 'alpha' in alpha/config.yaml: participant 'subject' has unknown type 'unregistered'; registered types: client, server");
 
         let content = PARTICIPANT_FIELDS.replace(minimal_procedure!(), "procedure: [{step: probe, on: subject}]");
-        let cases = fixtures::LOADER.load_content(&content, "alpha", source).unwrap();
+        let cases = fixtures::LOADER
+            .load_content("cases", &content, "alpha", source)
+            .unwrap();
         let CaseSchema::Participants { procedure, .. } = cases[0].schema() else {
             panic!("expected participant data");
         };
@@ -536,10 +555,9 @@ mod tests {
                 ..fixtures::REGISTRIES
             },
             fixtures::FixtureTypes,
-            "fixture-participants",
         );
         let error = loader
-            .load_content(&content, "alpha", source)
+            .load_content("cases", &content, "alpha", source)
             .err()
             .expect("only the supplied steps are accepted");
         assert_eq!(
@@ -601,7 +619,10 @@ mod tests {
         assert_eq!(case.description(), Some("A portable case"));
         assert_eq!(case.timeout(), Duration::from_secs(7));
         assert_eq!(*case.subject_os(), BTreeSet::from([Os::Linux, Os::MacOs]));
-        assert_eq!(case.suite(), "fixture-participants");
+        assert_eq!(
+            case.suite(),
+            dir.path().parent().unwrap().file_name().unwrap().to_str().unwrap()
+        );
         assert!(!case.is_disabled());
         assert_eq!(case.source(), path.canonicalize().unwrap());
         let CaseSchema::Participants { file, .. } = case.schema() else {
@@ -616,30 +637,60 @@ mod tests {
     }
 
     #[test]
-    fn a_participant_case_reports_the_suite_its_loader_names() {
-        let suite = String::from("another-suite");
-        let other = CaseLoader::new(fixtures::REGISTRIES, fixtures::FixtureTypes, &suite);
-        for (loader, suite) in [(&fixtures::LOADER, "fixture-participants"), (&other, "another-suite")] {
-            let cases = loader
-                .load_content(PARTICIPANT_FIELDS, "alpha", Path::new("alpha/config.yaml"))
-                .unwrap();
+    fn participant_suites_follow_the_directory_above_each_discovery_root() {
+        let root = tempfile::tempdir().unwrap();
+        for (suite, directory) in [
+            ("integration", "cases"),
+            ("correctness", "cases"),
+            ("correctness", "disabled"),
+            ("temporary", "custom-root"),
+        ] {
+            let discovery = root.path().join(suite).join(directory);
+            let case = discovery.join("alpha");
+            std::fs::create_dir_all(&case).unwrap();
+            std::fs::write(case.join("config.yaml"), PARTICIPANT_FIELDS).unwrap();
+            let cases = fixtures::LOADER.discover_cases(&[discovery]).unwrap();
             assert_eq!(cases.len(), 1);
             assert_eq!(cases[0].suite(), suite);
+            assert_eq!(cases[0].name(), "alpha");
         }
+    }
+
+    #[test]
+    fn a_suite_requires_an_ancestor_and_in_memory_cases_use_the_explicit_suite() {
+        for path in [
+            "config.yaml",
+            "case/config.yaml",
+            "cases/case/config.yaml",
+            "/cases/case/config.yaml",
+        ] {
+            assert_eq!(
+                participant_suite(Path::new(path)).unwrap_err().to_string(),
+                format!("Cannot name the suite for {path}: expected <suite>/<discovery-root>/<case>/config.yaml"),
+            );
+        }
+        assert_eq!(
+            participant_suite(Path::new("suite/cases/case/config.yaml")).unwrap(),
+            "suite"
+        );
+        let cases = fixtures::LOADER
+            .load_content("explicit", PARTICIPANT_FIELDS, "alpha", Path::new("config.yaml"))
+            .unwrap();
+        assert_eq!(cases[0].suite(), "explicit");
     }
 
     #[test]
     fn load_content_names_the_case_after_the_given_directory() {
         let source = Path::new("alpha/config.yaml");
         let cases = fixtures::LOADER
-            .load_content(PARTICIPANT_FIELDS, "alpha", source)
+            .load_content("cases", PARTICIPANT_FIELDS, "alpha", source)
             .unwrap();
         assert_eq!(cases.len(), 1);
         assert_eq!(cases[0].name(), "alpha");
         assert_eq!(cases[0].source(), source);
 
         let error = fixtures::LOADER
-            .load_content(&format!("name: beta\n{PARTICIPANT_FIELDS}"), "alpha", source)
+            .load_content("cases", &format!("name: beta\n{PARTICIPANT_FIELDS}"), "alpha", source)
             .err()
             .expect("a declared name must match the given directory");
         assert_eq!(
@@ -790,15 +841,15 @@ procedure:
     fn a_declared_case_name_must_match_its_directory_and_an_omitted_one_defaults_to_it() {
         let source = Path::new("cases/dir/config.yaml");
         let cases = fixtures::LOADER
-            .load_content(PARTICIPANT_FIELDS, "dir", source)
+            .load_content("cases", PARTICIPANT_FIELDS, "dir", source)
             .unwrap();
         assert_eq!(cases[0].name(), "dir");
         let cases = fixtures::LOADER
-            .load_content(&format!("name: dir\n{PARTICIPANT_FIELDS}"), "dir", source)
+            .load_content("cases", &format!("name: dir\n{PARTICIPANT_FIELDS}"), "dir", source)
             .unwrap();
         assert_eq!(cases[0].name(), "dir");
         let message = fixtures::LOADER
-            .load_content(&format!("name: other\n{PARTICIPANT_FIELDS}"), "dir", source)
+            .load_content("cases", &format!("name: other\n{PARTICIPANT_FIELDS}"), "dir", source)
             .err()
             .expect("a declared name must match its directory")
             .to_string();

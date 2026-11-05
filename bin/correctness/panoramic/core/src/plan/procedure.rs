@@ -155,14 +155,14 @@ mod tests {
             steps: &[&CallFactory],
             typed_case_roles: &[],
         };
-        let loader = CaseLoader::new(registries, FixtureTypes, "fixture");
+        let loader = CaseLoader::new(registries, FixtureTypes);
         for (os, operation, expected) in [
             (Os::Linux, "config_dump", None),
             (Os::Linux, "missing", Some("calls operation 'missing' of participant 'subject', which type 'server' doesn't offer as linux-container on linux; it offers: config_dump")),
             (Os::MacOs, "config_dump", Some("calls operation 'config_dump' of participant 'subject', which type 'server' doesn't offer as host-process-group on macos; it offers: none")),
         ] {
             let yaml = format!("timeout: 1s\nsubject_os: [{}]\nparticipants:\n  subject: {{type: server, subject: true}}\nprocedure: [{{step: call, on: subject, operation: {operation}}}]", os.name());
-            let case = loader.load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml")).unwrap().remove(0);
+            let case = loader.load_content("cases", &yaml, "alpha", Path::new("cases/alpha/config.yaml")).unwrap().remove(0);
             let result = Planner::new(registries, Default::default()).unwrap().compile(case, os);
             if let Some(expected) = expected {
                 let error = result.err().unwrap().to_string();
@@ -185,14 +185,14 @@ mod tests {
             steps: &[&CallFactory],
             typed_case_roles: &[],
         };
-        let loader = CaseLoader::new(registries, FixtureTypes, "fixture");
+        let loader = CaseLoader::new(registries, FixtureTypes);
         for os in [Os::Linux, Os::MacOs, Os::Windows] {
             let yaml = format!(
                 "timeout: 1s\nsubject_os: [{}]\nparticipants:\n  subject: {{type: server, subject: true}}\nprocedure: [{{step: call, on: subject, operation: http_dump}}, {{step: call, on: subject, operation: http_dump}}]",
                 os.name()
             );
             let case = loader
-                .load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml"))
+                .load_content("cases", &yaml, "alpha", Path::new("cases/alpha/config.yaml"))
                 .unwrap()
                 .remove(0);
             let mut planner = Planner::new(registries, Default::default()).unwrap();
@@ -246,8 +246,8 @@ mod tests {
             steps: &[&CallFactory],
             typed_case_roles: &[],
         };
-        let case = CaseLoader::new(registries, FixtureTypes, "fixture")
-            .load_content(
+        let case = CaseLoader::new(registries, FixtureTypes)
+            .load_content("cases",
                 "timeout: 1s\nsubject_os: [linux]\nparticipants:\n  subject: {type: server, subject: true}\nprocedure: [{step: call, on: subject, operation: http_dump}]",
                 "alpha",
                 Path::new("cases/alpha/config.yaml"),
@@ -706,12 +706,12 @@ mod tests {
             steps: STEPS,
             ..Default::default()
         };
-        let loader = CaseLoader::new(registries, FixtureTypes, "fixture-participants");
+        let loader = CaseLoader::new(registries, FixtureTypes);
         let yaml = FACT_CASE
             .replace("type: server", "type: pod-server, realization: {kind: kubernetes-pod}")
             .replace("subject.facts.file", "subject.late.pod_uid");
         let case = loader
-            .load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml"))
+            .load_content("cases", &yaml, "alpha", Path::new("cases/alpha/config.yaml"))
             .unwrap()
             .remove(0);
         let plan = Planner::with_run(registries, "testrun0")
@@ -725,6 +725,7 @@ mod tests {
         );
         let case = loader
             .load_content(
+                "cases",
                 &yaml.replace("kubernetes-pod", "linux-container"),
                 "alpha",
                 Path::new("cases/alpha/config.yaml"),
@@ -773,10 +774,10 @@ mod tests {
             steps: STEPS,
             ..Default::default()
         };
-        let loader = CaseLoader::new(registries, FixtureTypes, "fixture-participants");
+        let loader = CaseLoader::new(registries, FixtureTypes);
         let yaml = FACT_CASE.replace("type: server", "type: pod-server, realization: {kind: kubernetes-pod}");
         let case = loader
-            .load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml"))
+            .load_content("cases", &yaml, "alpha", Path::new("cases/alpha/config.yaml"))
             .unwrap()
             .remove(0);
         let message = Planner::with_run(registries, "testrun0")
@@ -789,6 +790,7 @@ mod tests {
         );
         let case = loader
             .load_content(
+                "cases",
                 &yaml.replace("kubernetes-pod", "linux-container"),
                 "alpha",
                 Path::new("config.yaml"),

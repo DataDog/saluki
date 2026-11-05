@@ -19,6 +19,7 @@ use panoramic_core::layout::Os;
 use panoramic_core::plan::Compiled;
 use panoramic_core::step::StepKind;
 use panoramic_participants::AgentAdp;
+use panoramic_steps::compare::analysis::AnalysisMode;
 use saluki_error::GenericError;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -30,7 +31,6 @@ use super::{
     typed_case::{LoadedCase, LoadedPlan, TypedConfig},
     BuiltCase,
 };
-use crate::{correctness::analysis::AnalysisMode, test::TestSuite};
 
 const JSON_PATH: &str = "docs/development/plans/panoramic-architecture-inventory.json";
 const MARKDOWN_PATH: &str = "docs/development/plans/panoramic-architecture.md";
@@ -42,8 +42,8 @@ const PROOF_PIPELINE_URL: &str = "https://gitlab.ddbuild.io/DataDog/saluki/-/pip
 const PROOF_JOB_URL: &str = "https://gitlab.ddbuild.io/DataDog/saluki/-/jobs/";
 const PROOF_COMPARISON: &str = "Compared with the inventory at `";
 const REGENERATE: &str = "PANORAMIC_WRITE_COVERAGE_INVENTORY=1 cargo nextest run -p panoramic coverage_inventory";
-const INTEGRATION: &str = TestSuite::Integration.name();
-const CORRECTNESS: &str = TestSuite::Correctness.name();
+const INTEGRATION: &str = "integration";
+const CORRECTNESS: &str = "correctness";
 const PARTICIPANTS: &str = "participants";
 const SELECTED: &str = "selected";
 const DISABLED: &str = "disabled";
@@ -419,7 +419,8 @@ fn load_cases(path: &Path) -> Vec<(String, Case)> {
         record_cases(&loaded, &content, directory).unwrap_or_else(|error| panic!("{}: {error:#}", path.display()));
     let doc: Value = serde_saphyr::from_str(&content).unwrap();
     let canonical = path.canonicalize().unwrap();
-    let view = |doc| loaded_view(&doc, directory, &canonical);
+    let suite = loaded.first().expect("a case file loads at least one case").suite();
+    let view = |doc| loaded_view(suite, &doc, directory, &canonical);
     let configs: Vec<_> = cases.iter().map(|(key, case)| (key, &case.config)).collect();
     assert_eq!(
         view(doc.clone()).unwrap(),
@@ -483,7 +484,7 @@ fn record_cases(cases: &[LoadedCase], content: &str, directory: &str) -> Result<
                 let mut config = BTreeMap::new();
                 for os in case.subject_os() {
                     let loaded = crate::CASE_LOADER
-                        .load_content(content, directory, case.source())?
+                        .load_content("cases", content, directory, case.source())?
                         .into_iter()
                         .find(|loaded| loaded.name() == case.name())
                         .expect("reloading yields the same case");
@@ -528,9 +529,9 @@ fn participant_records<'a>(plan: &'a LoadedPlan, file: &CaseFile) -> BTreeMap<&'
 /// Loads `doc` as the file at `source` and returns each case's recorded configuration.
 ///
 /// JSON text is valid YAML and preserves strings as strings. `load_cases` checks it against the original YAML.
-fn loaded_view(doc: &Value, directory: &str, source: &Path) -> Result<Value, GenericError> {
+fn loaded_view(suite: &str, doc: &Value, directory: &str, source: &Path) -> Result<Value, GenericError> {
     let content = serde_json::to_string(doc)?;
-    let cases = crate::CASE_LOADER.load_content(&content, directory, source)?;
+    let cases = crate::CASE_LOADER.load_content(suite, &content, directory, source)?;
     let recorded = record_cases(&cases, &content, directory)?;
     let configs: Vec<_> = recorded.iter().map(|(key, case)| (key, &case.config)).collect();
     Ok(serde_json::to_value(configs)?)
@@ -1022,8 +1023,7 @@ fn inventory_rejects_an_enabled_case_in_the_disabled_directory() {
 }
 
 #[test]
-#[should_panic(expected = "a selected integration case belongs in test/integration/cases/")]
-fn inventory_rejects_an_integration_case_in_a_correctness_directory() {
+fn inventory_reports_a_participant_case_in_a_correctness_directory_as_native_correctness() {
     let root = tempfile::tempdir().unwrap();
     create_case_dirs(root.path());
     write_case(
@@ -1031,7 +1031,14 @@ fn inventory_rejects_an_integration_case_in_a_correctness_directory() {
         "alpha",
         "name: alpha\ntimeout: 1s\nsubject_os: [linux]\nparticipants: {adp: {type: agent-adp, subject: true}}\nprocedure: [{step: log_contains, on: adp, pattern: ready, timeout: 5s}]\n",
     );
-    Inventory::generate(&root.path().canonicalize().unwrap());
+    let inventory = Inventory::generate(&root.path().canonicalize().unwrap());
+    assert_eq!(inventory.rows.len(), 1);
+    let row = &inventory.rows[0];
+    assert_eq!(row.name, "alpha");
+    assert_eq!(row.suite, CORRECTNESS);
+    assert_eq!(row.schema, PARTICIPANTS);
+    assert_eq!(row.execution, NATIVE);
+    assert_eq!(row.status, SELECTED);
 }
 
 #[test]
@@ -1588,7 +1595,7 @@ comparison: {image: comparison}
     assert_eq!(
         ignored_fields(
             &correctness,
-            &|doc| loaded_view(&doc, "probe", Path::new("probe/config.yaml")),
+            &|doc| loaded_view("cases", &doc, "probe", Path::new("probe/config.yaml")),
             Path::new("probe/config.yaml"),
         ),
         ["datadog_intake.config_path"],
@@ -1598,7 +1605,7 @@ comparison: {image: comparison}
     assert_eq!(
         ignored_fields(
             &correctness,
-            &|doc| loaded_view(&doc, "probe", Path::new("probe/config.yaml")),
+            &|doc| loaded_view("cases", &doc, "probe", Path::new("probe/config.yaml")),
             Path::new("probe/config.yaml"),
         ),
         ["datadog_intake.config_path"],
@@ -1607,14 +1614,14 @@ comparison: {image: comparison}
     assert_eq!(
         ignored_fields(
             &participant,
-            &|doc| loaded_view(&doc, "alpha", Path::new("alpha/config.yaml")),
+            &|doc| loaded_view("cases", &doc, "alpha", Path::new("alpha/config.yaml")),
             Path::new("alpha/config.yaml"),
         ),
         Vec::<String>::new(),
     );
-    let baseline = loaded_view(&participant, "alpha", Path::new("alpha/config.yaml")).unwrap();
+    let baseline = loaded_view("cases", &participant, "alpha", Path::new("alpha/config.yaml")).unwrap();
     participant["participants"]["adp"]["config"]["env"]["DD_API_KEY"] = json!("x");
-    let changed = loaded_view(&participant, "alpha", Path::new("alpha/config.yaml")).unwrap();
+    let changed = loaded_view("cases", &participant, "alpha", Path::new("alpha/config.yaml")).unwrap();
     assert_ne!(changed, baseline);
     assert_eq!(changed[0][1]["linux"]["participants"]["adp"]["env"]["DD_API_KEY"], "x");
 }
@@ -1625,7 +1632,7 @@ fn loaded_view_records_participant_realizations() {
         &PARTICIPANT_FIELDS.replace("subject: true", "subject: true, realization: {kind: linux-container}"),
     )
     .unwrap();
-    let view = loaded_view(&doc, "alpha", Path::new("alpha/config.yaml")).unwrap();
+    let view = loaded_view("cases", &doc, "alpha", Path::new("alpha/config.yaml")).unwrap();
     assert_eq!(
         view[0][1]["linux"]["participants"]["adp"]["realization"],
         "linux-container"

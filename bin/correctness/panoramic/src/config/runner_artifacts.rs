@@ -172,7 +172,7 @@ mod tests {
         };
         let mut planner = Planner::new(crate::REGISTRIES, manifest).unwrap();
         crate::CASE_LOADER
-            .load_content(yaml, "case", Path::new("case/config.yaml"))
+            .load_content("cases", yaml, "case", Path::new("case/config.yaml"))
             .unwrap()
             .into_iter()
             .map(|case| planner.compile(case, os).unwrap().into_plan().unwrap())

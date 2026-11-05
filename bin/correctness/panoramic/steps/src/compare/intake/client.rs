@@ -1,38 +1,37 @@
-use std::time::Duration;
+use std::future::Future;
 
+use panoramic_core::step::HttpResponse;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use stele::{ClientStatisticsAggregator, Event, Metric, ServiceCheck, Span};
 use tracing::{debug, error};
 
-/// Maximum wait for response headers or between body reads.
-const INTAKE_READ_TIMEOUT: Duration = Duration::from_secs(30);
-
 /// Client for the dump endpoints of one `datadog-intake` server.
 ///
-/// Each method fetches the full set of one telemetry kind the server has received so far.
-pub struct IntakeClient {
-    client: reqwest::Client,
-    base_url: String,
+/// The caller supplies the HTTP route; each method fetches one complete telemetry kind.
+pub struct IntakeClient<F> {
+    request: F,
 }
 
-impl IntakeClient {
-    /// Creates a client for the `datadog-intake` server published on the given local port.
-    ///
-    /// Requests fail after [`INTAKE_READ_TIMEOUT`] without data. Each read resets the timeout, allowing large responses
-    /// that keep making progress.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the TLS backend can't be initialized, as [`reqwest::Client::new`] does.
-    pub fn new(port: u16) -> Self {
-        Self {
-            client: reqwest::Client::builder()
-                .read_timeout(INTAKE_READ_TIMEOUT)
-                .build()
-                .expect("the intake HTTP client should build"),
-            // `localhost` can try IPv6 first, which delays each connection on Windows.
-            base_url: format!("http://127.0.0.1:{}", port),
+impl<F, Fut> IntakeClient<F>
+where
+    F: Fn(&'static str) -> Fut,
+    Fut: Future<Output = Result<HttpResponse, GenericError>>,
+{
+    /// Creates a client using the supplied HTTP GET callback.
+    pub fn new(request: F) -> Self {
+        Self { request }
+    }
+
+    async fn get(&self, path: &'static str) -> Result<HttpResponse, GenericError> {
+        let response = (self.request)(path).await?;
+        if !(200..300).contains(&response.status) {
+            return Err(generic_error!(
+                "intake dump at '{}' returned HTTP {}",
+                path,
+                response.status
+            ));
         }
+        Ok(response)
     }
 
     /// Fetches the captured events.
@@ -41,14 +40,11 @@ impl IntakeClient {
     ///
     /// If the endpoint can't be called, or its response can't be decoded, an error is returned.
     pub async fn events(&self) -> Result<Vec<Event>, GenericError> {
-        let events = self
-            .client
-            .get(format!("{}/events/dump", self.base_url))
-            .send()
+        let response = self
+            .get("/events/dump")
             .await
-            .error_context("Failed to call events dump endpoint on datadog-intake server.")?
-            .json::<Vec<Event>>()
-            .await
+            .error_context("Failed to call events dump endpoint on datadog-intake server.")?;
+        let events = serde_json::from_slice::<Vec<Event>>(&response.body)
             .error_context("Failed to decode dumped events from datadog-intake response.")?;
 
         debug!("Events dumped successfully.");
@@ -62,14 +58,11 @@ impl IntakeClient {
     ///
     /// If the endpoint can't be called, or its response can't be decoded, an error is returned.
     pub async fn metrics(&self) -> Result<Vec<Metric>, GenericError> {
-        let metrics = self
-            .client
-            .get(format!("{}/metrics/dump", self.base_url))
-            .send()
+        let response = self
+            .get("/metrics/dump")
             .await
-            .error_context("Failed to call metrics dump endpoint on datadog-intake server.")?
-            .json::<Vec<Metric>>()
-            .await
+            .error_context("Failed to call metrics dump endpoint on datadog-intake server.")?;
+        let metrics = serde_json::from_slice::<Vec<Metric>>(&response.body)
             .error_context("Failed to decode dumped metrics from datadog-intake response.")?;
 
         debug!("Metrics dumped successfully.");
@@ -83,14 +76,11 @@ impl IntakeClient {
     ///
     /// If the endpoint can't be called, or its response can't be decoded, an error is returned.
     pub async fn service_checks(&self) -> Result<Vec<ServiceCheck>, GenericError> {
-        let checks = self
-            .client
-            .get(format!("{}/service_checks/dump", self.base_url))
-            .send()
+        let response = self
+            .get("/service_checks/dump")
             .await
-            .error_context("Failed to call service checks dump endpoint on datadog-intake server.")?
-            .json::<Vec<ServiceCheck>>()
-            .await
+            .error_context("Failed to call service checks dump endpoint on datadog-intake server.")?;
+        let checks = serde_json::from_slice::<Vec<ServiceCheck>>(&response.body)
             .error_context("Failed to decode dumped service checks from datadog-intake response.")?;
 
         debug!("Service checks dumped successfully.");
@@ -104,14 +94,11 @@ impl IntakeClient {
     ///
     /// If the endpoint can't be called, or its response can't be decoded, an error is returned.
     pub async fn spans(&self) -> Result<Vec<Span>, GenericError> {
-        let spans = self
-            .client
-            .get(format!("{}/traces/dump_spans", self.base_url))
-            .send()
+        let response = self
+            .get("/traces/dump_spans")
             .await
-            .error_context("Failed to call spans dump endpoint on datadog-intake server.")?
-            .json::<Vec<Span>>()
-            .await
+            .error_context("Failed to call spans dump endpoint on datadog-intake server.")?;
+        let spans = serde_json::from_slice::<Vec<Span>>(&response.body)
             .error_context("Failed to decode dumped spans from datadog-intake response.")?;
 
         debug!("Spans dumped successfully.");
@@ -126,13 +113,11 @@ impl IntakeClient {
     /// If the endpoint can't be called, or its response can't be decoded, an error is returned.
     pub async fn trace_stats(&self) -> Result<ClientStatisticsAggregator, GenericError> {
         let response = self
-            .client
-            .get(format!("{}/traces/dump_stats", self.base_url))
-            .send()
+            .get("/traces/dump_stats")
             .await
             .error_context("Failed to call trace stats dump endpoint on datadog-intake server.")?;
 
-        let body = response.bytes().await.error_context("Failed to read response body")?;
+        let body = response.body;
 
         let stats = match serde_json::from_slice(&body) {
             Ok(stats) => stats,
@@ -156,14 +141,11 @@ impl IntakeClient {
     ///
     /// If the endpoint can't be called, or its response can't be decoded, an error is returned.
     pub async fn dogstatsd_forwarded_packets(&self) -> Result<Vec<String>, GenericError> {
-        let packets = self
-            .client
-            .get(format!("{}/dogstatsd-forwarding/dump", self.base_url))
-            .send()
+        let response = self
+            .get("/dogstatsd-forwarding/dump")
             .await
-            .error_context("Failed to call forwarded DogStatsD packet dump endpoint on datadog-intake server.")?
-            .json::<Vec<String>>()
-            .await
+            .error_context("Failed to call forwarded DogStatsD packet dump endpoint on datadog-intake server.")?;
+        let packets = serde_json::from_slice::<Vec<String>>(&response.body)
             .error_context("Failed to decode dumped forwarded DogStatsD packets from datadog-intake response.")?;
 
         debug!("Forwarded DogStatsD packets dumped successfully.");

@@ -195,7 +195,10 @@ mod tests {
         )
         .await;
         assert_eq!(result.name, "case");
-        assert_eq!(result.case_path.as_deref(), Some(Path::new("/cases/case")));
+        assert_eq!(
+            result.case_path.as_deref(),
+            Some(Path::new("/test/integration/cases/case"))
+        );
         assert_eq!(result.outcome, TestOutcome::Errored);
         let report: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(result.log_dir.unwrap().join("result.json")).unwrap())

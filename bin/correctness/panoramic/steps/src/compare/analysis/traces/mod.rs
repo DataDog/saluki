@@ -10,7 +10,7 @@ use stele::{AggregationKey, BucketedClientStatistics, ClientStatistics, Span};
 use tracing::{error, info};
 use treediff::value::Key;
 
-use crate::intake::CollectedData;
+use crate::compare::intake::CollectedData;
 
 /// Built-in span field paths always ignored when diffing. Configurable additions via `TracesAnalysisOptions::additional_span_ignore_fields`.
 static BASE_IGNORED_FIELDS_DIFF: &[&str] = &[
@@ -42,7 +42,7 @@ where
     }
 }
 
-use crate::correctness::analysis::TracesAnalysisOptions;
+use crate::compare::analysis::TracesAnalysisOptions;
 
 /// Analyzes traces for correctness.
 pub struct TracesAnalyzer {

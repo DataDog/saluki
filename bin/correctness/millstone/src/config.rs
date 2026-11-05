@@ -348,6 +348,35 @@ mod tests {
         }
     }
 
+    /// Replaces the references panoramic fills in before millstone reads a case's configuration.
+    ///
+    /// The target becomes a Unix socket URL when the file sets `http_path`, which requires one, and an HTTP URL
+    /// otherwise. Any other reference becomes a plain placeholder string.
+    fn render_case_template(raw: &str) -> String {
+        let target = if raw.lines().any(|line| line.starts_with("http_path:")) {
+            "unix:///run/target.sock"
+        } else {
+            "http://target:8080"
+        };
+        let mut rendered = String::with_capacity(raw.len());
+        let mut rest = raw;
+        while let Some(start) = rest.find("{{") {
+            let Some(length) = rest[start..].find("}}") else {
+                break;
+            };
+            let reference = rest[start + 2..start + length].trim();
+            rendered.push_str(&rest[..start]);
+            rendered.push_str(if reference == "self.connections.target.url" {
+                target
+            } else {
+                "placeholder"
+            });
+            rest = &rest[start + length + 2..];
+        }
+        rendered.push_str(rest);
+        rendered
+    }
+
     #[test]
     fn every_test_case_config_parses() {
         let test_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../test");
@@ -360,7 +389,12 @@ mod tests {
         );
 
         for path in configs {
-            let config = Config::try_from_file(&path).unwrap_or_else(|e| panic!("{}: {e:?}", path.display()));
+            let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e:?}", path.display()));
+            let config: Config = serde_saphyr::from_str(&render_case_template(&raw))
+                .unwrap_or_else(|e| panic!("{}: {e:?}", path.display()));
+            config
+                .validate()
+                .unwrap_or_else(|e| panic!("{}: {e:?}", path.display()));
             config
                 .corpus
                 .validate()

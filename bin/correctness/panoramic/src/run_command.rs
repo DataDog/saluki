@@ -931,8 +931,8 @@ mod tests {
                 "subject: true",
                 "subject: true, realization: {kind: host-process-group}",
             );
-        let case = CaseLoader::new(registries, TypedConfigLoader, "integration")
-            .load_content(&yaml, "native", &dir.join("native/config.yaml"))
+        let case = CaseLoader::new(registries, TypedConfigLoader)
+            .load_content("cases", &yaml, "native", &dir.join("native/config.yaml"))
             .unwrap()
             .remove(0);
         let bindings = ArtifactManifest::new(

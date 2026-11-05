@@ -1,10 +1,10 @@
 use std::{collections::BTreeMap, path::PathBuf};
 
 use panoramic_core::case::deserialize_env_map;
+use panoramic_steps::compare::analysis::AnalysisMode;
 use serde::Deserialize;
 
 use crate::config::LoadedFrom;
-use crate::correctness::analysis::AnalysisMode;
 
 /// The container runtime backend to use for a correctness test.
 #[cfg_attr(test, derive(serde::Serialize))]

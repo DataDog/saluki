@@ -20,7 +20,7 @@ use crate::{
     deadline::Budget,
     endpoint::{ConsumedEndpoint, Delivery, Endpoint, EndpointKind, Evidence, Port},
     layout::{Os, Realization},
-    participant::{EffectiveConfig, ExitChannel, OutputChannel, RenderedConfig},
+    participant::{CollectDestination, CollectFile, EffectiveConfig, ExitChannel, OutputChannel, RenderedConfig},
     plan::{
         fixtures::{attach_endpoint_evidence, participant_evidence},
         CasePlan, Planner,
@@ -36,10 +36,14 @@ const IMAGE: ArtifactRole = ArtifactRole {
     kind: ArtifactKind::Image { os: Os::Linux },
     local_default: "panoramic-lifecycle-test:absent",
 };
-struct Fixture;
+struct Fixture(bool);
 impl ParticipantType for Fixture {
     fn name(&self) -> &'static str {
-        "fixture"
+        if self.0 {
+            "fixture-collect"
+        } else {
+            "fixture"
+        }
     }
     fn supports(&self) -> &'static [(Os, RealizationKind)] {
         &[(Os::Linux, RealizationKind::LinuxContainer)]
@@ -82,6 +86,31 @@ impl ParticipantType for Fixture {
             mounts: vec![],
             output_line_bytes: None,
         }))
+    }
+    fn collect(&self, _: Realization) -> &'static [CollectFile] {
+        if !self.0 {
+            return &[];
+        }
+        &[
+            CollectFile {
+                path: "/case/settings",
+                name: "settings",
+                kind: "configuration",
+                destination: CollectDestination::Participant,
+            },
+            CollectFile {
+                path: "/case/settings",
+                name: "input.bin",
+                kind: "input",
+                destination: CollectDestination::Traffic,
+            },
+            CollectFile {
+                path: "/missing",
+                name: "missing",
+                kind: "diagnostic",
+                destination: CollectDestination::Participant,
+            },
+        ]
     }
     fn config_files(&self) -> &'static [&'static str] {
         &["settings"]
@@ -234,12 +263,13 @@ async fn with_case_control<F: Future<Output = ()> + Send + 'static>(
     std::fs::write(files.path().join("template.txt"), "peer={{ peer.late.container_id }}").unwrap();
     std::fs::write(files.path().join("courier"), &courier).unwrap();
     let registries = Registries {
-        participant_types: &[&Fixture],
+        participant_types: &[&Fixture(false), &Fixture(true)],
         steps: fixtures::STEPS,
         typed_case_roles: &[],
     };
-    let case = CaseLoader::new(registries, FixtureTypes, "fixture-participants")
+    let case = CaseLoader::new(registries, FixtureTypes)
         .load_content(
+            "cases",
             &format!("timeout: 60s\nsubject_os: [linux]\nparticipants:\n{participants}\nprocedure: {procedure}\n"),
             "case",
             &files.path().join("config.yaml"),
@@ -282,6 +312,7 @@ async fn with_case_control<F: Future<Output = ()> + Send + 'static>(
     let tasks = CaseTasks::new(&cancel);
     let logs = tempfile::tempdir().unwrap();
     let control = CaseControl {
+        interrupt: CancellationToken::new(),
         observations: Observations::default(),
         record: CaseRecord::default(),
         deadline: Deadline::after(
@@ -297,7 +328,12 @@ async fn with_case_control<F: Future<Output = ()> + Send + 'static>(
     let test_docker = docker.clone();
     let outcome = tokio::spawn(async move {
         timeout(Duration::from_secs(60), async {
-            let run = run(plan.participants().unwrap(), &[&Fixture], &inputs, &control);
+            let run = run(
+                plan.participants().unwrap(),
+                &[&Fixture(false), &Fixture(true)],
+                &inputs,
+                &control,
+            );
             let interrupt = async {
                 if matches!(stop, Some(Stop::Cancel)) {
                     while control.record.running().is_empty() {
@@ -312,6 +348,7 @@ async fn with_case_control<F: Future<Output = ()> + Send + 'static>(
                 () = interrupt => unreachable!("the interruption observer waits for the case"),
             };
             result.participants = control.observations.snapshot();
+            control.observations.record_collections(&mut result);
             let mut expected_resources = vec![format!("isolation_group:{}", plan.scope().unwrap().id())];
             for name in plan.create_order().unwrap().iter().flatten() {
                 if result.participants.iter().any(|participant| &participant.name == name) {
@@ -924,4 +961,67 @@ async fn cancelling_a_running_procedure_interrupts_its_step_and_leaves_the_case_
 #[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
 async fn the_case_deadline_interrupts_a_running_step() {
     interrupted_procedure(Stop::Deadline).await;
+}
+
+#[tokio::test]
+#[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
+async fn collection_reads_running_and_exited_participants_and_keeps_passing_and_failing_verdicts() {
+    for (script, procedure, running, outcome) in [
+        ("exec sleep 60", "[{step: noop}]", true, TestOutcome::Passed),
+        (
+            "exit 0",
+            "[{step: probe, on: subject, process: main}]",
+            false,
+            TestOutcome::Passed,
+        ),
+        (
+            "exit 0",
+            "[{step: probe, on: subject, process: main}, {step: probe, on: subject, path: /absent}]",
+            false,
+            TestOutcome::Failed,
+        ),
+    ] {
+        let participants = format!("  subject: {{type: fixture-collect, subject: true, config: {{files: {{settings: regular.txt}}, env: {{SCRIPT: '{script}'}}}}}}");
+        with_case(&participants, procedure, move |view| async move {
+            assert_eq!(view.result.outcome, outcome, "{:?}", view.result.error);
+            assert_eq!(view.container("subject").await.state.unwrap().running, Some(running));
+            assert_eq!(
+                view.result.collected,
+                [
+                    crate::result::Collected {
+                        participant: "subject".into(),
+                        kind: "configuration".into(),
+                        path: view.log_dir.join("subject/collected/settings")
+                    },
+                    crate::result::Collected {
+                        participant: "subject".into(),
+                        kind: "input".into(),
+                        path: view.log_dir.join("traffic/input.bin")
+                    },
+                ]
+            );
+            for artifact in &view.result.collected {
+                assert_eq!(std::fs::read(&artifact.path).unwrap(), b"case file");
+            }
+            assert_eq!(view.result.issues.len(), 1);
+            assert_eq!(view.result.issues[0].kind, crate::result::IssueKind::CollectionFailed);
+            assert!(
+                view.result.issues[0].message.contains("'/missing'"),
+                "{:?}",
+                view.result.issues
+            );
+            let json = serde_json::to_value(crate::machine_output::TestReport::new(&view.result)).unwrap();
+            assert_eq!(
+                json["outcome"],
+                if outcome == TestOutcome::Passed {
+                    "passed"
+                } else {
+                    "failed"
+                }
+            );
+            assert_eq!(json["collected"], serde_json::to_value(&view.result.collected).unwrap());
+            assert_eq!(json["issues"][0]["kind"], "collection_failed");
+        })
+        .await;
+    }
 }

@@ -1,6 +1,6 @@
 //! Step declarations and field decoding.
 
-use std::{collections::BTreeMap, fmt, time::Duration};
+use std::{collections::BTreeMap, fmt, path::Path, time::Duration};
 
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
@@ -66,6 +66,7 @@ pub trait Step: fmt::Debug + Send + Sync {
 pub struct StepContext<'a> {
     plan: ParticipantPlan<'a>,
     participants: BTreeMap<&'a str, StepParticipant<'a>>,
+    log_dir: &'a Path,
 }
 
 pub(crate) struct StepParticipant<'a> {
@@ -75,8 +76,25 @@ pub(crate) struct StepParticipant<'a> {
 }
 
 impl<'a> StepContext<'a> {
-    pub(crate) fn new(plan: ParticipantPlan<'a>, participants: BTreeMap<&'a str, StepParticipant<'a>>) -> Self {
-        Self { plan, participants }
+    pub(crate) fn new(
+        plan: ParticipantPlan<'a>, participants: BTreeMap<&'a str, StepParticipant<'a>>, log_dir: &'a Path,
+    ) -> Self {
+        Self {
+            plan,
+            participants,
+            log_dir,
+        }
+    }
+
+    /// Creates a file in the case's traffic directory, creating the directory when needed.
+    ///
+    /// # Errors
+    ///
+    /// Returns a harness error for a name other than a plain filename or an unsuccessful filesystem operation.
+    /// An existing file is rejected so parallel steps cannot overwrite another capture.
+    pub fn traffic_file(&self, name: &str) -> Result<std::fs::File, HandleError> {
+        crate::observe::collect::artifact_file(&self.log_dir.join("traffic"), name)
+            .map_err(|message| HandleError::Harness { message })
     }
 
     /// Returns a borrowed handle, or `None` if the participant did not start.
@@ -443,7 +461,7 @@ mod tests {
 
     fn compile(yaml: &str) -> CasePlan<FixtureConfig> {
         let case = fixtures::LOADER
-            .load_content(yaml, "case", std::path::Path::new("case/config.yaml"))
+            .load_content("cases", yaml, "case", std::path::Path::new("case/config.yaml"))
             .unwrap()
             .remove(0);
         Planner::new(fixtures::REGISTRIES, Default::default())
@@ -507,6 +525,47 @@ mod tests {
         }
     }
 
+    #[test]
+    fn traffic_files_are_confined_to_the_case_directory_and_never_overwrite_artifacts() {
+        use std::io::Write as _;
+
+        let plan = compile(crate::case::fixtures::PARTICIPANT_FIELDS);
+        let root = tempfile::tempdir().unwrap();
+        let cx = StepContext::new(plan.participants().unwrap(), BTreeMap::new(), root.path());
+        for name in [
+            "",
+            ".",
+            "..",
+            "../escape",
+            "/absolute",
+            "sub/file",
+            r"sub\file",
+            "C:drive",
+        ] {
+            assert!(
+                matches!(cx.traffic_file(name), Err(HandleError::Harness { .. })),
+                "{name}"
+            );
+        }
+        assert!(!root.path().join("traffic").exists());
+        cx.traffic_file("records.bin").unwrap().write_all(&[0, 255]).unwrap();
+        assert!(matches!(
+            cx.traffic_file("records.bin"),
+            Err(HandleError::Harness { .. })
+        ));
+        assert_eq!(
+            std::fs::read(root.path().join("traffic/records.bin")).unwrap(),
+            [0, 255]
+        );
+        let blocked = root.path().join("blocked");
+        std::fs::write(&blocked, b"not a directory").unwrap();
+        let cx = StepContext::new(plan.participants().unwrap(), BTreeMap::new(), &blocked);
+        assert!(matches!(
+            cx.traffic_file("records.bin"),
+            Err(HandleError::Harness { .. })
+        ));
+    }
+
     #[tokio::test]
     async fn handles_use_planned_endpoint_routes_and_reject_undeclared_needs() {
         let plan = compile("timeout: 30s\nsubject_os: [linux]\nparticipants:\n  subject: {type: server, subject: true}\nprocedure:\n  - {step: reach, endpoint: subject.metrics}\n  - {step: reach, endpoint: subject.metrics, operation: send}");
@@ -523,6 +582,7 @@ mod tests {
                     late: BTreeMap::from([(LateFact::ContainerId, "id")]),
                 },
             )]),
+            Path::new("."),
         );
         let handle = cx.handle("subject").unwrap();
         assert_eq!(handle.name(), "subject");
@@ -573,7 +633,7 @@ mod tests {
             steps: &[&CallFactory],
             typed_case_roles: &[],
         };
-        let case = CaseLoader::new(registries, FixtureTypes, "fixture").load_content(
+        let case = CaseLoader::new(registries, FixtureTypes).load_content("cases",
             "timeout: 30s\nsubject_os: [linux]\nparticipants:\n  subject: {type: server, subject: true}\nprocedure: [{step: call, on: subject, operation: config_dump}]", "case", std::path::Path::new("case/config.yaml"),
         ).unwrap().remove(0);
         let plan = Planner::new(registries, Default::default())
@@ -595,6 +655,7 @@ mod tests {
                     late: BTreeMap::new(),
                 },
             )]),
+            Path::new("."),
         );
         let handle = cx.handle("subject").unwrap();
         assert_eq!(
@@ -639,8 +700,8 @@ mod tests {
             steps: &factories,
             typed_case_roles: &[],
         };
-        let case = CaseLoader::new(registries, FixtureTypes, "fixture")
-            .load_content(
+        let case = CaseLoader::new(registries, FixtureTypes)
+            .load_content("cases",
                 "timeout: 30s\nsubject_os: [linux]\nparticipants:\n  subject: {type: server, subject: true}\nprocedure: [{step: reach, endpoint: subject.other, operation: request}, {step: call, on: subject, operation: http_dump}]",
                 "case",
                 std::path::Path::new("case/config.yaml"),
@@ -671,6 +732,7 @@ mod tests {
                     late: BTreeMap::new(),
                 },
             )]),
+            Path::new("."),
         );
         let handle = cx.handle("subject").unwrap();
         for endpoint in ["other", "missing"] {
@@ -753,6 +815,7 @@ mod tests {
                     late: BTreeMap::new(),
                 },
             )]),
+            Path::new("."),
         );
         let handle = cx.handle("subject").unwrap();
         assert_eq!(handle.processes().collect::<Vec<_>>(), ["server", "worker"]);
@@ -805,6 +868,7 @@ mod tests {
                         late,
                     },
                 )]),
+                Path::new("."),
             );
             let report = step.run(&cx).await;
             assert_eq!(report.status, status);
@@ -896,6 +960,7 @@ mod tests {
                     late: BTreeMap::from([(LateFact::Ip, "{{unresolved}}")]),
                 },
             )]),
+            Path::new("."),
         );
         assert_eq!(
             cx.resolve(&"{{subject.late.ip}}".parse().unwrap()),

@@ -12,21 +12,42 @@ use panoramic_core::ledger::ResourceLedger;
 use panoramic_core::record::{AssertionResult, AssertionStatus};
 use panoramic_core::result::{ErrorKind, PhaseTiming, TestResult};
 use panoramic_core::tasks::CaseTasks;
+use panoramic_steps::compare::{
+    analysis::{AnalysisMode, AnalysisRunner, TracesAnalysisOptions},
+    intake::{CollectedData, IntakeClient},
+};
 use saluki_error::{generic_error, GenericError};
 use tokio::{select, time::sleep};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, info_span, warn, Instrument as _, Span};
 
-use crate::correctness::{
-    analysis::{AnalysisMode, AnalysisRunner, TracesAnalysisOptions},
-    case::CorrectnessTestCase,
-    config::Runtime,
-};
+use crate::correctness::{case::CorrectnessTestCase, config::Runtime};
 use crate::{
-    intake::{CollectedData, IntakeClient},
     test::TestContext,
     traffic::{self, Side},
 };
+
+/// Creates the runner-host HTTP route to a published intake listener.
+pub(super) fn intake_client(
+    port: u16,
+) -> IntakeClient<
+    impl Fn(&'static str) -> futures::future::BoxFuture<'static, Result<panoramic_core::step::HttpResponse, GenericError>>,
+> {
+    let client = reqwest::Client::builder()
+        .read_timeout(Duration::from_secs(30))
+        .build()
+        .expect("the intake HTTP client should build");
+    IntakeClient::new(move |path: &'static str| {
+        let request = client.get(format!("http://127.0.0.1:{port}{path}"));
+        Box::pin(async move {
+            let response = request.send().await?;
+            Ok(panoramic_core::step::HttpResponse {
+                status: response.status().as_u16(),
+                body: response.bytes().await?.to_vec(),
+            })
+        }) as futures::future::BoxFuture<'static, Result<panoramic_core::step::HttpResponse, GenericError>>
+    })
+}
 
 /// Path where the original millstone config is mounted inside the shared millstone container.
 ///
@@ -395,7 +416,7 @@ impl CorrectnessRunner {
 
         // Phase 6: Collect data from both datadog-intake containers.
         info!("Collecting data from baseline and comparison intake containers...");
-        let collect = |port| async move { CollectedData::collect(&IntakeClient::new(port)).await };
+        let collect = |port| async move { CollectedData::collect(&intake_client(port)).await };
         tokio::try_join!(
             run_in_background(
                 tasks,
@@ -548,10 +569,10 @@ impl AgentGroupCollector {
 
 #[cfg(test)]
 mod tests {
+    use panoramic_steps::compare::intake::test_server::{install_crypto_provider, MockIntake};
     use tokio::time::timeout;
 
     use super::*;
-    use crate::intake::test_server::{install_crypto_provider, MockIntake};
 
     const BOUND: Duration = Duration::from_secs(5);
 
@@ -644,7 +665,7 @@ mod tests {
         let tasks = CaseTasks::new(&test_token);
         let port = intake.port();
         let collected = run_in_background(&tasks, &Span::none(), async move {
-            CollectedData::collect(&IntakeClient::new(port)).await
+            CollectedData::collect(&intake_client(port)).await
         });
         let canceller = test_token.clone();
         tokio::spawn(async move {
@@ -663,6 +684,44 @@ mod tests {
         assert!(
             intake.connections() > 0,
             "the collection should have reached the intake"
+        );
+    }
+}
+
+#[cfg(test)]
+mod intake_client_tests {
+    use std::time::Duration;
+
+    use panoramic_steps::compare::intake::test_server::MockIntake;
+    use tokio::time::Instant;
+
+    use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn collection_from_a_stalled_intake_fails_within_the_read_timeout() {
+        let intake = MockIntake::unresponsive().await;
+        let started = Instant::now();
+
+        let collected = tokio::time::timeout(
+            Duration::from_secs(120),
+            CollectedData::collect(&intake_client(intake.port())),
+        )
+        .await
+        .expect("collection should give up on a stalled intake within the bound");
+
+        let Err(error) = collected else {
+            panic!("collection from a stalled intake should fail");
+        };
+        assert_eq!(started.elapsed(), Duration::from_secs(30));
+        assert!(
+            format!("{error:#}").starts_with("Failed to call events dump endpoint on datadog-intake server.: "),
+            "{error:#}"
+        );
+        assert!(
+            error.chain().any(|cause| cause
+                .downcast_ref::<reqwest::Error>()
+                .is_some_and(reqwest::Error::is_timeout)),
+            "{error:#}"
         );
     }
 }

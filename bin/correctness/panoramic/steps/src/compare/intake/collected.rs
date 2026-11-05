@@ -1,4 +1,10 @@
+use std::future::Future;
+
+use base64::{engine::general_purpose::STANDARD, Engine as _};
+use panoramic_core::step::{HandleError, HttpResponse};
 use saluki_error::GenericError;
+use serde::de::DeserializeOwned;
+use serde_json::Value;
 use stele::{ClientStatisticsAggregator, Event, Metric, ServiceCheck, Span};
 
 use super::IntakeClient;
@@ -6,7 +12,7 @@ use super::IntakeClient;
 /// Collected data from a test target.
 ///
 /// Holds all telemetry data sent by the test target to the `datadog-intake` server spawned for the test run.
-#[cfg_attr(test, derive(Default))]
+#[derive(Default)]
 pub struct CollectedData {
     events: Vec<Event>,
     metrics: Vec<Metric>,
@@ -25,7 +31,11 @@ impl CollectedData {
     /// # Errors
     ///
     /// If any endpoint's data can't be retrieved from the `datadog-intake` server, an error is returned.
-    pub async fn collect(client: &IntakeClient) -> Result<Self, GenericError> {
+    pub async fn collect<F, Fut>(client: &IntakeClient<F>) -> Result<Self, GenericError>
+    where
+        F: Fn(&'static str) -> Fut,
+        Fut: Future<Output = Result<HttpResponse, GenericError>>,
+    {
         let events = client.events().await?;
         let metrics = client.metrics().await?;
         let service_checks = client.service_checks().await?;
@@ -40,6 +50,32 @@ impl CollectedData {
             spans,
             trace_stats,
             dogstatsd_forwarded_packets,
+        })
+    }
+
+    /// Collects each telemetry kind once through a participant's `dump` operation.
+    ///
+    /// # Errors
+    ///
+    /// Preserves operation errors; an invalid telemetry shape is a product error.
+    pub(crate) async fn collect_dumps<F, Fut>(dump: F) -> Result<Self, HandleError>
+    where
+        F: Fn(&'static str) -> Fut,
+        Fut: Future<Output = Result<Value, HandleError>>,
+    {
+        let events = decode_dump("events", dump("events").await?)?;
+        let metrics = decode_dump("metrics", dump("metrics").await?)?;
+        let service_checks = decode_dump("service_checks", dump("service_checks").await?)?;
+        let spans = decode_dump("spans", dump("spans").await?)?;
+        let trace_stats = decode_dump("trace_stats", dump("trace_stats").await?)?;
+        let packets: Vec<Vec<u8>> = decode_dump("dogstatsd_forwarded", dump("dogstatsd_forwarded").await?)?;
+        Ok(Self {
+            events,
+            metrics,
+            service_checks,
+            spans,
+            trace_stats,
+            dogstatsd_forwarded_packets: packets.into_iter().map(|packet| STANDARD.encode(packet)).collect(),
         })
     }
 
@@ -74,40 +110,8 @@ impl CollectedData {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use std::time::Duration;
-
-    use tokio::time::Instant;
-
-    use super::*;
-    use crate::intake::test_server::MockIntake;
-
-    #[tokio::test(start_paused = true)]
-    async fn collection_from_a_stalled_intake_fails_within_the_read_timeout() {
-        let intake = MockIntake::unresponsive().await;
-        let started = Instant::now();
-
-        let collected = tokio::time::timeout(
-            Duration::from_secs(120),
-            CollectedData::collect(&IntakeClient::new(intake.port())),
-        )
-        .await
-        .expect("collection should give up on a stalled intake within the bound");
-
-        let Err(error) = collected else {
-            panic!("collection from a stalled intake should fail");
-        };
-        assert_eq!(started.elapsed(), Duration::from_secs(30));
-        assert!(
-            format!("{error:#}").starts_with("Failed to call events dump endpoint on datadog-intake server.: "),
-            "{error:#}"
-        );
-        assert!(
-            error.chain().any(|cause| cause
-                .downcast_ref::<reqwest::Error>()
-                .is_some_and(reqwest::Error::is_timeout)),
-            "{error:#}"
-        );
-    }
+fn decode_dump<T: DeserializeOwned>(kind: &str, value: Value) -> Result<T, HandleError> {
+    serde_json::from_value(value).map_err(|error| HandleError::Product {
+        message: format!("Failed to decode dumped {kind} from intake: {error}"),
+    })
 }

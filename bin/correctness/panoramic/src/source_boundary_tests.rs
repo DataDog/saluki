@@ -39,6 +39,7 @@ struct Boundary {
     crate_dir: &'static str,
     terms: &'static [Term],
     exemptions: bool,
+    exact_exemptions: &'static [(&'static str, &'static str)],
     guidance: &'static str,
 }
 
@@ -57,6 +58,7 @@ const CORE: Boundary = Boundary {
         Term::Number("55001"),
     ],
     exemptions: true,
+    exact_exemptions: &[],
     guidance: "Product knowledge belongs in panoramic-participants; exempt an unavoidable line with `// north-star: <reason>`.",
 };
 
@@ -87,9 +89,21 @@ const STEPS: Boundary = Boundary {
         Term::Ident("pod"),
     ],
     exemptions: false,
+    exact_exemptions: STEPS_METRIC_PREFIX_EXEMPTIONS,
     guidance:
         "Steps reach participants through handles and must not name realizations, host mechanisms or product paths.",
 };
+
+const STEPS_METRIC_PREFIX_EXEMPTIONS: &[(&str, &str)] = &[
+    (
+        "steps/src/compare/analysis/metrics/mod.rs",
+        "|| name.starts_with(\"docker.\")",
+    ),
+    (
+        "steps/src/compare/analysis/metrics/mod.rs",
+        "|| name.starts_with(\"container.\")",
+    ),
+];
 
 impl Boundary {
     /// Core exemptions require a reason on the matching line. Stale markers fail so exemptions stay justified.
@@ -99,6 +113,9 @@ impl Boundary {
         let mut problems = Vec::new();
         for (path, text) in files {
             for (index, line) in text.lines().enumerate() {
+                if self.exact_exemptions.contains(&(path.as_str(), line.trim())) {
+                    continue;
+                }
                 let terms: Vec<_> = self.terms.iter().filter_map(|term| term.find_in(line)).collect();
                 let reason = line.split_once("// north-star:").map(|(_, reason)| reason.trim());
                 if self.exemptions && reason.is_some() {
@@ -481,5 +498,40 @@ fn symlinks_and_special_files_are_errors() {
 
         let _socket = UnixListener::bind(&path).unwrap();
         assert_eq!(source_files(dir.path(), "core").unwrap_err(), expected);
+    }
+}
+
+#[test]
+fn only_exact_metric_filter_prefix_lines_are_exempt() {
+    let path = "steps/src/compare/analysis/metrics/mod.rs";
+    for line in [
+        r#"|| name.starts_with("docker.")"#,
+        r#"|| name.starts_with("container.")"#,
+    ] {
+        assert!(STEPS.violations(&[(path.into(), line.into())]).is_empty());
+        assert!(!STEPS
+            .violations(&[("steps/src/other.rs".into(), line.into())])
+            .is_empty());
+        for changed in [
+            format!("{line} // container"),
+            line.replace("name", "path"),
+            line.replace("docker.", "docker/").replace("container.", "container/"),
+        ] {
+            assert!(!STEPS.violations(&[(path.into(), changed)]).is_empty());
+        }
+    }
+}
+
+#[test]
+fn metric_prefix_exemptions_require_both_the_exact_path_and_line() {
+    for &(path, line) in STEPS_METRIC_PREFIX_EXEMPTIONS {
+        assert!(STEPS.violations(&[(path.into(), line.into())]).is_empty());
+        assert_eq!(STEPS.violations(&[("steps/src/other.rs".into(), line.into())]).len(), 1);
+        assert_eq!(
+            STEPS
+                .violations(&[(path.into(), format!("{line} // another use"))])
+                .len(),
+            1
+        );
     }
 }

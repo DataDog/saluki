@@ -7,7 +7,7 @@ use saluki_error::{generic_error, GenericError};
 use crate::{
     artifact::{ArtifactBinding, ArtifactManifest, ArtifactRole},
     backend,
-    case::{config_references::FileTemplates, CaseConfig, CaseFile, CaseSchema, ProcedureNode, Registries},
+    case::{config_references::FileTemplates, CaseConfig, CaseFile, CaseSchema, FileSource, ProcedureNode, Registries},
     endpoint::{Endpoint, EndpointOperation, Listener, Port, ResolvedAddress, RunnerHostPort, RunnerHostRoute},
     layout::{describe_participant, lay_out, Layout, LayoutEntry, Os},
     participant::{
@@ -20,6 +20,7 @@ use crate::{
 mod artifacts;
 mod connections;
 mod endpoints;
+pub(crate) mod files;
 mod order;
 mod ports;
 mod procedure;
@@ -91,7 +92,6 @@ pub struct ParticipantPlan<'a> {
     file: &'a CaseFile,
     procedure: &'a [ProcedureNode<Box<dyn Step>>],
     templates: &'a FileTemplates,
-    source: &'a Path,
     data: &'a ParticipantData,
 }
 
@@ -229,6 +229,7 @@ impl<'a> Planner<'a> {
                     file,
                     procedure,
                     case.file_templates(),
+                    case.source(),
                     &candidate,
                     &candidate_scope,
                     self.registries.participant_types,
@@ -294,7 +295,6 @@ impl<C> CasePlan<C> {
             file,
             procedure,
             templates: self.case.file_templates(),
-            source: self.case.source(),
             data: self.participants.as_ref()?,
         })
     }
@@ -417,8 +417,8 @@ impl<'a> ParticipantPlan<'a> {
     pub(crate) fn templates(self) -> &'a FileTemplates {
         self.templates
     }
-    pub(crate) fn source(self) -> &'a Path {
-        self.source
+    pub(crate) fn file_sources(self, participant: &str) -> &'a BTreeMap<String, FileSource> {
+        &self.data.planned.participants[participant].case_values.files
     }
     pub(crate) fn scope(self) -> &'a ScopeLayout {
         &self.data.scope
@@ -533,8 +533,8 @@ impl<'a> ParticipantPlan<'a> {
 /// Then computes create and start orders, plans readiness gates and checks step needs,
 /// storing their runner-host routes.
 fn plan_participants(
-    file: &CaseFile, procedure: &[ProcedureNode<Box<dyn Step>>], templates: &FileTemplates, layout: &Layout,
-    scope: &ScopeLayout, types: &[&dyn ParticipantType], ports: &mut PortRegistry,
+    file: &CaseFile, procedure: &[ProcedureNode<Box<dyn Step>>], templates: &FileTemplates, source: &Path,
+    layout: &Layout, scope: &ScopeLayout, types: &[&dyn ParticipantType], ports: &mut PortRegistry,
 ) -> Result<PlannedCase, String> {
     let mut facts: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
     for (name, realization) in layout.iter() {
@@ -571,7 +571,10 @@ fn plan_participants(
         }
         let mut values = CaseValues::for_os(&entry.config, realization.os);
         references::resolve_config_references(file, layout, types, &facts, name, &mut values)?;
-        references::check_file_references(file, templates, layout, types, &facts, name, &values)?;
+        references::resolve_file_references(file, templates, layout, types, &facts, name, &mut values)?;
+        for (file_name, file_source) in values.files.iter().filter(|(_, source)| !source.template) {
+            files::read_source(name, file_name, file_source, source, &mut values.file_contents)?;
+        }
         let (config, endpoints) = derive_endpoints(
             &holder,
             participant_type,
@@ -994,7 +997,7 @@ mod tests {
             steps: STEPS,
             ..FILE_REGISTRIES
         };
-        let loader = CaseLoader::new(registries, FixtureTypes, "fixture-participants");
+        let loader = CaseLoader::new(registries, FixtureTypes);
         let mut yaml = r#"timeout: 1s
 subject_os: [linux]
 participants:
@@ -1059,7 +1062,7 @@ procedure: [{step: probe, on: subject, path: '{{observer.facts.file}}'}]
             ),
         ] {
             let case = loader
-                .load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml"))
+                .load_content("cases", &yaml, "alpha", Path::new("cases/alpha/config.yaml"))
                 .unwrap()
                 .remove(0);
             let message = Planner::with_run(registries, "testrun0")
@@ -1072,7 +1075,7 @@ procedure: [{step: probe, on: subject, path: '{{observer.facts.file}}'}]
             yaml = yaml.replace(bad, fix);
         }
         let case = loader
-            .load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml"))
+            .load_content("cases", &yaml, "alpha", Path::new("cases/alpha/config.yaml"))
             .unwrap()
             .remove(0);
         let plan = Planner::with_run(registries, "testrun0")
@@ -1150,7 +1153,7 @@ procedure: [{step: probe, on: subject, path: '{{observer.facts.file}}'}]
             (Os::Windows, RealizationKind::WindowsContainer),
         ] {
             let case = LOADER
-                .load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml"))
+                .load_content("cases", &yaml, "alpha", Path::new("cases/alpha/config.yaml"))
                 .unwrap()
                 .remove(0);
             let mut planner = Planner::with_run(REGISTRIES, "testrun0");
@@ -1171,7 +1174,12 @@ procedure: [{step: probe, on: subject, path: '{{observer.facts.file}}'}]
     #[test]
     fn an_excluded_participant_case_allocates_no_isolation_scope_or_runner_host_ports() {
         let case = CONFIG_LOADER
-            .load_content(&host_to_container_case(), "alpha", Path::new("cases/alpha/config.yaml"))
+            .load_content(
+                "cases",
+                &host_to_container_case(),
+                "alpha",
+                Path::new("cases/alpha/config.yaml"),
+            )
             .unwrap()
             .remove(0);
         let mut planner = planner();
@@ -1196,7 +1204,7 @@ procedure: [{step: probe, on: subject, path: '{{observer.facts.file}}'}]
             .replace("subject: true", "subject: true, realization: {kind: linux-container}");
         for os in [Os::Linux, Os::MacOs, Os::Windows] {
             let case = LOADER
-                .load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml"))
+                .load_content("cases", &yaml, "alpha", Path::new("cases/alpha/config.yaml"))
                 .unwrap()
                 .remove(0);
             let message = Planner::with_run(REGISTRIES, "testrun0")
@@ -1218,7 +1226,7 @@ procedure: [{step: probe, on: subject, path: '{{observer.facts.file}}'}]
     fn a_typed_case_is_planned_without_a_layout_for_its_declared_subject_os() {
         for os in [Os::MacOs, Os::Windows] {
             let case = LOADER
-                .load_content("type: fixture", "alpha", Path::new("config.yaml"))
+                .load_content("cases", "type: fixture", "alpha", Path::new("config.yaml"))
                 .unwrap()
                 .remove(0);
             let mut planner = Planner::with_run(REGISTRIES, "testrun0");
@@ -1237,7 +1245,7 @@ procedure: [{step: probe, on: subject, path: '{{observer.facts.file}}'}]
     fn compile_errors_name_the_case_source_and_subject_os() {
         let yaml = PARTICIPANT_FIELDS.replace("subject: true", "subject: true, realization: {kind: kubernetes-pod}");
         let case = LOADER
-            .load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml"))
+            .load_content("cases", &yaml, "alpha", Path::new("cases/alpha/config.yaml"))
             .unwrap()
             .remove(0);
         let message = Planner::with_run(REGISTRIES, "testrun0")

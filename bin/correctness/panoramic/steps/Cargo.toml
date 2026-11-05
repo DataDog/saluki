@@ -10,24 +10,33 @@ workspace = true
 
 [features]
 default = []
-test-util = ["dep:serde-saphyr"]
+test-util = ["dep:serde-saphyr", "dep:saluki-tls", "tokio/net", "tokio/rt"]
 
 [dependencies]
 async-trait = { workspace = true }
+base64 = { workspace = true }
 futures = { workspace = true }
 panoramic-core = { workspace = true }
 regex = { workspace = true, features = ["std"] }
+saluki-common = { workspace = true }
 saluki-error = { workspace = true }
+saluki-tls = { workspace = true, optional = true }
 serde = { workspace = true }
 serde-saphyr = { workspace = true, optional = true }
 serde_json = { workspace = true }
 stele = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
 
+tracing = { workspace = true }
+treediff = { workspace = true, features = ["with-serde-json"] }
+zstd = { workspace = true }
+
 [dev-dependencies]
+datadog-protos = { workspace = true }
 panoramic-core = { workspace = true, features = ["test-util"] }
 rustls = { workspace = true }
 saluki-tls = { workspace = true, features = ["test-util"] }
 serde-saphyr = { workspace = true }
+tempfile = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "test-util"] }
 tokio-rustls = { workspace = true }

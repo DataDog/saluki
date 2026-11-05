@@ -23,7 +23,7 @@ use crate::{
         case::CorrectnessTestCase,
         config::{Config as CorrectnessConfig, Runtime},
     },
-    test::{Test, TestSuite},
+    test::Test,
 };
 
 /// Time budget for correctness cases, which run two isolation groups of several containers each.
@@ -171,7 +171,7 @@ fn from_correctness(name: String, config: CorrectnessConfig) -> TypedCase<TypedC
     TypedCase {
         name,
         description: None,
-        suite: TestSuite::Correctness.name().to_string(),
+        suite: "correctness".to_string(),
         timeout: CORRECTNESS_TIMEOUT,
         subject_os: BTreeSet::from([Os::Linux]),
         artifact_roles,
@@ -347,7 +347,7 @@ mod tests {
         assert_eq!(case.description(), None);
         assert_eq!(case.timeout(), CORRECTNESS_TIMEOUT);
         assert_eq!(case.timeout(), Duration::from_mins(20));
-        assert_eq!(case.suite(), TestSuite::Correctness.name());
+        assert_eq!(case.suite(), "correctness");
         assert_eq!(*case.subject_os(), BTreeSet::from([Os::Linux]));
         assert!(!case.is_disabled());
     }
@@ -373,7 +373,7 @@ mod tests {
             let case = built.plan.case();
             assert_eq!(case.source(), source);
             assert_eq!(case.timeout(), CORRECTNESS_TIMEOUT);
-            assert_eq!(case.suite(), TestSuite::Correctness.name());
+            assert_eq!(case.suite(), "correctness");
             assert_eq!(case.description(), None);
             assert_eq!(*case.subject_os(), BTreeSet::from([Os::Linux]));
             assert!(!case.is_disabled());

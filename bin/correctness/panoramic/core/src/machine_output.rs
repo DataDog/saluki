@@ -177,6 +177,8 @@ pub struct TestReport {
     pub(crate) layout: Option<Vec<LayoutEntry>>,
     /// Native participants whose creation was attempted and their observed processes.
     pub(crate) participants: Vec<ParticipantReport>,
+    /// Files copied from participants into the case artifacts.
+    pub(crate) collected: Vec<crate::result::Collected>,
     /// How long the test took.
     pub(crate) duration_ms: u64,
     /// Absolute path of this test's log directory, when the runner knows it.
@@ -385,6 +387,7 @@ impl TestReport {
             skip_reason: Some(skip_reason(subject_os)),
             layout: None,
             participants: Vec::new(),
+            collected: Vec::new(),
             duration_ms: 0,
             log_dir: None,
             artifacts: Vec::new(),
@@ -449,6 +452,7 @@ impl TestReport {
             skip_reason: None,
             layout: result.layout.clone(),
             participants: result.participants.clone(),
+            collected: result.collected.clone(),
             duration_ms: DurationMs(result.duration).as_millis(),
             log_dir: result.log_dir.clone(),
             artifacts,
@@ -717,6 +721,7 @@ mod tests {
         }
         for field in [
             "artifacts",
+            "collected",
             "assertions",
             "phase_timings",
             "reclaim",

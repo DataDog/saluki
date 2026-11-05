@@ -8,5 +8,5 @@ pub use self::client::IntakeClient;
 mod collected;
 pub use self::collected::CollectedData;
 
-#[cfg(test)]
-pub(crate) mod test_server;
+#[cfg(any(test, feature = "test-util"))]
+pub mod test_server;

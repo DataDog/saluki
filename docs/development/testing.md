@@ -253,6 +253,9 @@ procedure:   # Required; at least one step.
     timeout: 30s
 ```
 
+A participant case's reporting suite is the directory above its discovery root: both `test/correctness/cases/`
+and `test/correctness/disabled/` report `correctness`; `test/integration/cases/` reports `integration`.
+
 Participant cases use native execution on every subject OS, including `agent-adp` in Windows containers.
 Panoramic prepares each case's scope, creates participants in create order
 from verified artifacts, and starts each level once the readiness evidence of the servers it connects to is observed. A
@@ -476,9 +479,10 @@ ports must be outside the assigned pool, `20000–29999`.
 Both endpoints declare readiness as HTTP 200 from `api` at `/ready`: the intake binds UDP before starting HTTP.
 Connections wait for that evidence before starting their consumer. Each intake stores its own telemetry.
 
-The intake's `dump` operation accepts one `kind`: `metrics`, `dogstatsd_forwarded`, or `service_checks`.
-`metrics` and `service_checks` return the JSON arrays of stele metrics and service checks unchanged, from
-`/metrics/dump` and `/service_checks/dump`. `dogstatsd_forwarded` requests `/dogstatsd-forwarding/dump` and returns
+The intake's `dump` operation accepts one `kind`: `metrics`, `events`, `service_checks`, `spans`, `trace_stats`,
+or `dogstatsd_forwarded`. The first five return JSON unchanged from `/metrics/dump`, `/events/dump`,
+`/service_checks/dump`, `/traces/dump_spans`, and `/traces/dump_stats`, respectively.
+`dogstatsd_forwarded` requests `/dogstatsd-forwarding/dump` and returns
 an array of packets, each an array of byte values decoded from the intake's base64 wire format.
 The operation declares only `api`. Unknown kinds and extra arguments
 are harness errors before any request. Non-success HTTP status, invalid JSON and invalid packet encoding are product
@@ -670,8 +674,9 @@ The participant type chooses destination paths and file modes.
 
 A `config.files` source can be a map with `from` and `template: true`. Panoramic reads that file when the case
 loads: it must be a regular UTF-8 file, and every double opening brace in it must start a reference.
-Other sources aren't read. On every OS in `subject_os`, references in the files a participant uses after its
-overlay follow the rules for environment variables, except for late facts. A Kubernetes pod's template files
+Other sources are read verbatim during planning; creation uses those saved bytes even if a source changes.
+On every OS in `subject_os`, references in the files a participant uses after its overlay follow the rules for
+environment variables, except for late facts. A Kubernetes pod's template files
 may reference any late fact the referenced participant has, including the pod's own, except a host process group's
 `ip`, which only participants on that host process group's realization can use. On other realizations, a template
 file may not reference the participant's own late facts, except for a host process group's fixed `ip`.
@@ -1037,6 +1042,13 @@ For native cases, `diagnostic_lines` reads declared process outputs and containe
 Non-blank stderr lines qualify; stdout and merged output require severity markers. Legacy cases use
 filename-based stream classification. `artifacts` lists files under the test's log directory.
 
+After the procedure, participant types can collect declared files from running or exited participants.
+Files go under `<participant>/collected/`, or `traffic/` for declared traffic captures. Copies still present after
+traffic retention appear as `{participant, kind, path}` in `collected` in `result.json`; merged sidecars and deleted
+captures are described by `traffic/manifest.json`. Collection continues after a case deadline but stops on run
+interruption. A missing file, failed read or write, or a collection exceeding five seconds adds a `collection_failed`
+issue without changing the procedure's verdict.
+
 Follow report types in `bin/correctness/panoramic/core/src/machine_output.rs` for semantics. For precedence rules, see
 `TestResult::from_steps` in `bin/correctness/panoramic/core/src/result.rs` and `exit_code` in
 `bin/correctness/panoramic/src/collector.rs`. The current `schema_version` is 3. Check it and `run.json`'s
@@ -1073,7 +1085,23 @@ zstd -dc traffic/<file-name> | head -5
 ```
 
 The module docs in `bin/correctness/panoramic/src/traffic.rs` explain each artifact, its retention, and record ordering.
-Native intake assertions read the intake through its participant operations.
+Native intake assertions read the intake through its participant operations. The `compare` step reads each dump
+once from two distinct participants offering `dump`. Both snapshots are fetched concurrently; decoded captures
+identify the participants and the dump operation, without assuming which products they run:
+
+```yaml
+- step: compare
+  kind: metrics
+  subject: intake-adp
+  baseline: intake-agent
+  require_forwarded_packets: false
+```
+
+`kind` is `metrics`, `events`, `service_checks`, or `traces`. Trace comparisons also accept `otlp_direct` (default
+false) and `ignore_fields` (default empty). Forwarded packets are compared for every kind; `require_forwarded_packets`
+(default false) additionally requires nonempty captures. Mismatches and invalid product responses fail the step;
+transport and other harness failures error it. Capture-write failures are recorded in the traffic manifest without
+changing the comparison verdict.
 
 ## Benchmark tests: Single Machine Performance (SMP)
 

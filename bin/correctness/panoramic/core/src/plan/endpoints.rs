@@ -293,7 +293,7 @@ mod tests {
         artifact::ArtifactRole,
         case::{
             fixtures::{minimal_procedure, write_case, Client, FixtureTypes, Server, PARTICIPANT_FIELDS, STEPS},
-            CaseLoader, FileSource, Registries,
+            CaseLoader, Registries,
         },
         plan::{
             fixtures::{
@@ -626,10 +626,10 @@ participants:
             steps: STEPS,
             ..Default::default()
         };
-        let loader = CaseLoader::new(registries, FixtureTypes, "fixture-participants");
+        let loader = CaseLoader::new(registries, FixtureTypes);
         let yaml = CONNECTION_CASE.replace("type: client", "type: hooks, config: {env: {CASE: value}}");
         let case = loader
-            .load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml"))
+            .load_content("cases", &yaml, "alpha", Path::new("cases/alpha/config.yaml"))
             .unwrap()
             .remove(0);
         let plan = Planner::with_run(registries, "testrun0")
@@ -926,13 +926,7 @@ participants:
                 assert_eq!(effective.env.get("PORT"), None);
                 assert_eq!(
                     effective.files,
-                    BTreeMap::from([(
-                        "settings.yaml".into(),
-                        FileSource {
-                            from: "windows.yaml".into(),
-                            template: true,
-                        }
-                    )])
+                    BTreeMap::from([("settings.yaml".into(), b"port: 7".to_vec())])
                 );
             } else {
                 assert_eq!(effective.env.get("PORT").map(String::as_str), Some("1"));
@@ -986,7 +980,7 @@ participants:
             steps: STEPS,
             ..Default::default()
         };
-        let loader = CaseLoader::new(registries, FixtureTypes, "fixture-participants");
+        let loader = CaseLoader::new(registries, FixtureTypes);
         for (participants, expected) in [
             (
                 "  subject: {type: minimal, subject: true, config: {endpoints: {api: {port: 80}}}}",
@@ -1002,7 +996,7 @@ participants:
             ),
         ] {
             let yaml = format!("timeout: 1s\nsubject_os: [linux]\nparticipants:\n{participants}\n{}\n", minimal_procedure!());
-            let case = loader.load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml")).unwrap().remove(0);
+            let case = loader.load_content("cases", &yaml, "alpha", Path::new("cases/alpha/config.yaml")).unwrap().remove(0);
             let message = Planner::with_run(registries, "testrun0").compile(case, Os::Linux).err().unwrap().to_string();
             assert_eq!(message, format!("case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', {expected}"));
         }

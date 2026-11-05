@@ -138,8 +138,8 @@ mod tests {
         STANDARD.encode(messages.join("\n"))
     }
 
-    const BASELINE_TELEMETRY: &str = "datadog.dogstatsd.client.metrics:1|c|#client:go|c:baseline-container-id";
-    const COMPARISON_TELEMETRY: &str = "datadog.dogstatsd.client.metrics:1|c|#client:go|c:comparison-container-id";
+    const BASELINE_TELEMETRY: &str = "datadog.dogstatsd.client.metrics:1|c|#client:go|c:baseline-sender-id";
+    const COMPARISON_TELEMETRY: &str = "datadog.dogstatsd.client.metrics:1|c|#client:go|c:comparison-sender-id";
     const CORPUS_MESSAGE: &str = "my.metric:1|c";
 
     #[test]

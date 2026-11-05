@@ -354,7 +354,9 @@ fn environment_only_cases_plan_natively_with_their_exit_and_api_needs_on_every_o
 fn registered_template_fields_match_step_types_and_other_fields_reject_references() {
     for factory in REGISTERED_STEPS {
         let mut fields = valid_fields(factory.name());
-        fields.insert("on".into(), Value::String("adp".into()));
+        if fields.contains_key("on") {
+            fields.insert("on".into(), Value::String("adp".into()));
+        }
         if matches!(
             factory.name(),
             "exits_with" | "log_contains" | "log_not_contains" | "process_stable_for"
@@ -387,11 +389,17 @@ fn registered_template_fields_match_step_types_and_other_fields_reject_reference
                 },
             );
             let declared = factory.template_fields().contains(&field.as_str());
-            let decode_error = if factory.name() == "config_key_equals" && field == "view" {
+            let decode_error = if (factory.name() == "config_key_equals" && field == "view")
+                || (factory.name() == "compare" && field == "kind")
+            {
                 let message = factory.build(&referenced).unwrap_err();
                 assert_eq!(
                     message,
-                    "view: unknown variant `{{ adp.facts.default_log_file }}`, expected `source` or `runtime`"
+                    if factory.name() == "compare" {
+                        "kind: unknown variant `{{ adp.facts.default_log_file }}`, expected one of `events`, `metrics`, `service_checks`, `traces`"
+                    } else {
+                        "view: unknown variant `{{ adp.facts.default_log_file }}`, expected `source` or `runtime`"
+                    }
                 );
                 assert!(!declared);
                 Some(message)
@@ -409,7 +417,7 @@ fn registered_template_fields_match_step_types_and_other_fields_reject_reference
             referenced.insert("step".into(), Value::String(factory.name().into()));
             let mut file: Value = serde_saphyr::from_str(PARTICIPANT_FIELDS).unwrap();
             file["procedure"] = serde_json::json!([referenced]);
-            let result = crate::CASE_LOADER.load_content(&file.to_string(), "alpha", Path::new("config.yaml"));
+            let result = crate::CASE_LOADER.load_content("cases", &file.to_string(), "alpha", Path::new("config.yaml"));
             if let Some(message) = decode_error {
                 assert_eq!(
                     result.err().expect("invalid view must fail").to_string(),
@@ -447,11 +455,11 @@ fn participant_step_errors_name_the_canonical_file_and_step() {
     for (fields, expected) in [
         (
             "step: wait_ready",
-            "names unknown step 'wait_ready'; registered steps: cli, config_key_equals, config_set, dogstatsd_replay, exec, exits_with, file_contains, http_check, intake_has_forwarded_packets, intake_has_metric, intake_has_service_check, log_contains, log_not_contains, port_listening, process_stable_for, send",
+            "names unknown step 'wait_ready'; registered steps: cli, compare, config_key_equals, config_set, dogstatsd_replay, exec, exits_with, file_contains, http_check, intake_has_forwarded_packets, intake_has_metric, intake_has_service_check, log_contains, log_not_contains, port_listening, process_stable_for, send",
         ),
         (
             "step: adp_cli, on: adp, args: [status]",
-            "names unknown step 'adp_cli'; registered steps: cli, config_key_equals, config_set, dogstatsd_replay, exec, exits_with, file_contains, http_check, intake_has_forwarded_packets, intake_has_metric, intake_has_service_check, log_contains, log_not_contains, port_listening, process_stable_for, send",
+            "names unknown step 'adp_cli'; registered steps: cli, compare, config_key_equals, config_set, dogstatsd_replay, exec, exits_with, file_contains, http_check, intake_has_forwarded_packets, intake_has_metric, intake_has_service_check, log_contains, log_not_contains, port_listening, process_stable_for, send",
         ),
         (
             "step: port_listening, on: adp, timeout: 1s",
@@ -578,7 +586,7 @@ fn agent_adp_env_placeholders_from_the_integration_schema_fail_at_load() {
             (format!("{{os: {{windows: {{env: {env}}}}}}}"), "config.os.windows.env"),
         ] {
             let yaml = PARTICIPANT_FIELDS.replace("[linux]", "[linux, windows]").replace("subject: true", &format!("subject: true, config: {config}"));
-            assert_eq!(crate::CASE_LOADER.load_content(&yaml, "alpha", Path::new("alpha/config.yaml")).err().unwrap().to_string(),
+            assert_eq!(crate::CASE_LOADER.load_content("cases", &yaml, "alpha", Path::new("alpha/config.yaml")).err().unwrap().to_string(),
                 format!("case 'alpha' in alpha/config.yaml: participant 'adp' {prefix} {reason}"));
         }
     }
@@ -597,7 +605,7 @@ fn agent_adp_default_log_file_in_env_plans_on_linux_and_windows_but_not_macos() 
         (Os::Windows, r"C:\ProgramData\Datadog\logs\agent-data-plane.log"),
     ] {
         let case = crate::CASE_LOADER
-            .load_content(&yaml, "alpha", Path::new("alpha/config.yaml"))
+            .load_content("cases", &yaml, "alpha", Path::new("alpha/config.yaml"))
             .unwrap()
             .remove(0);
         let plan = planner().compile(case, os).unwrap().into_plan().unwrap();
@@ -605,6 +613,7 @@ fn agent_adp_default_log_file_in_env_plans_on_linux_and_windows_but_not_macos() 
     }
     let case = crate::CASE_LOADER
         .load_content(
+            "cases",
             &yaml.replace("[linux, windows]", "[linux, macos, windows]"),
             "alpha",
             Path::new("alpha/config.yaml"),
@@ -631,7 +640,7 @@ fn agent_adp_accepts_and_canonicalizes_its_own_ip_in_container_env() {
                     &format!("subject: true, config: {{env: {{IP: '{reference}'}}}}"),
                 );
             let case = crate::CASE_LOADER
-                .load_content(&yaml, "alpha", Path::new("alpha/config.yaml"))
+                .load_content("cases", &yaml, "alpha", Path::new("alpha/config.yaml"))
                 .unwrap()
                 .remove(0);
             let plan = planner().compile(case, os).unwrap().into_plan().unwrap();
@@ -654,7 +663,7 @@ fn agent_adp_rejects_every_spelling_of_its_own_ip_in_an_adp_override() {
             &format!("subject: true, config: {{env: {{ADP_DD_BIND_HOST: '{reference}'}}}}"),
         );
         let case = crate::CASE_LOADER
-            .load_content(&yaml, "alpha", Path::new("alpha/config.yaml"))
+            .load_content("cases", &yaml, "alpha", Path::new("alpha/config.yaml"))
             .unwrap()
             .remove(0);
         let error = planner().compile(case, Os::Linux).err().unwrap().to_string();
@@ -670,6 +679,7 @@ fn agent_adp_rejects_every_spelling_of_its_own_ip_in_an_adp_override() {
 fn forwarding_case_frames_and_telemetry_match_their_wire_contracts() {
     let case = crate::CASE_LOADER
         .load_content(
+            "cases",
             include_str!("../../../../test/integration/cases/dogstatsd-forwarding/config.yaml"),
             "dogstatsd-forwarding",
             Path::new("test/integration/cases/dogstatsd-forwarding/config.yaml"),
@@ -813,7 +823,7 @@ fn realization_options_are_checked_against_the_backend() {
             "subject: true",
             &format!("subject: true, realization: {{kind: {kind}, options: {options}}}"),
         );
-        let loaded = crate::CASE_LOADER.load_content(&yaml, "alpha", Path::new("config.yaml"));
+        let loaded = crate::CASE_LOADER.load_content("cases", &yaml, "alpha", Path::new("config.yaml"));
         if let Some(option) = error {
             let message = loaded.err().expect("invalid option must fail at load").to_string();
             assert!(message.contains("participant 'adp'"), "{message}");

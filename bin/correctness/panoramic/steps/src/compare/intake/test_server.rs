@@ -8,20 +8,20 @@ use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 
 /// Installs the process-wide crypto provider, which building a `reqwest` client needs and `main` installs at startup.
-pub(crate) fn install_crypto_provider() {
-    let _ = crate::default_crypto_provider().install_default();
+pub fn install_crypto_provider() {
+    let _ = saluki_tls::initialize_default_crypto_provider();
 }
 
 /// Returns a local port with no listener, so every request to it fails to connect.
 ///
 /// Windows retries a refused connection for about two seconds before failing.
-pub(crate) fn closed_port() -> u16 {
+pub fn closed_port() -> u16 {
     let listener = StdTcpListener::bind("127.0.0.1:0").expect("should bind an ephemeral port");
     listener.local_addr().expect("should have a local address").port()
 }
 
 /// A local HTTP server that holds requests open. It stops when dropped.
-pub(crate) struct MockIntake {
+pub struct MockIntake {
     port: u16,
     connections: Arc<AtomicUsize>,
     task: JoinHandle<()>,
@@ -32,7 +32,7 @@ impl MockIntake {
     ///
     /// With Tokio's clock paused, requests stay pending as time advances to the next timer, making timeout tests
     /// independent of response timing.
-    pub(crate) async fn unresponsive() -> Self {
+    pub async fn unresponsive() -> Self {
         Self::spawn(|listener, connections| async move {
             let mut held = Vec::new();
             while let Ok((stream, _)) = listener.accept().await {
@@ -63,12 +63,12 @@ impl MockIntake {
     }
 
     /// Returns the port the server listens on.
-    pub(crate) fn port(&self) -> u16 {
+    pub fn port(&self) -> u16 {
         self.port
     }
 
     /// Returns how many connections the server has accepted.
-    pub(crate) fn connections(&self) -> usize {
+    pub fn connections(&self) -> usize {
         self.connections.load(Ordering::SeqCst)
     }
 }

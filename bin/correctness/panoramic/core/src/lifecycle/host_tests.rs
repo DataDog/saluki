@@ -122,8 +122,8 @@ const REGISTRIES: Registries<'static> = Registries {
 
 fn plan(participants: serde_json::Value, procedure: serde_json::Value, run: &str) -> CasePlan<FixtureConfig> {
     let yaml = json!({"timeout": "30s", "subject_os": [Os::host().name()], "participants": participants, "procedure": procedure}).to_string();
-    let case = CaseLoader::new(REGISTRIES, FixtureTypes, "host-fixture")
-        .load_content(&yaml, "case", Path::new("/cases/host/config.yaml"))
+    let case = CaseLoader::new(REGISTRIES, FixtureTypes)
+        .load_content("cases", &yaml, "case", Path::new("/cases/host/config.yaml"))
         .unwrap()
         .remove(0);
     Planner::with_run(REGISTRIES, run)
@@ -136,6 +136,7 @@ fn plan(participants: serde_json::Value, procedure: serde_json::Value, run: &str
 fn control(path: &Path) -> CaseControl {
     let cancel = CancellationToken::new();
     CaseControl {
+        interrupt: CancellationToken::new(),
         observations: Observations::default(),
         record: CaseRecord::default(),
         deadline: Deadline::after(Budget::Case, BOUND),

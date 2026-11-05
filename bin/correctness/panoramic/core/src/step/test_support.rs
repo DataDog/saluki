@@ -27,6 +27,7 @@ use crate::{
 
 #[derive(Clone, Copy)]
 struct Fixture {
+    name: &'static str,
     processes: &'static [&'static str],
     tls: bool,
     operations: &'static [&'static dyn Operation],
@@ -36,7 +37,7 @@ const DEFAULT_OPERATIONS: &[&dyn Operation] = &[&ConfigDump, &Dump];
 
 impl ParticipantType for Fixture {
     fn name(&self) -> &'static str {
-        "fixture"
+        self.name
     }
     fn supports(&self) -> &'static [(Os, RealizationKind)] {
         &[(Os::Linux, RealizationKind::LinuxContainer)]
@@ -213,6 +214,7 @@ async fn run_step_using(
     operations: &'static [&'static dyn Operation],
 ) -> StepReport {
     let fixture = Fixture {
+        name: "fixture",
         processes: fake.map_or(&["main", "worker"][..], |fake| fake.process_names),
         tls,
         operations,
@@ -230,8 +232,8 @@ async fn run_step_using(
         "procedure": [fields],
     })
     .to_string();
-    let case = CaseLoader::new(registries, fixture, "fixture")
-        .load_content(&content, "case", Path::new("cases/case/config.yaml"))
+    let case = CaseLoader::new(registries, fixture)
+        .load_content("cases", &content, "case", Path::new("cases/case/config.yaml"))
         .unwrap()
         .remove(0);
     let mut planner = Planner::new(registries, Default::default()).unwrap();
@@ -240,11 +242,73 @@ async fn run_step_using(
     }
     let plan = planner.compile(case, Os::Linux).unwrap().into_plan().unwrap();
     let plan = plan.participants().unwrap();
+    let fakes = fake.map(|fake| ("subject", fake)).into_iter().collect::<Vec<_>>();
+    run_planned_step(plan, &fakes, Path::new(".")).await
+}
+
+/// Runs a step with named scripted participants and a case artifact directory.
+/// The participant named `subject`, or the first participant, is the subject.
+///
+/// # Panics
+///
+/// Panics for an empty participant list or a case that cannot load or compile.
+pub async fn run_step_with_participants(
+    factory: &dyn StepFactory, fields: &StepFields, participants: &[(&'static str, &FakeParticipant)], log_dir: &Path,
+) -> StepReport {
+    let fixtures = participants
+        .iter()
+        .map(|(name, fake)| Fixture {
+            name,
+            processes: fake.process_names,
+            tls: false,
+            operations: fake.operations,
+        })
+        .collect::<Vec<_>>();
+    let types = fixtures
+        .iter()
+        .map(|fixture| fixture as &dyn ParticipantType)
+        .collect::<Vec<_>>();
+    let registries = Registries {
+        participant_types: &types,
+        steps: &[factory],
+        typed_case_roles: &[],
+    };
+    let subject = participants
+        .iter()
+        .find(|(name, _)| *name == "subject")
+        .unwrap_or(&participants[0])
+        .0;
+    let declarations = participants
+        .iter()
+        .map(|(name, _)| (*name, json!({"type": name, "subject": *name == subject})))
+        .collect::<BTreeMap<_, _>>();
+    let mut fields = fields.clone();
+    fields.insert("step".into(), factory.name().into());
+    let content = json!({
+        "timeout": "30s", "subject_os": ["linux"], "participants": declarations, "procedure": [fields],
+    })
+    .to_string();
+    let case = CaseLoader::new(registries, fixtures[0])
+        .load_content("cases", &content, "case", Path::new("cases/case/config.yaml"))
+        .unwrap()
+        .remove(0);
+    let plan = Planner::new(registries, Default::default())
+        .unwrap()
+        .compile(case, Os::Linux)
+        .unwrap()
+        .into_plan()
+        .unwrap();
+    run_planned_step(plan.participants().unwrap(), participants, log_dir).await
+}
+
+async fn run_planned_step(
+    plan: crate::plan::ParticipantPlan<'_>, fakes: &[(&str, &FakeParticipant)], log_dir: &Path,
+) -> StepReport {
     let crate::case::ProcedureNode::Step(step) = &plan.procedure()[0] else {
         panic!("step tests have one sequential step");
     };
     let mut refreshers = tokio::task::JoinSet::new();
-    if let Some(fake) = fake {
+    for (_, fake) in fakes {
         for process in fake.processes.values() {
             let mut requests = process.requests.clone();
             let served = process.served.clone();
@@ -266,19 +330,20 @@ async fn run_step_using(
             });
         }
     }
-    let participants = fake
-        .map(|fake| {
-            BTreeMap::from([(
-                "subject",
+    let participants = fakes
+        .iter()
+        .map(|(name, fake)| {
+            (
+                *name,
                 StepParticipant {
-                    primitives: fake,
+                    primitives: *fake,
                     observation: &fake.observation,
                     late: fake.late.clone(),
                 },
-            )])
+            )
         })
-        .unwrap_or_default();
-    step.run(&StepContext::new(plan, participants)).await
+        .collect();
+    step.run(&StepContext::new(plan, participants, log_dir)).await
 }
 
 type FileAnswer = Result<Option<Vec<u8>>, HandleError>;

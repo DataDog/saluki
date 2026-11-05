@@ -726,8 +726,7 @@ impl TypedCaseLoader for FixtureTypesWithRoles {
     }
 }
 
-pub(crate) const LOADER: CaseLoader<'static, FixtureTypes> =
-    CaseLoader::new(REGISTRIES, FixtureTypes, "fixture-participants");
+pub(crate) const LOADER: CaseLoader<'static, FixtureTypes> = CaseLoader::new(REGISTRIES, FixtureTypes);
 
 /// Expands to a one-step procedure line for participant cases whose procedure isn't under test.
 ///

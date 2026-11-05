@@ -7,6 +7,7 @@ use futures::{Stream, StreamExt as _};
 use saluki_error::{ErrorContext as _, GenericError};
 use tokio::{fs::File, io::AsyncWriteExt as _, sync::watch};
 
+pub(crate) mod collect;
 pub(crate) mod exit_record;
 pub(crate) mod output;
 
@@ -571,7 +572,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_exited_host_process_drains_both_pipes_while_its_sibling_runs() {
-        // Requiring every host process to exit let task shutdown discard an exited process's pending output.
+        // Stopping case tasks cancels output followers, so an exited process's output is drained without waiting for its siblings.
         let (_exit_tx, exit_rx) = watch::channel(ParticipantExit::Running);
         let mut observation = ParticipantObservation::host(exit_rx);
         let (_, exited_rx) = watch::channel(ExitObservation::Exited(ExitStatus {

@@ -464,7 +464,9 @@ mod tests {
                 &format!("  subject: {{type: server, subject: true, realization: {{kind: linux-container, options: {{host_cgroup_namespace: {value}}}}}}}"),
                 "linux",
             );
-            let cases = loader().load_content(&yaml, "alpha", Path::new("config.yaml")).unwrap();
+            let cases = loader()
+                .load_content("cases", &yaml, "alpha", Path::new("config.yaml"))
+                .unwrap();
             assert_eq!(cases.len(), 1);
             let CaseSchema::Participants { file, .. } = cases[0].schema() else {
                 panic!("expected participants");
@@ -491,7 +493,7 @@ mod tests {
                 "linux",
             );
             let message = loader()
-                .load_content(&yaml, "alpha", Path::new("config.yaml"))
+                .load_content("cases", &yaml, "alpha", Path::new("config.yaml"))
                 .err()
                 .unwrap()
                 .to_string();
@@ -520,7 +522,7 @@ mod tests {
                 "linux",
             );
             let message = loader()
-                .load_content(&yaml, "alpha", Path::new("config.yaml"))
+                .load_content("cases", &yaml, "alpha", Path::new("config.yaml"))
                 .err()
                 .unwrap()
                 .to_string();
@@ -538,7 +540,7 @@ mod tests {
             "subject: true, realization: {kind: linux-container, options: {}}",
         );
         let cases = super::super::fixtures::LOADER
-            .load_content(&yaml, "alpha", Path::new("config.yaml"))
+            .load_content("cases", &yaml, "alpha", Path::new("config.yaml"))
             .unwrap();
         assert_eq!(cases.len(), 1);
         assert_eq!(cases[0].name(), "alpha");
@@ -603,7 +605,6 @@ mod tests {
             ..crate::case::fixtures::REGISTRIES
         },
         FixtureTypes,
-        "fixture-participants",
     );
 
     fn file_case(name: &str, from: &Path, template: bool, overlay: bool) -> String {
@@ -647,7 +648,7 @@ mod tests {
             for from in missing_paths {
                 let yaml = file_case("settings.yaml", Path::new(from), false, overlay);
                 let message = FILE_LOADER
-                    .load_content(&yaml, "alpha", &source)
+                    .load_content("cases", &yaml, "alpha", &source)
                     .err()
                     .unwrap()
                     .to_string();
@@ -690,7 +691,7 @@ mod tests {
                 ("settings.yaml", "directory", true, Some("regular file")),
             ] {
                 let yaml = file_case(name, Path::new(from), template, overlay);
-                let loaded = FILE_LOADER.load_content(&yaml, "alpha", &source);
+                let loaded = FILE_LOADER.load_content("cases", &yaml, "alpha", &source);
                 if let Some(reason) = reason {
                     let kind = if name.ends_with('/') { "directory" } else { "file" };
                     assert_eq!(
@@ -720,7 +721,7 @@ mod tests {
             for from in ["directory", "input", "missing"] {
                 let yaml = file_case("files/", Path::new(from), true, overlay);
                 assert_eq!(
-                    FILE_LOADER.load_content(&yaml, "alpha", &source).err().unwrap().to_string(),
+                    FILE_LOADER.load_content("cases", &yaml, "alpha", &source).err().unwrap().to_string(),
                     format!(
                         "case 'alpha' in {}: participant 'subject' supplies configuration directory 'files/'{suffix} from '{from}' with 'template: true'; only a regular file can be a template",
                         source.display(),
@@ -747,7 +748,7 @@ mod tests {
                 ("settings.yaml", "input", true),
             ] {
                 let yaml = file_case(name, Path::new(from), template, overlay);
-                let loaded = FILE_LOADER.load_content(&yaml, "alpha", &source).unwrap();
+                let loaded = FILE_LOADER.load_content("cases", &yaml, "alpha", &source).unwrap();
                 assert_eq!(loaded.len(), 1);
             }
         }
@@ -768,7 +769,7 @@ mod tests {
             ] {
                 let yaml = file_case(name, Path::new("socket"), template, overlay);
                 assert_eq!(
-                    FILE_LOADER.load_content(&yaml, "alpha", &source).err().unwrap().to_string(),
+                    FILE_LOADER.load_content("cases", &yaml, "alpha", &source).err().unwrap().to_string(),
                     format!(
                         "case 'alpha' in {}: participant 'subject' supplies configuration {kind} '{name}'{suffix} from 'socket', which is not a {reason}",
                         source.display(),
@@ -788,7 +789,7 @@ mod tests {
             let yaml = file_case("settings.yaml", &from, false, overlay);
             let suffix = if overlay { " in its 'linux' overlay" } else { "" };
             let message = FILE_LOADER
-                .load_content(&yaml, "alpha", &source)
+                .load_content("cases", &yaml, "alpha", &source)
                 .err()
                 .unwrap()
                 .to_string();
@@ -810,7 +811,7 @@ mod tests {
             for from in ["", "..", "../outside.yaml", "nested/../../outside.yaml"] {
                 let yaml = file_case("settings.yaml", Path::new(from), false, overlay);
                 let message = FILE_LOADER
-                    .load_content(&yaml, "alpha", &source)
+                    .load_content("cases", &yaml, "alpha", &source)
                     .err()
                     .unwrap()
                     .to_string();
@@ -1029,7 +1030,6 @@ mod tests {
                 ..crate::case::fixtures::REGISTRIES
             },
             FixtureTypes,
-            "fixture",
         )
     }
 
@@ -1085,12 +1085,16 @@ mod tests {
         std::fs::write(source.parent().unwrap().join("empty"), "").unwrap();
         for from in ["binary", "literal", "empty"] {
             let config = format!("{{files: {{settings.yaml: {from}}}}}");
-            let loaded = loader.load_content(&template_case(&config), "alpha", &source).unwrap();
+            let loaded = loader
+                .load_content("cases", &template_case(&config), "alpha", &source)
+                .unwrap();
             assert_eq!(loaded.len(), 1);
             assert_eq!(loaded[0].name(), "alpha");
         }
         let config = "{files: {settings.yaml: {from: empty, template: true}}}";
-        let loaded = loader.load_content(&template_case(config), "alpha", &source).unwrap();
+        let loaded = loader
+            .load_content("cases", &template_case(config), "alpha", &source)
+            .unwrap();
         assert_eq!(loaded[0].file_templates().get(Path::new("empty")), &"".parse().unwrap());
     }
 

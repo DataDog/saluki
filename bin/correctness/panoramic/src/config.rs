@@ -330,7 +330,12 @@ procedure:
     /// Loads and compiles one case for tests.
     pub(crate) fn plan(yaml: &str, os: Os) -> LoadedPlan {
         let case = crate::CASE_LOADER
-            .load_content(yaml, "case", Path::new("/cases/case/config.yaml"))
+            .load_content(
+                "integration",
+                yaml,
+                "case",
+                Path::new("/test/integration/cases/case/config.yaml"),
+            )
             .unwrap()
             .remove(0);
         planner().compile(case, os).unwrap().into_plan().unwrap()
@@ -365,9 +370,9 @@ procedure:
             participant_types: &[&AgentAdp, &Plain],
             ..crate::REGISTRIES
         };
-        let source = format!("/cases/{name}/config.yaml");
-        let case = CaseLoader::new(registries, typed_case::TypedConfigLoader, "integration")
-            .load_content(yaml, name, Path::new(&source))
+        let source = format!("/test/integration/cases/{name}/config.yaml");
+        let case = CaseLoader::new(registries, typed_case::TypedConfigLoader)
+            .load_content("integration", yaml, name, Path::new(&source))
             .unwrap()
             .remove(0);
         Planner::new(registries, ArtifactManifest::default())

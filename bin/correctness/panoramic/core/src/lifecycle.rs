@@ -18,7 +18,10 @@ use crate::{
     handle::Primitives,
     layout::{Realization, RealizationKind},
     ledger::ResourceLedger,
-    observe::ParticipantObservation,
+    observe::{
+        collect::{self, CollectionReport},
+        ParticipantObservation,
+    },
     participant::{check_process_specs, find_type, ParticipantType, ProcessSpec},
     plan::ParticipantPlan,
     record::CaseRecord,
@@ -41,6 +44,7 @@ const OBSERVE_TIME: Duration = Duration::from_secs(5);
 #[derive(Clone, Default)]
 pub struct Observations {
     participants: Arc<Mutex<BTreeMap<String, ObservedParticipant>>>,
+    collections: Arc<Mutex<CollectionReport>>,
 }
 
 impl std::fmt::Debug for Observations {
@@ -58,6 +62,14 @@ struct ObservedParticipant {
 }
 
 impl Observations {
+    /// Adds completed collections and collection issues to the runner's final result.
+    /// Call once after the case body has returned or been dropped.
+    pub fn record_collections(&self, result: &mut TestResult) {
+        let report = self.collections.lock().unwrap();
+        result.collected.clone_from(&report.collected);
+        result.issues.extend(report.issues.iter().cloned());
+    }
+
     fn register(&self, name: &str, participant_type: &str, realization: Realization, specs: &'static [ProcessSpec]) {
         self.participants.lock().unwrap().insert(
             name.into(),
@@ -205,6 +217,8 @@ pub struct CaseControl {
     pub deadline: Deadline,
     /// Cancellation of this case, including its deadline and run interruption.
     pub cancel: CancellationToken,
+    /// Run interruption, independent of the case deadline so timeout artifacts can still be collected.
+    pub interrupt: CancellationToken,
     /// The active phase and completed timings reported by the runner.
     pub phases: PhaseTracker,
     /// Resources reclaimed by the runner after the case body finishes or is dropped.
@@ -294,18 +308,45 @@ pub async fn run(
         .await;
         phase.finish();
         if let Err(error) = result {
-            observe(control).await;
+            observe_and_collect(plan, types, &running, control).await;
             return fail(error);
         }
     }
     let phase = control.phases.enter("steps");
     steps::run(plan, &running, control).await;
     phase.finish();
-    observe(control).await;
+    observe_and_collect(plan, types, &running, control).await;
     control.record.result("", started.elapsed(), control.phases.completed())
 }
 
-async fn observe(control: &CaseControl) {
+async fn observe_and_collect(
+    plan: ParticipantPlan<'_>, types: &[&dyn ParticipantType], running: &BTreeMap<String, Started>,
+    control: &CaseControl,
+) {
+    observe(control, async {
+        for (name, started) in running {
+            let participant_type = find_type(types, &plan.file().participants[name].participant_type)
+                .expect("started participants have registered types");
+            let files =
+                participant_type.collect(plan.layout().get(name).expect("started participants have realizations"));
+            if files.is_empty() {
+                continue;
+            }
+            collect::collect(
+                name,
+                started.participant.as_ref(),
+                files,
+                &control.log_dir,
+                &control.observations.collections,
+                &control.interrupt,
+            )
+            .await;
+        }
+    })
+    .await;
+}
+
+async fn observe(control: &CaseControl, collect: impl std::future::Future<Output = ()>) {
     let observations: Vec<_> = control
         .observations
         .participants
@@ -323,6 +364,7 @@ async fn observe(control: &CaseControl) {
         .cancel
         .run_until_cancelled(tokio::time::timeout(OBSERVE_TIME, finish))
         .await;
+    collect.await;
     phase.finish();
 }
 
@@ -525,6 +567,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let cancel = CancellationToken::new();
             let control = CaseControl {
+                interrupt: CancellationToken::new(),
                 observations: Observations::default(),
                 record: CaseRecord::default(),
                 deadline: Deadline::after(Budget::Case, Duration::from_secs(60)),
@@ -534,7 +577,7 @@ mod tests {
                 cancel: cancel.clone(),
                 log_dir: dir.path().into(),
             };
-            observe(&control).await;
+            observe(&control, async {}).await;
             assert!(control.phases.completed().is_empty());
             let realization = Realization {
                 os: Os::Linux,
@@ -568,7 +611,7 @@ mod tests {
                 channels.push((exit_tx, capture_tx));
             }
             let started = Clock::now();
-            tokio::join!(observe(&control), async {
+            tokio::join!(observe(&control, async {}), async {
                 match completion {
                     Finish => {
                         sleep(Duration::from_secs(2)).await;
@@ -693,6 +736,7 @@ mod tests {
         let inputs = NativeInputs::new(Arc::new(RunBackends::with_docker(api.daemon())), &[], Path::new(".")).unwrap();
         let case = fixtures::LOADER
             .load_content(
+                "cases",
                 &fixtures::PARTICIPANT_FIELDS.replace("[linux]", "[windows]"),
                 "case",
                 Path::new("/cases/case/config.yaml"),
@@ -707,6 +751,7 @@ mod tests {
         let log_dir = tempfile::tempdir().unwrap();
         let cancel = CancellationToken::new();
         let control = CaseControl {
+            interrupt: CancellationToken::new(),
             observations: Observations::default(),
             record: CaseRecord::default(),
             deadline: Deadline::after(Budget::Case, std::time::Duration::from_secs(60)),
@@ -734,7 +779,7 @@ mod tests {
             participant_types: TYPES,
             ..fixtures::REGISTRIES
         };
-        let loader = crate::case::CaseLoader::new(registries, fixtures::FixtureTypes, "fixture-participants");
+        let loader = crate::case::CaseLoader::new(registries, fixtures::FixtureTypes);
         for (os, participants, expected) in [
             (
                 Os::Linux,
@@ -754,13 +799,14 @@ mod tests {
             ),
         ] {
             let yaml = format!("timeout: 1s\nsubject_os: [{}]\nparticipants:\n{participants}\n{}\n", os.name(), fixtures::minimal_procedure!());
-            let case = loader.load_content(&yaml, "case", Path::new("/cases/case/config.yaml")).unwrap().remove(0);
+            let case = loader.load_content("cases", &yaml, "case", Path::new("/cases/case/config.yaml")).unwrap().remove(0);
             let plan = Planner::with_run(registries, "testcase").compile(case, os).unwrap().into_plan().unwrap();
             let api = FakeDocker::new(Some("linux"));
             let inputs = NativeInputs::new(Arc::new(RunBackends::with_docker(api.daemon())), &[], Path::new(".")).unwrap();
             let log_dir = tempfile::tempdir().unwrap();
             let cancel = CancellationToken::new();
             let control = CaseControl {
+                interrupt: CancellationToken::new(),
                 observations: Observations::default(),
                 record: CaseRecord::default(),
                 deadline: Deadline::after(Budget::Case, Duration::from_secs(60)),
@@ -1081,6 +1127,7 @@ mod tests {
             let log_dir = tempfile::tempdir().unwrap();
             let cancel = CancellationToken::new();
             let control = CaseControl {
+                interrupt: CancellationToken::new(),
                 observations: Observations::default(),
                 record: CaseRecord::default(),
                 deadline: Deadline::after(Budget::Case, std::time::Duration::from_secs(60)),
@@ -1118,8 +1165,8 @@ mod tests {
             ..fixtures::REGISTRIES
         };
         let yaml = fixtures::PARTICIPANT_FIELDS.replace("participants:\n", "participants:\n  z: {type: pod-server}\n");
-        let case = crate::case::CaseLoader::new(registries, fixtures::FixtureTypes, "fixture-participants")
-            .load_content(&yaml, "case", Path::new("/cases/case/config.yaml"))
+        let case = crate::case::CaseLoader::new(registries, fixtures::FixtureTypes)
+            .load_content("cases", &yaml, "case", Path::new("/cases/case/config.yaml"))
             .unwrap()
             .remove(0);
         let plan = Planner::with_run(registries, "testcase")
@@ -1132,6 +1179,7 @@ mod tests {
         let log_dir = tempfile::tempdir().unwrap();
         let cancel = CancellationToken::new();
         let control = CaseControl {
+            interrupt: CancellationToken::new(),
             observations: Observations::default(),
             record: CaseRecord::default(),
             deadline: Deadline::after(Budget::Case, std::time::Duration::from_secs(60)),
@@ -1166,6 +1214,7 @@ mod tests {
         std::fs::write(&log_dir, b"regular file").unwrap();
         let cancel = CancellationToken::new();
         let control = CaseControl {
+            interrupt: CancellationToken::new(),
             observations: Observations::default(),
             record: CaseRecord::default(),
             deadline: Deadline::after(Budget::Case, std::time::Duration::from_secs(60)),
@@ -1206,6 +1255,7 @@ mod tests {
             let log_dir = tempfile::tempdir().unwrap();
             let cancel = CancellationToken::new();
             let control = CaseControl {
+                interrupt: CancellationToken::new(),
                 observations: Observations::default(),
                 record: CaseRecord::default(),
                 deadline: Deadline::after(Budget::Case, std::time::Duration::from_secs(60)),
@@ -1236,6 +1286,7 @@ mod tests {
     fn linux_plan() -> CasePlan<fixtures::FixtureConfig> {
         let case = fixtures::LOADER
             .load_content(
+                "cases",
                 fixtures::PARTICIPANT_FIELDS,
                 "case",
                 Path::new("/cases/case/config.yaml"),
@@ -1260,6 +1311,7 @@ mod tests {
         let log_dir = tempfile::tempdir().unwrap();
         let cancel = CancellationToken::new();
         let control = CaseControl {
+            interrupt: CancellationToken::new(),
             observations: Observations::default(),
             record: CaseRecord::default(),
             deadline: Deadline::after(Budget::Case, std::time::Duration::from_secs(60)),

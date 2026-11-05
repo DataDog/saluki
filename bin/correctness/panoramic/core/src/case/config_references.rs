@@ -250,7 +250,7 @@ mod tests {
     fn error(config: &str, expected: &str) {
         assert_eq!(
             LOADER
-                .load_content(&case(config), "alpha", Path::new("alpha/config.yaml"))
+                .load_content("cases", &case(config), "alpha", Path::new("alpha/config.yaml"))
                 .err()
                 .unwrap()
                 .to_string(),
@@ -282,7 +282,7 @@ mod tests {
                 format!("{{os: {{linux: {values}, macos: {values}, windows: {values}}}}}"),
             ] {
                 let cases = LOADER
-                    .load_content(&case(&config), "alpha", Path::new("alpha/config.yaml"))
+                    .load_content("cases", &case(&config), "alpha", Path::new("alpha/config.yaml"))
                     .unwrap();
                 assert_eq!(cases.len(), 1);
                 assert_eq!(cases[0].name(), "alpha");
@@ -361,7 +361,7 @@ mod tests {
             ),
         ] {
             let yaml = case(config).replace("other.api", "missing.api");
-            assert_eq!(LOADER.load_content(&yaml, "alpha", Path::new("alpha/config.yaml")).err().unwrap().to_string(),
+            assert_eq!(LOADER.load_content("cases", &yaml, "alpha", Path::new("alpha/config.yaml")).err().unwrap().to_string(),
                 format!("case 'alpha' in alpha/config.yaml: participant 'subject' {prefix}.params 'mode' key '{{{{name}}}}': parameter keys can't contain template references"));
         }
     }
@@ -431,7 +431,7 @@ mod tests {
             "config.os.windows.params 'mode' '{{self.connections.typo.path}}' references connection 'typo', which it does not connect; it connects link");
         let yaml =
             case("{env: {KEY: '{{self.connections.link.url}}'}}").replace("connect: {link: other.api}", "connect: {}");
-        assert_eq!(LOADER.load_content(&yaml, "alpha", Path::new("alpha/config.yaml")).err().unwrap().to_string(),
+        assert_eq!(LOADER.load_content("cases", &yaml, "alpha", Path::new("alpha/config.yaml")).err().unwrap().to_string(),
             "case 'alpha' in alpha/config.yaml: participant 'subject' config.env 'KEY' '{{self.connections.link.url}}' references connection 'link', which it does not connect; it connects none");
     }
 }

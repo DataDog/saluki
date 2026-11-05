@@ -298,8 +298,8 @@ mod tests {
     }
 
     fn typed_case(roles: BTreeMap<Os, Vec<ArtifactRole>>) -> CaseConfig<FixtureConfig> {
-        CaseLoader::new(CONFIG_REGISTRIES, FixtureTypesWithRoles(roles), "fixture-participants")
-            .load_content("type: fixture", "typed", Path::new("typed/config.yaml"))
+        CaseLoader::new(CONFIG_REGISTRIES, FixtureTypesWithRoles(roles))
+            .load_content("cases", "type: fixture", "typed", Path::new("typed/config.yaml"))
             .unwrap()
             .remove(0)
     }

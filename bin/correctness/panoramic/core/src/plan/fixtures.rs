@@ -356,20 +356,16 @@ pub(super) fn compile_files(yaml: &str, sources: &[(&str, &str)], os: Os) -> Res
     for (from, text) in sources {
         std::fs::write(source.parent().unwrap().join(from), text).unwrap();
     }
-    let loader = CaseLoader::new(FILE_REGISTRIES, FixtureTypes, "fixture");
+    let loader = CaseLoader::new(FILE_REGISTRIES, FixtureTypes);
     let normalize = |error: saluki_error::GenericError| {
         error
             .to_string()
             .replace(&source.display().to_string(), "cases/alpha/config.yaml")
     };
     let case = loader
-        .load_content(yaml, "alpha", &source)
+        .load_content("cases", yaml, "alpha", &source)
         .map_err(normalize)?
         .remove(0);
-    // Planning uses the template contents captured at load.
-    for (from, _) in sources {
-        std::fs::remove_file(source.parent().unwrap().join(from)).unwrap();
-    }
     Planner::with_run(FILE_REGISTRIES, "testrun0")
         .compile(case, os)
         .map_err(normalize)
@@ -575,8 +571,7 @@ pub(super) const CONFIG_REGISTRIES: Registries<'static> = Registries {
     steps: STEPS,
     ..crate::case::fixtures::REGISTRIES
 };
-pub(super) const CONFIG_LOADER: CaseLoader<'static, FixtureTypes> =
-    CaseLoader::new(CONFIG_REGISTRIES, FixtureTypes, "fixture-participants");
+pub(super) const CONFIG_LOADER: CaseLoader<'static, FixtureTypes> = CaseLoader::new(CONFIG_REGISTRIES, FixtureTypes);
 
 pub(super) fn planner() -> Planner<'static> {
     Planner::with_run(CONFIG_REGISTRIES, "testrun0")
@@ -590,7 +585,7 @@ pub(super) fn compile_with(
     planner: &mut Planner<'static>, yaml: &str, os: Os,
 ) -> Result<Option<CasePlan<FixtureConfig>>, GenericError> {
     let case = CONFIG_LOADER
-        .load_content(yaml, "alpha", Path::new("cases/alpha/config.yaml"))
+        .load_content("cases", yaml, "alpha", Path::new("cases/alpha/config.yaml"))
         .unwrap()
         .remove(0);
     planner.compile(case, os).map(super::Compiled::into_plan)

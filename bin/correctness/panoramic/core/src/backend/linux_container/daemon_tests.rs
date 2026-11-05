@@ -826,7 +826,7 @@ async fn a_probe_of_an_unlistened_published_port_is_not_listening() {
                 "procedure: [{step: reach, endpoint: subject.api}, {step: reach, endpoint: subject.extra, operation: send}]",
             );
         let case = LOADER
-            .load_content(&yaml, "probe", Path::new("cases/probe/config.yaml"))
+            .load_content("cases", &yaml, "probe", Path::new("cases/probe/config.yaml"))
             .unwrap()
             .remove(0);
         let plan = Planner::with_run(REGISTRIES, "testrun0")

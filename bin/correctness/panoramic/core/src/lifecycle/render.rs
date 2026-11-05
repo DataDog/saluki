@@ -1,6 +1,6 @@
 //! Renders creation-time references and case files for participant recipes.
 
-use std::{collections::BTreeMap, path::Path};
+use std::collections::BTreeMap;
 
 use crate::{
     backend::{shared_root, LateFact},
@@ -60,7 +60,7 @@ pub(super) fn render(
         directory: participant_dir(&root, participant, realization.os),
         env: config.env.clone(),
         params: config.params.clone(),
-        files: BTreeMap::new(),
+        files: config.files.clone(),
     };
     walk_config_strings_mut(&mut rendered.env, &mut rendered.params, |field, text| {
         let template = text
@@ -69,71 +69,23 @@ pub(super) fn render(
         *text = substitute(&template, field)?;
         Ok(())
     })?;
-    for (name, source) in &config.files {
-        let bytes = if source.template {
-            substitute(plan.templates().get(&source.from), ConfigField::File(name))?.into_bytes()
-        } else {
-            let path = plan
-                .source()
-                .parent()
-                .expect("case sources have a directory")
-                .join(&source.from);
-            let field = format!("participant '{participant}' file '{name}' ({})", path.display());
-            let metadata = std::fs::metadata(&path).map_err(|error| format!("{field}: {error}"))?;
-            if name.ends_with('/') {
-                if !metadata.is_dir() {
-                    return Err(format!("{field} is not a directory"));
-                }
-                render_directory(participant, name, &path, &mut rendered.files)?;
-                continue;
-            }
-            if !metadata.is_file() {
-                return Err(format!("{field} is not a regular file"));
-            }
-            std::fs::read(&path).map_err(|error| format!("{field}: {error}"))?
-        };
+    // Non-template entries, including expanded directories, keep the bytes snapshotted at planning.
+    // Template entries are rendered again because creation-time values fill in late references.
+    for (name, source) in plan
+        .file_sources(participant)
+        .iter()
+        .filter(|(_, source)| source.template)
+    {
+        let bytes = substitute(plan.templates().get(&source.from), ConfigField::File(name))?.into_bytes();
         rendered.files.insert(name.clone(), bytes);
     }
     Ok(rendered)
 }
 
-fn render_directory(
-    participant: &str, name: &str, directory: &Path, files: &mut BTreeMap<String, Vec<u8>>,
-) -> Result<(), String> {
-    let mut pending = vec![(directory.to_path_buf(), name.to_owned())];
-    while let Some((directory, prefix)) = pending.pop() {
-        let field = format!("participant '{participant}' file '{name}' ({})", directory.display());
-        let entries = std::fs::read_dir(&directory).map_err(|error| format!("{field}: {error}"))?;
-        for entry in entries {
-            let entry = entry.map_err(|error| format!("{field}: {error}"))?;
-            let path = entry.path();
-            let field = format!("participant '{participant}' file '{name}' ({})", path.display());
-            let metadata = std::fs::symlink_metadata(&path).map_err(|error| format!("{field}: {error}"))?;
-            if metadata.is_symlink() {
-                return Err(format!(
-                    "{field} is a symlink; directory sources cannot contain symlinks"
-                ));
-            }
-            let file_name = entry.file_name();
-            let file_name = file_name
-                .to_str()
-                .ok_or_else(|| format!("{field} has a non-UTF-8 name"))?;
-            let key = format!("{prefix}{file_name}");
-            if metadata.is_dir() {
-                pending.push((path, format!("{key}/")));
-            } else if metadata.is_file() {
-                let bytes = std::fs::read(&path).map_err(|error| format!("{field}: {error}"))?;
-                files.insert(key, bytes);
-            } else {
-                return Err(format!("{field} is not a regular file or directory"));
-            }
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use serde_json::json;
 
     use super::*;
@@ -165,7 +117,7 @@ mod tests {
         }
 
         fn config_files(&self) -> &'static [&'static str] {
-            &["files/", "settings.yaml"]
+            &["files/", "raw.txt", "settings.yaml"]
         }
 
         fn params(&self) -> &'static [&'static str] {
@@ -190,7 +142,7 @@ mod tests {
         }
     }
 
-    fn compile(config: &str, source: &Path) -> CasePlan<FixtureConfig> {
+    fn try_compile(config: &str, source: &Path) -> Result<CasePlan<FixtureConfig>, String> {
         let registries = Registries {
             participant_types: &[&FileClient, &Server],
             steps: STEPS,
@@ -200,15 +152,18 @@ mod tests {
             "timeout: 1s\nsubject_os: [linux]\nparticipants:\n  subject: {{type: file-client, subject: true, connect: {{upstream: server.api}}, config: {config}}}\n  server: {{type: server, config: {{env: {{OWN: '{{{{  self.late.ip  }}}}/{{{{server.late.ip}}}}'}}}}}}\n{}\n",
             minimal_procedure!()
         );
-        let case = CaseLoader::new(registries, FixtureTypes, "fixture")
-            .load_content(&yaml, "alpha", source)
-            .unwrap()
+        let case = CaseLoader::new(registries, FixtureTypes)
+            .load_content("cases", &yaml, "alpha", source)
+            .map_err(|error| error.to_string())?
             .remove(0);
         Planner::with_run(registries, "testrun0")
             .compile(case, Os::Linux)
-            .unwrap()
-            .into_plan()
-            .unwrap()
+            .map_err(|error| error.to_string())
+            .map(|compiled| compiled.into_plan().unwrap())
+    }
+
+    fn compile(config: &str, source: &Path) -> CasePlan<FixtureConfig> {
+        try_compile(config, source).unwrap()
     }
 
     #[test]
@@ -224,8 +179,8 @@ mod tests {
             (Os::Windows, "windows-container", r"C:\airlock\subject"),
         ] {
             let yaml = format!("timeout: 1s\nsubject_os: [{}]\nparticipants:\n  subject: {{type: server, subject: true, realization: {{kind: {kind}}}}}\n{}", os.name(), minimal_procedure!());
-            let case = CaseLoader::new(registries, FixtureTypes, "fixture")
-                .load_content(&yaml, "case", Path::new("cases/case/config.yaml"))
+            let case = CaseLoader::new(registries, FixtureTypes)
+                .load_content("cases", &yaml, "case", Path::new("cases/case/config.yaml"))
                 .unwrap()
                 .remove(0);
             let plan = Planner::with_run(registries, "testrun0")
@@ -250,11 +205,14 @@ mod tests {
         );
         let template_path = source.parent().unwrap().join("input.txt");
         std::fs::write(&template_path, text).unwrap();
+        let raw_path = source.parent().unwrap().join("raw.txt");
+        std::fs::write(&raw_path, text).unwrap();
         let config = format!(
-            "{{env: {{VALUE: '{text}'}}, params: {{mode: [{{nested: ['{text}', false, 7, null]}}]}}, files: {{settings.yaml: {{from: input.txt, template: true}}}}}}"
+            "{{env: {{VALUE: '{text}'}}, params: {{mode: [{{nested: ['{text}', false, 7, null]}}]}}, files: {{settings.yaml: {{from: input.txt, template: true}}, raw.txt: raw.txt}}}}"
         );
         let plan = compile(&config, &source);
         std::fs::remove_file(template_path).unwrap();
+        std::fs::remove_file(raw_path).unwrap();
         let created = BTreeMap::from([("server".into(), "created-id".into())]);
         let rendered = render(plan.participants().unwrap(), "subject", &created).unwrap();
         let expected = concat!(
@@ -268,6 +226,17 @@ mod tests {
             json!([{ "nested": [expected, false, 7, null] }])
         );
         assert_eq!(rendered.files["settings.yaml"], expected.as_bytes());
+        assert_eq!(rendered.files["raw.txt"], text.as_bytes());
+        assert_eq!(
+            plan.effective_config("subject").unwrap().files["raw.txt"],
+            text.as_bytes()
+        );
+        assert_eq!(
+            plan.effective_config("subject").unwrap().files["settings.yaml"],
+            expected
+                .replace("created-id", "{{server.late.container_id}}")
+                .as_bytes()
+        );
         for (config, field) in [
             (
                 "{env: {ID: '{{server.late.container_id}}'}}",
@@ -316,6 +285,7 @@ mod tests {
         std::fs::write(case_dir.join("separate"), "settings").unwrap();
         let plan = compile("{files: {files/: input, settings.yaml: separate}}", &source);
         let rendered = render(plan.participants().unwrap(), "subject", &BTreeMap::new()).unwrap();
+        assert_eq!(plan.effective_config("subject").unwrap().files, rendered.files);
         assert_eq!(
             rendered
                 .files()
@@ -364,50 +334,84 @@ mod tests {
     }
 
     #[test]
-    fn rendering_rechecks_directory_sources_after_loading() {
+    fn creation_uses_the_planned_bytes_of_file_and_directory_sources_after_the_sources_change() {
         let dir = tempfile::tempdir().unwrap();
         let source = write_case(dir.path(), "alpha", "");
-        let path = source.parent().unwrap().join("input");
-        std::fs::create_dir(&path).unwrap();
-        let plan = compile("{files: {files/: input}}", &source);
-        std::fs::remove_dir(&path).unwrap();
-        let error = render(plan.participants().unwrap(), "subject", &BTreeMap::new())
-            .err()
-            .unwrap();
-        assert!(error.starts_with(&format!("participant 'subject' file 'files/' ({}): ", path.display())));
-        std::fs::write(&path, "").unwrap();
+        let case_dir = source.parent().unwrap();
+        std::fs::create_dir_all(case_dir.join("input/a/empty")).unwrap();
+        std::fs::create_dir_all(case_dir.join("input/z/nested")).unwrap();
+        std::fs::write(case_dir.join("input/a/data"), "first").unwrap();
+        std::fs::write(case_dir.join("input/empty"), "").unwrap();
+        std::fs::write(case_dir.join("input/z/data"), "{{not a reference}}").unwrap();
+        std::fs::write(case_dir.join("input/z/nested/data"), [0xff, 0, 0xfe]).unwrap();
+        std::fs::write(case_dir.join("raw.txt"), b"\xff\0{{self.facts.shared_dir}}").unwrap();
+        std::fs::write(case_dir.join("input.txt"), "{{server.late.container_id}}").unwrap();
+        let plan = compile(
+            "{files: {files/: input, raw.txt: raw.txt, settings.yaml: {from: input.txt, template: true}}}",
+            &source,
+        );
+        let mut expected = plan.effective_config("subject").unwrap().files.clone();
         assert_eq!(
-            render(plan.participants().unwrap(), "subject", &BTreeMap::new())
-                .err()
-                .unwrap(),
-            format!(
-                "participant 'subject' file 'files/' ({}) is not a directory",
-                path.display()
-            ),
+            expected.keys().map(String::as_str).collect::<Vec<_>>(),
+            [
+                "files/a/data",
+                "files/empty",
+                "files/z/data",
+                "files/z/nested/data",
+                "raw.txt",
+                "settings.yaml"
+            ]
+        );
+        expected.insert("settings.yaml".into(), b"created-id".to_vec());
+        let created = BTreeMap::from([("server".into(), "created-id".into())]);
+
+        std::fs::remove_file(case_dir.join("input.txt")).unwrap();
+        std::fs::remove_file(case_dir.join("raw.txt")).unwrap();
+        std::fs::remove_dir_all(case_dir.join("input")).unwrap();
+        assert_eq!(
+            render(plan.participants().unwrap(), "subject", &created).unwrap().files,
+            expected
+        );
+
+        std::fs::create_dir_all(case_dir.join("raw.txt")).unwrap();
+        std::fs::write(case_dir.join("input"), "now a file").unwrap();
+        assert_eq!(
+            render(plan.participants().unwrap(), "subject", &created).unwrap().files,
+            expected
+        );
+
+        std::fs::remove_file(case_dir.join("input")).unwrap();
+        std::fs::create_dir_all(case_dir.join("input/changed")).unwrap();
+        std::fs::write(case_dir.join("input/changed/data"), "changed").unwrap();
+        assert_eq!(
+            render(plan.participants().unwrap(), "subject", &created).unwrap().files,
+            expected
         );
     }
 
     #[cfg(unix)]
     #[test]
-    fn a_symlink_inside_a_directory_source_fails_rendering() {
+    fn a_symlink_added_to_a_directory_source_after_planning_does_not_change_creation() {
         let dir = tempfile::tempdir().unwrap();
         let source = write_case(dir.path(), "alpha", "");
         let case_dir = source.parent().unwrap();
         std::fs::create_dir_all(case_dir.join("input/nested")).unwrap();
+        std::fs::write(case_dir.join("input/nested/kept"), "kept").unwrap();
         std::fs::create_dir(case_dir.join("outside")).unwrap();
         std::fs::write(case_dir.join("outside/file"), "outside").unwrap();
         let link = case_dir.join("input/nested/link");
         for target in ["../../outside/file", "../../outside", ".", "../../missing"] {
-            std::os::unix::fs::symlink(target, &link).unwrap();
             let plan = compile("{files: {files/: input}}", &source);
+            std::os::unix::fs::symlink(target, &link).unwrap();
+            assert_eq!(
+                try_compile("{files: {files/: input}}", &source).err().unwrap(),
+                format!("case 'alpha' in {}: on subject OS 'linux', participant 'subject' file 'files/' ({}) is a symlink; directory sources cannot contain symlinks", source.display(), link.display()),
+            );
             assert_eq!(
                 render(plan.participants().unwrap(), "subject", &BTreeMap::new())
-                    .err()
-                    .unwrap(),
-                format!(
-                    "participant 'subject' file 'files/' ({}) is a symlink; directory sources cannot contain symlinks",
-                    link.display(),
-                ),
+                    .unwrap()
+                    .files,
+                BTreeMap::from([("files/nested/kept".into(), b"kept".to_vec())]),
             );
             std::fs::remove_file(&link).unwrap();
         }
@@ -415,21 +419,23 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn a_special_file_inside_a_directory_source_fails_rendering() {
+    fn a_special_file_added_to_a_directory_source_after_planning_does_not_change_creation() {
         let dir = tempfile::tempdir().unwrap();
         let source = write_case(dir.path(), "alpha", "");
         let path = source.parent().unwrap().join("input/socket");
         std::fs::create_dir(path.parent().unwrap()).unwrap();
-        let _socket = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        std::fs::write(path.parent().unwrap().join("kept"), "kept").unwrap();
         let plan = compile("{files: {files/: input}}", &source);
+        let _socket = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        assert_eq!(
+            try_compile("{files: {files/: input}}", &source).err().unwrap(),
+            format!("case 'alpha' in {}: on subject OS 'linux', participant 'subject' file 'files/' ({}) is not a regular file or directory", source.display(), path.display()),
+        );
         assert_eq!(
             render(plan.participants().unwrap(), "subject", &BTreeMap::new())
-                .err()
-                .unwrap(),
-            format!(
-                "participant 'subject' file 'files/' ({}) is not a regular file or directory",
-                path.display()
-            ),
+                .unwrap()
+                .files,
+            BTreeMap::from([("files/kept".into(), b"kept".to_vec())]),
         );
     }
 
@@ -456,63 +462,64 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn a_non_utf8_name_inside_a_directory_source_fails_rendering() {
+    fn a_non_utf8_name_added_to_a_directory_source_after_planning_does_not_change_creation() {
         use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
 
         let dir = tempfile::tempdir().unwrap();
         let source = write_case(dir.path(), "alpha", "");
         let directory = source.parent().unwrap().join("input");
         std::fs::create_dir(&directory).unwrap();
-        let path = directory.join(OsStr::from_bytes(b"\xff"));
-        std::fs::write(&path, "").unwrap();
+        std::fs::write(directory.join("kept"), "kept").unwrap();
         let plan = compile("{files: {files/: input}}", &source);
+        std::fs::write(directory.join(OsStr::from_bytes(b"\xff")), "").unwrap();
+        assert!(try_compile("{files: {files/: input}}", &source)
+            .err()
+            .unwrap()
+            .ends_with("has a non-UTF-8 name"));
         assert_eq!(
             render(plan.participants().unwrap(), "subject", &BTreeMap::new())
-                .err()
-                .unwrap(),
-            format!(
-                "participant 'subject' file 'files/' ({}) has a non-UTF-8 name",
-                path.display()
-            ),
+                .unwrap()
+                .files,
+            BTreeMap::from([("files/kept".into(), b"kept".to_vec())]),
         );
     }
 
     #[test]
-    fn rendering_reads_regular_case_files_and_rechecks_their_kind() {
+    fn creation_uses_the_planned_bytes_of_a_regular_case_file_after_the_file_changes() {
         let dir = tempfile::tempdir().unwrap();
         let source = write_case(dir.path(), "alpha", "");
         let path = source.parent().unwrap().join("input.bin");
         let bytes = b"\xff\0{{not a reference}}";
         std::fs::write(&path, bytes).unwrap();
         let plan = compile("{files: {settings.yaml: input.bin}}", &source);
-        let rendered = render(plan.participants().unwrap(), "subject", &BTreeMap::new()).unwrap();
-        assert_eq!(rendered.files["settings.yaml"], bytes);
+        assert_eq!(plan.effective_config("subject").unwrap().files["settings.yaml"], bytes);
+        let planned = BTreeMap::from([("settings.yaml".to_owned(), bytes.to_vec())]);
+        assert_eq!(
+            render(plan.participants().unwrap(), "subject", &BTreeMap::new())
+                .unwrap()
+                .files,
+            planned
+        );
+        std::fs::write(&path, "changed").unwrap();
+        assert_eq!(
+            render(plan.participants().unwrap(), "subject", &BTreeMap::new())
+                .unwrap()
+                .files,
+            planned
+        );
         std::fs::remove_file(&path).unwrap();
-        let error = render(plan.participants().unwrap(), "subject", &BTreeMap::new())
-            .err()
-            .unwrap();
-        assert!(error.starts_with(&format!(
-            "participant 'subject' file 'settings.yaml' ({}): ",
-            path.display()
-        )));
+        assert_eq!(
+            render(plan.participants().unwrap(), "subject", &BTreeMap::new())
+                .unwrap()
+                .files,
+            planned
+        );
         std::fs::create_dir(&path).unwrap();
         assert_eq!(
             render(plan.participants().unwrap(), "subject", &BTreeMap::new())
-                .err()
-                .unwrap(),
-            format!(
-                "participant 'subject' file 'settings.yaml' ({}) is not a regular file",
-                path.display()
-            )
+                .unwrap()
+                .files,
+            planned
         );
-        #[cfg(unix)]
-        {
-            std::fs::remove_dir(&path).unwrap();
-            let _socket = std::os::unix::net::UnixListener::bind(&path).unwrap();
-            let error = render(plan.participants().unwrap(), "subject", &BTreeMap::new())
-                .err()
-                .unwrap();
-            assert!(error.ends_with("is not a regular file"));
-        }
     }
 }

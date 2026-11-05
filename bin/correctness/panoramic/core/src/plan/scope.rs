@@ -346,7 +346,7 @@ mod tests {
             steps: STEPS,
             ..Default::default()
         };
-        let loader = CaseLoader::new(registries, FixtureTypes, "fixture");
+        let loader = CaseLoader::new(registries, FixtureTypes);
         for (os, kind) in [
             (Os::Linux, "linux-container"),
             (Os::MacOs, "host-process-group"),
@@ -354,7 +354,7 @@ mod tests {
         ] {
             let yaml = format!("timeout: 1s\nsubject_os: [{}]\nparticipants:\n  a: {{type: every-kind-server, subject: true, config: {{env: {{KEY: '{{{{ self.facts.missing }}}}'}}}}}}\n  z: {{type: reserved}}\n{}", os.name(), minimal_procedure!());
             let case = loader
-                .load_content(&yaml, "alpha", Path::new("cases/alpha/config.yaml"))
+                .load_content("cases", &yaml, "alpha", Path::new("cases/alpha/config.yaml"))
                 .unwrap()
                 .remove(0);
             let error = Planner::with_run(registries, "testrun0")

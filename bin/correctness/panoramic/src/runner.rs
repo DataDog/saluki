@@ -339,6 +339,7 @@ impl Runner {
                             record: tctx.record.clone(),
                             deadline: tctx.deadline,
                             cancel: tctx.test_cancel_token(),
+                            interrupt: cancel_all.clone(),
                             phases: tctx.phases.clone(),
                             ledger: tctx.ledger.clone(),
                             tasks: tctx.tasks.clone(),
@@ -386,6 +387,7 @@ impl Runner {
         };
 
         result.participants = observed.unwrap_or_else(|| observations.snapshot());
+        observations.record_collections(&mut result);
 
         // Cleanup has its own budget because the test token may already be cancelled. Give tracked tasks time to stop
         // and mark interrupted creations before reclaim reads the ledger.
@@ -423,9 +425,10 @@ impl Runner {
         result.layout = Some(layout_entries(plan));
         result.log_dir = Some(log_dir.clone());
 
-        write_result_log(&result, &log_dir);
-        // Traffic retention runs before the report, so `result.json` lists the artifacts that are on disk.
+        // Retention can merge sidecars or delete captures; report only artifacts that remain on disk.
         crate::traffic::finalize(&log_dir, result.outcome);
+        result.collected.retain(|collected| collected.path.exists());
+        write_result_log(&result, &log_dir);
         panoramic_core::machine_output::write_test_report(&result, &log_dir);
 
         let _ = event_sender.send(TestEvent::TestCompleted {
@@ -631,8 +634,9 @@ pub(crate) mod test_support {
             .keys()
             .cloned()
             .collect::<std::collections::BTreeSet<_>>();
-        let case = CaseLoader::new(registries, TypedConfigLoader, "native")
+        let case = CaseLoader::new(registries, TypedConfigLoader)
             .load_content(
+                "cases",
                 &case_json.to_string(),
                 "native",
                 &logs.path().join("cases/native/config.yaml"),
@@ -836,7 +840,7 @@ pub(crate) mod test_support {
         /// Plans a Linux integration case with this test's name and timeout, sourced from `/cases/<name>/config.yaml`.
         pub(crate) fn plan(&self) -> LoadedPlan {
             let case = crate::CASE_LOADER
-                .load_content(
+                .load_content("cases",
                     &format!(
                         "name: {}\ntimeout: {}ms\nsubject_os: [linux]\nparticipants: {{adp: {{type: agent-adp, subject: true}}}}\nprocedure: [{{step: log_contains, on: adp, pattern: ready, timeout: 5s}}]\n",
                         self.name,
@@ -1163,6 +1167,7 @@ mod tests {
             let linux_plan = linux.plan();
             let pod_case = crate::CASE_LOADER
                 .load_content(
+                    "cases",
                     &format!(
                         "type: correctness\n{}",
                         crate::config::tests::CORRECTNESS_FIELDS
@@ -1373,7 +1378,7 @@ mod tests {
 
         assert_eq!(result.outcome, TestOutcome::Errored);
         assert_eq!(result.error.as_ref().map(|e| e.kind), Some(ErrorKind::Setup));
-        assert_eq!(result.case_path, Some(PathBuf::from("/cases/case")));
+        assert_eq!(result.case_path, Some(PathBuf::from("/test/integration/cases/case")));
         assert_eq!(result.layout, Some(layout_entries(&built.plan)));
 
         let mut reported = None;
@@ -1393,7 +1398,7 @@ mod tests {
     #[tokio::test]
     async fn reported_identity_comes_from_the_loaded_case() {
         let case = crate::CASE_LOADER
-            .load_content(
+            .load_content("cases",
                 "type: correctness\nruntime: docker\nanalysis_mode: metrics\nbaseline: {image: base}\ncomparison: {image: comp}\n",
                 "reported",
                 Path::new("/cases/reported/config.yaml"),
@@ -1449,7 +1454,7 @@ mod tests {
     #[tokio::test]
     async fn the_case_deadline_comes_from_the_loaded_case() {
         let case = crate::CASE_LOADER
-            .load_content(
+            .load_content("cases",
                 "name: reported\ntimeout: 50ms\nsubject_os: [linux]\nparticipants: {adp: {type: agent-adp, subject: true}}\nprocedure: [{step: log_contains, on: adp, pattern: ready, timeout: 5s}]\n",
                 "reported",
                 Path::new("/cases/reported/config.yaml"),
@@ -1600,10 +1605,10 @@ mod tests {
     async fn a_step_that_exhausts_its_own_budget_fails_the_test() {
         // The retry sleep outlasts the step budget, proving the slack preserves the assertion's own timeout message.
         // The last attempt is a request error or a probe timeout, depending on how busy the machine is.
-        crate::intake::test_server::install_crypto_provider();
+        panoramic_steps::compare::intake::test_server::install_crypto_provider();
         let log_base_dir = tempfile::tempdir().expect("temp dir should be creatable");
         let test = ScriptedTest {
-            target_port: Some(crate::intake::test_server::closed_port()),
+            target_port: Some(panoramic_steps::compare::intake::test_server::closed_port()),
             ..ScriptedTest::new(
             "procedure",
             Behavior::Procedure(
@@ -1627,7 +1632,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_stalled_request_cut_short_by_the_case_deadline_is_interrupted() {
-        let target = crate::intake::test_server::MockIntake::unresponsive().await;
+        let target = panoramic_steps::compare::intake::test_server::MockIntake::unresponsive().await;
         let log_base_dir = tempfile::tempdir().expect("temp dir should be creatable");
         let test = ScriptedTest {
             timeout: Duration::from_secs(1),

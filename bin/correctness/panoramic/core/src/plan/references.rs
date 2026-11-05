@@ -92,18 +92,27 @@ pub(super) fn resolve_config_references(
     })
 }
 
-pub(super) fn check_file_references(
+pub(super) fn resolve_file_references(
     file: &CaseFile, templates: &FileTemplates, layout: &Layout, types: &[&dyn ParticipantType],
-    facts: &BTreeMap<String, BTreeMap<String, String>>, name: &str, values: &CaseValues,
+    facts: &BTreeMap<String, BTreeMap<String, String>>, name: &str, values: &mut CaseValues,
 ) -> Result<(), String> {
     let realization = layout.get(name).expect("loaded participants have a layout");
     let holder = describe_participant(name, &file.participants[name].participant_type, realization);
     for (file_name, source) in values.files.iter().filter(|(_, source)| source.template) {
         let field = ConfigField::File(file_name);
-        for (written, reference) in templates.get(&source.from).written_references() {
-            resolve_reference(file, layout, types, facts, name, field, reference)
-                .map_err(|reason| format!("{holder} {field} '{written}' {reason}"))?;
-        }
+        let text = templates
+            .get(&source.from)
+            .substitute(|written, reference| {
+                let resolved = resolve_reference(file, layout, types, facts, name, field, reference)
+                    .map_err(|reason| format!("'{written}' {reason}"))?;
+                Ok(if matches!(reference, Reference::Late { .. }) {
+                    None
+                } else {
+                    resolved
+                })
+            })
+            .map_err(|reason| format!("{holder} {field} {reason}"))?;
+        values.file_contents.insert(file_name.clone(), text.into_bytes());
     }
     Ok(())
 }
@@ -207,6 +216,25 @@ pub(super) fn check_address_references(
                 planned,
                 ports,
             )?;
+            let text = simdutf8::basic::from_utf8(&planned.config.files[file_name]).expect("template files are UTF-8");
+            let template: Template = text.parse().expect("substituted file retains valid references");
+            let text = template
+                .substitute(|_, reference| {
+                    Ok(match reference {
+                        Reference::Endpoint {
+                            participant,
+                            endpoint,
+                            part,
+                        } => planned
+                            .endpoint_references
+                            .get(&(participant.name(name).into(), endpoint.clone()))
+                            .and_then(|address| address.part(*part)),
+                        Reference::Connection { consumed, part } => planned.connections[consumed].part(*part),
+                        _ => None,
+                    })
+                })
+                .map_err(|reason| format!("participant '{name}' configuration file '{file_name}': {reason}"))?;
+            planned.config.files.insert(file_name.clone(), text.into_bytes());
         }
     }
     Ok(())
@@ -391,10 +419,10 @@ mod tests {
             steps: STEPS,
             ..Default::default()
         };
-        let loader = CaseLoader::new(registries, FixtureTypes, "fixture");
+        let loader = CaseLoader::new(registries, FixtureTypes);
         let yaml = concat!("timeout: 1s\nsubject_os: [linux]\nparticipants:\n  subject: {type: observer, subject: true, config: {env: {PORT: '{{ self.facts.port }}', OWN: '{{self.late.ip}}/{{  subject.late.ip  }}'}, params: {mode: [{nested: ['{{z-other.facts.file}}', false, 7]}]}}}\n  z-other: {type: server}\n", minimal_procedure!(), "\n");
         let case = loader
-            .load_content(yaml, "alpha", Path::new("alpha/config.yaml"))
+            .load_content("cases", yaml, "alpha", Path::new("alpha/config.yaml"))
             .unwrap()
             .remove(0);
         let plan = Planner::with_run(registries, "testrun0")
@@ -1111,10 +1139,7 @@ mod tests {
             let plan = compile_files(&file_case("linux, windows"), &[("source.yaml", &text)], Os::Linux).unwrap();
             assert_eq!(
                 plan.effective_config("subject").unwrap().files["settings.yaml"],
-                crate::case::FileSource {
-                    from: "source.yaml".into(),
-                    template: true
-                }
+                b"path: /logs/output.log"
             );
             assert_eq!(
                 plan.case().file_templates().get(Path::new("source.yaml")),
@@ -1151,7 +1176,7 @@ mod tests {
                     os,
                 )
                 .unwrap();
-                let source = &plan.effective_config("subject").unwrap().files["settings.yaml"];
+                let source = &plan.case_values("subject").unwrap().files["settings.yaml"];
                 assert_eq!(
                     source.from,
                     Path::new(if os == Os::MacOs { "host.yaml" } else { "source.yaml" })
@@ -1175,7 +1200,7 @@ mod tests {
             )
             .unwrap();
             assert_eq!(
-                plan.effective_config("other").unwrap().files["settings.yaml"].from,
+                plan.case_values("other").unwrap().files["settings.yaml"].from,
                 Path::new("host.yaml")
             );
         }
@@ -1247,7 +1272,10 @@ mod tests {
                 let text = format!("{{{{other.late.{fact}}}}}");
                 if fact == "container_id" && kind != "kubernetes-pod" {
                     let plan = compile_files(&yaml, &[("source.yaml", &text)], Os::Linux).unwrap();
-                    assert!(plan.effective_config("subject").unwrap().files["settings.yaml"].template);
+                    assert_eq!(
+                        plan.effective_config("subject").unwrap().files["settings.yaml"],
+                        text.as_bytes()
+                    );
                     continue;
                 }
                 let reason = if fact == "container_id" {
@@ -1354,7 +1382,7 @@ mod tests {
             )
             .unwrap();
             assert_eq!(
-                plan.effective_config("subject").unwrap().files["settings.yaml"].from,
+                plan.case_values("subject").unwrap().files["settings.yaml"].from,
                 Path::new(if os == Os::MacOs { "host.yaml" } else { "source.yaml" })
             );
         }

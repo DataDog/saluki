@@ -19,6 +19,10 @@ use kube::{
 use panoramic_core::ledger::{random_id, ResourceLedger};
 use panoramic_core::result::{TestResult, UNKNOWN_PHASE};
 use panoramic_core::tasks::CaseTasks;
+use panoramic_steps::compare::{
+    analysis::{AnalysisMode, AnalysisRunner, TracesAnalysisOptions},
+    intake::CollectedData,
+};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tokio::{io::AsyncWriteExt as _, net::TcpListener, time::sleep};
 use tokio_util::sync::CancellationToken;
@@ -26,12 +30,10 @@ use tracing::{debug, info, warn};
 
 use crate::{
     correctness::{
-        analysis::{AnalysisMode, AnalysisRunner, TracesAnalysisOptions},
         case::CorrectnessTestCase,
         config::TargetConfig,
-        runner::make_error_result,
+        runner::{intake_client, make_error_result},
     },
-    intake::{CollectedData, IntakeClient},
     test::TestContext,
     traffic::{self, Side},
 };
@@ -296,8 +298,7 @@ pub async fn run_k8s_correctness_test(case: CorrectnessTestCase, tctx: TestConte
 
             // Phase 5: Collect data from both agent pods in parallel.
             let phase = phases.enter("collect_data");
-            let (baseline_client, comparison_client) =
-                (IntakeClient::new(baseline_port), IntakeClient::new(comparison_port));
+            let (baseline_client, comparison_client) = (intake_client(baseline_port), intake_client(comparison_port));
             let collected = tokio::join!(
                 CollectedData::collect(&baseline_client),
                 CollectedData::collect(&comparison_client),
@@ -1287,10 +1288,10 @@ async fn exec_write_file(
 
 #[cfg(test)]
 mod tests {
+    use panoramic_steps::compare::intake::test_server::MockIntake;
     use tokio::io::AsyncReadExt as _;
 
     use super::*;
-    use crate::intake::test_server::MockIntake;
 
     const BOUND: Duration = Duration::from_secs(5);
 

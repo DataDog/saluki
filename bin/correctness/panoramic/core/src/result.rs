@@ -324,6 +324,8 @@ pub enum IssueKind {
     ResourceLeaked,
     /// A registered resource's removal is unconfirmed.
     ResourceUnsettled,
+    /// A declared participant file could not be retained after the procedure.
+    CollectionFailed,
 }
 
 impl fmt::Display for IssueKind {
@@ -335,6 +337,7 @@ impl fmt::Display for IssueKind {
             Self::TasksStillRunning => "tasks_still_running",
             Self::ResourceLeaked => "resource_leaked",
             Self::ResourceUnsettled => "resource_unsettled",
+            Self::CollectionFailed => "collection_failed",
         };
         f.write_str(name)
     }
@@ -449,6 +452,17 @@ pub struct ProcessOutputReport {
     pub merged: Option<PathBuf>,
 }
 
+/// One file copied from a participant into the case artifacts.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct Collected {
+    /// Participant the file came from.
+    pub participant: String,
+    /// Definition-owned artifact kind.
+    pub kind: String,
+    /// Absolute path of the retained file.
+    pub path: PathBuf,
+}
+
 /// Result of a single test case.
 #[derive(Clone, Debug)]
 pub struct TestResult {
@@ -477,6 +491,8 @@ pub struct TestResult {
     pub layout: Option<Vec<LayoutEntry>>,
     /// Native participant observations, captured by the runner before stopping background tasks.
     pub participants: Vec<ParticipantReport>,
+    /// Files successfully collected after the procedure.
+    pub collected: Vec<Collected>,
     /// Directory this test's artifacts were written to. Set by the runner.
     pub log_dir: Option<PathBuf>,
     /// Timing breakdown for each phase of test execution.
@@ -547,6 +563,7 @@ impl TestResult {
             case_path: None,
             layout: None,
             participants: Vec::new(),
+            collected: Vec::new(),
             log_dir: None,
             phase_timings,
             assertion_details: Vec::new(),

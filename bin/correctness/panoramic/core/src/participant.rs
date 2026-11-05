@@ -8,7 +8,10 @@ use serde_json::Value;
 use crate::{
     artifact::ArtifactRole,
     backend::LateFact,
-    case::{EndpointOverride, FileSource, ParticipantConfig},
+    case::{
+        template::{Reference, Template},
+        EndpointOverride, FileSource, ParticipantConfig,
+    },
     endpoint::{ConsumedEndpoint, Endpoint, Evidence, RunnerHostRoute},
     handle::{http_get_from_runner_host, ExecCommand, ExecOutput, HandleError, HttpResponse, Primitives},
     layout::{Os, Realization, RealizationKind},
@@ -27,7 +30,8 @@ use crate::{
 /// Other references stay as written: another participant's `container_id` and endpoint and connection
 /// addresses resolve at creation.
 /// A type that must interpret an unresolved value reports a configuration error.
-/// Files marked `template: true` keep their references as written; their references are checked for this OS.
+/// File contents substitute early facts only in sources marked `template: true`.
+/// Address and late references stay as written until their values are available.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CaseValues {
     /// Environment variables after applying the overlay. Defaults to empty.
@@ -35,6 +39,10 @@ pub struct CaseValues {
     /// File sources as written, relative to the case directory. Defaults to empty.
     /// Files marked `template: true` keep their references as written, checked for this OS.
     pub files: BTreeMap<String, FileSource>,
+    /// File bytes after the OS overlay and substitution of early facts. Defaults to empty.
+    /// Only `template: true` sources are interpolated; other files retain their bytes verbatim.
+    /// Directory sources expand to one entry per regular file, keyed by `name/<relative path>`.
+    pub file_contents: BTreeMap<String, Vec<u8>>,
     /// Type-specific parameters; overlay values replace whole base values by key. Defaults to empty.
     pub params: BTreeMap<String, serde_json::Value>,
     /// Base endpoint overrides, shared by every OS. Defaults to empty.
@@ -47,6 +55,7 @@ impl CaseValues {
         let mut values = Self {
             env: config.env.clone(),
             files: config.files.clone(),
+            file_contents: BTreeMap::new(),
             params: config.params.clone(),
             endpoints: config.endpoints.clone(),
         };
@@ -73,9 +82,11 @@ pub struct EffectiveConfig {
     /// Type defaults (including assigned ports), then connection deliveries, then case variables. Defaults to empty.
     /// Case values must not set a key delivered by a connection.
     pub env: BTreeMap<String, String>,
-    /// Case-supplied file sources, relative to the case directory. Defaults to empty.
-    /// Files marked `template: true` keep their references as written, checked for this OS.
-    pub files: BTreeMap<String, FileSource>,
+    /// Case file bytes, with directories expanded as in [`CaseValues::file_contents`]. Defaults to empty.
+    /// Only `template: true` sources are interpolated. Hooks see early facts substituted;
+    /// the completed plan also substitutes endpoint and connection addresses. Late references stay as written.
+    /// Definitions must reject non-early references in values they read with [`require_early_config_value`].
+    pub files: BTreeMap<String, Vec<u8>>,
     /// Case parameters after the OS overlay, interpreted by the participant type. Defaults to empty.
     pub params: BTreeMap<String, serde_json::Value>,
     /// Case-supplied ports for listeners whose port the type cannot derive. Defaults to empty.
@@ -83,17 +94,41 @@ pub struct EffectiveConfig {
 }
 
 impl EffectiveConfig {
-    /// Applies case environment values over type defaults, preserving files, parameters and endpoint overrides.
+    /// Applies case environment values over type defaults, carrying file contents, parameters and endpoint overrides.
     pub(crate) fn assemble(defaults: BTreeMap<String, String>, case: CaseValues) -> Self {
         let mut env = defaults;
         env.extend(case.env);
         Self {
             env,
-            files: case.files,
+            files: case.file_contents,
             params: case.params,
             endpoints: case.endpoints,
         }
     }
+}
+
+/// Checks a configuration value a definition needs while planning, after parsing its containing file.
+/// Pass only the string being read, so unrelated references elsewhere in the file remain valid.
+///
+/// A definition reading the value in a hook sees only early facts substituted. Late, endpoint and connection
+/// references resolve later and stay as written, so the value is acceptable only if it contains literal text
+/// and fact references.
+///
+/// # Errors
+///
+/// Returns an error naming the file and key if the value is malformed or contains a late, endpoint or
+/// connection reference. The error quotes the first such reference exactly as written.
+pub fn require_early_config_value(file: &str, key: &str, value: &str) -> Result<(), String> {
+    let field = format!("configuration file '{file}' key '{key}'");
+    let template: Template = value.parse().map_err(|error| format!("{field}: {error}"))?;
+    for (written, reference) in template.written_references() {
+        if !matches!(reference, Reference::Fact { .. }) {
+            return Err(format!(
+                "{field} contains reference '{written}'; only early facts are substituted before planning"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Configuration rendered for participant creation, with case files keyed by configuration name.
@@ -279,6 +314,28 @@ impl OpContext<'_> {
 /// Default graceful-stop allowance, matching the ten-second Docker stop timeout.
 const DEFAULT_STOP_GRACE: Duration = Duration::from_secs(10);
 
+/// Where a participant file is retained in the case artifacts.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CollectDestination {
+    /// The participant's `collected/` directory.
+    Participant,
+    /// The case's shared `traffic/` directory.
+    Traffic,
+}
+
+/// A regular file copied after the procedure, while the participant still exists.
+#[derive(Clone, Copy, Debug)]
+pub struct CollectFile {
+    /// Absolute path inside the participant.
+    pub path: &'static str,
+    /// Plain filename used in the destination directory.
+    pub name: &'static str,
+    /// Definition-owned artifact kind reported with the collected path.
+    pub kind: &'static str,
+    /// Destination relative to the case's artifact directory.
+    pub destination: CollectDestination,
+}
+
 /// A participant type a case may name, and what it accepts and provides.
 pub trait ParticipantType: Send + Sync {
     /// Registry name, as written in a participant's `type`.
@@ -315,6 +372,12 @@ pub trait ParticipantType: Send + Sync {
             realization.kind.name(),
             realization.os.name(),
         ))
+    }
+
+    /// Files to copy after the procedure from every started participant, running or exited.
+    /// Each failed copy is reported as a collection issue and preserves the procedure verdict.
+    fn collect(&self, _realization: Realization) -> &'static [CollectFile] {
+        &[]
     }
 
     /// Names a case may supply under `config.files`. Defaults to none.
@@ -600,6 +663,42 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn an_early_file_value_check_accepts_only_literals_and_early_facts() {
+        for value in [
+            "8123",
+            "/run/input.sock",
+            "{{self.facts.shared_dir}}",
+            "{{ peer.facts.port }}:{{self.facts.shared_dir}}/input.sock",
+        ] {
+            assert_eq!(
+                require_early_config_value("settings.yaml", "listen.socket", value),
+                Ok(())
+            );
+        }
+        for written in [
+            "{{  peer.late.container_id  }}",
+            "{{self.late.ip}}",
+            "{{ self.endpoints.api.url }}",
+            "{{peer.endpoints.api.host}}",
+            "{{ self.connections.upstream.url }}",
+            "{{self.connections.upstream.port}}",
+        ] {
+            assert_eq!(
+                require_early_config_value(
+                    "settings.yaml",
+                    "listen.socket",
+                    &format!("{{{{self.facts.shared_dir}}}}/{written}"),
+                ),
+                Err(format!("configuration file 'settings.yaml' key 'listen.socket' contains reference '{written}'; only early facts are substituted before planning")),
+            );
+        }
+        assert_eq!(
+            require_early_config_value("settings.yaml", "listen.socket", "{{ unclosed"),
+            Err("configuration file 'settings.yaml' key 'listen.socket': unterminated template reference '{{ unclosed': expected '}}'".into()),
+        );
+    }
 
     #[tokio::test]
     async fn an_operation_http_request_uses_its_full_limit_instead_of_the_probe_limit() {
@@ -919,6 +1018,7 @@ os:
                 CaseValues {
                     env: config.env.clone(),
                     files: config.files.clone(),
+                    file_contents: BTreeMap::new(),
                     params: config.params.clone(),
                     endpoints: config.endpoints.clone(),
                 }
@@ -964,6 +1064,6 @@ os:
                 ("D".into(), "default".into()),
             ])
         );
-        assert_eq!(effective.files, config.files);
+        assert!(effective.files.is_empty());
     }
 }

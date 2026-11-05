@@ -18,22 +18,6 @@ use tokio_util::sync::CancellationToken;
 /// gets its own independent receiver with its own "last seen" mark—no mutex needed.
 pub(crate) type KindReadyReceiver = watch::Receiver<Option<Result<(), String>>>;
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum TestSuite {
-    Integration,
-    Correctness,
-}
-
-impl TestSuite {
-    /// Returns the suite's name, the spelling `list --json` reports as a case's `type`.
-    pub(crate) const fn name(self) -> &'static str {
-        match self {
-            Self::Integration => "integration",
-            Self::Correctness => "correctness",
-        }
-    }
-}
-
 /// Settings shared by every test in a run.
 #[derive(Debug, Clone)]
 pub(crate) struct RunnerSettings {

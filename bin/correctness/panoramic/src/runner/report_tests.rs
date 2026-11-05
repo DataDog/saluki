@@ -9,9 +9,11 @@ use panoramic_core::{
     backend::{self, RunBackends, FIXUP_IMAGE},
     case::{CaseLoader, Registries},
     layout::{Os, Realization, RealizationKind},
-    participant::{ExitChannel, OutputChannel, OutputStream, ProcessSpec, RenderedConfig},
+    participant::{
+        CollectDestination, CollectFile, ExitChannel, OutputChannel, OutputStream, ProcessSpec, RenderedConfig,
+    },
     plan::Planner,
-    recipe::{test_support::container, Recipe},
+    recipe::{ContainerRecipe, Recipe},
     record::{AssertionStatus, StepReport},
     result::{ReclaimResult, TestOutcome},
     step::{Need, Step, StepContext, StepFactory, StepFields},
@@ -41,6 +43,37 @@ impl ParticipantType for Fixture {
     fn stop_grace(&self, _: Realization) -> Duration {
         Duration::from_secs(1)
     }
+    fn recipe(&self, _: Realization, _: &RenderedConfig) -> Result<Recipe, String> {
+        Ok(Recipe::Container(
+            ContainerRecipe::new(IMAGE)
+                .with_entrypoint(["sh", "-c"])
+                .with_command(["echo ready; exec sleep 60"])
+                .with_file("/capture", 0o644, b"payload")
+                .with_file("/capture.json", 0o644, br#"{"complete":true,"records":1}"#),
+        ))
+    }
+    fn collect(&self, _: Realization) -> &'static [CollectFile] {
+        &[
+            CollectFile {
+                path: "/capture",
+                name: "input.jsonl.zst",
+                kind: "input",
+                destination: CollectDestination::Traffic,
+            },
+            CollectFile {
+                path: "/capture.json",
+                name: "input-manifest.json",
+                kind: "input_manifest",
+                destination: CollectDestination::Traffic,
+            },
+            CollectFile {
+                path: "/capture",
+                name: "retained.bin",
+                kind: "sample",
+                destination: CollectDestination::Participant,
+            },
+        ]
+    }
     fn processes(&self) -> &'static [&'static str] {
         &["main", "worker"]
     }
@@ -60,9 +93,6 @@ impl ParticipantType for Fixture {
                 },
             },
         ]
-    }
-    fn recipe(&self, _: Realization, _: &RenderedConfig) -> Result<Recipe, String> {
-        Ok(container(IMAGE, &["sh", "-c"], &["echo ready; exec sleep 60"]))
     }
 }
 
@@ -100,8 +130,8 @@ fn plan() -> LoadedPlan {
         steps: &[&Pass],
         typed_case_roles: &[],
     };
-    let case = CaseLoader::new(registries, TypedConfigLoader, "native")
-        .load_content("timeout: 2m\nsubject_os: [linux]\nparticipants:\n  subject: {type: fixture, subject: true}\nprocedure: [{step: pass}]",
+    let case = CaseLoader::new(registries, TypedConfigLoader)
+        .load_content("cases", "timeout: 2m\nsubject_os: [linux]\nparticipants:\n  subject: {type: fixture, subject: true}\nprocedure: [{step: pass}]",
             "report", Path::new("cases/report/config.yaml"))
         .unwrap().remove(0);
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(3).unwrap();
@@ -143,6 +173,7 @@ impl Test for StallsAfterStartup {
     }
     async fn run(&self, tctx: TestContext) -> TestResult {
         let control = CaseControl {
+            interrupt: self.cancel_run.clone(),
             observations: tctx.observations.clone(),
             record: tctx.record.clone(),
             deadline: tctx.deadline,
@@ -202,6 +233,15 @@ async fn run_report_case(stall: bool) {
         serde_json::from_slice(&std::fs::read(result.log_dir.as_ref().unwrap().join("result.json")).unwrap()).unwrap();
     assert_eq!(result.outcome, TestOutcome::Passed, "{report:#}");
     assert_eq!(report["schema_version"], 3);
+    let collected = report["collected"].as_array().unwrap();
+    assert_eq!(collected.len(), 1, "{collected:?}");
+    let retained = result.log_dir.as_ref().unwrap().join("subject/collected/retained.bin");
+    assert_eq!(collected[0]["path"], retained.to_str().unwrap());
+    assert_eq!(std::fs::read(retained).unwrap(), b"payload");
+    let traffic = result.log_dir.as_ref().unwrap().join("traffic");
+    assert!(traffic.join("manifest.json").is_file());
+    assert!(!traffic.join("input.jsonl.zst").exists());
+    assert!(!traffic.join("input-manifest.json").exists());
     assert_eq!(
         report["participants"],
         serde_json::to_value(&result.participants).unwrap()
@@ -295,4 +335,37 @@ async fn the_runner_reports_native_processes_and_per_participant_reclaim() {
 #[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
 async fn the_runner_snapshots_participants_after_dropping_a_case_body_that_outlived_its_grace() {
     run_report_case(true).await;
+}
+
+#[tokio::test]
+#[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
+async fn a_case_deadline_keeps_traffic_collections_before_reclaim() {
+    let image = std::env::var("PANORAMIC_TEST_IMAGE").unwrap_or_else(|_| "alpine:latest".into());
+    let (_logs, report) = super::test_support::run_native_case(
+        &[&Fixture],
+        crate::REGISTRIES.steps,
+        serde_json::json!({
+            "timeout": "10s", "subject_os": ["linux"],
+            "participants": {"subject": {"type": "fixture", "subject": true}},
+            "procedure": [{"step": "process_stable_for", "on": "subject", "process": "main", "duration": "30s"}],
+        }),
+        BTreeMap::from([(IMAGE.name.into(), image)]),
+        CancellationToken::new(),
+    )
+    .await;
+    assert_eq!(report["outcome"], "timed_out", "{report:#}");
+    assert_eq!(report["timeout"]["active_phase"], "steps");
+    assert_eq!(report["issues"], serde_json::json!([]));
+    let collected = report["collected"].as_array().unwrap();
+    assert_eq!(collected.len(), 2, "{collected:?}");
+    for file in collected {
+        assert_eq!(std::fs::read(file["path"].as_str().unwrap()).unwrap(), b"payload");
+    }
+    assert!(collected.iter().any(|file| file["kind"] == "input"));
+    let traffic = Path::new(report["log_dir"].as_str().unwrap()).join("traffic");
+    assert!(!traffic.join("input-manifest.json").exists());
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(traffic.join("manifest.json")).unwrap()).unwrap();
+    assert_eq!(manifest["captures_retained"], true);
+    assert_eq!(manifest["input"]["file"]["present"], true);
 }

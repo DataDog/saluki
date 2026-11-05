@@ -576,7 +576,7 @@ mod tests {
             "  zebra: {type: agent-adp}\n  alpha: {type: agent-adp, os: linux}\n  adp:",
         );
         let case = crate::CASE_LOADER
-            .load_content(&yaml, "participant", std::path::Path::new("config.yaml"))
+            .load_content("cases", &yaml, "participant", std::path::Path::new("config.yaml"))
             .unwrap()
             .remove(0);
         let manifest = ArtifactManifest::parse(
@@ -608,6 +608,7 @@ mod tests {
         );
         let case = crate::CASE_LOADER
             .load_content(
+                "cases",
                 &format!("type: correctness\n{CORRECTNESS_FIELDS}"),
                 "typed",
                 std::path::Path::new("config.yaml"),
@@ -744,7 +745,7 @@ mod tests {
         assert_eq!(entry["images"]["baseline"], "base:file");
 
         let path = write_case(
-            dir.path(),
+            &dir.path().join("integration/cases"),
             "participant",
             &PARTICIPANT_FIELDS.replace("1s", "9s").replace("[linux]", "[windows]"),
         );
