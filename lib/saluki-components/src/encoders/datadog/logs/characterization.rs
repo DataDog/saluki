@@ -16,6 +16,7 @@
 //! a whole buffer before its flush timeout can fire, so the requests depend only on the logs, not on timing.
 
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use async_compression::tokio::bufread::GzipDecoder;
 use http_body_util::BodyExt as _;
@@ -30,6 +31,9 @@ use crate::encoders::BufferedIncrementalConfiguration;
 
 /// The target logs sender's limit on the content of a batch, before compression.
 const TARGET_BATCH_MAX_CONTENT_SIZE: usize = 5_000_000;
+
+/// The flush timeout that the topology gives the encoder by default.
+const FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// A request built by the encoder.
 #[derive(Clone)]
@@ -64,7 +68,7 @@ async fn encode(compressor_kind: &str, logs: Vec<Log>) -> Vec<EncodedRequest> {
     assert!(logs.len() <= 1024, "logs must fit in a single event buffer");
 
     let config =
-        BufferedIncrementalConfiguration::from_encoder_builder(DatadogLogsConfiguration::new(compressor_kind, 3));
+        BufferedIncrementalConfiguration::new(DatadogLogsConfiguration::new(compressor_kind, 3), FLUSH_TIMEOUT);
     let (control, mut payloads) = TestComponentDriver::encoder(config)
         .await
         .expect("logs encoder should build");
