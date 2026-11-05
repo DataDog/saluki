@@ -1,9 +1,8 @@
 //! Encoder component basics.
 
-use std::{error::Error, fmt};
-
 use async_trait::async_trait;
 use saluki_error::GenericError;
+use snafu::Snafu;
 
 use crate::{data_model::event::Event, topology::PayloadsDispatcher};
 
@@ -29,7 +28,8 @@ pub enum ProcessResult {
 ///
 /// A flush can dispatch several payloads before one of them fails, so the error reports how many events had already
 /// been dispatched, letting the caller account for them even though the flush failed.
-#[derive(Debug)]
+#[derive(Debug, Snafu)]
+#[snafu(display("Failed to flush encoder after dispatching {dispatched_events} events."))]
 pub struct FlushError {
     dispatched_events: usize,
     source: GenericError,
@@ -52,18 +52,6 @@ impl FlushError {
     /// Consumes the error, returning the underlying error.
     pub fn into_source(self) -> GenericError {
         self.source
-    }
-}
-
-impl fmt::Display for FlushError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.source)
-    }
-}
-
-impl Error for FlushError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        Some(self.source.as_ref())
     }
 }
 

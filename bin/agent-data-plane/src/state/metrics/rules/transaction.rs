@@ -56,6 +56,6 @@ pub fn get_transaction_remappings() -> Vec<RemapperRule> {
     // otherwise count a validation `client_error` series under `transactions.errors`.
     rules
         .into_iter()
-        .map(|rule| rule.without_tags([API_KEY_VALIDATION_TAG]))
+        .map(|rule| rule.rejecting_tags([API_KEY_VALIDATION_TAG]))
         .collect()
 }
