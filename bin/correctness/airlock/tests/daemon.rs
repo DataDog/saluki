@@ -6,7 +6,7 @@ use std::{
 
 use airlock::{
     docker::{connect, image_id, Docker},
-    driver::{Driver, DriverConfig, ExitStatus, Protocol},
+    driver::{Driver, DriverConfig, Protocol},
     exec::{ExecOutput, ExecRequest, OutputChunk},
     files::{ContainerFile, FileKind, FileStat},
     group::IsolationGroup,
@@ -265,14 +265,10 @@ async fn a_prepared_group_creates_its_participants_concurrently_on_one_network_a
             participants.map(|participant| format!("{name}-{participant}"))
         );
 
-        for driver in &drivers {
-            let details = driver.start_container().await.unwrap();
-            let status = driver.wait_for_container_exit().await.unwrap();
-            assert!(
-                matches!(status, ExitStatus::Success),
-                "{}: {status}",
-                details.container_name()
-            );
+        for (participant, driver) in participants.into_iter().zip(&drivers) {
+            driver.start_container().await.unwrap();
+            let exit = driver.wait_exit().await.unwrap();
+            assert_eq!(exit, ContainerExit { code: 0, error: None }, "{participant}");
         }
     })
     .await;
@@ -313,10 +309,9 @@ exit 1"#
 
         tokio::try_join!(server.create(), client.create()).unwrap();
         tokio::try_join!(server.start_container(), client.start_container()).unwrap();
-        let (server_status, client_status) =
-            tokio::try_join!(server.wait_for_container_exit(), client.wait_for_container_exit()).unwrap();
-        assert!(matches!(server_status, ExitStatus::Success), "server: {server_status}");
-        assert!(matches!(client_status, ExitStatus::Success), "client: {client_status}");
+        let (server_exit, client_exit) = tokio::try_join!(server.wait_exit(), client.wait_exit()).unwrap();
+        assert_eq!(server_exit, ContainerExit { code: 0, error: None }, "server");
+        assert_eq!(client_exit, ContainerExit { code: 0, error: None }, "client");
 
         let name = format!("airlock-{id}");
         let inspected = docker.inspect_container(&format!("{name}-server"), None).await.unwrap();
@@ -355,9 +350,7 @@ out=$(nc -u -l -p 9001 -w 1); [ "$out" = udp-reached ]"#
             .unwrap();
 
         server.create().await.unwrap();
-        let details = server.start_container().await.unwrap();
-        assert_eq!(details.try_get_exposed_port(Protocol::Tcp, 9000), Some(tcp));
-        assert_eq!(details.try_get_exposed_port(Protocol::Udp, 9001), Some(udp));
+        server.start_container().await.unwrap();
 
         let inspected = docker
             .inspect_container(&format!("airlock-{id}-server"), None)
@@ -408,8 +401,8 @@ exit "$tcp_status""#,
         .await
         .unwrap();
         assert_eq!(code, 0);
-        let status = server.wait_for_container_exit().await.unwrap();
-        assert!(matches!(status, ExitStatus::Success), "server: {status}");
+        let exit = server.wait_exit().await.unwrap();
+        assert_eq!(exit, ContainerExit { code: 0, error: None }, "server");
     })
     .await;
 }
@@ -547,8 +540,8 @@ printf layer > /tmp/output"#
         assert!(format!("{error:#}").contains("cannot overwrite directory"), "{error:#}");
 
         driver.start_container().await.unwrap();
-        let status = driver.wait_for_container_exit().await.unwrap();
-        assert!(matches!(status, ExitStatus::Success), "{status}");
+        let exit = driver.wait_exit().await.unwrap();
+        assert_eq!(exit, ContainerExit { code: 0, error: None });
         for (path, expected) in [
             ("/airlock/subject/exit/record", &b"7 0\n"[..]),
             ("/tmp/output", &b"layer"[..]),
@@ -699,10 +692,11 @@ async fn a_prepared_participant_shares_the_host_pid_namespace_only_when_asked() 
     let id = unique_id();
     in_group(id.clone(), async move {
         let image = test_image();
-        let group = IsolationGroup::prepare(docker, &id, &["shared", "own"], &image)
+        let participants = ["shared", "own"];
+        let group = IsolationGroup::prepare(docker, &id, &participants, &image)
             .await
             .unwrap();
-        let drivers: Vec<_> = ["shared", "own"]
+        let drivers: Vec<_> = participants
             .into_iter()
             .map(|participant| {
                 let config = DriverConfig::from_image(participant, image.clone()).with_entrypoint(vec![
@@ -737,8 +731,8 @@ async fn a_prepared_participant_shares_the_host_pid_namespace_only_when_asked() 
         for driver in &drivers {
             driver.start_container().await.unwrap();
         }
-        for driver in &drivers {
-            let path = format!("/airlock/{}/shared/pid", driver.driver_id());
+        for (participant, driver) in participants.into_iter().zip(&drivers) {
+            let path = format!("/airlock/{participant}/shared/pid");
             let pid = timeout(Duration::from_secs(10), async {
                 loop {
                     if let Some(bytes) = driver.read_file(&path).await.unwrap() {
@@ -751,7 +745,7 @@ async fn a_prepared_participant_shares_the_host_pid_namespace_only_when_asked() 
             })
             .await
             .expect("the container should write its PID within 10 seconds");
-            if driver.driver_id() == "shared" {
+            if participant == "shared" {
                 assert!(pid > 1, "host PID should not be 1: {pid}");
             } else {
                 assert_eq!(pid, 1);
@@ -950,10 +944,8 @@ async fn exec_in_a_container_that_is_not_running_is_an_error() {
         assert!(error.to_string().contains("not running"), "{error}");
 
         driver.start_container().await.unwrap();
-        assert!(matches!(
-            driver.wait_for_container_exit().await.unwrap(),
-            ExitStatus::Success
-        ));
+        let exit = driver.wait_exit().await.unwrap();
+        assert_eq!(exit, ContainerExit { code: 0, error: None });
         let error = driver
             .exec(ExecRequest::new(vec!["true".to_string()]))
             .await
@@ -997,13 +989,11 @@ async fn a_dropped_exec_stream_leaves_its_process_running_until_the_container_st
         })
         .await
         .expect("tail should stream line3 within 20 seconds");
-        let error = stream.exit_code().await.unwrap_err();
-        assert!(error.to_string().contains("still running"), "{error}");
-
         let name = format!("airlock-{id}-subject");
         let exec_ids = docker.inspect_container(&name, None).await.unwrap().exec_ids.unwrap();
         assert_eq!(exec_ids.len(), 1);
         let exec_id = &exec_ids[0];
+        assert_eq!(docker.inspect_exec(exec_id).await.unwrap().running, Some(true));
         drop(stream);
         assert_eq!(docker.inspect_exec(exec_id).await.unwrap().running, Some(true));
         docker.stop_container(&name, None).await.unwrap();
@@ -1015,7 +1005,7 @@ async fn a_dropped_exec_stream_leaves_its_process_running_until_the_container_st
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_streamed_command_that_ends_reports_its_exit_code() {
+async fn a_streamed_command_that_ends_returns_both_streams_and_stays_ended() {
     let docker = daemon().await;
     let id = unique_id();
     in_group(id.clone(), async move {
@@ -1039,7 +1029,6 @@ async fn a_streamed_command_that_ends_reports_its_exit_code() {
         assert_eq!(stdout, b"out\n");
         assert_eq!(stderr, b"err\n");
         assert!(stream.next().await.is_none());
-        assert_eq!(stream.exit_code().await.unwrap(), 5);
     })
     .await;
 }
@@ -1192,10 +1181,15 @@ async fn a_container_ignoring_sigterm_is_killed_and_removed_by_the_deadline() {
 
         let start = Instant::now();
         let deadline = start + Duration::from_secs(5);
-        timeout_at(deadline, driver.stop_and_remove(Duration::from_secs(60), deadline))
-            .await
-            .expect("removal should finish before the deadline")
-            .unwrap();
+        timeout_at(
+            deadline,
+            driver
+                .container_ref()
+                .stop_and_remove(Duration::from_secs(60), deadline),
+        )
+        .await
+        .expect("removal should finish before the deadline")
+        .unwrap();
         assert!(start.elapsed() >= Duration::from_secs(2));
         assert_container_removed(&docker, &format!("airlock-{id}-subject")).await;
     })
@@ -1229,10 +1223,15 @@ async fn a_container_that_exits_on_sigterm_is_removed_without_waiting_out_its_gr
         }
         let start = Instant::now();
         let deadline = start + Duration::from_secs(40);
-        timeout_at(deadline, driver.stop_and_remove(Duration::from_secs(30), deadline))
-            .await
-            .unwrap()
-            .unwrap();
+        timeout_at(
+            deadline,
+            driver
+                .container_ref()
+                .stop_and_remove(Duration::from_secs(30), deadline),
+        )
+        .await
+        .unwrap()
+        .unwrap();
         while let Some(chunk) = logs.next().await {
             match chunk.unwrap() {
                 OutputChunk::Stdout(bytes) => stdout.extend_from_slice(&bytes),
@@ -1263,10 +1262,13 @@ async fn removing_an_unstarted_or_already_removed_participant_succeeds() {
         driver.create().await.unwrap();
         for _ in 0..2 {
             let deadline = Instant::now() + Duration::from_secs(10);
-            timeout_at(deadline, driver.stop_and_remove(Duration::from_secs(5), deadline))
-                .await
-                .unwrap()
-                .unwrap();
+            timeout_at(
+                deadline,
+                driver.container_ref().stop_and_remove(Duration::from_secs(5), deadline),
+            )
+            .await
+            .unwrap()
+            .unwrap();
             assert_container_removed(&docker, &format!("airlock-{id}-subject")).await;
         }
     })
@@ -1282,7 +1284,9 @@ async fn a_participant_removal_cut_short_leaves_the_group_removable() {
         let deadline = Instant::now() + Duration::from_secs(60);
         let result = timeout(
             Duration::from_secs(1),
-            driver.stop_and_remove(Duration::from_secs(30), deadline),
+            driver
+                .container_ref()
+                .stop_and_remove(Duration::from_secs(30), deadline),
         )
         .await;
         assert!(

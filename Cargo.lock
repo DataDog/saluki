@@ -4532,6 +4532,7 @@ dependencies = [
  "sha2",
  "simdutf8",
  "snafu",
+ "tar",
  "tempfile",
  "tokio",
  "tokio-rustls",

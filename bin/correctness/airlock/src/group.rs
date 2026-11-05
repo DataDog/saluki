@@ -174,10 +174,7 @@ impl IsolationGroup {
     /// # Errors
     ///
     /// Returns an error for a participant outside this group, a [`DriverConfig::with_container_os`] that differs
-    /// from the group's OS, or settings only
-    /// [`Driver::from_config`] supports: `with_alpine_image`, `with_network`, `with_volume_mount`, `with_logging`,
-    /// and `with_exposed_port`.
-    /// The fix-up image comes from [`Self::prepare`].
+    /// from the group's OS.
     pub fn driver(&self, config: DriverConfig) -> Result<Driver, GenericError> {
         if !self.participants.contains(&config.driver_id) {
             return Err(generic_error!(
@@ -193,15 +190,6 @@ impl IsolationGroup {
                 config.container_os,
                 self.id,
                 self.container_os
-            ));
-        }
-        let legacy_only_settings = config.legacy_only_settings();
-        if !legacy_only_settings.is_empty() {
-            return Err(generic_error!(
-                "Participant '{}' in isolation group '{}' sets {}, which only drivers built with Driver::from_config support",
-                config.driver_id,
-                self.id,
-                legacy_only_settings.join(", ")
             ));
         }
         Ok(Driver::in_group(self.docker.clone(), self.id.clone(), config))
@@ -307,7 +295,7 @@ fn is_dns_label(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{driver::Protocol, fake_daemon::FakeDaemon};
+    use crate::fake_daemon::FakeDaemon;
 
     #[test]
     fn group_identities_and_participant_names_must_be_dns_labels() {
@@ -357,10 +345,9 @@ mod tests {
             .expect("Windows containers must be rejected")
             .to_string();
         assert!(error.contains("'alpha'") && error.contains("Windows"), "{error}");
-        let driver = group
+        group
             .driver(DriverConfig::from_image("alpha", "local:latest".to_string()))
             .unwrap();
-        assert_eq!(driver.driver_id(), "alpha");
         assert!(daemon.requests.lock().unwrap().is_empty());
     }
 
@@ -392,14 +379,7 @@ mod tests {
             .expect("an unprepared participant must be rejected")
             .to_string();
         assert!(error.contains("'bravo'"), "{error}");
-        let error = group
-            .driver(windows.clone().with_exposed_port(Protocol::Tcp, 9000))
-            .err()
-            .expect("legacy-only settings must be rejected")
-            .to_string();
-        assert!(error.contains("with_exposed_port"), "{error}");
-        let driver = group.driver(windows).unwrap();
-        assert_eq!(driver.driver_id(), "alpha");
+        group.driver(windows).unwrap();
         assert!(daemon.requests.lock().unwrap().is_empty());
     }
 
@@ -495,59 +475,6 @@ mod tests {
             .to_string();
         assert!(error.contains("'group'") && error.contains("network"), "{error}");
         assert_eq!(daemon.requests.lock().unwrap().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn a_driver_with_settings_only_legacy_drivers_support_is_rejected() {
-        let daemon = FakeDaemon::start(|_, _| (500, r#"{"message":"unexpected request"}"#)).await;
-        let group = IsolationGroup {
-            docker: daemon.docker.clone(),
-            id: "group".to_string(),
-            participants: vec!["alpha".to_string()],
-            container_os: ContainerOs::Linux,
-        };
-        let config = DriverConfig::from_image("alpha", "local:latest".to_string());
-        for (config, settings) in [
-            (config.clone().with_alpine_image("alpine:latest"), "with_alpine_image"),
-            (config.clone().with_network("other"), "with_network"),
-            (config.clone().with_volume_mount("other", "/other"), "with_volume_mount"),
-            (config.clone().with_logging("logs".into()), "with_logging"),
-            (
-                config.clone().with_exposed_port(Protocol::Udp, 9001),
-                "with_exposed_port",
-            ),
-            (
-                config
-                    .clone()
-                    .with_alpine_image("alpine:latest")
-                    .with_network("other")
-                    .with_volume_mount("other", "/other")
-                    .with_logging("logs".into())
-                    .with_exposed_port(Protocol::Udp, 9001),
-                "with_alpine_image, with_network, with_volume_mount, with_logging, with_exposed_port",
-            ),
-        ] {
-            let error = group
-                .driver(config)
-                .err()
-                .expect("legacy-only settings must be rejected");
-            assert_eq!(error.to_string(), format!(
-                "Participant 'alpha' in isolation group 'group' sets {settings}, which only drivers built with Driver::from_config support"
-            ));
-        }
-        let driver = group
-            .driver(
-                config
-                    .with_bind_mount("/host/config", "/etc/config")
-                    .with_published_port(Protocol::Tcp, 9000, 24100)
-                    .with_published_port(Protocol::Udp, 9001, 24101)
-                    .with_network_alias("extra")
-                    .with_host_cgroup_namespace(true)
-                    .with_host_pid_namespace(true),
-            )
-            .unwrap();
-        assert_eq!(driver.driver_id(), "alpha");
-        assert!(daemon.requests.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

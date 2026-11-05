@@ -1,10 +1,11 @@
-use std::{collections::BTreeSet, future::Future, ops::RangeInclusive, time::Duration};
+use std::{collections::BTreeSet, future::Future, io::Read as _, ops::RangeInclusive, time::Duration};
 
-use airlock::{
-    docker::{image_id, Docker},
-    driver::{Driver, DriverConfig},
+use airlock::docker::{image_id, Docker};
+use bollard::{
+    models::{ContainerInspectResponse, PortBinding},
+    query_parameters::DownloadFromContainerOptionsBuilder,
 };
-use bollard::models::{ContainerInspectResponse, PortBinding};
+use futures::StreamExt as _;
 use tokio::time::{timeout, Instant as TokioInstant};
 
 use super::*;
@@ -173,10 +174,9 @@ impl Observed {
     }
     async fn assert_consumer_saw_marker(&self) {
         assert_eq!(self.result.outcome, TestOutcome::Passed, "{:?}", self.result.error);
-        let consumer = self.driver("consumer");
         let saw = timeout(Duration::from_secs(5), async {
             loop {
-                if let Some(bytes) = consumer.read_file("/airlock/consumer/shared/saw").await.unwrap() {
+                if let Some(bytes) = self.read_file("consumer", "/airlock/consumer/shared/saw").await {
                     if !bytes.is_empty() {
                         break bytes;
                     }
@@ -214,12 +214,34 @@ impl Observed {
         .unwrap_or_else(|_| panic!("{} must contain {expected:?}", path.display()))
     }
 
-    fn driver(&self, name: &str) -> Driver {
-        Driver::from_config(
-            self.plan.scope().id(),
-            DriverConfig::from_image(name, IMAGE.local_default.into()),
-        )
-        .unwrap()
+    async fn read_file(&self, name: &str, path: &str) -> Option<Vec<u8>> {
+        let container = format!("airlock-{}-{name}", self.plan.scope().id());
+        let mut stream = self.docker.download_from_container(
+            &container,
+            Some(DownloadFromContainerOptionsBuilder::default().path(path).build()),
+        );
+        let mut bytes = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            match chunk {
+                Ok(chunk) => bytes.extend_from_slice(&chunk),
+                Err(bollard::errors::Error::DockerResponseServerError { status_code: 404, .. }) => return None,
+                Err(error) => panic!("reading {path} from {container}: {error}"),
+            }
+        }
+        let mut archive = tar::Archive::new(bytes.as_slice());
+        let mut entries = archive.entries().unwrap();
+        let mut entry = entries
+            .next()
+            .expect("the archive must contain the requested file")
+            .unwrap();
+        assert!(entry.header().entry_type().is_file());
+        let mut contents = Vec::new();
+        entry.read_to_end(&mut contents).unwrap();
+        assert!(
+            entries.next().is_none(),
+            "the archive must contain only the requested file"
+        );
+        Some(contents)
     }
 }
 
@@ -488,13 +510,12 @@ async fn each_participant_holds_the_verified_courier_and_its_rendered_case_files
         assert_eq!(view.result.outcome, TestOutcome::Passed, "{:?}", view.result.error);
         let peer = view.container("peer").await.id.unwrap();
         for (name, contents) in [("consumer", format!("peer={peer}")), ("peer", "case file".into())] {
-            let driver = view.driver(name);
             assert_eq!(
-                driver.read_file("/panoramic/courier").await.unwrap().as_deref(),
+                view.read_file(name, "/panoramic/courier").await.as_deref(),
                 Some(view.courier.as_slice())
             );
             assert_eq!(
-                driver.read_file("/case/settings").await.unwrap().as_deref(),
+                view.read_file(name, "/case/settings").await.as_deref(),
                 Some(contents.as_bytes())
             );
         }

@@ -43,7 +43,9 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 bollard = { workspace = true }
+futures = { workspace = true, features = ["alloc"] }
 rcgen = { workspace = true, features = ["crypto", "pem"] }
+tar = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
 tracing-subscriber = { workspace = true, features = ["fmt"] }

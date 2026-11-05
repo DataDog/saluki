@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use airlock::driver::{ContainerRef, Driver, DriverDetails};
+use airlock::driver::ContainerRef;
 use futures::future::join_all;
 use k8s_openapi::api::core::v1::Namespace;
 use kube::api::{Api, DeleteParams};
@@ -26,7 +26,7 @@ pub const RECLAIM_TIME: Duration = Duration::from_secs(30);
 const NAMESPACE_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Returns a random lowercase alphanumeric ID suitable for Docker and Kubernetes names.
-pub fn random_id() -> String {
+pub(crate) fn random_id() -> String {
     const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
     let mut rng = rand::rng();
     (0..8)
@@ -36,7 +36,7 @@ pub fn random_id() -> String {
 
 /// Shares a case's registered resources between its test body and the runner.
 ///
-/// Register isolation groups and namespaces before creation requests. The runner calls [`Self::reclaim`] to attempt
+/// Register scopes, namespaces and participants before creation requests. The runner calls [`Self::reclaim`] to attempt
 /// removal in reverse registration order. Dropping the last ledger handle sends SIGKILL to registered process groups;
 /// directories, Docker resources, and namespaces require explicit reclaim.
 #[derive(Clone, Debug, Default)]
@@ -53,8 +53,6 @@ struct Entry {
 
 /// A resource the runner knows how to remove.
 enum Resource {
-    /// The containers, shared volume, and network labeled with this isolation-group ID.
-    IsolationGroup(String),
     /// A participant stopped with its type's grace before removal.
     Participant {
         name: String,
@@ -129,7 +127,6 @@ impl Resource {
             Self::ContainerScope { backends, scope, os } => {
                 backends.remove_container_scope(os, &scope).await.map(|()| None)
             }
-            Self::IsolationGroup(id) => Driver::clean_related_resources(id).await.map(|()| None),
             Self::Namespace { name, client } => {
                 let api = Api::<Namespace>::all(client);
                 match api.delete(&name, &DeleteParams::default()).await {
@@ -193,7 +190,6 @@ impl fmt::Debug for Resource {
         match self {
             Self::Participant { name, .. } => f.debug_tuple("Participant").field(name).finish(),
             Self::ContainerScope { scope, .. } => f.debug_tuple("ContainerScope").field(scope).finish(),
-            Self::IsolationGroup(id) => f.debug_tuple("IsolationGroup").field(id).finish(),
             Self::Namespace { name, .. } => f.debug_struct("Namespace").field("name", name).finish_non_exhaustive(),
             Self::Directory(path) => f.debug_tuple("Directory").field(path).finish(),
             Self::HostScope(path) => f.debug_tuple("HostScope").field(path).finish(),
@@ -208,7 +204,6 @@ impl fmt::Display for Resource {
         match self {
             Self::Participant { name, .. } => write!(f, "participant:{name}"),
             Self::ContainerScope { scope, .. } => write!(f, "isolation_group:{}", scope.id()),
-            Self::IsolationGroup(id) => write!(f, "isolation_group:{}", id),
             Self::Namespace { name, .. } => write!(f, "namespace:{}", name),
             Self::Directory(path) | Self::HostScope(path) => write!(f, "directory:{}", path.display()),
             Self::PodDirectory { node, path, .. } => write!(f, "node_directory:{}:{path}", node.container),
@@ -292,13 +287,6 @@ impl ResourceLedger {
         });
     }
 
-    /// Registers a new isolation group and returns its ID. Call it before creating anything in the group.
-    pub fn isolation_group(&self) -> String {
-        let id = random_id();
-        self.register(Resource::IsolationGroup(id.clone()));
-        id
-    }
-
     /// Registers the native scope before preparation.
     pub(crate) fn container_scope(&self, backends: Arc<RunBackends>, scope: ScopeLayout, os: crate::layout::Os) {
         self.register(Resource::ContainerScope { backends, scope, os });
@@ -340,7 +328,7 @@ impl ResourceLedger {
     }
 
     /// Registers a namespace, which reclaim deletes through `client`. Call it before creating the namespace.
-    pub fn namespace(&self, client: Client, name: String) {
+    pub(crate) fn namespace(&self, client: Client, name: String) {
         self.register(Resource::Namespace { name, client });
     }
 
@@ -364,7 +352,6 @@ impl ResourceLedger {
     fn mark_unsettled(&self, name: &str) {
         for entry in self.lock().iter_mut() {
             let named = match &entry.resource {
-                Resource::IsolationGroup(id) => id == name,
                 Resource::ContainerScope { scope, .. } => scope.id() == name,
                 Resource::Participant { name: participant, .. } => format!("participant:{participant}") == name,
                 Resource::Namespace { name: namespace, .. } | Resource::PodDirectory { namespace, .. } => {
@@ -378,10 +365,10 @@ impl ResourceLedger {
         }
     }
 
-    /// Runs a creation request for the registered isolation group or namespace `name`.
+    /// Runs a creation request for the registered scope, namespace or participant `name`.
     ///
     /// If cancellation drops the request, returns `None` and marks the resource unsettled.
-    pub async fn create<F>(&self, name: &str, cancel: &CancellationToken, request: F) -> Option<F::Output>
+    pub(crate) async fn create<F>(&self, name: &str, cancel: &CancellationToken, request: F) -> Option<F::Output>
     where
         F: Future,
     {
@@ -390,32 +377,6 @@ impl ResourceLedger {
             self.mark_unsettled(name);
         }
         created
-    }
-
-    /// Creates and starts `driver`'s container in `isolation_group`, returning early when `cancel` fires.
-    ///
-    /// An interrupted creation marks the group unsettled. Starting uses the existing container, so an interrupted start
-    /// preserves the group's current mark.
-    pub async fn start_container(
-        &self, driver: &Driver, isolation_group: &str, cancel: &CancellationToken,
-    ) -> Result<DriverDetails, GenericError> {
-        self.create(isolation_group, cancel, driver.create())
-            .await
-            .ok_or_else(|| {
-                generic_error!(
-                    "Cancelled while creating a container in isolation group '{}'.",
-                    isolation_group
-                )
-            })??;
-        cancel
-            .run_until_cancelled(driver.start_container())
-            .await
-            .unwrap_or_else(|| {
-                Err(generic_error!(
-                    "Cancelled while starting a container in isolation group '{}'.",
-                    isolation_group
-                ))
-            })
     }
 
     /// Attempts cleanup in reverse registration order under one deadline.
@@ -511,28 +472,36 @@ mod tests {
     use tokio::net::TcpListener;
     use tokio::sync::Notify;
     use tokio::task::JoinHandle;
+    use tokio::time::timeout;
 
     use super::*;
-    use crate::tasks::{CaseTasks, TASK_STOP_TIME};
+    use crate::{
+        backend::docker::test_util::FakeDocker,
+        layout::Os,
+        tasks::{CaseTasks, TASK_STOP_TIME},
+    };
+
+    fn container_scope(api: &FakeDocker, os: Os) -> (ResourceLedger, ScopeLayout) {
+        let ledger = ResourceLedger::default();
+        let scope = ScopeLayout {
+            run: "abcd1234".into(),
+            index: 0,
+        };
+        ledger.container_scope(Arc::new(RunBackends::with_docker(api.daemon())), scope.clone(), os);
+        (ledger, scope)
+    }
 
     #[tokio::test]
     async fn a_container_scope_is_removed_through_the_backend_of_its_os() {
-        use crate::{backend::docker::test_util::FakeDocker, layout::Os};
-
         for (daemon_os, scope_os) in [("linux", Os::Windows), ("windows", Os::Linux)] {
             let api = FakeDocker::new(Some(daemon_os));
-            let backends = Arc::new(RunBackends::with_docker(api.daemon()));
-            let ledger = ResourceLedger::default();
-            let scope = ScopeLayout {
-                run: "abcd1234".into(),
-                index: 0,
-            };
-            ledger.container_scope(backends, scope.clone(), scope_os);
+            let (ledger, scope) = container_scope(&api, scope_os);
             let (reclaimed, issues) = ledger.reclaim(Instant::now() + Duration::from_secs(1)).await;
             assert_eq!(reclaimed.len(), 1);
             assert_eq!(reclaimed[0].resource, format!("isolation_group:{}", scope.id()));
             assert_eq!(reclaimed[0].result, ReclaimResult::Leaked);
             assert_eq!(issues.len(), 1);
+            assert_eq!(issues[0].kind, IssueKind::ResourceLeaked);
             assert!(
                 issues[0].message.contains(&format!(
                     "the Docker daemon runs {daemon_os} containers, not {}",
@@ -543,6 +512,69 @@ mod tests {
             );
             assert_eq!(*api.calls.lock().unwrap(), ["connect", "info"]);
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_container_scope_creation_cut_short_by_the_task_stop_is_unsettled() {
+        let api = FakeDocker::new(Some("linux"));
+        let (ledger, scope) = container_scope(&api, Os::Linux);
+        let tasks = CaseTasks::new(&CancellationToken::new());
+        let entered = Arc::new(Notify::new());
+        let (task_ledger, task_entered, stop) = (ledger.clone(), entered.clone(), tasks.stop.clone());
+        let created = tasks.spawn(async move {
+            let request = async {
+                task_entered.notify_one();
+                std::future::pending::<()>().await
+            };
+            task_ledger.create(&scope.id(), &stop, request).await
+        });
+
+        timeout(BOUND, async {
+            entered.notified().await;
+            assert_eq!(tasks.stop_all(Instant::now() + TASK_STOP_TIME).await, 0);
+            assert_eq!(created.await.expect("creation task should not panic"), Some(None));
+        })
+        .await
+        .expect("creation and task shutdown should finish within the bound");
+
+        let entries = ledger.lock();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].unsettled, "task shutdown must mark the interrupted scope");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_container_scope_still_being_removed_at_the_deadline_is_unsettled() {
+        let mut api = FakeDocker::new(Some("linux"));
+        api.pending_info = true;
+        let (ledger, scope) = container_scope(&api, Os::Linux);
+        let started = Instant::now();
+        let budget = Duration::from_secs(1);
+
+        let (reclaimed, issues) = timeout(BOUND, ledger.reclaim(started + budget))
+            .await
+            .expect("reclaim should finish within the bound");
+
+        assert_eq!(started.elapsed(), budget);
+        let resource = format!("isolation_group:{}", scope.id());
+        assert_eq!(
+            reclaimed,
+            [ReclaimEntry {
+                resource: resource.clone(),
+                participant: None,
+                result: ReclaimResult::Unsettled,
+            }]
+        );
+        assert_eq!(
+            issues,
+            [Issue {
+                kind: IssueKind::ResourceUnsettled,
+                message: format!(
+                    "{resource}: still being removed when the {:?} reclaim budget expired",
+                    RECLAIM_TIME
+                ),
+            }]
+        );
+        assert_eq!(*api.calls.lock().unwrap(), ["connect", "info"]);
     }
 
     /// Bounds every reclaim in these tests.

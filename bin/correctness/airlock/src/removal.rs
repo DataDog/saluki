@@ -173,7 +173,9 @@ mod tests {
         );
         timeout_at(
             Instant::now() + BOUND,
-            driver.stop_and_remove(Duration::from_secs(10), Instant::now() + Duration::from_secs(30)),
+            driver
+                .container_ref()
+                .stop_and_remove(Duration::from_secs(10), Instant::now() + Duration::from_secs(30)),
         )
         .await
         .unwrap()

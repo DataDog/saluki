@@ -110,7 +110,7 @@ impl ExecStream {
     /// # Errors
     ///
     /// Returns an error if inspection fails, the command is still running, or Docker omits its state or exit code.
-    pub fn exit_code(&self) -> impl Future<Output = Result<i64, GenericError>> + Send + 'static {
+    fn exit_code(&self) -> impl Future<Output = Result<i64, GenericError>> + Send + 'static {
         // ExecStream isn't Sync, so a future borrowing it wouldn't be Send; clone what inspection needs.
         let docker = self.docker.clone();
         let container = self.container.clone();
@@ -451,6 +451,55 @@ mod tests {
             assert!(!format!("{error:?}").contains("secret"));
             assert!(!format!("{error:#}").contains("secret"));
         }
+    }
+
+    #[tokio::test]
+    async fn collected_output_keeps_the_exit_code_and_rejects_a_command_still_running() {
+        let daemon = crate::fake_daemon::FakeDaemon::start(|method, path| match (method, path) {
+            ("GET", "/exec/running/json") => (200, r#"{"Running":true,"ExitCode":0}"#),
+            ("GET", "/exec/exited/json") => (200, r#"{"Running":false,"ExitCode":5}"#),
+            _ => (500, r#"{"message":"unexpected request"}"#),
+        })
+        .await;
+        for exec_id in ["running", "exited"] {
+            let stream = ExecStream {
+                docker: daemon.docker.clone(),
+                container: "container".to_string(),
+                exec_id: exec_id.to_string(),
+                output: Box::pin(futures::stream::iter([
+                    Ok(LogOutput::StdOut {
+                        message: Bytes::from_static(b"out"),
+                    }),
+                    Ok(LogOutput::StdErr {
+                        message: Bytes::from_static(b"err"),
+                    }),
+                ])),
+                stdin_writer: None,
+                done: false,
+            };
+            let result = tokio::time::timeout(std::time::Duration::from_secs(5), stream.collect_output())
+                .await
+                .expect("exit inspection must finish within the bound");
+            if exec_id == "running" {
+                assert_eq!(
+                    result.unwrap_err().to_string(),
+                    "Exec 'running' in container 'container' is still running"
+                );
+            } else {
+                assert_eq!(
+                    result.unwrap(),
+                    ExecOutput {
+                        stdout: b"out".to_vec(),
+                        stderr: b"err".to_vec(),
+                        exit_code: 5
+                    }
+                );
+            }
+        }
+        assert_eq!(
+            *daemon.requests.lock().unwrap(),
+            ["GET /exec/running/json", "GET /exec/exited/json"]
+        );
     }
 
     #[tokio::test]

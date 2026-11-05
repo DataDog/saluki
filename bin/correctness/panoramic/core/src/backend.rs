@@ -28,7 +28,7 @@ use crate::{
 pub const FIXUP_IMAGE: ArtifactRole = ArtifactRole {
     name: "fixup-image",
     kind: ArtifactKind::Image { os: Os::Linux },
-    local_default: airlock::driver::DEFAULT_ALPINE_IMAGE,
+    local_default: "alpine:latest",
 };
 
 /// Static `panoramic-courier` executable (`bin/correctness/courier`) for Linux containers.
@@ -282,7 +282,7 @@ mod tests {
             ArtifactRole {
                 name: "fixup-image",
                 kind: ArtifactKind::Image { os: Os::Linux },
-                local_default: airlock::driver::DEFAULT_ALPINE_IMAGE,
+                local_default: FIXUP_IMAGE.local_default,
             }
         );
         assert_eq!(COURIER_LINUX_BINARY.name, "courier-linux-binary");

@@ -918,7 +918,7 @@ each reference and role before starting, and prints each role's reference, sourc
 `Images needed on <os>:`. When no images are needed, it prints `No images needed on <os>.` and exits 0.
 Successful pulls exit 0; any failed pull or inspection, invalid selection or manifest, or discovery or planning
 error exits 2. Registry access is unauthenticated, and platform selection follows the daemon rather than
-`--subject-os`. Test runs also pull images during container creation.
+`--subject-os`. Test runs never pull: a missing image fails verification before any case starts.
 
 Connections and endpoint overrides are checked the same way: on every OS in `subject_os`, each `connect` key
 must be an endpoint the participant consumes, the target must serve the named endpoint with its configuration,

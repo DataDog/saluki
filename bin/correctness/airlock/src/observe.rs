@@ -157,7 +157,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        driver::{Driver, DriverConfig, ExitStatus},
+        driver::{Driver, DriverConfig},
         fake_daemon::FakeDaemon,
     };
 
@@ -256,51 +256,6 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(10)).await;
         assert!(daemon.requests.lock().unwrap().is_empty());
         drop(future);
-    }
-
-    #[tokio::test]
-    async fn the_legacy_wait_reports_a_failed_status_instead_of_panicking() {
-        let daemon = FakeDaemon::start(|_, path| match path.split('?').next().unwrap() {
-            "/containers/airlock-test-message/wait" => (200, r#"{"StatusCode":0,"Error":{"Message":"boom"}}"#),
-            "/containers/airlock-test-empty/wait" => (200, ""),
-            "/containers/airlock-test-nonzero/wait" => (200, r#"{"StatusCode":7}"#),
-            "/containers/airlock-test-clean/wait" => (200, r#"{"StatusCode":0}"#),
-            _ => (200, r#"{"State":{"Status":"exited"}}"#),
-        })
-        .await;
-        for (name, expected) in [
-            ("message", Some((0, "boom"))),
-            ("nonzero", Some((7, "<no error message provided>"))),
-            ("clean", None),
-        ] {
-            let driver = Driver::in_group(
-                daemon.docker.clone(),
-                "test".to_string(),
-                DriverConfig::from_image(name, "image".to_string()),
-            );
-            match (driver.wait_for_container_exit().await.unwrap(), expected) {
-                (ExitStatus::Failed { code, error }, Some((expected_code, expected_error))) => {
-                    assert_eq!(code, expected_code);
-                    assert_eq!(error, expected_error);
-                }
-                (ExitStatus::Success, None) => {}
-                (status, _) => panic!("unexpected status for {name}: {status}"),
-            }
-        }
-        let driver = Driver::in_group(
-            daemon.docker.clone(),
-            "test".to_string(),
-            DriverConfig::from_image("empty", "image".to_string()),
-        );
-        let error = driver
-            .wait_for_container_exit()
-            .await
-            .err()
-            .expect("empty wait is an error");
-        assert_eq!(
-            error.to_string(),
-            "Wait for container 'airlock-test-empty' ended without an exit status"
-        );
     }
 
     #[tokio::test]

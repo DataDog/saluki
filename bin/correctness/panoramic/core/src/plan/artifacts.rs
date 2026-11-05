@@ -192,7 +192,7 @@ mod tests {
 
     use crate::{
         artifact::{ArtifactBinding, ArtifactKind, ArtifactManifest, ArtifactRole, BindingSource},
-        backend::{COURIER_LINUX_BINARY, COURIER_WINDOWS_BINARY},
+        backend::{COURIER_LINUX_BINARY, COURIER_WINDOWS_BINARY, FIXUP_IMAGE},
         case::{
             fixtures::{minimal_procedure, PARTICIPANT_FIELDS},
             Registries,
@@ -226,7 +226,7 @@ mod tests {
     const FIXUP: ArtifactRole = ArtifactRole {
         name: "fixup-image",
         kind: ArtifactKind::Image { os: Os::Linux },
-        local_default: airlock::driver::DEFAULT_ALPINE_IMAGE,
+        local_default: FIXUP_IMAGE.local_default,
     };
 
     struct Type {
@@ -652,7 +652,7 @@ mod tests {
             format!(
                 "artifact role 'fixup-image' is declared as linux image '{}' by the linux-container backend, \
              but as linux image 'other:latest' by participant type 'server' as linux-container on linux",
-                airlock::driver::DEFAULT_ALPINE_IMAGE,
+                FIXUP_IMAGE.local_default,
             )
         );
         let plan = compile_with(
