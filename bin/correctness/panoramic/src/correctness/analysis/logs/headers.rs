@@ -16,7 +16,7 @@ use stele::LogsRequest;
 use super::{DiffKind, FieldDiff};
 
 /// Path prefix used for header differences, followed by the lowercased header name.
-pub const HEADER_PATH_PREFIX: &str = "headers";
+const HEADER_PATH_PREFIX: &str = "headers";
 
 /// Shape of a header whose presence is compared, but not its value.
 const PRESENT: &str = "<present>";
@@ -99,7 +99,7 @@ pub fn compare_headers(
         }
 
         let never_sent = |shapes: &BTreeSet<Option<String>>| shapes.iter().all(Option::is_none);
-        let (kind, baseline, comparison) = if never_sent(&comparison_shapes) {
+        let (kind, baseline_value, comparison_value) = if never_sent(&comparison_shapes) {
             (DiffKind::Missing, Some(shapes_value(baseline_shapes)), None)
         } else if never_sent(&baseline_shapes) {
             (DiffKind::Extra, None, Some(shapes_value(comparison_shapes)))
@@ -113,8 +113,8 @@ pub fn compare_headers(
         diffs.push(FieldDiff {
             path: format!("{}.{}", HEADER_PATH_PREFIX, rule.name.to_ascii_lowercase()),
             kind,
-            baseline,
-            comparison,
+            baseline: baseline_value,
+            comparison: comparison_value,
         });
     }
     diffs
