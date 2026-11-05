@@ -17,8 +17,7 @@ use panoramic_participants::{AgentAdp, TOOLS_LINUX_IMAGE};
 use saluki_error::{generic_error, GenericError};
 
 use super::{
-    integration_bridge, os_for_runtime, parse_case, IntegrationConfig, MatrixVariants, LINUX_RUNTIME, MAC_RUNTIME,
-    WINDOWS_RUNTIME,
+    os_for_runtime, parse_case, IntegrationConfig, MatrixVariants, LINUX_RUNTIME, MAC_RUNTIME, WINDOWS_RUNTIME,
 };
 use crate::{
     config::runner_artifacts::RunnerArtifacts,
@@ -40,6 +39,20 @@ pub(crate) enum TypedConfig {
 }
 
 impl TypedConfig {
+    /// Builds a typed runner from a copy of its configuration, applying artifact choices to that copy.
+    pub(crate) fn build_test(
+        &self, name: &str, settings: &IntegrationSettings, artifacts: &RunnerArtifacts<'_>,
+    ) -> Box<dyn Test> {
+        match self {
+            Self::Integration(config) => Box::new(IntegrationTestCase::new(config.clone(), settings)),
+            Self::Correctness(config) => {
+                let mut config = config.clone();
+                artifacts.apply_correctness(&mut config);
+                Box::new(CorrectnessTestCase::new(name.to_string(), config))
+            }
+        }
+    }
+
     /// Returns the realization this case's runner creates: integration cases follow the subject OS,
     /// correctness cases their configured runtime.
     pub(crate) fn realization(&self, subject_os: Os) -> Realization {
@@ -233,89 +246,9 @@ fn from_correctness(name: String, config: CorrectnessConfig) -> TypedCase<TypedC
     }
 }
 
-/// Participant translation and runner construction for case plans.
-pub(crate) trait RunnableCase {
-    /// Translates a participant case into the configuration its integration runner receives.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error naming the case and source if it uses another schema or suite, has unsupported
-    /// participant settings or steps.
-    /// See [`integration_bridge::integration_config`].
-    fn integration_config(&self) -> Result<IntegrationConfig, GenericError>;
-
-    /// Builds a runner from a copy of the case data, applying image choices to that copy.
-    ///
-    /// # Errors
-    ///
-    /// Participant cases propagate [`Self::integration_config`] errors.
-    fn build_test(
-        &self, settings: &IntegrationSettings, artifacts: &RunnerArtifacts<'_>,
-    ) -> Result<Box<dyn Test>, GenericError>;
-}
-
-impl RunnableCase for LoadedPlan {
-    fn integration_config(&self) -> Result<IntegrationConfig, GenericError> {
-        let case = self.case();
-        let CaseSchema::Participants { file, .. } = case.schema() else {
-            return Err(generic_error!(
-                "Cannot run case '{}' from {}: integration translation requires a case that declares participants",
-                case.name(),
-                case.source().display()
-            ));
-        };
-        if case.suite() != TestSuite::Integration.name() {
-            return Err(generic_error!(
-                "Cannot run case '{}' from {}: the integration runner runs only integration-suite cases",
-                case.name(),
-                case.source().display()
-            ));
-        }
-        integration_bridge::integration_config(
-            file,
-            case.name(),
-            case.source(),
-            |participant, fact| self.fact(participant, fact),
-            |participant| self.case_values(participant),
-        )
-        .map_err(|reason| {
-            generic_error!(
-                "Cannot run case '{}' from {}: {}",
-                case.name(),
-                case.source().display(),
-                reason
-            )
-        })
-    }
-
-    fn build_test(
-        &self, settings: &IntegrationSettings, artifacts: &RunnerArtifacts<'_>,
-    ) -> Result<Box<dyn Test>, GenericError> {
-        match self.case().schema() {
-            CaseSchema::Typed(TypedConfig::Integration(config)) => {
-                Ok(Box::new(IntegrationTestCase::new(config.clone(), settings)))
-            }
-            CaseSchema::Typed(TypedConfig::Correctness(config)) => {
-                let mut config = config.clone();
-                artifacts.apply_correctness(&mut config);
-                Ok(Box::new(CorrectnessTestCase::new(
-                    self.case().name().to_string(),
-                    config,
-                )))
-            }
-            CaseSchema::Participants { .. } => {
-                Ok(Box::new(IntegrationTestCase::new(self.integration_config()?, settings)))
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use panoramic_core::{
-        artifact::BindingSource,
-        case::{CaseLoader, Registries},
-    };
+    use panoramic_core::artifact::BindingSource;
 
     use super::*;
     use crate::config::{
@@ -538,55 +471,6 @@ mod tests {
         let canonical = path.canonicalize().unwrap();
         assert_eq!(case.source(), canonical);
         assert_eq!(case.source().parent().unwrap(), canonical.parent().unwrap());
-    }
-
-    #[test]
-    fn integration_translation_requires_a_participant_case() {
-        for yaml in [
-            "type: integration\nname: alpha\ntimeout: 1s\nruntimes: [linux]\nprocedure: []\n".to_string(),
-            format!("type: correctness\n{CORRECTNESS_FIELDS}"),
-        ] {
-            let cases = crate::CASE_LOADER
-                .load_content(&yaml, "alpha", Path::new("alpha/config.yaml"))
-                .unwrap();
-            assert_eq!(cases.len(), 1);
-            let plan = planner()
-                .compile(cases.into_iter().next().unwrap(), Os::Linux)
-                .unwrap()
-                .into_plan()
-                .unwrap();
-            assert_eq!(
-                plan.integration_config().unwrap_err().to_string(),
-                "Cannot run case 'alpha' from alpha/config.yaml: \
-                 integration translation requires a case that declares participants"
-            );
-        }
-    }
-
-    #[test]
-    fn a_participant_case_in_another_suite_cannot_build_an_integration_runner() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_case(dir.path(), "alpha", &PARTICIPANT_FIELDS.replace("[linux]", "[windows]"));
-        let loader = CaseLoader::new(
-            Registries {
-                participant_types: panoramic_participants::REGISTERED_TYPES,
-                steps: panoramic_steps::REGISTERED_STEPS,
-                ..Default::default()
-            },
-            TypedConfigLoader,
-            TestSuite::Correctness.name(),
-        );
-        let case = loader.load_file(&path).unwrap().remove(0);
-        let plan = planner().compile(case, Os::Windows).unwrap().into_plan().unwrap();
-        let error = plan.integration_config().unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            format!(
-                "Cannot run case 'alpha' from {}: \
-                 the integration runner runs only integration-suite cases",
-                path.canonicalize().unwrap().display()
-            )
-        );
     }
 
     #[test]

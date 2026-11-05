@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use panoramic_core::case::{CaseSchema, ProcedureNode};
-use panoramic_core::layout::Os;
+use panoramic_core::layout::{Os, Realization, RealizationKind};
 use panoramic_core::step::Need;
 use panoramic_steps::{test_support::valid_fields, REGISTERED_STEPS};
 use serde_json::Value;
@@ -194,6 +194,76 @@ fn agent_adp_rejects_overriding_derived_ports_and_undeclared_connections() {
                 "Failed to plan test cases:\n  - case 'alpha' in {}: on subject OS 'linux', participant 'adp' of type 'agent-adp' as linux-container on linux {expected}",
                 path.canonicalize().unwrap().display(),
             ));
+        }
+    }
+}
+
+#[test]
+fn intake_cases_plan_with_subject_realizations_urls_and_artifact_roles_on_every_os() {
+    let cases_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../test/integration/cases");
+    for name in ["dogstatsd-host-tag", "dogstatsd-intake-metric"] {
+        for (os, kind, roles) in [
+            (
+                Os::Linux,
+                RealizationKind::LinuxContainer,
+                &[
+                    "agent-adp-linux-image",
+                    "courier-linux-binary",
+                    "fixup-image",
+                    "tools-linux-image",
+                ][..],
+            ),
+            (
+                Os::MacOs,
+                RealizationKind::HostProcessGroup,
+                &["adp-host-binary", "agent-host-install", "intake-host-binary"][..],
+            ),
+            (
+                Os::Windows,
+                RealizationKind::WindowsContainer,
+                &[
+                    "agent-adp-windows-image",
+                    "courier-windows-binary",
+                    "tools-windows-image",
+                ][..],
+            ),
+        ] {
+            let case = crate::CASE_LOADER
+                .load_file(&cases_dir.join(name).join("config.yaml"))
+                .unwrap()
+                .remove(0);
+            assert_eq!(
+                case.subject_os().iter().copied().collect::<Vec<_>>(),
+                [Os::Linux, Os::MacOs, Os::Windows],
+                "{name}"
+            );
+            let plan = planner().compile(case, os).unwrap().into_plan().unwrap();
+            assert_eq!(
+                plan.layout().unwrap().iter().collect::<Vec<_>>(),
+                [("adp", Realization { os, kind }), ("intake", Realization { os, kind })],
+                "{name} on {os:?}"
+            );
+            let expected_url = if os == Os::MacOs {
+                let listen = plan.effective_config("intake").unwrap().env["INTAKE_HTTP_LISTEN_ADDR"]
+                    .parse::<std::net::SocketAddr>()
+                    .unwrap();
+                assert_eq!(listen.ip(), std::net::Ipv4Addr::LOCALHOST);
+                assert!((20000..30000).contains(&listen.port()), "{name}: {listen}");
+                format!("http://{listen}")
+            } else {
+                "http://intake:2049".to_string()
+            };
+            let env = &plan.effective_config("adp").unwrap().env;
+            assert_eq!(env["DD_DD_URL"], expected_url, "{name} on {os:?}");
+            assert_eq!(env["DD_APM_DD_URL"], expected_url, "{name} on {os:?}");
+            assert_eq!(
+                plan.artifacts()
+                    .iter()
+                    .map(|binding| binding.role.name)
+                    .collect::<Vec<_>>(),
+                roles,
+                "{name} on {os:?}"
+            );
         }
     }
 }

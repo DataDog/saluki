@@ -27,7 +27,8 @@ mod port_listening;
 mod process_stable_for;
 mod send;
 
-pub use self::{
+#[cfg(any(test, feature = "test-util"))]
+use self::{
     file_contains::FileContains,
     log_contains::{LogContains, LogNotContains},
 };

@@ -203,14 +203,21 @@ const LISTENERS: &[Listener] = &[
     },
 ];
 
+#[derive(Clone, Copy, PartialEq)]
+enum Platform {
+    LinuxContainer,
+    WindowsContainer,
+    MacOsHost,
+}
+
 struct Environment<'a> {
     values: &'a BTreeMap<String, String>,
-    macos: bool,
+    platform: Platform,
 }
 
 impl<'a> Environment<'a> {
     fn value(&self, owner: Owner, key: &str, default: &'a str) -> (String, &'a str) {
-        if !self.macos && matches!(owner, Owner::Adp) {
+        if self.platform == Platform::LinuxContainer && matches!(owner, Owner::Adp) {
             let key = format!("ADP_DD_{key}");
             if let Some(value) = self.values.get(&key) {
                 return (key, value);
@@ -232,7 +239,7 @@ impl<'a> Environment<'a> {
 pub(super) fn otlp_proxy_enabled(env: &BTreeMap<String, String>) -> Result<bool, String> {
     let env = Environment {
         values: env,
-        macos: true,
+        platform: Platform::MacOsHost,
     };
     Ok(env.enabled(Owner::Agent, "DATA_PLANE_ENABLED", "false")?
         && env.enabled(Owner::Agent, "DATA_PLANE_OTLP_ENABLED", "false")?
@@ -242,16 +249,29 @@ pub(super) fn otlp_proxy_enabled(env: &BTreeMap<String, String>) -> Result<bool,
 pub(super) fn endpoints(
     realization: Realization, env: &BTreeMap<String, String>,
 ) -> Result<BTreeMap<String, Endpoint>, String> {
-    let macos = (realization.os, realization.kind) == (Os::MacOs, RealizationKind::HostProcessGroup);
-    let env = Environment { values: env, macos };
+    let platform = match (realization.os, realization.kind) {
+        (Os::Linux, RealizationKind::LinuxContainer) => Platform::LinuxContainer,
+        (Os::Windows, RealizationKind::WindowsContainer) => Platform::WindowsContainer,
+        (Os::MacOs, RealizationKind::HostProcessGroup) => Platform::MacOsHost,
+        _ => return Ok(BTreeMap::new()),
+    };
+    let env = Environment { values: env, platform };
     let adp = env.enabled(Owner::Agent, "DATA_PLANE_ENABLED", "false")?;
     let dogstatsd = env.enabled(Owner::Agent, "USE_DOGSTATSD", "true")?;
     let adp_dogstatsd = adp && env.enabled(Owner::Agent, "DATA_PLANE_DOGSTATSD_ENABLED", "true")?;
     let adp_otlp = adp && env.enabled(Owner::Adp, "DATA_PLANE_OTLP_ENABLED", "false")?;
-    let proxy = macos && otlp_proxy_enabled(env.values)?;
+    let proxy = platform == Platform::MacOsHost && otlp_proxy_enabled(env.values)?;
     let mut endpoints = BTreeMap::new();
     for listener in LISTENERS {
-        if listener.macos_only && !macos {
+        if platform == Platform::WindowsContainer && matches!(listener.value, ValueKind::Path) {
+            let (key, value) = env.value(Owner::Agent, listener.key, "");
+            if !value.is_empty() {
+                return Err(format!(
+                    "{key}='{value}' is unsupported on windows-container; unix socket listeners need a Linux container or macOS host"
+                ));
+            }
+        }
+        if listener.macos_only && platform != Platform::MacOsHost {
             continue;
         }
         let owner = match listener.owner {
@@ -261,7 +281,9 @@ pub(super) fn endpoints(
             Owner::Adp if !adp => continue,
             Owner::AdpOtlp if !adp_otlp => continue,
             Owner::AdpDogStatsD if !(dogstatsd && adp_dogstatsd) => continue,
-            Owner::AdpDogStatsD if macos && !env.values.contains_key(&format!("DD_{}", listener.key)) => {
+            Owner::AdpDogStatsD
+                if platform == Platform::MacOsHost && !env.values.contains_key(&format!("DD_{}", listener.key)) =>
+            {
                 // TCP is opt-in; assigning an unset port would enable another listener.
                 continue;
             }
@@ -288,7 +310,7 @@ pub(super) fn endpoints(
         } else {
             false
         };
-        let default = if macos && matches!(listener.value, ValueKind::Path) {
+        let default = if platform != Platform::LinuxContainer && matches!(listener.value, ValueKind::Path) {
             ""
         } else {
             listener.default
@@ -314,7 +336,7 @@ pub(super) fn endpoints(
             | ValueKind::PositivePort(deliver)
             | ValueKind::Address(deliver)
             | ValueKind::HostPort(deliver) => {
-                let port = if macos && !env.values.contains_key(&key) {
+                let port = if platform == Platform::MacOsHost && !env.values.contains_key(&key) {
                     Port::Assigned { deliver }
                 } else {
                     let port = match listener.value {
@@ -335,7 +357,7 @@ pub(super) fn endpoints(
                             let port = address.port().ok_or_else(|| invalid("must specify a port"))?;
                             let host = url::Host::parse(address.host_str().unwrap())
                                 .map_err(|_| invalid("must be host:port with no scheme"))?;
-                            if !macos && loopback_host(&host.to_string()) {
+                            if platform != Platform::MacOsHost && loopback_host(&host.to_string()) {
                                 continue;
                             }
                             port
@@ -353,7 +375,7 @@ pub(super) fn endpoints(
                             {
                                 return Err(invalid("must be tcp://host:port"));
                             }
-                            if !macos && loopback_host(address.host_str().unwrap()) {
+                            if platform != Platform::MacOsHost && loopback_host(address.host_str().unwrap()) {
                                 return Err(invalid(
                                     "must use a non-loopback host so other participants can reach it",
                                 ));
@@ -378,7 +400,7 @@ pub(super) fn endpoints(
                     }
                     Port::Fixed(port)
                 };
-                if !macos
+                if platform != Platform::MacOsHost
                     && (listener.kind == EndpointKind::Udp || matches!(listener.owner, Owner::AdpDogStatsD))
                     && !env.enabled(owner, "DOGSTATSD_NON_LOCAL_TRAFFIC", "false")?
                 {
@@ -497,6 +519,119 @@ mod tests {
                 ("DD_DATA_PLANE_OTLP_PROXY_ENABLED".into(), "true".into()),
             ]),
             ..Default::default()
+        }
+    }
+
+    const WINDOWS: Realization = Realization {
+        os: Os::Windows,
+        kind: RealizationKind::WindowsContainer,
+    };
+
+    #[test]
+    fn windows_declares_fixed_container_listeners_without_unix_sockets_or_host_only_listeners() {
+        let case = CaseValues {
+            env: BTreeMap::from([
+                ("DD_DATA_PLANE_ENABLED".into(), "true".into()),
+                ("DD_DOGSTATSD_NON_LOCAL_TRAFFIC".into(), "true".into()),
+                ("DD_DOGSTATSD_TCP_PORT".into(), "58127".into()),
+                ("DD_DATA_PLANE_OTLP_ENABLED".into(), "true".into()),
+                (
+                    "DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY".into(),
+                    "0.0.0.0:56317".into(),
+                ),
+                (
+                    "DD_DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY".into(),
+                    "0.0.0.0:56318".into(),
+                ),
+            ]),
+            ..Default::default()
+        };
+        AgentAdp.validate_config(WINDOWS, &case).unwrap();
+        let mut env = AgentAdp.default_env(WINDOWS, &case);
+        env.extend(case.env);
+        let endpoints = AgentAdp
+            .endpoints(
+                WINDOWS,
+                &EffectiveConfig {
+                    env,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let expected = [
+            ("agent_cmd", EndpointKind::Tcp, 55001),
+            ("agent_ipc", EndpointKind::Tcp, 55004),
+            ("api", EndpointKind::Http, 55100),
+            ("secure_api", EndpointKind::Tcp, 55101),
+            ("dogstatsd_udp", EndpointKind::Udp, 58125),
+            ("dogstatsd_tcp", EndpointKind::Tcp, 58127),
+            ("otlp_grpc", EndpointKind::Grpc, 56317),
+            ("otlp_http", EndpointKind::Http, 56318),
+        ];
+        assert_eq!(endpoints.len(), expected.len());
+        for (name, kind, port) in expected {
+            let ready = if kind == EndpointKind::Udp {
+                Evidence::output_matches(
+                    "adp",
+                    r#"listen_addr:"udp://[^"]+:58125" \| DogStatsD listener started\."#,
+                )
+            } else {
+                Evidence::tcp_accepts(name)
+            };
+            assert_network_endpoint(&endpoints[name], kind, port, Some(ready));
+        }
+    }
+
+    #[test]
+    fn windows_rejects_unix_socket_paths_even_when_dogstatsd_is_disabled() {
+        for key in ["DD_DOGSTATSD_SOCKET", "DD_DOGSTATSD_STREAM_SOCKET"] {
+            for enabled in ["false", "true"] {
+                let case = CaseValues {
+                    env: BTreeMap::from([
+                        (key.into(), "/run/dsd.sock".into()),
+                        ("DD_USE_DOGSTATSD".into(), enabled.into()),
+                    ]),
+                    ..Default::default()
+                };
+                assert_eq!(AgentAdp.validate_config(WINDOWS, &case).unwrap_err(), format!(
+                    "{key}='/run/dsd.sock' is unsupported on windows-container; unix socket listeners need a Linux container or macOS host"
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn windows_udp_listeners_need_non_local_traffic_or_a_non_loopback_bind_host() {
+        for adp in ["false", "true"] {
+            for (non_local, host, serves) in [
+                ("false", "", false),
+                ("false", "127.0.0.1", false),
+                ("false", "localhost", false),
+                ("false", "0.0.0.0", true),
+                ("true", "", true),
+                ("true", "127.0.0.1", true),
+            ] {
+                let mut env = AgentAdp.default_env(WINDOWS, &CaseValues::default());
+                env.extend([
+                    ("DD_DATA_PLANE_ENABLED".into(), adp.into()),
+                    ("DD_DOGSTATSD_NON_LOCAL_TRAFFIC".into(), non_local.into()),
+                    ("DD_BIND_HOST".into(), host.into()),
+                ]);
+                let endpoints = AgentAdp
+                    .endpoints(
+                        WINDOWS,
+                        &EffectiveConfig {
+                            env,
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap();
+                assert_eq!(
+                    endpoints.contains_key("dogstatsd_udp"),
+                    serves,
+                    "{adp} {non_local} {host}"
+                );
+            }
         }
     }
 

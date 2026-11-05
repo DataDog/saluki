@@ -7,7 +7,7 @@ use std::{
 };
 
 use airlock::driver::Protocol;
-use panoramic_core::case::{deserialize_case, deserialize_env_map, CaseDuration};
+use panoramic_core::case::{deserialize_case, deserialize_env_map, CaseSchema};
 use panoramic_core::{
     artifact::ArtifactManifest,
     layout::Os,
@@ -18,7 +18,7 @@ use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::Value;
 
 use self::runner_artifacts::RunnerArtifacts;
-use self::typed_case::{LoadedCase, LoadedPlan, RunnableCase};
+use self::typed_case::{LoadedCase, LoadedPlan};
 use crate::correctness::config::Config as CorrectnessConfig;
 use crate::image_override::ImageOverrides;
 use crate::test::Test;
@@ -26,12 +26,6 @@ use crate::test::Test;
 /// A duration that can be parsed from human-readable strings like `10s`, `1m`, `500ms`.
 #[derive(Clone, Debug)]
 pub struct HumanDuration(pub Duration);
-
-impl From<CaseDuration> for HumanDuration {
-    fn from(duration: CaseDuration) -> Self {
-        Self(duration.into())
-    }
-}
 
 impl<'de> Deserialize<'de> for HumanDuration {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -672,7 +666,7 @@ pub(crate) struct BuiltCase<P = LoadedPlan> {
 
 /// The executable case body or the host's setup failure.
 pub(crate) enum Execution {
-    /// The typed or integration bridge runner.
+    /// The typed runner.
     Runner(Box<dyn Test>),
     /// The panoramic-core lifecycle.
     Native,
@@ -689,11 +683,10 @@ impl<P> BuiltCase<P> {
     }
 }
 
-/// Builds executions in input order and validates image overrides across typed and bridge runners.
+/// Builds executions in input order and validates image overrides across typed runners.
 ///
 /// # Errors
 ///
-/// Reports every case that cannot build a runner, in input order, before validating image overrides.
 /// Returns an error if an image override is duplicate or unmatched.
 pub(crate) fn build_runners<P>(
     plans: impl IntoIterator<Item = P>, selected: Os, artifacts: &RunnerArtifacts<'_>,
@@ -703,28 +696,15 @@ where
 {
     let settings = artifacts.integration_settings(runtime_for_os(selected));
     let mut built = Vec::new();
-    let mut errors = Vec::new();
     for plan in plans {
         let borrowed = plan.borrow();
-        match route::route(borrowed) {
-            route::Route::Typed | route::Route::Bridge => match borrowed.build_test(&settings, artifacts) {
-                Ok(runner) => built.push(BuiltCase {
-                    plan,
-                    execution: Execution::Runner(runner),
-                }),
-                Err(error) => errors.push(format!("{error:#}").replace('\n', "\n    ")),
-            },
-            route::Route::Native => built.push(BuiltCase {
-                plan,
-                execution: Execution::Native,
-            }),
-        }
-    }
-    if !errors.is_empty() {
-        return Err(generic_error!(
-            "Failed to build test runners:\n  - {}",
-            errors.join("\n  - ")
-        ));
+        let execution = match borrowed.case().schema() {
+            CaseSchema::Typed(config) => {
+                Execution::Runner(config.build_test(borrowed.case().name(), &settings, artifacts))
+            }
+            CaseSchema::Participants { .. } => Execution::Native,
+        };
+        built.push(BuiltCase { plan, execution });
     }
     if let RunnerArtifacts::Overrides(entries) = artifacts {
         let runners: Vec<_> = built.iter().filter_map(BuiltCase::runner).collect();
@@ -774,8 +754,6 @@ pub fn parse_file_spec(spec: &str) -> Result<(&str, &str), GenericError> {
     Ok((parts[0], parts[1]))
 }
 
-mod integration_bridge;
-pub(crate) mod route;
 pub(crate) mod runner_artifacts;
 pub(crate) mod typed_case;
 
@@ -784,6 +762,14 @@ mod coverage_inventory;
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use panoramic_core::{
+        artifact::ArtifactRole,
+        case::{CaseLoader, Registries},
+        layout::{Realization, RealizationKind},
+        participant::ParticipantType,
+    };
+    use panoramic_participants::AgentAdp;
+
     use super::typed_case::LoadedCase;
     use super::*;
     use crate::correctness::case::CorrectnessTestCase;
@@ -822,8 +808,7 @@ pub(crate) mod tests {
     pub(crate) const CORRECTNESS_FIELDS: &str =
         "runtime: docker\nanalysis_mode: metrics\nbaseline: {image: 'base:file'}\ncomparison: {image: 'comp:file'}\n";
 
-    /// Expands to a one-step procedure the integration runner can translate,
-    /// for participant cases whose procedure isn't under test.
+    /// A one-step procedure for participant cases whose procedure isn't under test.
     macro_rules! minimal_procedure {
         () => {
             "procedure: [{step: log_contains, on: adp, pattern: ready, timeout: 5s}]"
@@ -877,34 +862,6 @@ procedure:
     timeout: 60s
 "#;
 
-    pub(crate) const LOGGING_INTEGRATION: &str = r#"type: integration
-name: alpha
-description: Portable logging assertions
-timeout: 120s
-runtimes: [linux, mac, windows]
-env:
-  DD_API_KEY: "0000"
-  DD_LOG_FILE: /tmp/core.log
-procedure:
-  - assertion: log_contains
-    pattern: Initial configuration received.
-    timeout: 30s
-  - parallel:
-      - assertion: log_not_contains
-        pattern: panic|PANIC
-        regex: true
-        during: 10s
-      - assertion: file_contains
-        path: /tmp/core.log
-        pattern: CORE
-        timeout: 20s
-  - assertion: file_contains
-    path: 'C:\adp\adp.log'
-    pattern: DATAPLANE.*ready
-    regex: true
-    timeout: 60s
-"#;
-
     /// Creates a test planner with the binary's registries and local artifact defaults.
     pub(crate) fn planner() -> Planner<'static> {
         Planner::with_run(crate::REGISTRIES, "inventry")
@@ -917,6 +874,91 @@ procedure:
             .unwrap()
             .remove(0);
         planner().compile(case, os).unwrap().into_plan().unwrap()
+    }
+
+    pub(crate) struct Plain;
+
+    impl ParticipantType for Plain {
+        fn name(&self) -> &'static str {
+            "plain"
+        }
+
+        fn supports(&self) -> &'static [(Os, RealizationKind)] {
+            &[
+                (Os::Linux, RealizationKind::LinuxContainer),
+                (Os::MacOs, RealizationKind::HostProcessGroup),
+                (Os::Windows, RealizationKind::WindowsContainer),
+            ]
+        }
+
+        fn artifacts(&self, _realization: Realization) -> &'static [ArtifactRole] {
+            &[]
+        }
+
+        fn processes(&self) -> &'static [&'static str] {
+            &[]
+        }
+    }
+
+    pub(crate) fn plan_with_plain(yaml: &str, name: &str, os: Os) -> LoadedPlan {
+        let registries = Registries {
+            participant_types: &[&AgentAdp, &Plain],
+            ..crate::REGISTRIES
+        };
+        let source = format!("/cases/{name}/config.yaml");
+        let case = CaseLoader::new(registries, typed_case::TypedConfigLoader, "integration")
+            .load_content(yaml, name, Path::new(&source))
+            .unwrap()
+            .remove(0);
+        Planner::new(registries, ArtifactManifest::default())
+            .unwrap()
+            .compile(case, os)
+            .unwrap()
+            .into_plan()
+            .unwrap()
+    }
+
+    #[test]
+    fn typed_cases_build_their_runner_on_every_runtime() {
+        let integration =
+            "type: integration\nname: case\ntimeout: 1s\nruntimes: [linux, mac, windows]\nprocedure: []\n";
+        let correctness = format!("type: correctness\n{CORRECTNESS_FIELDS}");
+        let pod = correctness.replace("runtime: docker", "runtime: kubernetes_in_docker");
+        for (yaml, os, runtime) in [
+            (integration, Os::Linux, "linux"),
+            (integration, Os::MacOs, "mac"),
+            (integration, Os::Windows, "windows"),
+            (correctness.as_str(), Os::Linux, "docker"),
+            (pod.as_str(), Os::Linux, "kubernetes_in_docker"),
+        ] {
+            let built = build_runners([plan(yaml, os)], os, &RunnerArtifacts::Overrides(&[])).unwrap();
+            assert_eq!(built.len(), 1);
+            assert!(matches!(built[0].execution, Execution::Runner(_)));
+            assert_eq!(built[0].runner().unwrap().runtime(), runtime);
+        }
+    }
+
+    #[test]
+    fn participant_cases_build_native_executions_on_every_subject_os() {
+        let single = PARTICIPANT_FIELDS.replace("[linux]", "[linux, macos, windows]");
+        let multiple = single.replace("  adp:", "  other: {type: agent-adp}\n  adp:");
+        let plain = single.replace("agent-adp", "plain");
+        let mixed = single.replace("  adp:", "  other: {type: plain, os: linux}\n  adp:");
+        for os in [Os::Linux, Os::MacOs, Os::Windows] {
+            let plans = [
+                plan_with_plain(&single, "single", os),
+                plan_with_plain(&multiple, "multiple", os),
+                plan_with_plain(&plain, "plain", os),
+                plan_with_plain(&mixed, "mixed", os),
+            ];
+            let built = build_runners(&plans, os, &RunnerArtifacts::Overrides(&[])).unwrap();
+            assert_eq!(built.len(), 4);
+            for (built, name) in built.iter().zip(["single", "multiple", "plain", "mixed"]) {
+                assert_eq!(built.plan.case().name(), name);
+                assert!(matches!(built.execution, Execution::Native));
+                assert!(built.runner().is_none());
+            }
+        }
     }
 
     fn load_case<T, P>(path: P) -> Result<T, GenericError>

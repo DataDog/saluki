@@ -1,7 +1,7 @@
 name: "dogstatsd-host-tag"
 description: "Sends DogStatsD gauges with and without host tags and asserts the exact contexts at datadog-intake"
 timeout: 180s
-subject_os: [linux]
+subject_os: [linux, macos, windows]
 
 participants:
   intake:

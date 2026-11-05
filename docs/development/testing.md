@@ -198,9 +198,9 @@ make test-integration-quick PANORAMIC_ARTIFACTS=artifacts.toml
 `test-integration`, `test-integration-quick`, `run-integration-quick`, `test-integration-macos-run`,
 `test-correctness` and `test-correctness-case` accept this variable only on the command line; they reject values
 from the environment, including empty values. For `test-integration-macos-run`, the manifest must bind
-`adp-host-binary` and `agent-host-install` to the paths the target passes as flags;
-`make render-macos-test-artifacts` writes a matching
-manifest to `MACOS_TEST_ARTIFACTS` (default: `target/panoramic-artifacts-macos.toml`). Use the same `BUILD_PROFILE` and
+`adp-host-binary` and `agent-host-install` to the paths the target passes as flags, and `intake-host-binary` to the
+host intake built by `make build-intake-host`. `make render-macos-test-artifacts` writes a matching manifest to
+`MACOS_TEST_ARTIFACTS` (default: `target/panoramic-artifacts-macos.toml`). Use the same `BUILD_PROFILE` and
 `MACOS_TEST_AGENT_INSTALL_DIR` values for rendering and running.
 `test-integration-macos-ci` renders and forces its own manifest, even if you supply another path.
 
@@ -353,15 +353,15 @@ The replay step budget is `timeout × (3 + number of payloads) + capture_duratio
 It covers capture, each send, and a final statistics/replay pair that starts at the replay deadline.
 
 An undetermined process exit errors stability and exit assertions. A process's first recorded exit remains final
-across supervised restarts. The integration runner translates `log_contains`, `log_not_contains` and `file_contains`;
-log steps must omit `process`.
+across supervised restarts.
 
 Participant types offer named **operations** per realization. An operation takes JSON arguments and returns JSON,
 keeping product-specific commands inside the participant definition. Steps declare the operations they call;
 plan compilation rejects an operation the participant's type does not offer for its realization, so `panoramic list`
 reports the error before anything starts. Operations run commands through the participant's exec primitive or request
-their own declared HTTP endpoints from the runner host. Planning validates those endpoints and allocates request
-routes and any published ports. An operation can request only the HTTP endpoints it declares.
+their own declared HTTP endpoints through planned routes. On Windows, HTTP requests run through the courier inside
+the server participant. Planning validates those endpoints and allocates request routes and any published ports.
+An operation can request only the HTTP endpoints it declares.
 Argument and mechanism problems are harness errors; a product answer that does not satisfy the operation is a
 product error.
 
@@ -443,21 +443,30 @@ observed names. Messages are capped at 4096 bytes. A subject exit does not end p
 The `observe` phase gives exited participants up to five seconds to finish
 capturing output; it also runs after a setup failure if any participant started. Running participants are skipped, and
 case cancellation ends the wait. The runner snapshots observations, stops observation tasks, then reclaims resources.
-Each case keeps its chosen route.
 
-The `datadog-intake` participant runs the mock intake in a Linux container from `tools-linux-image`, with one process
-named `intake`. Its exit and output come from the container. It serves two endpoints:
+The `datadog-intake` participant runs one process named `intake`:
 
-| Endpoint | Kind | Listen variable | Default |
+| Subject OS | Realization | Artifact role | Local default |
+| --- | --- | --- | --- |
+| Linux | Linux container | `tools-linux-image` | `saluki-images/correctness-tools:latest` |
+| macOS | Host process group | `intake-host-binary` | `target/release/datadog-intake` |
+| Windows | Windows container | `tools-windows-image` | `saluki-images/correctness-tools:testing-windows` |
+
+In containers, its exit and output come from the container. On macOS, they come from the waited process and its
+stdout and stderr pipes. The Windows tools image holds `C:\tools\datadog-intake.exe` on the Agent LTSC base already
+used by the Windows ADP image. The intake serves two endpoints:
+
+| Endpoint | Kind | Listen variable | Container default |
 | --- | --- | --- | --- |
 | `api` | HTTP | `INTAKE_HTTP_LISTEN_ADDR` | `0.0.0.0:2049` |
 | `dogstatsd_forward` | UDP | `INTAKE_DOGSTATSD_LISTEN_ADDR` | `0.0.0.0:9125` |
 
-Set these variables in `config.env` to change the listener ports. Each must be a socket address with a nonzero port
-and host `0.0.0.0` or `[::]`, so participants and published ports can reach it. Both endpoints declare readiness as
-HTTP 200 from `api` at `/ready`: the intake binds UDP before starting HTTP. Connections wait for that evidence before
-starting their consumer. Each intake stores its own telemetry. When the listen variables are unset, the intake binary
-uses the defaults listed above.
+Set these variables in `config.env` to pin listener addresses. Each must be a socket address with a nonzero port.
+In containers, the host must be unspecified (`0.0.0.0` or `[::]`), so other participants can reach it. On macOS,
+unset listeners get assigned loopback ports; a set listener may bind loopback or an unspecified host. Pinned host
+ports must be outside the assigned pool, `20000–29999`.
+Both endpoints declare readiness as HTTP 200 from `api` at `/ready`: the intake binds UDP before starting HTTP.
+Connections wait for that evidence before starting their consumer. Each intake stores its own telemetry.
 
 The intake's `dump` operation accepts one `kind`: `metrics`, `dogstatsd_forwarded`, or `service_checks`.
 `metrics` and `service_checks` return the JSON arrays of stele metrics and service checks unchanged, from
@@ -465,8 +474,8 @@ The intake's `dump` operation accepts one `kind`: `metrics`, `dogstatsd_forwarde
 an array of packets, each an array of byte values decoded from the intake's base64 wire format.
 The operation declares only `api`. Unknown kinds and extra arguments
 are harness errors before any request. Non-success HTTP status, invalid JSON and invalid packet encoding are product
-errors; messages omit response bodies. The operation is offered independently of realization. HTTP requests through
-a courier route are harness errors.
+errors; messages omit response bodies. The operation is offered on every realization. Through a courier route,
+the HTTP request runs inside the server participant, including in Windows containers.
 
 The `fixture` participant runs a case-supplied command in a Linux container from `tools-linux-image`, which includes
 Python 3. Its one process, `fixture`, uses the container's exit and output. It accepts the `files/` directory name;
@@ -480,8 +489,7 @@ The `liveness-container-tags` case shows a fixture created after its subject but
 The `agent-adp` Linux container definition uses `agent-adp-linux-image`. Its environment defaults match the legacy
 runner's port isolation: command API 55001, expvar 55000, APM 58126, process command API 56062, Agent IPC 55004,
 DogStatsD UDP 58125, ADP APIs 55100/55101 and Agent OTLP 54317/54318. The GUI is disabled. Case environment values
-replace those defaults. The legacy translation receives only the case's environment after its OS overlay, so the
-legacy runner applies its own defaults.
+replace those defaults.
 
 In Linux containers, `agent-adp` accepts the directory configuration names `files/` and `cont-init.d/`.
 Files under `files/` land beneath `/var/lib/panoramic/files`, available through the `files_dir` fact, with mode 0644.
@@ -523,13 +531,14 @@ Malformed addresses fail configuration with an error naming the key. The HTTP en
 are nonempty, with the same `ADP_DD_` precedence. Setting only one is a configuration error. HTTP-status readiness
 on a TLS endpoint is rejected; TCP-acceptance readiness remains supported.
 
-An optional `connect: {intake: <participant>.api}` connection accepts HTTP and delivers its URL as both `DD_DD_URL`
-and `DD_APM_DD_URL`. It gates Agent startup on the intake's ready route.
-An optional `connect: {dogstatsd_forward: <participant>.dogstatsd_forward}` connection accepts UDP and delivers
-`DD_STATSD_FORWARD_HOST` and `DD_STATSD_FORWARD_PORT` from the target's host and port. It gates startup on the target's
-readiness too. An optional `connect: {docker_api: <participant>.<endpoint>}` connection accepts a Unix stream,
-sets `DOCKER_HOST` to its Unix URL, and waits for the server's readiness.
-The native recipe uses the image's command and overlays the `data-plane` and `agent` s6 services. Each
+On every realization, `agent-adp` accepts an optional `connect: {intake: <participant>.api}` connection. It accepts
+HTTP and delivers its URL as both `DD_DD_URL` and `DD_APM_DD_URL`, gating startup on the intake's ready route.
+On macOS, both the Agent and ADP receive these keys through their shared environment.
+Only Linux containers accept the optional `dogstatsd_forward` and `docker_api` connections:
+`connect: {dogstatsd_forward: <participant>.dogstatsd_forward}` accepts UDP and delivers `DD_STATSD_FORWARD_HOST`
+and `DD_STATSD_FORWARD_PORT` from the target's host and port. `connect: {docker_api: <participant>.<endpoint>}`
+accepts a Unix stream and sets `DOCKER_HOST` to its Unix URL. Both gate startup on the server's readiness.
+The Linux recipe uses the image's command and overlays the `data-plane` and `agent` s6 services. Each
 finish script records the exit before running the shipped body, preserving ADP's two-second restart after failure and
 disablement after a clean exit. Each run script merges stderr into stdout, and its logger appends to `adp.log` or
 `agent.log` while retaining the lines on container stdout.
@@ -556,7 +565,10 @@ statistics table are product errors. CLI failure messages omit output, which may
 ADP CLI output is never quoted on a nonzero exit. `config_set` includes trimmed stderr capped at 512 bytes on
 product failure; it uses the Agent's own client for its runtime configuration API.
 
-On Windows, the `agent-adp` definition runs the Agent and ADP in one container through its own entrypoint.
+On Windows, the `agent-adp` definition runs the Agent and ADP in one container through its own entrypoint, using
+`agent-adp-windows-image`. It declares the Linux container listener table and fixed defaults above, except Unix
+sockets: their paths default to empty, and nonempty paths are rejected. Windows rejects `ADP_DD_` variables;
+listeners use the `DD_` keys. Loopback filtering and the DogStatsD non-local-traffic/bind-host rule match Linux.
 
 The `PANORAMIC_` environment-variable prefix is reserved. Plan compilation rejects keys with this prefix in the
 case's effective environment after OS overlays, in type defaults, and in connection deliveries. Errors identify
@@ -574,24 +586,14 @@ resolves to that container-local `shared` directory. Recipes that set reserved v
 publish runner-host ports are rejected. The courier occupies the reserved path `C:\panoramic\courier.exe`.
 Steps reach Windows endpoints through the courier inside the server participant.
 
-The integration runner's translation supports this subset of the schema:
-
-- One participant, of type `agent-adp` with `subject: true`, configured only through `config.env`, optionally with
-  `config.os` overlays of `env` whose values replace the base values on that OS. Environment values must be YAML strings;
-  the integration runner rejects references in them.
-- The steps `log_contains` and `log_not_contains`, without `process`. They search the output of every process
-  together, and what is captured differs by OS. Literal patterns may reference early participant facts; the bridge
-  rejects late-fact references.
-- The step `file_contains`. Its `path` may reference a participant fact, written as in the example above with the
-  participant's name and the fact's name.
-  `agent-adp` declares `default_log_file` for its Linux and Windows containers only, so a case that runs on macOS writes
-  the path out or uses its core-provided `shared_dir` fact under native execution.
-- `parallel` blocks of these steps.
+The `agent-adp` definition declares `default_log_file` for its Linux and Windows containers only, so a case that
+runs on macOS writes the path out or uses its core-provided `shared_dir` fact.
 
 Step fields can also reference a participant's late facts as `<participant>.late.<fact>`: `ip` on every realization,
-`container_id` on containers and pods, and `pod_uid` on pods only. They exist once the participant is created or running,
-so the integration runner rejects them. Step fields accept only facts and late facts of explicitly named participants.
+`container_id` on containers and pods, and `pod_uid` on pods only. They exist once the participant is created or running.
+Step fields accept only facts and late facts of explicitly named participants.
 
+Environment values must be YAML strings. Optional `config.os` overlays replace base values on the selected OS.
 Environment variable values and string parameters, at any depth, can also contain references, including to the
 participant itself as `self`. Variable names and parameter keys can't. On every OS in `subject_os`, a fact must exist
 for the referenced participant's realization, and panoramic substitutes it before the participant type reads the
@@ -603,8 +605,7 @@ or the participant's own name and regardless of spacing. Other late facts are re
 an endpoint the participant serves and a supported route from the referencing participant. A connection reference
 needs a matching `connect` key. Planning stores each connection's and endpoint reference's address as seen by its
 holder; the configuration keeps the reference text until recipe rendering. `host` and `port` apply to network
-endpoints, `path` to sockets and pipes, and `url` to every kind. The integration runner rejects any reference in an
-environment variable.
+endpoints, `path` to sockets and pipes, and `url` to every kind.
 
 In Linux containers, `agent-adp` substitutes its own `ip` through
 `/etc/cont-init.d/10-panoramic-late-substitution.sh`. The init hook runs before the products and case hooks,
@@ -648,7 +649,6 @@ overlay follow the rules for environment variables, except for late facts. A Kub
 may reference any late fact the referenced participant has, including the pod's own, except a host process group's
 `ip`, which only participants on that host process group's realization can use. On other realizations, a template
 file may not reference the participant's own late facts, except for a host process group's fixed `ip`.
-The integration runner rejects `config.files`.
 
 Panoramic orders participants before running a case. A participant is created after every other Linux or Windows container
 whose `container_id` its configuration references. It starts after every participant it connects to. A Kubernetes pod
@@ -661,8 +661,7 @@ fails the case. `panoramic list` prints both orders, grouping independent partic
 Durations in a participant case need a unit: write `30s`, not `30`.
 
 Every step names the participant it acts on with `on`. Step fields differ from the integration schema: steps use
-`step:` instead of `assertion:`, and `file_contains` requires `pattern`. The loader accepts other participant and
-configuration fields, but the integration runner rejects a case that sets them, with an error naming the field.
+`step:` instead of `assertion:`, and `file_contains` requires `pattern`.
 Each backend declares its accepted `realization.options`. The loader rejects unknown options and non-boolean
 values, naming the participant, realization kind, and option. Linux containers accept `host_cgroup_namespace`
 (default false); true exposes the host's cgroup paths to the participant. Other realization kinds accept no options.
@@ -697,7 +696,7 @@ Omitted roles use their local defaults: for example, `agent-adp-linux-image` def
 `saluki-images/datadog-agent:testing-devel`. A role no participant type, backend or typed schema declares fails the listing;
 a declared role the selected cases don't need is ignored. Relative binary and install paths resolve against the
 working directory, whether supplied by a manifest or a local default. Native execution always verifies and uses
-these bindings. With `run --artifacts <file>`, typed and bridge runners also verify and use them; without the flag,
+these bindings. With `run --artifacts <file>`, typed runners also verify and use them; without the flag,
 those runners use case files, harness defaults and the image and binary flags or their environment variables.
 
 Typed integration and correctness cases map their containers and host processes to these roles:
@@ -720,9 +719,9 @@ The `test-integration`, `test-integration-quick`, `test-correctness` and `test-c
 For a Docker daemon of another architecture, build with `COURIER_LINUX_TARGET=<arch>-unknown-linux-musl` and bind
 `courier-linux-binary` to that build in a manifest.
 
-Integration cases need the intake role only on Linux, where the sidecar runs. Correctness cases run only for subject OS
-`linux`; their roles appear in text listings, `artifacts verify`/`pull`, and `run --artifacts` verification only when you
-select Linux. Only runnable cases contribute artifact roles.
+Typed integration cases need the intake role only on Linux, where their sidecar runs. Correctness cases run only
+for subject OS `linux`; their roles appear in text listings, `artifacts verify`/`pull`, and `run --artifacts`
+verification only when you select Linux. Only runnable cases contribute artifact roles.
 
 Both correctness targets bind to `agent-adp-linux-image`, as CI supplies the same bundled image to both sides.
 Locally, correctness files declare `saluki-images/datadog-agent:testing-release`, while that role defaults to the
@@ -788,10 +787,12 @@ separates the role from its reference.
 `agent-adp-linux-image` and `tools-linux-image` to the pipeline's images and `fixup-image` to
 `registry.ddbuild.io/alpine:latest`, then run `panoramic artifacts pull` before testing.
 Linux integration and correctness jobs bind `courier-linux-binary` to the courier from `build-panoramic-binary`.
-`make test-integration-macos-ci` binds the ADP binary and Agent install it builds and provisions;
-`ci/tooling/windows-integration-tests.ps1` binds the image it builds. Image and binary overrides must agree with
-the manifest. Every selected correctness case must use a `saluki-images/` baseline, because both sides take
-`agent-adp-linux-image`.
+`make test-integration-macos-ci` binds the ADP and intake binaries and Agent install it builds and provisions;
+`ci/tooling/windows-integration-tests.ps1` binds the ADP and tools images and courier binary it builds.
+Both Windows images use `WINDOWS_ADP_BASE_IMAGE`, the Agent LTSC image already pulled by the job; local invocations
+without that variable fall back to `mcr.microsoft.com/windows/servercore:ltsc2022`.
+Image and binary overrides must agree with the manifest. Every selected correctness case must use a `saluki-images/`
+baseline, because both sides take `agent-adp-linux-image`.
 
 Use `panoramic artifacts verify -d <cases> [--subject-os linux|macos|windows] [--artifacts <file>]` to check every
 artifact the selected cases need. The subject OS defaults to the host's OS. Verification prints each
@@ -839,7 +840,6 @@ Every participant has a `shared_dir` fact: its directory for sockets it serves. 
 containers, and `<state dir>/<participant>/shared` for host process groups. Planning chooses a short per-case
 state directory under `/tmp`. A Unix socket another participant connects to or references must lie under the
 server's `shared_dir` and fit the OS limit: 103 bytes on macOS, 107 on Linux. Other sockets may lie anywhere.
-The integration runner rejects the `shared_dir` fact.
 
 On every OS in `subject_os`, panoramic resolves each connection to an address as the consumer sees it and sets
 its type's delivered environment variables, replacing the type's defaults. Containers of one kind reach each
@@ -856,8 +856,10 @@ cases is the case author's responsibility.
 Step routes depend on the operation. Probes and raw sends to containers and pods use the courier inside the
 server participant: a port proxy can accept a connection even when the server has no listener. HTTP and gRPC
 requests to Linux containers and pods use published or forwarded ports and must observe a server response.
+HTTP requests to Windows containers run through the courier inside the server participant, without published ports.
 Host process group endpoints are reached directly. Request/response step needs and operations' declared HTTP
-endpoints allocate runner-host ports. Connections and configuration references allocate ports as described above.
+endpoints allocate runner-host ports when their route needs them. Connections and configuration references allocate
+ports as described above.
 
 Run one panoramic invocation per runner host and Docker daemon at a time: each invocation allocates
 deterministically from 20000. Linux container participants publish exactly their planned ports on `127.0.0.1`.
@@ -876,8 +878,8 @@ A case must not set, in `config.env` or the overlay for that OS, an environment 
 connections delivers. Two connections of one participant must not deliver the same variable, and a connection
 must not deliver a variable carrying an assigned listener port.
 Every required consumed endpoint must be connected, and each `config.endpoints` key must name an endpoint
-the participant serves. The integration bridge requires `connect` to be empty. The Linux `agent-adp` definition derives
-its listener ports from the environment; configure those ports through the listener's environment key.
+the participant serves. The `agent-adp` definition derives its listener ports from the environment; configure those
+ports through the listener's environment key.
 
 On macOS, the `agent-adp` definition declares every listener and lets core assign its port unless the case sets
 its environment key. Agent-internal listeners have macOS-only endpoint declarations so they also receive assigned
@@ -901,8 +903,8 @@ A case whose `subject_os` omits the selected OS appears in `run.json` with outco
 Text listings show every enabled case's status: `runnable` or `skipped (subject_os)`.
 
 `list --json` includes every enabled case, keyed by name. Every row has `type`, `timeout` and `status`, which is
-`runnable` or `skipped`. Runnable rows that use a typed runner or the integration bridge also have `runtime` and
-`images`. Skipped rows have `skip_reason`. Each row also has:
+`runnable` or `skipped`. Runnable rows that use a typed runner also have `runtime` and `images`.
+Skipped rows have `skip_reason`. Each row also has:
 
 - `layout`: a list of `{participant, type, os, realization}` in participant-name order. `type` names the participant
   type, `os` is `linux`, `macos` or `windows`, and `realization` is `linux-container`, `windows-container`,
@@ -941,7 +943,6 @@ The source documents each part:
 - `bin/correctness/panoramic/core/src/layout.rs`: how participants are placed on an OS and realization.
 - `bin/correctness/panoramic/participants/src/agent_adp/mod.rs`: what `agent-adp` declares, including its facts and artifact roles.
 - `bin/correctness/panoramic/steps/src/`: each step's fields.
-- `bin/correctness/panoramic/src/config/integration_bridge.rs`: the subset the integration runner supports, and the output each OS captures.
 
 Tests in the `panoramic` binary scan every file in each crate directory recursively, excluding `target/`, to check
 that `panoramic-core` names no product and that `panoramic-steps` names no realization, host mechanism, or product path.

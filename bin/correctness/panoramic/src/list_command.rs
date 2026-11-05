@@ -273,7 +273,7 @@ mod tests {
     #[test]
     fn list_json_reports_native_rows_without_runtime_or_images() {
         let plans = [
-            crate::config::route::tests::plan_with_plain(
+            crate::config::tests::plan_with_plain(
                 &PARTICIPANT_FIELDS.replace("agent-adp", "plain"),
                 "native",
                 Os::Linux,

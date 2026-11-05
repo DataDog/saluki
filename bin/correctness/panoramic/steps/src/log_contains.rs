@@ -15,53 +15,49 @@ use tokio::time::{sleep_until, Instant};
 use super::Matcher;
 
 /// Waits until a participant's output contains a pattern.
-///
-/// Callers can decode the public fields with [`decode_fields`]. Patterns without references compile at build time.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct LogContains {
+pub(crate) struct LogContains {
     /// Required participant whose output is searched; has no default.
-    pub on: String,
+    on: String,
     /// Process whose output is searched. Defaults to every process of the participant.
     #[serde(default)]
-    pub process: Option<String>,
+    process: Option<String>,
     /// Required text or regex to find; literal patterns may reference participant facts. Has no default.
-    pub pattern: StepTemplate,
+    pattern: StepTemplate,
     /// Whether `pattern` is a regex. Defaults to false.
     #[serde(default)]
-    pub regex: bool,
+    regex: bool,
     /// Required, positive time to wait for a match; has no default.
-    pub timeout: CaseDuration,
+    timeout: CaseDuration,
 }
 
 impl LogContains {
     /// Registry name used in case procedures.
-    pub const NAME: &'static str = "log_contains";
+    pub(crate) const NAME: &'static str = "log_contains";
 }
 
 /// Checks that a pattern stays absent from a participant's output.
-///
-/// Callers can decode the public fields with [`decode_fields`]. Patterns without references compile at build time.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct LogNotContains {
+pub(crate) struct LogNotContains {
     /// Required participant whose output is searched; has no default.
-    pub on: String,
+    on: String,
     /// Process whose output is searched. Defaults to every process of the participant.
     #[serde(default)]
-    pub process: Option<String>,
+    process: Option<String>,
     /// Required text or regex to keep absent; literal patterns may reference participant facts. Has no default.
-    pub pattern: StepTemplate,
+    pattern: StepTemplate,
     /// Whether `pattern` is a regex. Defaults to false.
     #[serde(default)]
-    pub regex: bool,
+    regex: bool,
     /// Required, positive time the pattern must stay absent; has no default.
-    pub during: CaseDuration,
+    during: CaseDuration,
 }
 
 impl LogNotContains {
     /// Registry name used in case procedures.
-    pub const NAME: &'static str = "log_not_contains";
+    pub(crate) const NAME: &'static str = "log_not_contains";
 }
 
 /// What a built log step asserts about its pattern in the participant's output.

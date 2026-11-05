@@ -1,29 +1,17 @@
-//! Compares logging cases with a frozen integration-schema baseline.
+//! Compares the seven logging cases with their frozen integration configuration.
 //!
-//! Windows translation checks omit exposed ports. Native inventory rows use realization names and role-keyed
-//! artifacts. Keep the baseline fixed so configuration and step comparisons detect regressions.
+//! Never regenerate the baseline: it guards rows, steps, participants and unresolved paths.
 
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    path::Path,
-};
+use std::collections::{BTreeMap, BTreeSet};
 
-use panoramic_core::{
-    layout::{Os, Realization},
-    participant::ParticipantType,
-};
+use panoramic_core::{layout::Realization, participant::ParticipantType};
 use panoramic_participants::AgentAdp;
 use serde_json::{json, Value};
 
 use super::{
     create_case_dirs, read_text, repository_root, Inventory, INTEGRATION, JSON_PATH, NATIVE, OLD, PARTICIPANTS,
 };
-use crate::config::{
-    os_for_runtime,
-    tests::{planner, write_case},
-    typed_case::RunnableCase,
-    ContainerConfig, IntakeConfig,
-};
+use crate::config::{os_for_runtime, tests::write_case, ContainerConfig, IntakeConfig};
 
 const LOGGING_CASES: [&str; 7] = [
     "adp-logging-default-path",
@@ -35,14 +23,10 @@ const LOGGING_CASES: [&str; 7] = [
     "adp-logging-windows-respects-data-plane-log-file",
 ];
 
-/// Cases in the translation's subset whose log text serves as evidence of process exit.
-const LOG_PARSED_EXIT_CASES: [&str; 2] = ["adp-disabled-exit", "adp-no-pipelines-exit"];
-
 /// Converts a recorded integration configuration's log/file assertions to participant-schema text.
 ///
 /// Returns the text and whether a file path uses `{{ adp.facts.default_log_file }}`. The sole deliberately dropped
-/// setting is `container.exposed_ports`: the translation uses default container settings, and only `port_listening`
-/// reads a published port's mapping.
+/// setting is `container.exposed_ports`: log and file assertions do not read published ports.
 fn participant_twin(config: &Value) -> Result<(String, bool), String> {
     let config = config.as_object().ok_or("configuration must be an object")?;
     for key in config.keys() {
@@ -228,7 +212,7 @@ fn recorded_integration_cases() -> BTreeMap<String, RecordedCase> {
             ))
         })
         .collect();
-    for name in LOGGING_CASES.into_iter().chain(LOG_PARSED_EXIT_CASES) {
+    for name in LOGGING_CASES {
         assert!(recorded.contains_key(name), "{name} is not in the checked-in inventory");
     }
     recorded
@@ -303,63 +287,33 @@ fn migrated(baseline: &RecordedCase) -> Vec<Value> {
     rows
 }
 
-/// Checks the Windows translation independently of the production route table and returns the row count.
-fn assert_windows_logging_translation(content: &str, name: &str, baseline: &RecordedCase) -> usize {
-    let mut expected = baseline.case["config"].clone();
-    expected["container"]["exposed_ports"] = json!([]);
-    let mut checked = 0;
-    for row in baseline.rows.iter().filter(|row| row["subject_os"] == "windows") {
-        let case = crate::CASE_LOADER
-            .load_content(content, name, Path::new("config.yaml"))
-            .unwrap()
-            .remove(0);
-        let plan = planner().compile(case, Os::Windows).unwrap().into_plan().unwrap();
-        assert_eq!(
-            serde_json::to_value(plan.integration_config().unwrap()).unwrap(),
-            expected,
-            "{name} on {}",
-            row["subject_os"]
-        );
-        checked += 1;
-    }
-    checked
-}
-
 #[test]
-fn logging_case_twins_reproduce_the_frozen_windows_translation_and_migrated_rows() {
+fn logging_case_twins_reproduce_the_migrated_rows() {
     let baseline = logging_baseline();
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
     create_case_dirs(&root);
     let mut expected_rows = Vec::new();
-    let mut translated = 0;
     for name in LOGGING_CASES {
         let baseline = &baseline[name];
         let (twin, _) = participant_twin(&baseline.case["config"]).unwrap_or_else(|reason| panic!("{name}: {reason}"));
-        translated += assert_windows_logging_translation(&twin, name, baseline);
         write_case(&root.join("test/integration/cases"), name, &twin);
         expected_rows.extend(migrated(baseline));
     }
-    assert_eq!(translated, 3, "the three Windows logging cases must translate");
     let actual = serde_json::to_value(Inventory::generate(&root)).unwrap();
     assert_eq!(actual["rows"], json!(expected_rows));
 }
 
 #[test]
-fn checked_in_logging_cases_match_migrated_rows_and_translate_to_the_frozen_baseline_on_windows() {
+fn checked_in_logging_cases_match_migrated_rows_and_steps() {
     let baseline = logging_baseline();
     let recorded = recorded_integration_cases();
-    let root = repository_root();
-    let mut translated = 0;
     for name in LOGGING_CASES {
         let recorded = &recorded[name];
         assert!(!recorded.old_schema, "{name}: must use the participant schema");
         assert_eq!(recorded.rows, migrated(&baseline[name]), "{name}");
         assert_eq!(recorded.case["steps"], baseline[name].case["steps"], "{name}");
-        let content = read_text(&root.join(format!("test/integration/cases/{name}/config.yaml")));
-        translated += assert_windows_logging_translation(&content, name, &baseline[name]);
     }
-    assert_eq!(translated, 3, "the three Windows logging cases must translate");
 }
 
 /// Extracts participant settings and unresolved paths for comparison with the frozen configuration.
@@ -440,46 +394,4 @@ fn logging_case_twins_use_the_default_log_file_fact_exactly_where_the_case_asser
     .into_iter()
     .collect();
     assert_eq!(used_fact, expected);
-}
-
-#[test]
-fn only_the_logging_cases_and_the_log_parsed_exit_cases_fit_the_integration_runner_translation() {
-    let baseline = logging_baseline();
-    let recorded = recorded_integration_cases();
-    let supported: BTreeSet<_> = baseline
-        .iter()
-        .chain(
-            recorded
-                .iter()
-                .filter(|(name, recorded)| !LOGGING_CASES.contains(&name.as_str()) && recorded.old_schema),
-        )
-        .filter_map(|(name, recorded)| {
-            let (twin, _) = participant_twin(&recorded.case["config"]).ok()?;
-            let cases = crate::CASE_LOADER
-                .load_content(&twin, name, Path::new("config.yaml"))
-                .unwrap_or_else(|error| panic!("{name}: {error:#}"));
-            let [case] = cases.as_slice() else {
-                panic!("{name}: expected one participant case");
-            };
-            for os in case.subject_os() {
-                let loaded = crate::CASE_LOADER
-                    .load_content(&twin, name, Path::new("config.yaml"))
-                    .unwrap()
-                    .remove(0);
-                let plan = planner().compile(loaded, *os).unwrap().into_plan().unwrap();
-                plan.integration_config()
-                    .unwrap_or_else(|error| panic!("{name} on {os:?}: {error:#}"));
-            }
-            Some(name.as_str())
-        })
-        .collect();
-    let expected: BTreeSet<_> = LOGGING_CASES
-        .into_iter()
-        .chain(
-            LOG_PARSED_EXIT_CASES
-                .into_iter()
-                .filter(|name| recorded[*name].old_schema),
-        )
-        .collect();
-    assert_eq!(supported, expected);
 }

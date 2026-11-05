@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 
 use panoramic_core::artifact::{ArtifactKind, ArtifactRole};
 use panoramic_core::backend::LateFact;
-use panoramic_core::endpoint::{ConsumedEndpoint, Endpoint};
+use panoramic_core::endpoint::{ConsumedEndpoint, Delivery, Endpoint, EndpointKind};
 use panoramic_core::layout::{Os, Realization, RealizationKind};
 use panoramic_core::participant::{
     CaseValues, EffectiveConfig, FactDeclaration, Operation, ParticipantType, ProcessSpec, RenderedConfig,
@@ -125,7 +125,12 @@ impl ParticipantType for AgentAdp {
                 listeners::endpoints(realization, &env)?;
             }
             (Os::MacOs, RealizationKind::HostProcessGroup) => macos::validate_config(realization, config)?,
-            (Os::Windows, RealizationKind::WindowsContainer) => windows::validate_config(config)?,
+            (Os::Windows, RealizationKind::WindowsContainer) => {
+                windows::validate_config(config)?;
+                let mut env = container_default_env();
+                env.extend(config.env.clone());
+                listeners::endpoints(realization, &env)?;
+            }
             _ => {}
         }
         Ok(())
@@ -145,9 +150,9 @@ impl ParticipantType for AgentAdp {
         &self, realization: Realization, config: &EffectiveConfig,
     ) -> Result<BTreeMap<String, Endpoint>, String> {
         match (realization.os, realization.kind) {
-            (Os::Linux, RealizationKind::LinuxContainer) | (Os::MacOs, RealizationKind::HostProcessGroup) => {
-                listeners::endpoints(realization, &config.env)
-            }
+            (Os::Linux, RealizationKind::LinuxContainer)
+            | (Os::MacOs, RealizationKind::HostProcessGroup)
+            | (Os::Windows, RealizationKind::WindowsContainer) => listeners::endpoints(realization, &config.env),
             _ => Ok(BTreeMap::new()),
         }
     }
@@ -155,6 +160,9 @@ impl ParticipantType for AgentAdp {
     fn consumes(&self, realization: Realization, _: &EffectiveConfig) -> BTreeMap<String, ConsumedEndpoint> {
         match (realization.os, realization.kind) {
             (Os::Linux, RealizationKind::LinuxContainer) => linux::consumes(),
+            (Os::MacOs, RealizationKind::HostProcessGroup) | (Os::Windows, RealizationKind::WindowsContainer) => {
+                BTreeMap::from([("intake".into(), intake())])
+            }
             _ => BTreeMap::new(),
         }
     }
@@ -206,6 +214,22 @@ impl ParticipantType for AgentAdp {
             (Os::Windows, RealizationKind::WindowsContainer) => &windows::PROCESS_SPECS,
             _ => &[],
         }
+    }
+}
+
+fn intake() -> ConsumedEndpoint {
+    ConsumedEndpoint {
+        accepts: vec![EndpointKind::Http],
+        required: false,
+        delivery: Delivery::Env {
+            keys: ["DD_DD_URL".into(), "DD_APM_DD_URL".into()].into(),
+            value: |address| {
+                BTreeMap::from([
+                    ("DD_DD_URL".into(), address.url().into()),
+                    ("DD_APM_DD_URL".into(), address.url().into()),
+                ])
+            },
+        },
     }
 }
 
@@ -393,15 +417,45 @@ mod tests {
     }
 
     #[test]
-    fn windows_has_no_endpoints_consumers_or_operations() {
-        let realization = Realization {
-            os: Os::Windows,
-            kind: RealizationKind::WindowsContainer,
+    fn every_realization_consumes_intake_and_only_linux_consumes_forwarding_and_docker() {
+        use panoramic_core::{
+            endpoint::test_support::http_address,
+            recipe::test_support::{host_processes, rendered},
         };
-        let config = EffectiveConfig::default();
-        assert!(AgentAdp.endpoints(realization, &config).unwrap().is_empty());
-        assert!(AgentAdp.consumes(realization, &config).is_empty());
-        assert!(AgentAdp.operations(realization).is_empty());
+
+        for &(os, kind) in AgentAdp.supports() {
+            let realization = Realization { os, kind };
+            let consumes = AgentAdp.consumes(realization, &EffectiveConfig::default());
+            let expected = if os == Os::Linux {
+                vec!["docker_api", "dogstatsd_forward", "intake"]
+            } else {
+                vec!["intake"]
+            };
+            assert_eq!(consumes.keys().map(String::as_str).collect::<Vec<_>>(), expected);
+            let intake = &consumes["intake"];
+            assert_eq!(intake.accepts, [EndpointKind::Http]);
+            assert!(!intake.required);
+            let Delivery::Env { keys, value } = &intake.delivery;
+            assert_eq!(keys, &["DD_DD_URL".into(), "DD_APM_DD_URL".into()].into());
+            let address = http_address("intake", 2049);
+            let env = value(&address);
+            assert_eq!(
+                env,
+                BTreeMap::from([
+                    ("DD_DD_URL".into(), "http://intake:2049".into()),
+                    ("DD_APM_DD_URL".into(), "http://intake:2049".into()),
+                ])
+            );
+            if os == Os::MacOs {
+                let recipe = AgentAdp.recipe(realization, &rendered(env, BTreeMap::new())).unwrap();
+                let processes = host_processes(&recipe);
+                assert_eq!(processes.len(), 2);
+                for (_, _, _, process_env) in processes {
+                    assert_eq!(process_env["DD_DD_URL"], "http://intake:2049");
+                    assert_eq!(process_env["DD_APM_DD_URL"], "http://intake:2049");
+                }
+            }
+        }
     }
 
     #[test]

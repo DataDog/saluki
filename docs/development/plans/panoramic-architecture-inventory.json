@@ -2716,6 +2716,49 @@
       "case": "integration/dogstatsd-host-tag"
     },
     {
+      "name": "dogstatsd-host-tag",
+      "suite": "integration",
+      "subject_os": "macos",
+      "runtime": "host-process-group",
+      "source": "test/integration/cases/dogstatsd-host-tag/config.yaml",
+      "schema": "participants",
+      "execution": "native",
+      "status": "selected",
+      "timeout": "180s",
+      "images": {
+        "adp-host-binary": "target/release/agent-data-plane",
+        "agent-host-install": "/tmp/saluki-dda/datadog-agent",
+        "intake-host-binary": "target/release/datadog-intake"
+      },
+      "ci_jobs": [
+        "test-integration-macos-arm64",
+        "test-integration-macos-amd64"
+      ],
+      "ci_mixins": [],
+      "case": "integration/dogstatsd-host-tag"
+    },
+    {
+      "name": "dogstatsd-host-tag",
+      "suite": "integration",
+      "subject_os": "windows",
+      "runtime": "windows-container",
+      "source": "test/integration/cases/dogstatsd-host-tag/config.yaml",
+      "schema": "participants",
+      "execution": "native",
+      "status": "selected",
+      "timeout": "180s",
+      "images": {
+        "agent-adp-windows-image": "saluki-images/agent-data-plane:testing-windows",
+        "courier-windows-binary": "target/release/panoramic-courier.exe",
+        "tools-windows-image": "saluki-images/correctness-tools:testing-windows"
+      },
+      "ci_jobs": [
+        "test-integration-windows-amd64"
+      ],
+      "ci_mixins": [],
+      "case": "integration/dogstatsd-host-tag"
+    },
+    {
       "name": "dogstatsd-intake-metric",
       "suite": "integration",
       "subject_os": "linux",
@@ -2733,6 +2776,49 @@
       },
       "ci_jobs": [
         "test-integration"
+      ],
+      "ci_mixins": [],
+      "case": "integration/dogstatsd-intake-metric"
+    },
+    {
+      "name": "dogstatsd-intake-metric",
+      "suite": "integration",
+      "subject_os": "macos",
+      "runtime": "host-process-group",
+      "source": "test/integration/cases/dogstatsd-intake-metric/config.yaml",
+      "schema": "participants",
+      "execution": "native",
+      "status": "selected",
+      "timeout": "180s",
+      "images": {
+        "adp-host-binary": "target/release/agent-data-plane",
+        "agent-host-install": "/tmp/saluki-dda/datadog-agent",
+        "intake-host-binary": "target/release/datadog-intake"
+      },
+      "ci_jobs": [
+        "test-integration-macos-arm64",
+        "test-integration-macos-amd64"
+      ],
+      "ci_mixins": [],
+      "case": "integration/dogstatsd-intake-metric"
+    },
+    {
+      "name": "dogstatsd-intake-metric",
+      "suite": "integration",
+      "subject_os": "windows",
+      "runtime": "windows-container",
+      "source": "test/integration/cases/dogstatsd-intake-metric/config.yaml",
+      "schema": "participants",
+      "execution": "native",
+      "status": "selected",
+      "timeout": "180s",
+      "images": {
+        "agent-adp-windows-image": "saluki-images/agent-data-plane:testing-windows",
+        "courier-windows-binary": "target/release/panoramic-courier.exe",
+        "tools-windows-image": "saluki-images/correctness-tools:testing-windows"
+      },
+      "ci_jobs": [
+        "test-integration-windows-amd64"
       ],
       "ci_mixins": [],
       "case": "integration/dogstatsd-intake-metric"
@@ -8627,6 +8713,186 @@
               ]
             }
           ]
+        },
+        "macos": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DOGSTATSD_NON_LOCAL_TRAFFIC": "true",
+                "DD_DOGSTATSD_ORIGIN_DETECTION": "false",
+                "DD_HOSTNAME": "integration-host-tag"
+              },
+              "realization": "host-process-group",
+              "subject": true,
+              "type": "agent-adp"
+            },
+            "intake": {
+              "env": {},
+              "realization": "host-process-group",
+              "subject": false,
+              "type": "datadog-intake"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "listen_addr:\"udp://[^\"]+\" \\| DogStatsD listener started\\.",
+              "regex": true,
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "endpoint": "dogstatsd_udp",
+              "on": "adp",
+              "payload": "hosttag.metric:1|g\nhosttag.metric:2|g|#host:\nhosttag.metric:3|g|#host:integration-host-tag\nhosttag.metric:4|g|#host:custom",
+              "step": "send",
+              "timeout": "10s"
+            },
+            {
+              "metric_type": "gauge",
+              "name": "hosttag.metric",
+              "on": "intake",
+              "step": "intake_has_metric",
+              "tags": [
+                "host:integration-host-tag"
+              ],
+              "tags_match": "exact",
+              "timeout": "120s",
+              "value": 3
+            },
+            {
+              "metric_type": "gauge",
+              "name": "hosttag.metric",
+              "on": "intake",
+              "step": "intake_has_metric",
+              "tags": [],
+              "tags_match": "exact",
+              "timeout": "120s",
+              "value": 2
+            },
+            {
+              "metric_type": "gauge",
+              "name": "hosttag.metric",
+              "on": "intake",
+              "step": "intake_has_metric",
+              "tags": [
+                "host:custom"
+              ],
+              "tags_match": "exact",
+              "timeout": "120s",
+              "value": 4
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "5s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "5s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        },
+        "windows": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DOGSTATSD_NON_LOCAL_TRAFFIC": "true",
+                "DD_DOGSTATSD_ORIGIN_DETECTION": "false",
+                "DD_HOSTNAME": "integration-host-tag"
+              },
+              "realization": "windows-container",
+              "subject": true,
+              "type": "agent-adp"
+            },
+            "intake": {
+              "env": {},
+              "realization": "windows-container",
+              "subject": false,
+              "type": "datadog-intake"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "listen_addr:\"udp://[^\"]+\" \\| DogStatsD listener started\\.",
+              "regex": true,
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "endpoint": "dogstatsd_udp",
+              "on": "adp",
+              "payload": "hosttag.metric:1|g\nhosttag.metric:2|g|#host:\nhosttag.metric:3|g|#host:integration-host-tag\nhosttag.metric:4|g|#host:custom",
+              "step": "send",
+              "timeout": "10s"
+            },
+            {
+              "metric_type": "gauge",
+              "name": "hosttag.metric",
+              "on": "intake",
+              "step": "intake_has_metric",
+              "tags": [
+                "host:integration-host-tag"
+              ],
+              "tags_match": "exact",
+              "timeout": "120s",
+              "value": 3
+            },
+            {
+              "metric_type": "gauge",
+              "name": "hosttag.metric",
+              "on": "intake",
+              "step": "intake_has_metric",
+              "tags": [],
+              "tags_match": "exact",
+              "timeout": "120s",
+              "value": 2
+            },
+            {
+              "metric_type": "gauge",
+              "name": "hosttag.metric",
+              "on": "intake",
+              "step": "intake_has_metric",
+              "tags": [
+                "host:custom"
+              ],
+              "tags_match": "exact",
+              "timeout": "120s",
+              "value": 4
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "5s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "5s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
         }
       },
       "steps": {
@@ -8665,6 +8931,154 @@
             "intake": {
               "env": {},
               "realization": "linux-container",
+              "subject": false,
+              "type": "datadog-intake"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "listen_addr:\"udp://[^\"]+\" \\| DogStatsD listener started\\.",
+              "regex": true,
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "endpoint": "dogstatsd_udp",
+              "on": "adp",
+              "payload": "integration.intake.counter:3|c|#source:integration-test",
+              "step": "send",
+              "timeout": "10s"
+            },
+            {
+              "endpoint": "dogstatsd_udp",
+              "on": "adp",
+              "payload": "integration.intake.counter:3|c|#source:integration-test",
+              "step": "send",
+              "timeout": "10s"
+            },
+            {
+              "metric_type": "rate",
+              "name": "integration.intake.counter",
+              "on": "intake",
+              "step": "intake_has_metric",
+              "tags": [
+                "source:integration-test"
+              ],
+              "timeout": "120s",
+              "value": 0.6
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "5s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "5s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        },
+        "macos": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DOGSTATSD_NON_LOCAL_TRAFFIC": "true",
+                "DD_DOGSTATSD_ORIGIN_DETECTION": "false",
+                "DD_HOSTNAME": "integration-test-intake-metric"
+              },
+              "realization": "host-process-group",
+              "subject": true,
+              "type": "agent-adp"
+            },
+            "intake": {
+              "env": {},
+              "realization": "host-process-group",
+              "subject": false,
+              "type": "datadog-intake"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "listen_addr:\"udp://[^\"]+\" \\| DogStatsD listener started\\.",
+              "regex": true,
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "endpoint": "dogstatsd_udp",
+              "on": "adp",
+              "payload": "integration.intake.counter:3|c|#source:integration-test",
+              "step": "send",
+              "timeout": "10s"
+            },
+            {
+              "endpoint": "dogstatsd_udp",
+              "on": "adp",
+              "payload": "integration.intake.counter:3|c|#source:integration-test",
+              "step": "send",
+              "timeout": "10s"
+            },
+            {
+              "metric_type": "rate",
+              "name": "integration.intake.counter",
+              "on": "intake",
+              "step": "intake_has_metric",
+              "tags": [
+                "source:integration-test"
+              ],
+              "timeout": "120s",
+              "value": 0.6
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "5s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "5s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        },
+        "windows": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DOGSTATSD_NON_LOCAL_TRAFFIC": "true",
+                "DD_DOGSTATSD_ORIGIN_DETECTION": "false",
+                "DD_HOSTNAME": "integration-test-intake-metric"
+              },
+              "realization": "windows-container",
+              "subject": true,
+              "type": "agent-adp"
+            },
+            "intake": {
+              "env": {},
+              "realization": "windows-container",
               "subject": false,
               "type": "datadog-intake"
             }

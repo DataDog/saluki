@@ -20,7 +20,7 @@ configuration. Use it to check coverage when changing case schemas or runners.
 - **CI job:** the job that selects this row. Correctness jobs belong to the `run-correctness-tests` child pipeline.
   Disabled rows have no job. macOS rows list both architectures.
 - **Schema:** the file's `type` value, or `participants` for a file that declares participants.
-- **Execution:** `old` identifies typed and bridge runners; `native` identifies the participant lifecycle.
+- **Execution:** `old` identifies typed runners; `native` identifies the participant lifecycle.
 - **Steps:** assertions and actions, including assertions inside parallel blocks, or the correctness comparison mode.
 - **Ignored:** number of key paths the loader drops without error. The probe loads each modified file through the
   case loader and planner. Replacing each value with either a map or a string must
@@ -44,21 +44,21 @@ Review the diff. Update the inventory whenever a case file, its platforms or its
 Without the environment variable, the test compares the generated JSON and coverage tables with the checked-in
 versions and reports added or removed row keys and the first differing line in each file. The other inventory tests
 check file accounting, case placement by suite and status, case-name uniqueness across both suites, CI job and mixin
-definitions, the correctness generator's fail-fast shell options, ignored-key detection, logging-case translation
+definitions, the correctness generator's fail-fast shell options, ignored-key detection, logging-case baseline
 equivalence, and migration proofs: their rows, CI links and comparison commit.
 
 ## Coverage details
 
 - There are 52 integration files and 42 correctness files, two of them under `test/correctness/disabled/`.
-  Integration selects 45 Linux, 31 macOS and 34 Windows rows. Correctness selects 46 Linux rows: 39 Docker and seven
+  Integration selects 45 Linux, 33 macOS and 36 Windows rows. Correctness selects 46 Linux rows: 39 Docker and seven
   Kubernetes-in-Docker variants. Two correctness cases are disabled (`otlp-traces` and `otlp-traces-ets`) and live in
-  `test/correctness/disabled/`. The inventory has 158 rows.
+  `test/correctness/disabled/`. The inventory has 162 rows.
 - Correctness cases declare only Linux; `run` and `list` report them as skipped for other subject OSes.
   CI runs all selected correctness cases on Linux.
   The seven variants come from `dsd-origin-detection-matrix`: `legacy`, `legacy-high-cardinality`,
   `legacy-optout-disabled`, `legacy-with-client-fields`, `unified`, `unified-high-cardinality` and
   `unified-with-client-fields`. File counts are not runnable counts.
-- Integration has 25 cases on all three OSes, five on Linux/macOS, three on Linux/Windows, 12 Linux-only, one
+- Integration has 27 cases on all three OSes, five on Linux/macOS, three on Linux/Windows, 10 Linux-only, one
   macOS-only and six Windows-only. Every integration `name` equals its directory name. The 52 files contain 218
   assertions, 23 actions and 42 parallel blocks.
 - Every correctness baseline and comparison declares `saluki-images/datadog-agent:testing-release`. The generator
@@ -73,7 +73,9 @@ equivalence, and migration proofs: their rows, CI links and comparison commit.
 - Integration uses `saluki-images/datadog-agent:testing-devel` on Linux and
   `saluki-images/agent-data-plane:testing-windows` on Windows (overridden in CI by `--image-override container=$ImageTag`).
   macOS uses host processes. `dogstatsd-forwarding`, `dogstatsd-host-tag` and `dogstatsd-intake-metric` declare a
-  `datadog-intake` participant using `saluki-images/correctness-tools:latest`.
+  `datadog-intake` participant using `saluki-images/correctness-tools:latest` on Linux. The two intake metric cases
+  also run on macOS with `intake-host-binary` and on Windows with `saluki-images/correctness-tools:testing-windows`
+  through `tools-windows-image`.
 - Both `dsd-forwarding` and `dsd-forwarding-burst` require captured forwarded DogStatsD packets.
 - `privileged-api-endpoints` declares five `output_contains` keys on `adp_cli` actions that the loader ignores:
   `procedure[6].output_contains`, `procedure[7].output_contains`, `procedure[8].output_contains`,
@@ -95,10 +97,10 @@ Use product `config_dump` output from CI runs to compare effective product confi
 
 | Suite | Files | Selected rows (subject OS / runtime) | Disabled rows | Assertions (subject OS) | Actions (subject OS) |
 | --- | --- | --- | --- | --- | --- |
-| integration | 52 | linux / linux: 30; linux / linux-container: 15; macos / host-process-group: 5; macos / mac: 26; windows / windows: 31; windows / windows-container: 3 | 0 | linux: 192; macos: 130; windows: 144 | linux: 25; macos: 14; windows: 16 |
+| integration | 52 | linux / linux: 30; linux / linux-container: 15; macos / host-process-group: 7; macos / mac: 26; windows / windows: 31; windows / windows-container: 5 | 0 | linux: 192; macos: 140; windows: 154 | linux: 25; macos: 17; windows: 19 |
 | correctness | 42 | linux / docker: 39; linux / kubernetes_in_docker: 7 | 2 | — | — |
 
-Total: 158 rows.
+Total: 162 rows.
 
 ## Coverage rows
 
@@ -232,7 +234,11 @@ Total: 158 rows.
 | dogstatsd-enabled | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 3, actions: 0 | 0 |
 | dogstatsd-forwarding | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 13, actions: 5 | 0 |
 | dogstatsd-host-tag | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 6, actions: 1 | 0 |
+| dogstatsd-host-tag | integration | macos | host-process-group | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | native | assertions: 6, actions: 1 | 0 |
+| dogstatsd-host-tag | integration | windows | windows-container | selected | test-integration-windows-amd64 | participants | native | assertions: 6, actions: 1 | 0 |
 | dogstatsd-intake-metric | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 4, actions: 2 | 0 |
+| dogstatsd-intake-metric | integration | macos | host-process-group | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | native | assertions: 4, actions: 2 | 0 |
+| dogstatsd-intake-metric | integration | windows | windows-container | selected | test-integration-windows-amd64 | participants | native | assertions: 4, actions: 2 | 0 |
 | dogstatsd-named-pipe-windows | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 9, actions: 1 | 0 |
 | dogstatsd-no-listener-continues | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 4, actions: 0 | 0 |
 | dogstatsd-no-listener-continues | integration | macos | host-process-group | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | native | assertions: 4, actions: 0 | 0 |
@@ -265,21 +271,14 @@ Total: 158 rows.
 
 <!-- coverage-inventory:end -->
 
-## Integration runner translation
-
-The bridge runs `agent-adp` participant cases on Windows. It accepts one participant configured through
-`config.env`, `log_contains` and `log_not_contains` with `process` omitted, and `file_contains`. Linux and macOS
-participant cases run natively. File paths may reference participant facts. The bridge translates log steps to `stream: both`.
+## Logging baseline
 
 The seven logging cases retain a frozen integration-schema baseline in
-`bin/correctness/panoramic/src/config/coverage_inventory/logging_baseline.json`. Tests compare each case's translation
-on bridged Windows rows against its baseline configuration, except `container.exposed_ports: []`. Row comparisons
-allow the participant schema and, on Linux and macOS, native execution, the participant's realization and role-keyed
-artifacts. Never regenerate the frozen baseline.
+`bin/correctness/panoramic/src/config/coverage_inventory/logging_baseline.json`. Tests compare rows, steps,
+participants, unresolved step paths and default-log-file use against it. Row comparisons allow the participant
+schema, native execution, the participant's realization and role-keyed artifacts. Never regenerate the baseline.
+The integration translation was removed with the bridge.
 The logging cases drop the legacy `58125/udp` exposed port, which only `port_listening` used.
-
-`adp-disabled-exit` and `adp-no-pipelines-exit` also fit the supported subset, but their log line stands in for a
-process exit. They keep the old schema until exits are observed directly.
 
 ## Case migration notes
 
@@ -320,14 +319,17 @@ Log steps omit `process` to search every process's output plus the container log
 
 ## Case migration notes
 
-`dogstatsd-host-tag` and `dogstatsd-intake-metric` use the participant schema and native Linux execution.
+`dogstatsd-host-tag` and `dogstatsd-intake-metric` use the participant schema and native execution on Linux,
+macOS and Windows. On macOS the intake is a host process with assigned loopback ports, and the connection delivers
+`DD_DD_URL=http://127.0.0.1:<port>`. On Windows it runs from `tools-windows-image` and is reached by participant name.
+The Windows image adds `C:\tools\datadog-intake.exe` to the Agent LTSC base already used by the job.
 
 - The intake is a participant connected by `connect: {intake: intake.api}`. The connection delivers `DD_DD_URL`
   and `DD_APM_DD_URL`.
-- Sends reach `dogstatsd_udp` through the courier inside ADP's container instead of a published port.
+- Sends reach `dogstatsd_udp` through the courier inside ADP's container, or directly on macOS.
 - The listener gate is a port-free regex.
 - Failed runs no longer capture the intake's contents under `traffic/`; participant artifact collection restores it.
-- Stability watches both the ADP and Agent exit records.
+- Stability watches both ADP and Agent exits, through records in containers and waited status on macOS.
 - `intake_has_metric` waits out its timeout after a subject crash rather than ending early.
 - Assertion and action counts are unchanged: six assertions and one action for `dogstatsd-host-tag`, four assertions
   and two actions for `dogstatsd-intake-metric`.
@@ -408,6 +410,10 @@ Link CI runs; don't copy their logs into the repository.
 | dogstatsd-require-listener-exit | macos | native | Pending CI. Before: passed with execution `old` in the last green `test-integration-macos-arm64` and `test-integration-macos-amd64` run before this change. Compared with the inventory at `b8ace701c8`. |
 | dogstatsd-skip-failed-listener | linux | native | Pending CI. Before: passed with execution `old` in the last green `test-integration` run before this change. Compared with the inventory at `b8ace701c8`. |
 | dogstatsd-skip-failed-listener | macos | native | Pending CI. Before: passed with execution `old` in the last green `test-integration-macos-arm64` and `test-integration-macos-amd64` run before this change. Compared with the inventory at `b8ace701c8`. |
+| dogstatsd-host-tag | macos | native | Pending CI. Before: none; the case ran only on Linux. Compared with the inventory at `1f4685d997`. |
+| dogstatsd-host-tag | windows | native | Pending CI. Before: none; the case ran only on Linux. Compared with the inventory at `1f4685d997`. |
+| dogstatsd-intake-metric | macos | native | Pending CI. Before: none; the case ran only on Linux. Compared with the inventory at `1f4685d997`. |
+| dogstatsd-intake-metric | windows | native | Pending CI. Before: none; the case ran only on Linux. Compared with the inventory at `1f4685d997`. |
 <!-- migration-proofs:end -->
 
 Native runs use fresh participant directories and reclaim them after each case.

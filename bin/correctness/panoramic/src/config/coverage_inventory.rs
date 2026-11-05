@@ -25,7 +25,6 @@ use serde_json::{json, Value};
 
 use super::{
     build_runners,
-    route::{route, Route},
     runner_artifacts::RunnerArtifacts,
     tests::{planner, write_case, LOGGING_PARTICIPANT, PARTICIPANT_FIELDS},
     typed_case::{LoadedCase, LoadedPlan, TypedConfig},
@@ -154,7 +153,6 @@ impl Row {
                 OLD,
             )
         } else {
-            assert_eq!(route(&built.plan), Route::Native);
             let CaseSchema::Participants { file, .. } = case.schema() else {
                 panic!("native cases declare participants")
             };
@@ -1123,26 +1121,6 @@ fn correctness_ci_mixins_reject_a_skipped_row() {
 }
 
 #[test]
-fn participant_cases_run_natively_on_every_subject_os() {
-    let root = repository_root();
-    for os in [Os::Linux, Os::MacOs, Os::Windows] {
-        let cases = crate::CASE_LOADER
-            .discover_cases(&CASE_DIRS.map(|(dir, ..)| root.join(dir)))
-            .unwrap();
-        let mut participants = 0;
-        for case in cases {
-            if !matches!(case.schema(), CaseSchema::Participants { .. }) || !case.subject_os().contains(&os) {
-                continue;
-            }
-            let plan = planner().compile(case, os).unwrap().into_plan().unwrap();
-            assert_eq!(route(&plan), Route::Native, "{} on {}", plan.case().name(), os.name());
-            participants += 1;
-        }
-        assert!(participants > 0, "no participant cases checked on {}", os.name());
-    }
-}
-
-#[test]
 fn the_listener_failure_cases_run_natively_on_linux_and_macos() {
     let root = repository_root().join("test/integration/cases");
     for name in [
@@ -1161,7 +1139,6 @@ fn the_listener_failure_cases_run_natively_on_linux_and_macos() {
             );
             let plan = planner().compile(case, os).unwrap().into_plan().unwrap();
             assert_eq!(plan.case().name(), name);
-            assert_eq!(route(&plan), Route::Native, "{name} on {os:?}");
         }
     }
 }
@@ -1451,10 +1428,19 @@ fn ci_jobs_in_the_inventory_are_defined() {
         "Makefile",
         &makefile,
         &[
+            "build-intake-host: check-rust-build-tools",
+            "@cargo build --profile release --package datadog-intake --bin datadog-intake",
+        ],
+    );
+    assert_ci_block_lines_in_order(
+        "Makefile",
+        &makefile,
+        &[
             r#"render-macos-test-artifacts: build-panoramic"#,
             r#"@target/release/panoramic artifacts render"#,
             r#"--set adp-host-binary="$(CURDIR)/target/$(BUILD_PROFILE)/agent-data-plane""#,
             r#"--set agent-host-install="$(MACOS_TEST_AGENT_INSTALL_DIR)""#,
+            r#"--set intake-host-binary="$(CURDIR)/target/release/datadog-intake""#,
             r#"--output "$(MACOS_TEST_ARTIFACTS)""#,
         ],
     );
@@ -1463,15 +1449,17 @@ fn ci_jobs_in_the_inventory_are_defined() {
         &makefile,
         &[
             r#"test-integration-macos-ci: override PANORAMIC_ARTIFACTS = $(MACOS_TEST_ARTIFACTS)"#,
-            r#"test-integration-macos-ci: build-panoramic build-adp-host provision-macos-test-env render-macos-test-artifacts test-integration-macos-run ## CI entry point: builds binaries, provisions the Agent and cert, renders artifacts, and runs macOS integration tests"#,
+            r#"test-integration-macos-ci: build-panoramic build-adp-host build-intake-host provision-macos-test-env render-macos-test-artifacts test-integration-macos-run ## CI entry point: builds binaries, provisions the Agent and cert, renders artifacts, and runs macOS integration tests"#,
         ],
     );
     assert_lines_in_order(
         "ci/tooling/windows-integration-tests.ps1",
         &windows_script,
         &[
+            r#"Invoke-Native cargo build --release --package datadog-intake --bin datadog-intake"#,
+            r#"Build-WindowsToolsImage -ImageTag $ToolsImageTag"#,
             r#"$Manifest = Join-Path $env:CARGO_TARGET_DIR "panoramic-artifacts.toml""#,
-            r#"Invoke-Native -FilePath $Panoramic -Arguments @("artifacts", "render", "--set", "agent-adp-windows-image=$ImageTag", "--set", "courier-windows-binary=$Courier", "--output", $Manifest)"#,
+            r#"Invoke-Native -FilePath $Panoramic -Arguments @("artifacts", "render", "--set", "agent-adp-windows-image=$ImageTag", "--set", "tools-windows-image=$ToolsImageTag", "--set", "courier-windows-binary=$Courier", "--output", $Manifest)"#,
             r#""run","#,
             r#""--subject-os", "windows","#,
             r#""--artifacts", $Manifest,"#,
@@ -1590,7 +1578,7 @@ comparison: {image: comparison}
 }
 
 #[test]
-fn loaded_view_records_participant_cases_independently_of_bridge_support() {
+fn loaded_view_records_participant_realizations() {
     let doc: Value = serde_saphyr::from_str(
         &PARTICIPANT_FIELDS.replace("subject: true", "subject: true, realization: {kind: linux-container}"),
     )
@@ -1698,4 +1686,4 @@ fn migration_proofs_reject_wrong_execution_pending_old_rows_and_missing_particip
     }
 }
 
-mod bridge_equivalence;
+mod logging_baseline;

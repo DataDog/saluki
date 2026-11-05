@@ -346,6 +346,5 @@ mod tests {
             ]
         );
         assert!(AgentAdp.readiness(MACOS, &EffectiveConfig::default()).is_empty());
-        assert!(AgentAdp.consumes(MACOS, &EffectiveConfig::default()).is_empty());
     }
 }

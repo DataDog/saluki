@@ -98,22 +98,7 @@ pub(super) fn consumes() -> BTreeMap<String, ConsumedEndpoint> {
                 },
             },
         ),
-        (
-            "intake".into(),
-            ConsumedEndpoint {
-                accepts: vec![EndpointKind::Http],
-                required: false,
-                delivery: Delivery::Env {
-                    keys: ["DD_DD_URL".into(), "DD_APM_DD_URL".into()].into(),
-                    value: |address| {
-                        BTreeMap::from([
-                            ("DD_DD_URL".into(), address.url().into()),
-                            ("DD_APM_DD_URL".into(), address.url().into()),
-                        ])
-                    },
-                },
-            },
-        ),
+        ("intake".into(), super::intake()),
     ])
 }
 

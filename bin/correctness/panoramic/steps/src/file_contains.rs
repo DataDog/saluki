@@ -15,27 +15,25 @@ use tokio::time::{sleep_until, timeout_at, Instant};
 use super::Matcher;
 
 /// Waits until a file inside a participant contains a pattern.
-///
-/// Callers can decode the public fields with [`decode_fields`]. The factory compiles the pattern once at build time.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct FileContains {
+pub(crate) struct FileContains {
     /// Required participant whose file is searched; has no default.
-    pub on: String,
+    on: String,
     /// Required path inside the participant; may reference facts and late facts of named participants. Has no default.
-    pub path: StepTemplate,
+    path: StepTemplate,
     /// Required text or regex to find; has no default.
-    pub pattern: String,
+    pattern: String,
     /// Whether `pattern` is a regex. Defaults to false.
     #[serde(default)]
-    pub regex: bool,
+    regex: bool,
     /// Required, positive time to wait for a match; has no default.
-    pub timeout: CaseDuration,
+    timeout: CaseDuration,
 }
 
 impl FileContains {
     /// Registry name used in case procedures.
-    pub const NAME: &'static str = "file_contains";
+    pub(crate) const NAME: &'static str = "file_contains";
 }
 
 /// A built file step: the decoded fields with the pattern compiled once at build time.

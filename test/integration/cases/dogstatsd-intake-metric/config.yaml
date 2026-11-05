@@ -1,7 +1,7 @@
 name: "dogstatsd-intake-metric"
 description: "Sends a UDP DogStatsD counter twice through Agent+ADP and asserts its total reaches datadog-intake"
 timeout: 180s
-subject_os: [linux]
+subject_os: [linux, macos, windows]
 
 participants:
   intake:

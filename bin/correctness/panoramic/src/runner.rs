@@ -212,7 +212,7 @@ impl RunArgs {
 /// Owns the set of registered tests and orchestrates their execution.
 ///
 /// Handles parallelism, timeout enforcement, cancellation propagation, log directory creation,
-/// and event dispatch. Case bodies use typed runners, the integration bridge or the native lifecycle.
+/// and event dispatch. Case bodies use typed runners or the native lifecycle.
 pub(crate) struct Runner {
     tests: Vec<BuiltCase>,
     log_base_dir: PathBuf,
@@ -1680,9 +1680,8 @@ mod tests {
 
         use crate::config::{
             build_runners,
-            route::tests::{plan_with_plain, Plain},
             runner_artifacts::RunnerArtifacts,
-            tests::PARTICIPANT_FIELDS,
+            tests::{plan_with_plain, Plain, PARTICIPANT_FIELDS},
         };
 
         for fail_fast in [false, true] {

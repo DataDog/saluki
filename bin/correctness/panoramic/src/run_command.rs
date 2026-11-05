@@ -811,7 +811,7 @@ mod tests {
     fn without_a_manifest_only_native_rows_have_their_bindings_verified() {
         use panoramic_core::layout::RealizationKind;
 
-        use crate::config::route::tests::plan_with_plain;
+        use crate::config::tests::plan_with_plain;
 
         let native = PARTICIPANT_FIELDS.replace("agent-adp", "plain");
         let unavailable = native.replace("  adp:", "  windows: {type: agent-adp, os: windows}\n  adp:");
@@ -859,7 +859,7 @@ mod tests {
 
     #[test]
     fn verification_requires_a_manifest_or_native_bindings() {
-        use crate::config::route::tests::plan_with_plain;
+        use crate::config::tests::plan_with_plain;
 
         let unprovidable = BTreeMap::new();
         assert_eq!(verification_bindings(&[], &unprovidable, false), None);

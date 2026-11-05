@@ -698,6 +698,12 @@ build-adp-host: ## Builds the agent-data-plane binary for the current host (Carg
 		APP_BUILD_TIME="$(APP_BUILD_TIME)" \
 		cargo $(ADP_CARGO_BUILD_SUBCMD) --profile $(BUILD_PROFILE) --bin agent-data-plane
 
+.PHONY: build-intake-host
+build-intake-host: check-rust-build-tools
+build-intake-host: ## Builds datadog-intake for the current host (release)
+	@echo "[*] Building datadog-intake (release, host target)..."
+	@cargo build --profile release --package datadog-intake --bin datadog-intake
+
 .PHONY: build-adp-aix
 build-adp-aix: BUILD_PROFILE ?= aix-optimized-release
 build-adp-aix: ## Builds a release agent-data-plane binary natively on AIX (optimized settings without LTO)
@@ -815,15 +821,16 @@ provision-macos-test-env: ## Installs the pinned Datadog Agent ($(MACOS_TEST_AGE
 .PHONY: render-macos-test-artifacts
 render-macos-test-artifacts: BUILD_PROFILE ?= release
 render-macos-test-artifacts: build-panoramic
-render-macos-test-artifacts: ## Writes $$MACOS_TEST_ARTIFACTS binding the macOS tests' ADP binary and Agent install
+render-macos-test-artifacts: ## Writes $$MACOS_TEST_ARTIFACTS binding the macOS tests' ADP and intake binaries and Agent install
 	@target/release/panoramic artifacts render \
 		--set adp-host-binary="$(CURDIR)/target/$(BUILD_PROFILE)/agent-data-plane" \
 		--set agent-host-install="$(MACOS_TEST_AGENT_INSTALL_DIR)" \
+		--set intake-host-binary="$(CURDIR)/target/release/datadog-intake" \
 		--output "$(MACOS_TEST_ARTIFACTS)"
 
 .PHONY: test-integration-macos-ci
 test-integration-macos-ci: override PANORAMIC_ARTIFACTS = $(MACOS_TEST_ARTIFACTS)
-test-integration-macos-ci: build-panoramic build-adp-host provision-macos-test-env render-macos-test-artifacts test-integration-macos-run ## CI entry point: builds binaries, provisions the Agent and cert, renders artifacts, and runs macOS integration tests
+test-integration-macos-ci: build-panoramic build-adp-host build-intake-host provision-macos-test-env render-macos-test-artifacts test-integration-macos-run ## CI entry point: builds binaries, provisions the Agent and cert, renders artifacts, and runs macOS integration tests
 
 .PHONY: ensure-rust-nightly
 ensure-rust-nightly:

@@ -1,4 +1,4 @@
-//! The mock intake's listeners and Linux container recipe.
+//! The mock intake's listeners, container recipes and native macOS process.
 
 use std::{collections::BTreeMap, net::SocketAddr};
 
@@ -12,12 +12,12 @@ use panoramic_core::{
         CaseValues, EffectiveConfig, ExitChannel, OpContext, Operation, OutputChannel, ParticipantType, ProcessSpec,
         RenderedConfig,
     },
-    recipe::{ContainerRecipe, Recipe},
+    recipe::{ContainerRecipe, HostProcess, HostRecipe, Recipe},
     step::HandleError,
 };
 use serde_json::Value;
 
-use crate::TOOLS_LINUX_IMAGE;
+use crate::tools::{INTAKE_HOST_BINARY, TOOLS_LINUX_IMAGE, TOOLS_WINDOWS_IMAGE};
 
 /// The mock Datadog intake, with independent telemetry storage per participant.
 ///
@@ -37,38 +37,60 @@ impl ParticipantType for DatadogIntake {
     }
 
     fn supports(&self) -> &'static [(Os, RealizationKind)] {
-        &[(Os::Linux, RealizationKind::LinuxContainer)]
+        &[
+            (Os::Linux, RealizationKind::LinuxContainer),
+            (Os::MacOs, RealizationKind::HostProcessGroup),
+            (Os::Windows, RealizationKind::WindowsContainer),
+        ]
     }
 
-    fn artifacts(&self, _: Realization) -> &'static [ArtifactRole] {
-        &[TOOLS_LINUX_IMAGE]
+    fn artifacts(&self, realization: Realization) -> &'static [ArtifactRole] {
+        match (realization.os, realization.kind) {
+            (Os::Linux, RealizationKind::LinuxContainer) => &[TOOLS_LINUX_IMAGE],
+            (Os::MacOs, RealizationKind::HostProcessGroup) => &[INTAKE_HOST_BINARY],
+            (Os::Windows, RealizationKind::WindowsContainer) => &[TOOLS_WINDOWS_IMAGE],
+            _ => &[],
+        }
     }
 
-    fn recipe(&self, _: Realization, config: &RenderedConfig) -> Result<Recipe, String> {
-        Ok(Recipe::Container(
-            ContainerRecipe::new(TOOLS_LINUX_IMAGE)
-                .with_entrypoint(["/usr/local/bin/datadog-intake"])
-                .with_env(config.env().clone()),
-        ))
+    fn recipe(&self, realization: Realization, config: &RenderedConfig) -> Result<Recipe, String> {
+        let env = config.env().clone();
+        match (realization.os, realization.kind) {
+            (Os::Linux, RealizationKind::LinuxContainer) => Ok(Recipe::Container(
+                ContainerRecipe::new(TOOLS_LINUX_IMAGE)
+                    .with_entrypoint(["/usr/local/bin/datadog-intake"])
+                    .with_env(env),
+            )),
+            (Os::Windows, RealizationKind::WindowsContainer) => Ok(Recipe::Container(
+                ContainerRecipe::new(TOOLS_WINDOWS_IMAGE)
+                    .with_entrypoint([r"C:\tools\datadog-intake.exe"])
+                    .with_env(env),
+            )),
+            (Os::MacOs, RealizationKind::HostProcessGroup) => Ok(Recipe::HostProcessGroup(
+                HostRecipe::new(vec![HostProcess::new("intake", INTAKE_HOST_BINARY, vec![])]).with_env(env),
+            )),
+            _ => Err(format!(
+                "participant type '{}' has no recipe for {} on {}",
+                Self::NAME,
+                realization.kind.name(),
+                realization.os.name()
+            )),
+        }
     }
 
-    fn validate_config(&self, _: Realization, config: &CaseValues) -> Result<(), String> {
-        listen_ports(&config.env).map(|_| ())
+    fn validate_config(&self, realization: Realization, config: &CaseValues) -> Result<(), String> {
+        listen_ports(realization, &config.env).map(|_| ())
     }
 
-    fn endpoints(&self, _: Realization, config: &EffectiveConfig) -> Result<BTreeMap<String, Endpoint>, String> {
-        let [http, dogstatsd] = listen_ports(&config.env)?;
+    fn endpoints(
+        &self, realization: Realization, config: &EffectiveConfig,
+    ) -> Result<BTreeMap<String, Endpoint>, String> {
+        let [http, dogstatsd] = listen_ports(realization, &config.env)?;
         // The intake binds UDP before HTTP, so /ready covers both listeners.
         let ready = Evidence::http_ok("api", "/ready");
         Ok(BTreeMap::from([
-            (
-                "api".into(),
-                Endpoint::http(Port::Fixed(http)).with_ready(ready.clone()),
-            ),
-            (
-                "dogstatsd_forward".into(),
-                Endpoint::udp(Port::Fixed(dogstatsd)).with_ready(ready),
-            ),
+            ("api".into(), Endpoint::http(http).with_ready(ready.clone())),
+            ("dogstatsd_forward".into(), Endpoint::udp(dogstatsd).with_ready(ready)),
         ]))
     }
 
@@ -80,12 +102,22 @@ impl ParticipantType for DatadogIntake {
         &["intake"]
     }
 
-    fn process_specs(&self, _: Realization) -> &'static [ProcessSpec] {
-        &[ProcessSpec {
-            name: "intake",
-            exit: ExitChannel::Container,
-            output: OutputChannel::Container,
-        }]
+    fn process_specs(&self, realization: Realization) -> &'static [ProcessSpec] {
+        match (realization.os, realization.kind) {
+            (Os::Linux, RealizationKind::LinuxContainer) | (Os::Windows, RealizationKind::WindowsContainer) => {
+                &[ProcessSpec {
+                    name: "intake",
+                    exit: ExitChannel::Container,
+                    output: OutputChannel::Container,
+                }]
+            }
+            (Os::MacOs, RealizationKind::HostProcessGroup) => &[ProcessSpec {
+                name: "intake",
+                exit: ExitChannel::Wait,
+                output: OutputChannel::Pipes,
+            }],
+            _ => &[],
+        }
     }
 }
 
@@ -146,8 +178,16 @@ impl Operation for Dump {
     }
 }
 
-fn listen_ports(env: &BTreeMap<String, String>) -> Result<[u16; 2], String> {
-    let mut ports = [0; 2];
+fn listen_ports(realization: Realization, env: &BTreeMap<String, String>) -> Result<[Port; 2], String> {
+    let host = (realization.os, realization.kind) == (Os::MacOs, RealizationKind::HostProcessGroup);
+    let mut ports = [
+        Port::Assigned {
+            deliver: |port| BTreeMap::from([("INTAKE_HTTP_LISTEN_ADDR".into(), format!("127.0.0.1:{port}"))]),
+        },
+        Port::Assigned {
+            deliver: |port| BTreeMap::from([("INTAKE_DOGSTATSD_LISTEN_ADDR".into(), format!("127.0.0.1:{port}"))]),
+        },
+    ];
     for (index, (key, default)) in [
         ("INTAKE_HTTP_LISTEN_ADDR", "0.0.0.0:2049"),
         ("INTAKE_DOGSTATSD_LISTEN_ADDR", "0.0.0.0:9125"),
@@ -155,6 +195,9 @@ fn listen_ports(env: &BTreeMap<String, String>) -> Result<[u16; 2], String> {
     .into_iter()
     .enumerate()
     {
+        if host && !env.contains_key(key) {
+            continue;
+        }
         let value = env.get(key).map_or(default, String::as_str);
         let address: SocketAddr = value
             .parse()
@@ -162,12 +205,17 @@ fn listen_ports(env: &BTreeMap<String, String>) -> Result<[u16; 2], String> {
         if address.port() == 0 {
             return Err(format!("{key}='{value}' must use a nonzero port"));
         }
-        if !address.ip().is_unspecified() {
+        if host && !(address.ip().is_loopback() || address.ip().is_unspecified()) {
+            return Err(format!(
+                "{key}='{value}' must bind a loopback or unspecified host on macos"
+            ));
+        }
+        if !host && !address.ip().is_unspecified() {
             return Err(format!(
                 "{key}='{value}' must bind 0.0.0.0 or [::] so other participants and published ports can reach it"
             ));
         }
-        ports[index] = address.port();
+        ports[index] = Port::Fixed(address.port());
     }
     Ok(ports)
 }
@@ -177,9 +225,12 @@ mod tests {
     use std::{io::ErrorKind, time::Duration};
 
     use panoramic_core::{
-        endpoint::{test_support::assert_network_endpoint, EndpointKind},
+        endpoint::{
+            test_support::{assert_network_endpoint, assigned_delivery},
+            EndpointKind,
+        },
         participant::test_support::run_http_operation,
-        recipe::test_support::{assert_container, rendered},
+        recipe::test_support::{assert_container, host_processes, rendered},
     };
     use serde_json::json;
     use tokio::{
@@ -192,6 +243,14 @@ mod tests {
     const LINUX: Realization = Realization {
         os: Os::Linux,
         kind: RealizationKind::LinuxContainer,
+    };
+    const MACOS: Realization = Realization {
+        os: Os::MacOs,
+        kind: RealizationKind::HostProcessGroup,
+    };
+    const WINDOWS: Realization = Realization {
+        os: Os::Windows,
+        kind: RealizationKind::WindowsContainer,
     };
 
     async fn dump_response(kind: &str, path: &str, status: u16, body: &[u8]) -> Result<Value, HandleError> {
@@ -436,59 +495,159 @@ mod tests {
 
     #[test]
     fn the_intake_listens_on_historical_ports_unless_its_environment_overrides_them() {
-        for (env, ports) in [
-            (BTreeMap::new(), [2049, 9125]),
-            (
-                BTreeMap::from([
-                    ("INTAKE_HTTP_LISTEN_ADDR".into(), "0.0.0.0:8080".into()),
-                    ("INTAKE_DOGSTATSD_LISTEN_ADDR".into(), "[::]:8125".into()),
-                ]),
-                [8080, 8125],
-            ),
-        ] {
-            DatadogIntake
-                .validate_config(
-                    LINUX,
-                    &CaseValues {
-                        env: env.clone(),
-                        ..Default::default()
-                    },
-                )
-                .unwrap();
-            let endpoints = DatadogIntake
-                .endpoints(
-                    LINUX,
-                    &EffectiveConfig {
-                        env,
-                        ..Default::default()
-                    },
-                )
-                .unwrap();
-            assert_eq!(endpoints.len(), 2);
-            for (name, kind, port) in [
-                ("api", EndpointKind::Http, ports[0]),
-                ("dogstatsd_forward", EndpointKind::Udp, ports[1]),
+        for realization in [LINUX, WINDOWS] {
+            for (env, ports) in [
+                (BTreeMap::new(), [2049, 9125]),
+                (
+                    BTreeMap::from([
+                        ("INTAKE_HTTP_LISTEN_ADDR".into(), "0.0.0.0:8080".into()),
+                        ("INTAKE_DOGSTATSD_LISTEN_ADDR".into(), "[::]:8125".into()),
+                    ]),
+                    [8080, 8125],
+                ),
             ] {
-                assert_network_endpoint(&endpoints[name], kind, port, Some(Evidence::http_ok("api", "/ready")));
+                DatadogIntake
+                    .validate_config(
+                        realization,
+                        &CaseValues {
+                            env: env.clone(),
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap();
+                let endpoints = DatadogIntake
+                    .endpoints(
+                        realization,
+                        &EffectiveConfig {
+                            env,
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap();
+                assert_eq!(endpoints.len(), 2);
+                for (name, kind, port) in [
+                    ("api", EndpointKind::Http, ports[0]),
+                    ("dogstatsd_forward", EndpointKind::Udp, ports[1]),
+                ] {
+                    assert_network_endpoint(&endpoints[name], kind, port, Some(Evidence::http_ok("api", "/ready")));
+                }
             }
         }
     }
 
     #[test]
     fn an_intake_listen_address_must_have_a_nonzero_port_and_an_unspecified_host() {
-        for key in ["INTAKE_HTTP_LISTEN_ADDR", "INTAKE_DOGSTATSD_LISTEN_ADDR"] {
+        for realization in [LINUX, WINDOWS] {
+            for key in ["INTAKE_HTTP_LISTEN_ADDR", "INTAKE_DOGSTATSD_LISTEN_ADDR"] {
+                for (value, expected) in [
+                    ("0.0.0.0", "host:port"),
+                    ("0.0.0.0:invalid", "host:port"),
+                    ("0.0.0.0:65536", "host:port"),
+                    ("0.0.0.0:0", "nonzero port"),
+                    ("127.0.0.1:2049", "must bind 0.0.0.0 or [::]"),
+                    ("[::1]:2049", "must bind 0.0.0.0 or [::]"),
+                ] {
+                    let env = BTreeMap::from([(key.into(), value.into())]);
+                    let error = DatadogIntake
+                        .validate_config(
+                            realization,
+                            &CaseValues {
+                                env: env.clone(),
+                                ..Default::default()
+                            },
+                        )
+                        .unwrap_err();
+                    assert!(
+                        error.contains(key) && error.contains(value) && error.contains(expected),
+                        "{error}"
+                    );
+                    assert_eq!(
+                        DatadogIntake
+                            .endpoints(
+                                realization,
+                                &EffectiveConfig {
+                                    env,
+                                    ..Default::default()
+                                }
+                            )
+                            .unwrap_err(),
+                        error
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn macos_intake_listeners_assign_loopback_ports_and_rederive_them_as_fixed() {
+        let mut config = EffectiveConfig::default();
+        DatadogIntake.validate_config(MACOS, &CaseValues::default()).unwrap();
+        let endpoints = DatadogIntake.endpoints(MACOS, &config).unwrap();
+        assert_eq!(endpoints.len(), 2);
+        for (name, kind, key, port) in [
+            ("api", EndpointKind::Http, "INTAKE_HTTP_LISTEN_ADDR", 20001),
+            (
+                "dogstatsd_forward",
+                EndpointKind::Udp,
+                "INTAKE_DOGSTATSD_LISTEN_ADDR",
+                20002,
+            ),
+        ] {
+            let env = assigned_delivery(&endpoints[name], kind)(port);
+            assert_eq!(env, BTreeMap::from([(key.into(), format!("127.0.0.1:{port}"))]));
+            config.env.extend(env);
+            let fixed = DatadogIntake.endpoints(MACOS, &config).unwrap();
+            assert_network_endpoint(&fixed[name], kind, port, Some(Evidence::http_ok("api", "/ready")));
+        }
+    }
+
+    #[test]
+    fn macos_intake_listeners_accept_pinned_loopback_and_unspecified_hosts_only() {
+        for (key, name, kind) in [
+            ("INTAKE_HTTP_LISTEN_ADDR", "api", EndpointKind::Http),
+            ("INTAKE_DOGSTATSD_LISTEN_ADDR", "dogstatsd_forward", EndpointKind::Udp),
+        ] {
+            for host in ["127.0.0.1", "[::1]", "0.0.0.0", "[::]"] {
+                let env = BTreeMap::from([(key.into(), format!("{host}:2049"))]);
+                DatadogIntake
+                    .validate_config(
+                        MACOS,
+                        &CaseValues {
+                            env: env.clone(),
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap();
+                let endpoints = DatadogIntake
+                    .endpoints(
+                        MACOS,
+                        &EffectiveConfig {
+                            env,
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap();
+                assert_network_endpoint(&endpoints[name], kind, 2049, Some(Evidence::http_ok("api", "/ready")));
+                let other = if name == "api" { "dogstatsd_forward" } else { "api" };
+                assigned_delivery(
+                    &endpoints[other],
+                    if name == "api" {
+                        EndpointKind::Udp
+                    } else {
+                        EndpointKind::Http
+                    },
+                );
+            }
             for (value, expected) in [
-                ("0.0.0.0", "host:port"),
-                ("0.0.0.0:invalid", "host:port"),
-                ("0.0.0.0:65536", "host:port"),
-                ("0.0.0.0:0", "nonzero port"),
-                ("127.0.0.1:2049", "must bind 0.0.0.0 or [::]"),
-                ("[::1]:2049", "must bind 0.0.0.0 or [::]"),
+                ("127.0.0.1:0", "nonzero port"),
+                ("127.0.0.1:invalid", "host:port"),
+                ("192.0.2.1:2049", "loopback or unspecified"),
+                ("[2001:db8::1]:2049", "loopback or unspecified"),
             ] {
                 let env = BTreeMap::from([(key.into(), value.into())]);
                 let error = DatadogIntake
                     .validate_config(
-                        LINUX,
+                        MACOS,
                         &CaseValues {
                             env: env.clone(),
                             ..Default::default()
@@ -502,7 +661,7 @@ mod tests {
                 assert_eq!(
                     DatadogIntake
                         .endpoints(
-                            LINUX,
+                            MACOS,
                             &EffectiveConfig {
                                 env,
                                 ..Default::default()
@@ -516,37 +675,88 @@ mod tests {
     }
 
     #[test]
-    fn the_intake_runs_one_process_observed_through_its_container() {
+    fn the_intake_observes_containers_and_waited_host_processes() {
         assert_eq!(DatadogIntake.processes(), &["intake"]);
-        assert_eq!(
-            DatadogIntake.process_specs(LINUX),
-            &[ProcessSpec {
-                name: "intake",
-                exit: ExitChannel::Container,
-                output: OutputChannel::Container,
-            }]
-        );
+        for (realization, exit, output) in [
+            (LINUX, ExitChannel::Container, OutputChannel::Container),
+            (WINDOWS, ExitChannel::Container, OutputChannel::Container),
+            (MACOS, ExitChannel::Wait, OutputChannel::Pipes),
+        ] {
+            assert_eq!(
+                DatadogIntake.process_specs(realization),
+                &[ProcessSpec {
+                    name: "intake",
+                    exit,
+                    output
+                }]
+            );
+        }
     }
 
     #[test]
-    fn the_intake_recipe_runs_the_tools_binary_with_the_case_environment() {
+    fn the_intake_recipes_run_the_tools_binary_with_the_case_environment() {
         let env = BTreeMap::from([("INTAKE_HTTP_LISTEN_ADDR".into(), "0.0.0.0:8080".into())]);
         let config = rendered(env.clone(), BTreeMap::new());
-        let recipe = DatadogIntake.recipe(LINUX, &config).unwrap();
-        assert_container(&recipe, TOOLS_LINUX_IMAGE, &["/usr/local/bin/datadog-intake"], &env);
+        for (realization, role, executable) in [
+            (LINUX, TOOLS_LINUX_IMAGE, "/usr/local/bin/datadog-intake"),
+            (WINDOWS, TOOLS_WINDOWS_IMAGE, r"C:\tools\datadog-intake.exe"),
+        ] {
+            let recipe = DatadogIntake.recipe(realization, &config).unwrap();
+            assert_container(&recipe, role, &[executable], &env);
+        }
+        let recipe = DatadogIntake.recipe(MACOS, &config).unwrap();
+        let processes = host_processes(&recipe);
+        assert_eq!(processes.len(), 1);
+        assert_eq!((processes[0].0, processes[0].1), ("intake", INTAKE_HOST_BINARY));
+        assert!(processes[0].2.is_empty());
+        assert_eq!(processes[0].3, env);
     }
 
     #[test]
-    fn the_intake_supports_only_linux_containers_and_declares_only_the_tools_image() {
+    fn the_intake_supports_containers_and_macos_hosts_with_realization_specific_artifacts() {
         assert_eq!(
             DatadogIntake.supports(),
-            &[(Os::Linux, RealizationKind::LinuxContainer)]
+            &[
+                (Os::Linux, RealizationKind::LinuxContainer),
+                (Os::MacOs, RealizationKind::HostProcessGroup),
+                (Os::Windows, RealizationKind::WindowsContainer),
+            ]
         );
-        assert_eq!(DatadogIntake.artifacts(LINUX), &[TOOLS_LINUX_IMAGE]);
-        assert!(DatadogIntake.facts(LINUX).is_empty());
-        assert!(DatadogIntake.consumes(LINUX, &EffectiveConfig::default()).is_empty());
-        assert!(DatadogIntake.readiness(LINUX, &EffectiveConfig::default()).is_empty());
+        for (realization, role) in [
+            (LINUX, TOOLS_LINUX_IMAGE),
+            (MACOS, INTAKE_HOST_BINARY),
+            (WINDOWS, TOOLS_WINDOWS_IMAGE),
+        ] {
+            assert_eq!(DatadogIntake.artifacts(realization), &[role]);
+            assert!(DatadogIntake.facts(realization).is_empty());
+            assert!(DatadogIntake
+                .consumes(realization, &EffectiveConfig::default())
+                .is_empty());
+            assert!(DatadogIntake
+                .readiness(realization, &EffectiveConfig::default())
+                .is_empty());
+        }
         assert!(DatadogIntake.config_files().is_empty());
         assert!(DatadogIntake.params().is_empty());
+        for os in [Os::Linux, Os::MacOs, Os::Windows] {
+            for kind in [
+                RealizationKind::LinuxContainer,
+                RealizationKind::HostProcessGroup,
+                RealizationKind::WindowsContainer,
+                RealizationKind::KubernetesPod,
+            ] {
+                if DatadogIntake.supports().contains(&(os, kind)) {
+                    continue;
+                }
+                let realization = Realization { os, kind };
+                assert!(DatadogIntake.artifacts(realization).is_empty());
+                assert!(DatadogIntake.process_specs(realization).is_empty());
+                assert!(DatadogIntake
+                    .recipe(realization, &rendered(BTreeMap::new(), BTreeMap::new()))
+                    .err()
+                    .unwrap()
+                    .contains("has no recipe"));
+            }
+        }
     }
 }

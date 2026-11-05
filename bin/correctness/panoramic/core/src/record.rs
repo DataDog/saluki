@@ -323,7 +323,7 @@ pub struct ActiveStep {
 }
 
 /// Formats a one-based step label: `3` for a standalone step, `3.1` for a parallel member.
-pub fn step_label(step: usize, member: Option<usize>) -> String {
+pub(crate) fn step_label(step: usize, member: Option<usize>) -> String {
     match member {
         Some(member) => format!("{}.{}", step + 1, member + 1),
         None => (step + 1).to_string(),
