@@ -47,8 +47,8 @@ use saluki_components::{
     transforms::{
         aggregate_context_snapshot_channel, AggregateConfiguration, AutoscalingFailoverGatewayConfiguration,
         ChainedConfiguration, DogStatsDMapperConfiguration, DogStatsDMapperProfile, DogStatsDMetricMapping,
-        HistogramConfiguration, HostEnrichmentConfiguration, OtlpLogsRenderConfiguration, ReplaceRule, TraceObfuscationConfiguration,
-        TraceTagReplacerConfiguration,
+        HistogramConfiguration, HostEnrichmentConfiguration, OtlpLogsRenderConfiguration, ReplaceRule,
+        TraceObfuscationConfiguration, TraceTagReplacerConfiguration,
     },
 };
 use saluki_core::{
