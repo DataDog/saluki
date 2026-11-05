@@ -245,7 +245,7 @@ mod tests {
     use crate::common::datadog::test_util::{decompressed_bodies, incompressible_string};
     use crate::encoders::BufferedIncrementalConfiguration;
 
-    /// Returns the encoder settings the Agent's schema defaults resolve to.
+    /// Returns the default service checks encoder settings.
     fn service_checks_configuration() -> DatadogServiceChecksConfiguration {
         DatadogServiceChecksConfiguration {
             max_payload_size: DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT,
@@ -263,7 +263,7 @@ mod tests {
     async fn encode_service_checks(checks: Vec<ServiceCheck>) -> Vec<(usize, Vec<u8>)> {
         assert!(checks.len() <= 1024, "service checks must fit in a single event buffer");
 
-        // The Agent's default flush timeout.
+        // The default encoder flush timeout.
         let config = BufferedIncrementalConfiguration::new(service_checks_configuration(), Duration::from_secs(2));
         let (control, mut payloads) = TestComponentDriver::encoder(config)
             .await
