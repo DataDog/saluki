@@ -9,6 +9,9 @@ pub enum Report {
     Sent {
         /// Number of bytes accepted by the transport.
         bytes: u64,
+        /// Transport diagnostics; UDP includes every resolved address and the selected destination.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        diagnostic: String,
     },
     /// An HTTP server returned a response, regardless of status.
     Responded {
@@ -124,7 +127,10 @@ mod tests {
 
     fn reports() -> [Report; 9] {
         [
-            Report::Sent { bytes: 42 },
+            Report::Sent {
+                bytes: 42,
+                diagnostic: String::new(),
+            },
             Report::Responded { status: 503, bytes: 42 },
             Report::Listening,
             Report::Addressable,
@@ -154,7 +160,11 @@ mod tests {
             assert_eq!(Report::from_exec(i64::from(expected_code), &line).unwrap(), report);
         }
         assert_eq!(
-            serde_json::to_string(&Report::Sent { bytes: 42 }).unwrap(),
+            serde_json::to_string(&Report::Sent {
+                bytes: 42,
+                diagnostic: String::new()
+            })
+            .unwrap(),
             r#"{"outcome":"sent","bytes":42}"#
         );
     }

@@ -318,7 +318,7 @@ fn with_file(mut recipe: ContainerRecipe, path: &str, contents: impl Into<Vec<u8
 /// Writes bytes as a PowerShell `byte[]` expression, so scripts can produce exact binary content.
 fn ps_bytes(bytes: &[u8]) -> String {
     let bytes: Vec<_> = bytes.iter().map(u8::to_string).collect();
-    format!("[byte[]]({})", bytes.join(","))
+    format!("([byte[]]({}))", bytes.join(","))
 }
 
 async fn start_participant(
@@ -490,7 +490,8 @@ Signal 'ready'
 while ($true) { $listener.AcceptTcpClient().Dispose() }";
 
 const RESOLVE_SCRIPT: &str = r"
-$addresses = [System.Net.Dns]::GetHostAddresses($args[0]) | Where-Object { $_.AddressFamily -eq 'InterNetwork' }
+$ErrorActionPreference = 'Stop'
+$addresses = [System.Net.Dns]::GetHostAddresses($args[0])
 [Console]::Out.Write(($addresses | ForEach-Object { $_.ToString() }) -join ',')";
 
 #[tokio::test(flavor = "multi_thread")]
@@ -711,6 +712,7 @@ async fn files_and_directories_are_read_and_stated_when_created_running_and_stop
 }
 
 const BINARY_SCRIPT: &str = r"
+$ErrorActionPreference = 'Stop'
 $bytes = [byte[]](0..255)
 $out = [Console]::OpenStandardOutput()
 $out.Write($bytes, 0, $bytes.Length)
@@ -722,6 +724,7 @@ exit 7";
 
 const STDIN_SCRIPT: &str = r"
 param([int]$Length)
+$ErrorActionPreference = 'Stop'
 $inputStream = [Console]::OpenStandardInput()
 $bytes = [byte[]]::new($Length)
 $offset = 0
@@ -890,12 +893,29 @@ while ($true) {
 #[ignore = "needs a Windows Docker daemon; run in the Windows integration job"]
 async fn the_courier_probes_and_sends_over_tcp_udp_and_a_named_pipe_inside_its_container() {
     in_scope(&["srv"], |scope, _tasks| async move {
-        let participant = start_participant(&scope, "srv", &recipe(COURIER_SERVER), &[]).await;
+        let participant = start_participant(
+            &scope,
+            "srv",
+            &with_file(recipe(COURIER_SERVER), r"C:\test\resolve.ps1", RESOLVE_SCRIPT),
+            &[],
+        )
+        .await;
         let primitives: &dyn Primitives = participant.as_ref();
         wait_for_signal(primitives, "srv", "ready").await;
+        let resolved = primitives
+            .exec(pwsh_file(r"C:\test\resolve.ps1", &["srv"]), EXEC_TIME)
+            .await
+            .unwrap();
+        assert_eq!(resolved.exit_code, 0, "{resolved:?}");
+        eprintln!(
+            "Server hostname addresses: {}",
+            String::from_utf8_lossy(&resolved.stdout)
+        );
 
         let tcp = address(EndpointKind::Tcp, "127.0.0.1", 9000);
         let udp = address(EndpointKind::Udp, "127.0.0.1", 9001);
+        let tcp_by_name = address(EndpointKind::Tcp, "srv", 9000);
+        let udp_by_name = address(EndpointKind::Udp, "srv", 9001);
         let pipe = pipe_address("panoramic-test");
         assert_eq!(primitives.probe(&tcp, &limits()).await.unwrap(), ProbeAnswer::Listening);
         assert_eq!(
@@ -917,8 +937,17 @@ async fn the_courier_probes_and_sends_over_tcp_udp_and_a_named_pipe_inside_its_c
             );
         }
 
-        for (name, address) in [("tcp", &tcp), ("udp", &udp), ("pipe", &pipe)] {
-            let payload = format!("{name} payload\r\n\0\u{e9}").into_bytes();
+        for (index, (name, address)) in [
+            ("tcp", &tcp),
+            ("udp", &udp),
+            ("pipe", &pipe),
+            ("tcp", &tcp_by_name),
+            ("udp", &udp_by_name),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let payload = format!("{index} {name} payload\r\n\0\u{e9}").into_bytes();
             primitives.send(address, &payload, &limits()).await.unwrap();
             wait_for_file(primitives, &format!(r"C:\airlock\srv\log\{name}"), &payload).await;
         }

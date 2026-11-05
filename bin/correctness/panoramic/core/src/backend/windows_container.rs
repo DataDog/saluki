@@ -266,7 +266,9 @@ impl Primitives for WindowsParticipant {
         .await
     }
 
-    async fn send(&self, address: &ResolvedAddress, payload: &[u8], limits: &AttemptLimits) -> Result<(), HandleError> {
+    async fn send(
+        &self, address: &ResolvedAddress, payload: &[u8], limits: &AttemptLimits,
+    ) -> Result<String, HandleError> {
         courier::send(
             |command| async { self.driver.exec(exec_request(command)).await.map(ExecOutput::from) },
             COURIER_PATH,

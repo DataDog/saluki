@@ -272,7 +272,7 @@ mod tests {
             };
             Ok(answer)
         }
-        async fn send(&self, _: &ResolvedAddress, _: &[u8], _: &AttemptLimits) -> Result<(), HandleError> {
+        async fn send(&self, _: &ResolvedAddress, _: &[u8], _: &AttemptLimits) -> Result<String, HandleError> {
             panic!("readiness must not send payloads");
         }
         async fn http(

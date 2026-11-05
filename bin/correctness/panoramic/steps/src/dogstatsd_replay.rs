@@ -278,7 +278,7 @@ mod tests {
         ] {
             fake.push_exec(Ok(output(value)));
         }
-        fake.push_send(Ok(()));
+        fake.push_send(Ok(String::new()));
         let mut fields = valid_fields(DogstatsdReplay::NAME);
         fields.insert(
             "payloads".into(),
@@ -389,7 +389,7 @@ mod tests {
                 }
                 fake.push_exec(Err(error.clone()));
                 fake.push_exec(Ok(output(json!({}))));
-                fake.push_send(Ok(()));
+                fake.push_send(Ok(String::new()));
                 let report = run_step_with(
                     &DogstatsdReplayFactory,
                     &valid_fields(DogstatsdReplay::NAME),
@@ -418,7 +418,7 @@ mod tests {
             fake.push_exec(Ok(output(json!({"metrics": ["metric"]}))));
             fake.push_exec(Ok(output(json!({}))));
         }
-        fake.push_send(Ok(()));
+        fake.push_send(Ok(String::new()));
         let mut fields = valid_fields(DogstatsdReplay::NAME);
         fields.insert("timeout".into(), "100ms".into());
         fields.insert("expected_metrics".into(), json!(["metric", "missing"]));
@@ -451,7 +451,7 @@ mod tests {
                     }
                 }));
             }
-            fake.push_send(Ok(()));
+            fake.push_send(Ok(String::new()));
             let mut fields = valid_fields(DogstatsdReplay::NAME);
             fields.insert("timeout".into(), "100ms".into());
             let report = run_step_with(&DogstatsdReplayFactory, &fields, Some(&fake)).await;
@@ -471,7 +471,7 @@ mod tests {
     async fn dropping_replay_during_the_capture_wait_stops_it_promptly() {
         let fake = FakeParticipant::default().with_operations(OPERATIONS);
         fake.push_exec(Ok(output(json!({"path": "/capture"}))));
-        fake.push_send(Ok(()));
+        fake.push_send(Ok(String::new()));
         let mut fields = valid_fields(DogstatsdReplay::NAME);
         fields.insert("capture_duration".into(), "600s".into());
         let started = Instant::now();
@@ -509,7 +509,7 @@ mod tests {
             if !capture {
                 fake.push_exec(Ok(output(json!({}))));
             }
-            fake.push_send(Ok(()));
+            fake.push_send(Ok(String::new()));
             let report = run_step_with(
                 &DogstatsdReplayFactory,
                 &valid_fields(DogstatsdReplay::NAME),

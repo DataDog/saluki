@@ -563,7 +563,7 @@ mod tests {
             .with_writer(std::sync::Mutex::new(output.reopen().unwrap()))
             .finish();
         assert_eq!(
-            run_tests(cmd, false).with_subscriber(subscriber).await,
+            run_tests(*cmd, false).with_subscriber(subscriber).await,
             ExitCode::from(3)
         );
         let diagnostic = std::fs::read_to_string(output.path()).unwrap();
@@ -678,7 +678,7 @@ mod tests {
             .with_writer(std::sync::Mutex::new(output.reopen().unwrap()))
             .finish();
         assert_eq!(
-            run_tests(cmd, false).with_subscriber(subscriber).await,
+            run_tests(*cmd, false).with_subscriber(subscriber).await,
             ExitCode::from(3)
         );
         assert!(!logs.exists());
@@ -737,7 +737,7 @@ mod tests {
                 .with_writer(std::sync::Mutex::new(output.reopen().unwrap()))
                 .finish();
             assert_eq!(
-                run_tests(cmd, false).with_subscriber(subscriber).await,
+                run_tests(*cmd, false).with_subscriber(subscriber).await,
                 ExitCode::from(2)
             );
             let diagnostic = std::fs::read_to_string(output.path()).unwrap();
@@ -971,7 +971,7 @@ mod tests {
             panic!("expected run")
         };
         assert!(cmd.artifacts.is_none());
-        (cmd, built)
+        (*cmd, built)
     }
 
     #[tokio::test]
@@ -1256,7 +1256,7 @@ mod tests {
             .with_writer(std::sync::Mutex::new(output.reopen().unwrap()))
             .finish();
         assert_eq!(
-            run_tests(cmd, false).with_subscriber(subscriber).await,
+            run_tests(*cmd, false).with_subscriber(subscriber).await,
             ExitCode::from(2)
         );
         let diagnostic = std::fs::read_to_string(output.path()).unwrap();
@@ -1330,7 +1330,7 @@ mod tests {
             panic!("expected run")
         };
         let run_json = cmd.log_dir().join("run.json");
-        let (exit, diagnostic) = run_with_diagnostics(cmd, dir).await;
+        let (exit, diagnostic) = run_with_diagnostics(*cmd, dir).await;
         (exit, diagnostic, run_json)
     }
 
@@ -1418,7 +1418,7 @@ mod tests {
                 let Command::Run(cmd) = Cli::try_parse_from(args).unwrap().command else {
                     panic!("expected run")
                 };
-                let (exit, diagnostic) = run_with_diagnostics(cmd, dir.path()).await;
+                let (exit, diagnostic) = run_with_diagnostics(*cmd, dir.path()).await;
                 assert_eq!(exit, ExitCode::from(2));
                 assert!(diagnostic.contains(expected), "{diagnostic}");
                 assert!(!logs.exists());
@@ -1679,7 +1679,7 @@ comparison: {image: comp}
             let Command::Run(cmd) = cli.command else {
                 panic!("expected run")
             };
-            assert_eq!(run_tests(cmd, false).await, ExitCode::from(expected));
+            assert_eq!(run_tests(*cmd, false).await, ExitCode::from(expected));
         }
     }
 
@@ -1719,7 +1719,7 @@ comparison: {image: comp}
             let Command::Run(cmd) = cli.command else {
                 panic!("expected run");
             };
-            assert_eq!(run_tests(cmd, false).await, ExitCode::from(EXIT_HARNESS_ERROR));
+            assert_eq!(run_tests(*cmd, false).await, ExitCode::from(EXIT_HARNESS_ERROR));
             assert!(!logs.exists(), "discovery must fail before creating the log directory");
         }
     }
@@ -1778,7 +1778,7 @@ comparison: {image: comp}
         let Command::Run(cmd) = cli.command else {
             panic!("expected run")
         };
-        assert_eq!(run_tests(cmd, false).await, ExitCode::from(EXIT_NO_TESTS_SELECTED));
+        assert_eq!(run_tests(*cmd, false).await, ExitCode::from(EXIT_NO_TESTS_SELECTED));
     }
 
     #[test]

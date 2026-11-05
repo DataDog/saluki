@@ -246,12 +246,12 @@ impl Handle<'_> {
         probe_from_runner_host(route, self.primitives, limits).await
     }
 
-    /// Sends bytes through an endpoint's planned runner-host route.
+    /// Sends bytes through an endpoint's planned runner-host route, returning transport diagnostics when available.
     ///
     /// # Errors
     ///
     /// Distinguishes a missing endpoint need or failed mechanism from an unsuccessful product answer.
-    pub async fn send(&self, endpoint: &str, payload: &[u8], limits: &AttemptLimits) -> Result<(), HandleError> {
+    pub async fn send(&self, endpoint: &str, payload: &[u8], limits: &AttemptLimits) -> Result<String, HandleError> {
         let route = self.route(endpoint, EndpointOperation::Send)?;
         send_from_runner_host(route, self.primitives, payload, limits).await
     }
@@ -493,12 +493,12 @@ mod tests {
         }
         async fn send(
             &self, address: &ResolvedAddress, payload: &[u8], limits: &AttemptLimits,
-        ) -> Result<(), HandleError> {
+        ) -> Result<String, HandleError> {
             assert_eq!(address.kind, crate::endpoint::EndpointKind::Udp);
             assert_eq!(address.url, "udp://subject:9000");
             assert_eq!(payload, b"payload");
             assert_eq!(limits, &AttemptLimits::new(Duration::from_secs(3)));
-            Ok(())
+            Ok(String::new())
         }
         async fn http(
             &self, _: &ResolvedAddress, _: &str, _: bool, _: &AttemptLimits,
@@ -530,7 +530,7 @@ mod tests {
         assert_eq!(handle.late(LateFact::Ip), None);
         let limits = AttemptLimits::new(Duration::from_secs(3));
         assert_eq!(handle.probe("metrics", &limits).await, Ok(ProbeAnswer::Addressable));
-        assert_eq!(handle.send("metrics", b"payload", &limits).await, Ok(()));
+        assert_eq!(handle.send("metrics", b"payload", &limits).await, Ok(String::new()));
         for error in [
             handle.probe("api", &limits).await.unwrap_err(),
             handle.send("api", b"payload", &limits).await.unwrap_err(),

@@ -190,7 +190,7 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Command {
     /// Run integration tests.
-    Run(RunCommand),
+    Run(Box<RunCommand>),
 
     /// List available integration tests.
     List(ListCommand),

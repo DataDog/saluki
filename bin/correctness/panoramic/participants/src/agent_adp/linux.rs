@@ -1218,16 +1218,17 @@ ifthenelse
                 assert_eq!(*mode, 0o755);
                 *content
             };
-            let shipped_finish = service.finish.splitn(2, |&byte| byte == b'\n').nth(1).unwrap();
-            assert!(find("finish").ends_with(shipped_finish));
+            // Checkout line endings vary by host; overlays ship the normalized body.
+            let shipped_finish = body(service.finish);
+            assert!(find("finish").ends_with(&shipped_finish));
             let record_path = format!("redirfd -a 1 ${{D}}/{}\n", service.service);
             assert!(find("finish")
                 .windows(record_path.len())
                 .any(|bytes| bytes == record_path.as_bytes()));
-            let shipped_run = service.run.splitn(2, |&byte| byte == b'\n').nth(1).unwrap();
+            let shipped_run = body(service.run);
             assert_eq!(
                 find("run"),
-                [b"#!/usr/bin/execlineb -P\nfdmove -c 2 1\n".as_slice(), shipped_run].concat()
+                [b"#!/usr/bin/execlineb -P\nfdmove -c 2 1\n".as_slice(), &shipped_run].concat()
             );
             assert_eq!(
                 find("log/run"),

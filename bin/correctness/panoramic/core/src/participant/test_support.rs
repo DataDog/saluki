@@ -113,7 +113,7 @@ where
         panic!("the operation only executes commands");
     }
 
-    async fn send(&self, _: &ResolvedAddress, _: &[u8], _: &AttemptLimits) -> Result<(), HandleError> {
+    async fn send(&self, _: &ResolvedAddress, _: &[u8], _: &AttemptLimits) -> Result<String, HandleError> {
         panic!("the operation only executes commands");
     }
     async fn http(

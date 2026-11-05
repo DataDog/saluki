@@ -9,10 +9,13 @@ pub(crate) async fn probe(to: &Target) -> Report {
                 Ok(Report::Listening)
             }
             Target::Udp { host, port } => {
-                let (socket, address) = bind_udp(host, *port, to).await?;
-                socket.connect(address).await.map_err(|error| Report::Unreachable {
-                    reason: format!("{to}: {error}"),
-                })?;
+                let (socket, destination) = bind_udp(host, *port, to).await?;
+                socket
+                    .connect(destination.selected)
+                    .await
+                    .map_err(|error| Report::Unreachable {
+                        reason: format!("{to}: {destination}; connect failed: {error}"),
+                    })?;
                 Ok(Report::Addressable)
             }
             #[cfg(windows)]

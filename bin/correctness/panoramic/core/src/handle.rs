@@ -106,8 +106,10 @@ pub(crate) trait Primitives: Send + Sync {
     async fn stat(&self, path: &str) -> Result<Option<FileStatus>, HandleError>;
     /// Probes an address as seen from inside this participant.
     async fn probe(&self, address: &ResolvedAddress, limits: &AttemptLimits) -> Result<ProbeAnswer, HandleError>;
-    /// Sends a payload to an address as seen from inside this participant.
-    async fn send(&self, address: &ResolvedAddress, payload: &[u8], limits: &AttemptLimits) -> Result<(), HandleError>;
+    /// Sends a payload to an address as seen from inside this participant, returning transport diagnostics.
+    async fn send(
+        &self, address: &ResolvedAddress, payload: &[u8], limits: &AttemptLimits,
+    ) -> Result<String, HandleError>;
     /// Makes an HTTP GET to an address as seen from inside this participant.
     async fn http(
         &self, address: &ResolvedAddress, path: &str, headers_only: bool, limits: &AttemptLimits,
@@ -186,7 +188,7 @@ pub(crate) async fn http_get_with_from_runner_host(
 /// Sends through the plan's route for `EndpointOperation::Send`, using the server for a courier route.
 pub(crate) async fn send_from_runner_host(
     route: &RunnerHostRoute, server: &dyn Primitives, payload: &[u8], limits: &AttemptLimits,
-) -> Result<(), HandleError> {
+) -> Result<String, HandleError> {
     match route {
         RunnerHostRoute::Direct(address) => courier::send_in_process(address, payload, limits).await,
         RunnerHostRoute::Courier(address) => server.send(address, payload, limits).await,
@@ -239,7 +241,10 @@ mod tests {
                 "probe" => Report::Listening,
                 "send" => {
                     assert_eq!(command.stdin.as_deref(), Some(b"payload".as_slice()));
-                    Report::Sent { bytes: 7 }
+                    Report::Sent {
+                        bytes: 7,
+                        diagnostic: String::new(),
+                    }
                 }
                 "http" => {
                     let invocation = panoramic_courier::Invocation::parse(&command.argv[1..]).unwrap();
@@ -292,7 +297,7 @@ mod tests {
 
         async fn send(
             &self, address: &ResolvedAddress, payload: &[u8], limits: &AttemptLimits,
-        ) -> Result<(), HandleError> {
+        ) -> Result<String, HandleError> {
             assert_eq!(
                 Some(address),
                 self.address.as_ref(),
@@ -401,7 +406,7 @@ mod tests {
         );
         assert_eq!(
             send_from_runner_host(&route, &server, b"payload", &limits).await,
-            Ok(())
+            Ok(String::new())
         );
         assert_eq!(*server.calls.lock().unwrap(), ["probe", "send"]);
     }

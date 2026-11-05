@@ -104,7 +104,7 @@ async fn main() -> ExitCode {
     }
 
     let result = match cli.command {
-        Command::Run(cmd) => run_tests(cmd, use_tui).await,
+        Command::Run(cmd) => run_tests(*cmd, use_tui).await,
         Command::List(cmd) => list_tests(cmd).await,
         Command::Artifacts(cmd) => match cmd.command {
             cli::ArtifactsSubcommand::Render(cmd) => artifact_commands::render(cmd),
@@ -197,7 +197,7 @@ mod tests {
                     .finish();
                 let exit = async {
                     match Cli::try_parse_from(args).unwrap().command {
-                        Command::Run(cmd) => run_tests(cmd, false).await,
+                        Command::Run(cmd) => run_tests(*cmd, false).await,
                         Command::List(cmd) => list_tests(cmd).await,
                         Command::Artifacts(cmd) => {
                             let mut report = Vec::new();
@@ -266,7 +266,7 @@ mod tests {
                 .finish();
             let exit = async {
                 match Cli::try_parse_from(args).unwrap().command {
-                    Command::Run(cmd) => run_tests(cmd, use_tui).await,
+                    Command::Run(cmd) => run_tests(*cmd, use_tui).await,
                     Command::List(cmd) => list_tests(cmd).await,
                     Command::Artifacts(_) => panic!("expected run or list"),
                 }
@@ -397,7 +397,7 @@ mod tests {
                 args.extend(extra);
                 let cli = Cli::try_parse_from(args).unwrap();
                 let exit = match cli.command {
-                    Command::Run(cmd) => run_tests(cmd, false).await,
+                    Command::Run(cmd) => run_tests(*cmd, false).await,
                     Command::List(cmd) => list_tests(cmd).await,
                     Command::Artifacts(_) => panic!("expected run or list"),
                 };

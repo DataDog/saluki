@@ -5,20 +5,23 @@ use crate::{Report, Target};
 
 pub(crate) async fn send(to: &Target, payload: &[u8]) -> Report {
     let result = async {
+        let mut diagnostic = String::new();
         match to {
             Target::Tcp { host, port } => {
                 let stream = connect_tcp(host, *port, to).await?;
                 write_stream(stream, to, payload).await?;
             }
             Target::Udp { host, port } => {
-                let (socket, address) = bind_udp(host, *port, to).await?;
-                let written = socket
-                    .send_to(payload, address)
-                    .await
-                    .map_err(|error| Report::SendFailed {
-                        reason: format!("{to}: {error}"),
-                    })?;
-                check_datagram_length(to, written, payload.len())?;
+                let (socket, destination) = bind_udp(host, *port, to).await?;
+                diagnostic = format!("{to}: {destination}");
+                let written =
+                    socket
+                        .send_to(payload, destination.selected)
+                        .await
+                        .map_err(|error| Report::SendFailed {
+                            reason: format!("{diagnostic}; send failed: {error}"),
+                        })?;
+                check_datagram_length(&diagnostic, written, payload.len())?;
             }
             #[cfg(windows)]
             Target::NamedPipe { name } => {
@@ -62,6 +65,7 @@ pub(crate) async fn send(to: &Target, payload: &[u8]) -> Report {
         }
         Ok(Report::Sent {
             bytes: payload.len() as u64,
+            diagnostic,
         })
     }
     .await;
@@ -79,7 +83,7 @@ async fn write_stream(mut stream: impl AsyncWrite + Unpin, to: &Target, payload:
     })
 }
 
-fn check_datagram_length(to: &Target, written: usize, expected: usize) -> Result<(), Report> {
+fn check_datagram_length(to: impl std::fmt::Display, written: usize, expected: usize) -> Result<(), Report> {
     if written == expected {
         Ok(())
     } else {

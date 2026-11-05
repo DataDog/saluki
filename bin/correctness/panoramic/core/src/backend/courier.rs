@@ -107,7 +107,7 @@ fn probe_answer(command: &Command, report: Report) -> Result<ProbeAnswer, Handle
 /// a failed write or a courier timeout.
 pub(crate) async fn send<E, F>(
     exec: E, executable: &str, address: &ResolvedAddress, payload: &[u8], limits: &AttemptLimits,
-) -> Result<(), HandleError>
+) -> Result<String, HandleError>
 where
     E: FnOnce(ExecCommand) -> F,
     F: Future<Output = Result<ExecOutput, GenericError>>,
@@ -133,13 +133,13 @@ fn send_command(address: &ResolvedAddress, payload_len: usize) -> Result<Command
     })
 }
 
-fn send_outcome(command: &Command, report: Report, payload_len: usize) -> Result<(), HandleError> {
+fn send_outcome(command: &Command, report: Report, payload_len: usize) -> Result<String, HandleError> {
     let (Command::Probe { to } | Command::Send { to, .. }) = command else {
         unreachable!()
     };
     match report {
-        Report::Sent { bytes } if bytes == payload_len as u64 => Ok(()),
-        Report::Sent { bytes } => Err(harness_error(
+        Report::Sent { bytes, diagnostic } if bytes == payload_len as u64 => Ok(diagnostic),
+        Report::Sent { bytes, .. } => Err(harness_error(
             command,
             format!("reported {bytes} bytes sent, expected {}", payload_len),
         )),
@@ -169,7 +169,7 @@ pub(crate) async fn probe_in_process(
 /// Sends directly from the runner host with the courier's execution and outcome mapping.
 pub(crate) async fn send_in_process(
     address: &ResolvedAddress, payload: &[u8], limits: &AttemptLimits,
-) -> Result<(), HandleError> {
+) -> Result<String, HandleError> {
     let invocation = Invocation {
         command: send_command(address, payload.len())?,
         timeout: Some(limits.request),
@@ -371,7 +371,7 @@ mod tests {
         .await
     }
 
-    async fn send_output(output: Result<ExecOutput, GenericError>) -> Result<(), HandleError> {
+    async fn send_output(output: Result<ExecOutput, GenericError>) -> Result<String, HandleError> {
         send(
             |_| async { output },
             "/courier",
@@ -559,6 +559,7 @@ mod tests {
     #[tokio::test]
     async fn a_send_supplies_its_payload_as_stdin_even_when_empty() {
         for payload in [PAYLOAD, b"".as_slice()] {
+            let diagnostic = "udp://srv:9000: resolved addresses [[::1]:9000, 127.0.0.1:9000]; selected 127.0.0.1:9000";
             let mut recorded = None;
             let result = send(
                 |request| {
@@ -566,6 +567,7 @@ mod tests {
                     async {
                         Ok(output(Report::Sent {
                             bytes: payload.len() as u64,
+                            diagnostic: diagnostic.into(),
                         }))
                     }
                 },
@@ -576,7 +578,7 @@ mod tests {
             )
             .await;
 
-            assert_eq!(result, Ok(()));
+            assert_eq!(result, Ok(diagnostic.into()));
             let request = recorded.expect("the courier should run");
             assert_eq!(
                 request.argv,
@@ -812,7 +814,10 @@ mod tests {
     #[tokio::test]
     async fn reports_for_the_wrong_command_are_harness_errors() {
         for report in [
-            Report::Sent { bytes: 0 },
+            Report::Sent {
+                bytes: 0,
+                diagnostic: String::new(),
+            },
             Report::SendFailed {
                 reason: "broken pipe".into(),
             },
@@ -830,6 +835,7 @@ mod tests {
     async fn an_exit_code_that_disagrees_with_the_report_is_a_harness_error() {
         let mut result = output(Report::Sent {
             bytes: PAYLOAD.len() as u64,
+            diagnostic: String::new(),
         });
         result.exit_code = 10;
         assert_harness(
@@ -882,7 +888,12 @@ mod tests {
     #[tokio::test]
     async fn a_wrong_sent_byte_count_is_a_harness_error() {
         for bytes in [0, PAYLOAD.len() as u64 - 1, PAYLOAD.len() as u64 + 1] {
-            let error = send_output(Ok(output(Report::Sent { bytes }))).await.unwrap_err();
+            let error = send_output(Ok(output(Report::Sent {
+                bytes,
+                diagnostic: String::new(),
+            })))
+            .await
+            .unwrap_err();
             assert_harness(
                 &error,
                 "send",
@@ -959,6 +970,7 @@ mod tests {
                 assert_eq!(command.stdin.as_deref(), Some(PAYLOAD));
                 Ok(output(Report::Sent {
                     bytes: PAYLOAD.len() as u64,
+                    diagnostic: String::new(),
                 }))
             },
             "courier.exe",
@@ -1061,6 +1073,7 @@ mod tests {
             Report::Addressable,
             Report::Sent {
                 bytes: PAYLOAD.len() as u64,
+                diagnostic: String::new(),
             },
             Report::SendFailed {
                 reason: "unexpected send failure".into(),

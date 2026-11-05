@@ -83,12 +83,13 @@ impl Step for Send {
                 .send(&self.endpoint, payload.as_bytes(), &AttemptLimits::new(remaining))
                 .await
             {
-                Ok(()) => {
-                    return StepReport::new(
-                        started,
-                        AssertionStatus::Passed,
-                        format!("sent {} bytes to {subject}", payload.len()),
-                    );
+                Ok(diagnostic) => {
+                    let mut message = format!("sent {} bytes to {subject}", payload.len());
+                    if !diagnostic.is_empty() {
+                        message.push_str("; ");
+                        message.push_str(&diagnostic);
+                    }
+                    return StepReport::new(started, AssertionStatus::Passed, message);
                 }
                 Err(HandleError::Product { message }) => attempts.observed(message),
                 Err(HandleError::Harness { message }) => attempts.errored(message),
@@ -137,7 +138,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn the_first_accepted_send_passes_without_retrying() {
         let fake = FakeParticipant::default();
-        fake.push_send(Ok(()));
+        fake.push_send(Ok(String::new()));
         fake.push_send(Err(HandleError::Harness {
             message: "unexpected second send".into(),
         }));
@@ -155,6 +156,27 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn send_reports_transport_diagnostics_on_success_and_failure() {
+        // Keep the selected UDP destination visible even when a later assertion fails the case.
+        let diagnostic = "udp://subject:8125: resolved addresses [[::1]:8125, 127.0.0.1:8125]; selected 127.0.0.1:8125";
+        for (answer, status) in [
+            (Ok(diagnostic.into()), AssertionStatus::Passed),
+            (
+                Err(HandleError::Product {
+                    message: format!("{diagnostic}; send failed: message too long"),
+                }),
+                AssertionStatus::Failed,
+            ),
+        ] {
+            let fake = FakeParticipant::default();
+            fake.push_send(answer);
+            let report = run_step_with(&SendFactory, &valid_fields(Send::NAME), Some(&fake)).await;
+            assert_eq!(report.status, status);
+            assert!(report.message.contains(diagnostic), "{}", report.message);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn refused_sends_and_mechanism_errors_are_retried_until_one_is_accepted() {
         let fake = FakeParticipant::default();
         fake.push_send(Err(HandleError::Product {
@@ -163,7 +185,7 @@ mod tests {
         fake.push_send(Err(HandleError::Harness {
             message: "send connection lost".into(),
         }));
-        fake.push_send(Ok(()));
+        fake.push_send(Ok(String::new()));
         let started = Instant::now();
         let report = run_step_with(&SendFactory, &valid_fields(Send::NAME), Some(&fake)).await;
         assert_eq!(report.status, AssertionStatus::Passed);
@@ -239,7 +261,7 @@ mod tests {
                 serde_saphyr::from_str(&format!("on: subject\nendpoint: tcp\npayload: {payload}\ntimeout: 30s"))
                     .unwrap();
             let fake = FakeParticipant::default();
-            fake.push_send(Ok(()));
+            fake.push_send(Ok(String::new()));
             let report = run_step_with(&SendFactory, &fields, Some(&fake)).await;
             assert_eq!(report.status, AssertionStatus::Passed);
             fake.assert_sent(&[expected]);
@@ -254,7 +276,7 @@ mod tests {
     async fn send_repeats_its_payload_in_one_message_and_reports_the_total_bytes() {
         for (payload, repeat) in [("métric:1|c\n", 3), ("x", 10000), ("", 2)] {
             let fake = FakeParticipant::default();
-            fake.push_send(Ok(()));
+            fake.push_send(Ok(String::new()));
             let mut fields = valid_fields(Send::NAME);
             fields.insert("payload".into(), json!(payload));
             fields.insert("repeat".into(), json!(repeat));

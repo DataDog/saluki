@@ -306,7 +306,7 @@ pub struct FakeParticipant {
     execs: Mutex<VecDeque<Result<ExecOutput, HandleError>>>,
     exec_delay: Duration,
     executed: Mutex<Vec<(ExecCommand, Duration)>>,
-    sends: Mutex<VecDeque<Result<(), HandleError>>>,
+    sends: Mutex<VecDeque<Result<String, HandleError>>>,
     sent: Mutex<Vec<Vec<u8>>>,
 }
 
@@ -454,7 +454,7 @@ impl FakeParticipant {
     }
 
     /// Queues a send result; the last queued answer repeats.
-    pub fn push_send(&self, answer: Result<(), HandleError>) {
+    pub fn push_send(&self, answer: Result<String, HandleError>) {
         self.sends.lock().unwrap().push_back(answer);
     }
 
@@ -528,7 +528,7 @@ impl Primitives for FakeParticipant {
             probes.front().expect("the step must script its probe answers").clone()
         }
     }
-    async fn send(&self, _: &ResolvedAddress, payload: &[u8], _: &AttemptLimits) -> Result<(), HandleError> {
+    async fn send(&self, _: &ResolvedAddress, payload: &[u8], _: &AttemptLimits) -> Result<String, HandleError> {
         self.sent.lock().unwrap().push(payload.to_vec());
         let mut sends = self.sends.lock().unwrap();
         if sends.len() > 1 {

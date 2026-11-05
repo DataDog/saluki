@@ -671,7 +671,9 @@ impl Primitives for HostParticipant {
         courier::probe_in_process(address, limits).await
     }
 
-    async fn send(&self, address: &ResolvedAddress, payload: &[u8], limits: &AttemptLimits) -> Result<(), HandleError> {
+    async fn send(
+        &self, address: &ResolvedAddress, payload: &[u8], limits: &AttemptLimits,
+    ) -> Result<String, HandleError> {
         courier::send_in_process(address, payload, limits).await
     }
 

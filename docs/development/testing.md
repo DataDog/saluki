@@ -328,7 +328,8 @@ Native process and endpoint steps also require `on`:
   It retries failed sends until one is accepted or the timeout expires.
   A retry after a harness error may deliver the payload twice. A timeout fails after any product refusal; it errors
   if only harness failures occurred. UDP cannot confirm a listener, so gate UDP sends on the participant's listener
-  output.
+  output. UDP selects the first IPv4 address from hostname resolution, or the first address if none is IPv4.
+  The send report includes every resolved address and the selected destination; an IPv6 literal selects IPv6.
 
 Three native actions use participant operations:
 

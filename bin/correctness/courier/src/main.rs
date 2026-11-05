@@ -81,7 +81,10 @@ mod tests {
             assert_eq!(stderr.last(), Some(&b'\n'));
             assert_eq!(
                 Report::from_exec(i64::from(code), &stderr).unwrap(),
-                Report::Sent { bytes: 7 }
+                Report::Sent {
+                    bytes: 7,
+                    diagnostic: String::new()
+                }
             );
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut received = Vec::new();

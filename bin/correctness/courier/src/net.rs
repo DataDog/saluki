@@ -1,4 +1,4 @@
-use std::{io, net::SocketAddr};
+use std::{fmt, io, net::SocketAddr};
 
 use tokio::net::{lookup_host, TcpSocket, TcpStream, UdpSocket};
 
@@ -102,23 +102,46 @@ pub(crate) const UNSUPPORTED_PIPE_REASON: &str = "named pipes are supported only
 #[cfg(not(unix))]
 pub(crate) const UNSUPPORTED_UNIX_REASON: &str = "Unix sockets are not supported on this platform";
 
-// UDP uses the first resolved address: it has no handshake to test the address family.
-// Use an IP literal when a name resolves to both IPv4 and IPv6.
-pub(crate) async fn bind_udp(host: &str, port: u16, to: &Target) -> Result<(UdpSocket, SocketAddr), Report> {
-    let address = lookup_host((host, port))
-        .await
-        .map_err(|error| Report::Unreachable {
-            reason: format!("{to}: {error}"),
-        })?
-        .next()
-        .ok_or_else(|| Report::Unreachable {
-            reason: format!("{to}: host resolved to no addresses"),
-        })?;
-    let bind = if address.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" };
-    let socket = UdpSocket::bind(bind).await.map_err(|error| Report::Failed {
+pub(crate) struct UdpDestination {
+    resolved: Vec<SocketAddr>,
+    pub(crate) selected: SocketAddr,
+}
+
+impl UdpDestination {
+    fn select(resolved: Vec<SocketAddr>, to: &Target) -> Result<Self, Report> {
+        // A datagram to an unbound address is silently lost. Prefer IPv4 for the IPv4-wildcard listeners we target.
+        let selected = resolved
+            .iter()
+            .find(|address| address.is_ipv4())
+            .or_else(|| resolved.first())
+            .copied()
+            .ok_or_else(|| Report::Unreachable {
+                reason: format!("{to}: host resolved to no addresses"),
+            })?;
+        Ok(Self { resolved, selected })
+    }
+}
+
+impl fmt::Display for UdpDestination {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "resolved addresses {:?}; selected {}", self.resolved, self.selected)
+    }
+}
+
+pub(crate) async fn bind_udp(host: &str, port: u16, to: &Target) -> Result<(UdpSocket, UdpDestination), Report> {
+    let resolved = lookup_host((host, port)).await.map_err(|error| Report::Unreachable {
         reason: format!("{to}: {error}"),
     })?;
-    Ok((socket, address))
+    let destination = UdpDestination::select(resolved.collect(), to)?;
+    let bind = if destination.selected.is_ipv4() {
+        "0.0.0.0:0"
+    } else {
+        "[::]:0"
+    };
+    let socket = UdpSocket::bind(bind).await.map_err(|error| Report::Failed {
+        reason: format!("{to}: {destination}; bind failed: {error}"),
+    })?;
+    Ok((socket, destination))
 }
 
 #[cfg(test)]
@@ -128,6 +151,29 @@ mod tests {
     use tokio::net::TcpListener;
 
     use super::*;
+
+    #[test]
+    fn udp_prefers_the_first_ipv4_address_and_retains_every_resolution_result() {
+        // An IPv6-first hostname result silently misses a listener bound only to an IPv4 wildcard.
+        let to = Target::parse("udp://listener:8125").unwrap();
+        for (resolved, selected) in [
+            (vec!["[::1]:8125", "127.0.0.2:8125", "127.0.0.1:8125"], "127.0.0.2:8125"),
+            (vec!["127.0.0.1:8125", "[::1]:8125", "127.0.0.2:8125"], "127.0.0.1:8125"),
+            (vec!["[::1]:8125", "[::2]:8125"], "[::1]:8125"),
+            (vec!["127.0.0.1:8125"], "127.0.0.1:8125"),
+            (vec!["[::1]:8125"], "[::1]:8125"),
+        ] {
+            let expected = format!("resolved addresses [{}]; selected {selected}", resolved.join(", "));
+            let resolved = resolved.iter().map(|address| address.parse().unwrap()).collect();
+            let destination = UdpDestination::select(resolved, &to).unwrap();
+            assert_eq!(destination.selected, selected.parse::<SocketAddr>().unwrap());
+            assert_eq!(destination.to_string(), expected);
+        }
+        assert!(matches!(
+            UdpDestination::select(vec![], &to),
+            Err(Report::Unreachable { reason }) if reason == "udp://listener:8125: host resolved to no addresses"
+        ));
+    }
 
     #[tokio::test]
     async fn tcp_socket_creation_failure_does_not_hide_a_reachable_address() {

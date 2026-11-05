@@ -84,7 +84,8 @@ async fn a_tcp_send_delivers_stdin_unchanged_on_its_own_connection() {
                 )
                 .await,
                 Report::Sent {
-                    bytes: payload.len() as u64
+                    bytes: payload.len() as u64,
+                    diagnostic: String::new(),
                 }
             );
         }
@@ -124,7 +125,8 @@ async fn a_unix_stream_send_delivers_stdin_unchanged_and_closes_its_connection()
             )
             .await,
             Report::Sent {
-                bytes: payload.len() as u64
+                bytes: payload.len() as u64,
+                diagnostic: String::new(),
             }
         );
         let (received, _stream) = server.await.unwrap();
@@ -137,7 +139,9 @@ async fn a_unix_stream_send_delivers_stdin_unchanged_and_closes_its_connection()
 async fn a_udp_send_delivers_stdin_as_one_datagram() {
     within(async {
         let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let to = Target::parse(&format!("udp://{}", socket.local_addr().unwrap())).unwrap();
+        let address = socket.local_addr().unwrap();
+        let to = Target::parse(&format!("udp://{address}")).unwrap();
+        let diagnostic = format!("{to}: resolved addresses [{address}]; selected {address}");
         let payload = b"first\nsecond\nthird\0\xff";
         assert_eq!(
             execute(
@@ -150,7 +154,8 @@ async fn a_udp_send_delivers_stdin_as_one_datagram() {
             )
             .await,
             Report::Sent {
-                bytes: payload.len() as u64
+                bytes: payload.len() as u64,
+                diagnostic,
             }
         );
         let mut buffer = [0; 128];
@@ -162,6 +167,33 @@ async fn a_udp_send_delivers_stdin_as_one_datagram() {
         );
     })
     .await;
+}
+
+#[tokio::test]
+async fn a_udp_send_failure_reports_every_resolved_address_and_its_destination() {
+    // Oversized datagrams fail after resolution, so the diagnostic must survive the send error too.
+    let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let address = socket.local_addr().unwrap();
+    let to = Target::parse(&format!("udp://{address}")).unwrap();
+    let payload = vec![0; 65536];
+    let report = execute(
+        &invocation(Command::Send {
+            to,
+            stdin_len: payload.len() as u64,
+        }),
+        payload.as_slice(),
+        tokio::io::sink(),
+    )
+    .await;
+    let Report::SendFailed { reason } = report else {
+        panic!("expected an oversized datagram failure, got {report:?}");
+    };
+    assert!(
+        reason.starts_with(&format!(
+            "udp://{address}: resolved addresses [{address}]; selected {address}; send failed:"
+        )),
+        "{reason}"
+    );
 }
 
 #[cfg(unix)]
@@ -183,7 +215,8 @@ async fn a_unix_datagram_send_delivers_stdin_as_one_datagram() {
             )
             .await,
             Report::Sent {
-                bytes: payload.len() as u64
+                bytes: payload.len() as u64,
+                diagnostic: String::new(),
             }
         );
         let mut buffer = [0; 128];
@@ -201,7 +234,9 @@ async fn a_unix_datagram_send_delivers_stdin_as_one_datagram() {
 async fn an_empty_stdin_sends_an_empty_datagram() {
     within(async {
         let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let to = Target::parse(&format!("udp://{}", socket.local_addr().unwrap())).unwrap();
+        let address = socket.local_addr().unwrap();
+        let to = Target::parse(&format!("udp://{address}")).unwrap();
+        let diagnostic = format!("{to}: resolved addresses [{address}]; selected {address}");
         assert_eq!(
             execute(
                 &invocation(Command::Send { to, stdin_len: 0 }),
@@ -209,7 +244,7 @@ async fn an_empty_stdin_sends_an_empty_datagram() {
                 tokio::io::sink()
             )
             .await,
-            Report::Sent { bytes: 0 }
+            Report::Sent { bytes: 0, diagnostic }
         );
         assert_eq!(socket.recv(&mut [0; 1]).await.unwrap(), 0);
         #[cfg(unix)]
@@ -224,7 +259,10 @@ async fn an_empty_stdin_sends_an_empty_datagram() {
                     tokio::io::sink()
                 )
                 .await,
-                Report::Sent { bytes: 0 }
+                Report::Sent {
+                    bytes: 0,
+                    diagnostic: String::new()
+                }
             );
             assert_eq!(socket.recv(&mut [0; 1]).await.unwrap(), 0);
         }
@@ -237,7 +275,9 @@ async fn a_send_reads_exactly_its_length_while_stdin_stays_open() {
     within(async {
         for payload in [b"".as_slice(), b"payload\0\xff\r\n".as_slice()] {
             let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-            let to = Target::parse(&format!("udp://{}", socket.local_addr().unwrap())).unwrap();
+            let address = socket.local_addr().unwrap();
+            let to = Target::parse(&format!("udp://{address}")).unwrap();
+            let diagnostic = format!("{to}: resolved addresses [{address}]; selected {address}");
             let invocation = invocation(Command::Send {
                 to,
                 stdin_len: payload.len() as u64,
@@ -248,7 +288,8 @@ async fn a_send_reads_exactly_its_length_while_stdin_stays_open() {
             assert_eq!(
                 execute(&invocation, &mut reader, tokio::io::sink()).await,
                 Report::Sent {
-                    bytes: payload.len() as u64
+                    bytes: payload.len() as u64,
+                    diagnostic,
                 }
             );
             let mut received = [0; 64];
@@ -649,7 +690,8 @@ async fn named_pipe_send_delivers_the_payload_on_one_connection() {
         assert_eq!(
             report,
             Report::Sent {
-                bytes: payload.len() as u64
+                bytes: payload.len() as u64,
+                diagnostic: String::new(),
             }
         );
     })
@@ -701,7 +743,8 @@ async fn named_pipe_send_waits_for_pending_bytes_and_observes_write_errors() {
                 assert_eq!(
                     report,
                     Report::Sent {
-                        bytes: payload.len() as u64
+                        bytes: payload.len() as u64,
+                        diagnostic: String::new(),
                     }
                 );
             }
