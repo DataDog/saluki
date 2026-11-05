@@ -3040,7 +3040,7 @@ mod tests {
             Duration::from_millis(5),
         )
         .await;
-        let (_, forwarder) = build_test_forwarder(&server_url, Live::new_fixed(Secrets::default())).await;
+        let (_, forwarder) = build_test_forwarder(&server_url, Live::new_fixed(false)).await;
 
         let supervisor = TestSupervisor::start("test_forwarder").await;
         let handle = spawn_test_forwarder(&supervisor, forwarder).await;
