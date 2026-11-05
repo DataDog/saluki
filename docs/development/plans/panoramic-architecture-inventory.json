@@ -20,8 +20,7 @@
         "test-correctness-apm-trace"
       ],
       "ci_mixins": [
-        ".test-correctness-definition",
-        ".test-correctness-adp-baseline"
+        ".test-correctness-definition"
       ],
       "case": "correctness/apm-trace"
     },
@@ -45,8 +44,7 @@
         "test-correctness-apm-trace-uds"
       ],
       "ci_mixins": [
-        ".test-correctness-definition",
-        ".test-correctness-adp-baseline"
+        ".test-correctness-definition"
       ],
       "case": "correctness/apm-trace-uds"
     },
@@ -70,8 +68,7 @@
         "test-correctness-dsd-added-tags"
       ],
       "ci_mixins": [
-        ".test-correctness-definition",
-        ".test-correctness-adp-baseline"
+        ".test-correctness-definition"
       ],
       "case": "correctness/dsd-added-tags"
     },
@@ -95,8 +92,7 @@
         "test-correctness-dsd-events"
       ],
       "ci_mixins": [
-        ".test-correctness-definition",
-        ".test-correctness-adp-baseline"
+        ".test-correctness-definition"
       ],
       "case": "correctness/dsd-events"
     },
@@ -120,8 +116,7 @@
         "test-correctness-dsd-forwarding"
       ],
       "ci_mixins": [
-        ".test-correctness-definition",
-        ".test-correctness-adp-baseline"
+        ".test-correctness-definition"
       ],
       "case": "correctness/dsd-forwarding"
     },
@@ -145,8 +140,7 @@
         "test-correctness-dsd-forwarding-burst"
       ],
       "ci_mixins": [
-        ".test-correctness-definition",
-        ".test-correctness-adp-baseline"
+        ".test-correctness-definition"
       ],
       "case": "correctness/dsd-forwarding-burst"
     },
@@ -170,8 +164,7 @@
         "test-correctness-dsd-host-tag"
       ],
       "ci_mixins": [
-        ".test-correctness-definition",
-        ".test-correctness-adp-baseline"
+        ".test-correctness-definition"
       ],
       "case": "correctness/dsd-host-tag"
     },
@@ -195,8 +188,7 @@
         "test-correctness-dsd-mapper-blocklist"
       ],
       "ci_mixins": [
-        ".test-correctness-definition",
-        ".test-correctness-adp-baseline"
+        ".test-correctness-definition"
       ],
       "case": "correctness/dsd-mapper-blocklist"
     },
@@ -220,8 +212,7 @@
         "test-correctness-dsd-metric-filterlist-prefix"
       ],
       "ci_mixins": [
-        ".test-correctness-definition",
-        ".test-correctness-adp-baseline"
+        ".test-correctness-definition"
       ],
       "case": "correctness/dsd-metric-filterlist-prefix"
     },
@@ -245,8 +236,7 @@
         "test-correctness-dsd-origin-detection"
       ],
       "ci_mixins": [
-        ".test-correctness-definition",
-        ".test-correctness-adp-baseline"
+        ".test-correctness-definition"
       ],
       "case": "correctness/dsd-origin-detection"
     },
@@ -269,8 +259,7 @@
         "test-correctness-dsd-origin-detection-matrix-legacy"
       ],
       "ci_mixins": [
-        ".test-correctness-kind-definition",
-        ".test-correctness-adp-baseline"
+        ".test-correctness-kind-definition"
       ],
       "case": "correctness/dsd-origin-detection-matrix-legacy"
     },
@@ -293,8 +282,7 @@
         "test-correctness-dsd-origin-detection-matrix-legacy-high-cardinality"
       ],
       "ci_mixins": [
-        ".test-correctness-kind-definition",
-        ".test-correctness-adp-baseline"
+        ".test-correctness-kind-definition"
       ],
       "case": "correctness/dsd-origin-detection-matrix-legacy-high-cardinality"
     },
@@ -317,8 +305,7 @@
         "test-correctness-dsd-origin-detection-matrix-legacy-optout-disabled"
       ],
       "ci_mixins": [
-        ".test-correctness-kind-definition",
-        ".test-correctness-adp-baseline"
+        ".test-correctness-kind-definition"
       ],
       "case": "correctness/dsd-origin-detection-matrix-legacy-optout-disabled"
     },
@@ -341,8 +328,7 @@
         "test-correctness-dsd-origin-detection-matrix-legacy-with-client-fields"
       ],
       "ci_mixins": [
-        ".test-correctness-kind-definition",
-        ".test-correctness-adp-baseline"
+        ".test-correctness-kind-definition"
       ],
       "case": "correctness/dsd-origin-detection-matrix-legacy-with-client-fields"
     },
@@ -365,8 +351,7 @@
         "test-correctness-dsd-origin-detection-matrix-unified"
       ],
       "ci_mixins": [
-        ".test-correctness-kind-definition",
-        ".test-correctness-adp-baseline"
+        ".test-correctness-kind-definition"
       ],
       "case": "correctness/dsd-origin-detection-matrix-unified"
     },
@@ -389,8 +374,7 @@
         "test-correctness-dsd-origin-detection-matrix-unified-high-cardinality"
       ],
       "ci_mixins": [
-        ".test-correctness-kind-definition",
-        ".test-correctness-adp-baseline"
+        ".test-correctness-kind-definition"
       ],
       "case": "correctness/dsd-origin-detection-matrix-unified-high-cardinality"
     },
@@ -413,8 +397,7 @@
         "test-correctness-dsd-origin-detection-matrix-unified-with-client-fields"
       ],
       "ci_mixins": [
-        ".test-correctness-kind-definition",
-        ".test-correctness-adp-baseline"
+        ".test-correctness-kind-definition"
       ],
       "case": "correctness/dsd-origin-detection-matrix-unified-with-client-fields"
     },
@@ -438,8 +421,7 @@
         "test-correctness-dsd-plain"
       ],
       "ci_mixins": [
-        ".test-correctness-definition",
-        ".test-correctness-adp-baseline"
+        ".test-correctness-definition"
       ],
       "case": "correctness/dsd-plain"
     },
@@ -463,8 +445,7 @@
         "test-correctness-dsd-plain-v3"
       ],
       "ci_mixins": [
-        ".test-correctness-definition",
-        ".test-correctness-adp-baseline"
+        ".test-correctness-definition"
       ],
       "case": "correctness/dsd-plain-v3"
     },
@@ -488,8 +469,7 @@
         "test-correctness-dsd-provider-kind"
       ],
       "ci_mixins": [
-        ".test-correctness-definition",
-        ".test-correctness-adp-baseline"
+        ".test-correctness-definition"
       ],
       "case": "correctness/dsd-provider-kind"
     },
@@ -513,8 +493,7 @@
         "test-correctness-dsd-service-checks"
       ],
       "ci_mixins": [
-        ".test-correctness-definition",
-        ".test-correctness-adp-baseline"
+        ".test-correctness-definition"
       ],
       "case": "correctness/dsd-service-checks"
     },
@@ -538,8 +517,7 @@
         "test-correctness-dsd-tag-filterlist"
       ],
       "ci_mixins": [
-        ".test-correctness-definition",
-        ".test-correctness-adp-baseline"
+        ".test-correctness-definition"
       ],
       "case": "correctness/dsd-tag-filterlist"
     },
@@ -563,8 +541,7 @@
         "test-correctness-dsd-timestamp-extension"
       ],
       "ci_mixins": [
-        ".test-correctness-definition",
-        ".test-correctness-adp-baseline"
+        ".test-correctness-definition"
       ],
       "case": "correctness/dsd-timestamp-extension"
     },
@@ -588,8 +565,7 @@
         "test-correctness-dsd-timestamp-extension-custom-window"
       ],
       "ci_mixins": [
-        ".test-correctness-definition",
-        ".test-correctness-adp-baseline"
+        ".test-correctness-definition"
       ],
       "case": "correctness/dsd-timestamp-extension-custom-window"
     },
@@ -613,8 +589,7 @@
         "test-correctness-dsd-udp"
       ],
       "ci_mixins": [
-        ".test-correctness-definition",
-        ".test-correctness-adp-baseline"
+        ".test-correctness-definition"
       ],
       "case": "correctness/dsd-udp"
     },
@@ -638,8 +613,7 @@
         "test-correctness-dsd-uds-stream"
       ],
       "ci_mixins": [
-        ".test-correctness-definition",
-        ".test-correctness-adp-baseline"
+        ".test-correctness-definition"
       ],
       "case": "correctness/dsd-uds-stream"
     },
@@ -663,8 +637,7 @@
         "test-correctness-dsd-v1-api-series"
       ],
       "ci_mixins": [
-        ".test-correctness-definition",
-        ".test-correctness-adp-baseline"
+        ".test-correctness-definition"
       ],
       "case": "correctness/dsd-v1-api-series"
     },
@@ -688,8 +661,7 @@
         "test-correctness-otlp-metrics"
       ],
       "ci_mixins": [
-        ".test-correctness-definition",
-        ".test-correctness-adp-baseline"
+        ".test-correctness-definition"
       ],
       "case": "correctness/otlp-metrics"
     },
@@ -713,8 +685,7 @@
         "test-correctness-otlp-metrics-as-type-rate"
       ],
       "ci_mixins": [
-        ".test-correctness-definition",
-        ".test-correctness-adp-baseline"
+        ".test-correctness-definition"
       ],
       "case": "correctness/otlp-metrics-as-type-rate"
     },
@@ -738,8 +709,7 @@
         "test-correctness-otlp-metrics-configured-tags"
       ],
       "ci_mixins": [
-        ".test-correctness-definition",
-        ".test-correctness-adp-baseline"
+        ".test-correctness-definition"
       ],
       "case": "correctness/otlp-metrics-configured-tags"
     },
@@ -763,8 +733,7 @@
         "test-correctness-otlp-metrics-core-resource-attributes"
       ],
       "ci_mixins": [
-        ".test-correctness-definition",
-        ".test-correctness-adp-baseline"
+        ".test-correctness-definition"
       ],
       "case": "correctness/otlp-metrics-core-resource-attributes"
     },
@@ -788,8 +757,7 @@
         "test-correctness-otlp-metrics-cumulative-monotonic"
       ],
       "ci_mixins": [
-        ".test-correctness-definition",
-        ".test-correctness-adp-baseline"
+        ".test-correctness-definition"
       ],
       "case": "correctness/otlp-metrics-cumulative-monotonic"
     },
@@ -813,8 +781,7 @@
         "test-correctness-otlp-metrics-ec2-host"
       ],
       "ci_mixins": [
-        ".test-correctness-definition",
-        ".test-correctness-adp-baseline"
+        ".test-correctness-definition"
       ],
       "case": "correctness/otlp-metrics-ec2-host"
     },
@@ -838,8 +805,7 @@
         "test-correctness-otlp-metrics-fargate"
       ],
       "ci_mixins": [
-        ".test-correctness-definition",
-        ".test-correctness-adp-baseline"
+        ".test-correctness-definition"
       ],
       "case": "correctness/otlp-metrics-fargate"
     },
@@ -863,8 +829,7 @@
         "test-correctness-otlp-metrics-gcp-host"
       ],
       "ci_mixins": [
-        ".test-correctness-definition",
-        ".test-correctness-adp-baseline"
+        ".test-correctness-definition"
       ],
       "case": "correctness/otlp-metrics-gcp-host"
     },
@@ -888,8 +853,7 @@
         "test-correctness-otlp-metrics-histogram-counters"
       ],
       "ci_mixins": [
-        ".test-correctness-definition",
-        ".test-correctness-adp-baseline"
+        ".test-correctness-definition"
       ],
       "case": "correctness/otlp-metrics-histogram-counters"
     },
@@ -913,8 +877,7 @@
         "test-correctness-otlp-metrics-histogram-nobuckets"
       ],
       "ci_mixins": [
-        ".test-correctness-definition",
-        ".test-correctness-adp-baseline"
+        ".test-correctness-definition"
       ],
       "case": "correctness/otlp-metrics-histogram-nobuckets"
     },
@@ -938,8 +901,7 @@
         "test-correctness-otlp-metrics-host"
       ],
       "ci_mixins": [
-        ".test-correctness-definition",
-        ".test-correctness-adp-baseline"
+        ".test-correctness-definition"
       ],
       "case": "correctness/otlp-metrics-host"
     },
@@ -963,8 +925,7 @@
         "test-correctness-otlp-metrics-kafka-parity"
       ],
       "ci_mixins": [
-        ".test-correctness-definition",
-        ".test-correctness-adp-baseline"
+        ".test-correctness-definition"
       ],
       "case": "correctness/otlp-metrics-kafka-parity"
     },
@@ -988,8 +949,7 @@
         "test-correctness-otlp-metrics-resource-attributes"
       ],
       "ci_mixins": [
-        ".test-correctness-definition",
-        ".test-correctness-adp-baseline"
+        ".test-correctness-definition"
       ],
       "case": "correctness/otlp-metrics-resource-attributes"
     },
@@ -1013,8 +973,7 @@
         "test-correctness-otlp-metrics-scope-metadata"
       ],
       "ci_mixins": [
-        ".test-correctness-definition",
-        ".test-correctness-adp-baseline"
+        ".test-correctness-definition"
       ],
       "case": "correctness/otlp-metrics-scope-metadata"
     },
@@ -1038,8 +997,7 @@
         "test-correctness-otlp-metrics-summary-mode"
       ],
       "ci_mixins": [
-        ".test-correctness-definition",
-        ".test-correctness-adp-baseline"
+        ".test-correctness-definition"
       ],
       "case": "correctness/otlp-metrics-summary-mode"
     },
@@ -1103,8 +1061,7 @@
         "test-correctness-otlp-traces-ottl-filtering"
       ],
       "ci_mixins": [
-        ".test-correctness-definition",
-        ".test-correctness-adp-baseline"
+        ".test-correctness-definition"
       ],
       "case": "correctness/otlp-traces-ottl-filtering"
     },
@@ -1128,8 +1085,7 @@
         "test-correctness-otlp-traces-ottl-transform"
       ],
       "ci_mixins": [
-        ".test-correctness-definition",
-        ".test-correctness-adp-baseline"
+        ".test-correctness-definition"
       ],
       "case": "correctness/otlp-traces-ottl-transform"
     },
@@ -1153,8 +1109,7 @@
         "test-correctness-otlp-traces-probabilistic"
       ],
       "ci_mixins": [
-        ".test-correctness-definition",
-        ".test-correctness-adp-baseline"
+        ".test-correctness-definition"
       ],
       "case": "correctness/otlp-traces-probabilistic"
     },
@@ -1178,8 +1133,7 @@
         "test-correctness-otlp-traces-probabilistic-full-trace-id"
       ],
       "ci_mixins": [
-        ".test-correctness-definition",
-        ".test-correctness-adp-baseline"
+        ".test-correctness-definition"
       ],
       "case": "correctness/otlp-traces-probabilistic-full-trace-id"
     },

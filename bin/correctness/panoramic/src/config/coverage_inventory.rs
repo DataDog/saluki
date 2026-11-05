@@ -203,18 +203,11 @@ fn correctness_ci_mixins(listed: &Value) -> Vec<String> {
     let layout = listed["layout"]
         .as_array()
         .expect("a runnable row must have a layout array");
-    let roles = listed["roles"]
-        .as_array()
-        .expect("a runnable row must have a roles array");
-    let mut mixins = vec![if layout.iter().any(|entry| entry["realization"] == "kubernetes-pod") {
+    vec![if layout.iter().any(|entry| entry["realization"] == "kubernetes-pod") {
         ".test-correctness-kind-definition".to_string()
     } else {
         ".test-correctness-definition".to_string()
-    }];
-    if roles.iter().any(|entry| entry["role"] == AgentAdp::LINUX_IMAGE.name) {
-        mixins.push(".test-correctness-adp-baseline".to_string());
-    }
-    mixins
+    }]
 }
 
 impl Inventory {
@@ -1078,7 +1071,7 @@ fn every_original_correctness_row_runs_natively_with_its_comparison() {
         } else {
             assert_eq!(row.status, SELECTED, "{name}");
             assert_eq!(row.ci_jobs, [format!("test-correctness-{name}")], "{name}");
-            assert_eq!(row.ci_mixins.first().map(String::as_str), Some(base_mixin), "{name}");
+            assert_eq!(row.ci_mixins, [base_mixin], "{name}");
         }
 
         let loaded = crate::CASE_LOADER.load_file(&root.join(&row.source)).unwrap();
@@ -1136,7 +1129,8 @@ fn every_original_correctness_row_runs_natively_with_its_comparison() {
             BTreeSet::from([subject_intake, baseline_intake]),
             "{name}: compare the two intakes"
         );
-        let subject = file.participants.values().find(|entry| entry.subject).unwrap();
+        let (subject_name, subject) = file.participants.iter().find(|(_, entry)| entry.subject).unwrap();
+        assert_eq!(subject.participant_type, "agent-adp", "{name}: subject type");
         let target: panoramic_core::case::ConnectionTarget =
             serde_json::from_value(json!(format!("{subject_intake}.api"))).unwrap();
         assert_eq!(
@@ -1144,6 +1138,37 @@ fn every_original_correctness_row_runs_natively_with_its_comparison() {
             Some(&target),
             "{name}: compare.subject must receive the subject participant's output"
         );
+        let agents: Vec<_> = file
+            .participants
+            .iter()
+            .filter(|(_, entry)| entry.participant_type == "agent")
+            .collect();
+        assert_eq!(agents.len(), 1, "{name}: exactly one baseline Agent");
+        let (agent_name, agent) = agents[0];
+        let target: panoramic_core::case::ConnectionTarget =
+            serde_json::from_value(json!(format!("{baseline_intake}.api"))).unwrap();
+        assert_eq!(
+            agent.connect.get("intake"),
+            Some(&target),
+            "{name}: Agent must feed compare.baseline"
+        );
+        let loads: Vec<_> = file
+            .participants
+            .iter()
+            .filter(|(_, entry)| entry.participant_type == "millstone")
+            .collect();
+        assert_eq!(loads.len(), 1, "{name}: exactly one paired load generator");
+        let declared: Value = serde_saphyr::from_str(&read_text(&root.join(&row.source))).unwrap();
+        for (connection, receiver) in [("target", subject_name), ("baseline_target", agent_name)] {
+            let target = declared["participants"][loads[0].0]["connect"][connection]
+                .as_str()
+                .unwrap();
+            assert_eq!(
+                target.split_once('.').unwrap().0,
+                receiver,
+                "{name}: millstone {connection} must name {receiver}"
+            );
+        }
     }
     let intended: BTreeSet<_> = INTENDED_COMPARISON_ADDITIONS
         .iter()
@@ -1566,44 +1591,23 @@ fn missing_line_returns_the_first_pinned_line_absent_after_its_predecessor() {
 }
 
 #[test]
-fn correctness_ci_mixins_follow_the_listed_realization_and_roles() {
-    for (realization, roles, expected) in [
-        (
-            "linux-container",
-            json!([{"role": "agent-adp-linux-image"}]),
-            vec![".test-correctness-definition", ".test-correctness-adp-baseline"],
-        ),
-        (
-            "kubernetes-pod",
-            json!([{"role": "tools-linux-image"}, {"role": "agent-adp-linux-image"}]),
-            vec![".test-correctness-kind-definition", ".test-correctness-adp-baseline"],
-        ),
-        (
-            "linux-container",
-            json!([{"role": "tools-linux-image"}]),
-            vec![".test-correctness-definition"],
-        ),
-        ("kubernetes-pod", json!([]), vec![".test-correctness-kind-definition"]),
+fn correctness_ci_mixins_follow_the_listed_realization() {
+    for (realization, expected) in [
+        ("linux-container", ".test-correctness-definition"),
+        ("kubernetes-pod", ".test-correctness-kind-definition"),
     ] {
         let listed = json!({
             "status": "runnable",
             "layout": [{"realization": "linux-container"}, {"realization": realization}],
-            "roles": roles,
         });
-        assert_eq!(correctness_ci_mixins(&listed), expected, "{listed}");
+        assert_eq!(correctness_ci_mixins(&listed), [expected], "{listed}");
     }
 }
 
 #[test]
 #[should_panic(expected = "a runnable row must have a layout array")]
 fn correctness_ci_mixins_reject_a_listed_row_without_a_layout() {
-    correctness_ci_mixins(&json!({"status": "runnable", "layout": null, "roles": []}));
-}
-
-#[test]
-#[should_panic(expected = "a runnable row must have a roles array")]
-fn correctness_ci_mixins_reject_a_listed_row_without_roles() {
-    correctness_ci_mixins(&json!({"status": "runnable", "layout": [], "roles": null}));
+    correctness_ci_mixins(&json!({"status": "runnable", "layout": null}));
 }
 
 #[test]
@@ -1966,14 +1970,12 @@ fn ci_jobs_in_the_inventory_are_defined() {
     for rule in [
         "set -euo pipefail",
         list_rule,
-        r#"| jq -r 'to_entries[] | select(if .value.status == "skipped" then false elif .value.status == "runnable" then true else error("unknown status for \(.key)") end) | "\(.key)\t\(any(.value.layout[]; .realization == "kubernetes-pod"))\t\(any(.value.roles[]; .role == "agent-adp-linux-image"))"'"#,
-        r#"| while IFS=$'\t' read -r case pod agent_adp_image; do"#,
+        r#"| jq -r 'to_entries[] | select(if .value.status == "skipped" then false elif .value.status == "runnable" then true else error("unknown status for \(.key)") end) | "\(.key)\t\(any(.value.layout[]; .realization == "kubernetes-pod"))"'"#,
+        r#"| while IFS=$'\t' read -r case pod; do"#,
         r#"if [[ "${pod}" == "true" ]]; then"#,
         "base_mixin=\".test-correctness-kind-definition\"",
         "base_mixin=\".test-correctness-definition\"",
-        r#"if [[ "${agent_adp_image}" == "true" ]]; then"#,
-        "extends=\"[${base_mixin}, .test-correctness-adp-baseline]\"",
-        "extends=\"[${base_mixin}]\"",
+        "extends: [${base_mixin}]",
         "test-correctness-${case}:",
         "CORRECTNESS_TEST_CASE: ${case}",
     ] {

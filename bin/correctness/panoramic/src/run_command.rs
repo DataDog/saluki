@@ -1313,6 +1313,112 @@ mod tests {
         (exit, std::fs::read_to_string(dir.join("diagnostic.log")).unwrap())
     }
 
+    #[test]
+    fn correctness_ci_environment_accepts_native_plans() {
+        use clap::CommandFactory as _;
+
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .canonicalize()
+            .unwrap();
+        let mixins: serde_json::Value =
+            serde_saphyr::from_str(&std::fs::read_to_string(root.join(".gitlab/correctness-mixins.yml")).unwrap())
+                .unwrap();
+        let command = Cli::command();
+        let run = command.find_subcommand("run").unwrap();
+        let mut variables = BTreeMap::new();
+        for mixin in mixins.as_object().unwrap().values() {
+            if let Some(values) = mixin.get("variables") {
+                for (name, value) in values.as_object().unwrap() {
+                    let value = value.as_str().unwrap();
+                    match name.as_str() {
+                        // Resource requests belong to GitLab's Kubernetes executor.
+                        "KUBERNETES_CPU_REQUEST" | "KUBERNETES_MEMORY_REQUEST" | "KUBERNETES_MEMORY_LIMIT" => {}
+                        "RUST_LOG" => {
+                            saluki_common::logging::parse_filter_directives(value).unwrap();
+                        }
+                        _ => assert!(
+                            run.get_arguments()
+                                .any(|arg| arg.get_env() == Some(std::ffi::OsStr::new(name))),
+                            "correctness CI variable {name} must be consumed by the CLI"
+                        ),
+                    }
+                    variables.insert(name.as_str(), value);
+                }
+            }
+        }
+        const CHILD: &str = "PANORAMIC_CI_ENV_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            // Exercise clap's environment parsing without changing concurrent tests' environment.
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+            for arg in run.get_arguments() {
+                if let Some(env) = arg.get_env() {
+                    child.env_remove(env);
+                }
+            }
+            let output = child
+                .env_remove("RUST_LOG")
+                .envs(&variables)
+                .env(CHILD, "1")
+                .args([
+                    "--exact",
+                    "run_command::tests::correctness_ci_environment_accepts_native_plans",
+                    "--nocapture",
+                ])
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = dir.path().join("artifacts.toml");
+        std::fs::write(
+            &manifest,
+            format!(
+                "schema = 1\n[roles]\nfixup-image = {:?}\n",
+                variables["PANORAMIC_ALPINE_IMAGE"]
+            ),
+        )
+        .unwrap();
+        let cases = root.join("test/correctness/cases");
+        let Command::Run(cmd) = Cli::try_parse_from([
+            "panoramic",
+            "run",
+            "-d",
+            cases.to_str().unwrap(),
+            "-t",
+            "dsd-plain",
+            "--subject-os",
+            "linux",
+            "--artifacts",
+            manifest.to_str().unwrap(),
+            "--no-tui",
+        ])
+        .unwrap()
+        .command
+        else {
+            panic!("expected run")
+        };
+        let plans = discover_in_scope(
+            &mut crate::config::load_planner(Some(&manifest)).unwrap(),
+            &[cases],
+            Os::Linux,
+        )
+        .unwrap()
+        .plans;
+        let (built, settings, artifacts) = build_cases(&cmd, plans).unwrap();
+        assert_eq!(built.len(), 46);
+        assert!(built.iter().all(|case| matches!(case.execution, Execution::Native)));
+        // Legacy container-name overrides reject these plans before any participant can start.
+        check_legacy_inputs(&cmd, &built, &settings, &artifacts).unwrap();
+    }
+
     #[tokio::test]
     async fn legacy_image_inputs_must_agree_before_verification_or_log_creation() {
         let dir = tempfile::tempdir().unwrap();

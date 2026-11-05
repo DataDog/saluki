@@ -62,8 +62,8 @@ equivalence, and migration proofs: their rows, CI links and comparison commit.
   macOS-only and six Windows-only. Every integration `name` equals its directory name. The 52 files contain 218
   assertions, 23 actions and 42 parallel blocks.
 - Correctness files declare participants, not images. Both sides use `agent-adp-linux-image`; CI binds that role
-  to one `bundled-agent-adp` image. The generator selects the container or kind base mixin from each case's layout
-  and still adds the nonempty `.test-correctness-adp-baseline` mixin for the shared Agent image role.
+  to one `bundled-agent-adp` image. Each generated job extends only the container or kind base mixin selected from
+  its layout; image references come from the artifact manifest.
 - Local correctness Make targets render a manifest binding `agent-adp-linux-image` to
   `saluki-images/datadog-agent:testing-release`. A direct invocation without a manifest uses the role's
   `saluki-images/datadog-agent:testing-devel` default. Artifact commands, listings and native execution use these
