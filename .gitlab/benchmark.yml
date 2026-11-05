@@ -302,7 +302,7 @@ run-benchmarks-adp-full:
     # job would run even when the manual job is not triggered, since GitLab does not block
     # dependents on an un-triggered `allow_failure` manual job.
     - python3 ./ci/tooling/build-smp-report.py
-      --report-v1-json outputs/report.v1.json
+      --report-json outputs/report.v1.json
       --output-report outputs/condensed-report.md
       --smp-binary ./smp
     - |
