@@ -1,6 +1,5 @@
 use std::{borrow::Cow, fmt::Write, time::Duration};
 
-use agent_data_plane_config::{domains, SharedConfiguration};
 use async_trait::async_trait;
 use datadog_protos::traces::builders::{idx::SpanKind, AgentPayloadBuilder};
 use http::{uri::PathAndQuery, HeaderName, HeaderValue, Method, Uri};
@@ -108,66 +107,39 @@ impl StringTable {
 /// and enrichment with metadata such as hostname, environment, and container tags.
 pub struct DatadogTraceConfiguration {
     /// Compression algorithm applied to outgoing payloads.
-    compressor_kind: String,
+    pub compressor_kind: String,
 
-    /// Effective zstd compression level, resolved by the configuration layer.
-    zstd_compressor_level: i32,
+    /// zstd compression level, used when the compression algorithm is zstd.
+    pub zstd_compressor_level: i32,
 
     /// How long the encoder waits before flushing a partially filled payload.
     ///
     /// A zero duration is treated as "flush almost immediately" during `build`.
-    flush_timeout: Duration,
+    pub flush_timeout: Duration,
 
     /// Agent environment of emitted payloads.
-    agent_env: AgentEnv,
+    pub agent_env: AgentEnv,
 
     /// Target sampled traces per second, forwarded to the intake as `target_tps`.
-    target_traces_per_second: f64,
+    pub target_traces_per_second: f64,
 
     /// Target sampled error traces per second, forwarded to the intake as `error_tps`.
-    errors_per_second: f64,
+    pub errors_per_second: f64,
 
     /// Whether Error Tracking standalone mode is enabled.
-    error_tracking_standalone: bool,
+    pub error_tracking_standalone: bool,
 
     /// Whether spans missing intake-required fields are ingested rather than rejected.
-    ignore_missing_datadog_fields: bool,
+    pub ignore_missing_datadog_fields: bool,
 
-    /// Default hostname, resolved from the environment provider.
-    default_hostname: Option<String>,
-
-    /// ADP version string embedded in emitted payloads.
-    version: String,
+    /// Default hostname of emitted payloads.
+    ///
+    /// If unset, payloads carry an empty hostname. See
+    /// [`with_environment_provider`](Self::with_environment_provider).
+    pub default_hostname: Option<String>,
 }
 
 impl DatadogTraceConfiguration {
-    /// Creates a new `DatadogTraceConfiguration` from the resolved traces and shared configuration.
-    ///
-    /// The OTLP trace settings live in their own domain, so they arrive as a separate slice rather
-    /// than through the traces domain. Each payload carries `agent_env` as its agent environment.
-    pub fn from_configuration(
-        traces: &domains::traces::Domain, otlp_traces: &domains::otlp::Traces, shared: &SharedConfiguration,
-        agent_env: AgentEnv,
-    ) -> Self {
-        let app_details = saluki_metadata::get_app_details();
-        let version = format!("agent-data-plane/{}", app_details.version().raw());
-
-        let compression = &shared.endpoints.compression;
-
-        Self {
-            compressor_kind: compression.compressor_kind.clone(),
-            zstd_compressor_level: compression.effective_zstd_level(),
-            flush_timeout: shared.metrics_encoding.flush_timeout,
-            agent_env,
-            target_traces_per_second: traces.target_traces_per_second,
-            errors_per_second: traces.errors_per_second,
-            error_tracking_standalone: traces.error_tracking_standalone_enabled,
-            ignore_missing_datadog_fields: otlp_traces.ignore_missing_datadog_fields,
-            default_hostname: None,
-            version,
-        }
-    }
-
     /// Sets the `default_hostname` using the environment provider
     pub async fn with_environment_provider<E>(mut self, environment_provider: E) -> Result<Self, GenericError>
     where
@@ -180,9 +152,10 @@ impl DatadogTraceConfiguration {
     }
 
     fn endpoint_encoder(&self) -> TraceEndpointEncoder {
+        let app_details = saluki_metadata::get_app_details();
         TraceEndpointEncoder::new(
             MetaString::from(self.default_hostname.clone().unwrap_or_default()),
-            self.version.clone(),
+            format!("agent-data-plane/{}", app_details.version().raw()),
             self.agent_env.as_str().to_owned(),
             self.target_traces_per_second,
             self.errors_per_second,
@@ -868,6 +841,22 @@ fn append_tags(target: &mut String, tags: &str) {
 #[cfg(test)]
 mod sampling_round_trip;
 
+/// Returns trace encoder settings carrying the configuration defaults.
+#[cfg(test)]
+fn trace_configuration(agent_env: AgentEnv) -> DatadogTraceConfiguration {
+    DatadogTraceConfiguration {
+        compressor_kind: "zstd".to_string(),
+        zstd_compressor_level: 3,
+        flush_timeout: Duration::from_secs(2),
+        agent_env,
+        target_traces_per_second: 10.0,
+        errors_per_second: 10.0,
+        error_tracking_standalone: false,
+        ignore_missing_datadog_fields: false,
+        default_hostname: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeSet, HashMap};
@@ -1178,12 +1167,7 @@ mod tests {
             (AgentEnv::resolve(Some("!!!"), None, &[], &[]), ""),
         ];
         for (agent_env, expected) in cases {
-            let config = DatadogTraceConfiguration::from_configuration(
-                &domains::traces::Domain::default(),
-                &domains::otlp::Traces::default(),
-                &SharedConfiguration::default(),
-                agent_env,
-            );
+            let config = trace_configuration(agent_env);
             let mut buf = Vec::new();
             config
                 .endpoint_encoder()

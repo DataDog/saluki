@@ -23,6 +23,7 @@
 #![cfg_attr(test, recursion_limit = "256")]
 
 mod compatibility;
+mod datadog_yaml;
 mod loaded;
 mod saluki_env_overlay;
 mod saluki_only;
@@ -32,3 +33,6 @@ mod translators;
 
 pub use loaded::{EnvPrecedence, LoadedConfiguration};
 pub use system::{ConfigurationSystem, ConfigurationUpdates, Error};
+
+#[cfg(test)]
+mod corpus_replay;

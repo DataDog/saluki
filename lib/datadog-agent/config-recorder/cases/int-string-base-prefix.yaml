@@ -1,0 +1,11 @@
+# Sets numeric strings with octal and hex prefixes in YAML and the environment.
+# Shows that integer conversion uses base prefixes, including size-in-bytes reads.
+name: int-string-base-prefix
+group: behavior
+why: [cast-int-string-base-prefix]
+env:
+  DD_DOGSTATSD_PORT: "0x10"
+yaml: |
+  dogstatsd_buffer_size: "010"
+  log_file_max_size: "0x10KB"
+keys: [dogstatsd_buffer_size, dogstatsd_port, {key: log_file_max_size, getters: [GetString, GetSizeInBytes]}]

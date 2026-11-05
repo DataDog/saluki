@@ -1,0 +1,434 @@
+# Opens a backport PR against `releases/X.Y.x` for a merged PR labeled `backport/X.Y.x`.
+#
+# Trigger rules:
+#   - `closed` (merged): the PR has just merged, so every `backport/*` label on it is still pending.
+#   - `labeled` (merged): only the label that was just added is pending; earlier labels were already handled.
+#   - `workflow_dispatch`: manual (re)run for a given PR and target, e.g. after resolving a conflict by hand.
+#
+# Only squash-merged PRs are supported: the squash commit is cherry-picked as a single commit. See
+# `docs/development/contributing.md`.
+#
+# Stacked PRs are supported. The PR's base branch is not checked; the requirement is that its merge commit is on `main`,
+# which the preflight verifies. A stack tool that lands each PR on `main` as its own commit qualifies, even though GitHub
+# records the PR's base as its parent's branch. A PR that was merged into a parent branch never reached `main` on its
+# own, so it is refused: its change is inside the commit of the PR that did.
+#
+# Security: this runs on `pull_request_target`, so it has access to a write token. It never checks out or executes
+# code from the PR. It only reads `releases/*` branches and commits that are already on `main`, and it passes every
+# externally-controlled value (labels, titles) through `env:` rather than interpolating it into scripts.
+
+name: Backport
+
+on:
+  pull_request_target:
+    types: [closed, labeled]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Number of the merged PR (merged into `main`) to backport
+        required: true
+        type: string
+      target:
+        description: Release line to backport to, e.g. `1.8.x` (the branch is `releases/1.8.x`)
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  resolve:
+    name: Resolve backport targets
+    # Cheap early exit for events that can never produce a target.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.merged &&
+       (github.event.action == 'closed' || startsWith(github.event.label.name, 'backport/')))
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      pr_number: ${{ steps.resolve.outputs.pr_number }}
+      targets: ${{ steps.resolve.outputs.targets }}
+    steps:
+      - id: resolve
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          INPUT_PR_NUMBER: ${{ inputs.pr_number }}
+          INPUT_TARGET: ${{ inputs.target }}
+        with:
+          script: |
+            const labelPattern = /^backport\/(\d+\.\d+\.x)$/;
+            const { owner, repo } = context.repo;
+
+            let pr;
+            let candidates;
+            if (context.eventName === 'workflow_dispatch') {
+              const prNumber = Number(process.env.INPUT_PR_NUMBER);
+              if (!Number.isInteger(prNumber) || prNumber <= 0) {
+                core.setFailed(`Invalid PR number: ${process.env.INPUT_PR_NUMBER}`);
+                return;
+              }
+              pr = (await github.rest.pulls.get({ owner, repo, pull_number: prNumber })).data;
+              candidates = [`backport/${process.env.INPUT_TARGET.replace(/^backport\//, '')}`];
+            } else {
+              pr = context.payload.pull_request;
+              // A `closed` event handles every label on the PR (none have been processed yet). A `labeled` event
+              // handles only the label that was just added.
+              candidates = context.payload.action === 'labeled'
+                ? [context.payload.label.name]
+                : pr.labels.map((label) => label.name);
+            }
+
+            const targets = [...new Set(
+              candidates.map((name) => labelPattern.exec(name)).filter(Boolean).map((match) => match[1]),
+            )];
+
+            if (context.eventName === 'workflow_dispatch' && targets.length === 0) {
+              core.setFailed(`Invalid target: ${process.env.INPUT_TARGET} (expected X.Y.x)`);
+              return;
+            }
+
+            // Only merged PRs are backported. Whether the change is on `main` is checked by the `backport` job's
+            // preflight, which verifies the merge commit is reachable from `main`. The PR's base branch is not a
+            // reliable test: a PR in a stack can be recorded against its parent's branch even though its commit landed
+            // on `main`.
+            const eligible = pr.merged;
+            if (!eligible) {
+              core.info(`PR #${pr.number} is not merged; nothing to do.`);
+            }
+
+            const resolved = eligible ? targets : [];
+            core.info(`Backport targets for #${pr.number}: ${JSON.stringify(resolved)}`);
+            core.setOutput('pr_number', String(pr.number));
+            core.setOutput('targets', JSON.stringify(resolved));
+
+  backport:
+    name: Backport to ${{ matrix.target }}
+    needs: resolve
+    if: needs.resolve.outputs.targets != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.resolve.outputs.targets) }}
+    # Serialize runs for the same PR and target, so two near-simultaneous events don't race to open duplicate PRs.
+    concurrency:
+      group: backport-${{ needs.resolve.outputs.pr_number }}-${{ matrix.target }}
+      cancel-in-progress: false
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      PR_NUMBER: ${{ needs.resolve.outputs.pr_number }}
+      TARGET: ${{ matrix.target }}
+    steps:
+      - name: Get access token from dd-octo-sts
+        uses: DataDog/dd-octo-sts-action@c85802a58e202b7e764b5441e4378c76043c8108 # v1.0.5
+        id: octo-sts
+        with:
+          scope: DataDog/saluki
+          policy: self.backport.create-pr
+
+      - name: Check preconditions
+        id: preflight
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          EVENT_ACTION: ${{ github.event.action }}
+        with:
+          github-token: ${{ steps.octo-sts.outputs.token }}
+          script: |
+            const { owner, repo } = context.repo;
+            const prNumber = Number(process.env.PR_NUMBER);
+            const target = process.env.TARGET;
+            const targetBranch = `releases/${target}`;
+            const backportBranch = `backport-${prNumber}-to-${target}`;
+            // A `closed` event may race with a `labeled` event for the same target; stay quiet about duplicates then.
+            const quiet = process.env.EVENT_ACTION === 'closed';
+
+            const comment = (body) => github.rest.issues.createComment({
+              owner, repo, issue_number: prNumber, body,
+            });
+
+            // Stop without opening a backport. `fail` decides whether the job is also marked as failed.
+            const stop = async (message, { fail, notify = true }) => {
+              core.setOutput('proceed', 'false');
+              core.setOutput('fail', String(fail));
+              if (fail) {
+                core.error(message);
+              } else {
+                core.notice(message);
+              }
+              if (notify) {
+                await comment(message);
+              }
+            };
+
+            const manualSteps = (sha) => [
+              'To backport manually, run:',
+              '```bash',
+              'git fetch origin',
+              `git worktree add -b ${backportBranch} .worktrees/backport-${target} origin/${targetBranch}`,
+              `cd .worktrees/backport-${target}`,
+              `git cherry-pick -x ${sha}`,
+              '# Resolve any conflicts, then: git cherry-pick --continue',
+              `git push --set-upstream origin ${backportBranch}`,
+              'cd ../..',
+              `git worktree remove .worktrees/backport-${target}`,
+              '```',
+            ].join('\n');
+
+            const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
+            const sha = pr.merge_commit_sha;
+
+            // The target release branch must exist.
+            let base;
+            try {
+              ({ data: base } = await github.rest.repos.getBranch({ owner, repo, branch: targetBranch }));
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              await stop(
+                `⚠️ Cannot backport to \`${targetBranch}\`: that branch does not exist. ` +
+                  `If the release line is no longer maintained, remove the \`backport/${target}\` label.`,
+                { fail: true },
+              );
+              return;
+            }
+
+            // Only squash-merged PRs are supported: the merge commit must be a single non-merge commit on `main`.
+            const { data: mergeCommit } = await github.rest.repos.getCommit({ owner, repo, ref: sha });
+            if (mergeCommit.parents.length !== 1) {
+              await stop(
+                `⚠️ Cannot automatically backport to \`${targetBranch}\`: \`${sha}\` is a merge commit. ` +
+                  `Only squash-merged PRs are supported.\n\n${manualSteps(sha)}`,
+                { fail: true },
+              );
+              return;
+            }
+
+            // A PR with several commits must not have been rebase-merged: cherry-picking only the final commit would
+            // silently drop the rest. A rebase merge replays each PR commit onto `main` and keeps its author and author
+            // date, so the tip matches the PR head. A squash commit is created at merge time, so its author date never
+            // matches. This deliberately ignores the commit message, which reviewers edit and which proves nothing.
+            if (pr.commits > 1) {
+              const { data: headCommit } = await github.rest.repos.getCommit({ owner, repo, ref: pr.head.sha });
+              const replayed =
+                headCommit.commit.author.date === mergeCommit.commit.author.date &&
+                headCommit.commit.author.email === mergeCommit.commit.author.email;
+              if (replayed) {
+                await stop(
+                  `⚠️ Cannot automatically backport to \`${targetBranch}\`: this PR has ${pr.commits} commits and ` +
+                    `\`${sha}\` looks like the last of them (it was probably rebase-merged). Cherry-picking only ` +
+                    'that commit would silently drop the rest, so no backport was attempted. ' +
+                    'Backport the individual commits manually.',
+                  { fail: true },
+                );
+                return;
+              }
+            }
+
+            // The merge commit must be reachable from `main`.
+            const { data: comparison } = await github.rest.repos.compareCommitsWithBasehead({
+              owner, repo, basehead: `${sha}...main`,
+            });
+            if (comparison.status !== 'ahead' && comparison.status !== 'identical') {
+              await stop(
+                `⚠️ Cannot backport: merge commit \`${sha}\` is not reachable from \`main\`. ` +
+                  'This happens when the PR was merged into another branch, such as a backport PR or the parent ' +
+                  'branch of a stack. In a stack, the change reaches `main` inside the commit of the PR that was ' +
+                  'merged there, so label that PR instead.',
+                { fail: true },
+              );
+              return;
+            }
+
+            // Look for an earlier attempt for this PR and target.
+            const { data: priorPRs } = await github.rest.pulls.list({
+              owner, repo, state: 'all', head: `${owner}:${backportBranch}`,
+            });
+            const open = priorPRs.find((candidate) => candidate.state === 'open');
+            const merged = priorPRs.find((candidate) => candidate.merged_at);
+            if (open || merged) {
+              const existing = open ?? merged;
+              await stop(
+                `A backport of this PR to \`${targetBranch}\` ` +
+                  `${open ? 'already exists' : 'was already merged'}: #${existing.number}. Skipping.`,
+                { fail: false, notify: !quiet },
+              );
+              return;
+            }
+
+            let branchExists = true;
+            try {
+              await github.rest.git.getRef({ owner, repo, ref: `heads/${backportBranch}` });
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              branchExists = false;
+            }
+            if (branchExists) {
+              if (priorPRs.length === 0) {
+                // A branch with no PR may hold someone's in-progress manual backport. Never delete that.
+                await stop(
+                  `⚠️ Cannot backport to \`${targetBranch}\`: branch \`${backportBranch}\` already exists without ` +
+                    'a pull request. Open a PR from it, or delete the branch and re-apply the label.',
+                  { fail: true },
+                );
+                return;
+              }
+              // Every earlier backport PR was closed without merging: treat the label as a retry.
+              core.info(`Deleting stale branch ${backportBranch} from a previously closed backport PR.`);
+              await github.rest.git.deleteRef({ owner, repo, ref: `heads/${backportBranch}` });
+            }
+
+            core.setOutput('proceed', 'true');
+            core.setOutput('fail', 'false');
+            core.setOutput('merge_sha', sha);
+            core.setOutput('base_sha', base.commit.sha);
+            core.setOutput('target_branch', targetBranch);
+            core.setOutput('backport_branch', backportBranch);
+            core.setOutput('pr_title', pr.title);
+            core.setOutput('manual_steps', manualSteps(sha));
+
+      # CodeQL flags this checkout (`actions/untrusted-checkout`) because it can't trace step outputs. It is not
+      # untrusted code: `base_sha` is the tip of the protected `releases/X.Y.x` branch (with X.Y.x regex-validated),
+      # and the commit fetched below is the PR's merge commit, which preflight verified is reachable from `main`. The
+      # PR head is never checked out, and the steps after this only run git, never code from the tree.
+      #
+      # Checking out `base_sha` rather than the branch name pins the commit preflight inspected, so a concurrent push to
+      # the release branch can't leak into the backport.
+      - name: Checkout release branch
+        if: steps.preflight.outputs.proceed == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          token: ${{ steps.octo-sts.outputs.token }}
+          ref: ${{ steps.preflight.outputs.base_sha }}
+
+      - name: Cherry-pick merge commit
+        id: pick
+        if: steps.preflight.outputs.proceed == 'true'
+        env:
+          MERGE_SHA: ${{ steps.preflight.outputs.merge_sha }}
+          TARGET_BRANCH: ${{ steps.preflight.outputs.target_branch }}
+          PR_TITLE: ${{ steps.preflight.outputs.pr_title }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # The checkout is shallow: fetch just the merge commit and its parent, which is all a cherry-pick needs.
+          git fetch --no-tags --depth=2 origin "$MERGE_SHA"
+
+          if ! git cherry-pick -x "$MERGE_SHA"; then
+            if [ -z "$(git ls-files --unmerged)" ]; then
+              # No conflicts, so the change must already be on the release branch (an empty cherry-pick).
+              echo "reason=empty" >> "$GITHUB_OUTPUT"
+              echo "::error::The changes from $MERGE_SHA are already present on $TARGET_BRANCH."
+            else
+              echo "reason=conflict" >> "$GITHUB_OUTPUT"
+              echo "::error::Cherry-picking $MERGE_SHA onto $TARGET_BRANCH has conflicts."
+            fi
+            git cherry-pick --abort || true
+            exit 1
+          fi
+
+          # Retitle the commit to match the backport PR title, keeping the body and `-x` trailer.
+          body="$(git log -1 --format=%B | tail -n +2)"
+          printf '%s (backport %s)\n%s\n' "$PR_TITLE" "$TARGET" "$body" | git commit --amend --quiet -F -
+
+      # Creates the backport branch at `base_sha` and pushes the commits in `base_sha..HEAD` (the single cherry-pick) as
+      # signed commits. v3 preserves file modes (for example, executable scripts) by falling back to the REST API.
+      - name: Push signed commit
+        if: steps.preflight.outputs.proceed == 'true'
+        uses: DataDog/commit-headless@d6afabfd690ea1dbdd7d368acbefd71304928699 # action/v3.4.1
+        with:
+          token: ${{ steps.octo-sts.outputs.token }}
+          branch: ${{ steps.preflight.outputs.backport_branch }}
+          head-sha: ${{ steps.preflight.outputs.base_sha }}
+          create-branch: true
+          command: push
+
+      - name: Create pull request
+        if: steps.preflight.outputs.proceed == 'true'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          MERGE_SHA: ${{ steps.preflight.outputs.merge_sha }}
+          TARGET_BRANCH: ${{ steps.preflight.outputs.target_branch }}
+          BACKPORT_BRANCH: ${{ steps.preflight.outputs.backport_branch }}
+          PR_TITLE: ${{ steps.preflight.outputs.pr_title }}
+        with:
+          github-token: ${{ steps.octo-sts.outputs.token }}
+          script: |
+            const { owner, repo } = context.repo;
+            const prNumber = Number(process.env.PR_NUMBER);
+            const targetBranch = process.env.TARGET_BRANCH;
+
+            const body = [
+              '## Summary',
+              '',
+              `Backport of #${prNumber} to \`${targetBranch}\`, cherry-picked from ${process.env.MERGE_SHA}.`,
+              '',
+              '## References',
+              '',
+              `- Original PR: #${prNumber}`,
+              '',
+              '_This PR was automatically generated by the [Backport](.github/workflows/backport.yml) workflow._',
+            ].join('\n');
+
+            const { data: backport } = await github.rest.pulls.create({
+              owner,
+              repo,
+              title: `${process.env.PR_TITLE} (backport ${process.env.TARGET})`,
+              head: process.env.BACKPORT_BRANCH,
+              base: targetBranch,
+              body,
+            });
+            core.info(`Pull request created: ${backport.html_url}`);
+
+            await github.rest.issues.addLabels({
+              owner, repo, issue_number: backport.number, labels: ['backport'],
+            });
+
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number: prNumber,
+              body: `Backport to \`${targetBranch}\` opened: #${backport.number}.`,
+            });
+
+      - name: Comment on failure
+        # Precondition failures are reported by the preflight step itself; this covers everything after it.
+        if: failure() && steps.octo-sts.outcome == 'success' && steps.preflight.outputs.fail != 'true'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          TARGET_BRANCH: ${{ steps.preflight.outputs.target_branch }}
+          MANUAL_STEPS: ${{ steps.preflight.outputs.manual_steps }}
+          PICK_REASON: ${{ steps.pick.outputs.reason }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        with:
+          github-token: ${{ steps.octo-sts.outputs.token }}
+          script: |
+            const { owner, repo } = context.repo;
+            const prNumber = Number(process.env.PR_NUMBER);
+            const target = process.env.TARGET;
+            const targetBranch = process.env.TARGET_BRANCH || `releases/${target}`;
+            const reason = process.env.PICK_REASON;
+            const runUrl = process.env.RUN_URL;
+
+            let message;
+            if (reason === 'empty') {
+              message = `The changes from this PR already appear to be present on \`${targetBranch}\`, so there ` +
+                `is nothing to backport. Workflow logs: ${runUrl}`;
+            } else {
+              const lead = reason === 'conflict'
+                ? `⚠️ Automatic backport to \`${targetBranch}\` failed: the cherry-pick has merge conflicts.`
+                : `⚠️ Automatic backport to \`${targetBranch}\` failed.`;
+              // Built once by the preflight step. Empty when preflight failed before it knew the merge commit.
+              const steps = process.env.MANUAL_STEPS ? `${process.env.MANUAL_STEPS}\n\n` : '';
+              message = `${lead}\n\n${steps}Workflow logs: ${runUrl}`;
+            }
+
+            await github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body: message });
+
+      - name: Fail when a precondition was not met
+        if: steps.preflight.outputs.fail == 'true'
+        run: exit 1

@@ -1,0 +1,12 @@
+# Sets log_level to the same value under a new source, then removes that source twice.
+# Shows that the equal-value Set does not notify, the first removal does, and the second does not.
+name: update-unset-unchanged
+group: behavior
+why: [unset-always-notifies-even-if-unchanged, set-same-value-new-source-not-notified]
+yaml: |
+  log_level: warn
+updates:
+  - {key: log_level, value: "warn", source: remote-config}
+  - {op: unset, key: log_level, source: remote-config}
+  - {op: unset, key: log_level, source: remote-config}
+keys: [log_level]

@@ -158,7 +158,12 @@ build-adp-release-system-alloc: ## Builds the ADP binary in release mode with th
 build-schema-overlay: check-rust-build-tools
 build-schema-overlay: ## Builds the config schema overlay packages
 	@echo "[*] Building config schema overlay packages..."
-	@cargo build --profile devel --package datadog-agent-config --package datadog-agent-config-testing
+	@cargo build --profile devel --package datadog-agent-config --package datadog-agent-config-docs
+
+.PHONY: build-agent-config-corpus
+build-agent-config-corpus: ## Regenerates the Agent config corpus (needs Docker)
+	@echo "[*] Regenerating the Agent config corpus..."
+	@lib/datadog-agent/config-recorder/regenerate.sh
 
 .PHONY: build-adp-image-base
 build-adp-image-base:
@@ -861,6 +866,12 @@ endif
 	--url unix:///var/run/datadog/apm.socket \
 	--inlined-functions true --timeline --upload-period 10 --preset cpu_live_heap \
 	target/release/agent-data-plane run
+
+.PHONY: generate-correctness-fixtures
+generate-correctness-fixtures: check-rust-build-tools
+generate-correctness-fixtures: ## Regenerates the static payloads of the OTLP logs correctness cases
+	@echo "[*] Regenerating correctness case fixtures..."
+	@cargo run --profile devel --package otlp-fixtures
 
 SMP_GENERATOR := test/smp/regression/adp/generate_experiments.py
 

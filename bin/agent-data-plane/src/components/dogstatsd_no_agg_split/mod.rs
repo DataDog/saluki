@@ -307,11 +307,14 @@ impl Transform for DogStatsDNoAggSplit {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::num::NonZeroU64;
 
-    use agent_data_plane_config::{shared::SharedConfiguration, ConfigValue};
     use http_body_util::BodyExt as _;
-    use saluki_components::encoders::DatadogMetricsConfiguration;
+    use saluki_components::encoders::{
+        DatadogMetricsConfiguration, UseV3ApiConfig, UseV3ApiSeriesConfig, V3ApiConfig, V3SeriesMode,
+    };
+    use saluki_components::forwarders::OpwMetricsConfiguration;
     use saluki_core::{
         components::test_util::TestComponentDriver,
         data_model::event::metric::{context::Context, ScalarPoints},
@@ -323,17 +326,31 @@ mod tests {
     ///
     /// V1 JSON makes the encoded rate and interval directly readable, without decoding protobuf.
     fn v1_series_encoder() -> DatadogMetricsConfiguration {
-        let mut shared = SharedConfiguration::default();
-        shared.endpoints.dd_url = ConfigValue::explicit("https://example.com".to_string());
-        shared.endpoints.compression.compressor_kind = "zstd".to_string();
-        shared.metrics_encoding.max_payload_size = 64 * 1024;
-        shared.metrics_encoding.max_uncompressed_payload_size = 64 * 1024;
-        shared.metrics_encoding.max_series_payload_size = 64 * 1024;
-        shared.metrics_encoding.max_series_uncompressed_payload_size = 64 * 1024;
-        shared.metrics_encoding.max_series_points_per_payload = 100;
-        shared.metrics_encoding.flush_timeout = Duration::from_millis(10);
-        shared.metrics_encoding.use_v2_series_api = false;
-        DatadogMetricsConfiguration::from_configuration(&shared)
+        DatadogMetricsConfiguration {
+            max_metrics_per_payload: 10_000,
+            max_payload_size: 64 * 1024,
+            max_uncompressed_payload_size: 64 * 1024,
+            max_series_payload_size: 64 * 1024,
+            max_series_uncompressed_payload_size: 64 * 1024,
+            max_series_points_per_payload: 100,
+            flush_timeout: Duration::from_millis(10),
+            compressor_kind: "zstd".to_string(),
+            zstd_compressor_level: 3,
+            use_v2_series_api: false,
+            log_payloads: false,
+            additional_tags: None,
+            v3_api: V3ApiConfig::default(),
+            use_v3_api: UseV3ApiConfig {
+                series: UseV3ApiSeriesConfig {
+                    enabled: V3SeriesMode::DatadogOnly,
+                    endpoints: HashMap::new(),
+                },
+            },
+            opw_metrics: OpwMetricsConfiguration::default(),
+            primary_endpoint: "https://example.com".to_string(),
+            additional_endpoints: HashMap::new(),
+            routing: None,
+        }
     }
 
     /// Regression test: the passthrough path once normalized timestamped counters by the configured aggregation window

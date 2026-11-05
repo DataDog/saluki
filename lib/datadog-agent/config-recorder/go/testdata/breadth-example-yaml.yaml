@@ -1,0 +1,9 @@
+name: breadth-example-yaml
+group: breadth
+yaml: |
+  proxy:
+    http: http://proxy.example:8080
+    https: http://proxy.example:8443
+  log_level: debug
+  cmd_port: 5099
+keys: [proxy.http, proxy.https, log_level, cmd_port]

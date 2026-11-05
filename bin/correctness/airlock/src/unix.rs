@@ -105,6 +105,7 @@ pub trait LogSink: Send + Sync {
 ///   stderr open, `cleanup` aborts the log pumps after a timeout.
 /// - `Drop` does not run if the owning process is killed by SIGKILL or the OOM killer, or calls `std::process::exit`.
 /// - The OS may reuse an empty group's ID before `killpg` runs, risking a signal to an unrelated group.
+#[derive(Debug)]
 pub struct UnixProcess {
     name: String,
     /// Process group ID to kill on drop, or `None` after `cleanup` sends SIGKILL or if spawning returned no PID.
@@ -205,7 +206,12 @@ impl UnixProcess {
     /// and log pumps to finish, aborting unfinished tasks after a timeout.
     ///
     /// Dropping this future before SIGKILL drops the [`UnixProcess`], which sends SIGKILL instead.
-    pub async fn cleanup(mut self) {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the exit watcher or log pumps time out. An escaped descendant may hold the output pipes
+    /// open even after the process exits.
+    pub async fn cleanup(mut self) -> Result<(), GenericError> {
         #[cfg(unix)]
         if let Some(pgid) = self.process_group {
             signal_process_group(pgid, libc::SIGTERM);
@@ -222,15 +228,25 @@ impl UnixProcess {
             }
         })
         .await;
-        if joined.is_err() {
-            warn!(
-                name = %self.name,
-                "Process tasks still running after SIGKILL; aborting them. A descendant outside the process group \
-                 may still hold the output pipes."
-            );
-            for task in &tasks {
-                task.abort();
-            }
+        if joined.is_ok() {
+            return Ok(());
+        }
+
+        let exited = tasks[0].is_finished();
+        for task in &tasks {
+            task.abort();
+        }
+        if exited {
+            Err(generic_error!(
+                "'{}' exited, but a descendant outside its process group still holds its output pipes",
+                self.name
+            ))
+        } else {
+            Err(generic_error!(
+                "'{}' did not exit within {:?} of SIGKILL",
+                self.name,
+                TASK_JOIN_TIMEOUT
+            ))
         }
     }
 }
@@ -385,7 +401,8 @@ mod tests {
 
         tokio::time::timeout(WAIT, process.cleanup())
             .await
-            .expect("cleanup should return");
+            .expect("cleanup should return")
+            .expect("cleanup should confirm the exit");
 
         let lines = wait_for_pipes_closed(&mut rx).await;
         assert!(lines.iter().any(|line| line == "got-sigterm"), "lines: {lines:?}");
@@ -408,9 +425,14 @@ mod tests {
             "the descendant should lead its own group"
         );
 
-        tokio::time::timeout(SIGTERM_GRACE + TASK_JOIN_TIMEOUT + WAIT, process.cleanup())
+        let cleanup = tokio::time::timeout(SIGTERM_GRACE + TASK_JOIN_TIMEOUT + WAIT, process.cleanup())
             .await
             .expect("cleanup should give up on the pumps after its bound");
+
+        let error = cleanup
+            .expect_err("cleanup should report the unconfirmed exit")
+            .to_string();
+        assert!(error.contains("descendant outside its process group"), "{error}");
 
         // The escaped `sleep` still runs, so only aborting the pumps can drop the sink.
         tokio::time::timeout(Duration::from_secs(1), async { while rx.recv().await.is_some() {} })

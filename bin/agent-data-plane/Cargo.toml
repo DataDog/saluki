@@ -17,7 +17,6 @@ antithesis = ["saluki-antithesis/antithesis", "dep:antithesis-instrumentation"]
 agent-data-plane-config = { workspace = true }
 agent-data-plane-config-system = { workspace = true }
 antithesis-instrumentation = { workspace = true, optional = true }
-arc-swap = { workspace = true }
 argh = { workspace = true, features = ["help"] }
 async-trait = { workspace = true }
 bytesize = { workspace = true }
@@ -36,6 +35,7 @@ hyper = { workspace = true }
 metrics = { workspace = true }
 ottl = { workspace = true }
 prost = { workspace = true }
+prost-types = { workspace = true }
 saluki-antithesis = { workspace = true }
 saluki-api = { workspace = true }
 saluki-app = { workspace = true }
@@ -54,6 +54,9 @@ simdutf8 = { workspace = true }
 stringtheory = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = [
+  "fs",
+  "io-std",
+  "io-util",
   "macros",
   "net",
   "rt",
@@ -61,10 +64,15 @@ tokio = { workspace = true, features = [
   "signal",
   "time",
 ] }
+tokio-stream = { workspace = true }
 tokio-util = { workspace = true }
+tonic = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
 zstd = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 tikv-jemallocator = { workspace = true, features = [
@@ -73,8 +81,14 @@ tikv-jemallocator = { workspace = true, features = [
   "stats",
 ] }
 
+# AIX's libc doesn't route its own allocations through a `malloc` defined in the executable, so an unprefixed jemalloc
+# would mix two allocators in one process. Prefixed, jemalloc only serves Rust allocations.
+[target.'cfg(target_os = "aix")'.dependencies]
+tikv-jemallocator = { workspace = true, features = ["background_threads", "stats"] }
+
 [dev-dependencies]
-datadog-agent-config-testing = { workspace = true }
+# Build-script-only dependency: regenerates the configuration documentation during test builds.
+datadog-agent-config-docs = { workspace = true }
 derive-where = { workspace = true }
 rcgen = { workspace = true, features = ["crypto", "pem"] }
 saluki-components = { workspace = true, features = ["test-util"] }

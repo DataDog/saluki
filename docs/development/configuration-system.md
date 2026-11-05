@@ -23,7 +23,7 @@ parsing, and defaults. The typed system places a translation boundary between co
                                                 SalukiConfiguration
                                                 { control, shared, domains }
                                                                     │
-                                           typed slices and Live<T> │
+                      binary adapters: component values and Live<T> │
                                                                     v
                                                          runtime components
 ```
@@ -35,20 +35,22 @@ A generated witness trait creates a compile-time obligation to translate every s
 
 | Responsibility | Canonical location |
 |---|---|
-| Source-agnostic typed model and `Live<T>` | `lib/agent-data-plane-config/` |
+| Source-agnostic typed model | `lib/agent-data-plane-config/` |
+| `Live<T>`, a live view of a shared value, and the channel that publishes it | `lib/saluki-common/src/sync/live.rs` |
+| Adapters from the model to component inputs | `bin/agent-data-plane/src/component_inputs/` |
 | Loading, translation, authority, updates, compatibility | `lib/agent-data-plane-config-system/` |
 | Datadog source model, witness, classifier, environment decoding | `lib/datadog-agent/config/` |
 | Hand-edited ADP support inventory for Datadog schema keys | `lib/datadog-agent/config/schema/schema_overlay.yaml` |
 | Vendored Datadog JSON schema, written in YAML | `lib/datadog-agent/config/schema/core/` |
-| Overlay types, validation, `SALUKI_KEYS`, smoke-test metadata | `lib/datadog-agent/config-overlay-model/` |
-| Configuration registry, `run_config_smoke_tests`, documentation generation | `lib/datadog-agent/config-testing/` |
+| Overlay types, validation, `SALUKI_KEYS` | `lib/datadog-agent/config-overlay-model/` |
+| Documentation generation | `lib/datadog-agent/config-docs/` |
 | Raw map and loader: a general-purpose library, unused by ADP | `lib/saluki-config/` |
 | Hand-written Datadog witness implementation | `lib/agent-data-plane-config-system/src/translators/datadog_translator.rs` |
 | Saluki-only source model and `seed` | `lib/agent-data-plane-config-system/src/saluki_only.rs` |
 | Saluki-only defaults | `lib/agent-data-plane-config/src/defaults.rs` |
 | Runtime loading and authority selection | `lib/agent-data-plane-config-system/src/loaded.rs` |
 | Translation gate and update loop | `lib/agent-data-plane-config-system/src/system.rs` |
-| Datadog environment reader and its Figment provider | `lib/datadog-agent/config/src/env_reader.rs`, `env_provider.rs` |
+| Datadog environment reader | `lib/datadog-agent/config/src/env_reader.rs` |
 | Saluki-only environment reader (by convention, with no table) | `lib/agent-data-plane-config-system/src/saluki_env_overlay.rs` |
 | Merged sources with per-value provenance | `lib/agent-data-plane-config-system/src/source.rs` |
 
@@ -57,23 +59,22 @@ Use `ConfigValue<T>` in `SalukiConfiguration` when a default must be detectable,
 
 ### Dependency boundaries
 
-The intended end state is:
-
-- `agent-data-plane-config` depends on neither the raw map nor the Datadog source model.
+- `agent-data-plane-config` is a pure data model that does not depend on any other workspace crates.
 - `agent-data-plane-config-system` bridges sources to the model and constructs no components.
-- `saluki-components` define their own input arguments and structs.
-- `bin/agent-data-plane` hands each component what it requires.
+- `saluki-components` and `bin/agent-data-plane/src/components/` never depend on `agent-data-plane-config`, not even
+  in tests.
+- The rest of `bin/agent-data-plane` adapts the model into the inputs each component defines.
 
-### The `saluki-components` dependency
+### Component inputs
 
-Initially we wanted `saluki-components` to depend on `agent-data-plane-config`, but we changed our mind. We can't end
-this dependency immediately because of `Live<T>` and `ConfigValue<T>`. However, most migrations don't require these
-types. Migrations that don't require them **SHOULD NOT** depend on types in `agent-data-plane-config`, and should
-instead rely on the binary to copy data into fields or an arguments struct that the component presents.
+Components define their inputs: concrete values, component-owned types, or a `Live<T>` of a component-owned `T`.
+They **MUST NOT** name model types, in production code or tests.
 
-The end state removes `agent-data-plane-config` from the `saluki-components` `Cargo.toml`. Minimize the impact of that
-change when migrating components. Some migrations predate this design change: they're temporary exceptions, so don't
-follow them.
+The binary converts the model with free functions in `bin/agent-data-plane/src/component_inputs/`, because the orphan
+rule forbids `From` implementations between the two crates' types. An adapter copies fields and calls model methods
+that resolve provenance, such as `Endpoints::primary_endpoint` and `Compression::effective_zstd_level`, so components
+receive effective values and never see `ConfigValue<T>`. Adapters add no defaults, parsing, or validation. Test each
+adapter with a distinct value in every field, so that a swapped field fails the test.
 
 ## Datadog versus Saluki keys
 
@@ -117,7 +118,7 @@ reasons such as "Core Agent-only" or claims that support can never be added.
 The Datadog Agent doesn't derive a variable's name from its key path: `DD_PROXY_HTTP` reaches `proxy.http`, while
 `DD_DOGSTATSD_PORT` reaches the flat `dogstatsd_port`. No separator convention reproduces this. Datadog keys read the
 environment through the generated tables, and Saluki-only keys are derived through a serde workaround. The environment
-is read by `apply_datadog_env` and by the Saluki-only reader.
+is read by `apply_datadog_env_vars` and by the Saluki-only reader.
 
 **A modeled key arrives in the Agent's canonical shape.** A source model **MUST** read that shape: don't add a
 `#[serde(rename)]` or `#[serde(alias)]`. Unmodeled environment variables aren't read.
@@ -169,9 +170,13 @@ that the typed model doesn't carry, so they read the sources rather than the mod
 
 ### Runtime updates
 
-Startup translation is strict. Live updates are translated against tentative state: success atomically replaces both
-the typed model and the retained sources, while failure keeps the last-known-good model and leaves the sources as they
-were.
+Startup translation is strict. Live updates are translated against tentative state. On success, the update task
+replaces the retained sources and publishes the typed model before releasing the sources lock. Separate reads of the
+model and the sources can still observe different versions; they don't form a combined snapshot. On failure, the task
+keeps the last-known-good model and leaves the sources as they were.
+
+`ConfigurationSystem` holds the read-only `LiveSource` of a `live::channel`, and the update task owns its only
+`LivePublisher`. Tests that need a changing value create their own channel and publish replacements through it.
 
 ## Workflows
 
@@ -183,6 +188,13 @@ were.
 3. Run `make build-schema-overlay`.
 4. Implement the generated `consume_<key>` in `DatadogTranslator`, and find the right home for it in
    `SalukiConfiguration`.
+
+A support change needs only these steps. Do not record the corpus or add replay bookkeeping for
+it: the corpus decides which replay checks exist, and a newly supported key gets value comparisons
+once a later recording includes it. A replay check that fails after a support change means a
+recorded outcome changed: fix ADP, or edit the matching expectation deliberately. Removing support
+from a key the baseline case recorded fails coverage and may leave value-check expectations
+unused; handle that as deliberate corpus maintenance.
 
 An inventory key marked `none` or `unknown`, or a key under `excluded`, is absent from the witnessed model.
 
@@ -196,7 +208,7 @@ An inventory key marked `none` or `unknown`, or a key under `excluded`, is absen
    Saluki-only environment reader discovers paths from `SalukiOnly`, so without a field, the key is unreachable from
    the environment.
 5. Add one `seed` assignment to the destination.
-6. Keep the legacy `SALUKI_KEYS` consistent with the source key, type, and default.
+6. Keep `SALUKI_KEYS` consistent with the source key and default.
 
 ### Migrate a raw consumer
 
@@ -209,22 +221,26 @@ An inventory key marked `none` or `unknown`, or a key under `excluded`, is absen
    it. Components don't read `control`.
 5. Add any missing model, witness, or seed path with the workflows above.
 6. Delete `from_configuration`, and pick its replacement by the shape of the `*Configuration` struct:
-   - Fewer than four fields: `new(...)` taking concrete values.
-   - Four or more fields: make them `pub` and let the caller build the struct by field, with no constructor. Avoid
-     introducing a new arguments or settings struct, and don't implement `Default` or `Deserialize` on the
-     configuration struct.
-   - Runtime wiring the caller can't read out of configuration: have the caller create it and assign what the
-     component needs to a `pub` field. See `aggregate_context_snapshot_channel` and
-     `AggregateConfiguration::context_snapshot_receiver`.
-   - Values that change at runtime: pass a narrow `Live<T>`, and rebuild the reactive state after `changed()`.
+   - Count every value the caller supplies, including runtime wiring the caller can't read out of configuration.
+   - Fewer than four values: `new(...)` taking concrete values, with private fields. Existing `with_*` wiring methods
+     stay.
+   - Four or more values: make the fields `pub` and let the caller build the struct by field, with no constructor.
+     Wiring becomes a `pub` field too: see `aggregate_context_snapshot_channel` and
+     `AggregateConfiguration::context_snapshot_receiver`. Avoid introducing a new arguments or settings struct, and
+     don't implement `Default` or `Deserialize` on the configuration struct.
+   - With `pub` fields, compute derived values and run input handling in `build()` or a private accessor, once per
+     build. Keep a `with_*` method only when it does more than set one field.
+   - Keep a constructor, whatever the count, when it does more than assign fields: it builds private types,
+     compiles or validates input, or decides which endpoints apply. Name it for what it builds.
+   - Values that change at runtime: pass a `Live<T>` of a component-owned `T`, and rebuild the reactive state after
+     `changed()`. Use `project` when the model value already has the right type, `map` when it must convert, and
+     `into_stream` for a stream of changed values without an initial value. Values that must change together belong
+     in one `Live<T>`: separate views advance independently.
 7. Remove source serde, Datadog key names, raw-map access, key watches, parsing, configuration defaults, and code made
    unused by the cutover. `#[allow(dead_code)]` isn't an acceptable way to keep migration residue.
 8. Update topology call sites and tests. Preserve behavior tests by using typed inputs, and remove tests only when they
    tested legacy deserialization and nothing else.
-9. Remove the component's `run_config_smoke_tests` invocation once it no longer deserializes from
-   `GenericConfiguration`. Replace migrated structs in `used_by` with `TypedConfigSystem` in `schema_overlay.yaml`, or
-   with the string `TYPED_CONFIG_SYSTEM` in `SALUKI_KEYS`.
-10. Test higher-risk cutovers with correctness or integration tests that exercise the affected configurations.
+9. Test higher-risk cutovers with correctness or integration tests that exercise the affected configurations.
 
 A cutover should be behaviorally transparent. If the old behavior conflicts with the source schema or the typed
 system's invariants, surface the conflict rather than silently choosing one. Don't leave deserialization artifacts
@@ -242,9 +258,16 @@ For any configuration change, check the risks:
 - **Reachability**: every formerly configurable value still has a path from source to model to consumer.
 - **Defaults**: the effective default is unchanged, and is stated once in the configuration layer.
 - **Input handling**: parsing, coercion, normalization, and validation moved to the configuration layer.
-- **Model boundary**: components receive only the domain and shared slices they need.
+- **Model boundary**: components receive component-owned values, never model slices.
 - **Dynamic behavior**: startup and update paths construct the same reactive state from typed input.
 - **Test preservation**: deleting legacy deserialization coverage didn't delete behavioral coverage.
+
+- **Replay coverage:** a change to a deserializer, the environment reader, translation, or a key's
+  support runs the replay tests,
+  `cargo nextest run --lib -p agent-data-plane-config-system corpus_replay`. A failing check means a
+  recorded outcome changed. Update production code, or the matching typed expectation in
+  `src/corpus_replay/` deliberately, in the same change; never regenerate the corpus to make an
+  agent-data-plane change pass.
 
 ## Check your work
 

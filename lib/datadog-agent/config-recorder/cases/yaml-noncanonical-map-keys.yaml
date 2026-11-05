@@ -1,0 +1,10 @@
+# Uses boolean and leading-zero integer keys inside the additional_endpoints YAML map.
+# Shows that resolved non-string map keys become strings (true and octal 8).
+name: yaml-noncanonical-map-keys
+group: behavior
+why: [yaml-noncanonical-map-key]
+yaml: |
+  additional_endpoints:
+    true: [k]
+    010: [j]
+keys: [additional_endpoints]

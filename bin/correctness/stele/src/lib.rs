@@ -6,6 +6,9 @@
 mod events;
 pub use self::events::*;
 
+mod logs;
+pub use self::logs::*;
+
 mod metrics;
 pub use self::metrics::*;
 

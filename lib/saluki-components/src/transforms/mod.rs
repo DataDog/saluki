@@ -27,6 +27,8 @@ mod metric_router;
 pub use self::metric_router::MetricRouterConfiguration;
 
 mod trace_sampler;
+#[cfg(test)]
+pub(crate) use self::trace_sampler::sampler_configuration;
 pub use self::trace_sampler::TraceSamplerConfiguration;
 
 mod apm_stats;
@@ -34,5 +36,10 @@ pub use self::apm_stats::ApmStatsTransformConfiguration;
 
 mod trace_obfuscation;
 pub use self::trace_obfuscation::TraceObfuscationConfiguration;
+pub use crate::common::datadog::obfuscation::{
+    CreditCardObfuscationConfig, EsObfuscationConfig, HttpObfuscationConfig, MemcachedObfuscationConfig,
+    MongoObfuscationConfig, ObfuscationConfig, OpenSearchObfuscationConfig, RedisObfuscationConfig,
+    SqlObfuscationConfig, ValkeyObfuscationConfig,
+};
 mod trace_tag_replacer;
 pub use self::trace_tag_replacer::{ReplaceRule, TraceTagReplacerConfiguration};

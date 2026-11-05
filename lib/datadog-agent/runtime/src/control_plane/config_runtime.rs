@@ -2,7 +2,6 @@
 
 use std::sync::Arc;
 
-use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use saluki_api::{
     extract::State,
@@ -22,14 +21,16 @@ pub struct RuntimeConfigSnapshot {
 }
 
 impl RuntimeConfigSnapshot {
-    /// Creates a `RuntimeConfigSnapshot` that serializes whatever configuration `current` holds at the time of each
-    /// request.
-    pub fn from_shared<T>(current: Arc<ArcSwap<T>>) -> Self
+    /// Creates a `RuntimeConfigSnapshot` that calls `load` once per request and serializes the returned configuration.
+    ///
+    /// The loader is retained for later requests. Each returned `Arc` keeps its version alive until serialization finishes.
+    pub fn from_loader<T, F>(load: F) -> Self
     where
-        T: Serialize + Send + Sync + 'static,
+        T: Serialize,
+        F: Fn() -> Arc<T> + Send + Sync + 'static,
     {
         Self {
-            serialize: Arc::new(move || serde_json::to_string(&**current.load())),
+            serialize: Arc::new(move || serde_json::to_string(&*load())),
         }
     }
 
@@ -125,6 +126,8 @@ impl Supervisable for ConfigRuntimeWorker {
 
 #[cfg(test)]
 mod tests {
+    use arc_swap::ArcSwap;
+
     use super::*;
 
     #[derive(Serialize)]
@@ -133,11 +136,12 @@ mod tests {
     }
 
     #[test]
-    fn shared_snapshot_follows_updates_to_the_shared_configuration() {
+    fn snapshot_serializes_the_configuration_its_loader_returns_at_each_request() {
         let current = Arc::new(ArcSwap::from_pointee(ExampleConfig {
             log_level: "info".to_string(),
         }));
-        let snapshot = RuntimeConfigSnapshot::from_shared(Arc::clone(&current));
+        let loaded = Arc::clone(&current);
+        let snapshot = RuntimeConfigSnapshot::from_loader(move || loaded.load_full());
         assert_eq!(snapshot.to_json().unwrap(), r#"{"log_level":"info"}"#);
 
         current.store(Arc::new(ExampleConfig {

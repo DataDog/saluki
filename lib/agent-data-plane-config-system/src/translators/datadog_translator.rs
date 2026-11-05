@@ -26,8 +26,8 @@ use agent_data_plane_config::domains::dogstatsd::{
     FilterAction, MapperProfile, MetricMapping, MetricPrefixRule, MetricTagFilterEntry, OriginTagCardinality,
 };
 use agent_data_plane_config::domains::otlp::{
-    CumulativeMonotonicMode, GrpcTransport, HistogramMode, InitialCumulativeMonotonicValue, SummaryMode,
-    DEFAULT_GRPC_KEEPALIVE_TIME, DEFAULT_GRPC_KEEPALIVE_TIMEOUT, DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB,
+    ContainerTagPromotion, CumulativeMonotonicMode, GrpcTransport, HistogramMode, InitialCumulativeMonotonicValue,
+    SummaryMode, DEFAULT_GRPC_KEEPALIVE_TIME, DEFAULT_GRPC_KEEPALIVE_TIMEOUT, DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB,
 };
 use agent_data_plane_config::domains::traces::{ApmFeature, ReplaceRule};
 use agent_data_plane_config::shared::{ForwarderHttpProtocol, V3SeriesMode};
@@ -1517,6 +1517,22 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
 
     fn consume_otlp_config_traces_enabled(&mut self, value: bool) {
         self.config.domains.otlp.traces.enabled = value;
+    }
+
+    fn consume_otlp_config_traces_infra_attributes_container_tag_promotion(&mut self, value: String) {
+        match value.parse::<ContainerTagPromotion>() {
+            Ok(mode) => self.config.domains.otlp.traces.container_tag_promotion = mode,
+            Err(error) => {
+                self.record_error(TranslateError::new(
+                    "otlp_config.traces.infra_attributes.container_tag_promotion",
+                    error,
+                ));
+            }
+        }
+    }
+
+    fn consume_otlp_config_traces_infra_attributes_enabled(&mut self, value: bool) {
+        self.config.domains.otlp.traces.infra_attributes_enabled = value;
     }
 
     fn consume_otlp_config_traces_internal_port(&mut self, value: i64) {
@@ -3176,7 +3192,7 @@ mod tests {
     }
 
     #[test]
-    fn metric_namespace_translates_schema_default_and_blocklist_alias() {
+    fn metric_namespace_translates_schema_default_and_blacklist() {
         let (default_config, errors) = translate_explicit(json!({}));
         assert!(errors.is_none());
         assert_eq!(
@@ -3190,7 +3206,9 @@ mod tests {
 
         let (config, errors) = translate_explicit(json!({
             "statsd_metric_namespace": "tenant",
-            "statsd_metric_namespace_blocklist": ["custom"],
+            "statsd_metric_namespace_blacklist": ["custom"],
+            // The Agent has no such key, so it is ignored rather than read as the blacklist.
+            "statsd_metric_namespace_blocklist": ["ignored"],
         }));
         assert!(errors.is_none());
         assert_eq!(config.domains.dogstatsd.prefix_filter.metric_namespace, "tenant");

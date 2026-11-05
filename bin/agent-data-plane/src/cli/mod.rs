@@ -10,9 +10,11 @@ mod debug;
 pub use self::debug::handle_debug_command;
 use self::debug::DebugCommand;
 
-mod dogstatsd;
+pub(crate) mod dogstatsd;
 pub use self::dogstatsd::handle_dogstatsd_command;
 use self::dogstatsd::DogstatsdCommand;
+
+pub(crate) mod remote;
 
 mod run;
 pub use self::run::handle_run_command;

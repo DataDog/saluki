@@ -6,7 +6,6 @@
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, LazyLock};
 
-use agent_data_plane_config::{ConfigValue, SalukiConfiguration};
 use async_trait::async_trait;
 use axum::extract::{ConnectInfo, Request as AxumRequest, State};
 use axum::response::IntoResponse;
@@ -51,34 +50,34 @@ pub struct ApmRelayConfiguration {
     /// Unix domain socket path the relay listens on.
     ///
     /// Empty disables the Unix domain socket listener.
-    receiver_socket: String,
+    pub receiver_socket: String,
 
     /// URL of the trace-agent that every request not handled by ADP is proxied to: `http://host:port` or
     /// `unix:///path/to/socket`.
-    proxy_destination: String,
+    pub proxy_destination: String,
 
     /// Resolver for mapping the process ID of a tracer connected over the Unix domain socket to its container.
     ///
     /// The trace-agent finds the container of a tracer that sends no container headers from the peer credentials of
     /// its Unix domain socket connection, but behind the relay those credentials are ADP's. With a resolver, the relay
     /// resolves the container from the tracer's credentials itself, and passes it on as `Datadog-Container-ID`.
-    capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
+    pub capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
 
     /// The host address to bind the APM relay TCP listeners to.
     ///
     /// Accepts either an IP literal (for example, `192.168.1.50`, `::1`) or a hostname that resolves via DNS (for example, `agent.internal`).
-    /// Ignored when `apm_non_local_traffic` is `true`, and binds to `127.0.0.1` when unset.
-    bind_host: Option<String>,
+    /// Ignored when `non_local_traffic` is `true`, and binds to `127.0.0.1` when unset.
+    pub bind_host: Option<String>,
 
     /// Whether the TCP listener accepts traffic from other hosts.
     ///
     /// When `true`, the listener binds every interface, overriding `bind_host`, as the trace-agent does.
-    non_local_traffic: bool,
+    pub non_local_traffic: bool,
 
     /// TCP port the trace receiver listens on.
     ///
     /// `0` disables the TCP listener.
-    receiver_port: u16,
+    pub receiver_port: u16,
 }
 
 #[static_metrics(prefix = component, labels(component_id, component_type))]
@@ -89,34 +88,6 @@ struct Metrics {
 }
 
 impl ApmRelayConfiguration {
-    /// Creates a new `ApmRelayConfiguration` from the resolved configuration.
-    ///
-    /// `containerized` is whether ADP runs in the Datadog Agent's container image, where the TCP listener binds every
-    /// interface unless its host is configured, as the trace-agent's does.
-    pub fn from_configuration(config: &SalukiConfiguration, containerized: bool) -> Self {
-        let (bind_host, non_local_traffic) = resolve_listen_host(
-            &config.shared.bind_host,
-            config.domains.apm.non_local_traffic,
-            containerized,
-        );
-
-        // receiver_port `0` disables the TCP listener
-        Self {
-            receiver_socket: config.domains.apm.receiver_socket.clone().unwrap_or_default(),
-            proxy_destination: config.domains.apm.proxy_destination.to_owned(),
-            capture_entity_resolver: None,
-            bind_host,
-            non_local_traffic,
-            receiver_port: config.domains.apm.receiver_port,
-        }
-    }
-
-    /// Sets the resolver used to find the container of a tracer connected over the Unix domain socket.
-    pub fn with_capture_entity_resolver(mut self, resolver: Arc<dyn CaptureEntityResolver + Send + Sync>) -> Self {
-        self.capture_entity_resolver = Some(resolver);
-        self
-    }
-
     async fn tcp_listen_address(&self) -> Result<Option<ListenAddress>, GenericError> {
         if self.receiver_port == 0 {
             return Ok(None);
@@ -151,26 +122,6 @@ impl ApmRelayConfiguration {
                     self.receiver_socket
                 )
             })
-    }
-}
-
-/// Resolves the host the TCP listener binds to, as the trace-agent resolves its receiver host.
-///
-/// Returns the host to bind, if any, and whether to bind every interface instead. When `bind_host` or
-/// `apm_non_local_traffic` was set explicitly, they apply as configured. When neither was, the listener binds every
-/// interface in a container, so that tracers in other containers can reach it, and the default host otherwise.
-fn resolve_listen_host(
-    bind_host: &ConfigValue<Option<String>>, non_local_traffic: ConfigValue<bool>, containerized: bool,
-) -> (Option<String>, bool) {
-    if bind_host.is_explicit() || non_local_traffic.is_explicit() {
-        let host = if bind_host.is_explicit() {
-            bind_host.value.clone()
-        } else {
-            None
-        };
-        (host, non_local_traffic.value)
-    } else {
-        (None, containerized)
     }
 }
 
@@ -830,58 +781,6 @@ mod tests {
         assert!(!tcp_reaches(addr("10.0.0.2:8126"), addr("10.0.0.1:8126")));
         assert!(!tcp_reaches(addr("[::1]:8126"), addr("0.0.0.0:8126")));
         assert!(!tcp_reaches(addr("127.0.0.1:8126"), addr("10.0.0.1:8126")));
-    }
-
-    #[test]
-    fn listen_host_follows_explicit_settings() {
-        let host = Some("10.0.0.1".to_string());
-
-        // An explicit `bind_host` applies, in a container or not.
-        for containerized in [false, true] {
-            assert_eq!(
-                resolve_listen_host(
-                    &ConfigValue::explicit(host.clone()),
-                    ConfigValue::defaulted(false),
-                    containerized
-                ),
-                (host.clone(), false)
-            );
-        }
-
-        // `apm_non_local_traffic` overrides it, even at its default value once `bind_host` is explicit, as in
-        // Kubernetes where it defaults to `true`.
-        assert_eq!(
-            resolve_listen_host(
-                &ConfigValue::explicit(host.clone()),
-                ConfigValue::defaulted(true),
-                false
-            ),
-            (host.clone(), true)
-        );
-
-        // An explicit `apm_non_local_traffic: false` keeps a container on the default host.
-        assert_eq!(
-            resolve_listen_host(
-                &ConfigValue::defaulted(Some("localhost".to_string())),
-                ConfigValue::explicit(false),
-                true
-            ),
-            (None, false)
-        );
-    }
-
-    #[test]
-    fn listen_host_binds_every_interface_in_a_container_when_unset() {
-        let defaulted_host = ConfigValue::defaulted(Some("localhost".to_string()));
-
-        assert_eq!(
-            resolve_listen_host(&defaulted_host, ConfigValue::defaulted(false), true),
-            (None, true)
-        );
-        assert_eq!(
-            resolve_listen_host(&defaulted_host, ConfigValue::defaulted(false), false),
-            (None, false)
-        );
     }
 
     #[tokio::test]

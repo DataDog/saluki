@@ -1,8 +1,8 @@
 //! DogStatsD metric prefix and listener-side metric filter transform.
 
-use agent_data_plane_config::{domains::dogstatsd::MetricFilter, Live};
 use async_trait::async_trait;
 use metrics::{Counter, Gauge};
+use saluki_common::sync::live::Live;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::data_model::event::{
     metric::{Metric, MetricValues},
@@ -22,7 +22,7 @@ use stringtheory::MetaString;
 use tokio::select;
 use tracing::{debug, error, warn};
 
-use crate::components::dogstatsd_filterlist::{compile_metric_filter, Blocklist};
+use crate::components::dogstatsd_filterlist::{compile_metric_filter, Blocklist, MetricNameFilter};
 const METRIC_FILTERLIST_SIZE_METRIC: &str = "metric_filterlist_size";
 const METRIC_FILTERLIST_UPDATES_METRIC: &str = "metric_filterlist_updates_total";
 const LISTENER_FILTERED_POINTS_METRIC: &str = "dogstatsd_listener_filtered_points_total";
@@ -35,12 +35,14 @@ const LISTENER_FILTERED_POINTS_METRIC: &str = "dogstatsd_listener_filtered_point
 pub struct DogStatsDPrefixFilterConfiguration {
     metric_prefix: String,
     metric_prefix_blocklist: Vec<String>,
-    metric_filter: Live<MetricFilter>,
+    metric_filter: Live<MetricNameFilter>,
 }
 
 impl DogStatsDPrefixFilterConfiguration {
     /// Creates a new `DogStatsDPrefixFilterConfiguration`.
-    pub fn new(metric_prefix: String, metric_prefix_blocklist: Vec<String>, metric_filter: Live<MetricFilter>) -> Self {
+    pub fn new(
+        metric_prefix: String, metric_prefix_blocklist: Vec<String>, metric_filter: Live<MetricNameFilter>,
+    ) -> Self {
         Self {
             metric_prefix,
             metric_prefix_blocklist,
@@ -133,7 +135,7 @@ struct DogStatsDPrefixFilter {
     metric_prefix: String,
     metric_prefix_blocklist: Vec<String>,
     matcher: Blocklist,
-    metric_filter: Live<MetricFilter>,
+    metric_filter: Live<MetricNameFilter>,
     telemetry: FilterlistTelemetry,
 }
 
@@ -277,8 +279,6 @@ impl Transform for DogStatsDPrefixFilter {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use metrics::set_default_local_recorder;
     use saluki_core::{
         components::test_util::{ComponentControl, Output, TestComponentDriver},
@@ -288,13 +288,14 @@ mod tests {
     use saluki_metrics::{test::TestRecorder, MetricsBuilder};
 
     use super::*;
+    use crate::components::dogstatsd_filterlist::MetricPrefixRule;
 
     /// Builds a [`DogStatsDPrefixFilter`] with defaults for fields a test does not vary.
     struct FilterBuilder {
         metric_prefix: String,
         metric_prefix_blocklist: Vec<String>,
         matcher: Blocklist,
-        metric_filter: Live<MetricFilter>,
+        metric_filter: Live<MetricNameFilter>,
         telemetry: FilterlistTelemetry,
     }
 
@@ -304,7 +305,11 @@ mod tests {
                 metric_prefix: String::new(),
                 metric_prefix_blocklist: Vec::new(),
                 matcher: Blocklist::default(),
-                metric_filter: Live::new_fixed(MetricFilter::default()),
+                metric_filter: Live::new_fixed(MetricNameFilter {
+                    values: Vec::new(),
+                    match_prefix: false,
+                    prefix_rules: Vec::new(),
+                }),
                 telemetry: FilterlistTelemetry::noop(),
             }
         }
@@ -324,7 +329,7 @@ mod tests {
             self
         }
 
-        fn metric_filter(mut self, metric_filter: Live<MetricFilter>) -> Self {
+        fn metric_filter(mut self, metric_filter: Live<MetricNameFilter>) -> Self {
             self.metric_filter = metric_filter;
             self
         }
@@ -492,10 +497,10 @@ mod tests {
 
     #[test]
     fn typed_filter_prefix_rules_with_exceptions_are_applied() {
-        let metric_filter = Live::new_fixed(MetricFilter {
+        let metric_filter = Live::new_fixed(MetricNameFilter {
             values: vec!["exact.blocked".to_string()],
             match_prefix: false,
-            prefix_rules: vec![agent_data_plane_config::domains::dogstatsd::MetricPrefixRule {
+            prefix_rules: vec![MetricPrefixRule {
                 prefix: "prefixed.".to_string(),
                 except_prefix: vec!["prefixed.keep.".to_string()],
                 except_exact: vec!["prefixed.keep.exact".to_string()],
@@ -520,10 +525,10 @@ mod tests {
 
     #[test]
     fn histogram_input_is_preserved_when_descendant_aggregate_output_is_excepted() {
-        let metric_filter = Live::new_fixed(MetricFilter {
+        let metric_filter = Live::new_fixed(MetricNameFilter {
             values: Vec::new(),
             match_prefix: false,
-            prefix_rules: vec![agent_data_plane_config::domains::dogstatsd::MetricPrefixRule {
+            prefix_rules: vec![MetricPrefixRule {
                 prefix: "requests.".to_string(),
                 except_prefix: Vec::new(),
                 except_exact: vec!["requests.exact.keep.avg".to_string()],
@@ -543,10 +548,10 @@ mod tests {
 
     #[test]
     fn histogram_input_still_drops_when_metric_filterlist_exact_entry_matches() {
-        let metric_filter = Live::new_fixed(MetricFilter {
+        let metric_filter = Live::new_fixed(MetricNameFilter {
             values: vec!["requests.exact.keep".to_string()],
             match_prefix: false,
-            prefix_rules: vec![agent_data_plane_config::domains::dogstatsd::MetricPrefixRule {
+            prefix_rules: vec![MetricPrefixRule {
                 prefix: "requests.".to_string(),
                 except_prefix: Vec::new(),
                 except_exact: vec!["requests.exact.keep.avg".to_string()],
@@ -562,10 +567,10 @@ mod tests {
 
     #[test]
     fn preserved_histogram_input_still_gets_namespace_prefix_applied() {
-        let metric_filter = Live::new_fixed(MetricFilter {
+        let metric_filter = Live::new_fixed(MetricNameFilter {
             values: Vec::new(),
             match_prefix: false,
-            prefix_rules: vec![agent_data_plane_config::domains::dogstatsd::MetricPrefixRule {
+            prefix_rules: vec![MetricPrefixRule {
                 prefix: "tenant.requests.".to_string(),
                 except_prefix: Vec::new(),
                 except_exact: vec!["tenant.requests.exact.keep.avg".to_string()],
@@ -614,17 +619,12 @@ mod tests {
             ))
         };
 
-        let mut initial = agent_data_plane_config::SalukiConfiguration::default();
-        initial.domains.dogstatsd.metric_filter = MetricFilter {
+        let (mut publisher, source) = saluki_common::sync::live::channel(MetricNameFilter {
             values: vec!["foobar".to_string(), "test".to_string()],
             match_prefix: false,
             prefix_rules: Vec::new(),
-        };
-        let cell = Arc::new(arc_swap::ArcSwap::from_pointee(initial));
-        let (tick_tx, tick_rx) = tokio::sync::watch::channel(());
-        let metric_filter = Live::new_dynamic(Arc::clone(&cell), tick_rx, |config| {
-            &config.domains.dogstatsd.metric_filter
         });
+        let metric_filter = source.live(|filter| filter);
         let builder = DogStatsDPrefixFilterConfiguration::new(String::new(), Vec::new(), metric_filter);
         let (control, mut outputs) = TestComponentDriver::options()
             .with_component_id("prefix_filter")
@@ -635,14 +635,11 @@ mod tests {
 
         assert_eq!(kept(&control, output, &["foobar", "foo", "bar"]).await, ["bar", "foo"]);
 
-        let mut updated = (*cell.load_full()).clone();
-        updated.domains.dogstatsd.metric_filter = MetricFilter {
+        publisher.publish(MetricNameFilter {
             values: vec!["foo".to_string()],
             match_prefix: true,
             prefix_rules: Vec::new(),
-        };
-        cell.store(Arc::new(updated));
-        tick_tx.send_replace(());
+        });
         control
             .wait_until(
                 || updates() == Some(1),
@@ -651,6 +648,27 @@ mod tests {
             .await;
 
         assert_eq!(kept(&control, output, &["foobar", "foo", "bar"]).await, ["bar"]);
+
+        publisher.publish(MetricNameFilter {
+            values: Vec::new(),
+            match_prefix: false,
+            prefix_rules: vec![MetricPrefixRule {
+                prefix: "foo".to_string(),
+                except_prefix: vec!["foobar".to_string()],
+                except_exact: vec!["foo".to_string()],
+            }],
+        });
+        control
+            .wait_until(
+                || updates() == Some(2),
+                || "the prefix rule update is applied".to_string(),
+            )
+            .await;
+
+        assert_eq!(
+            kept(&control, output, &["foobar", "foo", "foobaz", "bar"]).await,
+            ["bar", "foo", "foobar"]
+        );
 
         control.shutdown().await.expect("prefix filter run should succeed");
     }
@@ -661,7 +679,7 @@ mod tests {
         let _local = set_default_local_recorder(&recorder);
 
         let telemetry = FilterlistTelemetry::new(&MetricsBuilder::default());
-        let metric_filter = Live::new_fixed(MetricFilter {
+        let metric_filter = Live::new_fixed(MetricNameFilter {
             values: vec!["preferred".to_string()],
             match_prefix: false,
             prefix_rules: Vec::new(),
@@ -675,7 +693,7 @@ mod tests {
         assert_eq!(recorder.counter(METRIC_FILTERLIST_UPDATES_METRIC), Some(0));
         assert_eq!(recorder.gauge(METRIC_FILTERLIST_SIZE_METRIC), Some(1.0));
 
-        filter.metric_filter = Live::new_fixed(MetricFilter {
+        filter.metric_filter = Live::new_fixed(MetricNameFilter {
             values: vec!["foo".to_string(), "foobar".to_string()],
             match_prefix: true,
             prefix_rules: Vec::new(),
