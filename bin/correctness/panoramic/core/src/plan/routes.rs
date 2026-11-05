@@ -40,6 +40,9 @@ pub(super) fn runner_host_route(
         return Err("request/response operations require an http or grpc endpoint");
     }
     match (kind, server.kind) {
+        (_, KubernetesPod) if operation == EndpointOperation::Send => {
+            Err("sending payloads to a kubernetes-pod endpoint from the runner host is not supported")
+        }
         (Http | Grpc, LinuxContainer | KubernetesPod) if operation == EndpointOperation::Request => {
             Ok(Direct(Route::RunnerHostPort))
         }
@@ -277,6 +280,9 @@ mod tests {
                             _ => None,
                         };
                     }
+                    if operation == EndpointOperation::Send && server.kind == RealizationKind::KubernetesPod {
+                        expected = None;
+                    }
                     assert_eq!(
                         runner_host_route(kind, server, operation).ok(),
                         expected,
@@ -289,6 +295,17 @@ mod tests {
 
     #[test]
     fn runner_host_route_errors_name_the_constraint() {
+        for kind in [
+            EndpointKind::Tcp,
+            EndpointKind::Udp,
+            EndpointKind::UnixDatagram,
+            EndpointKind::UnixStream,
+        ] {
+            assert_eq!(
+                runner_host_route(kind, LINUX_POD, EndpointOperation::Send),
+                Err("sending payloads to a kubernetes-pod endpoint from the runner host is not supported")
+            );
+        }
         for kind in [EndpointKind::UnixDatagram, EndpointKind::UnixStream] {
             assert_eq!(
                 runner_host_route(kind, WINDOWS_CONTAINER, EndpointOperation::Probe),

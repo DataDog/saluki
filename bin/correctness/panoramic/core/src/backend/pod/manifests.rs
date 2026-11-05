@@ -12,10 +12,12 @@ use k8s_openapi::{
 use saluki_error::{generic_error, GenericError};
 use serde_json::Value;
 
+use super::{node::Node, CRI_SOCKET, CRI_SOCKET_PATH, HOST_PID};
 use crate::{
     backend::runtime::LateFacts,
     case::template::{Reference, Template},
     endpoint::{RunnerHostPort, Transport},
+    handle::FileKind,
     recipe::PodRecipe,
 };
 
@@ -43,7 +45,13 @@ pub(super) struct Manifests {
     pub(super) service: Service,
     pub(super) files: Vec<PlacedFile>,
     pub(super) readable_files: BTreeMap<String, String>,
-    late_files: Vec<(String, Template)>,
+    late_files: Vec<LateFile>,
+}
+
+struct LateFile {
+    path: String,
+    node_path: String,
+    template: Template,
 }
 
 impl Manifests {
@@ -60,9 +68,9 @@ impl Manifests {
         } = input;
         check_name(name)?;
         for (key, value) in options {
-            if !matches!(key.as_str(), "host_pid" | "cri_socket") || !value.is_boolean() {
+            if !matches!(key.as_str(), HOST_PID | CRI_SOCKET) || !value.is_boolean() {
                 return Err(generic_error!(
-                    "Invalid pod option '{key}': expected host_pid or cri_socket with a boolean value"
+                    "Invalid pod option '{key}': expected {HOST_PID} or {CRI_SOCKET} with a boolean value"
                 ));
             }
         }
@@ -74,33 +82,33 @@ impl Manifests {
         if routes.iter().any(|port| port.transport != Transport::Tcp) {
             return Err(generic_error!("Pod '{name}' supports only TCP port-forwards"));
         }
+        let cri_socket = options.get(CRI_SOCKET).and_then(Value::as_bool).unwrap_or(false);
+        if cri_socket
+            && !recipe.containers.iter().any(|container| {
+                container
+                    .recipe
+                    .mounts
+                    .iter()
+                    .any(|mount| mount.host_path == CRI_SOCKET_PATH)
+            })
+        {
+            return Err(generic_error!(
+                "Pod '{name}' with cri_socket: true requires a host mount of '{CRI_SOCKET_PATH}'"
+            ));
+        }
         let labels: BTreeMap<String, String> = [("panoramic-participant".into(), name.into())].into();
         let mut volumes = vec![
             host_volume("shared", root, "Directory"),
             host_volume("courier", &format!("{root}/{name}/courier"), "File"),
         ];
-        let mut common_mounts = vec![mount("shared", "/airlock", false), mount("courier", COURIER_PATH, true)];
-        if options.get("host_pid").and_then(Value::as_bool).unwrap_or(false) {
-            volumes.extend([
-                host_volume("proc", "/proc", "Directory"),
-                host_volume("cgroup", "/sys/fs/cgroup", "Directory"),
-            ]);
-            common_mounts.extend([
-                mount("proc", "/host/proc", true),
-                mount("cgroup", "/host/sys/fs/cgroup", true),
-            ]);
-        }
-        if options.get("cri_socket").and_then(Value::as_bool).unwrap_or(false) {
-            volumes.push(host_volume("cri", "/run/containerd/containerd.sock", "Socket"));
-            common_mounts.push(mount("cri", "/var/run/containerd/containerd.sock", true));
-        }
+        let common_mounts = vec![mount("shared", "/airlock", false), mount("courier", COURIER_PATH, true)];
         let mut names = BTreeSet::new();
         let mut ports = BTreeSet::new();
         let mut containers = Vec::new();
         let mut files: Vec<PlacedFile> = Vec::new();
         let mut readable_files = BTreeMap::new();
         let mut late_files = Vec::new();
-        let mut unplaced = recipe.late_files.clone();
+        let mut unplaced: BTreeSet<_> = recipe.late_files.keys().cloned().collect();
         for (index, (container, image)) in recipe.containers.iter().zip(images).enumerate() {
             check_name(&container.name)?;
             if !names.insert(&container.name) {
@@ -108,11 +116,6 @@ impl Manifests {
             }
             let late_paths = &recipe.late_files;
             let recipe = &container.recipe;
-            if !recipe.mounts.is_empty() {
-                return Err(generic_error!(
-                    "Pod '{name}' host mounts must be declared through realization options"
-                ));
-            }
             let mut env = recipe.env.clone();
             for (key, value) in [
                 ("PANORAMIC_PARTICIPANT", name.to_string()),
@@ -124,6 +127,27 @@ impl Manifests {
                 }
             }
             let mut mounts = common_mounts.clone();
+            for (mount_index, host) in recipe.mounts.iter().enumerate() {
+                check_path(&host.host_path)?;
+                check_path(&host.container_path)?;
+                if mounts
+                    .iter()
+                    .any(|mount| overlaps(&host.container_path, &mount.mount_path))
+                {
+                    return Err(generic_error!(
+                        "Pod host mount '{}' overlaps another mount or a reserved path",
+                        host.container_path
+                    ));
+                }
+                let volume_name = format!("host-{index}-{mount_index}");
+                let kind = if cri_socket && host.host_path == CRI_SOCKET_PATH {
+                    "Socket"
+                } else {
+                    ""
+                };
+                volumes.push(host_volume(&volume_name, &host.host_path, kind));
+                mounts.push(mount(&volume_name, &host.container_path, host.read_only));
+            }
             let mut paths = BTreeSet::new();
             for (file_index, file) in recipe.files.iter().enumerate() {
                 check_path(&file.path)?;
@@ -163,7 +187,7 @@ impl Manifests {
                 if index == 0 {
                     readable_files.insert(file.path.clone(), node_path.clone());
                 }
-                let contents = if late_paths.contains(&file.path) {
+                let contents = if late_paths.contains_key(&file.path) {
                     unplaced.remove(&file.path);
                     let template = String::from_utf8(file.contents.clone())?
                         .parse::<Template>()
@@ -177,7 +201,11 @@ impl Manifests {
                             file.path
                         ));
                     }
-                    late_files.push((node_path.clone(), template));
+                    late_files.push(LateFile {
+                        path: file.path.clone(),
+                        node_path: node_path.clone(),
+                        template,
+                    });
                     Vec::new()
                 } else {
                     file.contents.clone()
@@ -260,7 +288,7 @@ impl Manifests {
             spec: Some(PodSpec {
                 node_name: Some(node.into()),
                 restart_policy: Some("Never".into()),
-                host_pid: Some(options.get("host_pid").and_then(Value::as_bool).unwrap_or(false)),
+                host_pid: Some(options.get(HOST_PID).and_then(Value::as_bool).unwrap_or(false)),
                 containers,
                 volumes: Some(volumes),
                 ..Default::default()
@@ -300,13 +328,52 @@ impl Manifests {
         })
     }
 
+    pub(super) async fn checked_pod(&self, node: &Node) -> Result<Pod, GenericError> {
+        let mut pod = self.pod.clone();
+        for volume in pod.spec.as_mut().unwrap().volumes.as_mut().unwrap() {
+            if !volume.name.starts_with("host-") {
+                continue;
+            }
+            let source = volume.host_path.as_mut().unwrap();
+            let status = node
+                .stat(&source.path)
+                .await?
+                .ok_or_else(|| generic_error!("pod host mount source '{}' is missing on the node", source.path))?;
+            let kind = match status.kind {
+                FileKind::Directory => "Directory",
+                FileKind::File => "File",
+                FileKind::Socket => "Socket",
+                kind => {
+                    return Err(generic_error!(
+                        "pod host mount source '{}' has unsupported kind {kind:?}",
+                        source.path
+                    ))
+                }
+            };
+            if source
+                .type_
+                .as_deref()
+                .is_some_and(|expected| !expected.is_empty() && expected != kind)
+            {
+                return Err(generic_error!(
+                    "pod host mount source '{}' must be {}, found {kind}",
+                    source.path,
+                    source.type_.as_deref().unwrap()
+                ));
+            }
+            // Pin the observed kind so kubelet also checks for replacement before mounting.
+            source.type_ = Some(kind.into());
+        }
+        Ok(pod)
+    }
+
     pub(super) fn render_late_files<'a>(
         &'a self, holder: &str, facts: &LateFacts,
     ) -> Result<Vec<(&'a str, String)>, GenericError> {
         self.late_files
             .iter()
-            .map(|(path, template)| {
-                template
+            .map(|late| {
+                late.template
                     .substitute(|written, reference| {
                         let Reference::Late { participant, fact } = reference else {
                             unreachable!("late files are validated before creation")
@@ -317,9 +384,9 @@ impl Manifests {
                             .and_then(|values| values.get(fact))
                             .cloned()
                             .map(Some)
-                            .ok_or_else(|| format!("late file '{path}' needs unavailable reference '{written}'"))
+                            .ok_or_else(|| format!("late file '{}' needs unavailable reference '{written}'", late.path))
                     })
-                    .map(|contents| (path.as_str(), contents))
+                    .map(|contents| (late.node_path.as_str(), contents))
                     .map_err(|error| generic_error!(error))
             })
             .collect()

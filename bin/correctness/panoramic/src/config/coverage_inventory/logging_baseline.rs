@@ -4,7 +4,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use panoramic_core::{layout::Realization, participant::ParticipantType};
+use panoramic_core::{
+    layout::{Os, Realization, RealizationKind},
+    participant::ParticipantType,
+};
 use panoramic_participants::AgentAdp;
 use serde_json::{json, Value};
 
@@ -104,17 +107,12 @@ fn participant_twin(config: &Value) -> Result<(String, bool), String> {
                 .and_then(Value::as_str)
                 .ok_or("file path must be a string")?;
             if subject_os.iter().all(|os| {
-                let supported: Vec<_> = AgentAdp
-                    .supports()
-                    .iter()
-                    .filter(|(supported_os, _)| supported_os == os)
-                    .collect();
-                assert_eq!(
-                    supported.len(),
-                    1,
-                    "the converter requires exactly one realization on {os:?}"
-                );
-                let &(os, kind) = supported[0];
+                let os = *os;
+                let kind = match os {
+                    Os::Linux => RealizationKind::LinuxContainer,
+                    Os::MacOs => RealizationKind::HostProcessGroup,
+                    Os::Windows => RealizationKind::WindowsContainer,
+                };
                 AgentAdp
                     .facts(Realization { os, kind })
                     .iter()

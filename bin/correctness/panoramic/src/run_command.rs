@@ -4,7 +4,7 @@ use panoramic_core::artifact::{verified_artifacts, ArtifactBinding, VerifiedArti
 use panoramic_core::backend::RunBackends;
 use panoramic_core::events::create_event_channel;
 use panoramic_core::interrupts::Interrupts;
-use panoramic_core::layout::{Os, Realization};
+use panoramic_core::layout::{Os, Realization, RealizationKind};
 use panoramic_core::lifecycle::NativeInputs;
 use panoramic_core::machine_output::{revision, RunReport, TestReport, RUN_REPORT_FILE_NAME};
 use panoramic_core::plan::needed_artifacts;
@@ -81,7 +81,7 @@ async fn prepare_run(cmd: &cli::RunCommand, console: &Console) -> Result<Prepare
     let (mut built, settings, artifacts) = build_cases(cmd, plans)?;
     check_legacy_inputs(cmd, &built, &settings, &artifacts)?;
     select_cases(cmd, console, subject_os, &mut built, &mut excluded)?;
-    let backends = Arc::new(RunBackends::default());
+    let backends = Arc::new(RunBackends::default().with_kube_context(format!("kind-{}", cmd.kind_cluster_name)));
     let unprovidable = check_providability(&backends, console, &mut built).await?;
     let (verified, native) = prepare_artifacts(backends, cmd, console, subject_os, &built, &unprovidable).await?;
     Ok(PreparedRun {
@@ -319,28 +319,18 @@ async fn execute(
 
     // Spawn kind cluster setup in the background so non-kind tests start immediately.
     // Kind tests wait on `kind_rx` before doing any work.
-    let kind_images = collect_kind_images(&built);
+    let kind_images = collect_kind_images(&built, native.as_ref());
     let kind_lifecycle_slot = std::sync::Arc::new(Mutex::new(None::<KindLifecycle>));
-    let kind_rx = if kind_images.is_empty() {
-        None
-    } else {
-        let (kind_tx, kind_rx) = watch::channel::<Option<Result<(), String>>>(None);
-        let slot = kind_lifecycle_slot.clone();
-        let cluster_name = cmd.kind_cluster_name.clone();
-        let event_tx = tx.clone();
-        tokio::spawn(async move {
-            match KindLifecycle::ensure(cluster_name, kind_images, event_tx).await {
-                Ok(lc) => {
-                    *slot.lock().await = Some(lc);
-                    let _ = kind_tx.send(Some(Ok(())));
-                }
-                Err(e) => {
-                    let _ = kind_tx.send(Some(Err(format!("{:?}", e))));
-                }
-            }
-        });
-        Some(kind_rx)
-    };
+    let slot = kind_lifecycle_slot.clone();
+    let cluster_name = cmd.kind_cluster_name.clone();
+    let event_tx = tx.clone();
+    let kind_rx = start_kind_setup(&built, kind_images, move |images| async move {
+        let lifecycle = KindLifecycle::ensure(cluster_name, images, event_tx)
+            .await
+            .map_err(|error| format!("{error:?}"))?;
+        *slot.lock().await = Some(lifecycle);
+        Ok(())
+    });
 
     let mut registry = Runner::new(log_dir, settings);
     if let Some(inputs) = native {
@@ -471,19 +461,49 @@ async fn verify_run_artifacts(
 }
 
 /// Collects the unique images of cases that need Kubernetes pods.
-fn collect_kind_images(built: &[BuiltCase]) -> Vec<String> {
+fn collect_kind_images(built: &[BuiltCase], native: Option<&NativeInputs>) -> Result<Vec<String>, String> {
     use std::collections::BTreeSet;
     let mut images = BTreeSet::new();
     for BuiltCase { plan, execution } in built {
-        if let Execution::Runner(runner) = execution {
-            if needs_pod(plan) {
-                for (_, image) in runner.images() {
-                    images.insert(image);
+        if !needs_pod(plan) {
+            continue;
+        }
+        match execution {
+            Execution::Runner(runner) => images.extend(runner.images().into_values()),
+            Execution::Native => {
+                let inputs = native.ok_or("Native execution inputs were not prepared.")?;
+                for &role in plan.image_roles_for(RealizationKind::KubernetesPod) {
+                    images.insert(inputs.image_reference(role)?.to_string());
                 }
             }
+            Execution::Unprovidable(_) => {}
         }
     }
-    images.into_iter().collect()
+    Ok(images.into_iter().collect())
+}
+
+/// Starts cluster setup for providable pod cases, even when they have no images to load.
+fn start_kind_setup<F>(
+    built: &[BuiltCase], images: Result<Vec<String>, String>, setup: impl FnOnce(Vec<String>) -> F + Send + 'static,
+) -> Option<crate::test::KindReadyReceiver>
+where
+    F: std::future::Future<Output = Result<(), String>> + Send + 'static,
+{
+    if !built
+        .iter()
+        .any(|built| needs_pod(&built.plan) && !matches!(built.execution, Execution::Unprovidable(_)))
+    {
+        return None;
+    }
+    let (tx, rx) = watch::channel(None);
+    tokio::spawn(async move {
+        let result = match images {
+            Ok(images) => setup(images).await,
+            Err(error) => Err(error),
+        };
+        let _ = tx.send(Some(result));
+    });
+    Some(rx)
 }
 
 /// Revision of the repository this binary was built from, as recorded by the build script.
@@ -495,7 +515,11 @@ fn build_revision() -> String {
 mod tests {
 
     use clap::Parser as _;
-    use panoramic_core::{artifact::ArtifactManifest, layout::Os, plan::Planner};
+    use panoramic_core::{
+        artifact::{ArtifactKind, ArtifactManifest},
+        layout::Os,
+        plan::Planner,
+    };
 
     use super::*;
     use crate::{
@@ -1445,7 +1469,7 @@ mod tests {
                 );
             }
             assert_eq!(
-                collect_kind_images(&built),
+                collect_kind_images(&built, None).unwrap(),
                 if os == Os::Linux {
                     vec!["linux:bound", "tools:bound"]
                 } else {
@@ -1581,7 +1605,7 @@ mod tests {
             .images()
             .into_values()
             .collect();
-        let images = collect_kind_images(&built);
+        let images = collect_kind_images(&built, None).unwrap();
         assert_eq!(images, expected.into_iter().collect::<Vec<_>>());
         assert!(images.contains(&"base:pod".to_string()));
         assert!(images.contains(&"comp:pod".to_string()));
@@ -1592,7 +1616,68 @@ mod tests {
             .find(|built| built.plan.case().name() == "pod")
             .unwrap()
             .execution = Execution::Unprovidable("kind unavailable".to_string());
-        assert!(collect_kind_images(&built).is_empty());
+        assert!(collect_kind_images(&built, None).unwrap().is_empty());
+
+        use panoramic_core::artifact::ArtifactVerification;
+
+        use crate::runner::test_support::native_pod_case;
+
+        let native = native_pod_case();
+        let verified = verified_artifacts(
+            &native
+                .plan
+                .artifacts()
+                .iter()
+                .filter(|binding| matches!(binding.role.kind, ArtifactKind::Image { .. } | ArtifactKind::Binary))
+                .map(|binding| ArtifactVerification {
+                    binding: binding.clone(),
+                    identity: Ok(format!("verified:{}", binding.role.name)),
+                })
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        let inputs = NativeInputs::new(Arc::new(RunBackends::default()), &verified, dir.path()).unwrap();
+        built.push(native);
+        assert_eq!(collect_kind_images(&built, Some(&inputs)).unwrap(), ["pod:bound"]);
+        assert!(collect_kind_images(&built, None)
+            .unwrap_err()
+            .contains("inputs were not prepared"));
+        let empty_inputs = NativeInputs::new(Arc::new(RunBackends::default()), &[], dir.path()).unwrap();
+        assert_eq!(
+            collect_kind_images(&built, Some(&empty_inputs)).unwrap_err(),
+            "native inputs lack verified image role 'pod-image'",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_native_pod_case_starts_kind_even_without_images_to_load() {
+        use crate::runner::test_support::native_pod_case;
+
+        let mut ready = start_kind_setup(&[native_pod_case()], Ok(Vec::new()), |images| async move {
+            assert!(images.is_empty());
+            Ok(())
+        })
+        .expect("a native pod case needs cluster setup");
+        tokio::time::timeout(std::time::Duration::from_secs(5), ready.wait_for(Option::is_some))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(*ready.borrow(), Some(Ok(())));
+        assert!(start_kind_setup(&[], Ok(Vec::new()), |_| async {
+            panic!("a run without pod cases must not start a cluster")
+        })
+        .is_none());
+    }
+
+    #[tokio::test]
+    async fn unprovidable_pod_cases_do_not_start_kind() {
+        // A providability failure must not start a cluster on the rejected Docker context.
+        let mut built = crate::runner::test_support::native_pod_case();
+        built.execution = Execution::Unprovidable("Docker context mismatch".into());
+        assert!(start_kind_setup(&[built], Ok(Vec::new()), |_| async {
+            panic!("unprovidable pods must not start a cluster")
+        })
+        .is_none());
     }
 
     #[test]

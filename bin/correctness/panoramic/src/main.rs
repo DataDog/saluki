@@ -341,10 +341,13 @@ mod tests {
     #[tokio::test]
     async fn a_case_with_an_unsupported_realization_fails_list_list_json_and_run_with_exit_2() {
         let dir = tempfile::tempdir().unwrap();
-        let pod = write_case(
+        let host = write_case(
             dir.path(),
-            "b-pod",
-            &PARTICIPANT_FIELDS.replace("subject: true", "subject: true, realization: {kind: kubernetes-pod}"),
+            "b-host",
+            &PARTICIPANT_FIELDS.replace(
+                "subject: true",
+                "subject: true, realization: {kind: host-process-group}",
+            ),
         );
         let windows = write_case(
             dir.path(),
@@ -364,12 +367,12 @@ mod tests {
                 format!(
                     "Failed to plan test cases:\n  - case 'a-windows' in {}: on subject OS 'windows', \
                      participant 'adp' of type 'agent-adp' cannot run as linux-container on windows; \
-                     it supports linux-container on linux, host-process-group on macos, \
-                     windows-container on windows\n  - case 'b-pod' in {}: on subject OS 'linux', \
-                     participant 'adp' of type 'agent-adp' cannot run as kubernetes-pod on linux; \
-                     it supports linux-container on linux, host-process-group on macos, windows-container on windows",
+                     it supports linux-container on linux, kubernetes-pod on linux, host-process-group on macos, \
+                     windows-container on windows\n  - case 'b-host' in {}: on subject OS 'linux', \
+                     participant 'adp' of type 'agent-adp' cannot run as host-process-group on linux; \
+                     it supports linux-container on linux, kubernetes-pod on linux, host-process-group on macos, windows-container on windows",
                     windows.canonicalize().unwrap().display(),
-                    pod.canonicalize().unwrap().display()
+                    host.canonicalize().unwrap().display()
                 )
             );
             for (command, extra) in [

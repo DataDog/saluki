@@ -12,7 +12,7 @@ use crate::{
     artifact::{ArtifactBinding, ArtifactKind, ArtifactManifest, ArtifactRole, BindingSource},
     backend,
     case::{CaseFile, Registries},
-    layout::{Layout, Os, Realization},
+    layout::{Layout, Os, Realization, RealizationKind},
     participant::{find_type, ParticipantType},
 };
 
@@ -126,7 +126,8 @@ pub(super) fn check_manifest(
 
 pub(super) fn bind(
     file: &CaseFile, layout: &Layout, types: &[&dyn ParticipantType], bindings: &BTreeMap<String, String>,
-) -> Vec<ArtifactBinding> {
+) -> (Vec<ArtifactBinding>, BTreeMap<RealizationKind, Vec<ArtifactRole>>) {
+    let mut image_roles: BTreeMap<_, BTreeMap<_, _>> = BTreeMap::new();
     let roles = layout.iter().flat_map(|(name, realization)| {
         let entry = &file.participants[name];
         let participant_type =
@@ -136,8 +137,22 @@ pub(super) fn bind(
             .iter()
             .chain(backend::artifacts(realization.kind))
             .copied()
+            .map(move |role| (realization.kind, role))
     });
-    bind_roles(roles, bindings)
+    let bindings = bind_roles(
+        roles.map(|(kind, role)| {
+            if matches!(role.kind, ArtifactKind::Image { .. }) {
+                image_roles.entry(kind).or_default().insert(role.name, role);
+            }
+            role
+        }),
+        bindings,
+    );
+    let image_roles = image_roles
+        .into_iter()
+        .map(|(kind, roles)| (kind, roles.into_values().collect()))
+        .collect();
+    (bindings, image_roles)
 }
 
 pub(super) fn bind_roles(
@@ -231,6 +246,7 @@ mod tests {
         fn supports(&self) -> &'static [(Os, RealizationKind)] {
             &[
                 (Os::Linux, RealizationKind::LinuxContainer),
+                (Os::Linux, RealizationKind::KubernetesPod),
                 (Os::MacOs, RealizationKind::HostProcessGroup),
                 (Os::Windows, RealizationKind::WindowsContainer),
             ]
@@ -316,6 +332,48 @@ mod tests {
             plan.artifacts(),
             local_bindings(&[COURIER_LINUX_BINARY, FIXUP, RESOURCES, TOOL]).as_slice()
         );
+    }
+
+    #[test]
+    fn image_roles_are_bound_once_per_realization_without_binary_roles() {
+        const POD_IMAGE: ArtifactRole = ArtifactRole {
+            name: "pod-image",
+            local_default: "pod:local",
+            ..FIXUP
+        };
+        let mut planner = role_planner(&[
+            &Type {
+                name: "server",
+                roles: &[POD_IMAGE, TOOL],
+                windows_roles: &[],
+            },
+            &Type {
+                name: "configured",
+                roles: &[TOOL],
+                windows_roles: &[],
+            },
+        ]);
+        let yaml = concat!(
+            "timeout: 1s\nsubject_os: [linux]\nparticipants:\n",
+            "  pod: {type: server, subject: true, realization: {kind: kubernetes-pod}}\n",
+            "  other: {type: server}\n",
+            "  container: {type: configured, realization: {kind: linux-container}}\n",
+            minimal_procedure!(),
+            "\n"
+        );
+        let plan = compile_with(&mut planner, yaml, Os::Linux).unwrap().unwrap();
+        assert_eq!(plan.image_roles_for(RealizationKind::KubernetesPod), [POD_IMAGE]);
+        assert_eq!(plan.image_roles_for(RealizationKind::LinuxContainer), [FIXUP]);
+        assert!(plan.image_roles_for(RealizationKind::HostProcessGroup).is_empty());
+        let typed = planner
+            .compile(
+                typed_case(BTreeMap::from([(Os::MacOs, vec![TOOL]), (Os::Windows, vec![])])),
+                Os::MacOs,
+            )
+            .unwrap()
+            .into_plan()
+            .unwrap();
+        assert!(typed.image_roles_for(RealizationKind::KubernetesPod).is_empty());
     }
 
     #[test]

@@ -165,7 +165,7 @@ impl Runner {
                 break;
             }
 
-            let kind_ready = if needs_pod(&built.plan) {
+            let kind_ready = if needs_pod(&built.plan) && !matches!(built.execution, Execution::Unprovidable(_)) {
                 self.kind_ready.clone()
             } else {
                 None
@@ -212,7 +212,7 @@ impl Runner {
             let cancel = cancel_all.clone();
             let log_base_dir = self.log_base_dir.clone();
             let settings = self.settings.clone();
-            let mut kind_ready = if needs_pod(&built.plan) {
+            let mut kind_ready = if needs_pod(&built.plan) && !matches!(built.execution, Execution::Unprovidable(_)) {
                 self.kind_ready.clone()
             } else {
                 None
@@ -325,6 +325,25 @@ impl Runner {
                 match &built.execution {
                     Execution::Runner(test) => test.run(tctx).await,
                     Execution::Native => {
+                        if needs_pod(plan) {
+                            let phase = phases.enter("kind_setup");
+                            let status = tctx.kind_ready.as_ref().and_then(|rx| rx.borrow().clone());
+                            let error = match status {
+                                Some(Ok(())) => None,
+                                Some(Err(error)) => Some(format!("Kind cluster setup failed: {error}")),
+                                None => Some("Kind cluster setup did not complete".to_string()),
+                            };
+                            if let Some(error) = error {
+                                return TestResult::errored(
+                                    "",
+                                    ErrorKind::Setup,
+                                    error,
+                                    started.elapsed(),
+                                    phase.finish_and_collect(),
+                                );
+                            }
+                            phase.finish();
+                        }
                         let Some(native) = native else {
                             return TestResult::errored(
                                 "",
@@ -583,7 +602,10 @@ fn write_result_log(result: &TestResult, dir: impl AsRef<Path>) {
 pub(crate) mod test_support {
     use std::collections::BTreeMap;
 
-    use panoramic_core::layout::Os;
+    use panoramic_core::artifact::{ArtifactKind, ArtifactManifest, ArtifactRole};
+    use panoramic_core::case::{CaseLoader, Registries};
+    use panoramic_core::layout::{Os, Realization, RealizationKind};
+    use panoramic_core::plan::Planner;
     use panoramic_core::record::{AssertionResult, AssertionStatus};
     use panoramic_core::{
         case::{ProcedureNode, StepNode},
@@ -597,7 +619,93 @@ pub(crate) mod test_support {
     use tokio::sync::{mpsc, Notify};
 
     use super::*;
-    use crate::config::typed_case::LoadedCase;
+    use crate::config::typed_case::{LoadedCase, TypedConfigLoader};
+
+    pub(crate) struct PodTest;
+
+    impl ParticipantType for PodTest {
+        fn name(&self) -> &'static str {
+            "pod-test"
+        }
+
+        fn supports(&self) -> &'static [(Os, RealizationKind)] {
+            &[
+                (Os::Linux, RealizationKind::KubernetesPod),
+                (Os::Linux, RealizationKind::LinuxContainer),
+            ]
+        }
+
+        fn artifacts(&self, realization: Realization) -> &'static [ArtifactRole] {
+            if realization.kind == RealizationKind::KubernetesPod {
+                &[
+                    ArtifactRole {
+                        name: "pod-image",
+                        kind: ArtifactKind::Image { os: Os::Linux },
+                        local_default: "pod:default",
+                    },
+                    ArtifactRole {
+                        name: "pod-binary",
+                        kind: ArtifactKind::Binary,
+                        local_default: "pod-helper",
+                    },
+                ]
+            } else {
+                &[ArtifactRole {
+                    name: "container-image",
+                    kind: ArtifactKind::Image { os: Os::Linux },
+                    local_default: "container:default",
+                }]
+            }
+        }
+
+        fn processes(&self) -> &'static [&'static str] {
+            &[]
+        }
+    }
+
+    pub(crate) fn native_pod_case() -> BuiltCase {
+        let registries = Registries {
+            participant_types: &[&PodTest],
+            ..crate::REGISTRIES
+        };
+        let case = CaseLoader::new(registries, TypedConfigLoader)
+            .load_content(
+                "integration",
+                r#"
+timeout: 1m
+subject_os: [linux]
+participants:
+  pod: {type: pod-test, subject: true, realization: {kind: kubernetes-pod}}
+  peer: {type: pod-test}
+  container: {type: pod-test, realization: {kind: linux-container}}
+procedure: [{step: file_contains, on: pod, path: /ready, pattern: ready, timeout: 1s}]
+"#,
+                "native-pod",
+                Path::new("/cases/native-pod/config.yaml"),
+            )
+            .unwrap()
+            .remove(0);
+        let manifest = ArtifactManifest::new(
+            "test",
+            BTreeMap::from([
+                ("pod-image".into(), "pod:bound".into()),
+                ("container-image".into(), "container:bound".into()),
+            ]),
+        )
+        .unwrap();
+        let plan = Planner::new(registries, manifest)
+            .unwrap()
+            .compile(case, Os::Linux)
+            .unwrap()
+            .into_plan()
+            .unwrap();
+        crate::config::build_runners(
+            [plan],
+            &crate::config::runner_artifacts::RunnerArtifacts::Overrides(&[]),
+        )
+        .unwrap()
+        .remove(0)
+    }
 
     /// Runs a native case through artifact verification, checks its report and confirms scope removal.
     pub(crate) async fn run_native_case(
@@ -1137,6 +1245,97 @@ mod tests {
             assert_eq!(report["reclaim"], serde_json::to_value(&result.reclaim).unwrap());
             assert_eq!(report["layout"], serde_json::to_value(layout).unwrap());
             assert!(rx.try_recv().is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn unprovidable_pods_report_without_waiting_for_kind_in_both_run_modes() {
+        for fail_fast in [false, true] {
+            let logs = tempfile::tempdir().unwrap();
+            let (ready_tx, ready_rx) = tokio::sync::watch::channel(None);
+            let mut runner = Runner::new(logs.path(), test_runner_settings()).with_kind_ready(ready_rx);
+            let mut built = super::test_support::native_pod_case();
+            built.execution = Execution::Unprovidable("Docker context mismatch".into());
+            runner.register(built).unwrap();
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            let args = RunArgs::new(CancellationToken::new(), tx).with_fail_fast(fail_fast);
+            tokio::time::timeout(BOUND, runner.run_tests(args)).await.unwrap();
+            assert!(ready_tx.borrow().is_none());
+            let mut completed = false;
+            while let Ok(event) = rx.try_recv() {
+                if let TestEvent::TestCompleted { result, .. } = event {
+                    assert_eq!(result.outcome, TestOutcome::Errored);
+                    let error = result.error.unwrap();
+                    assert_eq!(error.kind, ErrorKind::Setup);
+                    assert_eq!(error.message, "Docker context mismatch");
+                    assert!(result.reclaim.is_empty());
+                    completed = true;
+                }
+            }
+            assert!(completed);
+        }
+    }
+
+    #[tokio::test]
+    async fn native_pod_cases_report_failed_or_unfinished_kind_setup_without_creating_resources() {
+        use panoramic_core::backend::RunBackends;
+
+        use super::test_support::{native_pod_case, PodTest};
+
+        for fail_fast in [false, true] {
+            for state in ["failed", "pending", "closed", "missing"] {
+                let logs = tempfile::tempdir().unwrap();
+                let inputs = NativeInputs::new(Arc::new(RunBackends::default()), &[], logs.path()).unwrap();
+                let mut runner = Runner::new(logs.path(), test_runner_settings()).with_native(inputs, &[&PodTest]);
+                let (ready_tx, ready_rx) = tokio::sync::watch::channel(if state == "failed" {
+                    Some(Err("cluster creation failed".to_string()))
+                } else {
+                    None
+                });
+                if state != "missing" {
+                    runner = runner.with_kind_ready(ready_rx);
+                }
+                runner.register(native_pod_case()).unwrap();
+                let (tx, mut rx) = mpsc::unbounded_channel();
+                let args = RunArgs::new(CancellationToken::new(), tx).with_fail_fast(fail_fast);
+                let task = tokio::spawn(async move { runner.run_tests(args).await });
+                assert!(matches!(
+                    rx.recv().await.unwrap(),
+                    TestEvent::RunStarted { total_tests: 1 }
+                ));
+                if state == "pending" {
+                    assert!(tokio::time::timeout(Duration::from_millis(25), rx.recv())
+                        .await
+                        .is_err());
+                    assert!(!task.is_finished());
+                    ready_tx.send(Some(Err("cluster creation failed".to_string()))).unwrap();
+                }
+                drop(ready_tx);
+                tokio::time::timeout(BOUND, task).await.unwrap().unwrap();
+                assert!(matches!(rx.try_recv().unwrap(), TestEvent::TestStarted { name } if name == "native-pod"));
+                let TestEvent::TestCompleted { result, .. } = rx.try_recv().unwrap() else {
+                    panic!("native pod case must report its setup failure");
+                };
+                assert_eq!(result.outcome, TestOutcome::Errored);
+                let error = result.error.as_ref().unwrap();
+                assert_eq!(error.kind, ErrorKind::Setup);
+                assert_eq!(
+                    error.message,
+                    if matches!(state, "failed" | "pending") {
+                        "Kind cluster setup failed: cluster creation failed"
+                    } else {
+                        "Kind cluster setup did not complete"
+                    }
+                );
+                assert_eq!(phase_names(&result), ["kind_setup"]);
+                assert!(result.reclaim.is_empty());
+                assert!(result.participants.is_empty());
+                assert!(result.issues.is_empty());
+                let report = written_report(&result);
+                assert_eq!(report["error"]["kind"], "setup");
+                assert_eq!(report["error"]["message"], error.message);
+                assert!(rx.try_recv().is_err());
+            }
         }
     }
 

@@ -1,7 +1,7 @@
 use panoramic_core::{
     case::FileSource,
     endpoint::test_support::{http_address, unix_stream_address},
-    recipe::test_support::{assert_container_command, files, rendered},
+    recipe::test_support::{assert_container_command, assert_pod, files, late_files, rendered},
 };
 use serde_json::json;
 
@@ -10,6 +10,10 @@ use super::*;
 const LINUX: Realization = Realization {
     os: Os::Linux,
     kind: RealizationKind::LinuxContainer,
+};
+const POD: Realization = Realization {
+    os: Os::Linux,
+    kind: RealizationKind::KubernetesPod,
 };
 const SEED: [u8; 32] = [
     2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109,
@@ -54,26 +58,123 @@ fn paired_configs_change_only_the_target_and_keep_the_legacy_seed_and_payload() 
         ("RUST_LOG".into(), "info".into()),
     ]);
     let config = rendered(env.clone(), case_values(&document).file_contents);
-    let recipe = Millstone.recipe(LINUX, &config).unwrap();
-    assert_container_command(
-        &recipe,
-        TOOLS_LINUX_IMAGE,
-        &["/bin/sh", WRAPPER_PATH],
-        &["/usr/local/bin/millstone", CONFIG_DIR, STATE_DIR],
-        &env,
-    );
+    for realization in [LINUX, POD] {
+        let recipe = Millstone.recipe(realization, &config).unwrap();
+        if realization == LINUX {
+            assert_container_command(
+                &recipe,
+                TOOLS_LINUX_IMAGE,
+                &["/bin/sh", WRAPPER_PATH],
+                &["/usr/local/bin/millstone", CONFIG_DIR, STATE_DIR, "keep-alive"],
+                &env,
+            );
+        } else {
+            assert_pod(
+                &recipe,
+                "millstone",
+                TOOLS_LINUX_IMAGE,
+                &["/bin/sh", WRAPPER_PATH],
+                &["/usr/local/bin/millstone", CONFIG_DIR, STATE_DIR],
+                &env,
+            );
+            assert_eq!(
+                late_files(&recipe),
+                ["/etc/millstone/baseline.yaml", "/etc/millstone/subject.yaml"]
+            );
+        }
+        let placed = files(&recipe);
+        assert_eq!(placed.len(), 3);
+        assert_eq!(placed[0], (WRAPPER_PATH, 0o755, WRAPPER));
+        for (index, process, expected_target) in [(1, "subject", target), (2, "baseline", baseline)] {
+            let (path, mode, contents) = placed[index];
+            assert_eq!(path, format!("{CONFIG_DIR}/{process}.yaml"));
+            assert_eq!(mode, 0o644);
+            let mut actual: Value = serde_saphyr::from_str(simdutf8::basic::from_utf8(contents).unwrap()).unwrap();
+            assert_eq!(actual["target"], expected_target);
+            assert_eq!(actual["seed"], json!(SEED));
+            actual["target"] = json!(target);
+            assert_eq!(actual, document);
+        }
+    }
+}
+
+const LATE_CONTAINER_ID: &str = "{{ self.late.container_id }}";
+const LATE_POD_UID: &str = "{{ self.late.pod_uid }}";
+
+// YAML serialization must preserve quotes so numeric late IDs stay strings.
+#[test]
+fn pod_recipe_keeps_late_references_as_strings_in_the_real_origin_detection_matrix() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../../test/correctness/cases/dsd-origin-detection-matrix/millstone.yaml");
+    let fixture = std::fs::read_to_string(path).unwrap();
+    let legacy_target = "unixgram:///$GROUP-airlock/metrics.sock";
+    let subject = "unixgram:///airlock/subject/shared/metrics.sock";
+    let baseline = "unixgram:///airlock/baseline/shared/metrics.sock";
+    for placeholder in [legacy_target, "{{CONTAINER_ID}}", "{{POD_UID}}"] {
+        assert!(
+            fixture.contains(placeholder),
+            "{placeholder} missing from the matrix millstone.yaml"
+        );
+    }
+    let templated = fixture
+        .replace(legacy_target, subject)
+        .replace("{{CONTAINER_ID}}", LATE_CONTAINER_ID)
+        .replace("{{POD_UID}}", LATE_POD_UID);
+    let env = BTreeMap::from([
+        (TARGET_ENV.into(), subject.into()),
+        (BASELINE_TARGET_ENV.into(), baseline.into()),
+    ]);
+    let recipe = Millstone
+        .recipe(
+            POD,
+            &rendered(env, BTreeMap::from([(CONFIG_FILE.into(), templated.into_bytes())])),
+        )
+        .unwrap();
     let placed = files(&recipe);
     assert_eq!(placed.len(), 3);
-    assert_eq!(placed[0], (WRAPPER_PATH, 0o755, WRAPPER));
-    for (index, process, expected_target) in [(1, "subject", target), (2, "baseline", baseline)] {
-        let (path, mode, contents) = placed[index];
-        assert_eq!(path, format!("{CONFIG_DIR}/{process}.yaml"));
-        assert_eq!(mode, 0o644);
-        let mut actual: Value = serde_saphyr::from_str(simdutf8::basic::from_utf8(contents).unwrap()).unwrap();
-        assert_eq!(actual["target"], expected_target);
-        assert_eq!(actual["seed"], json!(SEED));
-        actual["target"] = json!(target);
-        assert_eq!(actual, document);
+
+    // Includes IDs that a plain scalar would turn into an integer, a float and a different string.
+    for (container_id, pod_uid) in [
+        (
+            "0123456789012345678901234567890123456789012345678901234567890123",
+            "1234567890",
+        ),
+        (
+            "1234567890123456789012345678901234567890123456789012345678901234",
+            "12e4",
+        ),
+        (
+            "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+            "0a1b2c3d-4e5f-6789-abcd-ef0123456789",
+        ),
+    ] {
+        let resolved = fixture
+            .replace(legacy_target, subject)
+            .replace("{{CONTAINER_ID}}", container_id)
+            .replace("{{POD_UID}}", pod_uid);
+        let mut expected: Value = serde_saphyr::from_str(&resolved).unwrap();
+        for (index, target) in [(1, subject), (2, baseline)] {
+            let (_, _, contents) = placed[index];
+            let contents = simdutf8::basic::from_utf8(contents)
+                .unwrap()
+                .replace(LATE_CONTAINER_ID, container_id)
+                .replace(LATE_POD_UID, pod_uid);
+            let actual: Value = serde_saphyr::from_str(&contents).unwrap();
+            let payload = &actual["corpus"]["payload"]["dogstatsd"];
+            assert_eq!(
+                payload["container_ids"][0],
+                Value::String(container_id.into()),
+                "{contents}"
+            );
+            assert_eq!(
+                payload["external_data"][0],
+                Value::String(format!("pu-{pod_uid},cn-millstone,it-false")),
+                "{contents}"
+            );
+            assert_eq!(actual["target"], target);
+            expected["target"] = json!(target);
+            assert_eq!(actual, expected);
+        }
     }
 }
 
@@ -223,17 +324,18 @@ fn a_recipe_applies_the_rendered_path_to_both_senders() {
         (BASELINE_TARGET_ENV.into(), "http://baseline:54317".into()),
     ]);
     let document = configuration(&format!("http://subject:4317{path}"));
-    let recipe = Millstone
-        .recipe(LINUX, &rendered(env, case_values(&document).file_contents))
-        .unwrap();
-    let placed = files(&recipe);
-    for (index, expected_target) in [
-        (1, format!("http://subject:4317{path}")),
-        (2, format!("http://baseline:54317{path}")),
-    ] {
-        let actual: Value = serde_saphyr::from_str(simdutf8::basic::from_utf8(placed[index].2).unwrap()).unwrap();
-        assert_eq!(actual["target"], expected_target);
-        assert_eq!(actual["seed"], json!(SEED));
+    let config = rendered(env, case_values(&document).file_contents);
+    for realization in [LINUX, POD] {
+        let recipe = Millstone.recipe(realization, &config).unwrap();
+        let placed = files(&recipe);
+        for (index, expected_target) in [
+            (1, format!("http://subject:4317{path}")),
+            (2, format!("http://baseline:54317{path}")),
+        ] {
+            let actual: Value = serde_saphyr::from_str(simdutf8::basic::from_utf8(placed[index].2).unwrap()).unwrap();
+            assert_eq!(actual["target"], expected_target);
+            assert_eq!(actual["seed"], json!(SEED));
+        }
     }
 }
 
@@ -298,6 +400,8 @@ fn process_channels_and_capture_destinations_keep_both_senders_distinct() {
         );
     }
     assert_eq!(Millstone.process_specs(LINUX).len(), 2);
+    assert_eq!(Millstone.process_specs(POD), Millstone.process_specs(LINUX));
+    assert!(Millstone.collect(POD).is_empty());
     let collected = Millstone.collect(LINUX);
     assert_eq!(collected.len(), 3);
     for (index, filename) in [(0, "input.jsonl.zst"), (1, "input-manifest.json")] {
@@ -313,17 +417,25 @@ fn process_channels_and_capture_destinations_keep_both_senders_distinct() {
 }
 
 #[test]
-fn only_linux_containers_are_supported_without_extra_parameters_or_operations() {
-    assert_eq!(Millstone.supports(), &[(Os::Linux, RealizationKind::LinuxContainer)]);
-    assert_eq!(Millstone.artifacts(LINUX), &[TOOLS_LINUX_IMAGE]);
+fn linux_containers_and_pods_are_supported_without_extra_parameters_or_operations() {
+    assert_eq!(
+        Millstone.supports(),
+        &[
+            (Os::Linux, RealizationKind::LinuxContainer),
+            (Os::Linux, RealizationKind::KubernetesPod),
+        ]
+    );
     assert_eq!(Millstone.config_files(), &["millstone.yaml"]);
     assert!(Millstone.params().is_empty());
-    assert!(Millstone.operations(LINUX).is_empty());
-    assert!(Millstone.facts(LINUX).is_empty());
-    assert!(Millstone
-        .endpoints(LINUX, &EffectiveConfig::default())
-        .unwrap()
-        .is_empty());
+    for realization in [LINUX, POD] {
+        assert_eq!(Millstone.artifacts(realization), &[TOOLS_LINUX_IMAGE]);
+        assert!(Millstone.operations(realization).is_empty());
+        assert!(Millstone.facts(realization).is_empty());
+        assert!(Millstone
+            .endpoints(realization, &EffectiveConfig::default())
+            .unwrap()
+            .is_empty());
+    }
     let config = rendered(BTreeMap::new(), BTreeMap::new());
     for os in [Os::Linux, Os::MacOs, Os::Windows] {
         for kind in [
@@ -333,7 +445,7 @@ fn only_linux_containers_are_supported_without_extra_parameters_or_operations() 
             RealizationKind::KubernetesPod,
         ] {
             let realization = Realization { os, kind };
-            if realization == LINUX {
+            if [LINUX, POD].contains(&realization) {
                 continue;
             }
             assert!(Millstone.artifacts(realization).is_empty());
@@ -368,6 +480,27 @@ mod shell {
 
     use super::*;
 
+    // Allow for slow process startup on shared hosts.
+    const WAIT_BOUND: Duration = Duration::from_secs(60);
+
+    #[test]
+    fn the_wrapper_rejects_unknown_modes_before_starting_senders() {
+        let output = Command::new("/bin/sh")
+            .args([
+                "-c",
+                simdutf8::basic::from_utf8(WRAPPER).unwrap(),
+                "run.sh",
+                "unused",
+                "unused",
+                "unused",
+                "keep-alvie",
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        assert_eq!(String::from_utf8(output.stderr).unwrap(), "unknown mode 'keep-alvie'\n");
+    }
+
     struct Wrapper {
         directory: PathBuf,
         child: Child,
@@ -376,7 +509,7 @@ mod shell {
     }
 
     impl Wrapper {
-        fn start(failing: &str) -> Self {
+        fn start(failing: &str, keep_alive: bool) -> Self {
             let scratch = tempfile::tempdir().unwrap();
             let directory = scratch.path().canonicalize().unwrap();
             fs::write(directory.join("run.sh"), WRAPPER).unwrap();
@@ -389,6 +522,12 @@ printf '%s\n' "$@" > "$FAKE_DIR/$process.args"
 printf '%s stdout\n' "$process"
 printf '%s stderr\n' "$process" >&2
 if [ "$FAILING_PROCESS" = "$process" ]; then exit 7; fi
+if [ "$2" = '--traffic-capture-dir' ]; then
+    mkdir -p "$3"
+    printf 'capture' > "$3/input.jsonl.zst"
+    printf '{"complete":true}' > "$3/input-manifest.json"
+    exit 0
+fi
 [ "$2" = '--completion-file' ] || exit 8
 [ "$4" = '--traffic-capture-dir' ] || exit 9
 mkdir -p "$5"
@@ -401,11 +540,16 @@ while [ ! -f "$FAKE_DIR/stop" ]; do sleep 0.05; done
             )
             .unwrap();
             fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
-            let child = Command::new("/bin/sh")
+            let mut command = Command::new("/bin/sh");
+            command
                 .arg(directory.join("run.sh"))
                 .arg(fake)
                 .arg(directory.join("config"))
-                .arg(directory.join("state"))
+                .arg(directory.join("state"));
+            if keep_alive {
+                command.arg("keep-alive");
+            }
+            let child = command
                 .env("PANORAMIC_EXIT_DIR", directory.join("exit"))
                 .env("PANORAMIC_LOG_DIR", directory.join("log"))
                 .env("FAKE_DIR", &directory)
@@ -420,7 +564,7 @@ while [ ! -f "$FAKE_DIR/stop" ]; do sleep 0.05; done
         }
 
         fn wait_for(&mut self, relative: &str) -> String {
-            let deadline = Instant::now() + Duration::from_secs(5);
+            let deadline = Instant::now() + WAIT_BOUND;
             loop {
                 if let Ok(contents) = fs::read_to_string(self.directory.join(relative)) {
                     if !contents.is_empty() {
@@ -433,7 +577,7 @@ while [ ! -f "$FAKE_DIR/stop" ]; do sleep 0.05; done
         }
 
         fn wait(&mut self) -> ExitStatus {
-            let deadline = Instant::now() + Duration::from_secs(5);
+            let deadline = Instant::now() + WAIT_BOUND;
             loop {
                 if let Some(status) = self.child.try_wait().unwrap() {
                     return status;
@@ -462,7 +606,7 @@ while [ ! -f "$FAKE_DIR/stop" ]; do sleep 0.05; done
             let _ = fs::write(self.directory.join("stop"), "");
             if self.child.try_wait().ok().flatten().is_none() {
                 self.terminate();
-                let deadline = Instant::now() + Duration::from_secs(5);
+                let deadline = Instant::now() + WAIT_BOUND;
                 while self.child.try_wait().ok().flatten().is_none() && Instant::now() < deadline {
                     thread::sleep(Duration::from_millis(10));
                 }
@@ -474,12 +618,12 @@ while [ ! -f "$FAKE_DIR/stop" ]; do sleep 0.05; done
 
     #[test]
     fn wrapper_keeps_both_senders_alive_and_records_shutdown_independently() {
-        let mut wrapper = Wrapper::start("");
+        let mut wrapper = Wrapper::start("", true);
         for process in ["baseline", "subject"] {
             wrapper.wait_for(&format!("state/{process}/input-manifest.json"));
             let log = wrapper.wait_for(&format!("log/{process}.log"));
             // The manifest precedes completion output, so wait for that line separately.
-            let deadline = Instant::now() + Duration::from_secs(5);
+            let deadline = Instant::now() + WAIT_BOUND;
             while !fs::read_to_string(wrapper.directory.join(format!("log/{process}.log")))
                 .unwrap()
                 .contains("Millstone finished sending")
@@ -520,9 +664,39 @@ while [ ! -f "$FAKE_DIR/stop" ]; do sleep 0.05; done
     }
 
     #[test]
+    fn wrapper_without_keep_alive_lets_both_senders_exit_after_sending() {
+        let mut wrapper = Wrapper::start("", false);
+        assert!(wrapper.wait().success());
+        for process in ["baseline", "subject"] {
+            wrapper.assert_record(process, 0, 0);
+            assert!(wrapper
+                .directory
+                .join(format!("state/{process}/input-manifest.json"))
+                .exists());
+            assert!(!wrapper.directory.join(format!("state/{process}.complete")).exists());
+            let log = wrapper.wait_for(&format!("log/{process}.log"));
+            assert!(log.contains(&format!("{process} stdout")));
+            assert!(log.contains(&format!("{process} stderr")));
+            let args = wrapper.wait_for(&format!("{process}.args"));
+            assert_eq!(
+                args.lines().map(str::to_owned).collect::<Vec<_>>(),
+                [
+                    wrapper
+                        .directory
+                        .join(format!("config/{process}.yaml"))
+                        .display()
+                        .to_string(),
+                    "--traffic-capture-dir".into(),
+                    wrapper.directory.join(format!("state/{process}")).display().to_string(),
+                ]
+            );
+        }
+    }
+
+    #[test]
     fn either_senders_failure_is_recorded_without_waiting_for_the_other() {
         for (failed, survivor) in [("baseline", "subject"), ("subject", "baseline")] {
-            let mut wrapper = Wrapper::start(failed);
+            let mut wrapper = Wrapper::start(failed, true);
             wrapper.assert_record(failed, 7, 0);
             wrapper.wait_for(&format!("state/{survivor}/input-manifest.json"));
             assert!(!wrapper.directory.join(format!("exit/{survivor}")).exists());

@@ -49,9 +49,7 @@ impl PodParticipant {
         let primary_path = paths[&self.primary].clone();
         let (exit_tx, exit_rx) = watch::channel(ParticipantExit::Running);
         let (capture_tx, capture_rx) = watch::channel(Capture::Following);
-        // Kubernetes exposes a merged stream; both legacy paths refer to the same file.
-        let mut observation =
-            ParticipantObservation::new(exit_rx.clone(), capture_rx, primary_path.clone(), primary_path);
+        let mut observation = ParticipantObservation::merged(exit_rx.clone(), capture_rx, primary_path);
         let output_owner = self.specs.iter().find(|spec| spec.output == OutputChannel::Container);
         let mut containers = BTreeMap::new();
         let mut exits = Vec::new();
@@ -272,8 +270,21 @@ async fn watch_containers<F>(
 ) where
     F: Future<Output = Result<Pod, GenericError>>,
 {
+    let mut consecutive_errors = 0;
     loop {
         let pod = read().await;
+        match &pod {
+            Ok(_) => consecutive_errors = 0,
+            Err(error) => {
+                consecutive_errors += 1;
+                let not_found = matches!(error.downcast_ref::<kube::Error>(),
+                    Some(kube::Error::Api(status)) if status.is_not_found());
+                if !not_found && consecutive_errors < 3 {
+                    sleep(POLL_INTERVAL).await;
+                    continue;
+                }
+            }
+        }
         let mut exits = Vec::with_capacity(containers.len());
         for (name, status) in &containers {
             if *status.borrow() == ExitObservation::Running {
@@ -334,25 +345,36 @@ async fn capture_logs<R, F>(
         let mut file = File::create(&path).await?;
         let mut bytes = [0; 8192];
         let mut followed = 0usize;
-        let ended = match open(true).await {
-            Err(error) => Err(error),
-            Ok(mut reader) => loop {
+        let ended = 'follow: loop {
+            let mut reader = match open(true).await {
+                Ok(reader) => reader,
+                Err(error) => break Err(error),
+            };
+            loop {
                 let count = tokio::select! {
                     biased;
-                    status = exit.settled() => break Ok(status),
+                    status = exit.settled() => break 'follow Ok(status),
                     count = reader.read(&mut bytes) => match count {
                         Ok(count) => count,
-                        Err(error) => break Err(error.into()),
+                        Err(error) => break 'follow Err(error.into()),
                     },
                 };
                 if count == 0 {
-                    break Err(generic_error!("log stream ended while its container was running"));
+                    if followed == 0 {
+                        // A newly running container can return an empty stream before its log file exists.
+                        tokio::select! {
+                            biased;
+                            status = exit.settled() => break 'follow Ok(status),
+                            _ = sleep(POLL_INTERVAL) => continue 'follow,
+                        }
+                    }
+                    break 'follow Err(generic_error!("log stream ended while its container was running"));
                 }
                 file.write_all(&bytes[..count]).await?;
                 file.flush().await?;
                 lines.push(&bytes[..count], SystemTime::now());
                 followed += count;
-            },
+            }
         };
         let status = match ended {
             Ok(status) => status,
@@ -598,22 +620,86 @@ mod tests {
         assert_eq!(*exit.borrow(), ParticipantExit::Ended);
     }
 
-    #[tokio::test]
-    async fn a_status_request_error_preserves_known_exits_and_fails_unsettled_ones() {
-        let (main_tx, main) = watch::channel(exited(7));
-        let (helper_tx, helper) = watch::channel(ExitObservation::Running);
-        let (tx, exit) = watch::channel(ParticipantExit::Running);
-        watch_containers(
-            || std::future::ready(Err(generic_error!("pod was deleted"))),
-            vec![("main".into(), main_tx), ("helper".into(), helper_tx)],
-            tx,
-        )
-        .await;
-        assert_eq!(*main.borrow(), exited(7));
-        assert!(
-            matches!(&*helper.borrow(), ExitObservation::Undetermined(reason) if reason.contains("pod was deleted"))
-        );
-        assert!(matches!(&*exit.borrow(), ParticipantExit::Undetermined { reason } if reason.contains("helper")));
+    #[tokio::test(start_paused = true)]
+    async fn status_request_errors_retry_transient_failures_and_preserve_known_exits() {
+        // A failed poll must not settle running containers; NotFound must survive the read's error context.
+        let not_found = Err::<Pod, _>(kube::Error::Api(
+            serde_json::from_value(json!({
+                "status": "Failure", "reason": "NotFound", "message": "pod was deleted", "code": 404
+            }))
+            .unwrap(),
+        ))
+        .with_error_context(|| "cannot observe pod 'ns/p'")
+        .unwrap_err();
+        let terminated = || {
+            Ok(pod(json!({"containerStatuses": [
+                state("helper", json!({"terminated": {"exitCode": 0}}))
+            ]})))
+        };
+        let failure = || Err(generic_error!("status request failed"));
+        for (name, responses, expected_error) in [
+            (
+                "one transient failure",
+                vec![failure(), Ok(Pod::default()), terminated()],
+                None,
+            ),
+            (
+                "a success resets consecutive failures",
+                vec![
+                    failure(),
+                    failure(),
+                    Ok(Pod::default()),
+                    failure(),
+                    failure(),
+                    terminated(),
+                ],
+                None,
+            ),
+            (
+                "three consecutive failures",
+                vec![failure(), failure(), failure()],
+                Some("status request failed"),
+            ),
+            ("NotFound", vec![Err(not_found)], Some("cannot observe pod 'ns/p':")),
+        ] {
+            let polls = responses.len();
+            let mut responses = VecDeque::from(responses);
+            let (main_tx, main) = watch::channel(exited(7));
+            let (helper_tx, helper) = watch::channel(ExitObservation::Running);
+            let (tx, exit) = watch::channel(ParticipantExit::Running);
+            let started = Instant::now();
+            watch_containers(
+                || {
+                    assert_eq!(*exit.borrow(), ParticipantExit::Running, "{name}");
+                    assert_eq!(*helper.borrow(), ExitObservation::Running, "{name}");
+                    std::future::ready(responses.pop_front().expect("no further status requests"))
+                },
+                vec![("main".into(), main_tx), ("helper".into(), helper_tx)],
+                tx,
+            )
+            .await;
+            assert!(responses.is_empty(), "{name}");
+            assert_eq!(started.elapsed(), POLL_INTERVAL * (polls - 1) as u32, "{name}");
+            assert_eq!(*main.borrow(), exited(7), "{name}");
+            match expected_error {
+                Some(expected) => {
+                    let ExitObservation::Undetermined(reason) = &*helper.borrow() else {
+                        panic!("{name}: expected an undetermined exit");
+                    };
+                    assert!(reason.contains(expected), "{name}: {reason}");
+                    assert_eq!(
+                        *exit.borrow(),
+                        ParticipantExit::Undetermined { reason: reason.clone() },
+                        "{name}"
+                    );
+                    assert!(reason.contains("helper"), "{name}: {reason}");
+                }
+                None => {
+                    assert_eq!(*helper.borrow(), exited(0), "{name}");
+                    assert_eq!(*exit.borrow(), ParticipantExit::Ended, "{name}");
+                }
+            }
+        }
         let (_, rx) = watch::channel(ExitObservation::Running);
         assert!(matches!(
             ProcessObservation::ContainerStatus(rx).settled().await,
@@ -691,7 +777,7 @@ mod tests {
             && line.process == Some("main")
             && line.stream == OutputStream::Merged));
         let (_, exit) = watch::channel(ParticipantExit::Ended);
-        let mut observation = ParticipantObservation::new(exit, logs.capture.clone(), path.clone(), path.clone());
+        let mut observation = ParticipantObservation::merged(exit, logs.capture.clone(), path.clone());
         observation.processes.insert("main", logs.exit.clone());
         observation.outputs.insert(
             "main",
@@ -823,11 +909,63 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn empty_initial_streams_retry_until_output_or_container_termination() {
+        // A container with no output can return an empty stream; capture must wait until it terminates.
+        for output in [b"".as_slice(), b"ready\n".as_slice()] {
+            let logs = Logs::new(1024);
+            let mut attempts = 0;
+            capture_logs(
+                |follow| {
+                    let bytes = if follow {
+                        attempts += 1;
+                        assert_eq!(*logs.capture.borrow(), Capture::Following);
+                        if attempts < 3 {
+                            Vec::new()
+                        } else {
+                            output.to_vec()
+                        }
+                    } else {
+                        output.to_vec()
+                    };
+                    let mut chunk = Some(bytes);
+                    let exit = logs.exit_tx.clone();
+                    let terminate = follow && attempts == 3;
+                    if terminate && output.is_empty() {
+                        exit.send_replace(exited(0));
+                    }
+                    let reader = stream::poll_fn(move |_| {
+                        let bytes = chunk.take();
+                        if terminate && bytes.is_none() {
+                            exit.send_replace(exited(0));
+                        }
+                        Poll::Ready(bytes.map(Ok::<_, io::Error>))
+                    })
+                    .into_async_read();
+                    std::future::ready(Ok(reader))
+                },
+                logs.dir.path().join("containers/main.log"),
+                LineBuffer::new(logs.lines.clone(), "p".into(), None, OutputStream::Merged),
+                logs.exit.clone(),
+                logs.capture_tx.clone(),
+            )
+            .await;
+            assert_eq!(attempts, 3);
+            assert_eq!(*logs.capture.borrow(), Capture::Complete);
+            assert_eq!(
+                tokio::fs::read(logs.dir.path().join("containers/main.log"))
+                    .await
+                    .unwrap(),
+                output
+            );
+        }
+    }
+
     #[tokio::test(start_paused = true)]
-    async fn an_early_log_eof_is_not_complete_without_container_termination() {
+    async fn a_log_eof_after_output_is_not_complete_without_container_termination() {
         let logs = Logs::new(1024);
         capture_logs(
-            |_| std::future::ready(Ok(futures::io::Cursor::new(Vec::<u8>::new()))),
+            |_| std::future::ready(Ok(futures::io::Cursor::new(b"partial\n".to_vec()))),
             logs.dir.path().join("containers/main.log"),
             LineBuffer::new(logs.lines.clone(), "p".into(), None, OutputStream::Merged),
             logs.exit.clone(),

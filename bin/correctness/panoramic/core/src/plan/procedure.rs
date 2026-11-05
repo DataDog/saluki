@@ -291,6 +291,17 @@ mod tests {
                         assert_eq!(planner.ports.allocate(), Ok(20000));
                         continue;
                     }
+                    if operation == EndpointOperation::Send && realization == RealizationKind::KubernetesPod {
+                        let error = compile_with(&mut planner, &yaml, Os::Linux).err().unwrap().to_string();
+                        assert!(
+                            error.ends_with(
+                                "sending payloads to a kubernetes-pod endpoint from the runner host is not supported"
+                            ),
+                            "{error}"
+                        );
+                        assert_eq!(planner.ports.allocate(), Ok(20000));
+                        continue;
+                    }
                     let plan = compile_with(&mut planner, &yaml, Os::Linux).unwrap().unwrap();
                     let expected = if operation == EndpointOperation::Request {
                         RunnerHostRoute::Direct(ResolvedAddress {

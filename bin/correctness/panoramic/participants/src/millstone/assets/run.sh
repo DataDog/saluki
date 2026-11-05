@@ -4,6 +4,11 @@ set -u
 binary=$1
 config_dir=$2
 state_dir=$3
+keep_alive=${4:-}
+case "$keep_alive" in
+    ''|keep-alive) ;;
+    *) echo "unknown mode '$keep_alive'" >&2; exit 2 ;;
+esac
 : "${PANORAMIC_EXIT_DIR:?}"
 : "${PANORAMIC_LOG_DIR:?}"
 mkdir -p "$state_dir" "$PANORAMIC_EXIT_DIR" "$PANORAMIC_LOG_DIR" || exit 1
@@ -29,9 +34,11 @@ run_sender() {
         exit 0
     }
 
-    "$binary" "$config_dir/$process.yaml" \
-        --completion-file "$state_dir/$process.complete" \
-        --traffic-capture-dir "$state_dir/$process" &
+    set -- "$config_dir/$process.yaml"
+    if [ "$keep_alive" = keep-alive ]; then
+        set -- "$@" --completion-file "$state_dir/$process.complete"
+    fi
+    "$binary" "$@" --traffic-capture-dir "$state_dir/$process" &
     child=$!
     trap stop_sender TERM INT
     wait "$child"

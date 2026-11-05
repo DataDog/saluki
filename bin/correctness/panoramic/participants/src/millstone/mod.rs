@@ -1,4 +1,4 @@
-//! Paired load generators sharing a seed and container identity through the targets' flush window.
+//! Paired load generators sharing a seed and runtime identity.
 
 use std::collections::BTreeMap;
 
@@ -16,6 +16,8 @@ use serde_json::Value;
 
 use crate::TOOLS_LINUX_IMAGE;
 
+mod pod;
+
 const CONFIG_FILE: &str = "millstone.yaml";
 const CONFIG_DIR: &str = "/etc/millstone";
 const STATE_DIR: &str = "/var/lib/millstone";
@@ -25,7 +27,7 @@ const TARGET_ENV: &str = "MILLSTONE_TARGET";
 const BASELINE_TARGET_ENV: &str = "MILLSTONE_BASELINE_TARGET";
 const TARGET_REFERENCE: &str = "self.connections.target.url";
 
-/// Two deterministic senders, kept alive after sending so targets can resolve their origin while flushing.
+/// Two deterministic senders sharing a seed and targeting separate receivers.
 pub struct Millstone;
 
 impl Millstone {
@@ -63,39 +65,10 @@ impl Millstone {
     fn is_path_suffix(suffix: &str) -> bool {
         (suffix.is_empty() || suffix.starts_with('/')) && !suffix.contains("{{") && !suffix.contains("}}")
     }
-}
 
-impl ParticipantType for Millstone {
-    fn name(&self) -> &'static str {
-        Self::NAME
-    }
-
-    fn supports(&self) -> &'static [(Os, RealizationKind)] {
-        &[(Os::Linux, RealizationKind::LinuxContainer)]
-    }
-
-    fn artifacts(&self, realization: Realization) -> &'static [ArtifactRole] {
-        match (realization.os, realization.kind) {
-            (Os::Linux, RealizationKind::LinuxContainer) => &[TOOLS_LINUX_IMAGE],
-            _ => &[],
-        }
-    }
-
-    fn recipe(&self, realization: Realization, config: &RenderedConfig) -> Result<Recipe, String> {
-        if !self.supports().contains(&(realization.os, realization.kind)) {
-            return Err(format!(
-                "participant type '{}' has no recipe for {} on {}",
-                Self::NAME,
-                realization.kind.name(),
-                realization.os.name(),
-            ));
-        }
+    fn sender_files(config: &RenderedConfig) -> Result<Vec<(String, Vec<u8>)>, String> {
         let mut sender_config = Self::configuration(config.files())?;
-        let mut recipe = ContainerRecipe::new(TOOLS_LINUX_IMAGE)
-            .with_entrypoint(["/bin/sh", WRAPPER_PATH])
-            .with_command(["/usr/local/bin/millstone", CONFIG_DIR, STATE_DIR])
-            .with_env(config.env().clone())
-            .with_file(WRAPPER_PATH, 0o755, WRAPPER);
+        let mut files = Vec::new();
         let subject_target = config
             .env()
             .get(TARGET_ENV)
@@ -117,7 +90,50 @@ impl ParticipantType for Millstone {
             sender_config["target"] = Value::String(format!("{target}{suffix}"));
             let contents = serde_saphyr::to_string(&sender_config)
                 .map_err(|error| format!("cannot serialize {process} millstone.yaml: {error}"))?;
-            recipe = recipe.with_file(format!("{CONFIG_DIR}/{process}.yaml"), 0o644, contents.into_bytes());
+            files.push((format!("{CONFIG_DIR}/{process}.yaml"), contents.into_bytes()));
+        }
+        Ok(files)
+    }
+}
+
+impl ParticipantType for Millstone {
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn supports(&self) -> &'static [(Os, RealizationKind)] {
+        &[
+            (Os::Linux, RealizationKind::LinuxContainer),
+            (Os::Linux, RealizationKind::KubernetesPod),
+        ]
+    }
+
+    fn artifacts(&self, realization: Realization) -> &'static [ArtifactRole] {
+        match (realization.os, realization.kind) {
+            (Os::Linux, RealizationKind::LinuxContainer | RealizationKind::KubernetesPod) => &[TOOLS_LINUX_IMAGE],
+            _ => &[],
+        }
+    }
+
+    fn recipe(&self, realization: Realization, config: &RenderedConfig) -> Result<Recipe, String> {
+        if !self.supports().contains(&(realization.os, realization.kind)) {
+            return Err(format!(
+                "participant type '{}' has no recipe for {} on {}",
+                Self::NAME,
+                realization.kind.name(),
+                realization.os.name(),
+            ));
+        }
+        if realization.kind == RealizationKind::KubernetesPod {
+            return pod::recipe(config);
+        }
+        let mut recipe = ContainerRecipe::new(TOOLS_LINUX_IMAGE)
+            .with_entrypoint(["/bin/sh", WRAPPER_PATH])
+            .with_command(["/usr/local/bin/millstone", CONFIG_DIR, STATE_DIR, "keep-alive"])
+            .with_env(config.env().clone())
+            .with_file(WRAPPER_PATH, 0o755, WRAPPER);
+        for (path, contents) in Self::sender_files(config)? {
+            recipe = recipe.with_file(path, 0o644, contents);
         }
         Ok(Recipe::Container(recipe))
     }
@@ -212,7 +228,7 @@ impl ParticipantType for Millstone {
 
     fn process_specs(&self, realization: Realization) -> &'static [ProcessSpec] {
         match (realization.os, realization.kind) {
-            (Os::Linux, RealizationKind::LinuxContainer) => &[
+            (Os::Linux, RealizationKind::LinuxContainer | RealizationKind::KubernetesPod) => &[
                 ProcessSpec {
                     name: "baseline",
                     exit: ExitChannel::Record { file: "baseline" },

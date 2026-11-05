@@ -27,6 +27,7 @@ pub mod metrics;
 mod port_listening;
 mod process_stable_for;
 mod send;
+mod wait;
 
 /// Steps available to case files, sorted by name.
 pub const REGISTERED_STEPS: &[&dyn StepFactory] = &[
@@ -47,6 +48,7 @@ pub const REGISTERED_STEPS: &[&dyn StepFactory] = &[
     &port_listening::PortListeningFactory,
     &process_stable_for::ProcessStableForFactory,
     &send::SendFactory,
+    &wait::WaitFactory,
 ];
 
 /// Matches text against a step's pattern, either literally or as a compiled regex.
@@ -118,6 +120,7 @@ mod tests {
         process_stable_for::ProcessStableFor,
         send::Send,
         test_support::valid_fields,
+        wait::Wait,
     };
 
     const PATTERN_STEPS: &[&dyn StepFactory] = &[
@@ -130,15 +133,16 @@ mod tests {
     fn duration_field(name: &str) -> &'static str {
         match name {
             LogNotContains::NAME => "during",
-            ProcessStableFor::NAME => "duration",
+            ProcessStableFor::NAME | Wait::NAME => "duration",
             _ => "timeout",
         }
     }
 
     #[tokio::test]
-    async fn every_step_errors_when_its_participant_did_not_start() {
+    async fn participant_steps_error_when_their_participant_did_not_start() {
         for factory in REGISTERED_STEPS {
-            if factory.name() == Compare::NAME {
+            // Compare names its intakes through its own fields; wait pauses without observing a participant.
+            if matches!(factory.name(), Compare::NAME | Wait::NAME) {
                 continue;
             }
             let report = panoramic_core::step::test_support::run_step_offering(
@@ -208,6 +212,7 @@ mod tests {
                 "port_listening",
                 "process_stable_for",
                 "send",
+                "wait",
             ]
         );
         assert!(names.windows(2).all(|pair| pair[0] < pair[1]));
@@ -238,6 +243,7 @@ mod tests {
                 PortListening::NAME,
                 ProcessStableFor::NAME,
                 Send::NAME,
+                Wait::NAME,
             ]
         );
     }
@@ -267,6 +273,7 @@ mod tests {
                 (PortListening::NAME, StepKind::Assertion),
                 (ProcessStableFor::NAME, StepKind::Assertion),
                 (Send::NAME, StepKind::Action),
+                (Wait::NAME, StepKind::Action),
             ]
         );
     }
@@ -301,6 +308,7 @@ mod tests {
                 Send::NAME => vec![Need::Endpoint("subject".into(), "udp".into(), EndpointOperation::Send)],
                 ExitsWith::NAME => vec![Need::Process("subject".into(), "main".into())],
                 PortListening::NAME => vec![Need::Endpoint("subject".into(), "tcp".into(), EndpointOperation::Probe)],
+                Wait::NAME => vec![],
                 _ => vec![Need::Handle("subject".into())],
             };
             assert_eq!(step.needs(), needs);
@@ -331,6 +339,7 @@ mod tests {
                 LogContains::NAME | LogNotContains::NAME => &["on", "pattern", "process"],
                 ExitsWith::NAME | ProcessStableFor::NAME => &["on", "process"],
                 PortListening::NAME => &["on", "endpoint"],
+                Wait::NAME => &[],
                 other => panic!("missing string fields for '{other}'"),
             };
             for &field in string_fields {

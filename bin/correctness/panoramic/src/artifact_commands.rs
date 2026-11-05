@@ -616,7 +616,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         for yaml in [
             r#"type: bogus"#.to_string(),
-            PARTICIPANT_FIELDS.replace("subject: true", "subject: true, realization: {kind: kubernetes-pod}"),
+            PARTICIPANT_FIELDS.replace(
+                "subject: true",
+                "subject: true, realization: {kind: host-process-group}",
+            ),
         ] {
             write_case(dir.path(), "invalid", &yaml);
             let (exit, report, log) =
@@ -667,7 +670,10 @@ mod tests {
         write_case(
             &cases,
             "invalid",
-            &PARTICIPANT_FIELDS.replace("subject: true", "subject: true, realization: {kind: kubernetes-pod}"),
+            &PARTICIPANT_FIELDS.replace(
+                "subject: true",
+                "subject: true, realization: {kind: host-process-group}",
+            ),
         );
         let unknown = dir.path().join("unknown.toml");
         std::fs::write(&unknown, "schema = 1\n[roles]\nbogus = 'x'").unwrap();

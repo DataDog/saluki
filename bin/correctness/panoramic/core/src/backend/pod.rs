@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use k8s_openapi::{
     api::core::v1::{Namespace, Pod, Service},
-    apimachinery::pkg::apis::meta::v1::ObjectMeta,
+    apimachinery::pkg::apis::meta::v1::{ObjectMeta, Status},
 };
 use kube::{
     api::{AttachParams, DeleteParams, PostParams},
@@ -41,6 +41,10 @@ use crate::{
     tasks::CaseTasks,
 };
 
+pub(super) const HOST_PID: &str = "host_pid";
+pub(super) const CRI_SOCKET: &str = "cri_socket";
+const CRI_SOCKET_PATH: &str = "/run/containerd/containerd.sock";
+
 pub(crate) struct PodScope {
     client: Client,
     node: Node,
@@ -56,9 +60,6 @@ impl RunBackends {
         let connection = self.pod_connection().await?;
         let namespace = scope.id();
         let root = scope.state_dir(Os::Linux);
-        for name in participants {
-            manifests::check_name(name)?;
-        }
         ledger.pod_directory(
             connection.node.clone(),
             root.clone(),
@@ -165,7 +166,6 @@ struct PodParticipant {
     specs: &'static [ProcessSpec],
 }
 
-#[derive(Clone)]
 pub(crate) struct PodRemoval {
     client: Client,
     namespace: String,
@@ -177,13 +177,10 @@ impl PodRemoval {
         let pods: Api<Pod> = Api::namespaced(self.client.clone(), &self.namespace);
         let services: Api<Service> = Api::namespaced(self.client.clone(), &self.namespace);
         let params = DeleteParams {
-            grace_period_seconds: Some(
-                grace
-                    .min(deadline.saturating_duration_since(Instant::now()))
-                    .as_secs()
-                    .try_into()
-                    .unwrap_or(u32::MAX),
-            ),
+            grace_period_seconds: Some(deletion_grace(
+                grace,
+                deadline.saturating_duration_since(Instant::now()),
+            )),
             ..Default::default()
         };
         let service_params = DeleteParams::default();
@@ -216,6 +213,7 @@ impl RuntimeParticipant for PodParticipant {
     }
 
     async fn create(&self) -> Result<Vec<(LateFact, String)>, GenericError> {
+        let pod = self.manifests.checked_pod(&self.node).await?;
         for file in &self.manifests.files {
             self.node
                 .write(&file.node_path, file.mode, file.contents.clone())
@@ -224,15 +222,17 @@ impl RuntimeParticipant for PodParticipant {
         let services: Api<Service> = Api::namespaced(self.client.clone(), &self.namespace);
         services.create(&PostParams::default(), &self.manifests.service).await?;
         let pods: Api<Pod> = Api::namespaced(self.client.clone(), &self.namespace);
-        pods.create(&PostParams::default(), &self.manifests.pod).await?;
+        pods.create(&PostParams::default(), &pod).await?;
         Ok(Vec::new())
     }
 
     async fn start(&self) -> Result<Vec<(LateFact, String)>, GenericError> {
         let pods: Api<Pod> = Api::namespaced(self.client.clone(), &self.namespace);
+        let mut last_status = "no status received".to_string();
         let facts = timeout(Duration::from_secs(120), async {
             loop {
                 let pod = pods.get(&self.name).await?;
+                last_status = startup_status(&pod)?;
                 if let Some(facts) = started_facts(&pod, &self.primary)? {
                     return Ok::<_, GenericError>(facts);
                 }
@@ -240,7 +240,13 @@ impl RuntimeParticipant for PodParticipant {
             }
         })
         .await
-        .map_err(|_| generic_error!("Pod '{}/{}' did not start within 120s", self.namespace, self.name))??;
+        .map_err(|_| {
+            generic_error!(
+                "Pod '{}/{}' did not start within 120s; last status: {last_status}",
+                self.namespace,
+                self.name
+            )
+        })??;
         for route in &self.routes {
             let listener = TcpListener::bind(("127.0.0.1", route.host_port)).await?;
             let pods = pods.clone();
@@ -248,16 +254,30 @@ impl RuntimeParticipant for PodParticipant {
             let port = route.container_port;
             let connections = self.tasks.clone();
             self.tasks.spawn(async move {
-                while let Ok((mut socket, _)) = listener.accept().await {
+                loop {
+                    let (mut socket, _) = match listener.accept().await {
+                        Ok(connection) => connection,
+                        Err(error) => {
+                            tracing::warn!(participant = %name, port, %error, "Port-forward listener failed.");
+                            break;
+                        }
+                    };
                     let pods = pods.clone();
                     let name = name.clone();
                     connections.spawn(async move {
-                        let mut forwarder = pods.portforward(&name, &[port]).await?;
-                        let mut stream = forwarder
-                            .take_stream(port)
-                            .ok_or_else(|| generic_error!("Port-forward has no stream for {port}"))?;
-                        tokio::io::copy_bidirectional(&mut socket, &mut stream).await?;
-                        Ok::<(), GenericError>(())
+                        let result: Result<(), GenericError> = async {
+                            let mut forwarder = pods.portforward(&name, &[port]).await?;
+                            let mut stream = forwarder
+                                .take_stream(port)
+                                .ok_or_else(|| generic_error!("Port-forward has no stream for {port}"))?;
+                            tokio::io::copy_bidirectional(&mut socket, &mut stream).await?;
+                            Ok(())
+                        }
+                        .await;
+                        if let Err(error) = result {
+                            let message = "Port-forward connection failed.";
+                            tracing::warn!(participant = %name, port, error = %format!("{error:#}"), message);
+                        }
                     });
                 }
             });
@@ -268,7 +288,7 @@ impl RuntimeParticipant for PodParticipant {
     async fn write_late_files(&self, facts: &super::runtime::LateFacts) -> Result<(), GenericError> {
         let rendered = self.manifests.render_late_files(&self.name, facts)?;
         for (path, contents) in rendered {
-            // Single-file hostPath mounts retain their inode when the node path is replaced.
+            // A single-file hostPath mount pins its starting inode, so write in place instead of renaming over it.
             self.node
                 .checked_shell("cat > \"$1\"", &[path], Some(contents.into_bytes()))
                 .await?;
@@ -286,6 +306,49 @@ impl RuntimeParticipant for PodParticipant {
     async fn observe(self: Arc<Self>, tasks: &CaseTasks, output_dir: &Path) -> ParticipantObservation {
         self.observation(tasks, output_dir).await
     }
+}
+
+fn deletion_grace(grace: Duration, remaining: Duration) -> u32 {
+    if remaining.is_zero() {
+        return 0;
+    }
+    let grace = grace.min(remaining);
+    grace
+        .as_secs()
+        .saturating_add(u64::from(grace.subsec_nanos() != 0))
+        .max(1)
+        .try_into()
+        .unwrap_or(u32::MAX)
+}
+
+fn startup_status(pod: &Pod) -> Result<String, GenericError> {
+    let Some(status) = &pod.status else {
+        return Ok("phase unknown".into());
+    };
+    let mut parts = vec![format!("phase {}", status.phase.as_deref().unwrap_or("unknown"))];
+    for container in status
+        .init_container_statuses
+        .iter()
+        .flatten()
+        .chain(status.container_statuses.iter().flatten())
+    {
+        if let Some(waiting) = container.state.as_ref().and_then(|state| state.waiting.as_ref()) {
+            let reason = waiting.reason.as_deref().unwrap_or("unknown reason");
+            let diagnostic = format!(
+                "container '{}': {reason}: {}",
+                container.name,
+                waiting.message.as_deref().unwrap_or("no message")
+            );
+            if matches!(
+                reason,
+                "ErrImageNeverPull" | "CreateContainerConfigError" | "CreateContainerError" | "InvalidImageName"
+            ) {
+                return Err(generic_error!("Pod cannot start: {diagnostic}"));
+            }
+            parts.push(diagnostic);
+        }
+    }
+    Ok(parts.join("; "))
 }
 
 fn started_facts(pod: &Pod, primary: &str) -> Result<Option<Vec<(LateFact, String)>>, GenericError> {
@@ -394,29 +457,44 @@ impl PodParticipant {
         let status = status
             .await
             .ok_or_else(|| generic_error!("Pod exec ended without a status"))?;
-        let exit_code = if status.status.as_deref() == Some("Success") {
-            0
-        } else if status.reason.as_deref() == Some("NonZeroExitCode") {
-            status
-                .details
-                .as_ref()
-                .and_then(|details| details.causes.as_ref())
-                .and_then(|causes| causes.iter().find(|cause| cause.reason.as_deref() == Some("ExitCode")))
-                .and_then(|cause| cause.message.as_deref())
-                .and_then(|code| code.parse::<i64>().ok())
-                .ok_or_else(|| generic_error!("Pod exec status lacks its nonzero exit code"))?
-        } else {
-            return Err(generic_error!(
-                "Pod exec failed: {}",
-                status.message.unwrap_or_default()
-            ));
-        };
-        Ok(ExecOutput {
-            stdout: out,
-            stderr: err,
-            exit_code,
-        })
+        exec_result(status, out, err)
     }
+}
+
+fn exec_result(status: Status, stdout: Vec<u8>, mut stderr: Vec<u8>) -> Result<ExecOutput, GenericError> {
+    let exit_code = if status.status.as_deref() == Some("Success") {
+        0
+    } else if status.reason.as_deref() == Some("NonZeroExitCode") {
+        status
+            .details
+            .as_ref()
+            .and_then(|details| details.causes.as_ref())
+            .and_then(|causes| causes.iter().find(|cause| cause.reason.as_deref() == Some("ExitCode")))
+            .and_then(|cause| cause.message.as_deref())
+            .and_then(|code| code.parse::<i64>().ok())
+            .ok_or_else(|| generic_error!("Pod exec status lacks its nonzero exit code"))?
+    } else if status.status.as_deref() == Some("Failure")
+        && status
+            .message
+            .as_deref()
+            .is_some_and(|message| message.contains("executable file not found"))
+    {
+        if !stderr.is_empty() && !stderr.ends_with(b"\n") {
+            stderr.push(b'\n');
+        }
+        stderr.extend_from_slice(status.message.as_ref().unwrap().as_bytes());
+        127
+    } else {
+        return Err(generic_error!(
+            "Pod exec failed: {}",
+            status.message.unwrap_or_default()
+        ));
+    };
+    Ok(ExecOutput {
+        stdout,
+        stderr,
+        exit_code,
+    })
 }
 
 #[async_trait]

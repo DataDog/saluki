@@ -315,7 +315,7 @@ pub(crate) fn endpoints(
     realization: Realization, env: &BTreeMap<String, String>, file: Option<&ConfigFile>, product: Product,
 ) -> Result<BTreeMap<String, Endpoint>, String> {
     let platform = match (realization.os, realization.kind) {
-        (Os::Linux, RealizationKind::LinuxContainer) => Platform::LinuxContainer,
+        (Os::Linux, RealizationKind::LinuxContainer | RealizationKind::KubernetesPod) => Platform::LinuxContainer,
         (Os::Windows, RealizationKind::WindowsContainer) => Platform::WindowsContainer,
         (Os::MacOs, RealizationKind::HostProcessGroup) => Platform::MacOsHost,
         _ => unreachable!("agent-adp dispatches listener configuration only for supported realizations"),

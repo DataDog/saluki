@@ -212,12 +212,17 @@ pub(crate) enum Capture {
     Failed { reason: String },
 }
 
+/// Participant-wide captured output files.
+pub(crate) enum OutputPaths {
+    Split { stdout: PathBuf, stderr: PathBuf },
+    Merged(PathBuf),
+}
+
 /// Participant-wide exit and output state, named process exits, and paths to captured output.
 pub(crate) struct ParticipantObservation {
     exit_rx: watch::Receiver<ParticipantExit>,
     capture_rx: watch::Receiver<Capture>,
-    pub stdout_path: Option<PathBuf>,
-    pub stderr_path: Option<PathBuf>,
+    pub output_paths: Option<OutputPaths>,
     pub outputs: BTreeMap<&'static str, ProcessOutput>,
     pub lines: OutputLines,
     pub processes: BTreeMap<&'static str, ProcessObservation>,
@@ -258,7 +263,7 @@ fn capture_state(receiver: &watch::Receiver<Capture>) -> Capture {
 }
 
 impl ParticipantObservation {
-    /// Combines the participant's observation channels and output paths.
+    /// Combines the participant's observation channels and separate output paths.
     pub(crate) fn new(
         exit_rx: watch::Receiver<ParticipantExit>, capture_rx: watch::Receiver<Capture>, stdout_path: PathBuf,
         stderr_path: PathBuf,
@@ -266,8 +271,24 @@ impl ParticipantObservation {
         Self {
             exit_rx,
             capture_rx,
-            stdout_path: Some(stdout_path),
-            stderr_path: Some(stderr_path),
+            output_paths: Some(OutputPaths::Split {
+                stdout: stdout_path,
+                stderr: stderr_path,
+            }),
+            processes: BTreeMap::new(),
+            outputs: BTreeMap::new(),
+            lines: OutputLines::default(),
+        }
+    }
+
+    /// Combines the participant's observation channels and merged output path.
+    pub(crate) fn merged(
+        exit_rx: watch::Receiver<ParticipantExit>, capture_rx: watch::Receiver<Capture>, path: PathBuf,
+    ) -> Self {
+        Self {
+            exit_rx,
+            capture_rx,
+            output_paths: Some(OutputPaths::Merged(path)),
             processes: BTreeMap::new(),
             outputs: BTreeMap::new(),
             lines: OutputLines::default(),
@@ -280,8 +301,7 @@ impl ParticipantObservation {
         Self {
             exit_rx,
             capture_rx: watch::channel(Capture::Complete).1,
-            stdout_path: None,
-            stderr_path: None,
+            output_paths: None,
             processes: BTreeMap::new(),
             outputs: BTreeMap::new(),
             lines: OutputLines::default(),
@@ -291,10 +311,14 @@ impl ParticipantObservation {
     /// Reads the retained output prefix; overflow errors name the files that still receive the full output.
     pub(crate) fn lines_since(&self, cursor: usize) -> Result<(Vec<output::OutputLine>, usize), String> {
         self.lines.since(cursor).map_err(|reason| {
-            let paths = self
-                .stdout_path
-                .iter()
-                .chain(self.stderr_path.iter())
+            let participant_paths = match &self.output_paths {
+                Some(OutputPaths::Split { stdout, stderr }) => [Some(stdout), Some(stderr)],
+                Some(OutputPaths::Merged(path)) => [Some(path), None],
+                None => [None, None],
+            };
+            let paths = participant_paths
+                .into_iter()
+                .flatten()
                 .chain(self.outputs.values().flat_map(|output| &output.paths))
                 .collect::<std::collections::BTreeSet<_>>()
                 .into_iter()
@@ -314,14 +338,17 @@ impl ParticipantObservation {
                 let output = &self.outputs[spec.name];
                 let first = output.paths.first().cloned();
                 let output = match spec.output {
-                    OutputChannel::Container if self.stdout_path == self.stderr_path => ProcessOutputReport {
-                        merged: self.stdout_path.clone(),
-                        ..Default::default()
-                    },
-                    OutputChannel::Container => ProcessOutputReport {
-                        stdout: self.stdout_path.clone(),
-                        stderr: self.stderr_path.clone(),
-                        merged: None,
+                    OutputChannel::Container => match &self.output_paths {
+                        Some(OutputPaths::Split { stdout, stderr }) => ProcessOutputReport {
+                            stdout: Some(stdout.clone()),
+                            stderr: Some(stderr.clone()),
+                            merged: None,
+                        },
+                        Some(OutputPaths::Merged(path)) => ProcessOutputReport {
+                            merged: Some(path.clone()),
+                            ..Default::default()
+                        },
+                        None => ProcessOutputReport::default(),
                     },
                     OutputChannel::Pipes => ProcessOutputReport {
                         stdout: first,
@@ -526,10 +553,13 @@ mod tests {
         }
 
         async fn follow(&self, stream: impl Stream<Item = Result<OutputChunk, GenericError>>) {
+            let Some(OutputPaths::Split { stdout, stderr }) = &self.observation.output_paths else {
+                panic!("container output has separate streams");
+            };
             follow_output(
                 stream,
-                self.observation.stdout_path.clone().unwrap(),
-                self.observation.stderr_path.clone().unwrap(),
+                stdout.clone(),
+                stderr.clone(),
                 self.capture_tx.clone(),
                 self.observation.lines.clone(),
                 "p".into(),
@@ -852,8 +882,7 @@ mod tests {
                 },
             );
         }
-        assert!(observation.stdout_path.is_none());
-        assert!(observation.stderr_path.is_none());
+        assert!(observation.output_paths.is_none());
         assert_eq!(observation.capture(), Capture::Complete);
         let reports = observation.snapshot(&specs);
         assert_eq!(
@@ -966,6 +995,64 @@ mod tests {
                 {"name": "c", "exit": {"state": "undetermined", "source": "record", "reason": "record missing"}, "output": {"merged": dir.join("c.log")}},
             ])
         );
+    }
+
+    #[test]
+    fn container_reports_use_the_declared_output_shape_even_when_split_paths_match() {
+        use crate::participant::ExitChannel;
+
+        // Equal paths must not turn explicitly split container output into a merged stream.
+        let (_, exit) = watch::channel(ParticipantExit::Ended);
+        let (_, capture) = watch::channel(Capture::Complete);
+        let path = PathBuf::from("p/container.log");
+        for (mut observation, expected) in [
+            (
+                ParticipantObservation::new(exit.clone(), capture.clone(), path.clone(), path.clone()),
+                ProcessOutputReport {
+                    stdout: Some(path.clone()),
+                    stderr: Some(path.clone()),
+                    merged: None,
+                },
+            ),
+            (
+                ParticipantObservation::merged(exit.clone(), capture.clone(), path.clone()),
+                ProcessOutputReport {
+                    merged: Some(path.clone()),
+                    ..Default::default()
+                },
+            ),
+        ] {
+            observation
+                .processes
+                .insert("main", ProcessObservation::Container(exit.clone()));
+            observation.outputs.insert(
+                "main",
+                ProcessOutput {
+                    capture: capture.clone(),
+                    paths: vec![path.clone()],
+                },
+            );
+            let reports = observation.snapshot(&[ProcessSpec {
+                name: "main",
+                exit: ExitChannel::Container,
+                output: OutputChannel::Container,
+            }]);
+            assert_eq!(reports[0].output, expected);
+            observation.outputs.clear();
+            observation.lines = OutputLines::new(1);
+            observation.lines.push(output::OutputLine {
+                participant: "p".into(),
+                process: None,
+                stream: OutputStream::Stdout,
+                received: SystemTime::now(),
+                text: "too long".into(),
+            });
+            let expected = concat!(
+                "output capture failed: in-memory output exceeded the 1-byte line-text bound; ",
+                "see output files: p/container.log"
+            );
+            assert_eq!(observation.lines_since(0).unwrap_err(), expected);
+        }
     }
 
     #[tokio::test(start_paused = true)]
@@ -1182,12 +1269,19 @@ mod tests {
     #[tokio::test]
     async fn container_output_reaches_separate_stdout_and_stderr_files_as_it_arrives() {
         let fixture = Fixture::new();
+        let Some(OutputPaths::Split {
+            stdout: stdout_path,
+            stderr: stderr_path,
+        }) = &fixture.observation.output_paths
+        else {
+            panic!("container output has separate streams");
+        };
         let (tx, rx) = mpsc::unbounded();
         let tasks = CaseTasks::new(&CancellationToken::new());
         let following = tasks.spawn(follow_output(
             rx,
-            fixture.observation.stdout_path.clone().unwrap(),
-            fixture.observation.stderr_path.clone().unwrap(),
+            stdout_path.clone(),
+            stderr_path.clone(),
             fixture.capture_tx.clone(),
             fixture.observation.lines.clone(),
             "p".into(),
@@ -1199,11 +1293,7 @@ mod tests {
             .unwrap();
         timeout(Duration::from_secs(5), async {
             loop {
-                if std::fs::read(fixture.observation.stdout_path.as_ref().unwrap())
-                    .ok()
-                    .as_deref()
-                    == Some(stdout)
-                {
+                if std::fs::read(stdout_path).ok().as_deref() == Some(stdout) {
                     break;
                 }
                 sleep(Duration::from_millis(10)).await;
@@ -1219,14 +1309,8 @@ mod tests {
             timeout(Duration::from_secs(5), following).await.unwrap().unwrap(),
             Some(())
         );
-        assert_eq!(
-            std::fs::read(fixture.observation.stdout_path.as_ref().unwrap()).unwrap(),
-            stdout
-        );
-        assert_eq!(
-            std::fs::read(fixture.observation.stderr_path.as_ref().unwrap()).unwrap(),
-            stderr
-        );
+        assert_eq!(std::fs::read(stdout_path).unwrap(), stdout);
+        assert_eq!(std::fs::read(stderr_path).unwrap(), stderr);
         assert_eq!(fixture.observation.capture(), Capture::Complete);
         assert_eq!(tasks.stop_all(Instant::now() + TASK_STOP_TIME).await, 0);
     }
@@ -1235,13 +1319,16 @@ mod tests {
     async fn container_log_lines_are_tagged_with_the_process_owning_the_container_output_or_none() {
         for process in [Some("main"), None] {
             let fixture = Fixture::new();
+            let Some(OutputPaths::Split { stdout, stderr }) = &fixture.observation.output_paths else {
+                panic!("container output has separate streams");
+            };
             follow_output(
                 stream::iter([
                     Ok(OutputChunk::Stdout(b"out\n".as_slice().into())),
                     Ok(OutputChunk::Stderr(b"err".as_slice().into())),
                 ]),
-                fixture.observation.stdout_path.clone().unwrap(),
-                fixture.observation.stderr_path.clone().unwrap(),
+                stdout.clone(),
+                stderr.clone(),
                 fixture.capture_tx.clone(),
                 fixture.observation.lines.clone(),
                 "p".into(),
@@ -1266,21 +1353,21 @@ mod tests {
     #[tokio::test]
     async fn both_output_files_exist_when_the_container_prints_nothing() {
         let fixture = Fixture::new();
+        let Some(OutputPaths::Split { stdout, stderr }) = &fixture.observation.output_paths else {
+            panic!("container output has separate streams");
+        };
         fixture.follow(stream::empty()).await;
-        assert_eq!(
-            std::fs::read(fixture.observation.stdout_path.as_ref().unwrap()).unwrap(),
-            b""
-        );
-        assert_eq!(
-            std::fs::read(fixture.observation.stderr_path.as_ref().unwrap()).unwrap(),
-            b""
-        );
+        assert_eq!(std::fs::read(stdout).unwrap(), b"");
+        assert_eq!(std::fs::read(stderr).unwrap(), b"");
         assert_eq!(fixture.observation.capture(), Capture::Complete);
     }
 
     #[tokio::test]
     async fn a_failed_log_stream_is_a_capture_error_and_keeps_the_output_already_written() {
         let fixture = Fixture::new();
+        let Some(OutputPaths::Split { stdout, stderr }) = &fixture.observation.output_paths else {
+            panic!("container output has separate streams");
+        };
         fixture
             .follow(stream::iter([
                 Ok(OutputChunk::Stdout(b"before\n".as_slice().into())),
@@ -1294,23 +1381,17 @@ mod tests {
                 reason: "log connection lost".into()
             }
         );
-        assert_eq!(
-            std::fs::read(fixture.observation.stdout_path.as_ref().unwrap()).unwrap(),
-            b"before\n"
-        );
-        assert_eq!(
-            std::fs::read(fixture.observation.stderr_path.as_ref().unwrap()).unwrap(),
-            b""
-        );
+        assert_eq!(std::fs::read(stdout).unwrap(), b"before\n");
+        assert_eq!(std::fs::read(stderr).unwrap(), b"");
     }
 
     #[tokio::test]
     async fn a_log_stream_that_ends_completes_capture() {
         let fixture = Fixture::new();
-        for path in [
-            fixture.observation.stdout_path.as_ref().unwrap(),
-            fixture.observation.stderr_path.as_ref().unwrap(),
-        ] {
+        let Some(OutputPaths::Split { stdout, stderr }) = &fixture.observation.output_paths else {
+            panic!("container output has separate streams");
+        };
+        for path in [stdout, stderr] {
             std::fs::write(path, b"old output").unwrap();
         }
         fixture
@@ -1320,25 +1401,18 @@ mod tests {
             ]))
             .await;
         assert_eq!(fixture.observation.capture(), Capture::Complete);
-        assert_eq!(
-            std::fs::read(fixture.observation.stdout_path.as_ref().unwrap()).unwrap(),
-            b"new\n"
-        );
-        assert_eq!(
-            std::fs::read(fixture.observation.stderr_path.as_ref().unwrap()).unwrap(),
-            b"error\n"
-        );
+        assert_eq!(std::fs::read(stdout).unwrap(), b"new\n");
+        assert_eq!(std::fs::read(stderr).unwrap(), b"error\n");
     }
 
     #[tokio::test]
     async fn an_output_file_creation_error_fails_capture_before_reading_the_stream() {
-        for stderr in [false, true] {
+        for fail_stderr in [false, true] {
             let fixture = Fixture::new();
-            let path = if stderr {
-                fixture.observation.stderr_path.as_ref().unwrap()
-            } else {
-                fixture.observation.stdout_path.as_ref().unwrap()
+            let Some(OutputPaths::Split { stdout, stderr }) = &fixture.observation.output_paths else {
+                panic!("container output has separate streams");
             };
+            let path = if fail_stderr { stderr } else { stdout };
             std::fs::create_dir(path).unwrap();
             fixture
                 .follow(stream::poll_fn(|_| panic!("a failed capture must stop reading")))

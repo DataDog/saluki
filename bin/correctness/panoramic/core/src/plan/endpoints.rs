@@ -38,11 +38,14 @@ struct PortAssignments {
 /// Derives listeners, assigning host ports through type defaults before deriving them again.
 pub(super) fn derive_endpoints(
     holder: &str, participant_type: &dyn ParticipantType, realization: Realization, values: CaseValues,
-    shared_dir: String, ports: &mut PortRegistry,
+    shared_dir: String, ports: &mut PortRegistry, options: &BTreeMap<String, serde_json::Value>,
 ) -> Result<(EffectiveConfig, ParticipantEndpoints), String> {
     let invalid_config = |message| format!("{holder} has invalid configuration: {message}");
     participant_type
         .validate_config(realization, &values)
+        .map_err(&invalid_config)?;
+    participant_type
+        .validate_realization_options(realization, options, &values)
         .map_err(&invalid_config)?;
     let mut defaults = participant_type.default_env(realization, &values);
     let mut config = EffectiveConfig::assemble(defaults.clone(), values.clone());

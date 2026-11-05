@@ -19,9 +19,10 @@ use crate::{
     port_listening::PortListening,
     process_stable_for::ProcessStableFor,
     send::Send,
+    wait::Wait,
 };
 
-/// Returns fields that build the registered step `name`, on participant `subject`.
+/// Returns fields that build `name`, using participant `subject` where required.
 ///
 /// # Panics
 ///
@@ -45,6 +46,7 @@ pub fn valid_fields(name: &str) -> StepFields {
         PortListening::NAME => "on: subject\nendpoint: tcp\ntimeout: 30s",
         ProcessStableFor::NAME => "on: subject\nduration: 10s",
         Send::NAME => "on: subject\nendpoint: udp\npayload: 'metric:1|c'\ntimeout: 30s",
+        Wait::NAME => "duration: 30s",
         other => panic!("missing valid fields for '{other}'"),
     };
     serde_saphyr::from_str(yaml).unwrap()

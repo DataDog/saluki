@@ -1,8 +1,8 @@
 //! Files, environment and host mounts supplied by a participant type.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
-use crate::artifact::ArtifactRole;
+use crate::{artifact::ArtifactRole, participant::RenderedConfig};
 
 /// A participant type's recipe for one supported realization.
 pub enum Recipe {
@@ -32,8 +32,56 @@ impl Recipe {
 /// Each container must set an entrypoint and command arguments (possibly empty), wrapped by a file-ready gate.
 pub struct PodRecipe {
     pub(crate) containers: Vec<PodContainer>,
-    /// Paths of recipe files whose remaining references resolve after start.
-    pub(crate) late_files: BTreeSet<String>,
+    /// Placed paths mapped to their source configuration names, including transformed files.
+    pub(crate) late_files: BTreeMap<String, String>,
+}
+
+impl PodRecipe {
+    /// Creates a pod with one named container and its explicit entrypoint and command.
+    pub fn new(container: impl Into<String>, recipe: ContainerRecipe) -> Self {
+        Self {
+            containers: vec![PodContainer {
+                name: container.into(),
+                recipe,
+                ports: Vec::new(),
+            }],
+            late_files: BTreeMap::new(),
+        }
+    }
+
+    /// Defers a placed file derived from `config_name` until late references resolve after startup.
+    pub fn with_late_file(mut self, path: impl Into<String>, config_name: impl Into<String>) -> Self {
+        self.late_files.insert(path.into(), config_name.into());
+        self
+    }
+
+    pub(crate) fn check_late_files(&self, config: &RenderedConfig) -> Result<(), String> {
+        for (path, source) in &self.late_files {
+            if !config.files.contains_key(source) {
+                return Err(format!(
+                    "late recipe file '{path}' names missing configuration file '{source}'"
+                ));
+            }
+            if !self
+                .containers
+                .iter()
+                .any(|container| container.recipe.files.iter().any(|file| &file.path == path))
+            {
+                return Err(format!(
+                    "configuration file '{source}' names unplaced late recipe file '{path}'"
+                ));
+            }
+        }
+        for name in &config.late_files {
+            let placed = self.late_files.values().any(|source| source == name);
+            if !placed {
+                return Err(format!(
+                    "configuration file '{name}' has deferred late references but is not placed as a late recipe file"
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 pub(crate) struct PodContainer {
@@ -155,7 +203,7 @@ impl ContainerRecipe {
         self
     }
 
-    /// Mounts a path from the container daemon's host at an absolute container path.
+    /// Mounts a path from the runtime host at an absolute container path, with the requested access mode.
     pub fn with_host_mount(
         mut self, host_path: impl Into<String>, container_path: impl Into<String>, read_only: bool,
     ) -> Self {
@@ -184,7 +232,7 @@ pub(crate) struct RecipeFile {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct HostMount {
-    /// A path on the Docker daemon's host.
+    /// A path on the runtime host, including the kind node for pods.
     pub(crate) host_path: String,
     pub(crate) container_path: String,
     pub(crate) read_only: bool,
@@ -193,6 +241,8 @@ pub(crate) struct HostMount {
 /// Recipes for test participants that exercise lifecycle callers outside this crate.
 #[cfg(any(test, feature = "test-util"))]
 pub mod test_support {
+    use std::collections::BTreeSet;
+
     use super::*;
 
     /// Checks a recipe that overrides only the image entrypoint and environment.
@@ -249,20 +299,62 @@ pub mod test_support {
         assert!(recipe.mounts.is_empty());
     }
 
-    /// Returns each container mount's host path, container path and read-only setting.
+    /// Checks a single-container pod's name, image, arguments and environment, with no host mounts or declared ports.
     ///
     /// # Panics
     ///
-    /// Panics if the recipe is not a container recipe.
-    pub fn host_mounts(recipe: &Recipe) -> Vec<(&str, &str, bool)> {
-        let Recipe::Container(recipe) = recipe else {
-            panic!("expected a container recipe")
+    /// Panics if any setting differs; placed files can be checked with [`files`].
+    #[track_caller]
+    pub fn assert_pod(
+        recipe: &Recipe, name: &str, image: ArtifactRole, entrypoint: &[&str], command: &[&str],
+        env: &BTreeMap<String, String>,
+    ) {
+        let Recipe::Pod(recipe) = recipe else {
+            panic!("expected a pod recipe")
         };
-        recipe
-            .mounts
-            .iter()
-            .map(|mount| (mount.host_path.as_str(), mount.container_path.as_str(), mount.read_only))
+        let [container] = recipe.containers.as_slice() else {
+            panic!("expected exactly one pod container")
+        };
+        assert_eq!(container.name, name);
+        assert!(container.ports.is_empty());
+        let recipe = &container.recipe;
+        assert_eq!(recipe.image, image);
+        assert_eq!(recipe.entrypoint.as_deref().unwrap(), entrypoint);
+        assert_eq!(recipe.command.as_deref().unwrap(), command);
+        assert_eq!(&recipe.env, env);
+        assert!(recipe.mounts.is_empty());
+    }
+
+    /// Returns each mount's host path, container path and read-only setting, in recipe order.
+    pub fn host_mounts(recipe: &Recipe) -> Vec<(&str, &str, bool)> {
+        let containers: Vec<_> = match recipe {
+            Recipe::Container(container) => vec![container],
+            Recipe::Pod(pod) => pod.containers.iter().map(|container| &container.recipe).collect(),
+            Recipe::HostProcessGroup(_) => Vec::new(),
+        };
+        containers
+            .into_iter()
+            .flat_map(|container| {
+                container
+                    .mounts
+                    .iter()
+                    .map(|mount| (mount.host_path.as_str(), mount.container_path.as_str(), mount.read_only))
+            })
             .collect()
+    }
+
+    /// Marks named files as deferred in a rendered-config fixture.
+    pub fn with_deferred_files(mut config: RenderedConfig, names: &[&str]) -> RenderedConfig {
+        config.late_files.extend(names.iter().map(|name| (*name).to_owned()));
+        config
+    }
+
+    /// Returns the sorted paths written after the pod starts.
+    pub fn late_files(recipe: &Recipe) -> Vec<&str> {
+        match recipe {
+            Recipe::Pod(pod) => pod.late_files.keys().map(String::as_str).collect(),
+            _ => Vec::new(),
+        }
     }
 
     /// Returns each placed file's path, permission bits and contents.
@@ -306,6 +398,7 @@ pub mod test_support {
             env,
             params,
             files,
+            late_files: BTreeSet::new(),
         }
     }
 
@@ -318,6 +411,7 @@ pub mod test_support {
             env,
             params: BTreeMap::new(),
             files,
+            late_files: BTreeSet::new(),
         }
     }
 
@@ -387,6 +481,121 @@ pub mod test_support {
 mod tests {
     use super::*;
     use crate::artifact::ArtifactKind;
+
+    #[test]
+    fn pod_recipe_wraps_one_named_container_and_marks_its_late_files() {
+        let role = ArtifactRole {
+            name: "tool",
+            kind: ArtifactKind::Image {
+                os: crate::layout::Os::Linux,
+            },
+            local_default: "tool:local",
+        };
+        let env = BTreeMap::from([("KEY".into(), "value".into())]);
+        let pod = PodRecipe::new(
+            "worker",
+            ContainerRecipe::new(role)
+                .with_entrypoint(["/tool"])
+                .with_command(["--config", "/settings"])
+                .with_env(env.clone())
+                .with_file("/settings", 0o640, b"id={{ self.late.container_id }}".to_vec()),
+        );
+        assert!(pod.late_files.is_empty());
+        let pod = pod
+            .with_late_file("/settings", "settings.yaml")
+            .with_late_file("/settings", "settings.yaml");
+        assert_eq!(
+            pod.late_files,
+            BTreeMap::from([("/settings".into(), "settings.yaml".into())])
+        );
+        let recipe = Recipe::Pod(pod);
+        test_support::assert_pod(&recipe, "worker", role, &["/tool"], &["--config", "/settings"], &env);
+        assert_eq!(
+            test_support::files(&recipe),
+            [("/settings", 0o640, b"id={{ self.late.container_id }}".as_slice())]
+        );
+        assert_eq!(recipe.roles(), [role]);
+    }
+
+    #[test]
+    fn every_deferred_config_file_needs_a_named_source_at_a_marked_path() {
+        let first = b"id={{ self.late.container_id }}";
+        let second = b"uid={{ self.late.pod_uid }}";
+        let mut config = test_support::rendered(
+            BTreeMap::new(),
+            BTreeMap::from([
+                ("first.yaml".into(), first.to_vec()),
+                ("second.yaml".into(), second.to_vec()),
+            ]),
+        );
+        config.late_files.extend(config.files.keys().cloned());
+        let mut pod = PodRecipe::new(
+            "main",
+            ContainerRecipe::new(crate::backend::FIXUP_IMAGE)
+                .with_file("/etc/first", 0o644, first.as_slice())
+                .with_file("/etc/second", 0o644, second.as_slice()),
+        );
+        for (name, path) in [("first.yaml", "/etc/first"), ("second.yaml", "/etc/second")] {
+            assert_eq!(
+                pod.check_late_files(&config),
+                Err(format!(
+                    "configuration file '{name}' has deferred late references but is not placed as a late recipe file"
+                ))
+            );
+            pod = pod.with_late_file(path, name);
+        }
+        assert_eq!(pod.check_late_files(&config), Ok(()));
+        pod.containers[0].recipe.files.pop();
+        assert_eq!(
+            pod.check_late_files(&config),
+            Err("configuration file 'second.yaml' names unplaced late recipe file '/etc/second'".into())
+        );
+    }
+
+    #[test]
+    fn transformed_late_files_retain_their_config_source_and_require_placement() {
+        let mut config = test_support::rendered(
+            BTreeMap::new(),
+            BTreeMap::from([
+                ("settings.yaml".into(), b"id: '{{ self.late.container_id }}'".to_vec()),
+                ("other.yaml".into(), b"other: '{{ self.late.pod_uid }}'".to_vec()),
+            ]),
+        );
+        config.late_files.insert("settings.yaml".into());
+        for (source, path, expected) in [
+            ("settings.yaml", "/etc/settings", None),
+            (
+                "missing.yaml",
+                "/etc/settings",
+                Some("names missing configuration file 'missing.yaml'"),
+            ),
+            (
+                "settings.yaml",
+                "/etc/missing",
+                Some("names unplaced late recipe file '/etc/missing'"),
+            ),
+            (
+                "other.yaml",
+                "/etc/settings",
+                Some("configuration file 'settings.yaml' has deferred late references"),
+            ),
+        ] {
+            let pod = PodRecipe::new(
+                "worker",
+                ContainerRecipe::new(crate::backend::FIXUP_IMAGE).with_file(
+                    "/etc/settings",
+                    0o644,
+                    b"{\"id\": \"{{ self.late.container_id }}\"}".as_slice(),
+                ),
+            )
+            .with_late_file(path, source);
+            let result = pod.check_late_files(&config);
+            match expected {
+                None => assert_eq!(result, Ok(())),
+                Some(expected) => assert!(result.unwrap_err().contains(expected), "{source}: {path}"),
+            }
+        }
+    }
 
     #[test]
     fn host_recipe_builders_keep_env_files_and_process_env() {

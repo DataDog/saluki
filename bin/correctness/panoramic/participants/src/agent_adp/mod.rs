@@ -20,6 +20,7 @@ pub(crate) mod linux;
 pub(crate) mod listeners;
 mod macos;
 pub(crate) mod operations;
+pub(crate) mod pod;
 mod windows;
 
 /// The Core Agent and ADP running together.
@@ -69,6 +70,7 @@ impl ParticipantType for AgentAdp {
     fn supports(&self) -> &'static [(Os, RealizationKind)] {
         &[
             (Os::Linux, RealizationKind::LinuxContainer),
+            (Os::Linux, RealizationKind::KubernetesPod),
             (Os::MacOs, RealizationKind::HostProcessGroup),
             (Os::Windows, RealizationKind::WindowsContainer),
         ]
@@ -76,7 +78,7 @@ impl ParticipantType for AgentAdp {
 
     fn artifacts(&self, realization: Realization) -> &'static [ArtifactRole] {
         match (realization.os, realization.kind) {
-            (Os::Linux, RealizationKind::LinuxContainer) => &[Self::LINUX_IMAGE],
+            (Os::Linux, RealizationKind::LinuxContainer | RealizationKind::KubernetesPod) => &[Self::LINUX_IMAGE],
             (Os::MacOs, RealizationKind::HostProcessGroup) => &[Self::ADP_HOST_BINARY, Self::AGENT_HOST_INSTALL],
             (Os::Windows, RealizationKind::WindowsContainer) => &[Self::WINDOWS_IMAGE],
             _ => &[],
@@ -86,6 +88,7 @@ impl ParticipantType for AgentAdp {
     fn recipe(&self, realization: Realization, config: &RenderedConfig) -> Result<Recipe, String> {
         match (realization.os, realization.kind) {
             (Os::Linux, RealizationKind::LinuxContainer) => linux::recipe(config, true),
+            (Os::Linux, RealizationKind::KubernetesPod) => pod::recipe(config, true),
             (Os::MacOs, RealizationKind::HostProcessGroup) => macos::recipe(config),
             (Os::Windows, RealizationKind::WindowsContainer) => windows::recipe(config),
             _ => Err(format!(
@@ -106,15 +109,26 @@ impl ParticipantType for AgentAdp {
     }
 
     fn validate_config(&self, realization: Realization, config: &CaseValues) -> Result<(), String> {
-        if (realization.os, realization.kind) != (Os::Linux, RealizationKind::LinuxContainer) {
-            if linux::host_view(&config.params)? {
-                return Err("host_view is supported in Linux containers only".into());
-            }
-            if config.files.contains_key("datadog.yaml") || config.file_contents.contains_key("datadog.yaml") {
-                return Err("agent-adp datadog.yaml is supported in Linux containers only".into());
-            }
+        if !matches!(
+            (realization.os, realization.kind),
+            (Os::Linux, RealizationKind::LinuxContainer) | (Os::Linux, RealizationKind::KubernetesPod),
+        ) && linux::host_view(&config.params)?
+        {
+            return Err("host_view is supported in Linux containers and pods only".into());
         }
         if !matches!(
+            (realization.os, realization.kind),
+            (
+                Os::Linux,
+                RealizationKind::LinuxContainer | RealizationKind::KubernetesPod
+            )
+        ) && (config.files.contains_key("datadog.yaml") || config.file_contents.contains_key("datadog.yaml"))
+        {
+            return Err("agent-adp datadog.yaml is supported in Linux containers and pods only".into());
+        }
+        if realization.kind == RealizationKind::KubernetesPod {
+            pod::validate_config(config)?;
+        } else if !matches!(
             (realization.os, realization.kind),
             (Os::Linux, RealizationKind::LinuxContainer) | (Os::Windows, RealizationKind::WindowsContainer)
         ) {
@@ -130,7 +144,7 @@ impl ParticipantType for AgentAdp {
             }
         }
         match (realization.os, realization.kind) {
-            (Os::Linux, RealizationKind::LinuxContainer) => {
+            (Os::Linux, RealizationKind::LinuxContainer | RealizationKind::KubernetesPod) => {
                 linux::validate_config(config)?;
                 let file = config_file::ConfigFile::parse(&config.file_contents)?;
                 let mut env = self.default_env(realization, config);
@@ -150,9 +164,19 @@ impl ParticipantType for AgentAdp {
         Ok(())
     }
 
+    fn validate_realization_options(
+        &self, realization: Realization, options: &BTreeMap<String, serde_json::Value>, config: &CaseValues,
+    ) -> Result<(), String> {
+        if realization.kind == RealizationKind::KubernetesPod {
+            pod::validate_realization_options(options, config)?;
+        }
+        Ok(())
+    }
+
     fn default_env(&self, realization: Realization, config: &CaseValues) -> BTreeMap<String, String> {
         match (realization.os, realization.kind) {
             (Os::Linux, RealizationKind::LinuxContainer) => linux::default_env(config, container_default_env()),
+            (Os::Linux, RealizationKind::KubernetesPod) => pod::default_env(config, container_default_env()),
             (Os::Windows, RealizationKind::WindowsContainer) => container_default_env(),
             (Os::MacOs, RealizationKind::HostProcessGroup) => macos::default_env(),
             _ => BTreeMap::new(),
@@ -163,7 +187,7 @@ impl ParticipantType for AgentAdp {
         &self, realization: Realization, config: &EffectiveConfig,
     ) -> Result<BTreeMap<String, Endpoint>, String> {
         match (realization.os, realization.kind) {
-            (Os::Linux, RealizationKind::LinuxContainer) => {
+            (Os::Linux, RealizationKind::LinuxContainer | RealizationKind::KubernetesPod) => {
                 let file = config_file::ConfigFile::parse(&config.files)?;
                 listeners::endpoints(realization, &config.env, Some(&file), listeners::Product::AgentAdp)
             }
@@ -177,9 +201,9 @@ impl ParticipantType for AgentAdp {
     fn consumes(&self, realization: Realization, _: &EffectiveConfig) -> BTreeMap<String, ConsumedEndpoint> {
         match (realization.os, realization.kind) {
             (Os::Linux, RealizationKind::LinuxContainer) => linux::consumes(),
-            (Os::MacOs, RealizationKind::HostProcessGroup) | (Os::Windows, RealizationKind::WindowsContainer) => {
-                BTreeMap::from([("intake".into(), intake())])
-            }
+            (Os::Linux, RealizationKind::KubernetesPod)
+            | (Os::MacOs, RealizationKind::HostProcessGroup)
+            | (Os::Windows, RealizationKind::WindowsContainer) => BTreeMap::from([("intake".into(), intake())]),
             _ => BTreeMap::new(),
         }
     }
@@ -236,7 +260,7 @@ impl ParticipantType for AgentAdp {
 
     fn process_specs(&self, realization: Realization) -> &'static [ProcessSpec] {
         match (realization.os, realization.kind) {
-            (Os::Linux, RealizationKind::LinuxContainer) => &linux::PROCESS_SPECS,
+            (Os::Linux, RealizationKind::LinuxContainer | RealizationKind::KubernetesPod) => &linux::PROCESS_SPECS,
             (Os::MacOs, RealizationKind::HostProcessGroup) => &macos::PROCESS_SPECS,
             (Os::Windows, RealizationKind::WindowsContainer) => &windows::PROCESS_SPECS,
             _ => &[],
@@ -244,7 +268,7 @@ impl ParticipantType for AgentAdp {
     }
 }
 
-fn intake() -> ConsumedEndpoint {
+pub(crate) fn intake() -> ConsumedEndpoint {
     ConsumedEndpoint {
         accepts: vec![EndpointKind::Http],
         required: false,
@@ -324,12 +348,12 @@ mod tests {
     }
 
     #[test]
-    fn extra_hosts_are_rejected_on_macos_host_process_groups() {
+    fn extra_hosts_are_rejected_on_macos_host_process_groups_and_pods() {
         assert_eq!(AgentAdp.params(), &["extra_hosts", "host_view"]);
         for &(os, kind) in AgentAdp
             .supports()
             .iter()
-            .filter(|&&(os, kind)| (os, kind) == (Os::MacOs, RealizationKind::HostProcessGroup))
+            .filter(|&&(_, kind)| matches!(kind, RealizationKind::HostProcessGroup | RealizationKind::KubernetesPod))
         {
             for (hosts, accepted) in [
                 (serde_json::json!({}), true),
@@ -346,7 +370,11 @@ mod tests {
                 } else {
                     assert_eq!(
                         result.unwrap_err(),
-                        "agent-adp extra_hosts is supported in containers only"
+                        if kind == RealizationKind::KubernetesPod {
+                            "extra_hosts is not supported in pods"
+                        } else {
+                            "agent-adp extra_hosts is supported in containers only"
+                        }
                     );
                 }
             }
@@ -354,11 +382,12 @@ mod tests {
     }
 
     #[test]
-    fn agent_adp_supports_linux_containers_macos_host_process_groups_and_windows_containers() {
+    fn agent_adp_supports_linux_containers_and_pods_macos_hosts_and_windows_containers() {
         assert_eq!(
             AgentAdp.supports(),
             &[
                 (Os::Linux, RealizationKind::LinuxContainer),
+                (Os::Linux, RealizationKind::KubernetesPod),
                 (Os::MacOs, RealizationKind::HostProcessGroup),
                 (Os::Windows, RealizationKind::WindowsContainer)
             ]
@@ -377,6 +406,7 @@ mod tests {
                     local_default: "saluki-images/datadog-agent:testing-devel",
                 }],
             ),
+            (Os::Linux, RealizationKind::KubernetesPod, vec![AgentAdp::LINUX_IMAGE]),
             (
                 Os::MacOs,
                 RealizationKind::HostProcessGroup,
@@ -419,7 +449,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_adp_offers_the_same_seven_operations_on_every_supported_realization() {
+    fn agent_adp_offers_the_same_seven_operations_on_supported_realizations_except_pods() {
         for os in [Os::Linux, Os::MacOs, Os::Windows] {
             for kind in [
                 RealizationKind::LinuxContainer,
@@ -432,7 +462,7 @@ mod tests {
                     .iter()
                     .map(|operation| operation.name())
                     .collect::<Vec<_>>();
-                let expected = if AgentAdp.supports().contains(&(os, kind)) {
+                let expected = if AgentAdp.supports().contains(&(os, kind)) && kind != RealizationKind::KubernetesPod {
                     vec![
                         "cli_adp",
                         "cli_agent",
@@ -451,7 +481,7 @@ mod tests {
     }
 
     #[test]
-    fn every_realization_consumes_intake_and_only_linux_consumes_forwarding_and_docker() {
+    fn every_realization_consumes_intake_and_only_linux_containers_consume_forwarding_and_docker() {
         use panoramic_core::{
             endpoint::test_support::http_address,
             recipe::test_support::{host_processes, rendered},
@@ -460,7 +490,7 @@ mod tests {
         for &(os, kind) in AgentAdp.supports() {
             let realization = Realization { os, kind };
             let consumes = AgentAdp.consumes(realization, &EffectiveConfig::default());
-            let expected = if os == Os::Linux {
+            let expected = if (os, kind) == (Os::Linux, RealizationKind::LinuxContainer) {
                 vec!["docker_api", "dogstatsd_forward", "intake"]
             } else {
                 vec!["intake"]
@@ -527,7 +557,11 @@ mod tests {
                     } else {
                         assert_eq!(
                             result.unwrap_err(),
-                            "agent-adp case files are supported in containers only",
+                            if kind == RealizationKind::KubernetesPod {
+                                "pods accept only the datadog.yaml case file"
+                            } else {
+                                "agent-adp case files are supported in containers only"
+                            },
                             "{os:?} {kind:?}: {name}"
                         );
                     }

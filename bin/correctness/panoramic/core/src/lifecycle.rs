@@ -24,6 +24,7 @@ use crate::{
     },
     participant::{check_process_specs, find_type, ParticipantType, ProcessSpec},
     plan::ParticipantPlan,
+    recipe::Recipe,
     record::CaseRecord,
     result::{ErrorKind, ParticipantReport, PhaseTracker, TestResult},
     tasks::CaseTasks,
@@ -170,7 +171,12 @@ impl NativeInputs {
             .ok_or_else(|| format!("native inputs lack verified image role '{}'", role.name))
     }
 
-    pub(crate) fn image_reference(&self, role: ArtifactRole) -> Result<&str, String> {
+    /// Returns the verified image reference used when loading images into a cluster.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the role has no verified image binding.
+    pub fn image_reference(&self, role: ArtifactRole) -> Result<&str, String> {
         self.image_references
             .get(role.name)
             .map(String::as_str)
@@ -449,6 +455,10 @@ async fn create(
     let recipe = participant_type
         .recipe(realization, &config)
         .map_err(|error| format!("participant '{name}': {error}"))?;
+    if let Recipe::Pod(pod) = &recipe {
+        pod.check_late_files(&config)
+            .map_err(|error| format!("participant '{name}': {error}"))?;
+    }
     for role in recipe.roles() {
         if !participant_type.artifacts(realization).contains(&role) {
             return Err(undeclared_role(name, type_name, role, realization));
@@ -722,6 +732,7 @@ mod tests {
             env: BTreeMap::new(),
             params: BTreeMap::new(),
             files: BTreeMap::new(),
+            late_files: Default::default(),
         };
         let error = fixtures::Server
             .recipe(
@@ -811,17 +822,23 @@ mod tests {
         for (os, participants, expected) in [
             (
                 Os::Linux,
+                concat!(
+                    "  first: {type: pod-server, subject: true, realization: {kind: kubernetes-pod}}\n",
+                    "  second: {type: pod-server, realization: {kind: kubernetes-pod}}"
+                ),
+                concat!(
+                    "participant 'first' of type 'pod-server' as kubernetes-pod on linux ",
+                    "declares no exit channel for process 'server'"
+                ),
+            ),
+            (
+                Os::Linux,
                 "  subject: {type: pod-server, subject: true, realization: {kind: kubernetes-pod}}",
                 "participant 'subject' of type 'pod-server' as kubernetes-pod on linux declares no exit channel for process 'server'",
             ),
             (
                 Os::Windows,
                 "  subject: {type: server, subject: true}\n  other: {type: pod-server, os: linux, realization: {kind: kubernetes-pod}}",
-                "participant 'other' of type 'pod-server' as kubernetes-pod on linux declares no exit channel for process 'server'",
-            ),
-            (
-                Os::Linux,
-                "  subject: {type: server, subject: true}\n  other: {type: pod-server, os: linux, realization: {kind: kubernetes-pod}}\n  z: {type: pod-server, os: linux, realization: {kind: kubernetes-pod}}",
                 "participant 'other' of type 'pod-server' as kubernetes-pod on linux declares no exit channel for process 'server'",
             ),
         ] {
@@ -851,6 +868,168 @@ mod tests {
             assert!(control.ledger.labels().is_empty());
             assert!(control.observations.snapshot().is_empty());
             assert_eq!(std::fs::read_dir(log_dir.path()).unwrap().count(), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn creation_requires_deferred_template_files_to_be_placed_as_late_files() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        use crate::recipe::{ContainerRecipe, PodRecipe};
+
+        struct PodFiles {
+            late_path: Option<&'static str>,
+            contents: Option<&'static [u8]>,
+        }
+        impl ParticipantType for PodFiles {
+            fn name(&self) -> &'static str {
+                "pod-files"
+            }
+
+            fn supports(&self) -> &'static [(Os, RealizationKind)] {
+                &[(Os::Linux, RealizationKind::KubernetesPod)]
+            }
+
+            fn artifacts(&self, _: Realization) -> &'static [ArtifactRole] {
+                &[FIXUP_IMAGE]
+            }
+
+            fn recipe(&self, _: Realization, config: &RenderedConfig) -> Result<Recipe, String> {
+                let contents = self.contents.unwrap_or(&config.files["settings.yaml"]);
+                let mut pod = PodRecipe::new(
+                    "main",
+                    ContainerRecipe::new(FIXUP_IMAGE)
+                        .with_entrypoint(["/bin/sh"])
+                        .with_command(["-c", "cat /etc/generated"])
+                        .with_file("/etc/generated", 0o644, contents),
+                );
+                if let Some(path) = self.late_path {
+                    pod = pod.with_late_file(path, "settings.yaml");
+                }
+                Ok(Recipe::Pod(pod))
+            }
+
+            fn config_files(&self) -> &'static [&'static str] {
+                &["settings.yaml"]
+            }
+
+            fn processes(&self) -> &'static [&'static str] {
+                &[]
+            }
+        }
+
+        struct InspectPod {
+            called: Arc<AtomicBool>,
+            marked: bool,
+            contents: &'static [u8],
+        }
+        impl ScopeRuntime for InspectPod {
+            fn participant(&self, request: ParticipantRequest<'_>) -> Result<Arc<dyn RuntimeParticipant>, String> {
+                self.called.store(true, Ordering::SeqCst);
+                let Recipe::Pod(pod) = request.recipe else {
+                    panic!("expected a pod recipe")
+                };
+                let file = &pod.containers[0].recipe.files[0];
+                assert_eq!(file.path, "/etc/generated");
+                assert_eq!(file.contents, self.contents);
+                assert_eq!(pod.late_files.contains_key(&file.path), self.marked);
+                Err("reached backend".into())
+            }
+        }
+
+        // Unmarked deferred templates would reach the pod literally; create rejects them before contacting the backend.
+        for (template, late_path, contents, accepted) in [
+            (true, None, None, false),
+            (true, Some("/etc/generated"), None, true),
+            (false, None, None, true),
+            (true, Some("/etc/other"), None, false),
+            (true, Some("/etc/generated"), Some(b"different".as_slice()), true),
+        ] {
+            let participant_type = PodFiles { late_path, contents };
+            let types: &[&dyn ParticipantType] = &[&participant_type];
+            let registries = crate::case::Registries {
+                participant_types: types,
+                ..fixtures::REGISTRIES
+            };
+            let dir = tempfile::tempdir().unwrap();
+            let source = fixtures::write_case(dir.path(), "case", "");
+            std::fs::write(source.parent().unwrap().join("input.txt"), "id={{ self.late.pod_uid }}").unwrap();
+            let yaml = format!(
+                r#"
+timeout: 1s
+subject_os: [linux]
+participants:
+  subject:
+    type: pod-files
+    subject: true
+    realization: {{kind: kubernetes-pod}}
+    config:
+      files:
+        settings.yaml: {{from: input.txt, template: {template}}}
+{}
+"#,
+                fixtures::minimal_procedure!()
+            );
+            let case = crate::case::CaseLoader::new(registries, fixtures::FixtureTypes)
+                .load_content("cases", &yaml, "case", &source)
+                .unwrap()
+                .remove(0);
+            let plan = Planner::with_run(registries, "testcase")
+                .compile(case, Os::Linux)
+                .unwrap()
+                .into_plan()
+                .unwrap();
+            let called = Arc::new(AtomicBool::new(false));
+            let prepared = Prepared {
+                scopes: BTreeMap::from([(
+                    RealizationKind::KubernetesPod,
+                    Box::new(InspectPod {
+                        called: called.clone(),
+                        marked: late_path.is_some(),
+                        contents: contents.unwrap_or(b"id={{ self.late.pod_uid }}"),
+                    }) as Box<dyn ScopeRuntime>,
+                )]),
+                id: plan.participants().unwrap().scope().id(),
+                process_specs: BTreeMap::from([("subject".into(), &[] as &'static [ProcessSpec])]),
+            };
+            let inputs = NativeInputs::new(Arc::default(), &[], dir.path()).unwrap();
+            let cancel = CancellationToken::new();
+            let control = CaseControl {
+                observations: Observations::default(),
+                record: CaseRecord::default(),
+                deadline: Deadline::after(Budget::Case, Duration::from_secs(60)),
+                tasks: CaseTasks::new(&cancel),
+                cancel,
+                interrupt: CancellationToken::new(),
+                log_dir: dir.path().into(),
+                phases: PhaseTracker::default(),
+                ledger: ResourceLedger::default(),
+            };
+            let error = create(
+                plan.participants().unwrap(),
+                types,
+                &inputs,
+                &control,
+                &prepared,
+                "subject",
+                &BTreeMap::new(),
+            )
+            .await
+            .err()
+            .unwrap();
+            assert_eq!(called.load(Ordering::SeqCst), accepted);
+            assert_eq!(
+                error,
+                if accepted {
+                    "reached backend"
+                } else if late_path.is_some() {
+                    "participant 'subject': configuration file 'settings.yaml' names unplaced late recipe file '/etc/other'"
+                } else {
+                    "participant 'subject': configuration file 'settings.yaml' has deferred late references but is not placed as a late recipe file"
+                }
+            );
+            assert!(control.ledger.labels().is_empty());
+            assert!(control.observations.snapshot().is_empty());
         }
     }
 

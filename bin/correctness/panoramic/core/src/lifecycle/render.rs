@@ -1,6 +1,6 @@
 //! Renders creation-time references and case files for participant recipes.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
     backend::{shared_root, writes_late_files, LateFact},
@@ -22,17 +22,25 @@ pub(super) fn render(
         .layout()
         .get(participant)
         .expect("planned participant has a realization");
-    let substitute = |template: &Template, field: ConfigField<'_>| {
+    let root = shared_root(realization.kind, realization.os, plan.scope());
+    let mut rendered = RenderedConfig {
+        directory: participant_dir(&root, participant, realization.os),
+        env: config.env.clone(),
+        params: config.params.clone(),
+        files: config.files.clone(),
+        late_files: BTreeSet::new(),
+    };
+    let mut substitute = |template: &Template, field: ConfigField<'_>| {
         template
             .substitute(|written, reference| {
+                let own_late = matches!(reference, Reference::Late { participant: target, .. }
+                    if target.name(participant) == participant);
                 let value = match reference {
                     Reference::Fact {
                         participant: target,
                         fact,
                     } => plan.fact(target.name(participant), fact).map(str::to_owned),
-                    Reference::Late {
-                        participant: target, ..
-                    } if target.name(participant) == participant => return Ok(None),
+                    Reference::Late { .. } if own_late => None,
                     Reference::Late {
                         participant: target,
                         fact: LateFact::ContainerId,
@@ -49,25 +57,22 @@ pub(super) fn render(
                         .and_then(|address| address.part(*part)),
                     Reference::Late { .. } => None,
                 };
-                if value.is_none()
-                    && matches!(reference, Reference::Late { .. })
-                    && matches!(field, ConfigField::File(_))
-                    && writes_late_files(realization.kind)
-                {
-                    return Ok(None);
+                if value.is_none() && matches!(reference, Reference::Late { .. }) {
+                    if let ConfigField::File(name) = field {
+                        if writes_late_files(realization.kind) {
+                            rendered.late_files.insert(name.to_owned());
+                            return Ok(None);
+                        }
+                    }
+                    if own_late {
+                        return Ok(None);
+                    }
                 }
                 value
                     .map(Some)
                     .ok_or_else(|| format!("internal error: no creation-time value for '{written}'"))
             })
             .map_err(|error| format!("participant '{participant}' {field}: {error}"))
-    };
-    let root = shared_root(realization.kind, realization.os, plan.scope());
-    let mut rendered = RenderedConfig {
-        directory: participant_dir(&root, participant, realization.os),
-        env: config.env.clone(),
-        params: config.params.clone(),
-        files: config.files.clone(),
     };
     walk_config_strings_mut(&mut rendered.env, &mut rendered.params, |field, text| {
         let template = text
@@ -91,7 +96,6 @@ pub(super) fn render(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
     use std::path::Path;
 
     use serde_json::json;
@@ -268,6 +272,7 @@ mod tests {
                 .replace("created-id", "{{server.late.container_id}}")
                 .as_bytes()
         );
+        assert!(rendered.late_files.is_empty());
         for (config, field) in [
             (
                 "{env: {ID: '{{server.late.container_id}}'}}",
@@ -321,7 +326,8 @@ mod tests {
             ("server".into(), "created-pod-id".into()),
             ("container".into(), "created-id".into()),
         ]);
-        // Pod file rendering used to reject unavailable peer late facts; defer only those to the late write.
+        // Pod template files keep unavailable late references for the late write; env and params still need every
+        // value at creation.
         for (created, expected) in [
             (&BTreeMap::new(), late.to_owned()),
             (
@@ -336,6 +342,7 @@ mod tests {
                 format!("{expected}|/logs/output.log|http://server:8080|server|8080").as_bytes()
             );
             assert_eq!(rendered.env["UPSTREAM_URL"], "http://server:8080");
+            assert_eq!(rendered.late_files, BTreeSet::from(["settings.yaml".into()]));
         }
         for (config, field) in [
             (
@@ -362,10 +369,68 @@ mod tests {
     }
 
     #[test]
+    fn only_pod_template_files_with_deferred_references_are_marked_late() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = write_case(dir.path(), "alpha", "");
+        for (text, template, deferred) in [
+            ("{{self.late.pod_uid}}", true, true),
+            ("{{subject.late.container_id}}", true, true),
+            ("{{self.late.ip}}", true, true),
+            ("{{peer.late.pod_uid}}", true, true),
+            ("{{peer.late.container_id}}", true, true),
+            ("{{peer.late.ip}}", true, true),
+            ("{{container.late.container_id}}", true, false),
+            ("{{self.facts.shared_dir}}", true, false),
+            ("{{self.late.pod_uid}}", false, false),
+            ("{{not a reference}}", false, false),
+        ] {
+            std::fs::write(source.parent().unwrap().join("input.txt"), text).unwrap();
+            let yaml = format!(
+                r#"
+timeout: 1s
+subject_os: [linux]
+participants:
+  subject:
+    type: file-client
+    subject: true
+    realization: {{kind: kubernetes-pod}}
+    config:
+      files:
+        settings.yaml: {{from: input.txt, template: {template}}}
+  peer: {{type: file-client}}
+  container: {{type: server, realization: {{kind: linux-container}}}}
+{}
+"#,
+                minimal_procedure!()
+            );
+            let plan = compile_case(&yaml, &source);
+            let rendered = render(
+                plan.participants().unwrap(),
+                "subject",
+                &BTreeMap::from([("container".into(), "created-id".into())]),
+            )
+            .unwrap();
+            assert_eq!(
+                rendered.late_files,
+                if deferred {
+                    BTreeSet::from(["settings.yaml".into()])
+                } else {
+                    BTreeSet::new()
+                },
+                "{text}, template: {template}"
+            );
+            if deferred || !template {
+                assert_eq!(rendered.files["settings.yaml"], text.as_bytes());
+            }
+        }
+    }
+
+    #[test]
     fn an_own_ip_reference_in_env_stays_canonical_through_rendering() {
         let plan = compile("{}", Path::new("cases/alpha/config.yaml"));
         let rendered = render(plan.participants().unwrap(), "server", &BTreeMap::new()).unwrap();
         assert_eq!(rendered.env["OWN"], "{{ self.late.ip }}/{{ self.late.ip }}");
+        assert!(rendered.late_files.is_empty());
     }
 
     #[test]

@@ -11,7 +11,7 @@ use crate::{
         exit_record::{watch_record, RecordRefresh},
         follow_output,
         output::{host_output_file, FileOutput},
-        watch_exit, Capture, ExitObservation, ParticipantExit, ParticipantObservation, ProcessObservation,
+        watch_exit, Capture, ExitObservation, OutputPaths, ParticipantExit, ParticipantObservation, ProcessObservation,
         ProcessOutput,
     },
     participant::{ExitChannel, OutputChannel, ProcessSpec},
@@ -40,6 +40,9 @@ impl ContainerObserver {
             output_dir.join("container.stdout.log"),
             output_dir.join("container.stderr.log"),
         );
+        let Some(OutputPaths::Split { stdout, stderr }) = &observation.output_paths else {
+            unreachable!("container output has separate streams");
+        };
         #[cfg(any(test, feature = "test-util"))]
         if let Some(limit) = self.output_line_bytes {
             observation.lines = crate::observe::output::OutputLines::new(limit);
@@ -84,10 +87,7 @@ impl ContainerObserver {
                     container_output = Some(spec.name);
                     ProcessOutput {
                         capture: capture_rx.clone(),
-                        paths: vec![
-                            observation.stdout_path.clone().expect("container stdout path"),
-                            observation.stderr_path.clone().expect("container stderr path"),
-                        ],
+                        paths: vec![stdout.clone(), stderr.clone()],
                     }
                 }
                 OutputChannel::File { file, stream } => {
@@ -128,8 +128,8 @@ impl ContainerObserver {
             Ok(stream) => {
                 tasks.spawn(follow_output(
                     stream,
-                    observation.stdout_path.clone().expect("container stdout path"),
-                    observation.stderr_path.clone().expect("container stderr path"),
+                    stdout.clone(),
+                    stderr.clone(),
                     capture_tx,
                     observation.lines.clone(),
                     self.name.clone().into(),

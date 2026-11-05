@@ -80,6 +80,23 @@ equivalence, and migration proofs: their rows, CI links and comparison commit.
   `otlp-traces-probabilistic-full-trace-id`, including the two enabled probabilistic cases. The `apm-trace` cases set
   `millstone.config_path`, which the loader consumes.
 
+## Pod host-view contract
+
+Pod host mounts belong to participant definitions, matching the container recipe model. Realization options control
+runtime behavior rather than product filesystem paths:
+
+| Setting | Owner | Effect |
+| --- | --- | --- |
+| `realization.options.host_pid` | Pod backend | Shares the node PID namespace; adds no mounts. |
+| `realization.options.cri_socket` | Pod backend | Requires a recipe mount of the node containerd socket; adds no mounts. |
+| `config.params.host_view` | `agent-adp` and `agent` pod definitions | Adds the image's read-only proc, cgroup and CRI socket mounts. |
+
+Origin-sensitive pod cases require `host_view: true`. Pod host view requires `host_pid: true`; planning rejects a
+mismatch and names the participant. This replaces the earlier behavior where enabling realization options implicitly
+mounted product-specific paths. Pod template files retain their
+configuration names when rendering defers late references; creation rejects a deferred file unless its recipe
+places it as a late file.
+
 ## Effective configuration scope
 
 The JSON records the loader's configuration with defaults and matrix environments applied, before CLI image

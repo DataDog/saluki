@@ -14,6 +14,39 @@ use crate::config::{
 };
 
 #[test]
+fn pod_host_view_requires_host_pid_at_plan_compile_for_both_agent_types() {
+    for participant_type in ["agent", "agent-adp"] {
+        for (host_view, options, valid) in [
+            (true, "{}", false),
+            (true, "{host_pid: false}", false),
+            (true, "{host_pid: true}", true),
+            (false, "{}", true),
+            (false, "{host_pid: false}", true),
+        ] {
+            let yaml = format!("timeout: 1s\nsubject_os: [linux]\nparticipants:\n  target:\n    type: {participant_type}\n    subject: true\n    realization: {{kind: kubernetes-pod, options: {options}}}\n    config: {{params: {{host_view: {host_view}}}}}\nprocedure: [{{step: wait, duration: 1ms}}]\n");
+            let case = crate::CASE_LOADER
+                .load_content("integration", &yaml, "host-view", Path::new("host-view/config.yaml"))
+                .unwrap()
+                .remove(0);
+            let result = planner().compile(case, Os::Linux);
+            if valid {
+                result.unwrap();
+            } else {
+                let error = result.err().unwrap().to_string();
+                assert!(
+                    error.contains(&format!("participant 'target' of type '{participant_type}'")),
+                    "{error}"
+                );
+                assert!(
+                    error.contains("pod host_view: true requires realization.options.host_pid: true"),
+                    "{error}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn default_log_file_references_plan_on_linux_and_windows_but_not_macos() {
     let dir = tempfile::tempdir().unwrap();
     let yaml = PARTICIPANT_FIELDS.replace(minimal_procedure!(), "procedure: [{step: file_contains, on: adp, path: '{{ adp.facts.default_log_file }}', pattern: ready, timeout: 1s}]");
@@ -354,8 +387,8 @@ fn environment_only_cases_plan_natively_with_their_exit_and_api_needs_on_every_o
 fn registered_template_fields_match_step_types_and_other_fields_reject_references() {
     for factory in REGISTERED_STEPS {
         let mut fields = valid_fields(factory.name());
-        if fields.contains_key("on") {
-            fields.insert("on".into(), Value::String("adp".into()));
+        if let Some(on) = fields.get_mut("on") {
+            *on = Value::String("adp".into());
         }
         if matches!(
             factory.name(),
@@ -906,4 +939,20 @@ fn uds_comparisons_share_one_paired_sender_and_preserve_their_configured_workloa
         };
         assert_eq!(window.budget(), std::time::Duration::from_secs(32));
     }
+}
+
+#[test]
+fn wait_is_rejected_in_parallel() {
+    let yaml = PARTICIPANT_FIELDS.replace(
+        minimal_procedure!(),
+        "procedure: [{parallel: [{step: wait, duration: 1s}]}]",
+    );
+    let error = crate::CASE_LOADER
+        .load_content("integration", &yaml, "case", Path::new("cases/case/config.yaml"))
+        .err()
+        .expect("an action cannot run in parallel");
+    assert_eq!(
+        error.to_string(),
+        "case 'case' in cases/case/config.yaml: step 1.1 'wait' is an action; parallel blocks accept only assertions"
+    );
 }

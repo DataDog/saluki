@@ -192,7 +192,7 @@ mod tests {
 
     use super::*;
     use crate::handle::{ExecOutput, FileStatus, HttpResponse};
-    use crate::observe::{output::OutputLine, ParticipantExit, ProcessOutput};
+    use crate::observe::{output::OutputLine, OutputPaths, ParticipantExit, ProcessOutput};
     use crate::participant::OutputStream;
     use crate::{
         endpoint::{EndpointKind, Evidence, ResolvedAddress, RunnerHostRoute},
@@ -375,8 +375,10 @@ mod tests {
     async fn an_output_gate_fails_when_capture_overflows_before_a_match() {
         let mut server = Server::new([]);
         server.observation.lines = crate::observe::output::OutputLines::new(5);
-        server.observation.stdout_path = Some("server/container.stdout.log".into());
-        server.observation.stderr_path = Some("server/container.stderr.log".into());
+        server.observation.output_paths = Some(OutputPaths::Split {
+            stdout: "server/container.stdout.log".into(),
+            stderr: "server/container.stderr.log".into(),
+        });
         server.observation.outputs.get_mut("main").unwrap().paths = vec!["server/main.log".into()];
         push_line(&server, Some("main"), "noise");
         push_line(&server, Some("main"), "ready");

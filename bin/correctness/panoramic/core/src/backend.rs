@@ -249,8 +249,8 @@ impl Backend for KubernetesPods {
 
     fn options(&self) -> &'static [RealizationOption] {
         &[
-            RealizationOption { name: "host_pid" },
-            RealizationOption { name: "cri_socket" },
+            RealizationOption { name: pod::HOST_PID },
+            RealizationOption { name: pod::CRI_SOCKET },
         ]
     }
 

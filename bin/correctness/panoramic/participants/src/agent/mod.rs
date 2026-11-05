@@ -14,7 +14,7 @@ use panoramic_core::{
     recipe::Recipe,
 };
 
-use crate::agent_adp::{config_file::ConfigFile, linux, listeners, operations};
+use crate::agent_adp::{config_file::ConfigFile, linux, listeners, operations, pod};
 use crate::AgentAdp;
 
 /// The Core Agent without ADP.
@@ -91,12 +91,15 @@ impl ParticipantType for Agent {
     }
 
     fn supports(&self) -> &'static [(Os, RealizationKind)] {
-        &[(Os::Linux, RealizationKind::LinuxContainer)]
+        &[
+            (Os::Linux, RealizationKind::LinuxContainer),
+            (Os::Linux, RealizationKind::KubernetesPod),
+        ]
     }
 
     fn artifacts(&self, realization: Realization) -> &'static [ArtifactRole] {
         match (realization.os, realization.kind) {
-            (Os::Linux, RealizationKind::LinuxContainer) => &[AgentAdp::LINUX_IMAGE],
+            (Os::Linux, RealizationKind::LinuxContainer | RealizationKind::KubernetesPod) => &[AgentAdp::LINUX_IMAGE],
             _ => &[],
         }
     }
@@ -104,6 +107,7 @@ impl ParticipantType for Agent {
     fn recipe(&self, realization: Realization, config: &RenderedConfig) -> Result<Recipe, String> {
         match (realization.os, realization.kind) {
             (Os::Linux, RealizationKind::LinuxContainer) => linux::recipe(config, false),
+            (Os::Linux, RealizationKind::KubernetesPod) => pod::recipe(config, false),
             _ => Err(format!(
                 "participant type '{}' has no recipe for {} on {}",
                 Self::NAME,
@@ -122,6 +126,9 @@ impl ParticipantType for Agent {
     }
 
     fn validate_config(&self, realization: Realization, config: &CaseValues) -> Result<(), String> {
+        if realization.kind == RealizationKind::KubernetesPod {
+            pod::validate_config(config)?;
+        }
         linux::validate_config(config)?;
         let file = ConfigFile::parse(&config.file_contents)?;
         let enabled = config.env.get("DD_DATA_PLANE_ENABLED").map(String::as_str);
@@ -140,9 +147,22 @@ impl ParticipantType for Agent {
         Ok(())
     }
 
+    fn validate_realization_options(
+        &self, realization: Realization, options: &BTreeMap<String, serde_json::Value>, config: &CaseValues,
+    ) -> Result<(), String> {
+        if realization.kind == RealizationKind::KubernetesPod {
+            pod::validate_realization_options(options, config)?;
+        }
+        Ok(())
+    }
+
     fn default_env(&self, realization: Realization, config: &CaseValues) -> BTreeMap<String, String> {
         match (realization.os, realization.kind) {
             (Os::Linux, RealizationKind::LinuxContainer) => linux::default_env(
+                config,
+                BTreeMap::from([("DD_DATA_PLANE_ENABLED".into(), "false".into())]),
+            ),
+            (Os::Linux, RealizationKind::KubernetesPod) => pod::default_env(
                 config,
                 BTreeMap::from([("DD_DATA_PLANE_ENABLED".into(), "false".into())]),
             ),
@@ -154,7 +174,7 @@ impl ParticipantType for Agent {
         &self, realization: Realization, config: &EffectiveConfig,
     ) -> Result<BTreeMap<String, Endpoint>, String> {
         match (realization.os, realization.kind) {
-            (Os::Linux, RealizationKind::LinuxContainer) => {
+            (Os::Linux, RealizationKind::LinuxContainer | RealizationKind::KubernetesPod) => {
                 Self::configured_endpoints(realization, &config.env, &config.files)
             }
             _ => Ok(BTreeMap::new()),
@@ -164,6 +184,9 @@ impl ParticipantType for Agent {
     fn consumes(&self, realization: Realization, _: &EffectiveConfig) -> BTreeMap<String, ConsumedEndpoint> {
         match (realization.os, realization.kind) {
             (Os::Linux, RealizationKind::LinuxContainer) => linux::consumes(),
+            (Os::Linux, RealizationKind::KubernetesPod) => {
+                BTreeMap::from([("intake".into(), crate::agent_adp::intake())])
+            }
             _ => BTreeMap::new(),
         }
     }
@@ -198,7 +221,9 @@ impl ParticipantType for Agent {
 
     fn process_specs(&self, realization: Realization) -> &'static [ProcessSpec] {
         match (realization.os, realization.kind) {
-            (Os::Linux, RealizationKind::LinuxContainer) => &linux::AGENT_PROCESS_SPECS,
+            (Os::Linux, RealizationKind::LinuxContainer | RealizationKind::KubernetesPod) => {
+                &linux::AGENT_PROCESS_SPECS
+            }
             _ => &[],
         }
     }
@@ -250,9 +275,15 @@ otlp_config:
     }
 
     #[test]
-    fn agent_uses_the_converged_image_only_in_linux_containers() {
+    fn agent_uses_the_converged_image_in_linux_containers_and_pods() {
         assert_eq!(Agent.name(), "agent");
-        assert_eq!(Agent.supports(), &[(Os::Linux, RealizationKind::LinuxContainer)]);
+        assert_eq!(
+            Agent.supports(),
+            &[
+                (Os::Linux, RealizationKind::LinuxContainer),
+                (Os::Linux, RealizationKind::KubernetesPod)
+            ]
+        );
         assert_eq!(Agent.artifacts(LINUX), &[AgentAdp::LINUX_IMAGE]);
         assert_eq!(
             Agent.config_files(),
@@ -268,10 +299,6 @@ otlp_config:
             Realization {
                 os: Os::Windows,
                 kind: RealizationKind::WindowsContainer,
-            },
-            Realization {
-                os: Os::Linux,
-                kind: RealizationKind::KubernetesPod,
             },
         ] {
             assert!(Agent.artifacts(realization).is_empty());
@@ -352,44 +379,52 @@ otlp_config:
 
     #[test]
     fn agent_rejects_enabling_adp_and_accepts_an_explicit_disable_over_the_file() {
-        for value in ["true", "garbage", "{{ peer.late.container_id }}"] {
-            let values = CaseValues {
-                env: BTreeMap::from([("DD_DATA_PLANE_ENABLED".into(), value.into())]),
-                ..Default::default()
-            };
-            assert!(Agent
-                .validate_config(LINUX, &values)
-                .unwrap_err()
-                .contains("DD_DATA_PLANE_ENABLED"));
-            let mut values = CaseValues {
-                file_contents: BTreeMap::from([(
-                    "datadog.yaml".into(),
-                    format!("data_plane:\n  enabled: '{value}'").into_bytes(),
-                )]),
-                ..Default::default()
-            };
-            assert!(Agent
-                .validate_config(LINUX, &values)
-                .unwrap_err()
-                .contains("data_plane.enabled"));
-            values.env.insert("DD_DATA_PLANE_ENABLED".into(), "false".into());
-            Agent.validate_config(LINUX, &values).unwrap();
-            let env = Agent
-                .default_env(LINUX, &values)
-                .into_iter()
-                .chain(values.env)
-                .collect();
-            let endpoints = Agent
-                .endpoints(
-                    LINUX,
-                    &EffectiveConfig {
-                        env,
-                        files: values.file_contents,
-                        ..Default::default()
-                    },
-                )
-                .unwrap();
-            assert!(!endpoints.contains_key("api"));
+        for realization in [
+            LINUX,
+            Realization {
+                os: Os::Linux,
+                kind: RealizationKind::KubernetesPod,
+            },
+        ] {
+            for value in ["true", "garbage", "{{ peer.late.container_id }}"] {
+                let values = CaseValues {
+                    env: BTreeMap::from([("DD_DATA_PLANE_ENABLED".into(), value.into())]),
+                    ..Default::default()
+                };
+                assert!(Agent
+                    .validate_config(realization, &values)
+                    .unwrap_err()
+                    .contains("DD_DATA_PLANE_ENABLED"));
+                let mut values = CaseValues {
+                    file_contents: BTreeMap::from([(
+                        "datadog.yaml".into(),
+                        format!("data_plane:\n  enabled: '{value}'").into_bytes(),
+                    )]),
+                    ..Default::default()
+                };
+                assert!(Agent
+                    .validate_config(realization, &values)
+                    .unwrap_err()
+                    .contains("data_plane.enabled"));
+                values.env.insert("DD_DATA_PLANE_ENABLED".into(), "false".into());
+                Agent.validate_config(realization, &values).unwrap();
+                let env = Agent
+                    .default_env(realization, &values)
+                    .into_iter()
+                    .chain(values.env)
+                    .collect();
+                let endpoints = Agent
+                    .endpoints(
+                        realization,
+                        &EffectiveConfig {
+                            env,
+                            files: values.file_contents,
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap();
+                assert!(!endpoints.contains_key("api"));
+            }
         }
     }
 

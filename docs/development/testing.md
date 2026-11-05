@@ -81,6 +81,16 @@ Set `PANORAMIC_TEST_WINDOWS_IMAGE` to a local Windows image and
 `PANORAMIC_TEST_WINDOWS_COURIER` to the path of a natively built `panoramic-courier.exe`. The Windows integration job
 sets both and runs them before the integration cases. `make test-panoramic-daemon` excludes them on Linux.
 
+### Panoramic kind tests
+
+`make test-panoramic-kind` runs the ignored `backend::pod::kind_tests` suite in a cluster it creates and deletes.
+It covers Service routing, node-backed files, courier execution, TCP port-forwards, late files, exit and output
+observation, and reclaim after successful, failed, timed-out and cancelled native scenarios.
+
+Install `kind` and `docker`, set `DOCKER_HOST` to the daemon kind uses, and load a local `PANORAMIC_TEST_IMAGE`
+(default `alpine:latest`). The target builds the static musl courier with `make build-courier-linux` before testing.
+The suite runs locally only; it has no dedicated CI job.
+
 ### Panoramic host process tests
 
 The `panoramic-core` unit tests run host process groups through the native lifecycle on Unix hosts, using `/bin/sh`.
@@ -275,6 +285,10 @@ budgets, case deadline, parallel blocks and fail-fast behavior. Steps receive th
 participants through borrowed handles. File paths and literal log patterns resolve early and late facts when the step runs.
 A `parallel` block accepts only assertions. Actions, such as `exec` and `send`, must be sequential steps; discovery rejects an
 action in a parallel block before building its fields.
+
+The `wait` action pauses for its required, positive `duration`, such as `30s`. It names no participant and takes no
+`on` field. Its step budget is that duration, and case cancellation interrupts the pause. As an action, it cannot
+appear inside `parallel`.
 
 The native log and file steps accept `on`, `pattern` and an optional `regex` flag (default false):
 
@@ -529,19 +543,20 @@ requires that file. Its `receivers.otlp.protocols.grpc.endpoint` declares `otel_
 `host:port` with a nonzero port, gated on TCP acceptance. It cannot share a port with `agent_otlp_grpc`.
 Only the receiver address must be available while planning; exporter URLs may use connection references.
 
-Both types accept `config.params.host_view: true` on Linux. This mounts `/proc`, `/sys/fs/cgroup`, and the Docker
-socket read-only and sets the corresponding Agent host paths. Rootless Docker can reject file placement with a
-`remount-ro /host/proc: operation not permitted` error. Removing host view can diagnose other behavior, but cannot
+Both types accept `config.params.host_view: true` on Linux. In containers this mounts `/proc`, `/sys/fs/cgroup`,
+and the Docker socket read-only and sets the corresponding Agent host paths. Rootless Docker can reject file placement
+with a `remount-ro /host/proc: operation not permitted` error. Removing host view can diagnose other behavior, but cannot
 prove container-origin enrichment.
 
 The Linux-only `millstone` type runs `baseline` and `subject` senders in one container from `tools-linux-image`.
 Both use the seed in the required `millstone.yaml` template. Its target is a reference to the `target` connection's
 URL, optionally followed by a literal path starting with `/`, such as an OTLP service path. The baseline uses the
 `baseline_target` URL with the same suffix. Both connections are required; suffixes cannot contain references.
-Senders stay alive after `Millstone finished sending` so their container identity remains available through flushing.
-Each has its own exit record and log. The baseline capture is collected into `traffic/`; the subject capture manifest
-is kept under `load/collected/` when the participant is named `load`, allowing payload-digest comparison without
-retaining a second payload stream. `dsd-plain` and `dsd-origin-detection` demonstrate this composition.
+In Linux containers, senders stay alive after `Millstone finished sending` so their container identity remains
+available through flushing. Each has its own exit record and log. The baseline capture is collected into `traffic/`;
+the subject capture manifest is kept under `load/collected/` when the participant is named `load`, allowing
+payload-digest comparison without retaining a second payload stream. `dsd-plain` and `dsd-origin-detection`
+demonstrate this composition.
 
 In Linux containers, `agent-adp` accepts the directory configuration names `files/` and `cont-init.d/`.
 Files under `files/` land beneath `/var/lib/panoramic/files`, available through the `files_dir` fact, with mode 0644.
@@ -660,6 +675,29 @@ resolves to that container-local `shared` directory. Recipes that set reserved v
 publish runner-host ports are rejected. The courier occupies the reserved path `C:\panoramic\courier.exe`.
 Steps reach Windows endpoints through the courier inside the server participant.
 
+`agent-adp`, `agent`, `datadog-intake` and `millstone` support Linux Kubernetes pods, with the same listener and
+process declarations as their Linux containers. Each participant runs in its own pod and has a same-named Service.
+Only the intake exposes a pod operation, `dump`. Agent pods accept `datadog.yaml`, but reject `extra_hosts`, `files/`
+and `cont-init.d/`. Set `config.params.host_view: true` to mount the node's `/proc`, cgroup filesystem and containerd
+socket read-only. Host view defaults to false. Pod host view requires `realization.options.host_pid: true`, so peer
+credential PIDs refer to the mounted node process tree. Planning rejects missing or false `host_pid` and names the
+participant. `host_pid` and `cri_socket` remain realization options; they do not add mounts.
+
+Both millstone senders share one container named `millstone`, so they have the same container identity. Their
+configuration files are written after start, once the pod's identities exist. Unlike Linux-container senders, pod
+senders exit after sending; use `exits_with` followed by `wait` for the targets' flush window. Pods collect no input
+capture.
+
+Pod commands wait for their late files before running. The backend writes those files once all referenced
+identities exist. Shared files and exit records remain readable through the kind node after a pod exits. Container
+output is merged into `<log_dir>/<participant>/containers/<container>.log`; named process files keep their usual
+paths.
+
+For any selected pod case, native or legacy, `panoramic run` creates or reuses the cluster named by
+`--kind-cluster-name` (default `saluki-correctness`) and loads its image references. Native pods use the `kubeconfig`
+context `kind-<cluster-name>`, regardless of the current context. Cluster setup failure errors pod cases before
+participant creation. Use `--no-delete-kind-cluster` to retain the cluster after the run.
+
 The `agent-adp` definition declares `default_log_file` for its Linux and Windows containers only, so a case that
 runs on macOS writes the path out or uses its core-provided `shared_dir` fact.
 
@@ -741,11 +779,16 @@ fails the case. `panoramic list` prints both orders, grouping independent partic
 
 Durations in a participant case need a unit: write `30s`, not `30`.
 
-Every step names the participant it acts on with `on` and its kind with `step`. The `file_contains` step requires
-`pattern`.
+Steps name the participant they act on with `on`; `wait` names none. Step fields differ from the integration schema:
+steps use `step:` instead of `assertion:`, and `file_contains` requires `pattern`.
 Each backend declares its accepted `realization.options`. The loader rejects unknown options and non-boolean
 values, naming the participant, realization kind, and option. Linux containers accept `host_cgroup_namespace`
-(default false); true exposes the host's cgroup paths to the participant. Other realization kinds accept no options.
+(default false); true exposes the host's cgroup paths to the participant. Pods accept `host_pid` and `cri_socket`,
+both defaulting to false. `host_pid` shares the node's PID namespace. `cri_socket` requires the node's containerd
+socket to be mounted by the recipe; it adds no mount. Before creating a pod, the backend checks every recipe host-mount
+source on the node and rejects missing sources. HostPath volumes pin the observed file, directory or socket type;
+`cri_socket` requires a socket. Participant recipes own host mounts and their destination paths. Host process groups
+and Windows containers accept no options.
 A `config.files` source must be a nonempty path relative to the case directory that exists when the case loads.
 Parent-directory components must stay within the case directory; symlink targets may be outside it.
 
@@ -923,8 +966,9 @@ its environment defaults. A case pins the port by setting the type's variable in
 No two network listeners of a case's host process groups may share a port on one transport (TCP or UDP).
 A fixed or pinned host port must be outside the pool, `20000–29999`; avoiding collisions across concurrent
 cases is the case author's responsibility.
-Step routes depend on the operation. Probes and raw sends to containers and pods use the courier inside the
-server participant: a port proxy can accept a connection even when the server has no listener. HTTP and gRPC
+Step routes depend on the operation. Probes to containers and pods, and raw sends to containers, use the courier
+inside the server participant: a port proxy can accept a connection even when the server has no listener. Raw sends
+from the runner host to pods fail planning; use a sending participant. HTTP and gRPC
 requests to Linux containers and pods use published or forwarded ports and must observe a server response.
 HTTP requests to Windows containers run through the courier inside the server participant, without published ports.
 Host process group endpoints are reached directly. Request/response step needs and operations' declared HTTP

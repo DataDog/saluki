@@ -1,6 +1,9 @@
 //! Participant type declarations, effective configuration and realization-specific early facts.
 
-use std::{collections::BTreeMap, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -71,8 +74,8 @@ impl CaseValues {
 /// A participant's configuration: type defaults, connection deliveries, then case values, with later layers winning.
 ///
 /// Type defaults include assigned-port values. Case environment variables can pin those ports.
-/// The `validate_config`, `default_env`, `endpoints`, `readiness` and `consumes` hooks see configuration
-/// before connection deliveries.
+/// The `validate_config`, `validate_realization_options`, `default_env`, `endpoints`, `readiness` and `consumes` hooks
+/// see configuration before connection deliveries.
 /// After port assignment, `endpoints`, `readiness` and `consumes` see the reassembled configuration,
 /// including assigned values.
 /// A type must derive what it serves and consumes independently of where it connects.
@@ -137,9 +140,16 @@ pub struct RenderedConfig {
     pub(crate) env: BTreeMap<String, String>,
     pub(crate) params: BTreeMap<String, serde_json::Value>,
     pub(crate) files: BTreeMap<String, Vec<u8>>,
+    /// Config names whose pod templates retain deferred late references.
+    pub(crate) late_files: BTreeSet<String>,
 }
 
 impl RenderedConfig {
+    /// Returns whether rendering left late references in this template file, to be written after startup.
+    pub fn file_needs_late_write(&self, name: &str) -> bool {
+        self.late_files.contains(name)
+    }
+
     /// The participant's directory under its scope's shared root: an absolute path in the
     /// participant OS's style. On a host process group, its processes run in it and recipe files
     /// are placed relative to it.
@@ -401,6 +411,18 @@ pub trait ParticipantType: Send + Sync {
     ///
     /// Returns an error describing configuration this type cannot use for the realization.
     fn validate_config(&self, _realization: Realization, _config: &CaseValues) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Checks whether backend-validated realization options support the validated case configuration.
+    /// Defaults to accepting them. Called after [`Self::validate_config`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the configuration requires different realization options.
+    fn validate_realization_options(
+        &self, _realization: Realization, _options: &BTreeMap<String, serde_json::Value>, _config: &CaseValues,
+    ) -> Result<(), String> {
         Ok(())
     }
 

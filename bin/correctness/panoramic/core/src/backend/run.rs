@@ -7,44 +7,63 @@ use std::{
 };
 
 use k8s_openapi::api::core::v1::Node as KubernetesNode;
-use kube::{api::ListParams, Api, Client};
+use kube::{api::ListParams, config::KubeConfigOptions, Api, Client, Config};
 use saluki_error::{generic_error, GenericError};
 use tokio::sync::OnceCell;
 
 use super::{docker::DockerDaemon, pod::node::Node};
+use crate::{
+    artifact::{self, ArtifactBinding, ArtifactVerification},
+    layout::{Os, Realization, RealizationKind},
+};
 
 pub(super) struct PodConnection {
     pub(super) client: Client,
     pub(super) node: Node,
 }
-use crate::{
-    artifact::{self, ArtifactBinding, ArtifactVerification},
-    layout::{Os, Realization, RealizationKind},
-};
 
 /// Runtime checks, artifact verification and container scopes sharing one lazily connected Docker daemon.
 #[derive(Default)]
 pub struct RunBackends {
     pub(super) docker: DockerDaemon,
     pub(super) pods: OnceCell<PodConnection>,
+    kube_context: Option<String>,
     #[cfg(test)]
     providability_checks: std::sync::Mutex<BTreeMap<Realization, usize>>,
 }
 
 impl RunBackends {
+    /// Selects the cluster context used for pod participants instead of the current context.
+    pub fn with_kube_context(mut self, context: String) -> Self {
+        self.kube_context = Some(context);
+        self
+    }
+
     #[cfg(test)]
     pub(crate) fn with_docker(docker: DockerDaemon) -> Self {
         Self {
             docker,
             pods: OnceCell::new(),
+            kube_context: None,
             providability_checks: std::sync::Mutex::default(),
         }
     }
 
     pub(super) async fn pod_connection(&self) -> Result<&PodConnection, GenericError> {
         self.pods
-            .get_or_try_init(|| async { self.connect_pods(Client::try_default().await?).await })
+            .get_or_try_init(|| async { self.connect_pods(Client::try_from(self.pod_config().await?)?).await })
             .await
+    }
+
+    async fn pod_config(&self) -> Result<Config, GenericError> {
+        match &self.kube_context {
+            Some(context) => Ok(Config::from_kubeconfig(&KubeConfigOptions {
+                context: Some(context.clone()),
+                ..Default::default()
+            })
+            .await?),
+            None => Ok(Config::infer().await?),
+        }
     }
 
     pub(super) async fn connect_pods(&self, client: Client) -> Result<PodConnection, GenericError> {
@@ -156,6 +175,7 @@ impl RunBackends {
                     return Err(format!("{} runs only on {}", kind.name(), Os::Linux.name()));
                 }
                 check_tools(path)?;
+                check_docker_context().await?;
                 self.docker.for_os(Os::Linux).await.map(|_| ())
             }
         }
@@ -229,6 +249,87 @@ mod tests {
         artifact::{ArtifactKind, ArtifactRole, BindingSource},
         backend::docker::test_util::FakeDocker,
     };
+
+    async fn rerun_in_child(test: &str, env: &[(&str, Option<&OsStr>)]) {
+        let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+        command.args(["--exact", test, "--nocapture"]).kill_on_drop(true);
+        for (key, value) in env {
+            match value {
+                Some(value) => {
+                    command.env(key, value);
+                }
+                None => {
+                    command.env_remove(key);
+                }
+            }
+        }
+        let output = tokio::time::timeout(std::time::Duration::from_secs(30), command.output())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[tokio::test]
+    async fn pod_configuration_selects_the_named_context_instead_of_the_current_one() {
+        const CHILD: &str = "PANORAMIC_CONTEXT_TEST_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let backends = RunBackends::default().with_kube_context("selected".into());
+            let config = backends.pod_config().await.unwrap();
+            assert_eq!(config.cluster_url.to_string(), "https://127.0.0.1:6444/");
+            assert_eq!(config.default_namespace, "selected-namespace");
+            assert_eq!(
+                RunBackends::default()
+                    .pod_config()
+                    .await
+                    .unwrap()
+                    .cluster_url
+                    .to_string(),
+                "https://127.0.0.1:6443/"
+            );
+            assert!(RunBackends::default()
+                .with_kube_context("missing".into())
+                .pod_config()
+                .await
+                .is_err());
+            return;
+        }
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(4).unwrap();
+        let dir = tempfile::tempdir_in(root.join("target")).unwrap();
+        let path = dir.path().join("kubeconfig");
+        std::fs::write(
+            &path,
+            r"apiVersion: v1
+kind: Config
+current-context: current
+clusters:
+- name: first
+  cluster: {server: 'https://127.0.0.1:6443'}
+- name: second
+  cluster: {server: 'https://127.0.0.1:6444'}
+contexts:
+- name: current
+  context: {cluster: first, user: test}
+- name: selected
+  context: {cluster: second, user: test, namespace: selected-namespace}
+users:
+- name: test
+  user: {token: test-token}
+",
+        )
+        .unwrap();
+        // Isolate kubeconfig discovery from tests that use the runner's environment.
+        rerun_in_child(
+            "backend::run::tests::pod_configuration_selects_the_named_context_instead_of_the_current_one",
+            &[(CHILD, Some(OsStr::new("1"))), ("KUBECONFIG", Some(path.as_os_str()))],
+        )
+        .await;
+    }
 
     #[test]
     fn pod_setup_rejects_an_implicit_nondefault_docker_context() {
@@ -412,6 +513,14 @@ mod tests {
 
     #[tokio::test]
     async fn containers_and_pods_need_a_daemon_running_their_os() {
+        if std::env::var_os("DOCKER_HOST").is_none_or(|value| value.is_empty()) {
+            rerun_in_child(
+                "backend::run::tests::containers_and_pods_need_a_daemon_running_their_os",
+                &[("DOCKER_HOST", Some(OsStr::new("test-daemon")))],
+            )
+            .await;
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
         for tool in ["kind", "docker"] {
             std::fs::write(dir.path().join(format!("{tool}{}", std::env::consts::EXE_SUFFIX)), "").unwrap();
@@ -442,6 +551,43 @@ mod tests {
             }
             assert_eq!(*api.calls.lock().unwrap(), ["connect", "info"]);
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_nondefault_context_fails_providability_before_contacting_the_daemon() {
+        const CHILD: &str = "PANORAMIC_DOCKER_CONTEXT_TEST_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let api = FakeDocker::new(Some("linux"));
+            let backends = RunBackends::with_docker(api.daemon());
+            let pod = Realization {
+                os: Os::Linux,
+                kind: RealizationKind::KubernetesPod,
+            };
+            let errors = backends.unprovidable([pod]).await;
+            assert!(
+                errors[&pod].contains("DOCKER_HOST") && errors[&pod].contains("other-context"),
+                "{errors:?}"
+            );
+            assert!(api.calls.lock().unwrap().is_empty());
+            return;
+        }
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(4).unwrap();
+        let dir = tempfile::tempdir_in(root.join("target")).unwrap();
+        let docker = dir.path().join("docker");
+        std::fs::write(&docker, "#!/bin/sh\nprintf 'other-context\\n'\n").unwrap();
+        std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(dir.path().join("kind"), "").unwrap();
+        rerun_in_child(
+            "backend::run::tests::a_nondefault_context_fails_providability_before_contacting_the_daemon",
+            &[
+                (CHILD, Some(OsStr::new("1"))),
+                ("DOCKER_HOST", None),
+                ("PATH", Some(dir.path().as_os_str())),
+            ],
+        )
+        .await;
     }
 
     #[tokio::test]

@@ -28,7 +28,9 @@ use crate::{
     handle::{ExecCommand, ExecOutput, FileKind, HandleError, Primitives},
     layout::Os,
     ledger::{self, ResourceLedger, RECLAIM_TIME},
-    observe::{Capture, ExitObservation, ExitStatus, ParticipantExit, ParticipantObservation, ProcessOutput},
+    observe::{
+        Capture, ExitObservation, ExitStatus, OutputPaths, ParticipantExit, ParticipantObservation, ProcessOutput,
+    },
     participant::{ExitChannel, OutputChannel, OutputStream, ProcessSpec},
     plan::ScopeLayout,
     probe::{AttemptLimits, ProbeAnswer},
@@ -1181,16 +1183,11 @@ async fn output_written_before_the_container_stops_is_retained_however_early_it_
         for (name, observation) in &observations {
             wait_for_capture(&observation.outputs["main"]).await;
             wait_for_capture(&observation.outputs["svc"]).await;
-            assert_eq!(
-                std::fs::read(observation.stdout_path.as_ref().unwrap()).unwrap(),
-                b"out\n",
-                "{name}"
-            );
-            assert_eq!(
-                std::fs::read(observation.stderr_path.as_ref().unwrap()).unwrap(),
-                b"err",
-                "{name}"
-            );
+            let Some(OutputPaths::Split { stdout, stderr }) = &observation.output_paths else {
+                panic!("container output has separate streams");
+            };
+            assert_eq!(std::fs::read(stdout).unwrap(), b"out\n", "{name}");
+            assert_eq!(std::fs::read(stderr).unwrap(), b"err", "{name}");
             assert_eq!(
                 std::fs::read(&observation.outputs["svc"].paths[0]).unwrap(),
                 RETAINED,

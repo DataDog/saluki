@@ -9,7 +9,7 @@ use crate::{
     backend,
     case::{config_references::FileTemplates, CaseConfig, CaseFile, CaseSchema, FileSource, ProcedureNode, Registries},
     endpoint::{Endpoint, EndpointOperation, Listener, Port, ResolvedAddress, RunnerHostPort, RunnerHostRoute},
-    layout::{describe_participant, lay_out, Layout, LayoutEntry, Os},
+    layout::{describe_participant, lay_out, Layout, LayoutEntry, Os, RealizationKind},
     participant::{
         check_process_names, check_process_specs, find_type, CaseValues, EffectiveConfig, Operation, ParticipantType,
         SHARED_DIR_FACT,
@@ -77,6 +77,7 @@ pub struct CasePlan<C> {
     case: CaseConfig<C>,
     subject_os: Os,
     artifacts: Vec<ArtifactBinding>,
+    image_roles: BTreeMap<RealizationKind, Vec<ArtifactRole>>,
     participants: Option<ParticipantData>,
 }
 
@@ -194,6 +195,7 @@ impl<'a> Planner<'a> {
     pub fn compile<C>(&mut self, case: CaseConfig<C>, subject_os: Os) -> Result<Compiled<C>, GenericError> {
         let selected = case.subject_os().contains(&subject_os);
         let mut artifacts = Vec::new();
+        let mut image_roles = BTreeMap::new();
         let mut selected_participants = None;
         let mut participants = None;
         if let CaseSchema::Participants { file, procedure } = case.schema() {
@@ -237,7 +239,8 @@ impl<'a> Planner<'a> {
                 )
                 .map_err(error)?;
                 if os == subject_os {
-                    artifacts = artifacts::bind(file, &candidate, self.registries.participant_types, &self.bindings);
+                    (artifacts, image_roles) =
+                        artifacts::bind(file, &candidate, self.registries.participant_types, &self.bindings);
                     selected_participants = Some((candidate, planned));
                 }
             }
@@ -275,6 +278,7 @@ impl<'a> Planner<'a> {
             case,
             subject_os,
             artifacts,
+            image_roles,
             participants,
         })))
     }
@@ -336,6 +340,12 @@ impl<C> CasePlan<C> {
     /// Returns the case's artifact bindings for the selected OS, sorted by role name.
     pub fn artifacts(&self) -> &[ArtifactBinding] {
         &self.artifacts
+    }
+
+    /// Returns participant and backend image roles for a realization kind, sorted and deduplicated by name.
+    /// Typed cases have no participant realizations and return an empty slice.
+    pub fn image_roles_for(&self, kind: RealizationKind) -> &[ArtifactRole] {
+        self.image_roles.get(&kind).map(Vec::as_slice).unwrap_or(&[])
     }
 
     /// Returns create dependency levels for participant cases, or `None` for typed cases.
@@ -582,6 +592,11 @@ fn plan_participants(
             values.clone(),
             facts[name][SHARED_DIR_FACT].clone(),
             ports,
+            entry
+                .realization
+                .as_ref()
+                .map(|realization| &realization.options)
+                .unwrap_or(&BTreeMap::new()),
         )?;
         if let Some(key) = config.env.keys().find(|key| key.starts_with("PANORAMIC_")) {
             let source = if values.env.contains_key(key) {

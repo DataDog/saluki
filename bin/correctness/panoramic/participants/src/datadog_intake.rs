@@ -19,6 +19,8 @@ use serde_json::Value;
 
 use crate::tools::{INTAKE_HOST_BINARY, TOOLS_LINUX_IMAGE, TOOLS_WINDOWS_IMAGE};
 
+mod pod;
+
 /// The mock Datadog intake, with independent telemetry storage per participant.
 ///
 /// The `dump` operation accepts a `kind`: `events`, `metrics`, `service_checks`, `spans`, `trace_stats`,
@@ -39,6 +41,7 @@ impl ParticipantType for DatadogIntake {
     fn supports(&self) -> &'static [(Os, RealizationKind)] {
         &[
             (Os::Linux, RealizationKind::LinuxContainer),
+            (Os::Linux, RealizationKind::KubernetesPod),
             (Os::MacOs, RealizationKind::HostProcessGroup),
             (Os::Windows, RealizationKind::WindowsContainer),
         ]
@@ -46,7 +49,7 @@ impl ParticipantType for DatadogIntake {
 
     fn artifacts(&self, realization: Realization) -> &'static [ArtifactRole] {
         match (realization.os, realization.kind) {
-            (Os::Linux, RealizationKind::LinuxContainer) => &[TOOLS_LINUX_IMAGE],
+            (Os::Linux, RealizationKind::LinuxContainer | RealizationKind::KubernetesPod) => &[TOOLS_LINUX_IMAGE],
             (Os::MacOs, RealizationKind::HostProcessGroup) => &[INTAKE_HOST_BINARY],
             (Os::Windows, RealizationKind::WindowsContainer) => &[TOOLS_WINDOWS_IMAGE],
             _ => &[],
@@ -61,6 +64,7 @@ impl ParticipantType for DatadogIntake {
                     .with_entrypoint(["/usr/local/bin/datadog-intake"])
                     .with_env(env),
             )),
+            (Os::Linux, RealizationKind::KubernetesPod) => Ok(pod::recipe(env)),
             (Os::Windows, RealizationKind::WindowsContainer) => Ok(Recipe::Container(
                 ContainerRecipe::new(TOOLS_WINDOWS_IMAGE)
                     .with_entrypoint([r"C:\tools\datadog-intake.exe"])
@@ -104,13 +108,12 @@ impl ParticipantType for DatadogIntake {
 
     fn process_specs(&self, realization: Realization) -> &'static [ProcessSpec] {
         match (realization.os, realization.kind) {
-            (Os::Linux, RealizationKind::LinuxContainer) | (Os::Windows, RealizationKind::WindowsContainer) => {
-                &[ProcessSpec {
-                    name: "intake",
-                    exit: ExitChannel::Container,
-                    output: OutputChannel::Container,
-                }]
-            }
+            (Os::Linux, RealizationKind::LinuxContainer | RealizationKind::KubernetesPod)
+            | (Os::Windows, RealizationKind::WindowsContainer) => &[ProcessSpec {
+                name: "intake",
+                exit: ExitChannel::Container,
+                output: OutputChannel::Container,
+            }],
             (Os::MacOs, RealizationKind::HostProcessGroup) => &[ProcessSpec {
                 name: "intake",
                 exit: ExitChannel::Wait,
@@ -257,6 +260,10 @@ mod tests {
     const LINUX: Realization = Realization {
         os: Os::Linux,
         kind: RealizationKind::LinuxContainer,
+    };
+    const POD: Realization = Realization {
+        os: Os::Linux,
+        kind: RealizationKind::KubernetesPod,
     };
     const MACOS: Realization = Realization {
         os: Os::MacOs,
@@ -569,7 +576,7 @@ mod tests {
 
     #[test]
     fn the_intake_listens_on_historical_ports_unless_its_environment_overrides_them() {
-        for realization in [LINUX, WINDOWS] {
+        for realization in [LINUX, WINDOWS, POD] {
             for (env, ports) in [
                 (BTreeMap::new(), [2049, 9125]),
                 (
@@ -611,7 +618,7 @@ mod tests {
 
     #[test]
     fn an_intake_listen_address_must_have_a_nonzero_port_and_an_unspecified_host() {
-        for realization in [LINUX, WINDOWS] {
+        for realization in [LINUX, WINDOWS, POD] {
             for key in ["INTAKE_HTTP_LISTEN_ADDR", "INTAKE_DOGSTATSD_LISTEN_ADDR"] {
                 for (value, expected) in [
                     ("0.0.0.0", "host:port"),
@@ -753,6 +760,7 @@ mod tests {
         assert_eq!(DatadogIntake.processes(), &["intake"]);
         for (realization, exit, output) in [
             (LINUX, ExitChannel::Container, OutputChannel::Container),
+            (POD, ExitChannel::Container, OutputChannel::Container),
             (WINDOWS, ExitChannel::Container, OutputChannel::Container),
             (MACOS, ExitChannel::Wait, OutputChannel::Pipes),
         ] {
@@ -787,17 +795,19 @@ mod tests {
     }
 
     #[test]
-    fn the_intake_supports_containers_and_macos_hosts_with_realization_specific_artifacts() {
+    fn the_intake_supports_containers_pods_and_macos_hosts_with_realization_specific_artifacts() {
         assert_eq!(
             DatadogIntake.supports(),
             &[
                 (Os::Linux, RealizationKind::LinuxContainer),
+                (Os::Linux, RealizationKind::KubernetesPod),
                 (Os::MacOs, RealizationKind::HostProcessGroup),
                 (Os::Windows, RealizationKind::WindowsContainer),
             ]
         );
         for (realization, role) in [
             (LINUX, TOOLS_LINUX_IMAGE),
+            (POD, TOOLS_LINUX_IMAGE),
             (MACOS, INTAKE_HOST_BINARY),
             (WINDOWS, TOOLS_WINDOWS_IMAGE),
         ] {

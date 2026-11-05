@@ -22,7 +22,7 @@ use crate::{
     endpoint::{EndpointKind, EndpointOperation, RunnerHostRoute},
     handle::{probe_from_runner_host, send_from_runner_host, FileKind},
     ledger::{self, ResourceLedger},
-    observe::{Capture, ExitObservation, ExitStatus, ParticipantExit, ProcessOutput},
+    observe::{Capture, ExitObservation, ExitStatus, OutputPaths, ParticipantExit, ProcessOutput},
     participant::{ExitChannel, OutputChannel, OutputStream},
     probe::ProbeAnswer,
     recipe::HostMount,
@@ -887,14 +887,11 @@ async fn a_stopped_containers_exit_and_output_are_observed() {
         .await
         .unwrap();
         assert_eq!(observation.capture(), Capture::Complete);
-        assert_eq!(
-            std::fs::read(observation.stdout_path.as_ref().unwrap()).unwrap(),
-            b"out\n"
-        );
-        assert_eq!(
-            std::fs::read(observation.stderr_path.as_ref().unwrap()).unwrap(),
-            b"err\n"
-        );
+        let Some(OutputPaths::Split { stdout, stderr }) = &observation.output_paths else {
+            panic!("container output has separate streams");
+        };
+        assert_eq!(std::fs::read(stdout).unwrap(), b"out\n");
+        assert_eq!(std::fs::read(stderr).unwrap(), b"err\n");
     })
     .await;
 }
@@ -1208,13 +1205,10 @@ async fn container_output_lines_are_tagged_with_their_process_and_stream() {
             wait_for_capture(output).await;
             wait_for_capture(&observation.outputs["svc"]).await;
             assert_eq!(std::fs::read(&observation.outputs["svc"].paths[0]).unwrap(), b"");
-            assert_eq!(
-                output.paths,
-                [
-                    observation.stdout_path.clone().unwrap(),
-                    observation.stderr_path.clone().unwrap()
-                ]
-            );
+            let Some(OutputPaths::Split { stdout, stderr }) = &observation.output_paths else {
+                panic!("container output has separate streams");
+            };
+            assert_eq!(output.paths, [stdout.clone(), stderr.clone()]);
             assert!(!dir.path().join("main.stdout.log").exists());
             assert_eq!(std::fs::read(&output.paths[0]).unwrap(), b"out\n");
             assert_eq!(std::fs::read(&output.paths[1]).unwrap(), b"err");

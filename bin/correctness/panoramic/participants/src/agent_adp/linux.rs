@@ -123,13 +123,19 @@ pub(crate) fn default_env(config: &CaseValues, mut env: BTreeMap<String, String>
 }
 
 pub(crate) fn recipe(config: &RenderedConfig, with_adp: bool) -> Result<Recipe, String> {
-    let mut recipe = ContainerRecipe::new(AgentAdp::LINUX_IMAGE).with_env(config.env().clone());
+    let mut recipe = base_recipe(config, with_adp)?;
     if host_view(config.params())? {
         recipe = recipe
             .with_host_mount("/proc", "/host/proc", true)
             .with_host_mount("/sys/fs/cgroup", "/host/sys/fs/cgroup", true)
             .with_host_mount("/var/run/docker.sock", "/var/run/docker.sock", true);
     }
+    Ok(Recipe::Container(recipe))
+}
+
+/// Builds the Linux recipe without host-view mounts, which differ by realization.
+pub(crate) fn base_recipe(config: &RenderedConfig, with_adp: bool) -> Result<ContainerRecipe, String> {
+    let mut recipe = ContainerRecipe::new(AgentAdp::LINUX_IMAGE).with_env(config.env().clone());
     if let Some(hook) = super::late::hook(config.env(), config.params()) {
         recipe = recipe.with_file("/etc/cont-init.d/10-panoramic-late-substitution.sh", 0o755, hook);
     }
@@ -184,7 +190,7 @@ foreground {{
                 log.into_bytes(),
             );
     }
-    Ok(Recipe::Container(recipe))
+    Ok(recipe)
 }
 
 /// Returns a shipped service script without its shebang line, with LF line endings.
@@ -325,7 +331,7 @@ mod tests {
             };
             assert_eq!(
                 AgentAdp.validate_config(Realization { os, kind }, &values).unwrap_err(),
-                "host_view is supported in Linux containers only"
+                "host_view is supported in Linux containers and pods only"
             );
         }
     }
