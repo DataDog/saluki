@@ -414,7 +414,9 @@ mod tests {
         let content = r#"{"message":"hi","status":""}"#;
         let mut write = |log: &Log| {
             let mut buffer = Vec::new();
-            encoder.write_envelope(log, &mut buffer);
+            encoder
+                .write_envelope(log, &mut buffer)
+                .expect("envelope should serialize");
             serde_json::from_slice::<serde_json::Value>(&buffer).expect("envelope should be JSON")
         };
 
