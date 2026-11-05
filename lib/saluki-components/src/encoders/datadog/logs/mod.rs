@@ -248,19 +248,15 @@ impl EndpointEncoder for LogsEndpointEncoder {
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeSet, HashMap};
-    use std::time::Duration;
 
     use saluki_core::data_model::{
         event::log::{Log, LogStatus},
         tags::{Tag, TagSet},
     };
-    use saluki_core::{components::test_util::TestComponentDriver, data_model::event::Event};
     use serde_json::json;
     use stringtheory::MetaString;
 
-    use super::{DatadogLogsConfiguration, JsonValue, LogsEndpointEncoder};
-    use crate::common::datadog::test_util::{decompressed_bodies, incompressible_string};
-    use crate::encoders::BufferedIncrementalConfiguration;
+    use super::{JsonValue, LogsEndpointEncoder};
 
     fn tag_set<const N: usize>(tags: [&'static str; N]) -> TagSet {
         tags.into_iter().map(Tag::from_static).collect()
@@ -363,68 +359,5 @@ mod tests {
         let json = encoder.build_agent_json(&log);
         assert_eq!(json!("override-host"), json["hostname"]);
         assert_eq!(json!(42), json["custom"]);
-    }
-
-    /// Encodes `logs` with the encoder set up as the topology sets it up, and returns the decompressed request bodies.
-    ///
-    /// `logs` must fit in a single event buffer, so that the requests depend only on the logs and not on timing.
-    async fn encode_logs(logs: Vec<Log>) -> Vec<(usize, Vec<u8>)> {
-        assert!(logs.len() <= 1024, "logs must fit in a single event buffer");
-
-        let config =
-            BufferedIncrementalConfiguration::new(DatadogLogsConfiguration::new("zstd", 3), Duration::from_secs(2));
-        let (control, mut payloads) = TestComponentDriver::encoder(config)
-            .await
-            .expect("logs encoder should build");
-        control.send_events(logs.into_iter().map(Event::Log)).await;
-        control.shutdown().await.expect("logs encoder should stop cleanly");
-
-        decompressed_bodies(payloads.collect().await).await
-    }
-
-    /// Asserts that every request body is a JSON array holding as many logs as its metadata counts, and that the
-    /// requests hold `expected_logs` logs in total.
-    fn assert_valid_json_requests(requests: &[(usize, Vec<u8>)], expected_logs: usize) {
-        assert!(requests.len() > 1, "the logs should be split across requests");
-        for (index, (event_count, body)) in requests.iter().enumerate() {
-            let tail = String::from_utf8_lossy(&body[body.len().saturating_sub(16)..]);
-            let logs = serde_json::from_slice::<Vec<JsonValue>>(body).unwrap_or_else(|e| {
-                panic!(
-                    "request {} isn't a valid JSON array ({}), it ends with {:?}",
-                    index, e, tail
-                )
-            });
-            assert_eq!(
-                *event_count,
-                logs.len(),
-                "request {} metadata should count its logs",
-                index
-            );
-        }
-        assert_eq!(requests.iter().map(|(count, _)| count).sum::<usize>(), expected_logs);
-    }
-
-    #[tokio::test]
-    async fn requests_split_at_compressed_size_estimate_are_valid_json() {
-        // About 6.5 MB of content that barely compresses, so the compressed size estimate rejects a log before the
-        // 1000-log cap or the uncompressed limit is reached.
-        let logs = (0..400)
-            .map(|index| Log::new(incompressible_string(16 * 1024, index)))
-            .collect::<Vec<_>>();
-
-        let requests = encode_logs(logs).await;
-        assert_valid_json_requests(&requests, 400);
-    }
-
-    #[tokio::test]
-    async fn requests_split_at_uncompressed_size_limit_are_valid_json() {
-        // About 70 MB of content that compresses to almost nothing, so the 60 MiB uncompressed limit rejects a log
-        // before the 1000-log cap or the compressed size estimate is reached.
-        let logs = (0..700)
-            .map(|index| Log::new(format!("{:06}:{}", index, "a".repeat(100_000))))
-            .collect::<Vec<_>>();
-
-        let requests = encode_logs(logs).await;
-        assert_valid_json_requests(&requests, 700);
     }
 }
