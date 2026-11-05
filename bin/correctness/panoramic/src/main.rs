@@ -149,12 +149,9 @@ mod tests {
     use panoramic_core::layout::Os;
 
     use super::*;
-    use crate::{
-        collector::EXIT_HARNESS_ERROR,
-        config::{
-            discover_in_scope, runtime_for_os,
-            tests::{planner, write_case, PARTICIPANT_FIELDS},
-        },
+    use crate::config::{
+        discover_in_scope, runtime_for_os,
+        tests::{planner, write_case, PARTICIPANT_FIELDS},
     };
 
     #[tokio::test]
@@ -309,7 +306,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_shows_a_participant_case_the_integration_runner_cannot_run_but_list_json_and_run_fail() {
+    async fn list_and_list_json_accept_windows_participant_cases_with_an_explicit_realization() {
         let dir = tempfile::tempdir().unwrap();
         write_case(
             dir.path(),
@@ -346,38 +343,7 @@ mod tests {
             let Command::List(cmd) = cli.command else {
                 panic!("expected list");
             };
-            let expected = if json {
-                ExitCode::from(EXIT_HARNESS_ERROR)
-            } else {
-                ExitCode::SUCCESS
-            };
-            assert_eq!(list_tests(cmd).await, expected, "json: {json}");
-        }
-        let logs = dir.path().join("logs");
-        for selection in [Some("good"), None] {
-            let mut args = vec![
-                "panoramic",
-                "run",
-                "-d",
-                dir.path().to_str().unwrap(),
-                "--runtime",
-                "windows",
-                "--no-tui",
-                "-l",
-                logs.to_str().unwrap(),
-            ];
-            if let Some(name) = selection {
-                args.extend(["-t", name]);
-            }
-            let cli = Cli::try_parse_from(args).unwrap();
-            let Command::Run(cmd) = cli.command else {
-                panic!("expected run");
-            };
-            assert_eq!(run_tests(cmd, false).await, ExitCode::from(EXIT_HARNESS_ERROR));
-            assert!(
-                !logs.exists(),
-                "runner construction must fail before creating the log directory"
-            );
+            assert_eq!(list_tests(cmd).await, ExitCode::SUCCESS, "json: {json}");
         }
     }
 

@@ -1824,14 +1824,15 @@
       "name": "adp-logging-windows-default-path",
       "suite": "integration",
       "subject_os": "windows",
-      "runtime": "windows",
+      "runtime": "windows-container",
       "source": "test/integration/cases/adp-logging-windows-default-path/config.yaml",
       "schema": "participants",
-      "execution": "old",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/agent-data-plane:testing-windows"
+        "agent-adp-windows-image": "saluki-images/agent-data-plane:testing-windows",
+        "courier-windows-binary": "target/release/panoramic-courier.exe"
       },
       "ci_jobs": [
         "test-integration-windows-amd64"
@@ -1843,14 +1844,15 @@
       "name": "adp-logging-windows-ignores-core-agent-log-file",
       "suite": "integration",
       "subject_os": "windows",
-      "runtime": "windows",
+      "runtime": "windows-container",
       "source": "test/integration/cases/adp-logging-windows-ignores-core-agent-log-file/config.yaml",
       "schema": "participants",
-      "execution": "old",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/agent-data-plane:testing-windows"
+        "agent-adp-windows-image": "saluki-images/agent-data-plane:testing-windows",
+        "courier-windows-binary": "target/release/panoramic-courier.exe"
       },
       "ci_jobs": [
         "test-integration-windows-amd64"
@@ -1862,14 +1864,15 @@
       "name": "adp-logging-windows-respects-data-plane-log-file",
       "suite": "integration",
       "subject_os": "windows",
-      "runtime": "windows",
+      "runtime": "windows-container",
       "source": "test/integration/cases/adp-logging-windows-respects-data-plane-log-file/config.yaml",
       "schema": "participants",
-      "execution": "old",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/agent-data-plane:testing-windows"
+        "agent-adp-windows-image": "saluki-images/agent-data-plane:testing-windows",
+        "courier-windows-binary": "target/release/panoramic-courier.exe"
       },
       "ci_jobs": [
         "test-integration-windows-amd64"

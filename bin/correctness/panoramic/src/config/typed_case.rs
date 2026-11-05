@@ -576,14 +576,13 @@ mod tests {
             TypedConfigLoader,
             TestSuite::Correctness.name(),
         );
-        let cases = loader.load_file(&path).unwrap();
-        let error = build_case_runners(cases, Os::Windows, &[])
-            .err()
-            .expect("the case and runner suites must agree");
+        let case = loader.load_file(&path).unwrap().remove(0);
+        let plan = planner().compile(case, Os::Windows).unwrap().into_plan().unwrap();
+        let error = plan.integration_config().unwrap_err();
         assert_eq!(
             error.to_string(),
             format!(
-                "Failed to build test runners:\n  - Cannot run case 'alpha' from {}: \
+                "Cannot run case 'alpha' from {}: \
                  the integration runner runs only integration-suite cases",
                 path.canonicalize().unwrap().display()
             )

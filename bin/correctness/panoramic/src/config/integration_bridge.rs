@@ -5,7 +5,6 @@
 //! (`process` omitted), translated to `stream: both`, and `file_contains`.
 //! File paths may reference the participant's facts, resolved from the participant's planned realization;
 //! the integration runner rejects `shared_dir` and late-fact references.
-//! The bridge runs Windows cases; log steps search Windows container console output only.
 //! The translated configuration has default container settings, with empty `container.exposed_ports`;
 //! `runtimes` follow `subject_os` order.
 
@@ -24,8 +23,8 @@ use super::{
     runtime_for_os, AssertionConfig, AssertionStep, ContainerConfig, IntakeConfig, IntegrationConfig, LogStream,
 };
 
-/// Participant types the integration runner runs, by subject OS.
-pub(super) const BRIDGED_TYPES: &[(&str, Os)] = &[(AgentAdp::NAME, Os::Windows)];
+/// Participant types routed to the integration runner, by subject OS.
+pub(super) const BRIDGED_TYPES: &[(&str, Os)] = &[];
 
 /// Translates the case file's step fields, preserving step order and time budgets.
 ///
@@ -359,7 +358,7 @@ mod tests {
     }
 
     #[test]
-    fn bridged_case_runners_match_their_integration_twins_on_windows() {
+    fn windows_logging_cases_translate_to_the_configuration_of_their_integration_twins() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("alpha/config.yaml");
         let overrides = ["container=target:custom".parse().unwrap()];
@@ -374,38 +373,33 @@ mod tests {
                 .map(|case| planner().compile(case, os).unwrap().into_plan().unwrap())
                 .collect::<Vec<_>>()
         });
-        let overrides = &overrides[..];
-        let participant_runners =
-            build_runners(&participant_plans, os, &RunnerArtifacts::Overrides(overrides)).unwrap();
         let integration_runners =
-            build_runners(&integration_plans, os, &RunnerArtifacts::Overrides(overrides)).unwrap();
-        assert_eq!(participant_runners.len(), 1);
+            build_runners(&integration_plans, os, &RunnerArtifacts::Overrides(&overrides)).unwrap();
+        assert_eq!(participant_plans.len(), 1);
         assert_eq!(integration_runners.len(), 1);
-        let participant = &participant_runners[0];
+        let participant = &participant_plans[0];
         let integration = &integration_runners[0];
-        assert_eq!(participant.plan.case().name(), integration.plan.case().name());
-        assert_eq!(participant.plan.case().name(), "alpha");
-        assert_eq!(participant.plan.case().suite(), integration.plan.case().suite());
-        assert_eq!(participant.plan.case().suite(), TestSuite::Integration.name());
+        assert_eq!(participant.case().name(), integration.plan.case().name());
+        assert_eq!(participant.case().name(), "alpha");
+        assert_eq!(participant.case().suite(), integration.plan.case().suite());
+        assert_eq!(participant.case().suite(), TestSuite::Integration.name());
         assert_eq!(
-            participant.plan.case().source().parent().unwrap(),
+            participant.case().source().parent().unwrap(),
             integration.plan.case().source().parent().unwrap()
         );
         assert_eq!(
-            participant.plan.case().source().parent().unwrap(),
+            participant.case().source().parent().unwrap(),
             path.canonicalize().unwrap().parent().unwrap()
         );
-        assert_eq!(participant.plan.case().timeout(), integration.plan.case().timeout());
+        assert_eq!(participant.case().timeout(), integration.plan.case().timeout());
+        assert_eq!(integration.runner().unwrap().runtime(), runtime);
+        let CaseSchema::Typed(TypedConfig::Integration(twin)) = integration.plan.case().schema() else {
+            panic!("expected integration data");
+        };
         assert_eq!(
-            participant.runner().unwrap().runtime(),
-            integration.runner().unwrap().runtime()
+            serde_json::to_value(participant.integration_config().unwrap()).unwrap(),
+            serde_json::to_value(twin).unwrap()
         );
-        assert_eq!(participant.runner().unwrap().runtime(), runtime);
-        assert_eq!(
-            participant.runner().unwrap().images(),
-            integration.runner().unwrap().images()
-        );
-        assert_eq!(participant.runner().unwrap().images()["container"], "target:custom");
     }
 
     #[test]
@@ -901,14 +895,12 @@ mod tests {
         ] {
             let dir = tempfile::tempdir().unwrap();
             let path = write_case(dir.path(), "alpha", &PARTICIPANT_FIELDS.replace(old, new).replace("[linux]", "[windows]"));
-            let cases = crate::CASE_LOADER.load_file(&path).unwrap();
-            let error = build_case_runners(cases, Os::Windows, &[])
-                .err()
-                .expect("unsupported participant cases must fail runner construction");
+            let case = crate::CASE_LOADER.load_file(&path).unwrap().remove(0);
+            let plan = planner().compile(case, Os::Windows).unwrap().into_plan().unwrap();
             assert_eq!(
-                error.to_string(),
+                plan.integration_config().unwrap_err().to_string(),
                 format!(
-                    "Failed to build test runners:\n  - Cannot run case 'alpha' from {}: {reason}",
+                    "Cannot run case 'alpha' from {}: {reason}",
                     path.canonicalize().unwrap().display()
                 )
             );

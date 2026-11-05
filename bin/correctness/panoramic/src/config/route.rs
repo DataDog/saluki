@@ -118,20 +118,13 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn agent_adp_cases_run_natively_on_linux_and_macos_and_use_the_bridge_on_windows() {
+    fn agent_adp_cases_run_natively_on_every_subject_os() {
         for os in [Os::Linux, Os::MacOs, Os::Windows] {
             for extra in ["", "  other: {type: agent-adp}\n"] {
                 let yaml = PARTICIPANT_FIELDS
                     .replace("[linux]", "[linux, macos, windows]")
                     .replace("participants:\n", &format!("participants:\n{extra}"));
-                assert_eq!(
-                    route(&plan(&yaml, os)),
-                    if os == Os::Windows {
-                        Route::Bridge
-                    } else {
-                        Route::Native
-                    }
-                );
+                assert_eq!(route(&plan(&yaml, os)), Route::Native);
             }
         }
     }

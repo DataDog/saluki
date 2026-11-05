@@ -63,43 +63,6 @@ impl Operation for ConfigDump {
     }
 }
 
-pub(super) fn default_env() -> BTreeMap<String, String> {
-    BTreeMap::from([
-        // The Core Agent listens on this port; ADP uses it for IPC.
-        ("DD_CMD_PORT".to_string(), "55001".to_string()),
-        ("DD_GUI_PORT".to_string(), "-1".to_string()),
-        // Isolate the other Agent listeners as well as those the procedure exercises.
-        ("DD_EXPVAR_PORT".to_string(), "55000".to_string()),
-        ("DD_APM_RECEIVER_PORT".to_string(), "58126".to_string()),
-        ("DD_PROCESS_CONFIG_CMD_PORT".to_string(), "56062".to_string()),
-        ("DD_AGENT_IPC_PORT".to_string(), "55004".to_string()),
-        // DogStatsD can run in either process, depending on the pipeline switches.
-        ("DD_DOGSTATSD_PORT".to_string(), "58125".to_string()),
-        // The Core Agent streams these listen addresses to ADP.
-        (
-            "DD_DATA_PLANE_API_LISTEN_ADDRESS".to_string(),
-            "tcp://0.0.0.0:55100".to_string(),
-        ),
-        (
-            "DD_DATA_PLANE_SECURE_API_LISTEN_ADDRESS".to_string(),
-            "tcp://0.0.0.0:55101".to_string(),
-        ),
-        (
-            "DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR".to_string(),
-            "tcp://0.0.0.0:55102".to_string(),
-        ),
-        // Core Agent OTLP listeners; ADP uses its own endpoint settings.
-        (
-            "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT".to_string(),
-            "0.0.0.0:54317".to_string(),
-        ),
-        (
-            "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT".to_string(),
-            "0.0.0.0:54318".to_string(),
-        ),
-    ])
-}
-
 pub(super) fn consumes() -> BTreeMap<String, ConsumedEndpoint> {
     BTreeMap::from([
         (

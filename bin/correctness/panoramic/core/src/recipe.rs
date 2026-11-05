@@ -197,6 +197,25 @@ pub mod test_support {
         assert!(recipe.mounts.is_empty());
     }
 
+    /// Checks a container recipe's image, entrypoint, command and environment, with no host mounts.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any setting differs; placed files can be checked with [`files`].
+    #[track_caller]
+    pub fn assert_container_command(
+        recipe: &Recipe, image: ArtifactRole, entrypoint: &[&str], command: &[&str], env: &BTreeMap<String, String>,
+    ) {
+        let Recipe::Container(recipe) = recipe else {
+            panic!("expected a container recipe")
+        };
+        assert_eq!(recipe.image, image);
+        assert_eq!(recipe.entrypoint.as_deref().unwrap(), entrypoint);
+        assert_eq!(recipe.command.as_deref().unwrap(), command);
+        assert_eq!(&recipe.env, env);
+        assert!(recipe.mounts.is_empty());
+    }
+
     /// Returns each placed file's path, permission bits and contents.
     pub fn files(recipe: &Recipe) -> Vec<(&str, u32, &[u8])> {
         let files = match recipe {

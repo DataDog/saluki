@@ -1435,44 +1435,46 @@ timeout: 30s
     }
 
     #[test]
-    fn building_runners_names_every_case_that_cannot_run_before_validating_overrides() {
+    fn windows_participant_cases_accept_explicit_realizations_and_env_references() {
         let dir = tempfile::tempdir().unwrap();
-        let mut cases = Vec::new();
-        let mut errors = Vec::new();
-        for (name, yaml, reason) in [
+        let mut plans = Vec::new();
+        for (name, yaml) in [
             (
                 "second",
                 PARTICIPANT_FIELDS.replace("subject: true", "subject: true, realization: {kind: windows-container}"),
-                Some("sets 'realization', which the integration runner does not support"),
             ),
             (
                 "integration",
                 "type: integration\nname: integration\ntimeout: 1s\nruntimes: [linux]\nprocedure: []\n".to_string(),
-                None,
             ),
             (
                 "first",
-                PARTICIPANT_FIELDS.replace("subject: true", "subject: true, config: {env: {KEY: '{{ self.facts.default_log_file }}'}}"),
-                Some("sets config.env 'KEY' with a template reference ('{{'); the integration runner does not support references in environment variables"),
+                PARTICIPANT_FIELDS.replace(
+                    "subject: true",
+                    "subject: true, config: {env: {KEY: '{{ self.facts.default_log_file }}'}}",
+                ),
             ),
         ] {
             let yaml = yaml.replace("[linux]", "[windows]");
             let path = write_case(dir.path(), name, &yaml);
-            cases.extend(crate::CASE_LOADER.load_file(&path).unwrap());
-            if let Some(reason) = reason {
-                errors.push(format!(
-                    "Cannot run case '{name}' from {}: participant 'adp' {reason}",
-                    path.canonicalize().unwrap().display()
-                ));
-            }
+            let case = crate::CASE_LOADER.load_file(&path).unwrap().remove(0);
+            plans.push(planner().compile(case, Os::Windows).unwrap().into_plan().unwrap());
         }
-        let overrides = ["unmatched=image:override".parse().unwrap()];
-        let error = build_case_runners(cases, Os::Windows, &overrides)
-            .err()
-            .expect("unsupported participant settings must fail runner construction");
+        let built = build_runners(&plans, Os::Windows, &RunnerArtifacts::Overrides(&[])).unwrap();
         assert_eq!(
-            format!("{error:#}"),
-            format!("Failed to build test runners:\n  - {}", errors.join("\n  - "))
+            built.iter().map(|case| case.plan.case().name()).collect::<Vec<_>>(),
+            ["second", "integration", "first"]
+        );
+        assert!(matches!(built[0].execution, Execution::Native));
+        assert!(matches!(built[1].execution, Execution::Runner(_)));
+        assert!(matches!(built[2].execution, Execution::Native));
+        let overrides = ["unmatched=image:override".parse().unwrap()];
+        let error = build_runners(&plans, Os::Windows, &RunnerArtifacts::Overrides(&overrides))
+            .err()
+            .expect("unmatched overrides must still fail");
+        assert_eq!(
+            error.to_string(),
+            "No test in this run uses a container named 'unmatched'. Available: container."
         );
     }
 

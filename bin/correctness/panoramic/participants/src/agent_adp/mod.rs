@@ -1,6 +1,6 @@
 //! The `agent-adp` participant type: the Core Agent and ADP running together.
 //!
-//! Runs under s6 in Linux containers or as a native macOS host process group.
+//! Runs under s6 in Linux containers, under PowerShell in Windows containers, or as a native macOS host process group.
 //! Uses the default ten-second stop grace.
 
 use std::collections::BTreeMap;
@@ -19,6 +19,7 @@ mod linux;
 mod listeners;
 mod macos;
 mod operations;
+mod windows;
 
 /// The Core Agent and ADP running together.
 pub struct AgentAdp;
@@ -85,6 +86,7 @@ impl ParticipantType for AgentAdp {
         match (realization.os, realization.kind) {
             (Os::Linux, RealizationKind::LinuxContainer) => linux::recipe(config),
             (Os::MacOs, RealizationKind::HostProcessGroup) => macos::recipe(config),
+            (Os::Windows, RealizationKind::WindowsContainer) => windows::recipe(config),
             _ => Err(format!(
                 "participant type '{}' has no recipe for {} on {}",
                 Self::NAME,
@@ -118,11 +120,12 @@ impl ParticipantType for AgentAdp {
         match (realization.os, realization.kind) {
             (Os::Linux, RealizationKind::LinuxContainer) => {
                 late::validate(&config.env, &config.params)?;
-                let mut env = linux::default_env();
+                let mut env = container_default_env();
                 env.extend(config.env.clone());
                 listeners::endpoints(realization, &env)?;
             }
             (Os::MacOs, RealizationKind::HostProcessGroup) => macos::validate_config(realization, config)?,
+            (Os::Windows, RealizationKind::WindowsContainer) => windows::validate_config(config)?,
             _ => {}
         }
         Ok(())
@@ -130,7 +133,9 @@ impl ParticipantType for AgentAdp {
 
     fn default_env(&self, realization: Realization, _: &CaseValues) -> BTreeMap<String, String> {
         match (realization.os, realization.kind) {
-            (Os::Linux, RealizationKind::LinuxContainer) => linux::default_env(),
+            (Os::Linux, RealizationKind::LinuxContainer) | (Os::Windows, RealizationKind::WindowsContainer) => {
+                container_default_env()
+            }
             (Os::MacOs, RealizationKind::HostProcessGroup) => macos::default_env(),
             _ => BTreeMap::new(),
         }
@@ -198,9 +203,47 @@ impl ParticipantType for AgentAdp {
         match (realization.os, realization.kind) {
             (Os::Linux, RealizationKind::LinuxContainer) => &linux::PROCESS_SPECS,
             (Os::MacOs, RealizationKind::HostProcessGroup) => &macos::PROCESS_SPECS,
+            (Os::Windows, RealizationKind::WindowsContainer) => &windows::PROCESS_SPECS,
             _ => &[],
         }
     }
+}
+
+fn container_default_env() -> BTreeMap<String, String> {
+    BTreeMap::from([
+        // The Core Agent listens on this port; ADP uses it for IPC.
+        ("DD_CMD_PORT".to_string(), "55001".to_string()),
+        ("DD_GUI_PORT".to_string(), "-1".to_string()),
+        // Isolate the other Agent listeners as well as those the procedure exercises.
+        ("DD_EXPVAR_PORT".to_string(), "55000".to_string()),
+        ("DD_APM_RECEIVER_PORT".to_string(), "58126".to_string()),
+        ("DD_PROCESS_CONFIG_CMD_PORT".to_string(), "56062".to_string()),
+        ("DD_AGENT_IPC_PORT".to_string(), "55004".to_string()),
+        // DogStatsD can run in either process, depending on the pipeline switches.
+        ("DD_DOGSTATSD_PORT".to_string(), "58125".to_string()),
+        // The Core Agent streams these listen addresses to ADP.
+        (
+            "DD_DATA_PLANE_API_LISTEN_ADDRESS".to_string(),
+            "tcp://0.0.0.0:55100".to_string(),
+        ),
+        (
+            "DD_DATA_PLANE_SECURE_API_LISTEN_ADDRESS".to_string(),
+            "tcp://0.0.0.0:55101".to_string(),
+        ),
+        (
+            "DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR".to_string(),
+            "tcp://0.0.0.0:55102".to_string(),
+        ),
+        // Core Agent OTLP listeners; ADP uses its own endpoint settings.
+        (
+            "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT".to_string(),
+            "0.0.0.0:54317".to_string(),
+        ),
+        (
+            "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT".to_string(),
+            "0.0.0.0:54318".to_string(),
+        ),
+    ])
 }
 
 #[cfg(test)]
@@ -350,21 +393,15 @@ mod tests {
     }
 
     #[test]
-    fn agent_adp_keeps_windows_declarations_unchanged() {
+    fn windows_has_no_endpoints_consumers_or_operations() {
+        let realization = Realization {
+            os: Os::Windows,
+            kind: RealizationKind::WindowsContainer,
+        };
         let config = EffectiveConfig::default();
-        for &(os, kind) in &AgentAdp.supports()[2..] {
-            let realization = Realization { os, kind };
-            assert!(AgentAdp.default_env(realization, &CaseValues::default()).is_empty());
-            assert!(AgentAdp.process_specs(realization).is_empty());
-            assert!(AgentAdp
-                .recipe(
-                    realization,
-                    &panoramic_core::recipe::test_support::rendered(BTreeMap::new(), BTreeMap::new())
-                )
-                .is_err());
-            assert!(AgentAdp.endpoints(realization, &config).unwrap().is_empty());
-            assert!(AgentAdp.consumes(realization, &config).is_empty());
-        }
+        assert!(AgentAdp.endpoints(realization, &config).unwrap().is_empty());
+        assert!(AgentAdp.consumes(realization, &config).is_empty());
+        assert!(AgentAdp.operations(realization).is_empty());
     }
 
     #[test]

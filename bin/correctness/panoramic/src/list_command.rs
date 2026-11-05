@@ -780,11 +780,30 @@ mod tests {
         assert_eq!(entries.len(), 1);
         let entry = &entries["participant"];
         assert_eq!(entry["type"], "integration");
-        assert_eq!(entry["runtime"], "windows");
+        assert_eq!(entry["status"], "runnable");
+        assert!(entry.get("runtime").is_none());
+        assert!(entry.get("images").is_none());
         assert_eq!(entry["timeout"], serde_json::json!({"secs": 9, "nanos": 0}));
         assert_eq!(
-            entry["images"]["container"],
-            "saluki-images/agent-data-plane:testing-windows"
+            entry["layout"],
+            serde_json::json!([{
+                "participant": "adp", "type": "agent-adp", "os": "windows", "realization": "windows-container",
+            }])
+        );
+        assert_eq!(
+            entry["roles"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|role| (role["role"].as_str().unwrap(), role["reference"].as_str().unwrap()))
+                .collect::<Vec<_>>(),
+            [
+                (
+                    "agent-adp-windows-image",
+                    "saluki-images/agent-data-plane:testing-windows"
+                ),
+                ("courier-windows-binary", "target/release/panoramic-courier.exe"),
+            ]
         );
     }
 }

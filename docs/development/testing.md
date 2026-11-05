@@ -250,10 +250,8 @@ procedure:   # Required; at least one step.
     timeout: 30s
 ```
 
-Panoramic routes a participant case to the integration runner when every participant's type has an integration bridge
-route on the selected subject OS. `agent-adp` uses the bridge on Windows, running in a Windows container with default
-settings. Its Linux and macOS participant cases use native execution, as do other
-participant types without a bridge route. Panoramic prepares each case's scope, creates participants in create order
+Participant cases use native execution on every subject OS, including `agent-adp` in Windows containers.
+Panoramic prepares each case's scope, creates participants in create order
 from verified artifacts, and starts each level once the readiness evidence of the servers it connects to is observed. A
 readiness wait fails as soon as its server's container exit is observed. Each started container's exit and output are
 watched in case-owned tasks. Output reaches `<log_dir>/<participant>/container.stdout.log` and `container.stderr.log` as
@@ -265,7 +263,7 @@ Readiness and step readers share a 64 MiB line-text bound per participant across
 the buffer drops new lines, preserving existing cursors. Readers can consume the retained prefix, then get a capture
 error naming the bound and the output files. Empty lines count as one byte; unterminated lines are also bounded.
 Capture still writes every byte to disk, so the files remain the full output source.
-After the start levels, native Linux container cases run their procedure in the `steps` phase, using the same step
+After the start levels, native cases run their procedure in the `steps` phase, using the same step
 budgets, case deadline, parallel blocks and fail-fast behavior as the integration runner. Steps receive the started
 participants through borrowed handles. File paths and literal log patterns resolve early and late facts when the step runs.
 A `parallel` block accepts only assertions. Actions, such as `exec` and `send`, must be sequential steps; discovery rejects an
@@ -274,6 +272,8 @@ action in a parallel block before building its fields.
 The native log and file steps accept `on`, `pattern` and an optional `regex` flag (default false):
 
 - `log_contains` searches output from the participant's start, optionally narrowed by `process`, until `timeout`.
+  Without `process`, it searches every process's output together. On a Windows `agent-adp` container that includes the
+  Agent's output as well as the container console.
   A match passes; completed output without a match or a timeout fails.
 - `log_not_contains` searches the same output for `during`, optionally narrowed by `process`. A match fails and quotes
   the matching line. Completed output keeps the wall-clock window; an exit alone does not fail this assertion.
@@ -353,8 +353,8 @@ The replay step budget is `timeout × (3 + number of payloads) + capture_duratio
 It covers capture, each send, and a final statistics/replay pair that starts at the replay deadline.
 
 An undetermined process exit errors stability and exit assertions. A process's first recorded exit remains final
-across supervised restarts. The integration bridge translates only `log_contains`, `log_not_contains` and
-`file_contains`; log steps on the bridge must omit `process`.
+across supervised restarts. The integration runner translates `log_contains`, `log_not_contains` and `file_contains`;
+log steps must omit `process`.
 
 Participant types offer named **operations** per realization. An operation takes JSON arguments and returns JSON,
 keeping product-specific commands inside the participant definition. Steps declare the operations they call;
@@ -556,6 +556,8 @@ statistics table are product errors. CLI failure messages omit output, which may
 ADP CLI output is never quoted on a nonzero exit. `config_set` includes trimmed stderr capped at 512 bytes on
 product failure; it uses the Agent's own client for its runtime configuration API.
 
+On Windows, the `agent-adp` definition runs the Agent and ADP in one container through its own entrypoint.
+
 The `PANORAMIC_` environment-variable prefix is reserved. Plan compilation rejects keys with this prefix in the
 case's effective environment after OS overlays, in type defaults, and in connection deliveries. Errors identify
 whether the case, type default or connection set the key.
@@ -565,7 +567,12 @@ Every native Linux container receives three reserved variables: `PANORAMIC_PARTI
 Recipes that set any of these variables fail creation. The backend prepares the directories before start. The
 Linux backend always shares the host PID namespace. Its cgroup namespace is private unless
 `realization.options.host_cgroup_namespace` is true.
-Windows uses the integration bridge.
+
+Every native Windows container receives the same three reserved variables. The backend creates each participant's
+`C:\airlock\<participant>\{exit,log,shared}` directories in its container's own filesystem before start; `shared_dir`
+resolves to that container-local `shared` directory. Recipes that set reserved variables, declare host mounts or
+publish runner-host ports are rejected. The courier occupies the reserved path `C:\panoramic\courier.exe`.
+Steps reach Windows endpoints through the courier inside the server participant.
 
 The integration runner's translation supports this subset of the schema:
 

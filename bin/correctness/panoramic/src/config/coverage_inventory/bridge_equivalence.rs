@@ -1,7 +1,7 @@
-//! Compares bridged logging cases with the frozen integration configuration.
+//! Compares logging cases with a frozen integration-schema baseline.
 //!
-//! Only exposed ports change in the translation. Inventory rows also change schema, and Linux and macOS rows use
-//! native execution, the subject's realization and role-keyed artifacts. Never regenerate the frozen baseline.
+//! Windows translation checks omit exposed ports. Native inventory rows use realization names and role-keyed
+//! artifacts. Keep the baseline fixed so configuration and step comparisons detect regressions.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -291,68 +291,75 @@ fn migrated(baseline: &RecordedCase) -> Vec<Value> {
                 "adp-host-binary": "target/release/agent-data-plane",
                 "agent-host-install": "/tmp/saluki-dda/datadog-agent",
             });
+        } else if row["subject_os"] == "windows" {
+            row["execution"] = json!(NATIVE);
+            row["runtime"] = json!("windows-container");
+            row["images"] = json!({
+                "agent-adp-windows-image": "saluki-images/agent-data-plane:testing-windows",
+                "courier-windows-binary": "target/release/panoramic-courier.exe",
+            });
         }
     }
     rows
 }
 
-fn assert_logging_translation(content: &str, name: &str, baseline: &RecordedCase) {
+/// Checks the Windows translation independently of the production route table and returns the row count.
+fn assert_windows_logging_translation(content: &str, name: &str, baseline: &RecordedCase) -> usize {
     let mut expected = baseline.case["config"].clone();
     expected["container"]["exposed_ports"] = json!([]);
-    for row in &baseline.rows {
-        let os = match row["subject_os"].as_str().unwrap() {
-            "linux" => Os::Linux,
-            "macos" => Os::MacOs,
-            "windows" => Os::Windows,
-            other => panic!("unknown subject OS {other}"),
-        };
-        if !crate::config::integration_bridge::BRIDGED_TYPES.contains(&(AgentAdp::NAME, os)) {
-            continue;
-        }
+    let mut checked = 0;
+    for row in baseline.rows.iter().filter(|row| row["subject_os"] == "windows") {
         let case = crate::CASE_LOADER
             .load_content(content, name, Path::new("config.yaml"))
             .unwrap()
             .remove(0);
-        let plan = planner().compile(case, os).unwrap().into_plan().unwrap();
+        let plan = planner().compile(case, Os::Windows).unwrap().into_plan().unwrap();
         assert_eq!(
             serde_json::to_value(plan.integration_config().unwrap()).unwrap(),
             expected,
-            "{name} on {os:?}"
+            "{name} on {}",
+            row["subject_os"]
         );
+        checked += 1;
     }
+    checked
 }
 
 #[test]
-fn logging_case_twins_reproduce_the_frozen_translation_and_migrated_rows() {
+fn logging_case_twins_reproduce_the_frozen_windows_translation_and_migrated_rows() {
     let baseline = logging_baseline();
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
     create_case_dirs(&root);
     let mut expected_rows = Vec::new();
+    let mut translated = 0;
     for name in LOGGING_CASES {
         let baseline = &baseline[name];
         let (twin, _) = participant_twin(&baseline.case["config"]).unwrap_or_else(|reason| panic!("{name}: {reason}"));
-        assert_logging_translation(&twin, name, baseline);
+        translated += assert_windows_logging_translation(&twin, name, baseline);
         write_case(&root.join("test/integration/cases"), name, &twin);
         expected_rows.extend(migrated(baseline));
     }
+    assert_eq!(translated, 3, "the three Windows logging cases must translate");
     let actual = serde_json::to_value(Inventory::generate(&root)).unwrap();
     assert_eq!(actual["rows"], json!(expected_rows));
 }
 
 #[test]
-fn checked_in_logging_cases_translate_to_the_frozen_baseline_on_bridged_subject_oses() {
+fn checked_in_logging_cases_match_migrated_rows_and_translate_to_the_frozen_baseline_on_windows() {
     let baseline = logging_baseline();
     let recorded = recorded_integration_cases();
     let root = repository_root();
+    let mut translated = 0;
     for name in LOGGING_CASES {
         let recorded = &recorded[name];
         assert!(!recorded.old_schema, "{name}: must use the participant schema");
         assert_eq!(recorded.rows, migrated(&baseline[name]), "{name}");
         assert_eq!(recorded.case["steps"], baseline[name].case["steps"], "{name}");
         let content = read_text(&root.join(format!("test/integration/cases/{name}/config.yaml")));
-        assert_logging_translation(&content, name, &baseline[name]);
+        translated += assert_windows_logging_translation(&content, name, &baseline[name]);
     }
+    assert_eq!(translated, 3, "the three Windows logging cases must translate");
 }
 
 /// Extracts participant settings and unresolved paths for comparison with the frozen configuration.

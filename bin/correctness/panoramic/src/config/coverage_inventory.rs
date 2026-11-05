@@ -804,8 +804,23 @@ fn participant_inventory_records_native_rows_and_per_os_configuration_as_written
         linux.images["courier-linux-binary"],
         "target/x86_64-unknown-linux-musl/release/panoramic-courier"
     );
-    assert_eq!(inventory.rows[1].execution, OLD);
-    assert_eq!(inventory.rows[1].runtime, "windows");
+    let windows = &inventory.rows[1];
+    assert_eq!(windows.subject_os, "windows");
+    assert_eq!(windows.execution, NATIVE);
+    assert_eq!(windows.runtime, "windows-container");
+    assert_eq!(
+        windows.images,
+        BTreeMap::from([
+            (
+                "agent-adp-windows-image".into(),
+                "saluki-images/agent-data-plane:testing-windows".into()
+            ),
+            (
+                "courier-windows-binary".into(),
+                "target/release/panoramic-courier.exe".into()
+            ),
+        ])
+    );
     let case = &inventory.cases["integration/alpha"];
     let written: Value = serde_saphyr::from_str(&yaml).unwrap();
     for (os, realization) in [("linux", "linux-container"), ("windows", "windows-container")] {
@@ -1108,7 +1123,7 @@ fn correctness_ci_mixins_reject_a_skipped_row() {
 }
 
 #[test]
-fn participant_cases_run_natively_on_linux_and_macos_and_use_the_bridge_on_windows() {
+fn participant_cases_run_natively_on_every_subject_os() {
     let root = repository_root();
     for os in [Os::Linux, Os::MacOs, Os::Windows] {
         let cases = crate::CASE_LOADER
@@ -1120,17 +1135,7 @@ fn participant_cases_run_natively_on_linux_and_macos_and_use_the_bridge_on_windo
                 continue;
             }
             let plan = planner().compile(case, os).unwrap().into_plan().unwrap();
-            assert_eq!(
-                route(&plan),
-                if os == Os::Windows {
-                    Route::Bridge
-                } else {
-                    Route::Native
-                },
-                "{} on {}",
-                plan.case().name(),
-                os.name()
-            );
+            assert_eq!(route(&plan), Route::Native, "{} on {}", plan.case().name(), os.name());
             participants += 1;
         }
         assert!(participants > 0, "no participant cases checked on {}", os.name());
@@ -1675,7 +1680,7 @@ fn migration_proofs_reject_wrong_execution_pending_old_rows_and_missing_particip
             "Only native rows may have a pending proof",
         ),
         (
-            proofs.replacen("| old | Tested", "| native | Tested", 1),
+            proofs.replacen("| native | Pending CI. Before: Tested", "| old | Tested", 1),
             "Migration proof must name exactly one inventory row",
         ),
         (
