@@ -162,7 +162,9 @@ pub(super) fn integration_config<'a>(
                     return Err(process_error());
                 }
                 Ok(AssertionConfig::LogContains {
-                    pattern,
+                    pattern: pattern
+                        .resolve(&fact)
+                        .map_err(|reason| error(&format!("pattern: {reason}")))?,
                     regex,
                     timeout: timeout.into(),
                     stream: LogStream::Both,
@@ -181,7 +183,9 @@ pub(super) fn integration_config<'a>(
                     return Err(process_error());
                 }
                 Ok(AssertionConfig::LogNotContains {
-                    pattern,
+                    pattern: pattern
+                        .resolve(&fact)
+                        .map_err(|reason| error(&format!("pattern: {reason}")))?,
                     regex,
                     during: during.into(),
                     stream: LogStream::Both,
@@ -786,6 +790,76 @@ mod tests {
                 error,
                 "step 1 'file_contains' path: the integration runner does not create participant shared directories"
             );
+        }
+    }
+
+    #[test]
+    fn the_bridge_resolves_log_pattern_facts_and_preserves_literals_but_rejects_late_facts() {
+        for (step, duration) in [("log_contains", "timeout"), ("log_not_contains", "during")] {
+            for (pattern, expected) in [
+                ("ready", "ready"),
+                (
+                    "{{adp.facts.default_log_file}}",
+                    "/var/log/datadog/agent-data-plane.log",
+                ),
+                ("{{ adp.late.ip }}", ""),
+            ] {
+                let yaml = PARTICIPANT_FIELDS.replace(
+                    minimal_procedure!(),
+                    &format!("procedure: [{{step: {step}, on: adp, pattern: '{pattern}', {duration}: 1s}}]"),
+                );
+                let case = crate::CASE_LOADER
+                    .load_content(&yaml, "alpha", Path::new("alpha/config.yaml"))
+                    .unwrap()
+                    .remove(0);
+                let plan = planner().compile(case, Os::Linux).unwrap().into_plan().unwrap();
+                let result = plan.integration_config();
+                if expected.is_empty() {
+                    assert_eq!(
+                        result.unwrap_err().to_string(),
+                        format!(
+                            "Cannot run case 'alpha' from alpha/config.yaml: step 1 '{step}' pattern: \
+                         cannot resolve late fact reference '{pattern}' before the participant runs"
+                        )
+                    );
+                } else {
+                    let config = result.unwrap();
+                    let [AssertionStep::Single(
+                        AssertionConfig::LogContains { pattern, .. } | AssertionConfig::LogNotContains { pattern, .. },
+                    )] = config.procedure.as_slice()
+                    else {
+                        panic!("expected one log assertion");
+                    };
+                    assert_eq!(pattern, expected);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn log_steps_accept_references_only_in_pattern() {
+        for (step, duration) in [("log_contains", "timeout"), ("log_not_contains", "during")] {
+            for field in ["on", "process"] {
+                let fields = if field == "on" {
+                    "on: '{{adp.late.ip}}'"
+                } else {
+                    "on: adp, process: '{{adp.late.ip}}'"
+                };
+                let yaml = PARTICIPANT_FIELDS.replace(
+                    minimal_procedure!(),
+                    &format!("procedure: [{{step: {step}, {fields}, pattern: ready, {duration}: 1s}}]"),
+                );
+                let error = crate::CASE_LOADER
+                    .load_content(&yaml, "alpha", Path::new("alpha/config.yaml"))
+                    .err()
+                    .expect("references outside pattern must fail loading")
+                    .to_string();
+                assert!(
+                    error.contains(&format!("field '{field}' contains a template reference")),
+                    "{error}"
+                );
+                assert!(error.contains("accepts references only in: pattern"), "{error}");
+            }
         }
     }
 

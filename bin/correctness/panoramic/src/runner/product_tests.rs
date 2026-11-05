@@ -505,3 +505,62 @@ async fn linux_logging_default_path_case_passes_natively() {
     assert_eq!(participant["processes"][0]["name"], "adp");
     assert_eq!(participant["processes"][1]["name"], "agent");
 }
+
+fn bind_config(host: &str) -> serde_json::Value {
+    json!({"env": {
+        "DD_API_KEY": "00000000000000000000000000000000", "DD_HOSTNAME": "panoramic-bind",
+        "DD_DATA_PLANE_ENABLED": "true", "DD_DATA_PLANE_STANDALONE_MODE": "false",
+        "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true", "DD_DOGSTATSD_NON_LOCAL_TRAFFIC": "false",
+        "DD_BIND_HOST": host,
+    }})
+}
+
+async fn assert_bind_case(config: serde_json::Value, listeners: &[(&str, u16)]) {
+    let _ = crate::default_crypto_provider().install_default();
+    let mut procedure = listeners
+        .iter()
+        .map(|(protocol, port)| {
+            json!({
+                "step": "log_contains", "on": "adp", "process": "adp",
+                "pattern": format!("listen_addr:\"{protocol}://{{{{ adp.late.ip }}}}:{port}\""), "timeout": "60s",
+            })
+        })
+        .collect::<Vec<_>>();
+    procedure.push(json!({"parallel": [
+        {"step": "process_stable_for", "on": "adp", "duration": "10s"},
+        {"step": "log_not_contains", "on": "adp", "pattern": "panic|PANIC", "regex": true, "during": "10s"},
+    ]}));
+    let (_logs, report) = run_native_case(
+        panoramic_participants::REGISTERED_TYPES,
+        panoramic_steps::REGISTERED_STEPS,
+        json!({
+            "timeout": "180s", "subject_os": ["linux"],
+            "participants": {"adp": {"type": "agent-adp", "subject": true, "config": config}},
+            "procedure": procedure,
+        }),
+        product_bindings(),
+        CancellationToken::new(),
+    )
+    .await;
+    assert_eq!(report["outcome"], "passed", "{report:#}");
+    let assertions = report["assertions"].as_array().unwrap();
+    assert_eq!(assertions.len(), listeners.len() + 2);
+    assert!(assertions.iter().all(|step| step["status"] == "passed"), "{report:#}");
+}
+
+#[tokio::test]
+#[ignore = "needs product images; run with make test-panoramic-products"]
+async fn agent_adp_substitutes_its_own_ip_into_bind_host_before_adp_starts() {
+    assert_bind_case(bind_config("{{ self.late.ip }}"), &[("udp", 58125)]).await;
+}
+
+#[tokio::test]
+#[ignore = "needs product images; run with make test-panoramic-products"]
+async fn agent_adp_maps_an_extra_host_to_its_own_ip_for_dogstatsd_and_apm_binds() {
+    let mut config = bind_config("foo.local");
+    config["params"] = json!({"extra_hosts": {"foo.local": "self"}});
+    config["env"]["DD_DATA_PLANE_EXPERIMENTAL_APM_ENABLED"] = "true".into();
+    config["env"]["DD_APM_NON_LOCAL_TRAFFIC"] = "false".into();
+    config["env"]["DD_APM_ENABLED"] = "false".into();
+    assert_bind_case(config, &[("udp", 58125), ("tcp", 58126)]).await;
+}

@@ -263,10 +263,10 @@ mod tests {
     }
 
     #[test]
-    fn rendering_keeps_the_participants_own_late_facts_as_written_for_its_type() {
+    fn an_own_ip_reference_in_env_stays_canonical_through_rendering() {
         let plan = compile("{}", Path::new("cases/alpha/config.yaml"));
         let rendered = render(plan.participants().unwrap(), "server", &BTreeMap::new()).unwrap();
-        assert_eq!(rendered.env["OWN"], "{{  self.late.ip  }}/{{server.late.ip}}");
+        assert_eq!(rendered.env["OWN"], "{{ self.late.ip }}/{{ self.late.ip }}");
     }
 
     #[test]

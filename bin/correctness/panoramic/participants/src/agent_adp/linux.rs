@@ -485,6 +485,9 @@ pub(super) const PROCESS_SPECS: [ProcessSpec; 2] = [SERVICES[0].process_spec(), 
 
 pub(super) fn recipe(config: &RenderedConfig) -> Result<Recipe, String> {
     let mut recipe = ContainerRecipe::new(AgentAdp::LINUX_IMAGE).with_env(config.env().clone());
+    if let Some(hook) = super::late::hook(config.env(), config.params()) {
+        recipe = recipe.with_file("/etc/cont-init.d/10-panoramic-late-substitution.sh", 0o755, hook);
+    }
     for (name, contents) in config.files() {
         let (path, mode) = if let Some(relative) = name.strip_prefix("files/") {
             (format!("{CASE_FILES_DIR}/{relative}"), 0o644)

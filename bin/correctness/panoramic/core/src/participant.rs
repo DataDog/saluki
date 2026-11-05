@@ -22,9 +22,10 @@ use crate::{
 /// Contains only case values, before type defaults and connection deliveries.
 ///
 /// In `env` and `params`, fact references and fixed late facts (a host process group's `ip`) are already substituted.
-/// Other references stay exactly as written: another participant's `container_id` and endpoint and connection
-/// addresses resolve at creation; the participant's own late facts listed by
-/// [`ParticipantType::substituted_late_facts`] resolve after start.
+/// The participant's own late facts listed by [`ParticipantType::substituted_late_facts`] use the canonical
+/// spelling from [`LateFact::substituted_reference`], which the type replaces after start.
+/// Other references stay as written: another participant's `container_id` and endpoint and connection
+/// addresses resolve at creation.
 /// A type that must interpret an unresolved value reports a configuration error.
 /// Files marked `template: true` keep their references as written; their references are checked for this OS.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -373,6 +374,7 @@ pub trait ParticipantType: Send + Sync {
 
     /// The participant's own late facts this type writes into its environment variables
     /// after the participant starts and before its product reads them.
+    /// Type hooks receive these placeholders in [`LateFact::substituted_reference`] spelling.
     /// Sorted by fact; defaults to none. Called only with realizations from [`Self::supports`].
     fn substituted_late_facts(&self, _realization: Realization) -> &'static [LateFact] {
         &[]

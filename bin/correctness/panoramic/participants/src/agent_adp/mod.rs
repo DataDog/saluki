@@ -5,6 +5,7 @@
 use std::collections::BTreeMap;
 
 use panoramic_core::artifact::{ArtifactKind, ArtifactRole};
+use panoramic_core::backend::LateFact;
 use panoramic_core::endpoint::{ConsumedEndpoint, Endpoint};
 use panoramic_core::layout::{Os, Realization, RealizationKind};
 use panoramic_core::participant::{
@@ -12,6 +13,7 @@ use panoramic_core::participant::{
 };
 use panoramic_core::recipe::Recipe;
 
+mod late;
 mod linux;
 
 /// The Core Agent and ADP running together.
@@ -91,16 +93,30 @@ impl ParticipantType for AgentAdp {
         &["cont-init.d/", "files/"]
     }
 
+    fn params(&self) -> &'static [&'static str] {
+        &["extra_hosts"]
+    }
+
     fn validate_config(&self, realization: Realization, config: &CaseValues) -> Result<(), String> {
         if matches!(
             (realization.os, realization.kind),
             (Os::Linux, RealizationKind::LinuxContainer)
         ) {
+            late::validate(&config.env, &config.params)?;
             let mut env = linux::default_env();
             env.extend(config.env.clone());
             linux::endpoints(&env)?;
-        } else if !config.files.is_empty() {
-            return Err("agent-adp case files are supported in Linux containers only".into());
+        } else {
+            if config
+                .params
+                .get("extra_hosts")
+                .is_some_and(|hosts| hosts.as_object().is_none_or(|hosts| !hosts.is_empty()))
+            {
+                return Err("agent-adp extra_hosts is supported in Linux containers only".into());
+            }
+            if !config.files.is_empty() {
+                return Err("agent-adp case files are supported in Linux containers only".into());
+            }
         }
         Ok(())
     }
@@ -150,6 +166,13 @@ impl ParticipantType for AgentAdp {
         }
     }
 
+    fn substituted_late_facts(&self, realization: Realization) -> &'static [LateFact] {
+        match (realization.os, realization.kind) {
+            (Os::Linux, RealizationKind::LinuxContainer) => &[LateFact::Ip],
+            _ => &[],
+        }
+    }
+
     fn processes(&self) -> &'static [&'static str] {
         &["adp", "agent"]
     }
@@ -172,6 +195,51 @@ impl ParticipantType for AgentAdp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agent_adp_substitutes_its_own_ip_only_in_linux_containers() {
+        for os in [Os::Linux, Os::MacOs, Os::Windows] {
+            for kind in [
+                RealizationKind::LinuxContainer,
+                RealizationKind::WindowsContainer,
+                RealizationKind::HostProcessGroup,
+                RealizationKind::KubernetesPod,
+            ] {
+                let expected: &[LateFact] = if (os, kind) == (Os::Linux, RealizationKind::LinuxContainer) {
+                    &[LateFact::Ip]
+                } else {
+                    &[]
+                };
+                assert_eq!(AgentAdp.substituted_late_facts(Realization { os, kind }), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn extra_hosts_are_rejected_outside_linux_containers() {
+        assert_eq!(AgentAdp.params(), &["extra_hosts"]);
+        for &(os, kind) in &AgentAdp.supports()[1..] {
+            for (hosts, accepted) in [
+                (serde_json::json!({}), true),
+                (serde_json::json!({"foo.local": "self"}), false),
+                (serde_json::json!("self"), false),
+            ] {
+                let config = CaseValues {
+                    params: BTreeMap::from([("extra_hosts".into(), hosts)]),
+                    ..Default::default()
+                };
+                let result = AgentAdp.validate_config(Realization { os, kind }, &config);
+                if accepted {
+                    result.unwrap();
+                } else {
+                    assert_eq!(
+                        result.unwrap_err(),
+                        "agent-adp extra_hosts is supported in Linux containers only"
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn agent_adp_supports_linux_containers_macos_host_process_groups_and_windows_containers() {

@@ -129,12 +129,15 @@ fn agent_adp_participants_accept_environment_overlays_and_only_declared_file_nam
             "config: {files: {settings.yaml: missing.yaml}}",
             "it declares cont-init.d/, files/",
         ),
-        ("config: {params: {mode: fast}}", "it accepts none"),
+        ("config: {params: {mode: fast}}", "it accepts extra_hosts"),
         (
             "config: {os: {linux: {files: {settings.yaml: missing.yaml}}}}",
             "it declares cont-init.d/, files/",
         ),
-        ("config: {os: {linux: {params: {mode: fast}}}}", "it accepts none"),
+        (
+            "config: {os: {linux: {params: {mode: fast}}}}",
+            "it accepts extra_hosts",
+        ),
     ] {
         let yaml = PARTICIPANT_FIELDS.replace("subject: true", &format!("subject: true, {fields}"));
         let path = write_case(dir.path(), "alpha", &yaml);
@@ -458,21 +461,58 @@ fn agent_adp_default_log_file_in_env_plans_on_linux_and_windows_but_not_macos() 
 }
 
 #[test]
-fn agent_adp_cannot_use_its_own_ip_in_env_in_containers() {
+fn agent_adp_accepts_its_own_ip_in_linux_env_but_rejects_it_in_windows_env() {
     for (os, kind) in [("linux", "linux-container"), ("windows", "windows-container")] {
-        for name in ["self", "adp"] {
+        for reference in [
+            "{{self.late.ip}}",
+            "{{adp.late.ip}}",
+            "{{ self.late.ip }}",
+            "{{  adp.late.ip  }}",
+        ] {
             let yaml = PARTICIPANT_FIELDS.replace("[linux]", &format!("[{os}]")).replace(
                 "subject: true",
-                &format!("subject: true, config: {{env: {{IP: '{{{{{name}.late.ip}}}}'}}}}"),
+                &format!("subject: true, config: {{env: {{IP: '{reference}'}}}}"),
             );
             let case = crate::CASE_LOADER
                 .load_content(&yaml, "alpha", Path::new("alpha/config.yaml"))
                 .unwrap()
                 .remove(0);
-            assert_eq!(planner().compile(case, Os::Linux).err().unwrap().to_string(), format!(
-                "case 'alpha' in alpha/config.yaml: on subject OS '{os}', participant 'adp' of type 'agent-adp' as {kind} on {os} environment variable 'IP' '{{{{{name}.late.ip}}}}' references its own late fact 'ip', which type 'agent-adp' does not substitute into its environment as {kind}"
-            ));
+            let result = planner().compile(case, Os::Linux);
+            if os == "linux" {
+                let plan = result.unwrap().into_plan().unwrap();
+                assert_eq!(plan.case_values("adp").unwrap().env["IP"], "{{ self.late.ip }}");
+                assert_eq!(plan.effective_config("adp").unwrap().env["IP"], "{{ self.late.ip }}");
+            } else {
+                assert_eq!(result.err().unwrap().to_string(), format!(
+                    "case 'alpha' in alpha/config.yaml: on subject OS '{os}', participant 'adp' of type 'agent-adp' as {kind} on {os} environment variable 'IP' '{reference}' references its own late fact 'ip', which type 'agent-adp' does not substitute into its environment as {kind}"
+                ));
+            }
         }
+    }
+}
+
+#[test]
+fn agent_adp_rejects_every_spelling_of_its_own_ip_in_an_adp_override() {
+    for reference in [
+        "{{self.late.ip}}",
+        "{{adp.late.ip}}",
+        "{{ self.late.ip }}",
+        "{{  adp.late.ip  }}",
+    ] {
+        let yaml = PARTICIPANT_FIELDS.replace(
+            "subject: true",
+            &format!("subject: true, config: {{env: {{ADP_DD_BIND_HOST: '{reference}'}}}}"),
+        );
+        let case = crate::CASE_LOADER
+            .load_content(&yaml, "alpha", Path::new("alpha/config.yaml"))
+            .unwrap()
+            .remove(0);
+        let error = planner().compile(case, Os::Linux).err().unwrap().to_string();
+        assert!(
+            error.contains("ADP_DD_BIND_HOST cannot reference its own ip"),
+            "{error}"
+        );
+        assert!(error.contains("use DD_BIND_HOST instead"), "{error}");
     }
 }
 

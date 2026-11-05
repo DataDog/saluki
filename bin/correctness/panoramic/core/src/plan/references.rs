@@ -71,6 +71,9 @@ pub(super) fn resolve_config_references(
 ) -> Result<(), String> {
     let realization = layout.get(name).expect("loaded participants have a layout");
     let holder = describe_participant(name, &file.participants[name].participant_type, realization);
+    let participant_type = find_type(types, &file.participants[name].participant_type)
+        .expect("laid-out participants have registered types");
+    let substituted = participant_type.substituted_late_facts(realization);
     walk_config_strings_mut(&mut values.env, &mut values.params, |field, text| {
         let template: Template = text.parse().expect("configuration templates were checked at load");
         *text = template
@@ -79,6 +82,12 @@ pub(super) fn resolve_config_references(
                     .map_err(|reason| format!("'{written}' {reason}"))
             })
             .map_err(|reason| format!("{holder} {field} {reason}"))?;
+        if matches!(field, ConfigField::Env(_)) {
+            *text = text
+                .parse::<Template>()
+                .expect("substituted configuration retains valid references")
+                .canonicalize_own_late(name, |fact| substituted.contains(&fact));
+        }
         Ok(())
     })
 }
@@ -329,6 +338,7 @@ mod tests {
 
         fn validate_config(&self, _realization: Realization, config: &CaseValues) -> Result<(), String> {
             assert_eq!(config.env["PORT"], "17");
+            assert_eq!(config.env["OWN"], "{{ self.late.ip }}/{{ self.late.ip }}");
             assert_eq!(
                 config.params["mode"],
                 json!([{"nested": ["/logs/output.log", false, 7]}])
@@ -337,6 +347,7 @@ mod tests {
         }
 
         fn default_env(&self, _realization: Realization, config: &CaseValues) -> BTreeMap<String, String> {
+            assert_eq!(config.env["OWN"], "{{ self.late.ip }}/{{ self.late.ip }}");
             BTreeMap::from([
                 ("COPY".into(), config.env["PORT"].clone()),
                 ("RAW".into(), "{{product}}".into()),
@@ -346,11 +357,13 @@ mod tests {
         fn endpoints(
             &self, realization: Realization, config: &EffectiveConfig,
         ) -> Result<BTreeMap<String, Endpoint>, String> {
+            assert_eq!(config.env["OWN"], "{{ self.late.ip }}/{{ self.late.ip }}");
             Server.endpoints(realization, config)
         }
 
         fn consumes(&self, _realization: Realization, config: &EffectiveConfig) -> BTreeMap<String, ConsumedEndpoint> {
             assert_eq!(config.env["PORT"], "17");
+            assert_eq!(config.env["OWN"], "{{ self.late.ip }}/{{ self.late.ip }}");
             assert_eq!(config.params["mode"][0]["nested"][0], "/logs/output.log");
             BTreeMap::new()
         }
@@ -362,20 +375,24 @@ mod tests {
             }]
         }
 
+        fn substituted_late_facts(&self, _: Realization) -> &'static [LateFact] {
+            &[LateFact::Ip]
+        }
+
         fn processes(&self) -> &'static [&'static str] {
             &[]
         }
     }
 
     #[test]
-    fn fact_references_in_env_and_params_are_substituted_before_participant_type_hooks_see_them() {
+    fn facts_are_substituted_and_own_late_references_are_canonical_before_type_hooks_see_them() {
         let registries = Registries {
             participant_types: &[&Observer, &Server],
             steps: STEPS,
             ..Default::default()
         };
         let loader = CaseLoader::new(registries, FixtureTypes, "fixture");
-        let yaml = concat!("timeout: 1s\nsubject_os: [linux]\nparticipants:\n  subject: {type: observer, subject: true, config: {env: {PORT: '{{ self.facts.port }}'}, params: {mode: [{nested: ['{{z-other.facts.file}}', false, 7]}]}}}\n  z-other: {type: server}\n", minimal_procedure!(), "\n");
+        let yaml = concat!("timeout: 1s\nsubject_os: [linux]\nparticipants:\n  subject: {type: observer, subject: true, config: {env: {PORT: '{{ self.facts.port }}', OWN: '{{self.late.ip}}/{{  subject.late.ip  }}'}, params: {mode: [{nested: ['{{z-other.facts.file}}', false, 7]}]}}}\n  z-other: {type: server}\n", minimal_procedure!(), "\n");
         let case = loader
             .load_content(yaml, "alpha", Path::new("alpha/config.yaml"))
             .unwrap()
@@ -390,6 +407,7 @@ mod tests {
             config.env,
             BTreeMap::from([
                 ("PORT".into(), "17".into()),
+                ("OWN".into(), "{{ self.late.ip }}/{{ self.late.ip }}".into()),
                 ("COPY".into(), "17".into()),
                 ("RAW".into(), "{{product}}".into())
             ])
@@ -414,7 +432,7 @@ mod tests {
         let plan = compile(&yaml, Os::Linux).unwrap().unwrap();
         assert_eq!(
             plan.effective_config("subject").unwrap().env["KEY"],
-            "{{  self.late.ip  }}/{{self.endpoints.api.url}}"
+            "{{ self.late.ip }}/{{self.endpoints.api.url}}"
         );
     }
 
@@ -631,7 +649,7 @@ mod tests {
             assert_eq!(config.env["FILE"], "/logs/output.log");
             assert_eq!(
                 config.env["KEY"],
-                format!("{{{{{name}.late.ip}}}}/{{{{{name}.endpoints.api.url}}}}")
+                format!("{{{{ self.late.ip }}}}/{{{{{name}.endpoints.api.url}}}}")
             );
             error(&case(&format!("{{params: {{mode: '{{{{{name}.late.container_id}}}}'}}}}"), "linux"), "linux", &format!(
                 "participant 'subject' of type 'server' as linux-container on linux parameter 'mode' '{{{{{name}.late.container_id}}}}' references its own late fact 'container_id', which a parameter cannot wait for"

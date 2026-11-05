@@ -52,6 +52,16 @@ pub enum LateFact {
 }
 
 impl LateFact {
+    /// Canonical placeholder for this participant's own late fact in its rendered environment.
+    /// The participant type's init mechanism replaces it after start, before the product reads it.
+    pub fn substituted_reference(self) -> &'static str {
+        match self {
+            Self::ContainerId => "{{ self.late.container_id }}",
+            Self::Ip => "{{ self.late.ip }}",
+            Self::PodUid => "{{ self.late.pod_uid }}",
+        }
+    }
+
     pub(crate) fn name(self) -> &'static str {
         match self {
             Self::ContainerId => "container_id",

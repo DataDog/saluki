@@ -212,7 +212,7 @@ async fn run_step_with_port(
                 StepParticipant {
                     primitives: fake,
                     observation: &fake.observation,
-                    late: BTreeMap::new(),
+                    late: fake.late.clone(),
                 },
             )])
         })
@@ -232,6 +232,7 @@ struct FakeProcess {
 
 /// A participant with scripted output, exits, file reads, command output, probe answers and sends.
 pub struct FakeParticipant {
+    late: BTreeMap<LateFact, &'static str>,
     observation: ParticipantObservation,
     exit: watch::Sender<ParticipantExit>,
     capture: watch::Sender<Capture>,
@@ -302,6 +303,7 @@ impl FakeParticipant {
             })
             .collect();
         Self {
+            late: BTreeMap::new(),
             observation,
             exit,
             capture,
@@ -316,6 +318,11 @@ impl FakeParticipant {
             sends: Mutex::new(VecDeque::new()),
             sent: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Supplies a late fact to steps running with this participant.
+    pub fn set_late(&mut self, fact: LateFact, value: &'static str) {
+        self.late.insert(fact, value);
     }
 
     /// Sets the named process's exit observation.
@@ -467,6 +474,20 @@ impl Primitives for FakeParticipant {
 mod tests {
     use super::*;
     use crate::record::AssertionStatus;
+
+    #[tokio::test]
+    async fn a_fake_participants_late_facts_reach_steps() {
+        let factory = crate::case::fixtures::STEPS
+            .iter()
+            .find(|factory| factory.name() == "probe")
+            .unwrap();
+        let fields = serde_json::from_value(json!({"on": "subject", "path": "{{subject.late.ip}}"})).unwrap();
+        let mut fake = FakeParticipant::default();
+        fake.set_late(LateFact::Ip, "192.0.2.7");
+        fake.set_file("192.0.2.7", Ok(Some(b"ready".to_vec())));
+        let report = run_step_with(*factory, &fields, Some(&fake)).await;
+        assert_eq!(report.status, AssertionStatus::Passed, "{report:?}");
+    }
 
     struct RequestFactory(EndpointOperation);
 

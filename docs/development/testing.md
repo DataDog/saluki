@@ -240,7 +240,7 @@ error naming the bound and the output files. Empty lines count as one byte; unte
 Capture still writes every byte to disk, so the files remain the full output source.
 After the start levels, native Linux container cases run their procedure in the `steps` phase, using the same step
 budgets, case deadline, parallel blocks and fail-fast behavior as the integration runner. Steps receive the started
-participants through borrowed handles. File paths resolve early and late facts when the step runs.
+participants through borrowed handles. File paths and literal log patterns resolve early and late facts when the step runs.
 A `parallel` block accepts only assertions. Actions, such as `exec` and `send`, must be sequential steps; discovery rejects an
 action in a parallel block before building its fields.
 
@@ -253,6 +253,10 @@ The native log and file steps accept `on`, `pattern` and an optional `regex` fla
 - `file_contains` resolves `path` once, then reads until the contents match or `timeout` expires. Invalid UTF-8 bytes
   become replacement characters. Missing files and contents without a match are retried. Timeout reports the last
   observed file state.
+
+The log steps' `pattern` may reference named participants' facts and late facts when `regex` is false. Patterns
+with references and `regex: true` are rejected at load. Each step resolves its pattern once before searching;
+an unavailable reference errors the step. Diagnostics quote the resolved pattern.
 
 Capture failures and failed read mechanisms are errors, not assertion failures. Output steps scan available lines
 before reporting a capture failure. With `process`, only that process's capture failure errors the step; a process
@@ -501,7 +505,8 @@ The integration runner's translation supports this subset of the schema:
   `config.os` overlays of `env` whose values replace the base values on that OS. Environment values must be YAML strings;
   the integration runner rejects references in them.
 - The steps `log_contains` and `log_not_contains`, without `process`. They search the output of every process
-  together, and what is captured differs by OS.
+  together, and what is captured differs by OS. Literal patterns may reference early participant facts; the bridge
+  rejects late-fact references.
 - The step `file_contains`. Its `path` may reference a participant fact, written as in the example above with the
   participant's name and the fact's name.
   `agent-adp` declares `default_log_file` for its Linux and Windows containers only, so a case that runs on macOS writes
@@ -518,12 +523,43 @@ for the referenced participant's realization, and panoramic substitutes it befor
 configuration. A host process group's `ip` is `127.0.0.1` for itself and for other host process groups on the same OS,
 and is substituted the same way. Another participant's `container_id` is allowed when that participant is a Linux or
 Windows container. A participant's own late facts are allowed only in environment variables, and only when its type
-substitutes them after start; `agent-adp` substitutes none. Other late facts are rejected. An endpoint reference needs
+substitutes them after start. Core gives the type one canonical placeholder spelling, whether the case used `self`
+or the participant's own name and regardless of spacing. Other late facts are rejected. An endpoint reference needs
 an endpoint the participant serves and a supported route from the referencing participant. A connection reference
 needs a matching `connect` key. Planning stores each connection's and endpoint reference's address as seen by its
 holder; the configuration keeps the reference text until recipe rendering. `host` and `port` apply to network
 endpoints, `path` to sockets and pipes, and `url` to every kind. The integration runner rejects any reference in an
-environment variable, and `agent-adp` accepts no parameters.
+environment variable.
+
+In Linux containers, `agent-adp` substitutes its own `ip` through
+`/etc/cont-init.d/10-panoramic-late-substitution.sh`. The init hook runs before the products and case hooks,
+writing resolved values into both services' environment directories. An empty address fails the hook and stops
+the container. Values in `ADP_DD_*` variables cannot use this placeholder: the image copies those overrides
+unresolved later; use the `DD_` spelling instead. Processes started through operations (Docker exec) inherit the
+container's original environment, so they still see the placeholder.
+
+`agent-adp` accepts `config.params.extra_hosts` in Linux containers: a map from host names to the string `self`.
+The same init hook maps each name to the participant's own address in `/etc/hosts`. Names must be nonempty,
+contain only ASCII letters, digits, dots and hyphens, and not be `localhost` (case-insensitive, including a trailing
+dot). Other targets and value shapes are rejected. Nonempty mappings are supported only in Linux containers.
+
+```yaml
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    config:
+      env:
+        DD_API_KEY: "00000000000000000000000000000000"
+        DD_DATA_PLANE_ENABLED: "true"
+        DD_BIND_HOST: foo.local
+      params:
+        extra_hosts:
+          foo.local: self
+```
+
+The hook is installed only when an environment value references the participant's own `ip` or `extra_hosts` is
+nonempty.
 
 A declared configuration name ending in `/` requires a directory source; other names require regular files.
 Directories expand recursively into regular files in sorted path order. Empty directories contribute nothing.

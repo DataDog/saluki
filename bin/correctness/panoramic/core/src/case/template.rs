@@ -209,6 +209,21 @@ impl Template {
         Ok(resolved)
     }
 
+    /// Writes selected late references to the holder in canonical form, preserving all other text.
+    pub(crate) fn canonicalize_own_late(&self, holder: &str, substituted: impl Fn(LateFact) -> bool) -> String {
+        self.segments
+            .iter()
+            .map(|segment| match segment {
+                Segment::Reference {
+                    reference: Reference::Late { participant, fact },
+                    ..
+                } if participant.name(holder) == holder && substituted(*fact) => fact.substituted_reference(),
+                Segment::Reference { written, .. } => written,
+                Segment::Literal(text) => text,
+            })
+            .collect()
+    }
+
     fn check_step_field(&self) -> Result<(), String> {
         let allowed = "step fields accept only fact and late fact references to named participants";
         let name_participant = "a step has no 'self'; name the participant, as in";
@@ -336,6 +351,41 @@ mod tests {
     #[derive(Debug, Deserialize)]
     struct Fields {
         path: StepTemplate,
+    }
+
+    #[test]
+    fn canonicalizing_rewrites_the_holders_own_late_references_to_one_spelling() {
+        for fact in [LateFact::Ip, LateFact::ContainerId, LateFact::PodUid] {
+            for name in ["self", "subject"] {
+                for spaces in ["", " ", "   "] {
+                    let template: Template =
+                        format!("before {{{{{spaces}{name}.late.{}{spaces}}}}} after", fact.name())
+                            .parse()
+                            .unwrap();
+                    assert_eq!(
+                        template.canonicalize_own_late("subject", |selected| selected == fact),
+                        format!("before {} after", fact.substituted_reference())
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn canonicalizing_keeps_other_participants_late_references_and_literals_as_written() {
+        let text = "a/{{ other.late.ip }}/{{self.late.container_id}}/{{self.facts.file}}/{{ self.endpoints.api.url }}";
+        let template: Template = text.parse().unwrap();
+        assert_eq!(
+            template.canonicalize_own_late("subject", |fact| fact == LateFact::Ip),
+            text
+        );
+        let text = "{{subject.late.ip}}";
+        assert_eq!(
+            text.parse::<Template>()
+                .unwrap()
+                .canonicalize_own_late("subject", |_| false),
+            text
+        );
     }
 
     #[test]

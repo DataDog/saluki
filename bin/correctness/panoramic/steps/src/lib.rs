@@ -129,6 +129,19 @@ mod tests {
     }
 
     #[test]
+    fn steps_accept_references_only_in_their_declared_template_fields() {
+        for factory in REGISTERED_STEPS {
+            let expected: &[&str] = match factory.name() {
+                Exec::NAME => &["argv"],
+                FileContains::NAME => &["path"],
+                LogContains::NAME | LogNotContains::NAME => &["pattern"],
+                _ => &[],
+            };
+            assert_eq!(factory.template_fields(), expected, "{}", factory.name());
+        }
+    }
+
+    #[test]
     fn every_registered_step_uses_its_declared_name_and_budget() {
         for factory in REGISTERED_STEPS {
             let mut fields = valid_fields(factory.name());

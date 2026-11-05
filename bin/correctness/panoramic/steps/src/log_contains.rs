@@ -5,7 +5,10 @@ use std::time::Duration;
 use async_trait::async_trait;
 use panoramic_core::record::{AssertionStatus, StepReport};
 use panoramic_core::step::{decode_fields, Need, OutputEnd, Step, StepContext, StepFactory, StepFields};
-use panoramic_core::{case::CaseDuration, probe::POLL_INTERVAL};
+use panoramic_core::{
+    case::{CaseDuration, StepTemplate},
+    probe::POLL_INTERVAL,
+};
 use serde::Deserialize;
 use tokio::time::{sleep_until, Instant};
 
@@ -13,7 +16,7 @@ use super::Matcher;
 
 /// Waits until a participant's output contains a pattern.
 ///
-/// Callers can decode the public fields with [`decode_fields`]. The factory compiles the pattern once at build time.
+/// Callers can decode the public fields with [`decode_fields`]. Patterns without references compile at build time.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LogContains {
@@ -22,8 +25,8 @@ pub struct LogContains {
     /// Process whose output is searched. Defaults to every process of the participant.
     #[serde(default)]
     pub process: Option<String>,
-    /// Required text or regex to find; has no default.
-    pub pattern: String,
+    /// Required text or regex to find; literal patterns may reference participant facts. Has no default.
+    pub pattern: StepTemplate,
     /// Whether `pattern` is a regex. Defaults to false.
     #[serde(default)]
     pub regex: bool,
@@ -38,7 +41,7 @@ impl LogContains {
 
 /// Checks that a pattern stays absent from a participant's output.
 ///
-/// Callers can decode the public fields with [`decode_fields`]. The factory compiles the pattern once at build time.
+/// Callers can decode the public fields with [`decode_fields`]. Patterns without references compile at build time.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LogNotContains {
@@ -47,8 +50,8 @@ pub struct LogNotContains {
     /// Process whose output is searched. Defaults to every process of the participant.
     #[serde(default)]
     pub process: Option<String>,
-    /// Required text or regex that must stay absent; has no default.
-    pub pattern: String,
+    /// Required text or regex to keep absent; literal patterns may reference participant facts. Has no default.
+    pub pattern: StepTemplate,
     /// Whether `pattern` is a regex. Defaults to false.
     #[serde(default)]
     pub regex: bool,
@@ -70,12 +73,13 @@ enum Expect {
     Absent,
 }
 
-/// A built log step: the decoded fields with the pattern compiled once at build time.
+/// A built log step with either a compiled pattern or a literal template.
 #[derive(Debug)]
 struct LogStep {
     on: String,
     process: Option<String>,
-    matcher: Matcher,
+    pattern: StepTemplate,
+    matcher: Option<Matcher>,
     expect: Expect,
     budget: Duration,
 }
@@ -89,10 +93,11 @@ impl Step for LogStep {
         }
     }
     fn needs(&self) -> Vec<Need> {
-        match &self.process {
-            Some(process) => vec![Need::Process(self.on.clone(), process.clone())],
-            None => vec![Need::Handle(self.on.clone())],
-        }
+        let participant = match &self.process {
+            Some(process) => Need::Process(self.on.clone(), process.clone()),
+            None => Need::Handle(self.on.clone()),
+        };
+        std::iter::once(participant).chain(self.pattern.needs()).collect()
     }
     fn budget(&self) -> Duration {
         self.budget
@@ -100,7 +105,18 @@ impl Step for LogStep {
     async fn run(&self, cx: &StepContext<'_>) -> StepReport {
         let started = Instant::now();
         let deadline = started + self.budget;
-        let pattern = self.matcher.pattern();
+        let resolved;
+        let matcher = match &self.matcher {
+            Some(matcher) => matcher,
+            None => match cx.resolve(&self.pattern) {
+                Ok(pattern) => {
+                    resolved = Matcher::Literal(pattern);
+                    &resolved
+                }
+                Err(message) => return StepReport::new(started, AssertionStatus::Errored, message),
+            },
+        };
+        let pattern = matcher.pattern();
         let Some(handle) = cx.handle(&self.on) else {
             return StepReport::new(
                 started,
@@ -111,7 +127,7 @@ impl Step for LogStep {
         let mut output = handle.output(self.process.as_deref());
         loop {
             let batch = output.read();
-            if let Some(line) = batch.lines.iter().find(|line| self.matcher.is_match(line)) {
+            if let Some(line) = batch.lines.iter().find(|line| matcher.is_match(line)) {
                 let line = line.chars().take(200).collect::<String>();
                 let status = match self.expect {
                     Expect::Present => AssertionStatus::Passed,
@@ -153,6 +169,17 @@ impl Step for LogStep {
     }
 }
 
+fn compile_pattern(pattern: &StepTemplate, regex: bool) -> Result<Option<Matcher>, String> {
+    if pattern.needs().next().is_some() {
+        if regex {
+            return Err("pattern: template references are allowed only in literal patterns (regex: false)".into());
+        }
+        Ok(None)
+    } else {
+        Matcher::build(&pattern.resolve(|_, _| None)?, regex).map(Some)
+    }
+}
+
 /// Builds `log_contains` from its case-file fields.
 pub(crate) struct LogContainsFactory;
 
@@ -161,12 +188,17 @@ impl StepFactory for LogContainsFactory {
         LogContains::NAME
     }
 
+    fn template_fields(&self) -> &'static [&'static str] {
+        &["pattern"]
+    }
+
     fn build(&self, fields: &StepFields) -> Result<Box<dyn Step>, String> {
         let step: LogContains = decode_fields(fields)?;
-        let matcher = Matcher::build(&step.pattern, step.regex)?;
+        let matcher = compile_pattern(&step.pattern, step.regex)?;
         Ok(Box::new(LogStep {
             on: step.on,
             process: step.process,
+            pattern: step.pattern,
             matcher,
             expect: Expect::Present,
             budget: step.timeout.into(),
@@ -182,12 +214,17 @@ impl StepFactory for LogNotContainsFactory {
         LogNotContains::NAME
     }
 
+    fn template_fields(&self) -> &'static [&'static str] {
+        &["pattern"]
+    }
+
     fn build(&self, fields: &StepFields) -> Result<Box<dyn Step>, String> {
         let step: LogNotContains = decode_fields(fields)?;
-        let matcher = Matcher::build(&step.pattern, step.regex)?;
+        let matcher = compile_pattern(&step.pattern, step.regex)?;
         Ok(Box::new(LogStep {
             on: step.on,
             process: step.process,
+            pattern: step.pattern,
             matcher,
             expect: Expect::Absent,
             budget: step.during.into(),
@@ -204,6 +241,98 @@ mod tests {
 
     use super::*;
     use crate::test_support::valid_fields;
+
+    #[tokio::test(start_paused = true)]
+    async fn log_patterns_match_resolved_facts_and_late_facts_and_quote_the_resolved_pattern() {
+        for factory in [&LogContainsFactory as &dyn StepFactory, &LogNotContainsFactory] {
+            for (pattern, resolved) in [
+                ("listen={{ subject.late.ip }}", "listen=192.0.2.7"),
+                ("file={{subject.facts.file}}", "file=/logs/output.log"),
+            ] {
+                let mut fake = FakeParticipant::default();
+                fake.set_late(panoramic_core::backend::LateFact::Ip, "192.0.2.7");
+                let mut fields = valid_fields(factory.name());
+                fields.insert("pattern".into(), pattern.into());
+                let absent = run_step_with(factory, &fields, Some(&fake)).await;
+                fake.push_line(None, resolved);
+                let present = run_step_with(factory, &fields, Some(&fake)).await;
+                let (passed, failed) = if factory.name() == "log_contains" {
+                    (present, absent)
+                } else {
+                    (absent, present)
+                };
+                assert_eq!(passed.status, AssertionStatus::Passed, "{passed:?}");
+                assert_eq!(failed.status, AssertionStatus::Failed, "{failed:?}");
+                for report in [passed, failed] {
+                    assert!(report.message.contains(&format!("pattern '{resolved}'")), "{report:?}");
+                    assert!(!report.message.contains("{{"), "{report:?}");
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_log_pattern_reference_to_a_participant_that_has_not_started_errors_the_step() {
+        for factory in [&LogContainsFactory as &dyn StepFactory, &LogNotContainsFactory] {
+            let mut fields = valid_fields(factory.name());
+            fields.insert("pattern".into(), "{{subject.late.ip}}".into());
+            for fake in [None, Some(FakeParticipant::default())] {
+                let report = run_step_with(factory, &fields, fake.as_ref()).await;
+                assert_eq!(report.status, AssertionStatus::Errored, "{report:?}");
+                assert_eq!(report.message, "participant 'subject' has no late fact 'ip'");
+            }
+        }
+    }
+
+    #[test]
+    fn a_regex_log_pattern_with_a_reference_is_rejected_at_build() {
+        for factory in [&LogContainsFactory as &dyn StepFactory, &LogNotContainsFactory] {
+            for reference in ["{{subject.facts.file}}", "{{subject.late.ip}}"] {
+                let mut fields = valid_fields(factory.name());
+                fields.insert("pattern".into(), reference.into());
+                fields.insert("regex".into(), true.into());
+                assert_eq!(
+                    factory.build(&fields).unwrap_err(),
+                    "pattern: template references are allowed only in literal patterns (regex: false)"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn log_steps_report_pattern_references_as_needs() {
+        use panoramic_core::backend::LateFact;
+        for factory in [&LogContainsFactory as &dyn StepFactory, &LogNotContainsFactory] {
+            let mut fields = valid_fields(factory.name());
+            fields.insert("pattern".into(), "{{other.late.ip}}/{{subject.facts.file}}".into());
+            assert_eq!(
+                factory.build(&fields).unwrap().needs(),
+                vec![
+                    Need::Handle("subject".into()),
+                    Need::Late("other".into(), LateFact::Ip),
+                    Need::Fact("subject".into(), "file".into()),
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn log_patterns_accept_only_named_fact_and_late_fact_references() {
+        for factory in [&LogContainsFactory as &dyn StepFactory, &LogNotContainsFactory] {
+            for reference in [
+                "{{self.late.ip}}",
+                "{{self.facts.file}}",
+                "{{subject.endpoints.http.url}}",
+                "{{self.connections.target.url}}",
+            ] {
+                let mut fields = valid_fields(factory.name());
+                fields.insert("pattern".into(), reference.into());
+                let error = factory.build(&fields).unwrap_err();
+                assert!(error.starts_with("pattern:"), "{error}");
+                assert!(error.contains(reference), "{error}");
+            }
+        }
+    }
 
     #[tokio::test(start_paused = true)]
     async fn log_contains_searches_all_output_or_only_the_named_process() {
@@ -313,7 +442,7 @@ mod tests {
         let step: LogContains = decode_fields(&fields).unwrap();
         assert_eq!(step.on, "subject");
         assert_eq!(step.process, None);
-        assert_eq!(step.pattern, "ready");
+        assert_eq!(step.pattern.resolve(|_, _| None).unwrap(), "ready");
         assert!(!step.regex);
         assert_eq!(Duration::from(step.timeout), Duration::from_secs(30));
     }
@@ -324,7 +453,7 @@ mod tests {
         let step: LogNotContains = decode_fields(&fields).unwrap();
         assert_eq!(step.on, "subject");
         assert_eq!(step.process, None);
-        assert_eq!(step.pattern, "panic");
+        assert_eq!(step.pattern.resolve(|_, _| None).unwrap(), "panic");
         assert!(!step.regex);
         assert_eq!(Duration::from(step.during), Duration::from_secs(10));
         let during = fields.remove("during").unwrap();
