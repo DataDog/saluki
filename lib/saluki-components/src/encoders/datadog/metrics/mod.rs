@@ -1826,7 +1826,7 @@ mod tests {
     use super::*;
     use crate::common::datadog::{
         config::OpwMetricsSettings,
-        test_util::{datadog_metrics_configuration, default_series_config},
+        test_util::{datadog_metrics_configuration, decompressed_bodies, default_series_config, incompressible_string},
     };
 
     /// Returns a catalog built from the endpoints of `config`, the way the topology builds the one it shares.
@@ -3163,6 +3163,105 @@ mod tests {
             total_points, 12_000,
             "all points should be emitted across the split payloads"
         );
+    }
+
+    /// Encodes `metrics` with the encoder set up for the V1 series endpoint, and returns the decompressed request
+    /// bodies.
+    async fn encode_series_v1(metrics: Vec<Metric>) -> Vec<(usize, Vec<u8>)> {
+        let mut config = datadog_metrics_configuration();
+        config.use_v2_series_api = false;
+        assert!(!config.requires_v3_series(false).expect("endpoints should resolve"));
+
+        let (control, mut payloads) = TestComponentDriver::encoder(config)
+            .await
+            .expect("metrics encoder should build");
+        control.send_events(metrics.into_iter().map(Event::Metric)).await;
+        control.shutdown().await.expect("metrics encoder should stop cleanly");
+
+        decompressed_bodies(payloads.collect().await).await
+    }
+
+    /// Returns a gauge with a single tag whose value is `tag_value`.
+    fn gauge_with_tag(index: usize, tag_value: String) -> Metric {
+        let tags = [Tag::from(format!("big:{}", tag_value))]
+            .into_iter()
+            .collect::<TagSet>();
+        Metric::gauge(
+            Context::from_parts(MetaString::from(format!("series.v1.{:04}", index)), tags),
+            [(1u64, 1.0)],
+        )
+    }
+
+    /// Asserts that every request body is a V1 series JSON object holding as many metrics as its metadata counts, and
+    /// that the requests hold `expected_metrics` metrics in total.
+    fn assert_valid_series_v1_requests(requests: &[(usize, Vec<u8>)], expected_metrics: usize) {
+        for (index, (event_count, body)) in requests.iter().enumerate() {
+            let tail = String::from_utf8_lossy(&body[body.len().saturating_sub(16)..]);
+            let payload = serde_json::from_slice::<serde_json::Value>(body)
+                .unwrap_or_else(|e| panic!("request {} isn't valid JSON ({}), it ends with {:?}", index, e, tail));
+            let series = payload["series"]
+                .as_array()
+                .expect("payload should hold a series array");
+            assert_eq!(
+                *event_count,
+                series.len(),
+                "request {} metadata should count its metrics",
+                index
+            );
+        }
+        assert_eq!(requests.iter().map(|(count, _)| count).sum::<usize>(), expected_metrics);
+    }
+
+    #[tokio::test]
+    async fn series_v1_requests_split_at_compressed_size_estimate_are_valid_json() {
+        // About 4 MB of tags that barely compress, so the compressed size estimate rejects a metric before the
+        // 4 MiB uncompressed limit is reached.
+        let metrics = (0..240)
+            .map(|index| gauge_with_tag(index, incompressible_string(16 * 1024, index as u64)))
+            .collect::<Vec<_>>();
+
+        let requests = encode_series_v1(metrics).await;
+        assert!(requests.len() > 1, "the metrics should be split across requests");
+        assert_valid_series_v1_requests(&requests, 240);
+    }
+
+    #[tokio::test]
+    async fn series_v1_requests_split_at_uncompressed_size_limit_are_valid_json() {
+        // About 6 MB of tags that compress to almost nothing, so the 4 MiB uncompressed limit rejects a metric before
+        // the compressed size estimate does.
+        let metrics = (0..120)
+            .map(|index| gauge_with_tag(index, "a".repeat(50_000)))
+            .collect::<Vec<_>>();
+
+        let requests = encode_series_v1(metrics).await;
+        assert!(requests.len() > 1, "the metrics should be split across requests");
+        assert_valid_series_v1_requests(&requests, 120);
+    }
+
+    #[tokio::test]
+    async fn series_v1_request_with_a_metric_over_the_uncompressed_limit_between_others_is_valid_json() {
+        // The encoder drops a metric that's over the uncompressed limit by itself, and carries on with the next one.
+        let limit = datadog_metrics_configuration().max_uncompressed_payload_size;
+        let metrics = vec![
+            gauge_with_tag(0, "before".to_string()),
+            gauge_with_tag(1, "a".repeat(limit)),
+            gauge_with_tag(2, "after".to_string()),
+        ];
+
+        let requests = encode_series_v1(metrics).await;
+        assert_valid_series_v1_requests(&requests, 2);
+    }
+
+    #[tokio::test]
+    async fn series_v1_request_after_a_first_metric_over_the_uncompressed_limit_is_valid_json() {
+        let limit = datadog_metrics_configuration().max_uncompressed_payload_size;
+        let metrics = vec![
+            gauge_with_tag(0, "a".repeat(limit)),
+            gauge_with_tag(1, "after".to_string()),
+        ];
+
+        let requests = encode_series_v1(metrics).await;
+        assert_valid_series_v1_requests(&requests, 1);
     }
 }
 
