@@ -34,14 +34,15 @@ const OUT_OF_RANGE: &str = "<out of range>";
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum HeaderCheck {
-    /// The header values must be equal.
+    /// The header must take the same set of values across each side's requests, and be missing from some requests on
+    /// both sides or on neither.
     Exact,
 
-    /// The header must be present on the same requests, with any value.
+    /// The header must be present on all requests on both sides, or on only some requests on both sides, with any value.
     Presence,
 
-    /// The header must be present on the same requests, holding epoch milliseconds within the plausible range of the
-    /// run, with any value in that range.
+    /// Like `Presence`, and the header must also hold epoch milliseconds within the plausible range of the run on every
+    /// request of both sides, or fall outside it in the same ways on both.
     Timestamp,
 }
 
@@ -122,7 +123,8 @@ pub fn compare_headers(
 
 /// Returns the shapes `rule`'s header took across `requests`, with `None` for requests without it.
 ///
-/// A side with no requests has no shapes, so it never matches a side that sent some.
+/// A side with no requests has no shapes, so it never matches a side with requests, and `compare_headers` reports it as
+/// never sending the header. This can't happen during analysis, which requires logs, and so requests, on both sides.
 fn header_shapes(
     requests: &[LogsRequest], rule: &HeaderRule, timestamp_range: &RangeInclusive<u64>,
 ) -> BTreeSet<Option<String>> {
