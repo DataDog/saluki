@@ -344,17 +344,25 @@ fn split_into_trace_stats(client_payloads: Vec<ClientStatsPayload>, max_entries_
     let mut current_client_payloads = Vec::new();
     let mut current_event_entries = 0;
 
+    // Adds a client payload to the event being built, closing that event first if the payload would not fit.
+    let mut add_to_event = |client_payload: ClientStatsPayload, entries: usize| {
+        if !current_client_payloads.is_empty() && current_event_entries + entries > max_entries_per_event {
+            finished_events.push(std::mem::take(&mut current_client_payloads));
+            current_event_entries = 0;
+        }
+        current_client_payloads.push(client_payload);
+        current_event_entries += entries;
+    };
+
     for client_payload in client_payloads {
-        for split_payload in split_client_payload(client_payload, max_entries_per_event) {
-            let split_payload_entries = count_grouped_entries(&split_payload);
-            if !current_client_payloads.is_empty()
-                && current_event_entries + split_payload_entries > max_entries_per_event
-            {
-                finished_events.push(std::mem::take(&mut current_client_payloads));
-                current_event_entries = 0;
+        let client_payload_entries = count_grouped_entries(&client_payload);
+        if client_payload_entries <= max_entries_per_event {
+            add_to_event(client_payload, client_payload_entries);
+        } else {
+            for split_payload in split_client_payload(client_payload, max_entries_per_event) {
+                let split_payload_entries = count_grouped_entries(&split_payload);
+                add_to_event(split_payload, split_payload_entries);
             }
-            current_client_payloads.push(split_payload);
-            current_event_entries += split_payload_entries;
         }
     }
 
