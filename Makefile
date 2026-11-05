@@ -867,6 +867,12 @@ endif
 	--inlined-functions true --timeline --upload-period 10 --preset cpu_live_heap \
 	target/release/agent-data-plane run
 
+.PHONY: generate-correctness-fixtures
+generate-correctness-fixtures: check-rust-build-tools
+generate-correctness-fixtures: ## Regenerates the static payloads of the OTLP logs correctness cases
+	@echo "[*] Regenerating correctness case fixtures..."
+	@cargo run --profile devel --package otlp-fixtures
+
 SMP_GENERATOR := test/smp/regression/adp/generate_experiments.py
 
 .PHONY: generate-smp-experiments

@@ -124,6 +124,10 @@ pub enum Payload {
     #[serde(rename = "opentelemetry_traces")]
     OpenTelemetryTraces(lading_payload::opentelemetry::trace::Config),
 
+    /// OpenTelemetry-encoded logs.
+    #[serde(rename = "opentelemetry_logs")]
+    OpenTelemetryLogs(lading_payload::opentelemetry::log::Config),
+
     /// Datadog trace-agent traces (for example, v0.4 MessagePack), as sent by Datadog tracing libraries.
     #[serde(rename = "datadog_traces")]
     DatadogTraces(lading_payload::trace_agent::Config),
@@ -138,6 +142,7 @@ impl Payload {
             Self::StaticBase64(_) => "Static Base64",
             Self::OpenTelemetryMetrics(_) => "OpenTelemetry Metrics",
             Self::OpenTelemetryTraces(_) => "OpenTelemetry Traces",
+            Self::OpenTelemetryLogs(_) => "OpenTelemetry Logs",
             Self::DatadogTraces(_) => "Datadog Traces",
         }
     }
@@ -197,6 +202,9 @@ impl CorpusBlueprint {
                 .valid()
                 .map_err(|e| generic_error!("Invalid OpenTelemetry Metrics payload configuration: {}", e)),
             Payload::OpenTelemetryTraces(_) => Ok(()),
+            Payload::OpenTelemetryLogs(config) => config
+                .valid()
+                .map_err(|e| generic_error!("Invalid OpenTelemetry Logs payload configuration: {}", e)),
             Payload::DatadogTraces(config) => config
                 .valid()
                 .map_err(|e| generic_error!("Invalid Datadog Traces payload configuration: {}", e)),

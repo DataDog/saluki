@@ -8,6 +8,11 @@
 # Only squash-merged PRs are supported: the squash commit is cherry-picked as a single commit. See
 # `docs/development/contributing.md`.
 #
+# Stacked PRs are supported. The PR's base branch is not checked; the requirement is that its merge commit is on `main`,
+# which the preflight verifies. A stack tool that lands each PR on `main` as its own commit qualifies, even though GitHub
+# records the PR's base as its parent's branch. A PR that was merged into a parent branch never reached `main` on its
+# own, so it is refused: its change is inside the commit of the PR that did.
+#
 # Security: this runs on `pull_request_target`, so it has access to a write token. It never checks out or executes
 # code from the PR. It only reads `releases/*` branches and commits that are already on `main`, and it passes every
 # externally-controlled value (labels, titles) through `env:` rather than interpolating it into scripts.
@@ -83,11 +88,13 @@ jobs:
               return;
             }
 
-            // Only PRs merged into `main` are backported. This also keeps backport PRs themselves from being
-            // backported if someone labels one.
-            const eligible = pr.merged && pr.base.ref === 'main';
+            // Only merged PRs are backported. Whether the change is on `main` is checked by the `backport` job's
+            // preflight, which verifies the merge commit is reachable from `main`. The PR's base branch is not a
+            // reliable test: a PR in a stack can be recorded against its parent's branch even though its commit landed
+            // on `main`.
+            const eligible = pr.merged;
             if (!eligible) {
-              core.info(`PR #${pr.number} is not a merged PR into main; nothing to do.`);
+              core.info(`PR #${pr.number} is not merged; nothing to do.`);
             }
 
             const resolved = eligible ? targets : [];
@@ -225,7 +232,10 @@ jobs:
             });
             if (comparison.status !== 'ahead' && comparison.status !== 'identical') {
               await stop(
-                `⚠️ Cannot backport: merge commit \`${sha}\` is not reachable from \`main\`.`,
+                `⚠️ Cannot backport: merge commit \`${sha}\` is not reachable from \`main\`. ` +
+                  'This happens when the PR was merged into another branch, such as a backport PR or the parent ' +
+                  'branch of a stack. In a stack, the change reaches `main` inside the commit of the PR that was ' +
+                  'merged there, so label that PR instead.',
                 { fail: true },
               );
               return;

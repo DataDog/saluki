@@ -1,4 +1,4 @@
-//! Shared fixtures for the Datadog component tests.
+//! Shared fixtures and payload helpers for the Datadog component tests.
 //!
 //! The fixtures state the values a translated Agent configuration carries when nothing is configured, so a test only
 //! has to state what it is actually varying. They copy those defaults by hand, so they can drift from the schema.
@@ -7,7 +7,14 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use http_body_util::BodyExt as _;
+use rand::{
+    distr::{Alphanumeric, SampleString as _},
+    rngs::StdRng,
+    SeedableRng as _,
+};
 use saluki_common::sync::live::{self, LivePublisher, LiveSource};
+use saluki_core::data_model::payload::Payload;
 
 use super::api_key::{ApiKeyView, LiveApiKeys};
 use super::config::{ForwarderConfiguration, ForwarderHttpProtocol, OpwMetricsConfiguration};
@@ -154,4 +161,32 @@ impl LiveConfiguration {
             additional: Some(self.source.live(|root| &root.additional_endpoints)),
         }
     }
+}
+
+/// Returns a string of `len` random alphanumeric characters, which compresses far less than repeated characters do.
+///
+/// The characters come from a random number generator seeded with `seed`, so every run produces the same string.
+pub(crate) fn incompressible_string(len: usize, seed: u64) -> String {
+    let mut rng = StdRng::seed_from_u64(seed);
+    Alphanumeric.sample_string(&mut rng, len)
+}
+
+/// Returns the event count and decompressed body of each zstd-compressed HTTP payload, in order.
+pub(crate) async fn decompressed_bodies(payloads: Vec<Payload>) -> Vec<(usize, Vec<u8>)> {
+    let mut bodies = Vec::new();
+    for payload in payloads {
+        let (metadata, request) = payload
+            .try_into_http_payload()
+            .expect("payload should be HTTP")
+            .into_parts();
+        let compressed = request
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let body = zstd::stream::decode_all(compressed.as_ref()).expect("body should decompress");
+        bodies.push((metadata.event_count(), body));
+    }
+    bodies
 }
