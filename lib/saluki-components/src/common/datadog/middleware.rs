@@ -1,4 +1,7 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use http::{
     uri::{Authority, Scheme},
@@ -107,21 +110,30 @@ pub fn with_version_info<B>() -> impl Fn(Request<B>) -> Request<B> + Clone {
     }
 }
 
+/// A source of the current time, in milliseconds since the Unix epoch.
+pub(crate) type UnixMillisClock = Arc<dyn Fn() -> u64 + Send + Sync>;
+
+/// Returns a clock that reads the system time.
+pub(crate) fn system_clock() -> UnixMillisClock {
+    Arc::new(|| {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_millis() as u64)
+            .unwrap_or_default()
+    })
+}
+
 /// Builds a middleware function that stamps logs requests with the time they're sent.
 ///
-/// Adds the `dd-current-timestamp` header, in milliseconds since the Unix epoch, to requests for the logs intake paths
-/// (`/api/v2/logs` and `/v1/input`). Any existing value is replaced, so a retried request carries the time of its
-/// latest attempt rather than its first.
-pub fn with_logs_current_timestamp<B>() -> impl Fn(Request<B>) -> Request<B> + Clone {
+/// Adds the `dd-current-timestamp` header, read from `clock`, to requests for the logs intake paths (`/api/v2/logs`
+/// and `/v1/input`). Any existing value is replaced, so a retried request carries the time of its latest attempt
+/// rather than its first.
+pub(crate) fn with_logs_current_timestamp<B>(clock: UnixMillisClock) -> impl Fn(Request<B>) -> Request<B> + Clone {
     move |mut request| {
         if LOGS_PATHS.contains(&request.uri().path()) {
-            let now_ms = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|elapsed| elapsed.as_millis())
-                .unwrap_or_default();
             request
                 .headers_mut()
-                .insert(DD_CURRENT_TIMESTAMP_HEADER.clone(), HeaderValue::from(now_ms as u64));
+                .insert(DD_CURRENT_TIMESTAMP_HEADER.clone(), HeaderValue::from(clock()));
         }
 
         request
@@ -130,11 +142,14 @@ pub fn with_logs_current_timestamp<B>() -> impl Fn(Request<B>) -> Request<B> + C
 
 #[cfg(test)]
 mod tests {
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::sync::Arc;
 
     use http::Request;
 
-    use super::{for_resolved_endpoint, with_allow_arbitrary_tags, with_logs_current_timestamp, with_version_info};
+    use super::{
+        for_resolved_endpoint, with_allow_arbitrary_tags, with_logs_current_timestamp, with_version_info,
+        UnixMillisClock,
+    };
     use crate::common::datadog::endpoints::ResolvedEndpoint;
 
     #[test]
@@ -271,37 +286,24 @@ mod tests {
         assert!(request.headers().get("allow-arbitrary-tag-value").is_none());
     }
 
-    fn now_ms() -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock should be after the Unix epoch")
-            .as_millis() as u64
+    fn fixed_clock(now_ms: u64) -> UnixMillisClock {
+        Arc::new(move || now_ms)
     }
 
-    fn current_timestamp(request: &Request<()>) -> Option<u64> {
-        request.headers().get("dd-current-timestamp").map(|value| {
-            value
-                .to_str()
-                .expect("header should be ASCII")
-                .parse()
-                .expect("header should be numeric")
-        })
+    fn current_timestamp(request: &Request<()>) -> Option<&str> {
+        request
+            .headers()
+            .get("dd-current-timestamp")
+            .map(|value| value.to_str().expect("header should be ASCII"))
     }
 
     #[test]
     fn logs_current_timestamp_is_set_on_logs_paths_only() {
-        let middleware = with_logs_current_timestamp();
+        let middleware = with_logs_current_timestamp(fixed_clock(1_700_000_000_123));
 
         for path in ["/api/v2/logs", "/v1/input"] {
-            let before = now_ms();
             let request = middleware(Request::builder().uri(path).body(()).expect("request should build"));
-            let after = now_ms();
-
-            let timestamp = current_timestamp(&request).unwrap_or_else(|| panic!("{path} should be stamped"));
-            assert!(
-                (before..=after).contains(&timestamp),
-                "{path}: {timestamp} not in {before}..={after}"
-            );
+            assert_eq!(current_timestamp(&request), Some("1700000000123"), "{path}");
         }
 
         for path in ["/api/v2/series", "/api/v0.2/traces", "/api/v2/logsx"] {
@@ -312,17 +314,16 @@ mod tests {
 
     #[test]
     fn logs_current_timestamp_replaces_an_existing_value() {
-        let middleware = with_logs_current_timestamp();
+        let middleware = with_logs_current_timestamp(fixed_clock(1_700_000_000_123));
         let request = Request::builder()
             .uri("http://intake.example.com/api/v2/logs")
             .header("dd-current-timestamp", "1")
             .body(())
             .expect("request should build");
 
-        let before = now_ms();
         let request = middleware(request);
 
         assert_eq!(request.headers().get_all("dd-current-timestamp").iter().count(), 1);
-        assert!(current_timestamp(&request).expect("request should be stamped") >= before);
+        assert_eq!(current_timestamp(&request), Some("1700000000123"));
     }
 }
