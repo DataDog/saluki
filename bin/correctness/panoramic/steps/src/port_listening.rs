@@ -15,7 +15,7 @@ use tokio::time::{sleep_until, Instant};
 
 use crate::attempts::Attempts;
 
-/// Waits until an endpoint listens, or is addressable over UDP.
+/// Waits until a non-UDP endpoint listens.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PortListening {
@@ -74,8 +74,8 @@ impl Step for PortListening {
                 Ok(ProbeAnswer::Addressable) => {
                     return StepReport::new(
                         started,
-                        AssertionStatus::Passed,
-                        format!("{subject} is addressable over UDP; listener availability is unconfirmed"),
+                        AssertionStatus::Errored,
+                        format!("{subject} probe returned only UDP addressability, not listener evidence"),
                     );
                 }
                 Ok(ProbeAnswer::NotListening { reason }) => attempts.observed(reason),
@@ -111,32 +111,29 @@ impl StepFactory for PortListeningFactory {
 #[cfg(test)]
 mod tests {
     use panoramic_core::step::test_support::{run_step_with, FakeParticipant};
-    use serde_json::Value;
 
     use super::*;
     use crate::test_support::{exited, valid_fields};
 
     #[tokio::test(start_paused = true)]
-    async fn a_listening_endpoint_and_an_addressable_udp_endpoint_pass() {
-        for (endpoint, answer, expected) in [
-            ("tcp", ProbeAnswer::Listening, "is listening"),
+    async fn a_listening_endpoint_passes_but_addressability_is_a_harness_error() {
+        for (answer, status, expected) in [
+            (ProbeAnswer::Listening, AssertionStatus::Passed, "is listening"),
             (
-                "udp",
                 ProbeAnswer::Addressable,
-                "is addressable over UDP; listener availability is unconfirmed",
+                AssertionStatus::Errored,
+                "probe returned only UDP addressability, not listener evidence",
             ),
         ] {
             let fake = FakeParticipant::default();
             fake.push_probe(Ok(answer));
-            let mut fields = valid_fields(PortListening::NAME);
-            fields.insert("endpoint".into(), Value::String(endpoint.into()));
             let started = Instant::now();
-            let report = run_step_with(&PortListeningFactory, &fields, Some(&fake)).await;
-            assert_eq!(report.status, AssertionStatus::Passed);
+            let report = run_step_with(&PortListeningFactory, &valid_fields(PortListening::NAME), Some(&fake)).await;
+            assert_eq!(report.status, status);
             assert_eq!(started.elapsed(), Duration::ZERO);
             assert_eq!(
                 report.message,
-                format!("endpoint '{endpoint}' of participant 'subject' {expected}")
+                format!("endpoint 'tcp' of participant 'subject' {expected}")
             );
         }
     }

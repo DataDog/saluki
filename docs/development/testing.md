@@ -367,7 +367,8 @@ Process and endpoint steps require `on`:
   exactly: code 10 does not satisfy code 1. A different code, a signal death or a process still running at timeout
   fails. It re-reads the exit record before reporting a timeout.
 - `port_listening` requires `endpoint` and `timeout`. It probes the named endpoint through its planned route until
-  it listens or the timeout expires. An addressable UDP endpoint also passes, because UDP cannot confirm a listener.
+  it listens or the timeout expires. Planning rejects UDP endpoints because a probe cannot confirm a listener;
+  use a listener-output or received-metrics assertion instead.
   A timeout fails after any product answer; it errors if only harness failures prevented observation. A participant
   exit does not end the retry window early.
 - `http_check` requires `endpoint`, `path`, `status` and `timeout`. The path must start with `/`; status is either

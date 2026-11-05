@@ -64,15 +64,80 @@ pub(crate) fn discover_in_scope(
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use std::collections::BTreeMap;
+
     use panoramic_core::{
         artifact::ArtifactRole,
         case::{CaseLoader, Registries},
+        endpoint::{Endpoint, Port},
         layout::Realization,
-        participant::ParticipantType,
+        participant::{EffectiveConfig, ParticipantType},
     };
     use panoramic_participants::AgentAdp;
 
     use super::*;
+
+    #[test]
+    fn planning_rejects_udp_listeners_with_the_case_step_and_endpoint() {
+        // UDP addressability cannot prove a listener exists; reject the need before the step can report a pass.
+        struct Server(Endpoint);
+        impl ParticipantType for Server {
+            fn name(&self) -> &'static str {
+                "server"
+            }
+            fn supports(&self) -> &'static [(Os, RealizationKind)] {
+                &[(Os::Linux, RealizationKind::LinuxContainer)]
+            }
+            fn artifacts(&self, _: Realization) -> &'static [ArtifactRole] {
+                &[]
+            }
+            fn endpoints(&self, _: Realization, _: &EffectiveConfig) -> Result<BTreeMap<String, Endpoint>, String> {
+                Ok(BTreeMap::from([("input".into(), self.0.clone())]))
+            }
+            fn processes(&self) -> &'static [&'static str] {
+                &[]
+            }
+        }
+
+        for (endpoint, supported) in [
+            (Endpoint::udp(Port::Fixed(1001)), false),
+            (Endpoint::tcp(Port::Fixed(1001)), true),
+        ] {
+            let server = Server(endpoint);
+            let registries = Registries {
+                participant_types: &[&server],
+                steps: crate::REGISTRIES.steps,
+            };
+            for (procedure, label) in [
+                (
+                    "[{step: port_listening, on: subject, endpoint: input, timeout: 1s}]",
+                    "1",
+                ),
+                (
+                    "[{parallel: [{step: port_listening, on: subject, endpoint: input, timeout: 1s}]}]",
+                    "1.1",
+                ),
+            ] {
+                let yaml = format!(
+                    "timeout: 1s\nsubject_os: [linux]\nparticipants:\n  subject: {{type: server, subject: true}}\nprocedure: {procedure}"
+                );
+                let case = CaseLoader::new(registries)
+                    .load_content("cases", &yaml, "listener", Path::new("cases/listener/config.yaml"))
+                    .unwrap();
+                let result = Planner::new(registries, Default::default())
+                    .unwrap()
+                    .compile(case, Os::Linux);
+                if supported {
+                    assert!(result.unwrap().into_plan().is_some());
+                } else {
+                    assert_eq!(
+                        result.err().unwrap().to_string(),
+                        format!("case 'listener' in cases/listener/config.yaml: on subject OS 'linux', step {label} 'port_listening' reaches endpoint 'input' of participant 'subject', which the runner host cannot reach: UDP probes cannot confirm a listener; use an output or metric assertion instead")
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn load_planner_returns_manifest_and_role_errors_without_logging_them() {

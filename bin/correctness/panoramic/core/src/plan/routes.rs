@@ -36,6 +36,9 @@ pub(super) fn runner_host_route(
     use RealizationKind::{HostProcessGroup, KubernetesPod, LinuxContainer, WindowsContainer};
     use RunnerHostAccess::{Courier, Direct};
 
+    if operation == EndpointOperation::Probe && kind == Udp {
+        return Err("UDP probes cannot confirm a listener; use an output or metric assertion instead");
+    }
     if operation == EndpointOperation::Request && !matches!(kind, Http | Grpc) {
         return Err("request/response operations require an http or grpc endpoint");
     }
@@ -280,7 +283,9 @@ mod tests {
                             _ => None,
                         };
                     }
-                    if operation == EndpointOperation::Send && server.kind == RealizationKind::KubernetesPod {
+                    if (operation == EndpointOperation::Probe && kind == EndpointKind::Udp)
+                        || (operation == EndpointOperation::Send && server.kind == RealizationKind::KubernetesPod)
+                    {
                         expected = None;
                     }
                     assert_eq!(
@@ -295,6 +300,12 @@ mod tests {
 
     #[test]
     fn runner_host_route_errors_name_the_constraint() {
+        for server in REALIZATIONS {
+            assert_eq!(
+                runner_host_route(EndpointKind::Udp, server, EndpointOperation::Probe),
+                Err("UDP probes cannot confirm a listener; use an output or metric assertion instead")
+            );
+        }
         for kind in [
             EndpointKind::Tcp,
             EndpointKind::Udp,

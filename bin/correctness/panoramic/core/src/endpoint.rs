@@ -30,7 +30,7 @@ pub enum EndpointKind {
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EndpointOperation {
-    /// Tests whether the endpoint is listening or addressable.
+    /// Tests whether the endpoint is listening. UDP is unsupported: probes cannot confirm a listener.
     Probe,
     /// Sends raw bytes on a stream or in a datagram.
     Send,

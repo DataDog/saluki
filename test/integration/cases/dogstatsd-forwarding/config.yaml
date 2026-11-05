@@ -101,10 +101,6 @@ procedure:
         duration: 10s
       - step: port_listening
         on: adp
-        endpoint: dogstatsd_udp
-        timeout: 10s
-      - step: port_listening
-        on: adp
         endpoint: dogstatsd_tcp
         timeout: 10s
       - step: log_not_contains

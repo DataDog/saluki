@@ -503,10 +503,10 @@ mod tests {
             panic!("the step reads a file");
         }
         async fn probe(&self, address: &ResolvedAddress, limits: &AttemptLimits) -> Result<ProbeAnswer, HandleError> {
-            assert_eq!(address.kind, crate::endpoint::EndpointKind::Udp);
-            assert_eq!(address.url, "udp://subject:9000");
+            assert_eq!(address.kind, crate::endpoint::EndpointKind::Http);
+            assert_eq!(address.url, "http://subject:8080");
             assert_eq!(limits, &AttemptLimits::new(Duration::from_secs(3)));
-            Ok(ProbeAnswer::Addressable)
+            Ok(ProbeAnswer::Listening)
         }
         async fn send(
             &self, address: &ResolvedAddress, payload: &[u8], limits: &AttemptLimits,
@@ -567,7 +567,7 @@ mod tests {
 
     #[tokio::test]
     async fn handles_use_planned_endpoint_routes_and_reject_undeclared_needs() {
-        let plan = compile("timeout: 30s\nsubject_os: [linux]\nparticipants:\n  subject: {type: server, subject: true}\nprocedure:\n  - {step: reach, endpoint: subject.metrics}\n  - {step: reach, endpoint: subject.metrics, operation: send}");
+        let plan = compile("timeout: 30s\nsubject_os: [linux]\nparticipants:\n  subject: {type: server, subject: true}\nprocedure:\n  - {step: reach, endpoint: subject.api}\n  - {step: reach, endpoint: subject.metrics, operation: send}");
         let (_exit, exit_rx) = watch::channel(ParticipantExit::Running);
         let (_capture, capture_rx) = watch::channel(Capture::Following);
         let observation = ParticipantObservation::new(exit_rx, capture_rx, Default::default(), Default::default());
@@ -588,16 +588,16 @@ mod tests {
         assert_eq!(handle.late(LateFact::ContainerId), Some("id"));
         assert_eq!(handle.late(LateFact::Ip), None);
         let limits = AttemptLimits::new(Duration::from_secs(3));
-        assert_eq!(handle.probe("metrics", &limits).await, Ok(ProbeAnswer::Addressable));
+        assert_eq!(handle.probe("api", &limits).await, Ok(ProbeAnswer::Listening));
         assert_eq!(handle.send("metrics", b"payload", &limits).await, Ok(String::new()));
-        for error in [
-            handle.probe("api", &limits).await.unwrap_err(),
-            handle.send("api", b"payload", &limits).await.unwrap_err(),
+        for (error, endpoint) in [
+            (handle.probe("metrics", &limits).await.unwrap_err(), "metrics"),
+            (handle.send("api", b"payload", &limits).await.unwrap_err(), "api"),
         ] {
             let HandleError::Harness { message } = error else {
                 panic!("a missing route is a harness error");
             };
-            assert!(message.contains("subject.api"), "{message}");
+            assert!(message.contains(&format!("subject.{endpoint}")), "{message}");
             assert!(message.contains("the step must declare an endpoint need"), "{message}");
         }
         let output = handle

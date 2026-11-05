@@ -278,6 +278,12 @@ mod tests {
                     let yaml = reach_case(Os::Linux, realization, endpoint)
                         .replace("step: reach,", &format!("step: reach, operation: {field},"));
                     let mut planner = planner();
+                    if operation == EndpointOperation::Probe && kind == EndpointKind::Udp {
+                        assert_eq!(compile_with(&mut planner, &yaml, Os::Linux).err().unwrap().to_string(), format!(
+                            "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', step 1 'reach' reaches endpoint '{endpoint}' of participant 'subject', which the runner host cannot reach: UDP probes cannot confirm a listener; use an output or metric assertion instead"));
+                        assert_eq!(planner.ports.allocate(), Ok(20000));
+                        continue;
+                    }
                     if operation == EndpointOperation::Request
                         && !matches!(kind, EndpointKind::Http | EndpointKind::Grpc)
                     {
@@ -430,9 +436,9 @@ mod tests {
             (
                 Os::Linux,
                 RealizationKind::KubernetesPod,
-                "udp",
-                EndpointKind::Udp,
-                "udp://subject:1001",
+                "tcp",
+                EndpointKind::Tcp,
+                "tcp://subject:1001",
                 Some("subject"),
                 Some(1001),
                 None,
@@ -511,7 +517,7 @@ mod tests {
     fn a_step_and_a_host_process_group_reaching_one_container_endpoint_share_its_runner_host_port() {
         let yaml = host_to_container_case()
             .replace("subject: true", "subject: true, config: {env: {REF: '{{server.endpoints.api.url}}'}}")
-            .replace(minimal_procedure!(), "procedure: [{step: reach, endpoint: server.api, operation: request}, {step: reach, endpoint: server.metrics}, {step: reach, endpoint: server.api}, {step: reach, endpoint: server.api, operation: send}, {step: reach, endpoint: server.api, operation: request}]");
+            .replace(minimal_procedure!(), "procedure: [{step: reach, endpoint: server.api, operation: request}, {step: reach, endpoint: server.metrics, operation: send}, {step: reach, endpoint: server.api}, {step: reach, endpoint: server.api, operation: send}, {step: reach, endpoint: server.api, operation: request}]");
         let mut planner = planner();
         let plan = compile_with(&mut planner, &yaml, Os::MacOs).unwrap().unwrap();
         let address = ResolvedAddress {
