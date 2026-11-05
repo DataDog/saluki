@@ -334,7 +334,7 @@ mod tests {
     use panoramic_core::events::create_event_channel;
     use panoramic_core::layout::Os;
     use panoramic_core::machine_output::RUN_REPORT_FILE_NAME;
-    use panoramic_core::record::{AssertionResult, AssertionStatus};
+    use panoramic_core::record::{StepResult, StepStatus};
     use panoramic_core::result::{ErrorKind, TestResult};
     use serde_json::{json, Value};
     use tokio::sync::Notify;
@@ -364,7 +364,7 @@ mod tests {
             let report = RunReport::new(
                 "unknown".to_string(),
                 Vec::new(),
-                "linux".to_string(),
+                Vec::new(),
                 Os::Linux,
                 1,
                 log_dir.path().to_path_buf(),
@@ -467,14 +467,16 @@ mod tests {
         interrupts
     }
 
-    fn result(name: &str, status: AssertionStatus) -> TestResult {
-        let assertion = AssertionResult {
+    fn result(name: &str, status: StepStatus) -> TestResult {
+        let assertion = StepResult {
+            step: 0,
+            member: None,
             name: "log_contains".to_string(),
             status,
             message: String::new(),
             duration: Duration::from_millis(1),
         };
-        TestResult::from_assertions(name, Duration::from_secs(1), vec![assertion], Vec::new())
+        TestResult::from_steps(name, Duration::from_secs(1), vec![assertion], Vec::new())
     }
 
     fn completed(result: TestResult) -> TestEvent {
@@ -682,7 +684,7 @@ mod tests {
         let report = RunReport::new(
             "unknown".to_string(),
             Vec::new(),
-            "linux".to_string(),
+            Vec::new(),
             Os::Linux,
             1,
             log_dir.path().to_path_buf(),
@@ -691,7 +693,7 @@ mod tests {
         );
         let mut collector = RunCollector::start(report, false);
         collector.observe(&TestEvent::TestStarted { name: "a".to_string() });
-        collector.observe(&completed(result("a", AssertionStatus::Passed)));
+        collector.observe(&completed(result("a", StepStatus::Passed)));
 
         collector.finish(Ok(()));
 
@@ -709,7 +711,7 @@ mod tests {
             let report = RunReport::new(
                 "unknown".into(),
                 Vec::new(),
-                "mac".into(),
+                Vec::new(),
                 Os::MacOs,
                 1,
                 log_dir.path().to_path_buf(),
@@ -722,7 +724,7 @@ mod tests {
             );
             let mut collector = RunCollector::start(report, true);
             if complete {
-                collector.observe(&completed(result("a", AssertionStatus::Passed)));
+                collector.observe(&completed(result("a", StepStatus::Passed)));
             }
             collector.finish(Ok(()));
             let on_disk = read_run_json(log_dir.path());
@@ -743,7 +745,7 @@ mod tests {
         let mut report = RunReport::new(
             "unknown".into(),
             Vec::new(),
-            "mac".into(),
+            Vec::new(),
             Os::MacOs,
             1,
             std::path::PathBuf::new(),
@@ -765,14 +767,14 @@ mod tests {
         report.not_run.clear();
         report
             .tests
-            .push(TestReport::new(&result("passed", AssertionStatus::Passed)));
+            .push(TestReport::new(&result("passed", StepStatus::Passed)));
         assert!(!every_test_skipped(&report));
     }
 
     #[test]
     fn exit_code_distinguishes_failures_errors_interruptions_and_skips() {
-        let passed = || result("a", AssertionStatus::Passed);
-        let failed = || result("b", AssertionStatus::Failed);
+        let passed = || result("a", StepStatus::Passed);
+        let failed = || result("b", StepStatus::Failed);
         let timed_out = || TestResult::errored("t", ErrorKind::Timeout, "slow", Duration::from_secs(1), Vec::new());
         let setup_error = || TestResult::errored("e", ErrorKind::Setup, "boom", Duration::from_secs(1), Vec::new());
         for (case, results, skipped, interrupted, expected) in [
@@ -800,7 +802,7 @@ mod tests {
             let report = RunReport::new(
                 "unknown".into(),
                 Vec::new(),
-                "mac".into(),
+                Vec::new(),
                 Os::MacOs,
                 1,
                 log_dir.path().to_path_buf(),
@@ -827,7 +829,7 @@ mod tests {
         let report = RunReport::new(
             "unknown".to_string(),
             Vec::new(),
-            "linux".to_string(),
+            Vec::new(),
             Os::Linux,
             1,
             log_dir.path().to_path_buf(),
@@ -836,7 +838,7 @@ mod tests {
         );
         let mut collector = RunCollector::start(report, false);
         collector.observe(&TestEvent::TestStarted { name: "a".to_string() });
-        collector.observe(&completed(result("a", AssertionStatus::Passed)));
+        collector.observe(&completed(result("a", StepStatus::Passed)));
         collector.finish(Ok(()));
         let (tx, mut interrupts) = Interrupts::manual();
 

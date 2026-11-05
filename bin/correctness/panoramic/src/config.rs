@@ -8,19 +8,12 @@ use panoramic_core::{
 };
 use saluki_error::{generic_error, GenericError};
 
-/// Returns `run.json`'s `runtime` value for `os`.
-pub(crate) fn runtime_for_os(os: Os) -> &'static str {
-    match os {
-        Os::Linux => "linux",
-        Os::MacOs => "mac",
-        Os::Windows => "windows",
-    }
-}
-
+/// Directory containing the case's source file.
 pub(crate) fn case_dir(case: &CaseConfig) -> PathBuf {
     case.source().parent().unwrap_or(Path::new("")).to_path_buf()
 }
 
+/// Whether any planned participant requires a Kubernetes pod.
 pub(crate) fn needs_pod(plan: &CasePlan) -> bool {
     plan.layout()
         .iter()
@@ -37,7 +30,7 @@ pub(crate) fn load_planner(artifacts: Option<&Path>) -> Result<Planner<'static>,
     Planner::new(crate::REGISTRIES, manifest).map_err(|error| format!("Invalid artifact roles: {error:#}"))
 }
 
-/// Enabled cases partitioned by the selected subject OS, with each list sorted by name.
+/// Discovered cases partitioned by the selected subject OS, with each list sorted by name.
 pub(crate) struct Discovered {
     /// Cases that declare the selected subject OS, planned for it.
     pub(crate) plans: Vec<CasePlan>,
@@ -45,7 +38,7 @@ pub(crate) struct Discovered {
     pub(crate) excluded: Vec<CaseConfig>,
 }
 
-/// Discovers and compiles enabled cases, sorted by name, using the caller's run planner.
+/// Discovers and compiles cases, sorted by name, using the caller's run planner.
 pub(crate) fn discover_in_scope(
     planner: &mut Planner<'_>, dirs: &[PathBuf], subject_os: Os,
 ) -> Result<Discovered, GenericError> {
@@ -228,13 +221,6 @@ procedure:
             .unwrap()
             .into_plan()
             .unwrap()
-    }
-
-    #[test]
-    fn every_subject_os_maps_to_its_runtime() {
-        for (os, runtime) in [(Os::Linux, "linux"), (Os::MacOs, "mac"), (Os::Windows, "windows")] {
-            assert_eq!(runtime_for_os(os), runtime);
-        }
     }
 
     #[test]

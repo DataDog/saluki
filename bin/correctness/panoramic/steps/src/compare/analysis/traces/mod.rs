@@ -45,7 +45,7 @@ where
 use crate::compare::analysis::TracesAnalysisOptions;
 
 /// Analyzes traces for correctness.
-pub struct TracesAnalyzer {
+pub(crate) struct TracesAnalyzer {
     baseline_total_traces: usize,
     baseline_spans: HashMap<u64, Span>,
     baseline_ssi_metadata_present: bool,
@@ -60,7 +60,7 @@ pub struct TracesAnalyzer {
 
 impl TracesAnalyzer {
     /// Creates a new `TracesAnalyzer` instance with the given baseline/comparison data and options.
-    pub fn new(
+    pub(crate) fn new(
         baseline_data: &CollectedData, comparison_data: &CollectedData, options: TracesAnalysisOptions,
     ) -> Result<Self, GenericError> {
         let mut baseline_traces = HashSet::new();
@@ -129,7 +129,7 @@ impl TracesAnalyzer {
     /// # Errors
     ///
     /// If analysis fails, an error will be returned with specific details and the full list of mismatches.
-    pub fn run_analysis(self) -> Result<(), (GenericError, Vec<String>)> {
+    pub(crate) fn run_analysis(self) -> Result<(), (GenericError, Vec<String>)> {
         let mut error_count = 0;
         let mut diff_recorder = DifferenceRecorder::new(self.ignored_fields);
         let mut span_samples: Vec<String> = Vec::new();

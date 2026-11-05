@@ -13,14 +13,14 @@ use crate::metrics::{
 type ContextTypePair<'a> = (&'a NormalizedMetricContext, MetricType);
 
 /// Analyzes metrics for correctness.
-pub struct MetricsAnalyzer {
+pub(crate) struct MetricsAnalyzer {
     baseline_metrics: NormalizedMetrics,
     comparison_metrics: NormalizedMetrics,
 }
 
 impl MetricsAnalyzer {
     /// Creates a new `MetricsAnalyzer` instance with the given baseline/comparison data.
-    pub fn new(baseline_data: &CollectedData, comparison_data: &CollectedData) -> Result<Self, GenericError> {
+    pub(crate) fn new(baseline_data: &CollectedData, comparison_data: &CollectedData) -> Result<Self, GenericError> {
         let baseline_metrics = NormalizedMetrics::try_from_stele_metrics(baseline_data.metrics())
             .error_context("Failed to normalize baseline metrics.")?;
 
@@ -39,7 +39,7 @@ impl MetricsAnalyzer {
     /// # Errors
     ///
     /// If analysis fails, an error will be returned with specific details and the full list of mismatches.
-    pub fn run_analysis(self, required_tag_keys: &[String]) -> Result<(), (GenericError, Vec<String>)> {
+    pub(crate) fn run_analysis(self, required_tag_keys: &[String]) -> Result<(), (GenericError, Vec<String>)> {
         let mut baseline_metrics = self.baseline_metrics;
         let mut comparison_metrics = self.comparison_metrics;
 

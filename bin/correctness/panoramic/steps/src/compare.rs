@@ -17,9 +17,12 @@ use self::{
     intake::CollectedData,
 };
 
-pub mod analysis;
+pub(crate) mod analysis;
 pub mod decoded;
-pub mod intake;
+pub(crate) mod intake;
+
+#[cfg(any(test, feature = "test-util"))]
+pub use intake::test_server;
 
 const DUMP_TIMEOUT: Duration = Duration::from_secs(30);
 

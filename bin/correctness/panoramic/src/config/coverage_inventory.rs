@@ -138,8 +138,7 @@ impl Row {
             ]),
             (INTEGRATION, "windows") => self.ci_jobs.push("test-integration-windows-amd64".to_string()),
             (CORRECTNESS, "linux") => {
-                self.ci_jobs
-                    .push(format!("test-correctness-{}", self.name.replace('/', "-")));
+                self.ci_jobs.push(format!("test-correctness-{}", self.name));
                 self.ci_mixins = correctness_ci_mixins(listed);
             }
             key => panic!("No CI mapping for {key:?}"),
@@ -1285,6 +1284,8 @@ fn inventory_reports_a_participant_case_in_a_correctness_directory_as_native_cor
     assert_eq!(row.schema, PARTICIPANTS);
     assert_eq!(row.execution, NATIVE);
     assert_eq!(row.status, SELECTED);
+    assert_eq!(row.ci_jobs, ["test-correctness-alpha"]);
+    assert_eq!(row.ci_mixins, [".test-correctness-definition"]);
 }
 
 #[test]
@@ -1418,7 +1419,7 @@ fn correctness_ci_mixins_reject_a_listed_row_without_a_layout() {
 #[test]
 #[should_panic(expected = "a correctness CI row must be runnable")]
 fn correctness_ci_mixins_reject_a_skipped_row() {
-    correctness_ci_mixins(&json!({"status": "skipped", "layout": null, "roles": null}));
+    correctness_ci_mixins(&json!({"status": "skipped", "layout": null}));
 }
 
 #[test]

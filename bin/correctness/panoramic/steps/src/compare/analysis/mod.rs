@@ -14,7 +14,7 @@ mod traces;
 /// Types of analysis to perform on collected data
 #[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum AnalysisMode {
+pub(crate) enum AnalysisMode {
     /// Compares events between the baseline and comparison targets.
     Events,
 
@@ -29,16 +29,16 @@ pub enum AnalysisMode {
 }
 
 /// Options for traces analysis. Used when `AnalysisMode` is `Traces`.
-pub struct TracesAnalysisOptions {
+pub(crate) struct TracesAnalysisOptions {
     /// If true, use OTLP-direct analysis (baseline is OTel-based): skip trace stats comparison and don't require baseline SSI metadata.
-    pub otlp_direct_analysis_mode: bool,
+    pub(crate) otlp_direct_analysis_mode: bool,
 
     /// Additional span field paths to ignore when diffing baseline vs comparison. Merged with the built-in list.
-    pub additional_span_ignore_fields: Vec<String>,
+    pub(crate) additional_span_ignore_fields: Vec<String>,
 }
 
 /// Analysis runner.
-pub struct AnalysisRunner {
+pub(crate) struct AnalysisRunner {
     mode: AnalysisMode,
     baseline_data: CollectedData,
     comparison_data: CollectedData,
@@ -51,7 +51,7 @@ impl AnalysisRunner {
     /// Creates a new `AnalysisRunner` with the given analysis mode, baseline data, and comparison data.
     ///
     /// When mode is `Traces`, `traces_options` should be `Some(...)`; otherwise it's ignored.
-    pub fn new(
+    pub(crate) fn new(
         mode: AnalysisMode, baseline_data: CollectedData, comparison_data: CollectedData,
         traces_options: Option<TracesAnalysisOptions>,
     ) -> Self {
@@ -66,7 +66,7 @@ impl AnalysisRunner {
     }
 
     /// Sets whether forwarded DogStatsD packets are required for this analysis run.
-    pub const fn with_dogstatsd_forwarding_requirement(mut self, require_packets: bool) -> Self {
+    pub(crate) const fn with_dogstatsd_forwarding_requirement(mut self, require_packets: bool) -> Self {
         self.require_dogstatsd_forwarded_packets = require_packets;
         self
     }
@@ -74,7 +74,7 @@ impl AnalysisRunner {
     /// Requires a workload metric context with all named tags, with nonempty values, on each side.
     ///
     /// Applies only to metrics analysis. An empty list adds no requirement.
-    pub fn with_required_metric_tag_keys(mut self, keys: Vec<String>) -> Self {
+    pub(crate) fn with_required_metric_tag_keys(mut self, keys: Vec<String>) -> Self {
         self.required_metric_tag_keys = keys;
         self
     }
@@ -85,7 +85,7 @@ impl AnalysisRunner {
     ///
     /// If the analysis fails, or if the analysis identifies a difference between the baseline and comparison data,
     /// an error is returned alongside the full list of mismatch details (for log output).
-    pub fn run_analysis(self) -> Result<(), (GenericError, Vec<String>)> {
+    pub(crate) fn run_analysis(self) -> Result<(), (GenericError, Vec<String>)> {
         match self.mode {
             AnalysisMode::Events => {
                 let analyzer = events::EventsAnalyzer::new(&self.baseline_data, &self.comparison_data);

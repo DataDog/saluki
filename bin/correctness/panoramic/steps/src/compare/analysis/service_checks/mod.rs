@@ -21,14 +21,14 @@ fn is_agent_internal(check: &ServiceCheck) -> bool {
 }
 
 /// Analyzes service checks for correctness.
-pub struct ServiceChecksAnalyzer {
+pub(crate) struct ServiceChecksAnalyzer {
     baseline_checks: Vec<ServiceCheck>,
     comparison_checks: Vec<ServiceCheck>,
 }
 
 impl ServiceChecksAnalyzer {
     /// Creates a new `ServiceChecksAnalyzer` with the given baseline/comparison data.
-    pub fn new(baseline_data: &CollectedData, comparison_data: &CollectedData) -> Self {
+    pub(crate) fn new(baseline_data: &CollectedData, comparison_data: &CollectedData) -> Self {
         let mut baseline_checks = baseline_data.service_checks().to_vec();
         let mut comparison_checks = comparison_data.service_checks().to_vec();
 
@@ -83,7 +83,7 @@ impl ServiceChecksAnalyzer {
     /// # Errors
     ///
     /// If analysis fails or a difference is found, an error is returned with details.
-    pub fn run_analysis(self) -> Result<(), (GenericError, Vec<String>)> {
+    pub(crate) fn run_analysis(self) -> Result<(), (GenericError, Vec<String>)> {
         info!(
             "Analyzing {} service checks from baseline target, and {} service checks from comparison target.",
             self.baseline_checks.len(),

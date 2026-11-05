@@ -10,7 +10,7 @@ type MessageCounts = BTreeMap<Vec<u8>, usize>;
 /// Analysis failure: the overall error, plus the per-message details backing it.
 type AnalysisError = (GenericError, Vec<String>);
 
-pub fn run_analysis(
+pub(crate) fn run_analysis(
     baseline_packets: &[String], comparison_packets: &[String], require_packets: bool,
 ) -> Result<(), AnalysisError> {
     let (baseline_counts, baseline_filtered) = forwarded_message_counts(baseline_packets)?;

@@ -1,8 +1,6 @@
 //! A stand-in `datadog-intake` server for unit tests.
 
 use std::net::TcpListener as StdTcpListener;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
 
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
@@ -23,7 +21,6 @@ pub fn closed_port() -> u16 {
 /// A local HTTP server that holds requests open. It stops when dropped.
 pub struct MockIntake {
     port: u16,
-    connections: Arc<AtomicUsize>,
     task: JoinHandle<()>,
 }
 
@@ -33,10 +30,9 @@ impl MockIntake {
     /// With Tokio's clock paused, requests stay pending as time advances to the next timer, making timeout tests
     /// independent of response timing.
     pub async fn unresponsive() -> Self {
-        Self::spawn(|listener, connections| async move {
+        Self::spawn(|listener| async move {
             let mut held = Vec::new();
             while let Ok((stream, _)) = listener.accept().await {
-                connections.fetch_add(1, Ordering::SeqCst);
                 held.push(stream);
             }
         })
@@ -45,7 +41,7 @@ impl MockIntake {
 
     async fn spawn<F, Fut>(serve: F) -> Self
     where
-        F: FnOnce(TcpListener, Arc<AtomicUsize>) -> Fut,
+        F: FnOnce(TcpListener) -> Fut,
         Fut: std::future::Future<Output = ()> + Send + 'static,
     {
         install_crypto_provider();
@@ -53,23 +49,13 @@ impl MockIntake {
             .await
             .expect("should bind an ephemeral port");
         let port = listener.local_addr().expect("should have a local address").port();
-        let connections = Arc::new(AtomicUsize::new(0));
-        let task = tokio::spawn(serve(listener, connections.clone()));
-        Self {
-            port,
-            connections,
-            task,
-        }
+        let task = tokio::spawn(serve(listener));
+        Self { port, task }
     }
 
     /// Returns the port the server listens on.
     pub fn port(&self) -> u16 {
         self.port
-    }
-
-    /// Returns how many connections the server has accepted.
-    pub fn connections(&self) -> usize {
-        self.connections.load(Ordering::SeqCst)
     }
 }
 

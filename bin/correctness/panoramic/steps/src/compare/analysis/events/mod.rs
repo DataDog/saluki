@@ -7,14 +7,14 @@ use tracing::{error, info};
 use crate::compare::intake::CollectedData;
 
 /// Analyzes events for correctness.
-pub struct EventsAnalyzer {
+pub(crate) struct EventsAnalyzer {
     baseline_events: Vec<Event>,
     comparison_events: Vec<Event>,
 }
 
 impl EventsAnalyzer {
     /// Creates a new `EventsAnalyzer` instance with the given baseline/comparison data.
-    pub fn new(baseline_data: &CollectedData, comparison_data: &CollectedData) -> Self {
+    pub(crate) fn new(baseline_data: &CollectedData, comparison_data: &CollectedData) -> Self {
         let mut baseline_events = baseline_data.events().to_vec();
         let mut comparison_events = comparison_data.events().to_vec();
 
@@ -53,7 +53,7 @@ impl EventsAnalyzer {
     /// # Errors
     ///
     /// If analysis fails or a difference is found, an error is returned with details.
-    pub fn run_analysis(self) -> Result<(), (GenericError, Vec<String>)> {
+    pub(crate) fn run_analysis(self) -> Result<(), (GenericError, Vec<String>)> {
         info!(
             "Analyzing {} events from baseline target, and {} events from comparison target.",
             self.baseline_events.len(),

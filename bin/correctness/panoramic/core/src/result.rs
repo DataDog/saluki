@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 
 use crate::layout::{LayoutEntry, Os, RealizationKind};
-use crate::record::{step_label, ActiveStep, AssertionResult, StepResult, StepStatus};
+use crate::record::{step_label, ActiveStep, StepResult, StepStatus};
 
 /// Phase name reported when the harness cannot tell which phase a test was in.
 pub const UNKNOWN_PHASE: &str = "unknown";
@@ -486,7 +486,7 @@ pub struct TestResult {
     pub issues: Vec<Issue>,
     /// Directory the test case was loaded from. Set by the runner.
     pub case_path: Option<PathBuf>,
-    /// Planned layout, set by the runner even when setup fails; only skipped cases have a null layout.
+    /// Planned participant layout, set by the runner even when setup fails; only skipped cases have a null layout.
     pub layout: Option<Vec<LayoutEntry>>,
     /// Native participant observations, captured by the runner before stopping background tasks.
     pub participants: Vec<ParticipantReport>,
@@ -496,31 +496,9 @@ pub struct TestResult {
     pub log_dir: Option<PathBuf>,
     /// Timing breakdown for each phase of test execution.
     pub phase_timings: Vec<PhaseTiming>,
-    /// Full per-assertion mismatch details, written to the test's result log.
-    pub assertion_details: Vec<Vec<String>>,
 }
 
 impl TestResult {
-    /// Creates a result from sequential assertions, assigning step indices in order.
-    pub fn from_assertions(
-        name: impl Into<String>, duration: Duration, assertion_results: Vec<AssertionResult>,
-        phase_timings: Vec<PhaseTiming>,
-    ) -> Self {
-        let steps = assertion_results
-            .into_iter()
-            .enumerate()
-            .map(|(step, result)| StepResult {
-                step,
-                member: None,
-                name: result.name,
-                status: result.status.into(),
-                message: result.message,
-                duration: result.duration,
-            })
-            .collect();
-        Self::from_steps(name, duration, steps, phase_timings)
-    }
-
     /// Creates a result whose outcome follows from the step statuses.
     ///
     /// In priority order:
@@ -529,7 +507,7 @@ impl TestResult {
     /// 3. A procedure with only `passed` steps, or no steps, is `Passed`.
     /// 4. Otherwise, it is `Errored` with [`ErrorKind::Internal`]. For tests it stopped, the runner replaces this
     ///    outcome with the interruption cause.
-    pub(crate) fn from_steps(
+    pub fn from_steps(
         name: impl Into<String>, duration: Duration, steps: Vec<StepResult>, phase_timings: Vec<PhaseTiming>,
     ) -> Self {
         let (outcome, error) = if steps.iter().any(|step| step.status == StepStatus::Failed) {
@@ -565,7 +543,6 @@ impl TestResult {
             collected: Vec::new(),
             log_dir: None,
             phase_timings,
-            assertion_details: Vec::new(),
         };
         match error {
             Some((kind, message)) => result.with_harness_error(kind, message),
@@ -598,12 +575,6 @@ impl TestResult {
     /// Records the timeout detail on a result the harness stopped for taking too long.
     pub fn with_timeout_attribution(mut self, attribution: TimeoutAttribution) -> Self {
         self.timeout = Some(attribution);
-        self
-    }
-
-    /// Attaches full per-assertion mismatch details, indexed alongside `assertion_results`.
-    pub fn with_assertion_details(mut self, details: Vec<Vec<String>>) -> Self {
-        self.assertion_details = details;
         self
     }
 
@@ -803,7 +774,6 @@ pub mod test_support {
 mod tests {
     use super::test_support::{each_outcome, step};
     use super::*;
-    use crate::record::AssertionStatus;
 
     const LABELS: [&str; 5] = ["PASS", "FAIL", "ERROR", "TIMEOUT", "INTERRUPTED"];
 
@@ -896,7 +866,9 @@ mod tests {
                 .with_timeout_attribution(attribution)
         };
         let assertions = |status| {
-            vec![AssertionResult {
+            vec![StepResult {
+                step: 0,
+                member: None,
                 name: "log_contains".to_string(),
                 status,
                 message: "message".to_string(),
@@ -943,21 +915,11 @@ mod tests {
                 vec!["Error: Failed to start container.", "No such image."],
             ),
             (
-                TestResult::from_assertions(
-                    "f",
-                    Duration::from_secs(1),
-                    assertions(AssertionStatus::Failed),
-                    Vec::new(),
-                ),
+                TestResult::from_steps("f", Duration::from_secs(1), assertions(StepStatus::Failed), Vec::new()),
                 vec![],
             ),
             (
-                TestResult::from_assertions(
-                    "p",
-                    Duration::from_secs(1),
-                    assertions(AssertionStatus::Passed),
-                    Vec::new(),
-                ),
+                TestResult::from_steps("p", Duration::from_secs(1), assertions(StepStatus::Passed), Vec::new()),
                 vec![],
             ),
         ];

@@ -137,31 +137,6 @@ impl From<AssertionStatus> for StepStatus {
     }
 }
 
-/// Result of running an assertion.
-#[derive(Clone, Debug)]
-pub struct AssertionResult {
-    /// Name of the assertion type.
-    pub name: String,
-    /// How the step ended.
-    pub status: AssertionStatus,
-    /// Human-readable message about the result.
-    pub message: String,
-    /// How long the assertion took to run.
-    pub duration: Duration,
-}
-
-impl AssertionResult {
-    /// Creates a step result with the elapsed time since `started`.
-    pub fn new(name: &str, started: Instant, status: AssertionStatus, message: impl Into<String>) -> Self {
-        Self {
-            name: name.to_string(),
-            status,
-            message: message.into(),
-            duration: started.elapsed(),
-        }
-    }
-}
-
 /// What a procedure step reported. The driver supplies its name and adds `interrupted` and `not_run`.
 #[derive(Clone, Debug)]
 pub struct StepReport {
@@ -180,16 +155,6 @@ impl StepReport {
             status,
             message: message.into(),
             duration: started.elapsed(),
-        }
-    }
-}
-
-impl From<AssertionResult> for StepReport {
-    fn from(result: AssertionResult) -> Self {
-        Self {
-            status: result.status,
-            message: result.message,
-            duration: result.duration,
         }
     }
 }

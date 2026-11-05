@@ -2,11 +2,8 @@
 //!
 //! This module fetches intake data. Deciding what the data must look like is left to each test kind.
 
-mod client;
-pub use self::client::IntakeClient;
-
 mod collected;
-pub use self::collected::CollectedData;
+pub(crate) use self::collected::CollectedData;
 
 #[cfg(any(test, feature = "test-util"))]
 pub mod test_server;

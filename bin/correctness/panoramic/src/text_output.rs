@@ -217,7 +217,7 @@ mod tests {
         let mut report = RunReport::new(
             "unknown".into(),
             Vec::new(),
-            "mac".into(),
+            Vec::new(),
             Os::MacOs,
             1,
             PathBuf::new(),
@@ -289,7 +289,7 @@ mod tests {
             let mut report = RunReport::new(
                 "unknown".to_string(),
                 Vec::new(),
-                "linux".to_string(),
+                Vec::new(),
                 Os::Linux,
                 1,
                 PathBuf::new(),
@@ -356,7 +356,7 @@ mod tests {
         let mut long_run = RunReport::new(
             "unknown".to_string(),
             Vec::new(),
-            "linux".to_string(),
+            Vec::new(),
             Os::Linux,
             1,
             PathBuf::new(),

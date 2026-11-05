@@ -16,7 +16,7 @@ use tracing::{error, info};
 use crate::{
     artifact_commands, cli,
     collector::{self, consume_run, run_teardown, RunCollector, RunDisplay, RunEnd, EXIT_HARNESS_ERROR},
-    config::{case_dir, needs_pod, runtime_for_os, Discovered},
+    config::{case_dir, needs_pod, Discovered},
     console::{Console, SetupFailure},
     discovery::{prepare_discovery, Selection},
     kind::KindLifecycle,
@@ -53,7 +53,7 @@ struct PreparedRun {
     plans: Vec<CasePlan>,
     unprovidable: BTreeMap<Realization, String>,
     excluded: Vec<CaseConfig>,
-    verified: Option<Vec<VerifiedArtifact>>,
+    verified: Vec<VerifiedArtifact>,
     native: Option<NativeInputs>,
 }
 
@@ -78,7 +78,7 @@ async fn prepare_run(cmd: &cli::RunCommand, console: &Console) -> Result<Prepare
     select_cases(cmd, console, subject_os, &mut plans, &mut excluded)?;
     let backends = Arc::new(RunBackends::default().with_kube_context(format!("kind-{}", cmd.kind_cluster_name)));
     let unprovidable = check_providability(&backends, console, &plans).await;
-    let (verified, native) = prepare_artifacts(backends, cmd, console, subject_os, &plans, &unprovidable).await?;
+    let (verified, native) = prepare_artifacts(backends, console, subject_os, &plans, &unprovidable).await?;
     Ok(PreparedRun {
         subject_os,
         plans,
@@ -157,27 +157,18 @@ async fn check_providability(
 
 /// Verifies selected artifacts and loads native inputs before creating any run logs.
 pub(crate) async fn prepare_artifacts(
-    backends: Arc<RunBackends>, cmd: &cli::RunCommand, console: &Console, subject_os: Os, plans: &[CasePlan],
+    backends: Arc<RunBackends>, console: &Console, subject_os: Os, plans: &[CasePlan],
     unprovidable: &BTreeMap<Realization, String>,
-) -> Result<(Option<Vec<VerifiedArtifact>>, Option<NativeInputs>), SetupFailure> {
-    let bindings = verification_bindings(plans, unprovidable, cmd.artifacts.is_some());
+) -> Result<(Vec<VerifiedArtifact>, Option<NativeInputs>), SetupFailure> {
+    let bindings = run_artifacts(plans, unprovidable);
     let any_providable = plans
         .iter()
         .any(|plan| providability::is_providable(plan, unprovidable));
-    if bindings.is_none() && !any_providable {
-        return Ok((None, None));
-    }
     let base = std::env::current_dir()
         .map_err(|error| SetupFailure::harness(format!("Cannot read the current directory: {error}")))?;
-    let verified = match bindings {
-        Some(bindings) => Some(verify_run_artifacts(&backends, &bindings, subject_os, &base, console).await?),
-        None => None,
-    };
+    let verified = verify_run_artifacts(&backends, &bindings, subject_os, &base, console).await?;
     let native = if any_providable {
-        Some(
-            NativeInputs::new(backends, verified.as_deref().unwrap_or_default(), &base)
-                .map_err(SetupFailure::harness)?,
-        )
+        Some(NativeInputs::new(backends, &verified, &base).map_err(SetupFailure::harness)?)
     } else {
         None
     };
@@ -212,7 +203,7 @@ async fn report_run(prepared: PreparedRun, cmd: &cli::RunCommand, console: &Cons
     let report = RunReport::new(
         build_revision(),
         cmd.test_dirs.clone(),
-        runtime_for_os(subject_os).to_string(),
+        verified,
         subject_os,
         cmd.parallelism.get(),
         log_dir.clone(),
@@ -222,10 +213,6 @@ async fn report_run(prepared: PreparedRun, cmd: &cli::RunCommand, console: &Cons
             .map(|case| TestReport::skipped(case.name().to_string(), case_dir(&case), subject_os))
             .collect(),
     );
-    let report = match verified {
-        Some(verified) => report.with_artifacts(verified),
-        None => report,
-    };
     let mut collector = RunCollector::start(report, cmd.fail_fast);
 
     let display_error = if !plans.is_empty() {
@@ -399,14 +386,6 @@ fn run_artifacts(plans: &[CasePlan], unprovidable: &BTreeMap<Realization, String
     )
 }
 
-/// Chooses whether to verify, retaining an empty selection when a manifest was supplied.
-fn verification_bindings(
-    plans: &[CasePlan], unprovidable: &BTreeMap<Realization, String>, with_manifest: bool,
-) -> Option<Vec<ArtifactBinding>> {
-    let bindings = run_artifacts(plans, unprovidable);
-    (!bindings.is_empty() || with_manifest).then_some(bindings)
-}
-
 /// Reports artifact verification results and returns their verified identities.
 async fn verify_run_artifacts(
     backends: &RunBackends, bindings: &[ArtifactBinding], subject_os: Os, base: &Path, console: &Console,
@@ -559,16 +538,12 @@ mod tests {
         assert_eq!(run_dirs.len(), 1);
         let run_json = run_dirs[0].join(RUN_REPORT_FILE_NAME);
         let report: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&run_json).unwrap()).unwrap();
-        assert_eq!(report["schema_version"], 3);
+        assert_eq!(report["schema_version"], 4);
         assert_eq!(report["state"], "complete");
         assert_eq!(report["subject_os"], "macos");
-        assert_eq!(report["runtime"], "mac");
-        let expected_artifacts = if manifest.is_some() {
-            serde_json::json!([])
-        } else {
-            serde_json::Value::Null
-        };
-        assert_eq!(report.get("artifacts"), Some(&expected_artifacts));
+        assert!(report.get("runtime").is_none());
+        assert_eq!(report["artifacts"], serde_json::json!([]));
+        assert!(diagnostic.contains("No artifacts needed on macos."), "{diagnostic}");
         let expected = requested.map_or_else(|| vec!["correctness", "windows"], |name| vec![name]);
         assert_eq!(report["totals"]["skipped"], expected.len());
         assert_eq!(report["running"], serde_json::json!([]));
@@ -774,7 +749,7 @@ mod tests {
     }
 
     #[test]
-    fn artifact_bindings_follow_selection_and_providability_with_or_without_a_manifest() {
+    fn artifact_bindings_follow_selection_and_providability() {
         use panoramic_core::layout::RealizationKind;
 
         use crate::config::tests::plan_with_plain;
@@ -796,32 +771,28 @@ mod tests {
             },
             "unavailable".into(),
         )]);
-        for with_manifest in [false, true] {
-            let bindings = verification_bindings(&plans, &unprovidable, with_manifest).unwrap();
-            assert_eq!(
-                bindings.iter().map(|binding| binding.role.name).collect::<Vec<_>>(),
-                ["agent-adp-linux-image", "courier-linux-binary", "fixup-image"]
-            );
-        }
+        let bindings = run_artifacts(&plans, &unprovidable);
+        assert_eq!(
+            bindings.iter().map(|binding| binding.role.name).collect::<Vec<_>>(),
+            ["agent-adp-linux-image", "courier-linux-binary", "fixup-image"]
+        );
         plans.retain(|plan| plan.case().name() == "unavailable");
         assert!(run_artifacts(&plans, &unprovidable).is_empty());
     }
 
-    #[test]
-    fn verification_requires_a_manifest_or_native_bindings() {
-        use crate::config::tests::plan_with_plain;
-
-        let unprovidable = BTreeMap::new();
-        assert_eq!(verification_bindings(&[], &unprovidable, false), None);
-        assert_eq!(verification_bindings(&[], &unprovidable, true), Some(vec![]));
-
-        let plan = plan_with_plain(&PARTICIPANT_FIELDS.replace("agent-adp", "plain"), "native", Os::Linux);
-        let plans = vec![plan];
-        let bindings = verification_bindings(&plans, &unprovidable, false).expect("native bindings must be verified");
-        assert_eq!(
-            bindings.iter().map(|binding| binding.role.name).collect::<Vec<_>>(),
-            ["courier-linux-binary", "fixup-image"]
-        );
+    #[tokio::test]
+    async fn an_empty_selection_verifies_no_artifacts_and_needs_no_execution_inputs() {
+        let (verified, native) = prepare_artifacts(
+            Arc::new(RunBackends::default()),
+            &Console { use_tui: false },
+            Os::host(),
+            &[],
+            &BTreeMap::new(),
+        )
+        .await
+        .unwrap();
+        assert!(verified.is_empty());
+        assert!(native.is_none());
     }
 
     fn native_file_run(dir: &Path) -> (cli::RunCommand, Vec<CasePlan>) {
@@ -937,7 +908,7 @@ mod tests {
             .without_time()
             .with_writer(std::sync::Mutex::new(output))
             .finish();
-        let failure = prepare_artifacts(backends, &cmd, &console, Os::host(), &plans, &unprovidable)
+        let failure = prepare_artifacts(backends, &console, Os::host(), &plans, &unprovidable)
             .with_subscriber(subscriber)
             .await
             .err()
@@ -965,7 +936,7 @@ mod tests {
         let backends = Arc::new(RunBackends::default());
         let unprovidable = check_providability(&backends, &console, &plans).await;
         assert!(unprovidable.is_empty());
-        let (verified, native) = prepare_artifacts(backends, &cmd, &console, Os::host(), &plans, &unprovidable)
+        let (verified, native) = prepare_artifacts(backends, &console, Os::host(), &plans, &unprovidable)
             .await
             .unwrap();
         assert!(native.is_some());
@@ -1505,6 +1476,9 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(run_dir.join("run.json")).unwrap()).unwrap();
         let tests = report["tests"].as_array().unwrap();
         assert_eq!(tests.len(), 1);
+        assert_eq!(report["artifacts"], serde_json::json!([]));
+        assert_eq!(report["schema_version"], 4);
+        assert!(report.get("runtime").is_none());
         let result = &tests[0];
         assert_eq!(result["name"], "unprovidable");
         assert_eq!(result["outcome"], "errored");
@@ -1685,7 +1659,7 @@ mod tests {
             "-d",
             dir.path().to_str().unwrap(),
             "--subject-os",
-            "windows",
+            "linux",
             "-t",
             "disabled",
         ])
@@ -1693,7 +1667,18 @@ mod tests {
         let Command::Run(cmd) = cli.command else {
             panic!("expected run")
         };
-        assert_eq!(run_tests(*cmd, false).await, ExitCode::from(EXIT_NO_TESTS_SELECTED));
+        // OS exclusion must not hide recursive discovery of the nested Linux case.
+        let console = Console { use_tui: false };
+        let failure = prepare_run(&cmd, &console)
+            .await
+            .err()
+            .expect("a case outside the discovery roots must not match");
+        assert!(
+            failure.message.contains("No test matches: disabled"),
+            "{}",
+            failure.message
+        );
+        assert_eq!(failure.report(&console), ExitCode::from(EXIT_NO_TESTS_SELECTED));
     }
 
     #[test]

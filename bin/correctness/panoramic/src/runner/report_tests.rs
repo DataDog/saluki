@@ -227,7 +227,7 @@ async fn run_report_case(stall: bool) {
     let report: serde_json::Value =
         serde_json::from_slice(&std::fs::read(result.log_dir.as_ref().unwrap().join("result.json")).unwrap()).unwrap();
     assert_eq!(result.outcome, TestOutcome::Passed, "{report:#}");
-    assert_eq!(report["schema_version"], 3);
+    assert_eq!(report["schema_version"], 4);
     let collected = report["collected"].as_array().unwrap();
     assert_eq!(collected.len(), 1, "{collected:?}");
     let retained = result.log_dir.as_ref().unwrap().join("subject/collected/retained.bin");

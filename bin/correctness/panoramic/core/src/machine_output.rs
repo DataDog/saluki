@@ -1,7 +1,7 @@
 //! Run reports and their durable artifacts.
 
 use std::fmt;
-use std::io::{BufRead as _, BufReader, Write as _};
+use std::io::{BufRead as _, BufReader};
 use std::path::{Path, PathBuf};
 
 use chrono::Local;
@@ -27,12 +27,6 @@ pub(crate) const TEST_REPORT_FILE_NAME: &str = "result.json";
 
 /// File name of the human-readable result log, written into each test's log directory.
 pub const RESULT_LOG_FILE_NAME: &str = "result.log";
-
-/// Directory, under a test's log directory, holding uncapped assertion detail files.
-const DETAILS_DIR_NAME: &str = "details";
-
-/// Number of detail lines carried inline per assertion. The full set always lands on disk.
-const DETAIL_LINE_CAP: usize = 100;
 
 /// Number of diagnostic lines carried per test. The artifacts they came from hold the rest.
 const DIAGNOSTIC_LINE_CAP: usize = 25;
@@ -61,7 +55,7 @@ const SEVERITY_MARKERS: &[&str] = &[
 ];
 
 /// Schema version of `run.json` and `result.json`. An absent version field denotes version 1.
-pub(crate) const REPORT_SCHEMA_VERSION: u32 = 3;
+pub(crate) const REPORT_SCHEMA_VERSION: u32 = 4;
 
 /// A whole run, as consumed by a program.
 ///
@@ -79,12 +73,10 @@ pub struct RunReport {
     pub(crate) build_revision: String,
     /// Test-case directories the run discovered from.
     pub(crate) suite_dirs: Vec<PathBuf>,
-    /// Integration-test runtime the run was scoped to.
-    pub(crate) runtime: String,
     /// Subject operating system selected for the run.
     pub(crate) subject_os: Os,
-    /// Artifacts `run --artifacts` verified, in role-name order; `null` when the run did not verify artifacts.
-    pub(crate) artifacts: Option<Vec<VerifiedArtifact>>,
+    /// Artifacts verified before the run, in role-name order; empty when none are needed.
+    pub(crate) artifacts: Vec<VerifiedArtifact>,
     /// How many tests ran concurrently.
     pub(crate) parallelism: usize,
     /// When the run started, as an RFC 3339 timestamp.
@@ -172,7 +164,7 @@ pub struct TestReport {
     /// Why the case was skipped, present only when the outcome is `skipped`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) skip_reason: Option<String>,
-    /// Planned layout, including when setup failed; skipped cases have `null`.
+    /// Planned participant layout, including when setup failed; skipped cases have `null`.
     pub(crate) layout: Option<Vec<LayoutEntry>>,
     /// Native participants whose creation was attempted and their observed processes.
     pub(crate) participants: Vec<ParticipantReport>,
@@ -251,9 +243,7 @@ enum CapturedStream {
 impl CapturedStream {
     /// Classifies an artifact by the captured output it holds, or `None` if it holds none.
     ///
-    /// Only log files are read, and only those the components wrote, so the harness's own files
-    /// (`result.log`, the JSON reports, and assertion detail) never feed back into the reported
-    /// lines.
+    /// Only component logs are read, so harness summaries never feed back into the reported lines.
     fn from_artifact(path: &Path) -> Option<Self> {
         let name = path.file_name().and_then(|name| name.to_str())?;
 
@@ -312,21 +302,16 @@ pub(crate) struct AssertionReport {
     pub(crate) message: String,
     /// How long the assertion took.
     pub(crate) duration_ms: u64,
-    /// Mismatch detail, capped at 100 lines.
-    pub(crate) details: Vec<String>,
-    /// Whether `details` was capped.
-    pub(crate) details_truncated: bool,
-    /// Absolute path of the file holding the uncapped detail, when there is one.
-    pub(crate) details_path: Option<PathBuf>,
 }
 
 impl RunReport {
     /// Creates a running report, seeding skipped results and listing runnable selections as not run.
     ///
     /// `build_revision` identifies the runner build, formatted by [`revision`].
+    /// `artifacts` contains the bindings verified before the run.
     pub fn new(
-        build_revision: String, suite_dirs: Vec<PathBuf>, runtime: String, subject_os: Os, parallelism: usize,
-        log_dir: PathBuf, selected: Vec<String>, skipped: Vec<TestReport>,
+        build_revision: String, suite_dirs: Vec<PathBuf>, artifacts: Vec<VerifiedArtifact>, subject_os: Os,
+        parallelism: usize, log_dir: PathBuf, selected: Vec<String>, skipped: Vec<TestReport>,
     ) -> Self {
         Self {
             schema_version: REPORT_SCHEMA_VERSION,
@@ -334,9 +319,8 @@ impl RunReport {
             interrupted_reason: None,
             build_revision,
             suite_dirs,
-            runtime,
             subject_os,
-            artifacts: None,
+            artifacts,
             parallelism,
             started_at: Local::now().to_rfc3339(),
             duration_ms: 0,
@@ -346,12 +330,6 @@ impl RunReport {
             not_run: selected,
             tests: skipped,
         }
-    }
-
-    /// Records the artifacts the run verified before any case started.
-    pub fn with_artifacts(mut self, artifacts: Vec<VerifiedArtifact>) -> Self {
-        self.artifacts = Some(artifacts);
-        self
     }
 }
 
@@ -402,35 +380,21 @@ impl TestReport {
         }
     }
 
-    /// Builds the per-test document. Assumes the test's detail files are already on disk, and so
-    /// points at them by path rather than writing them.
+    /// Builds the per-test document.
     pub fn new(result: &TestResult) -> Self {
-        let details_dir = result.log_dir.as_ref().map(|dir| dir.join(DETAILS_DIR_NAME));
-
         let assertions = result
             .assertion_results
             .iter()
             .enumerate()
-            .map(|(index, assertion)| {
-                let details = result.assertion_details.get(index).cloned().unwrap_or_default();
-                let details_path = details_dir
-                    .as_ref()
-                    .filter(|_| !details.is_empty())
-                    .map(|dir| dir.join(detail_file_name(index, &assertion.name)));
-
-                AssertionReport {
-                    index,
-                    step: assertion.step,
-                    member: assertion.member,
-                    kind: assertion.name.clone(),
-                    status: assertion.status,
-                    passed: assertion.status == StepStatus::Passed,
-                    message: assertion.message.clone(),
-                    duration_ms: DurationMs(assertion.duration).as_millis(),
-                    details_truncated: details.len() > DETAIL_LINE_CAP,
-                    details: details.into_iter().take(DETAIL_LINE_CAP).collect(),
-                    details_path,
-                }
+            .map(|(index, assertion)| AssertionReport {
+                index,
+                step: assertion.step,
+                member: assertion.member,
+                kind: assertion.name.clone(),
+                status: assertion.status,
+                passed: assertion.status == StepStatus::Passed,
+                message: assertion.message.clone(),
+                duration_ms: DurationMs(assertion.duration).as_millis(),
             })
             .collect();
 
@@ -576,14 +540,12 @@ impl PhaseTimingReport {
     }
 }
 
-/// Writes a test's `result.json` and its uncapped assertion detail files.
+/// Writes a test's `result.json`.
 ///
 /// Called for every test regardless of output format, so that a run killed mid-flight still leaves
 /// machine-readable evidence behind. Failures are logged, never fatal: losing an artifact should not
 /// change a verdict.
 pub fn write_test_report(result: &TestResult, log_dir: &Path) {
-    write_detail_files(result, log_dir);
-
     let report = TestReport::new(result);
     let file = TestReportFile {
         schema_version: REPORT_SCHEMA_VERSION,
@@ -595,43 +557,6 @@ pub fn write_test_report(result: &TestResult, log_dir: &Path) {
 /// Writes the run-level `run.json`.
 pub fn write_run_report(report: &RunReport) {
     write_json(&report.log_dir.join(RUN_REPORT_FILE_NAME), report);
-}
-
-fn write_detail_files(result: &TestResult, log_dir: &Path) {
-    let has_details = result.assertion_details.iter().any(|details| !details.is_empty());
-    if !has_details {
-        return;
-    }
-
-    let details_dir = log_dir.join(DETAILS_DIR_NAME);
-    if let Err(e) = std::fs::create_dir_all(&details_dir) {
-        warn!(path = %details_dir.display(), error = %e, "Failed to create assertion details directory.");
-        return;
-    }
-
-    for (index, details) in result.assertion_details.iter().enumerate() {
-        if details.is_empty() {
-            continue;
-        }
-
-        let name = result
-            .assertion_results
-            .get(index)
-            .map(|assertion| assertion.name.as_str())
-            .unwrap_or("assertion");
-        let path = details_dir.join(detail_file_name(index, name));
-        match std::fs::File::create(&path) {
-            Ok(mut file) => {
-                for line in details {
-                    if let Err(e) = writeln!(file, "{}", line) {
-                        warn!(path = %path.display(), error = %e, "Failed to write assertion details.");
-                        break;
-                    }
-                }
-            }
-            Err(e) => warn!(path = %path.display(), error = %e, "Failed to create assertion details file."),
-        }
-    }
 }
 
 /// Writes a temporary file, then renames it over `path` so readers see a complete report.
@@ -655,16 +580,6 @@ fn write_json<T: Serialize>(path: &Path, value: &T) {
         warn!(path = %path.display(), error = %e, "Failed to write machine-readable report.");
         let _ = std::fs::remove_file(&tmp_path);
     }
-}
-
-/// Names a detail file after its assertion's position and kind, so the file is identifiable without
-/// opening it and stays stable across reruns.
-fn detail_file_name(index: usize, kind: &str) -> String {
-    let sanitized: String = kind
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect();
-    format!("{}-{}.txt", index, sanitized)
 }
 
 fn list_artifacts(log_dir: &Path) -> Vec<PathBuf> {
@@ -694,11 +609,13 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::record::{AssertionResult, AssertionStatus};
+    use crate::record::StepResult;
     use crate::result::{ErrorKind, TestOutcome, TimeoutAttribution};
 
-    fn assertion(name: &str, status: AssertionStatus) -> AssertionResult {
-        AssertionResult {
+    fn assertion(name: &str, status: StepStatus) -> StepResult {
+        StepResult {
+            step: 0,
+            member: None,
             name: name.to_string(),
             status,
             message: "message".to_string(),
@@ -733,7 +650,7 @@ mod tests {
         let run = RunReport::new(
             "unknown".into(),
             Vec::new(),
-            "mac".into(),
+            Vec::new(),
             Os::MacOs,
             1,
             PathBuf::new(),
@@ -755,7 +672,7 @@ mod tests {
                 report: &report,
             };
             let json = serde_json::to_value(file).unwrap();
-            assert_eq!(json["schema_version"], 3);
+            assert_eq!(json["schema_version"], 4);
             assert!(json.get("skip_reason").is_none());
         }
         let skipped = TestReport::skipped("excluded".into(), PathBuf::new(), Os::Linux);
@@ -767,7 +684,7 @@ mod tests {
 
     #[test]
     fn a_test_report_carries_the_result_layout_and_skipped_reports_have_null_layout() {
-        let mut result = TestResult::from_assertions("case", Duration::ZERO, vec![], vec![]);
+        let mut result = TestResult::from_steps("case", Duration::ZERO, vec![], vec![]);
         assert_eq!(
             serde_json::to_value(TestReport::new(&result)).unwrap().get("layout"),
             Some(&serde_json::Value::Null)
@@ -791,16 +708,17 @@ mod tests {
 
     #[test]
     fn test_report_pins_the_contract_field_names() {
-        let mut result = TestResult::from_assertions(
+        let mut result = TestResult::from_steps(
             "dsd-plain",
             Duration::from_secs(3),
-            vec![assertion("telemetry matches", AssertionStatus::Failed)],
+            vec![assertion("telemetry matches", StepStatus::Failed)],
             vec![PhaseTiming {
                 phase: "analysis".to_string(),
                 duration: Duration::from_millis(20),
             }],
-        )
-        .with_assertion_details(vec![vec!["one".to_string(), "two".to_string()]]);
+        );
+        let message = "mismatch\n".repeat(125);
+        result.assertion_results[0].message = message.clone();
         result.case_path = Some(PathBuf::from("/cases/dsd-plain"));
         result.log_dir = Some(PathBuf::from("/logs/correctness/dsd-plain"));
 
@@ -814,20 +732,18 @@ mod tests {
         assert_eq!(json["log_dir"], "/logs/correctness/dsd-plain");
         assert_eq!(json["phase_timings"][0]["phase"], "analysis");
         assert_eq!(json["phase_timings"][0]["duration_ms"], 20);
-        assert_eq!(json["assertions"][0]["index"], 0);
-        assert_eq!(json["assertions"][0]["step"], 0);
-        assert!(json["assertions"][0]["member"].is_null());
-        assert_eq!(json["assertions"][0]["kind"], "telemetry matches");
-        assert_eq!(json["assertions"][0]["status"], "failed");
-        assert_eq!(json["assertions"][0]["passed"], false);
-        assert_eq!(json["assertions"][0]["details"][1], "two");
-        assert_eq!(json["assertions"][0]["details_truncated"], false);
-        let expected_details_path = PathBuf::from("/logs/correctness/dsd-plain")
-            .join("details")
-            .join("0-telemetry-matches.txt");
         assert_eq!(
-            json["assertions"][0]["details_path"],
-            serde_json::to_value(expected_details_path).expect("details path should serialize")
+            json["assertions"],
+            serde_json::json!([{
+                "index": 0,
+                "step": 0,
+                "member": null,
+                "kind": "telemetry matches",
+                "status": "failed",
+                "passed": false,
+                "message": message,
+                "duration_ms": 5,
+            }])
         );
         assert!(json["error"].is_null());
         assert!(json["cause"].is_null());
@@ -854,44 +770,6 @@ mod tests {
             .as_array()
             .expect("assertions is an array")
             .is_empty());
-    }
-
-    #[test]
-    fn assertion_details_are_capped_inline_and_complete_on_disk() {
-        let details: Vec<String> = (0..DETAIL_LINE_CAP + 25).map(|i| format!("line {}", i)).collect();
-        let log_dir = tempfile::tempdir().expect("temp dir should be creatable");
-        let mut result = TestResult::from_assertions(
-            "dsd-plain",
-            Duration::from_secs(1),
-            vec![assertion("telemetry matches", AssertionStatus::Failed)],
-            Vec::new(),
-        )
-        .with_assertion_details(vec![details]);
-        result.log_dir = Some(log_dir.path().to_path_buf());
-
-        let nested_log_dir = log_dir.path().join("comparison");
-        std::fs::create_dir(&nested_log_dir).expect("nested log directory should be creatable");
-        let nested_log = nested_log_dir.join("target.stdout.log");
-        std::fs::write(&nested_log, "log line\n").expect("nested log should be writable");
-
-        write_test_report(&result, log_dir.path());
-
-        let report = TestReport::new(&result);
-        assert!(report.artifacts.contains(&nested_log));
-        assert_eq!(report.assertions[0].details.len(), DETAIL_LINE_CAP);
-        assert!(report.assertions[0].details_truncated);
-
-        let detail_path = report.assertions[0]
-            .details_path
-            .as_ref()
-            .expect("a detail path should be reported");
-        let written = std::fs::read_to_string(detail_path).expect("detail file should exist");
-        assert_eq!(written.lines().count(), DETAIL_LINE_CAP + 25);
-
-        let result_json =
-            std::fs::read_to_string(log_dir.path().join(TEST_REPORT_FILE_NAME)).expect("result.json should exist");
-        let parsed: serde_json::Value = serde_json::from_str(&result_json).expect("result.json should parse");
-        assert_eq!(parsed["outcome"], "failed");
     }
 
     #[test]
@@ -955,10 +833,10 @@ mod tests {
 
     #[test]
     fn cancelled_test_report_carries_no_timeout_attribution() {
-        let result = TestResult::from_assertions(
+        let result = TestResult::from_steps(
             "cancelled",
             Duration::from_secs(1),
-            vec![assertion("cancelled", AssertionStatus::Failed)],
+            vec![assertion("cancelled", StepStatus::Failed)],
             Vec::new(),
         )
         .with_harness_error(ErrorKind::Internal, "Test was cancelled.");
@@ -991,10 +869,10 @@ mod tests {
         )
         .expect("result log should be writable");
 
-        let mut result = TestResult::from_assertions(
+        let mut result = TestResult::from_steps(
             "dsd-plain",
             Duration::from_secs(1),
-            vec![assertion("log_contains", AssertionStatus::Failed)],
+            vec![assertion("log_contains", StepStatus::Failed)],
             Vec::new(),
         );
         result.log_dir = Some(log_dir.path().to_path_buf());
@@ -1041,10 +919,10 @@ mod tests {
         )
         .expect("load log should be writable");
 
-        let mut result = TestResult::from_assertions(
+        let mut result = TestResult::from_steps(
             "dsd-plain",
             Duration::from_secs(1),
-            vec![assertion("telemetry matches", AssertionStatus::Failed)],
+            vec![assertion("telemetry matches", StepStatus::Failed)],
             Vec::new(),
         );
         result.log_dir = Some(log_dir.path().to_path_buf());
@@ -1181,10 +1059,10 @@ mod tests {
         std::fs::write(log_dir.path().join("stdout.log"), "ERROR failed to bind socket\n")
             .expect("stdout log should be writable");
 
-        let mut result = TestResult::from_assertions(
+        let mut result = TestResult::from_steps(
             "dsd-plain",
             Duration::from_secs(1),
-            vec![assertion("log_contains", AssertionStatus::Passed)],
+            vec![assertion("log_contains", StepStatus::Passed)],
             Vec::new(),
         );
         result.log_dir = Some(log_dir.path().to_path_buf());
@@ -1202,10 +1080,10 @@ mod tests {
         let lines: Vec<String> = (0..DIAGNOSTIC_LINE_CAP + 10).map(|_| long_line.clone()).collect();
         std::fs::write(log_dir.path().join("stdout.log"), lines.join("\n")).expect("stdout log should be writable");
 
-        let mut result = TestResult::from_assertions(
+        let mut result = TestResult::from_steps(
             "dsd-plain",
             Duration::from_secs(1),
-            vec![assertion("log_contains", AssertionStatus::Failed)],
+            vec![assertion("log_contains", StepStatus::Failed)],
             Vec::new(),
         );
         result.log_dir = Some(log_dir.path().to_path_buf());
@@ -1231,16 +1109,16 @@ mod tests {
     #[test]
     fn run_report_totals_separate_failures_from_errors() {
         let results = [
-            TestResult::from_assertions(
+            TestResult::from_steps(
                 "a",
                 Duration::from_secs(1),
-                vec![assertion("x", AssertionStatus::Passed)],
+                vec![assertion("x", StepStatus::Passed)],
                 Vec::new(),
             ),
-            TestResult::from_assertions(
+            TestResult::from_steps(
                 "b",
                 Duration::from_secs(1),
-                vec![assertion("x", AssertionStatus::Failed)],
+                vec![assertion("x", StepStatus::Failed)],
                 Vec::new(),
             ),
             TestResult::errored("c", ErrorKind::Setup, "boom", Duration::from_secs(1), Vec::new()),
@@ -1265,50 +1143,38 @@ mod tests {
     }
 
     #[test]
-    fn a_run_report_records_artifacts_as_null_until_verification_then_lists_them() {
-        let report = RunReport::new(
-            "unknown".into(),
-            Vec::new(),
-            "linux".into(),
-            Os::Linux,
-            1,
-            PathBuf::new(),
-            Vec::new(),
-            Vec::new(),
-        );
-        assert_eq!(
-            serde_json::to_value(&report).unwrap().get("artifacts"),
-            Some(&serde_json::Value::Null)
-        );
-        let report = report.with_artifacts(vec![VerifiedArtifact {
-            role: "tool",
-            reference: "tool:latest".into(),
-            identity: "sha256:123".into(),
-            kind: crate::artifact::ArtifactKind::Image { os: Os::Linux },
-        }]);
-        assert_eq!(
-            serde_json::to_value(&report).unwrap()["artifacts"],
-            serde_json::json!([{
-                "role": "tool",
-                "reference": "tool:latest",
-                "identity": "sha256:123",
-                "kind": "image",
-            }])
-        );
-        let report = report.with_artifacts(Vec::new());
-        assert_eq!(
-            serde_json::to_value(&report).unwrap()["artifacts"],
-            serde_json::json!([])
-        );
+    fn a_run_report_lists_verified_artifacts_even_when_none_are_needed() {
+        for artifacts in [
+            vec![],
+            vec![VerifiedArtifact {
+                role: "tool",
+                reference: "tool:latest".into(),
+                identity: "sha256:123".into(),
+                kind: crate::artifact::ArtifactKind::Image { os: Os::Linux },
+            }],
+        ] {
+            let expected = serde_json::to_value(&artifacts).unwrap();
+            let report = RunReport::new(
+                "unknown".into(),
+                Vec::new(),
+                artifacts,
+                Os::Linux,
+                1,
+                PathBuf::new(),
+                Vec::new(),
+                Vec::new(),
+            );
+            assert_eq!(serde_json::to_value(report).unwrap()["artifacts"], expected);
+        }
     }
 
     #[test]
-    fn run_report_pins_the_schema_three_field_names() {
+    fn run_report_pins_the_schema_four_field_names() {
         let selected = vec!["a".to_string(), "b".to_string(), "c".to_string()];
         let mut report = RunReport::new(
             "0123abcd-dirty".to_string(),
             Vec::new(),
-            "linux".to_string(),
+            Vec::new(),
             Os::Linux,
             1,
             PathBuf::new(),
@@ -1325,9 +1191,30 @@ mod tests {
 
         let json = serde_json::to_value(&report).expect("run report should serialize");
 
-        assert_eq!(json["schema_version"], 3);
+        assert_eq!(
+            json.as_object().unwrap().keys().map(String::as_str).collect::<Vec<_>>(),
+            [
+                "artifacts",
+                "build_revision",
+                "duration_ms",
+                "interrupted_reason",
+                "log_dir",
+                "not_run",
+                "parallelism",
+                "running",
+                "schema_version",
+                "started_at",
+                "state",
+                "subject_os",
+                "suite_dirs",
+                "tests",
+                "totals"
+            ]
+        );
+        assert_eq!(json["schema_version"], 4);
         assert_eq!(json["subject_os"], "linux");
-        assert_eq!(json.get("artifacts"), Some(&serde_json::Value::Null));
+        assert_eq!(json["artifacts"], serde_json::json!([]));
+        assert!(json.get("runtime").is_none());
         assert_eq!(json["build_revision"], "0123abcd-dirty");
         assert_eq!(json["state"], "interrupted");
         assert_eq!(json["interrupted_reason"]["kind"], "signal");
@@ -1359,7 +1246,7 @@ mod tests {
         let mut report = RunReport::new(
             "unknown".to_string(),
             Vec::new(),
-            "linux".to_string(),
+            Vec::new(),
             Os::Linux,
             1,
             log_dir.path().to_path_buf(),

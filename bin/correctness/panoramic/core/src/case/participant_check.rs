@@ -42,7 +42,7 @@ pub(super) fn check_participants(
                  starting with a letter and not ending with '-'"
             )));
         }
-        if ["traffic", "details"].contains(&participant.as_str()) {
+        if participant == "traffic" {
             return Err(error(format!(
                 "participant name '{participant}' is reserved for harness {participant} artifacts; choose another name"
             )));
@@ -419,17 +419,26 @@ mod tests {
     }
 
     #[test]
-    fn harness_artifact_directories_are_reserved_participant_names() {
-        for name in ["traffic", "details"] {
-            let yaml = case_yaml(&format!("  {name}: {{type: server, subject: true}}"), "linux");
-            let message = check_error(&yaml);
-            assert!(
-                message.contains(&format!(
-                    "participant name '{name}' is reserved for harness {name} artifacts; choose another name"
-                )),
-                "{message}"
-            );
-            check(&yaml.replace(&format!("  {name}:"), &format!("  {name}-source:"))).unwrap();
+    fn the_loader_accepts_details_but_reserves_traffic_for_harness_artifacts() {
+        // The loader reserved `details` for unused assertion files; only `traffic` needs that reservation.
+        let yaml = case_yaml("  traffic: {type: server, subject: true}", "linux");
+        let loader = loader();
+        let source = Path::new("config.yaml");
+        let message = loader
+            .load_content("cases", &yaml, "alpha", source)
+            .err()
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            message,
+            "case 'alpha' in config.yaml: participant name 'traffic' is reserved for harness traffic artifacts; choose another name"
+        );
+        for name in ["details", "traffic-source"] {
+            let yaml = yaml.replace("  traffic:", &format!("  {name}:"));
+            let cases = loader.load_content("cases", &yaml, "alpha", source).unwrap();
+            assert_eq!(cases.len(), 1);
+            assert!(cases[0].file().participants[name].subject);
+            assert_eq!(cases[0].file().participants[name].participant_type, "server");
         }
     }
 

@@ -240,8 +240,8 @@ panoramic and courier binaries from `build-panoramic-binary`.
 
 ### Participant cases
 
-A case file without a top-level `type` declares **participants**: named instances of a participant type. The case
-states what runs, how it's configured and what the procedure checks. The participant type knows how its product is
+A case file declares **participants**: named instances of a participant type. The case states what runs, how it's
+configured and what the procedure checks. The participant type knows how its product is
 installed and where it writes. Every case in `test/integration/cases/` uses this schema;
 `adp-logging-default-path` looks like this:
 
@@ -836,18 +836,9 @@ fixup-image = "registry.example/alpine:3"
 ```
 
 Omitted roles use their local defaults: for example, `agent-adp-linux-image` defaults to
-`saluki-images/datadog-agent:testing-devel`. A role no participant type, backend or typed schema declares fails the listing;
+`saluki-images/datadog-agent:testing-devel`. A role no participant type or backend declares fails the listing;
 a declared role the selected cases don't need is ignored. Relative binary and install paths resolve against the
-working directory, whether supplied by a manifest or a local default. Native execution always verifies and uses
-these bindings. With `run --artifacts <file>`, typed runners also verify and use them; without the flag,
-those runners use case files, harness defaults and image flags or their environment variables.
-
-Typed correctness cases map their containers to these roles:
-
-| Case and subject OS | Container or process | Artifact roles |
-| --- | --- | --- |
-| Correctness, Linux, Docker or Kubernetes-in-Docker | Baseline and comparison | `agent-adp-linux-image` |
-| Correctness, Linux, Docker or Kubernetes-in-Docker | Datadog intake and millstone | `tools-linux-image` |
+working directory, whether supplied by a manifest or a local default. Execution always verifies and uses these bindings.
 
 Each case also needs the roles its backend declares: Linux containers need `fixup-image` and `courier-linux-binary`,
 the static courier. On aarch64 and x86_64, its local default is `target/<arch>-unknown-linux-musl/release/panoramic-courier`,
@@ -861,14 +852,8 @@ For a Docker daemon of another architecture, build with `COURIER_LINUX_TARGET=<a
 Correctness cases run only for subject OS `linux`; their roles appear in text listings, `artifacts verify`/`pull`,
 and `run --artifacts` verification only when you select Linux. Only runnable cases contribute artifact roles.
 
-Both correctness targets bind to `agent-adp-linux-image`, as CI supplies the same bundled image to both sides.
-Locally, correctness files declare `saluki-images/datadog-agent:testing-release`, while that role defaults to the
-integration image, `saluki-images/datadog-agent:testing-devel`. These are release and debug builds, respectively.
-With `run --artifacts`, both targets use the role binding: locally, `:testing-devel` unless the manifest binds it.
-Without the flag, runners keep the images the files declare, subject to image overrides.
-
 Use `panoramic run --artifacts <file> -d <cases>` to verify all selected artifact roles before any case starts.
-Native cases' roles are verified on every run, with or without `--artifacts`. Verification follows
+Roles are verified on every run, with or without `--artifacts`. Verification follows
 `-t` selection and the check that the host can provide the cases. Unavailable cases stay `errored`/`setup` rows and
 contribute no artifacts to verification. Any verification failure exits 2 before creating the log directory or
 `run.json`, starting kind setup or running a case. The report goes to stderr, including in TUI mode, leaving stdout
@@ -877,37 +862,16 @@ for `-o json`.
 When verification passes, `run.json`'s `artifacts` lists each verified binding as `{role, reference, identity, kind}`
 in role-name order. `identity` is the image ID for images, the SHA-256 of the file for binaries, and the SHA-256 of the
 main binary for installs. `reference` is preserved as written. Roles needed only by skipped cases or cases the host
-can't provide aren't verified and don't appear. With `--artifacts`, the list is empty (`[]`) when no bindings need
-verification. Without the flag, `artifacts` lists verified native bindings, or is `null` when nothing was verified.
+can't provide aren't verified and don't appear. The field is always an array, empty (`[]`) when no bindings need
+verification, including an empty selection.
 
-The flag has no environment fallback. Legacy flags and their environment variables can accompany `--artifacts`,
-but each explicit value must name the same reference as the binding of the role it feeds:
+`--artifacts` has no environment fallback.
 
-| Flag | Environment variable | Artifact role |
-| --- | --- | --- |
-| `--image-override datadog-intake=IMAGE` | `PANORAMIC_IMAGE_OVERRIDES` | `tools-linux-image` |
-| `--image-override millstone=IMAGE` | `PANORAMIC_IMAGE_OVERRIDES` | `tools-linux-image` |
-| `--image-override baseline=IMAGE` | `PANORAMIC_IMAGE_OVERRIDES` | `agent-adp-linux-image` |
-| `--image-override comparison=IMAGE` | `PANORAMIC_IMAGE_OVERRIDES` | `agent-adp-linux-image` |
-| `--alpine-image` | `PANORAMIC_ALPINE_IMAGE` | `fixup-image` |
-
-Only values explicitly supplied by a flag or environment variable are compared; defaults don't count as inputs.
-Images are compared as strings: `alpine` differs from `alpine:latest`.
-The comparison uses every planned case in scope, before `-t` selection, and ignores inputs for roles no case needs.
-Image override names must be unique and match a correctness container in scope.
-Several names feeding one role must all agree with its binding.
-
-Panoramic reports every disagreement, including the role, bound reference and whether it came from the manifest or
-a local default. Any disagreement exits 2 before verification, log directory creation or `run.json`. Agreeing
-inputs leave the binding as the only effective input. CI can keep its legacy variables alongside a manifest that
-binds the same references, including `fixup-image` for `PANORAMIC_ALPINE_IMAGE`.
-
-The image roles feed the containers listed in the case table above. `adp-host-binary` supplies the host ADP executable;
+`adp-host-binary` supplies the host ADP executable;
 `agent-host-install` supplies the Core Agent executable at `bin/agent/agent` beneath that directory. `fixup-image`
 supplies the shared-volume permission fix-up container. `courier-linux-binary` supplies the static courier executable
-for Linux containers. Kind loads the runners' bound images into its cluster.
-Kind options, `-l` and TUI options remain available. In `list --json`, `images` and `runtime` report
-the case files' images and runtime regardless of `--artifacts`, while `roles` shows the bound references and their sources.
+for Linux containers. Kind loads the participants' bound images into its cluster.
+Kind options, `-l` and TUI options remain available. In `list --json`, `roles` shows the bound references and their sources.
 
 Use `panoramic artifacts render --set <role>=<reference> … -o <file>` to write a manifest, replacing an existing
 file. Repeat `--set` to bind more roles; omitting it writes a manifest binding nothing. Rendering checks bindings
@@ -924,8 +888,6 @@ Linux integration and correctness jobs bind `courier-linux-binary` to the courie
 `ci/tooling/windows-integration-tests.ps1` binds the ADP and tools images and courier binary it builds.
 Both Windows images use `WINDOWS_ADP_BASE_IMAGE`, the Agent LTSC image already pulled by the job; local invocations
 without that variable fall back to `mcr.microsoft.com/windows/servercore:ltsc2022`.
-Image overrides must agree with the manifest. Every selected correctness case must use a `saluki-images/`
-baseline, because both sides take `agent-adp-linux-image`.
 
 Use `panoramic artifacts verify -d <cases> [--subject-os linux|macos|windows] [--artifacts <file>]` to check every
 artifact the selected cases need. The subject OS defaults to the host's OS. Verification prints each
@@ -1035,18 +997,16 @@ A case whose `subject_os` omits the selected OS appears in `run.json` with outco
 Text listings show every enabled case's status: `runnable` or `skipped (subject_os)`.
 
 `list --json` includes every enabled case, keyed by name. Every row has `type`, `timeout` and `status`, which is
-`runnable` or `skipped`. Runnable rows that use a typed runner also have `runtime` and `images`.
-Skipped rows have `skip_reason`. Each row also has:
+`runnable` or `skipped`. Skipped rows have `skip_reason`. Each row also has:
 
 - `layout`: a list of `{participant, type, os, realization}` in participant-name order. `type` names the participant
   type, `os` is `linux`, `macos` or `windows`, and `realization` is `linux-container`, `windows-container`,
-  `host-process-group` or `kubernetes-pod`. Cases with a top-level `type` have one entry with `participant` and
-  `type` set to `null`, giving the realization their runner uses. Only skipped cases have `layout: null`.
+  `host-process-group` or `kubernetes-pod`. Only skipped cases have `layout: null`.
 - `roles`: a list of `{role, kind, reference, source}` in role-name order. `kind` is `image`, `binary` or `install`;
   `source` is `manifest` or `local_default`. A runnable case needing no roles has an empty list;
   a skipped case has `roles: null` because it wasn't planned for this OS.
 
-The correctness CI generator reads `status`, `layout[].realization` and `roles` to select jobs and their templates.
+The correctness CI generator reads `status` and `layout[].realization` to select jobs and their templates.
 
 Before running, `run` checks each distinct realization needed by the selected cases once, without changing their
 layouts:
@@ -1131,26 +1091,25 @@ jq -r '.tests[] | select((.outcome != "passed" and .outcome != "skipped") or (.i
 
 Follow the selected tests' `log_dir` to `result.json`. Use `outcome` for the test result and `assertions[].status` for
 each step. Check `issues` even on passes; they don't change `outcome`. Open reported artifact paths and
-`diagnostic_lines` sources for context and uncapped details.
+`diagnostic_lines` sources for context.
 
 Each `run.json` entry in `tests[]` and each `result.json` contains `layout`, using the same
 `{participant, type, os, realization}` entries as `list --json`. It records the planned layout even when setup
-fails, including when the host can't provide a realization. Cases with a top-level `type` have one entry with
-`participant` and `type` set to `null`, giving the realization their runner uses. Only skipped cases have
-`layout: null`. Run-level `artifacts` in `run.json` records every binding and identity verified before cases
-started, including native cases' roles on runs without `--artifacts`, or `null` when the run didn't verify artifacts.
+fails, including when the host can't provide a realization. Only skipped cases have `layout: null`.
+Run-level `artifacts` in `run.json` records every binding and identity verified before cases started,
+with or without `--artifacts`. It is always an array, empty (`[]`) when no artifacts needed verification.
+`run.json` records the selected `subject_os`.
 
-Native cases also report `participants[]`, with each participant's `name`, `type`, `os`, `realization`, and `processes`.
+Cases also report `participants[]`, with each participant's `name`, `type`, `os`, `realization`, and `processes`.
 A participant appears once its creation is attempted; its process list stays empty until startup. Each process has an
 `exit` with `state: running | exited | undetermined` and `source: container | record | process`. Exit codes, signals and
 failure reasons appear only when observed. A container runtime error accompanies its exit as `reason`. Process `output`
 lists host paths under `stdout`, `stderr` or `merged`. The runner snapshots observations before cancelling an interrupted
 case, or after the case body returns normally, then stops background tasks. The snapshot survives a dropped case body.
-Legacy cases report an empty participant list.
 
-For native cases, `diagnostic_lines` reads declared process outputs and container output that no process owns.
-Non-blank stderr lines qualify; stdout and merged output require severity markers. Legacy cases use
-filename-based stream classification. `artifacts` lists files under the test's log directory.
+`diagnostic_lines` reads declared process outputs and container output that no process owns.
+Non-blank stderr lines qualify; stdout and merged output require severity markers.
+`artifacts` lists files under the test's log directory.
 
 After the procedure, participant types can collect declared files from running or exited participants.
 Files go under `<participant>/collected/`, or `traffic/` for declared traffic captures. Copies still present after
@@ -1161,8 +1120,9 @@ issue without changing the procedure's verdict.
 
 Follow report types in `bin/correctness/panoramic/core/src/machine_output.rs` for semantics. For precedence rules, see
 `TestResult::from_steps` in `bin/correctness/panoramic/core/src/result.rs` and `exit_code` in
-`bin/correctness/panoramic/src/collector.rs`. The current `schema_version` is 3. Check it and `run.json`'s
-`build_revision` against the working tree.
+`bin/correctness/panoramic/src/collector.rs`. Both `run.json` and `result.json` use `schema_version: 4`,
+from the shared `REPORT_SCHEMA_VERSION` constant. Check their schema version and `run.json`'s `build_revision`
+against the working tree.
 
 On Unix, send SIGINT or SIGTERM to stop a run with cleanup. A second signal may leave containers behind.
 
@@ -1176,12 +1136,12 @@ Child reapers remain active after case tasks stop. The host scope has a `directo
 participants; it also removes an empty parent run directory. A failed participant removal keeps the state directory
 for diagnosis. Consecutive participant entries stop concurrently; a container scope's shared volume and network follow
 through the run's Docker connection. An interrupted creation marks both its participant and scope `unsettled`, because
-creation might finish after removal. The `details` and `traffic` artifact directories are reserved participant names.
+creation might finish after removal. The `traffic` artifact directory is a reserved participant name.
 
-Correctness tests have one isolation-group entry per container group, or one `namespace:` entry per kind namespace.
-The runner stops their background tasks first. Failed or skipped removal adds a `resource_leaked` issue; unconfirmed removal adds `resource_unsettled`. These issues leave the
-test outcome unchanged. A background task still tracked after the five-second stop budget adds a
-`tasks_still_running` issue without changing the outcome; resource cleanup still runs.
+The runner stops background tasks before reclaiming resources. Failed or skipped removal adds a `resource_leaked`
+issue; unconfirmed removal adds `resource_unsettled`. These issues leave the test outcome unchanged. A background task
+still tracked after the five-second stop budget adds a `tasks_still_running` issue without changing the outcome;
+resource cleanup still runs.
 
 ### Reading traffic artifacts
 

@@ -112,7 +112,7 @@ struct Digest {
 /// # Errors
 ///
 /// Returns serialization, compression or file-write failures.
-pub fn write_decoded_records(
+pub(crate) fn write_decoded_records(
     file: File, side: Side, role: &str, source: &str, data: &CollectedData,
 ) -> Result<Value, GenericError> {
     let mut writer = RecordWriter::new(

@@ -553,28 +553,20 @@ fn write_result_log(result: &TestResult, dir: impl AsRef<Path>) {
     let ran: Vec<_> = result
         .assertion_results
         .iter()
-        .enumerate()
-        .filter(|(_, step)| step.status != StepStatus::NotRun)
+        .filter(|step| step.status != StepStatus::NotRun)
         .collect();
     if !ran.is_empty() {
         let _ = writeln!(f);
         let _ = writeln!(f, "Assertions:");
-        for (i, assertion) in ran {
+        for assertion in ran {
             let indicator = if assertion.status == StepStatus::Passed {
                 "+"
             } else {
                 "-"
             };
             let _ = writeln!(f, "  {} {} ({:.2?})", indicator, assertion.name, assertion.duration);
-            let full_details = result.assertion_details.get(i).map(|d| d.as_slice()).unwrap_or(&[]);
-            if !full_details.is_empty() {
-                for line in full_details {
-                    let _ = writeln!(f, "    {}", line);
-                }
-            } else {
-                for line in assertion.message.lines() {
-                    let _ = writeln!(f, "    {}", line);
-                }
+            for line in assertion.message.lines() {
+                let _ = writeln!(f, "    {}", line);
             }
         }
     }
@@ -597,7 +589,7 @@ pub(crate) mod test_support {
     use panoramic_core::case::{CaseConfig, CaseLoader, Registries};
     use panoramic_core::layout::{Os, Realization, RealizationKind};
     use panoramic_core::plan::Planner;
-    use panoramic_core::record::{AssertionResult, AssertionStatus};
+    use panoramic_core::record::StepResult;
     use panoramic_core::{
         case::{ProcedureNode, StepNode},
         procedure::{Member, Procedure},
@@ -696,7 +688,6 @@ procedure: [{step: file_contains, on: pod, path: /ready, pattern: ready, timeout
         participant_types: &'static [&'static dyn ParticipantType], steps: &[&dyn panoramic_core::step::StepFactory],
         case_json: serde_json::Value, mut bindings: BTreeMap<String, String>, cancel: CancellationToken,
     ) -> (tempfile::TempDir, serde_json::Value) {
-        use clap::Parser as _;
         use panoramic_core::{
             artifact::{ArtifactKind, ArtifactManifest},
             backend::{self, RunBackends, FIXUP_IMAGE},
@@ -707,11 +698,7 @@ procedure: [{step: file_contains, on: pod, path: /ready, pattern: ready, timeout
         use serde_json::{json, Value};
 
         use super::report_tests::assert_scope_removed;
-        use crate::{
-            cli::{Cli, Command},
-            console::Console,
-            run_command,
-        };
+        use crate::{console::Console, run_command};
 
         let registries = panoramic_core::case::Registries {
             participant_types,
@@ -755,23 +742,8 @@ procedure: [{step: file_contains, on: pod, path: /ready, pattern: ready, timeout
         let scope = panoramic_core::plan::test_support::scope_id(&plan);
         eprintln!("Native runner test scope: {scope}");
         let limit = plan.case().timeout() + Duration::from_secs(30);
-        let Command::Run(cmd) = Cli::try_parse_from([
-            "panoramic",
-            "run",
-            "--subject-os",
-            "linux",
-            "--no-tui",
-            "--artifacts",
-            path.to_str().unwrap(),
-        ])
-        .unwrap()
-        .command
-        else {
-            panic!("expected run")
-        };
         let (verified, native) = run_command::prepare_artifacts(
             Arc::new(RunBackends::default()),
-            &cmd,
             &Console { use_tui: false },
             Os::Linux,
             std::slice::from_ref(&plan),
@@ -779,7 +751,7 @@ procedure: [{step: file_contains, on: pod, path: /ready, pattern: ready, timeout
         )
         .await
         .unwrap();
-        let verified = serde_json::to_value(verified.unwrap()).unwrap();
+        let verified = serde_json::to_value(verified).unwrap();
         let verified = verified.as_array().unwrap();
         assert_eq!(verified.len(), plan.artifacts().len());
         for binding in plan.artifacts() {
@@ -814,7 +786,7 @@ procedure: [{step: file_contains, on: pod, path: /ready, pattern: ready, timeout
         let report: Value =
             serde_json::from_slice(&std::fs::read(result.log_dir.as_ref().unwrap().join("result.json")).unwrap())
                 .unwrap();
-        assert_eq!(report["schema_version"], 3);
+        assert_eq!(report["schema_version"], 4);
         assert_eq!(
             report["participants"],
             serde_json::to_value(&result.participants).unwrap()
@@ -982,23 +954,25 @@ procedure: [{step: file_contains, on: pod, path: /ready, pattern: ready, timeout
                 entered.notify_one();
             }
 
-            let assertion = |status| AssertionResult {
+            let assertion = |status| StepResult {
+                step: 0,
+                member: None,
                 name: "scripted".to_string(),
                 status,
                 message: String::new(),
                 duration: Duration::from_millis(1),
             };
             match self.behavior {
-                Behavior::Pass => TestResult::from_assertions(
+                Behavior::Pass => TestResult::from_steps(
                     &self.name,
                     Duration::from_millis(1),
-                    vec![assertion(AssertionStatus::Passed)],
+                    vec![assertion(StepStatus::Passed)],
                     Vec::new(),
                 ),
-                Behavior::Fail => TestResult::from_assertions(
+                Behavior::Fail => TestResult::from_steps(
                     &self.name,
                     Duration::from_millis(1),
-                    vec![assertion(AssertionStatus::Failed)],
+                    vec![assertion(StepStatus::Failed)],
                     Vec::new(),
                 ),
                 Behavior::Panic => panic!("scripted test '{}' panicked", self.name),
@@ -1007,14 +981,14 @@ procedure: [{step: file_contains, on: pod, path: /ready, pattern: ready, timeout
                     if !finish_on_cancel {
                         std::future::pending::<()>().await;
                     }
-                    TestResult::from_assertions(&self.name, Duration::from_secs(1), Vec::new(), Vec::new())
+                    TestResult::from_steps(&self.name, Duration::from_secs(1), Vec::new(), Vec::new())
                 }
                 Behavior::ReturnAtDeadline => {
                     tokio::time::sleep_until(tctx.deadline.at).await;
-                    TestResult::from_assertions(
+                    TestResult::from_steps(
                         &self.name,
                         Duration::from_millis(1),
-                        vec![assertion(AssertionStatus::Passed)],
+                        vec![assertion(StepStatus::Passed)],
                         Vec::new(),
                     )
                 }
@@ -1754,7 +1728,8 @@ mod tests {
     #[test]
     fn result_log_counts_the_steps_that_never_ran_instead_of_listing_them() {
         let log_dir = tempfile::tempdir().expect("temp dir should be creatable");
-        let [_, (failed, _), ..] = each_outcome();
+        let [_, (mut failed, _), ..] = each_outcome();
+        failed.assertion_results[0].message = "mismatch\n".repeat(125);
 
         write_result_log(&failed, log_dir.path());
 
@@ -1768,6 +1743,7 @@ mod tests {
             .filter(|line| !line.starts_with("    "))
             .collect();
         assert_eq!(assertions, ["  - log_contains (1.00ms)"], "{result_log}");
+        assert!(result_log.contains(&"    mismatch\n".repeat(125)), "{result_log}");
         assert!(!result_log.contains(NOT_RUN_KIND), "{result_log}");
         assert!(result_log.contains("\n1 step not run\n"), "{result_log}");
     }
@@ -1822,10 +1798,10 @@ mod tests {
     async fn a_step_that_exhausts_its_own_budget_fails_the_test() {
         // The retry sleep outlasts the step budget, proving the slack preserves the assertion's own timeout message.
         // The last attempt is a request error or a probe timeout, depending on how busy the machine is.
-        panoramic_steps::compare::intake::test_server::install_crypto_provider();
+        panoramic_steps::compare::test_server::install_crypto_provider();
         let log_base_dir = tempfile::tempdir().expect("temp dir should be creatable");
         let test = ScriptedTest {
-            target_port: Some(panoramic_steps::compare::intake::test_server::closed_port()),
+            target_port: Some(panoramic_steps::compare::test_server::closed_port()),
             ..ScriptedTest::new(
             "procedure",
             Behavior::Procedure(
@@ -1849,7 +1825,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_stalled_request_cut_short_by_the_case_deadline_is_interrupted() {
-        let target = panoramic_steps::compare::intake::test_server::MockIntake::unresponsive().await;
+        let target = panoramic_steps::compare::test_server::MockIntake::unresponsive().await;
         let log_base_dir = tempfile::tempdir().expect("temp dir should be creatable");
         let test = ScriptedTest {
             timeout: Duration::from_secs(1),
@@ -1955,7 +1931,7 @@ mod tests {
         assert_eq!(phase_names(&result), ["assertions"]);
 
         let json = written_report(&result);
-        assert_eq!(json["schema_version"], 3);
+        assert_eq!(json["schema_version"], 4);
         let written_statuses: Vec<&str> = json["assertions"]
             .as_array()
             .expect("assertions is an array")
@@ -2062,7 +2038,7 @@ mod tests {
                     let _ = release.recv();
                 });
                 started_rx.await.unwrap();
-                TestResult::from_assertions("blocked-task", Duration::ZERO, Vec::new(), Vec::new())
+                TestResult::from_steps("blocked-task", Duration::ZERO, Vec::new(), Vec::new())
             }
         }
 

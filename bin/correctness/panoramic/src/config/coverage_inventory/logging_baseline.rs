@@ -62,11 +62,11 @@ fn participant_twin(config: &Value) -> Result<(String, bool), String> {
         .as_array()
         .ok_or("runtimes must be an array")?
         .iter()
-        .map(|runtime| {
-            [Os::Linux, Os::MacOs, Os::Windows]
-                .into_iter()
-                .find(|os| Some(crate::config::runtime_for_os(*os)) == runtime.as_str())
-                .ok_or_else(|| format!("unsupported runtime {runtime}"))
+        .map(|runtime| match runtime.as_str() {
+            Some("linux") => Ok(Os::Linux),
+            Some("mac") => Ok(Os::MacOs),
+            Some("windows") => Ok(Os::Windows),
+            _ => Err(format!("unsupported runtime {runtime}")),
         })
         .collect::<Result<Vec<_>, _>>()?;
     if subject_os.is_empty() {
