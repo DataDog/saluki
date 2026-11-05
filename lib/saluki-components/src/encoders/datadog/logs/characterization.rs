@@ -36,7 +36,6 @@ const TARGET_BATCH_MAX_CONTENT_SIZE: usize = 5_000_000;
 const FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// A request built by the encoder.
-#[derive(Clone)]
 struct EncodedRequest {
     method: http::Method,
     path: String,
@@ -232,21 +231,11 @@ async fn splits_requests_by_compressed_size() {
         );
     }
 
-    // Bug: the request builder writes the separator for the 257th log before its compression estimate rejects the
-    // log, so the first request ends with `,]` and isn't valid JSON. The intake can't parse it, and its 256 logs are
-    // lost. Once that's fixed, every request should parse as it is.
-    assert!(requests[0].body.ends_with(b",]"));
-    assert!(stele::Log::try_from_payload(&requests[0].body).is_err());
-    let mut first_body = requests[0].body.clone();
-    first_body.remove(first_body.len() - 2);
-    let repaired = EncodedRequest {
-        body: first_body,
-        ..requests[0].clone()
-    };
-
-    // Apart from that separator, no log is lost or reordered across the requests.
-    let repaired_requests = [repaired, requests[1].clone()];
-    assert_eq!(all_messages(&repaired_requests), messages_of(&logs));
+    // Every request is a valid JSON array, and no log is lost or reordered across the requests.
+    for request in &requests {
+        assert!(request.body.ends_with(b"}]"), "a request should end with its last log");
+    }
+    assert_eq!(all_messages(&requests), messages_of(&logs));
 }
 
 #[tokio::test]
