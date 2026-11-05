@@ -8,7 +8,8 @@
 //! behind, items go to whichever worker has the fewest queued items, so no worker sits idle while another has a backlog.
 //!
 //! Each sender balances independently, based on how many items are currently queued for each worker. Items already
-//! queued for a worker stay with that worker, so a worker that stops making progress holds on to its backlog.
+//! queued for a worker stay with that worker, so a worker that stops making progress holds on to its backlog. Workers
+//! that have stopped, by dropping their receiver, are skipped, and items queued for them are dropped.
 
 use std::{fmt, num::NonZeroUsize, sync::Arc};
 
@@ -49,13 +50,14 @@ pub struct WorkQueueSender<T> {
 impl<T> WorkQueueSender<T> {
     /// Sends an item to one of the workers.
     ///
-    /// If every worker's queue is full, waits for room in the queue of the least loaded worker.
+    /// Workers that have stopped are skipped. If every running worker's queue is full, waits for room in a running
+    /// worker's queue.
     ///
     /// # Errors
     ///
     /// If every worker has stopped, an error is returned with the item.
     pub async fn send(&mut self, mut item: T) -> Result<(), SendError<T>> {
-        if self.queued(self.current) >= BACKLOG_THRESHOLD {
+        if self.is_stopped(self.current) || self.queued(self.current) >= BACKLOG_THRESHOLD {
             self.current = self.least_loaded();
         }
 
@@ -70,10 +72,21 @@ impl<T> WorkQueueSender<T> {
             }
         }
 
-        self.senders[self.current]
-            .send(item)
-            .await
-            .map_err(|mpsc::error::SendError(item)| SendError(item))
+        // Every running worker's queue is full. Wait for room, moving on to the next worker if one stops while waiting.
+        for offset in 0..workers {
+            let index = (self.current + offset) % workers;
+            match self.senders[index].send(item).await {
+                Ok(()) => return Ok(()),
+                Err(mpsc::error::SendError(returned)) => item = returned,
+            }
+        }
+
+        Err(SendError(item))
+    }
+
+    /// Returns `true` if the given worker has stopped.
+    fn is_stopped(&self, index: usize) -> bool {
+        self.senders[index].is_closed()
     }
 
     /// Returns the number of items queued for the given worker.
@@ -82,11 +95,14 @@ impl<T> WorkQueueSender<T> {
         sender.max_capacity() - sender.capacity()
     }
 
-    /// Returns the worker with the fewest queued items, preferring the workers after the current one on ties.
+    /// Returns the running worker with the fewest queued items, preferring the workers after the current one on ties.
+    ///
+    /// If every worker has stopped, returns the current worker.
     fn least_loaded(&self) -> usize {
         let workers = self.senders.len();
         (1..=workers)
             .map(|offset| (self.current + offset) % workers)
+            .filter(|&index| !self.is_stopped(index))
             .min_by_key(|&index| self.queued(index))
             .unwrap_or(self.current)
     }
@@ -256,6 +272,45 @@ mod tests {
         assert_eq!((first, second), (Some(1), Some(2)));
         let rest: Vec<_> = receivers.iter_mut().flat_map(drain).collect();
         assert_eq!(rest, vec![3]);
+    }
+
+    #[tokio::test]
+    async fn waits_for_a_running_worker_when_the_current_worker_has_stopped() {
+        let (mut sender, mut receivers) = bounded(workers(2), 2);
+
+        // Stop the first worker, which is the sender's current worker, and fill the second worker's queue.
+        drop(receivers.remove(0));
+        sender.send(1).await.unwrap();
+
+        // Every running worker's queue is full, so the send waits rather than failing on the stopped worker.
+        let blocked = tokio::spawn(async move { sender.send(2).await });
+        tokio::task::yield_now().await;
+        assert!(!blocked.is_finished(), "send should wait for the running worker");
+
+        assert_eq!(receivers[0].recv().await, Some(1));
+        blocked.await.unwrap().unwrap();
+        assert_eq!(receivers[0].recv().await, Some(2));
+    }
+
+    #[tokio::test]
+    async fn moves_on_when_a_worker_stops_while_waiting_for_it() {
+        let (mut sender, mut receivers) = bounded(workers(2), 2);
+        sender.send(1).await.unwrap();
+        sender.send(2).await.unwrap();
+
+        // Both queues are full, so the send waits on the current worker.
+        let blocked = tokio::spawn(async move { sender.send(3).await });
+        tokio::task::yield_now().await;
+        assert!(!blocked.is_finished(), "send should wait while every queue is full");
+
+        // Stopping that worker moves the send on to the other worker, which it waits on until there's room.
+        drop(receivers.remove(0));
+        tokio::task::yield_now().await;
+        assert!(!blocked.is_finished(), "send should wait for the remaining worker");
+
+        assert_eq!(receivers[0].recv().await, Some(2));
+        blocked.await.unwrap().unwrap();
+        assert_eq!(receivers[0].recv().await, Some(3));
     }
 
     #[tokio::test]
