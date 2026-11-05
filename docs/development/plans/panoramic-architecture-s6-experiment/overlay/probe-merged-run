@@ -1,5 +1,0 @@
-#!/usr/bin/execlineb -P
-fdmove -c 2 1
-foreground { echo panoramic-probe-merged-stdout }
-foreground { fdmove -c 1 2 echo panoramic-probe-merged-stderr }
-sleep 3600

@@ -476,10 +476,10 @@ pub(crate) async fn watch_exit(
 /// Publishes `Complete` at stream end or `Failed` on the first stream or file error.
 pub(crate) async fn follow_output(
     stream: impl Stream<Item = Result<OutputChunk, GenericError>>, stdout_path: PathBuf, stderr_path: PathBuf,
-    tx: watch::Sender<Capture>, lines: OutputLines, participant: Arc<str>, process: Option<&'static str>,
+    tx: watch::Sender<Capture>, lines: OutputLines, process: Option<&'static str>,
 ) {
-    let mut stdout_lines = LineBuffer::new(lines.clone(), participant.clone(), process, OutputStream::Stdout);
-    let mut stderr_lines = LineBuffer::new(lines, participant, process, OutputStream::Stderr);
+    let mut stdout_lines = LineBuffer::new(lines.clone(), process);
+    let mut stderr_lines = LineBuffer::new(lines, process);
     let capture: Result<(), GenericError> = async {
         let mut stdout = File::create(&stdout_path)
             .await
@@ -489,7 +489,6 @@ pub(crate) async fn follow_output(
             .with_error_context(|| format!("cannot create output file '{}'", stderr_path.display()))?;
         let mut stream = std::pin::pin!(stream);
         while let Some(chunk) = stream.next().await {
-            let received = SystemTime::now();
             let (file, path, lines, bytes) = match chunk? {
                 OutputChunk::Stdout(bytes) => (&mut stdout, &stdout_path, &mut stdout_lines, bytes),
                 OutputChunk::Stderr(bytes) => (&mut stderr, &stderr_path, &mut stderr_lines, bytes),
@@ -500,7 +499,7 @@ pub(crate) async fn follow_output(
             file.flush()
                 .await
                 .with_error_context(|| format!("cannot flush output file '{}'", path.display()))?;
-            lines.push(&bytes, received);
+            lines.push(&bytes);
         }
         Ok(())
     }
@@ -562,7 +561,6 @@ mod tests {
                 stderr.clone(),
                 self.capture_tx.clone(),
                 self.observation.lines.clone(),
-                "p".into(),
                 None,
             )
             .await;
@@ -650,7 +648,6 @@ mod tests {
             stderr.clone(),
             capture_tx,
             observation.lines.clone(),
-            "p".into(),
             Some("main"),
         ));
         let mut finishing = std::pin::pin!(observation.finish_output());
@@ -923,10 +920,7 @@ mod tests {
             },
         );
         observation.lines.push(output::OutputLine {
-            participant: "p".into(),
             process: Some("main"),
-            stream: OutputStream::Stdout,
-            received: SystemTime::now(),
             text: "too long".into(),
         });
         assert_eq!(observation.lines_since(0).unwrap_err(),
@@ -1041,10 +1035,7 @@ mod tests {
             observation.outputs.clear();
             observation.lines = OutputLines::new(1);
             observation.lines.push(output::OutputLine {
-                participant: "p".into(),
                 process: None,
-                stream: OutputStream::Stdout,
-                received: SystemTime::now(),
                 text: "too long".into(),
             });
             let expected = concat!(
@@ -1284,7 +1275,6 @@ mod tests {
             stderr_path.clone(),
             fixture.capture_tx.clone(),
             fixture.observation.lines.clone(),
-            "p".into(),
             None,
         ));
         let stdout = b"out\x00\xff\n";
@@ -1331,19 +1321,13 @@ mod tests {
                 stderr.clone(),
                 fixture.capture_tx.clone(),
                 fixture.observation.lines.clone(),
-                "p".into(),
                 process,
             )
             .await;
             let (lines, cursor) = fixture.observation.lines.since(0).unwrap();
             assert_eq!(cursor, 2);
-            for (line, text, stream) in [
-                (&lines[0], "out", OutputStream::Stdout),
-                (&lines[1], "err", OutputStream::Stderr),
-            ] {
-                assert_eq!(&*line.participant, "p");
+            for (line, text) in [(&lines[0], "out"), (&lines[1], "err")] {
                 assert_eq!(line.process, process);
-                assert_eq!(line.stream, stream);
                 assert_eq!(line.text, text);
             }
             assert_eq!(fixture.observation.capture(), Capture::Complete);

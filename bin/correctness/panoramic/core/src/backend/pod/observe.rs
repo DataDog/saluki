@@ -5,7 +5,7 @@ use std::{
     future::Future,
     path::{Path, PathBuf},
     sync::Arc,
-    time::{Duration, SystemTime},
+    time::Duration,
 };
 
 use airlock::exec::OutputChunk;
@@ -24,7 +24,7 @@ use crate::{
         Capture, ExitObservation, ExitStatus, ParticipantExit, ParticipantObservation, ProcessObservation,
         ProcessOutput,
     },
-    participant::{ExitChannel, OutputChannel, OutputStream},
+    participant::{ExitChannel, OutputChannel},
     probe::POLL_INTERVAL,
     tasks::CaseTasks,
 };
@@ -62,9 +62,7 @@ impl PodParticipant {
             captures.push((container.clone(), capture.clone()));
             let lines = LineBuffer::new(
                 observation.lines.clone(),
-                self.name.clone().into(),
                 output_owner.filter(|_| container == self.primary).map(|spec| spec.name),
-                OutputStream::Merged,
             );
             let participant = self.clone();
             let exit = process.clone();
@@ -153,13 +151,12 @@ impl PodParticipant {
                     capture: primary_output.capture.clone(),
                     paths: primary_output.paths.clone(),
                 },
-                OutputChannel::File { file, stream } => {
+                OutputChannel::File { file, .. } => {
                     let source_path = format!("/airlock/{}/log/{file}", self.name);
                     let host_path = output_dir.join(host_output_file(spec.name, spec.output).expect("file output"));
                     let output = FileOutput {
                         participant: self.name.clone().into(),
                         process: spec.name,
-                        stream,
                         source_path: source_path.clone(),
                         host_path: host_path.clone(),
                         lines: observation.lines.clone(),
@@ -372,7 +369,7 @@ async fn capture_logs<R, F>(
                 }
                 file.write_all(&bytes[..count]).await?;
                 file.flush().await?;
-                lines.push(&bytes[..count], SystemTime::now());
+                lines.push(&bytes[..count]);
                 followed += count;
             }
         };
@@ -395,7 +392,7 @@ async fn capture_logs<R, F>(
             skip -= skipped;
             file.write_all(&bytes[skipped..count]).await?;
             file.flush().await?;
-            lines.push(&bytes[skipped..count], SystemTime::now());
+            lines.push(&bytes[skipped..count]);
         }
         if skip != 0 {
             return Err(generic_error!(
@@ -452,7 +449,7 @@ fn file_chunks(node: Node, path: String) -> impl futures::Stream<Item = Result<O
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::VecDeque, io, task::Poll};
+    use std::{collections::VecDeque, io, task::Poll, time::SystemTime};
 
     use futures::TryStreamExt as _;
     use serde_json::{json, Value};
@@ -750,7 +747,7 @@ mod tests {
                     std::future::ready(Ok(reader))
                 },
                 self.dir.path().join("containers/main.log"),
-                LineBuffer::new(self.lines.clone(), "p".into(), Some("main"), OutputStream::Merged),
+                LineBuffer::new(self.lines.clone(), Some("main")),
                 self.exit.clone(),
                 self.capture_tx.clone(),
             )
@@ -759,7 +756,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn merged_logs_keep_tags_and_final_bytes_without_overwriting_process_files() {
+    async fn merged_logs_keep_process_identity_and_final_bytes_without_overwriting_process_files() {
         let logs = Logs::new(1024);
         let other = logs.dir.path().join("main.log");
         tokio::fs::write(&other, b"process output").await.unwrap();
@@ -773,9 +770,7 @@ mod tests {
             lines.iter().map(|line| line.text.as_str()).collect::<Vec<_>>(),
             ["one", "two", "last"]
         );
-        assert!(lines.iter().all(|line| &*line.participant == "p"
-            && line.process == Some("main")
-            && line.stream == OutputStream::Merged));
+        assert!(lines.iter().all(|line| line.process == Some("main")));
         let (_, exit) = watch::channel(ParticipantExit::Ended);
         let mut observation = ParticipantObservation::merged(exit, logs.capture.clone(), path.clone());
         observation.processes.insert("main", logs.exit.clone());
@@ -836,7 +831,7 @@ mod tests {
                     })
                 },
                 logs.dir.path().join("containers/main.log"),
-                LineBuffer::new(logs.lines.clone(), "p".into(), None, OutputStream::Merged),
+                LineBuffer::new(logs.lines.clone(), None),
                 logs.exit.clone(),
                 logs.capture_tx.clone(),
             )
@@ -881,7 +876,7 @@ mod tests {
                     })
                 },
                 logs.dir.path().join("containers/main.log"),
-                LineBuffer::new(logs.lines.clone(), "p".into(), None, OutputStream::Merged),
+                LineBuffer::new(logs.lines.clone(), None),
                 logs.exit.clone(),
                 logs.capture_tx.clone(),
             )
@@ -945,7 +940,7 @@ mod tests {
                     std::future::ready(Ok(reader))
                 },
                 logs.dir.path().join("containers/main.log"),
-                LineBuffer::new(logs.lines.clone(), "p".into(), None, OutputStream::Merged),
+                LineBuffer::new(logs.lines.clone(), None),
                 logs.exit.clone(),
                 logs.capture_tx.clone(),
             )
@@ -967,7 +962,7 @@ mod tests {
         capture_logs(
             |_| std::future::ready(Ok(futures::io::Cursor::new(b"partial\n".to_vec()))),
             logs.dir.path().join("containers/main.log"),
-            LineBuffer::new(logs.lines.clone(), "p".into(), None, OutputStream::Merged),
+            LineBuffer::new(logs.lines.clone(), None),
             logs.exit.clone(),
             logs.capture_tx.clone(),
         )

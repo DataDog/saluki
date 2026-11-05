@@ -29,6 +29,8 @@ mod list_command;
 #[cfg(test)]
 mod case_loader_tests;
 #[cfg(test)]
+mod ci_shape_tests;
+#[cfg(test)]
 mod crate_dependencies_tests;
 #[cfg(test)]
 mod source_boundary_tests;

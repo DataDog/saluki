@@ -13,7 +13,7 @@ use crate::{
     backend::LateFact,
     case::{
         template::{Reference, Template},
-        EndpointOverride, FileSource, ParticipantConfig,
+        FileSource, ParticipantConfig,
     },
     endpoint::{ConsumedEndpoint, Endpoint, Evidence, RunnerHostRoute},
     handle::{http_get_from_runner_host, ExecCommand, ExecOutput, HandleError, HttpResponse, Primitives},
@@ -49,7 +49,7 @@ pub struct CaseValues {
     /// Type-specific parameters; overlay values replace whole base values by key. Defaults to empty.
     pub params: BTreeMap<String, serde_json::Value>,
     /// Base endpoint overrides, shared by every OS. Defaults to empty.
-    pub endpoints: BTreeMap<String, EndpointOverride>,
+    pub endpoints: BTreeMap<String, u16>,
 }
 
 impl CaseValues {
@@ -60,7 +60,11 @@ impl CaseValues {
             files: config.files.clone(),
             file_contents: BTreeMap::new(),
             params: config.params.clone(),
-            endpoints: config.endpoints.clone(),
+            endpoints: config
+                .endpoints
+                .iter()
+                .map(|(name, endpoint)| (name.clone(), endpoint.port))
+                .collect(),
         };
         if let Some(overlay) = config.os.get(&os) {
             values.env.extend(overlay.env.clone());
@@ -93,7 +97,7 @@ pub struct EffectiveConfig {
     /// Case parameters after the OS overlay, interpreted by the participant type. Defaults to empty.
     pub params: BTreeMap<String, serde_json::Value>,
     /// Case-supplied ports for listeners whose port the type cannot derive. Defaults to empty.
-    pub endpoints: BTreeMap<String, EndpointOverride>,
+    pub endpoints: BTreeMap<String, u16>,
 }
 
 impl EffectiveConfig {
@@ -1042,7 +1046,7 @@ os:
                     files: config.files.clone(),
                     file_contents: BTreeMap::new(),
                     params: config.params.clone(),
-                    endpoints: config.endpoints.clone(),
+                    endpoints: BTreeMap::from([("api".into(), 80), ("extra".into(), 90)]),
                 }
             );
         }
@@ -1051,10 +1055,7 @@ os:
     #[test]
     fn case_values_carry_the_base_endpoint_overrides_on_every_os() {
         let config: ParticipantConfig = serde_saphyr::from_str(CONFIG).unwrap();
-        let expected = BTreeMap::from([
-            ("api".into(), EndpointOverride { port: 80 }),
-            ("extra".into(), EndpointOverride { port: 90 }),
-        ]);
+        let expected = BTreeMap::from([("api".into(), 80), ("extra".into(), 90)]);
         for os in [Os::Linux, Os::MacOs, Os::Windows] {
             assert_eq!(CaseValues::for_os(&config, os).endpoints, expected);
         }

@@ -422,8 +422,7 @@ mod tests {
         let yaml = concat!("timeout: 1s\nsubject_os: [linux]\nparticipants:\n  subject: {type: observer, subject: true, config: {env: {PORT: '{{ self.facts.port }}', OWN: '{{self.late.ip}}/{{  subject.late.ip  }}'}, params: {mode: [{nested: ['{{z-other.facts.file}}', false, 7]}]}}}\n  z-other: {type: server}\n", minimal_procedure!(), "\n");
         let case = loader
             .load_content("cases", yaml, "alpha", Path::new("alpha/config.yaml"))
-            .unwrap()
-            .remove(0);
+            .unwrap();
         let plan = Planner::with_run(registries, "testrun0")
             .compile(case, Os::Linux)
             .unwrap()

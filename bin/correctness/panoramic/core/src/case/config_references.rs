@@ -278,12 +278,11 @@ mod tests {
                 values.clone(),
                 format!("{{os: {{linux: {values}, macos: {values}, windows: {values}}}}}"),
             ] {
-                let cases = LOADER
+                let case = LOADER
                     .load_content("cases", &case(&config), "alpha", Path::new("alpha/config.yaml"))
                     .unwrap();
-                assert_eq!(cases.len(), 1);
-                assert_eq!(cases[0].name(), "alpha");
-                let file = cases[0].file();
+                assert_eq!(case.name(), "alpha");
+                let file = case.file();
                 let config = &file.participants["subject"].config;
                 let expected_env = std::collections::BTreeMap::from([("KEY".into(), format!("prefix/{reference}"))]);
                 let expected_params = std::collections::BTreeMap::from([(

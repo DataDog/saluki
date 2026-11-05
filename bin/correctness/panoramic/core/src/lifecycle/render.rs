@@ -188,8 +188,7 @@ mod tests {
         };
         let case = CaseLoader::new(registries)
             .load_content("cases", yaml, "alpha", source)
-            .map_err(|error| error.to_string())?
-            .remove(0);
+            .map_err(|error| error.to_string())?;
         Planner::with_run(registries, "testrun0")
             .compile(case, Os::Linux)
             .map_err(|error| error.to_string())
@@ -214,8 +213,7 @@ mod tests {
             let yaml = format!("timeout: 1s\nsubject_os: [{}]\nparticipants:\n  subject: {{type: server, subject: true, realization: {{kind: {kind}}}}}\n{}", os.name(), minimal_procedure!());
             let case = CaseLoader::new(registries)
                 .load_content("cases", &yaml, "case", Path::new("cases/case/config.yaml"))
-                .unwrap()
-                .remove(0);
+                .unwrap();
             let plan = Planner::with_run(registries, "testrun0")
                 .compile(case, os)
                 .unwrap()

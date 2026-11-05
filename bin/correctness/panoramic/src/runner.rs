@@ -665,8 +665,7 @@ procedure: [{step: file_contains, on: pod, path: /ready, pattern: ready, timeout
                 "native-pod",
                 Path::new("/cases/native-pod/config.yaml"),
             )
-            .unwrap()
-            .remove(0);
+            .unwrap();
         let manifest = ArtifactManifest::new(
             "test",
             BTreeMap::from([
@@ -718,8 +717,7 @@ procedure: [{step: file_contains, on: pod, path: /ready, pattern: ready, timeout
                 "native",
                 &logs.path().join("cases/native/config.yaml"),
             )
-            .unwrap()
-            .remove(0);
+            .unwrap();
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(3).unwrap();
         let courier = backend::artifacts(RealizationKind::LinuxContainer)
             .iter()
@@ -914,8 +912,7 @@ procedure: [{step: file_contains, on: pod, path: /ready, pattern: ready, timeout
                     &self.name,
                     &PathBuf::from("/cases").join(&self.name).join("config.yaml"),
                 )
-                .expect("the scripted case should load")
-                .remove(0);
+                .expect("the scripted case should load");
             plan_for_linux(case)
         }
     }
@@ -1324,8 +1321,7 @@ mod tests {
                     "pod",
                     Path::new("/cases/pod/config.yaml"),
                 )
-                .unwrap()
-                .remove(0);
+                .unwrap();
         panoramic_core::plan::Planner::new(registries, Default::default())
             .unwrap()
             .compile(pod_case, Os::Linux)
@@ -1598,8 +1594,7 @@ mod tests {
                 "reported",
                 Path::new("/test/correctness/cases/reported/config.yaml"),
             )
-            .unwrap()
-            .remove(0);
+            .unwrap();
         let plan = plan_for_linux(case);
         let test = ScriptedTest::new("body", Behavior::Pass);
         let log_base_dir = tempfile::tempdir().expect("temp dir should be creatable");
@@ -1655,8 +1650,7 @@ mod tests {
                 "reported",
                 Path::new("/cases/reported/config.yaml"),
             )
-            .unwrap()
-            .remove(0);
+            .unwrap();
         let plan = plan_for_linux(case);
         let test = ScriptedTest::new("body", Behavior::WaitForCancel { finish_on_cancel: true });
         assert_eq!(test.timeout, Duration::from_secs(60));

@@ -250,7 +250,11 @@ impl Evidence {
     }
 
     /// Waits for a file to exist at the given path.
-    pub fn file_exists(path: impl Into<String>) -> Self {
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "Only core readiness tests construct file evidence.")
+    )]
+    pub(crate) fn file_exists(path: impl Into<String>) -> Self {
         Self {
             check: Check::FileExists { path: path.into() },
             within: DEFAULT_READINESS_BOUND,

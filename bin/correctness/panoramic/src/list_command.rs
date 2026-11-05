@@ -501,8 +501,7 @@ mod tests {
         );
         let case = crate::CASE_LOADER
             .load_content("cases", &yaml, "participant", std::path::Path::new("config.yaml"))
-            .unwrap()
-            .remove(0);
+            .unwrap();
         let manifest = ArtifactManifest::parse(
             "schema = 1\n[roles]\nfixup-image = 'registry.example/alpine:3'",
             std::path::Path::new("artifacts.toml"),
@@ -638,11 +637,8 @@ mod tests {
             "participant",
             &PARTICIPANT_FIELDS.replace("1s", "9s").replace("[linux]", "[windows]"),
         );
-        let cases = crate::CASE_LOADER.load_file(&path).unwrap();
-        let plans = cases
-            .into_iter()
-            .map(|case| planner().compile(case, Os::Windows).unwrap().into_plan().unwrap())
-            .collect::<Vec<_>>();
+        let case = crate::CASE_LOADER.load_file(&path).unwrap();
+        let plans = [planner().compile(case, Os::Windows).unwrap().into_plan().unwrap()];
         let entries = listing(&plans, &[], Os::Windows);
         assert_eq!(entries.len(), 1);
         let entry = &entries["participant"];

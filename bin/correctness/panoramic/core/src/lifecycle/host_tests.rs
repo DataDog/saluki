@@ -120,8 +120,7 @@ fn plan(participants: serde_json::Value, procedure: serde_json::Value, run: &str
     let yaml = json!({"timeout": "30s", "subject_os": [Os::host().name()], "participants": participants, "procedure": procedure}).to_string();
     let case = CaseLoader::new(REGISTRIES)
         .load_content("cases", &yaml, "case", Path::new("/cases/host/config.yaml"))
-        .unwrap()
-        .remove(0);
+        .unwrap();
     Planner::with_run(REGISTRIES, run)
         .compile(case, Os::host())
         .unwrap()

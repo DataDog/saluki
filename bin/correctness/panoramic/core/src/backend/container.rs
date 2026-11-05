@@ -90,14 +90,13 @@ impl ContainerObserver {
                         paths: vec![stdout.clone(), stderr.clone()],
                     }
                 }
-                OutputChannel::File { file, stream } => {
+                OutputChannel::File { file, .. } => {
                     let path = format!("{}{file}", self.log_dir);
                     let filename = host_output_file(spec.name, spec.output).expect("file output has a host file name");
                     let host_path = output_dir.join(filename);
                     let output = FileOutput {
                         participant: self.name.clone().into(),
                         process: spec.name,
-                        stream,
                         source_path: path.clone(),
                         host_path: host_path.clone(),
                         lines: observation.lines.clone(),
@@ -132,7 +131,6 @@ impl ContainerObserver {
                     stderr.clone(),
                     capture_tx,
                     observation.lines.clone(),
-                    self.name.clone().into(),
                     container_output,
                 ));
             }

@@ -63,9 +63,6 @@ pub(crate) fn discover_in_scope(
 }
 
 #[cfg(test)]
-mod coverage_inventory;
-
-#[cfg(test)]
 pub(crate) mod tests {
     use panoramic_core::{
         artifact::ArtifactRole,
@@ -126,44 +123,9 @@ pub(crate) mod tests {
         "\n"
     );
 
-    pub(crate) const LOGGING_PARTICIPANT: &str = r#"description: Portable logging assertions
-timeout: 120s
-subject_os: [linux, macos, windows]
-participants:
-  adp:
-    type: agent-adp
-    subject: true
-    config:
-      env:
-        DD_API_KEY: "0000"
-        DD_LOG_FILE: /tmp/core.log
-procedure:
-  - step: log_contains
-    on: adp
-    pattern: Initial configuration received.
-    timeout: 30s
-  - parallel:
-      - step: log_not_contains
-        on: adp
-        pattern: panic|PANIC
-        regex: true
-        during: 10s
-      - step: file_contains
-        on: adp
-        path: /tmp/core.log
-        pattern: CORE
-        timeout: 20s
-  - step: file_contains
-    on: adp
-    path: 'C:\adp\adp.log'
-    pattern: DATAPLANE.*ready
-    regex: true
-    timeout: 60s
-"#;
-
     /// Creates a test planner with the binary's registries and local artifact defaults.
     pub(crate) fn planner() -> Planner<'static> {
-        Planner::with_run(crate::REGISTRIES, "inventry")
+        Planner::new(crate::REGISTRIES, ArtifactManifest::default()).unwrap()
     }
 
     /// Loads and compiles one case for tests.
@@ -175,8 +137,7 @@ procedure:
                 "case",
                 Path::new("/test/integration/cases/case/config.yaml"),
             )
-            .unwrap()
-            .remove(0);
+            .unwrap();
         planner().compile(case, os).unwrap().into_plan().unwrap()
     }
 
@@ -213,8 +174,7 @@ procedure:
         let source = format!("/test/integration/cases/{name}/config.yaml");
         let case = CaseLoader::new(registries)
             .load_content("integration", yaml, name, Path::new(&source))
-            .unwrap()
-            .remove(0);
+            .unwrap();
         Planner::new(registries, ArtifactManifest::default())
             .unwrap()
             .compile(case, os)
@@ -519,7 +479,7 @@ procedure:
         ] {
             let yaml = yaml.replace("[linux]", "[windows]");
             let path = write_case(dir.path(), name, &yaml);
-            let case = crate::CASE_LOADER.load_file(&path).unwrap().remove(0);
+            let case = crate::CASE_LOADER.load_file(&path).unwrap();
             plans.push(planner().compile(case, Os::Windows).unwrap().into_plan().unwrap());
         }
         assert_eq!(
@@ -608,7 +568,7 @@ procedure:
     fn case_directory_is_the_canonical_source_parent() {
         let root = tempfile::tempdir().unwrap();
         let path = write_case(root.path(), "relative", PARTICIPANT_FIELDS);
-        let case = crate::CASE_LOADER.load_file(&path).unwrap().remove(0);
+        let case = crate::CASE_LOADER.load_file(&path).unwrap();
         assert_eq!(case_dir(&case), path.parent().unwrap().canonicalize().unwrap());
     }
 

@@ -1,6 +1,6 @@
 //! Loads case files through `CASE_LOADER` with the participant types and steps the binary registers.
 
-use std::{fs, path::Path};
+use std::{collections::BTreeSet, fs, path::Path};
 
 use panoramic_core::case::ProcedureNode;
 use panoramic_core::endpoint::{test_support::assert_socket_endpoint, EndpointKind, Evidence};
@@ -45,6 +45,58 @@ fn tracked_test_files_are_not_symlinks() {
         "test files must not be symlinks: {}",
         links.join(", ")
     );
+}
+
+#[test]
+fn every_checked_in_case_file_is_discovered() {
+    // Discovery reads only direct subdirectories; nested cases must not silently drop out of runs.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../test")
+        .canonicalize()
+        .unwrap();
+    let roots = ["integration/cases", "correctness/cases", "correctness/disabled"].map(|path| root.join(path));
+    let mut files = BTreeSet::new();
+    for root in &roots {
+        let mut directories = vec![root.clone()];
+        while let Some(directory) = directories.pop() {
+            for entry in fs::read_dir(&directory).unwrap() {
+                let entry = entry.unwrap();
+                let path = entry.path();
+                if entry.file_type().unwrap().is_dir() {
+                    if directory == *root {
+                        assert!(
+                            path.join("config.yaml").is_file(),
+                            "{}: missing config.yaml",
+                            path.display()
+                        );
+                    }
+                    directories.push(path);
+                } else if entry.file_name() == "config.yaml" || entry.file_name() == "config.yml" {
+                    assert!(
+                        entry.file_name() == "config.yaml"
+                            && path.parent().and_then(Path::parent) == Some(root.as_path()),
+                        "{}: expected <case>/config.yaml under {}",
+                        path.display(),
+                        root.display()
+                    );
+                    files.insert(path.canonicalize().unwrap());
+                }
+            }
+        }
+    }
+    let cases = crate::CASE_LOADER.discover_cases(&roots).unwrap();
+    assert_eq!(
+        files,
+        cases
+            .iter()
+            .map(|case| case.source().to_path_buf())
+            .collect::<BTreeSet<_>>()
+    );
+    for case in cases {
+        // Compilation validates every declared subject OS, not just the selected one.
+        let os = *case.subject_os().first().unwrap();
+        planner().compile(case, os).unwrap().into_plan().unwrap();
+    }
 }
 
 #[test]
@@ -101,8 +153,7 @@ fn pod_host_view_requires_host_pid_at_plan_compile_for_both_agent_types() {
             let yaml = format!("timeout: 1s\nsubject_os: [linux]\nparticipants:\n  target:\n    type: {participant_type}\n    subject: true\n    realization: {{kind: kubernetes-pod, options: {options}}}\n    config: {{params: {{host_view: {host_view}}}}}\nprocedure: [{{step: wait, duration: 1ms}}]\n");
             let case = crate::CASE_LOADER
                 .load_content("integration", &yaml, "host-view", Path::new("host-view/config.yaml"))
-                .unwrap()
-                .remove(0);
+                .unwrap();
             let result = planner().compile(case, Os::Linux);
             if valid {
                 result.unwrap();
@@ -127,8 +178,8 @@ fn default_log_file_references_plan_on_linux_and_windows_but_not_macos() {
     let yaml = PARTICIPANT_FIELDS.replace(minimal_procedure!(), "procedure: [{step: file_contains, on: adp, path: '{{ adp.facts.default_log_file }}', pattern: ready, timeout: 1s}]");
     for oses in ["linux", "windows", "linux, windows"] {
         let path = write_case(dir.path(), "alpha", &yaml.replace("[linux]", &format!("[{oses}]")));
-        let cases = crate::CASE_LOADER.load_file(&path).unwrap();
-        let os = *cases[0].subject_os().first().unwrap();
+        let case = crate::CASE_LOADER.load_file(&path).unwrap();
+        let os = *case.subject_os().first().unwrap();
         let plans = discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], os)
             .unwrap()
             .plans;
@@ -146,7 +197,7 @@ fn default_log_file_references_plan_on_linux_and_windows_but_not_macos() {
         );
     }
     let path = write_case(dir.path(), "alpha", &yaml.replace("[linux]", "[linux, macos, windows]"));
-    assert_eq!(crate::CASE_LOADER.load_file(&path).unwrap().len(), 1);
+    assert_eq!(crate::CASE_LOADER.load_file(&path).unwrap().name(), "alpha");
     let message = discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], Os::Linux)
         .err()
         .expect("macOS has no declared default log file")
@@ -165,7 +216,7 @@ fn agent_adp_cases_cannot_reference_pod_uid() {
         "procedure: [{step: file_contains, on: adp, path: '{{ adp.late.pod_uid }}', pattern: ready, timeout: 1s}]",
     );
     let path = write_case(dir.path(), "alpha", &yaml);
-    assert_eq!(crate::CASE_LOADER.load_file(&path).unwrap().len(), 1);
+    assert_eq!(crate::CASE_LOADER.load_file(&path).unwrap().name(), "alpha");
     let message = discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], Os::Linux)
         .err()
         .unwrap()
@@ -199,9 +250,8 @@ fn agent_adp_log_steps_may_name_the_adp_and_agent_processes_only() {
                     )
                 );
             } else {
-                let cases = crate::CASE_LOADER.load_file(&path).unwrap();
-                assert_eq!(cases.len(), 1);
-                let procedure = cases[0].procedure();
+                let case = crate::CASE_LOADER.load_file(&path).unwrap();
+                let procedure = case.procedure();
                 let [ProcedureNode::Step(step)] = procedure else {
                     panic!("expected one built step");
                 };
@@ -218,13 +268,12 @@ fn agent_adp_participants_accept_environment_overlays_and_only_declared_file_nam
         "subject: true",
         "subject: true, config: {env: {ANY_KEY: arbitrary}, os: {linux: {env: {ANY_KEY: linux}}}}",
     );
-    let path = write_case(dir.path(), "alpha", &yaml);
-    let cases = crate::CASE_LOADER.load_file(&path).unwrap();
-    assert_eq!(cases.len(), 1);
-    let file = cases[0].file();
-    let config = &file.participants["adp"].config;
-    assert_eq!(config.env["ANY_KEY"], "arbitrary");
-    assert_eq!(config.os[&Os::Linux].env["ANY_KEY"], "linux");
+    let path = write_case(dir.path(), "alpha", &yaml.replace("[linux]", "[linux, windows]"));
+    for (os, expected) in [(Os::Linux, "linux"), (Os::Windows, "arbitrary")] {
+        let case = crate::CASE_LOADER.load_file(&path).unwrap();
+        let plan = planner().compile(case, os).unwrap().into_plan().unwrap();
+        assert_eq!(plan.effective_config("adp").unwrap().env["ANY_KEY"], expected);
+    }
 
     for (fields, expected) in [
         (
@@ -286,7 +335,7 @@ fn agent_adp_rejects_overriding_derived_ports_and_undeclared_connections() {
             .replace("participants:", "participants:\n  other: {type: agent-adp}")
             .replace("subject: true", &format!("subject: true, {fields}"));
         let path = write_case(dir.path(), "alpha", &yaml);
-        assert_eq!(crate::CASE_LOADER.load_file(&path).unwrap().len(), 1);
+        assert_eq!(crate::CASE_LOADER.load_file(&path).unwrap().name(), "alpha");
         for os in [Os::Linux, Os::MacOs, Os::Windows] {
             let message = discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], os)
                 .err()
@@ -332,8 +381,7 @@ fn intake_cases_plan_with_subject_realizations_urls_and_artifact_roles_on_every_
         ] {
             let case = crate::CASE_LOADER
                 .load_file(&cases_dir.join(name).join("config.yaml"))
-                .unwrap()
-                .remove(0);
+                .unwrap();
             assert_eq!(
                 case.subject_os().iter().copied().collect::<Vec<_>>(),
                 [Os::Linux, Os::MacOs, Os::Windows],
@@ -399,8 +447,7 @@ fn environment_only_cases_plan_natively_with_their_exit_and_api_needs_on_every_o
         ] {
             let case = crate::CASE_LOADER
                 .load_file(&cases_dir.join(name).join("config.yaml"))
-                .unwrap()
-                .remove(0);
+                .unwrap();
             assert_eq!(
                 case.subject_os().iter().copied().collect::<Vec<_>>(),
                 [Os::Linux, Os::MacOs, Os::Windows],
@@ -524,8 +571,8 @@ fn registered_template_fields_match_step_types_and_other_fields_reject_reference
                     format!("case 'alpha' in config.yaml: step 1 '{}': {message}", factory.name())
                 );
             } else if declared {
-                let cases = result.unwrap_or_else(|error| panic!("{}: {field}: {error}", factory.name()));
-                let procedure = cases[0].procedure();
+                let case = result.unwrap_or_else(|error| panic!("{}: {field}: {error}", factory.name()));
+                let procedure = case.procedure();
                 let [ProcedureNode::Step(step)] = procedure else {
                     panic!("expected one built step");
                 };
@@ -704,8 +751,7 @@ fn agent_adp_default_log_file_in_env_plans_on_linux_and_windows_but_not_macos() 
     ] {
         let case = crate::CASE_LOADER
             .load_content("cases", &yaml, "alpha", Path::new("alpha/config.yaml"))
-            .unwrap()
-            .remove(0);
+            .unwrap();
         let plan = planner().compile(case, os).unwrap().into_plan().unwrap();
         assert_eq!(plan.effective_config("adp").unwrap().env["FILE"], expected);
     }
@@ -716,8 +762,7 @@ fn agent_adp_default_log_file_in_env_plans_on_linux_and_windows_but_not_macos() 
             "alpha",
             Path::new("alpha/config.yaml"),
         )
-        .unwrap()
-        .remove(0);
+        .unwrap();
     assert_eq!(planner().compile(case, Os::Linux).err().unwrap().to_string(),
         "case 'alpha' in alpha/config.yaml: on subject OS 'macos', participant 'adp' of type 'agent-adp' as host-process-group on macos environment variable 'FILE' '{{ self.facts.default_log_file }}' references fact 'default_log_file' of participant 'adp', which type 'agent-adp' does not provide as host-process-group on macos; it provides it as linux-container on linux, windows-container on windows");
 }
@@ -739,10 +784,8 @@ fn agent_adp_accepts_and_canonicalizes_its_own_ip_in_container_env() {
                 );
             let case = crate::CASE_LOADER
                 .load_content("cases", &yaml, "alpha", Path::new("alpha/config.yaml"))
-                .unwrap()
-                .remove(0);
+                .unwrap();
             let plan = planner().compile(case, os).unwrap().into_plan().unwrap();
-            assert_eq!(plan.case_values("adp").unwrap().env["IP"], "{{ self.late.ip }}");
             assert_eq!(plan.effective_config("adp").unwrap().env["IP"], "{{ self.late.ip }}");
         }
     }
@@ -762,8 +805,7 @@ fn agent_adp_rejects_every_spelling_of_its_own_ip_in_an_adp_override() {
         );
         let case = crate::CASE_LOADER
             .load_content("cases", &yaml, "alpha", Path::new("alpha/config.yaml"))
-            .unwrap()
-            .remove(0);
+            .unwrap();
         let error = planner().compile(case, Os::Linux).err().unwrap().to_string();
         assert!(
             error.contains("ADP_DD_BIND_HOST cannot reference its own ip"),
@@ -775,24 +817,12 @@ fn agent_adp_rejects_every_spelling_of_its_own_ip_in_an_adp_override() {
 
 #[test]
 fn forwarding_case_frames_and_telemetry_match_their_wire_contracts() {
-    let case = crate::CASE_LOADER
-        .load_content(
-            "cases",
-            include_str!("../../../../test/integration/cases/dogstatsd-forwarding/config.yaml"),
-            "dogstatsd-forwarding",
-            Path::new("test/integration/cases/dogstatsd-forwarding/config.yaml"),
-        )
-        .unwrap()
-        .remove(0);
-    let file = case.file();
-    let steps: Vec<_> = file
-        .procedure
-        .iter()
-        .filter_map(|node| match node {
-            ProcedureNode::Step(step) => Some(step),
-            ProcedureNode::Parallel(_) => None,
-        })
-        .collect();
+    let source =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../test/integration/cases/dogstatsd-forwarding/config.yaml");
+    let case = crate::CASE_LOADER.load_file(&source).unwrap();
+    planner().compile(case, Os::Linux).unwrap().into_plan().unwrap();
+    let document: Value = serde_saphyr::from_str(&fs::read_to_string(source).unwrap()).unwrap();
+    let steps = document["procedure"].as_array().unwrap();
     for (endpoint, body) in [
         (
             "dogstatsd_tcp",
@@ -802,9 +832,9 @@ fn forwarding_case_frames_and_telemetry_match_their_wire_contracts() {
     ] {
         let step = steps
             .iter()
-            .find(|step| step.name == "send" && step.fields["endpoint"] == endpoint)
+            .find(|step| step["step"] == "send" && step["endpoint"] == endpoint)
             .unwrap();
-        let payload = step.fields["payload"].as_str().unwrap().as_bytes();
+        let payload = step["payload"].as_str().unwrap().as_bytes();
         assert_eq!(&payload[4..], body.as_bytes());
         assert_eq!(
             u32::from_le_bytes(payload[..4].try_into().unwrap()) as usize,
@@ -812,12 +842,12 @@ fn forwarding_case_frames_and_telemetry_match_their_wire_contracts() {
         );
     }
 
-    let telemetry = steps.iter().find(|step| step.name == "http_check").unwrap();
-    assert_eq!(telemetry.fields["endpoint"], "api");
-    assert_eq!(telemetry.fields["path"], "/metrics");
-    assert_eq!(telemetry.fields["status"], serde_json::json!({"equal": 200}));
-    assert_eq!(telemetry.fields["regex"], true);
-    let pattern = regex::Regex::new(telemetry.fields["pattern"].as_str().unwrap()).unwrap();
+    let telemetry = steps.iter().find(|step| step["step"] == "http_check").unwrap();
+    assert_eq!(telemetry["endpoint"], "api");
+    assert_eq!(telemetry["path"], "/metrics");
+    assert_eq!(telemetry["status"], serde_json::json!({"equal": 200}));
+    assert_eq!(telemetry["regex"], true);
+    let pattern = regex::Regex::new(telemetry["pattern"].as_str().unwrap()).unwrap();
     // ADP's /metrics response prefixes the received-event counter with `adp__`.
     let observed = r#"adp__component_events_received_total{component_id="dsd_in",component_type="source",listener_type="udp",message_type="metrics"} 200"#;
     assert!(pattern.is_match(observed));
@@ -846,10 +876,9 @@ fn dogstatsd_top_tls_and_dns_cases_place_their_case_files_under_the_definitions_
     for name in ["adp-ipc-no-dns", "otlp-tls", "dogstatsd-top"] {
         let case = crate::CASE_LOADER
             .load_file(&cases_dir.join(name).join("config.yaml"))
-            .unwrap()
-            .remove(0);
+            .unwrap();
         let plan = planner().compile(case, Os::Linux).unwrap().into_plan().unwrap();
-        assert!(plan.case().file().participants.contains_key("adp"));
+        assert!(plan.layout().iter().any(|(name, _)| name == "adp"));
         assert_eq!(plan.fact("adp", "files_dir"), Some("/var/lib/panoramic/files"));
         if name == "otlp-tls" {
             let env = &plan.effective_config("adp").unwrap().env;
@@ -870,7 +899,7 @@ fn dogstatsd_top_tls_and_dns_cases_place_their_case_files_under_the_definitions_
 fn liveness_case_creates_adp_before_its_fixture_and_starts_the_fixture_before_adp() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../../test/integration/cases/liveness-container-tags/config.yaml");
-    let case = crate::CASE_LOADER.load_file(&path).unwrap().remove(0);
+    let case = crate::CASE_LOADER.load_file(&path).unwrap();
     let plan = planner().compile(case, Os::Linux).unwrap().into_plan().unwrap();
     assert_eq!(
         plan.create_order(),
@@ -919,14 +948,14 @@ fn realization_options_are_checked_against_the_backend() {
             "subject: true",
             &format!("subject: true, realization: {{kind: {kind}, options: {options}}}"),
         );
-        let loaded = crate::CASE_LOADER.load_content("cases", &yaml, "alpha", Path::new("config.yaml"));
+        let case = crate::CASE_LOADER.load_content("cases", &yaml, "alpha", Path::new("config.yaml"));
         if let Some(option) = error {
-            let message = loaded.err().expect("invalid option must fail at load").to_string();
+            let message = case.err().expect("invalid option must fail at load").to_string();
             assert!(message.contains("participant 'adp'"), "{message}");
             assert!(message.contains(kind), "{message}");
             assert!(message.contains(option), "{message}");
         } else {
-            assert_eq!(loaded.unwrap().len(), 1);
+            assert_eq!(case.unwrap().name(), "alpha");
         }
     }
 }
@@ -941,18 +970,24 @@ fn uds_comparisons_share_one_paired_sender_and_preserve_their_configured_workloa
     for (name, origin) in [("dsd-plain", false), ("dsd-origin-detection", true)] {
         let case = crate::CASE_LOADER
             .load_file(&root.join(name).join("config.yaml"))
-            .unwrap()
-            .remove(0);
+            .unwrap();
         let plan = planner().compile(case, Os::Linux).unwrap().into_plan().unwrap();
         assert_eq!(plan.case().suite(), "correctness");
-        let file = plan.case().file();
         let procedure = plan.case().procedure();
+        let entries = plan.layout_entries();
         assert_eq!(
-            file.participants.keys().map(String::as_str).collect::<Vec<_>>(),
-            ["adp", "agent", "intake-adp", "intake-agent", "load"]
+            entries
+                .iter()
+                .map(|entry| (entry.participant.as_str(), entry.participant_type.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("adp", "agent-adp"),
+                ("agent", "agent"),
+                ("intake-adp", "datadog-intake"),
+                ("intake-agent", "datadog-intake"),
+                ("load", "millstone")
+            ]
         );
-        assert_eq!(file.participants["load"].participant_type, "millstone");
-        assert_eq!(file.participants["agent"].participant_type, "agent");
         for participant in ["adp", "agent"] {
             let config = plan.effective_config(participant).unwrap();
             let settings: Value = serde_saphyr::from_str(
@@ -1017,4 +1052,104 @@ fn wait_is_rejected_in_parallel() {
         error.to_string(),
         "case 'case' in cases/case/config.yaml: step 1.1 'wait' is an action; parallel blocks accept only assertions"
     );
+}
+
+#[test]
+fn the_listener_failure_cases_run_natively_on_linux_and_macos() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../test/integration/cases");
+    for name in [
+        "dogstatsd-no-listener-continues",
+        "dogstatsd-require-listener-exit",
+        "dogstatsd-skip-failed-listener",
+    ] {
+        for os in [Os::Linux, Os::MacOs] {
+            let case = crate::CASE_LOADER
+                .load_file(&root.join(name).join("config.yaml"))
+                .unwrap();
+            assert_eq!(
+                case.subject_os().iter().copied().collect::<Vec<_>>(),
+                [Os::Linux, Os::MacOs]
+            );
+            let plan = planner().compile(case, os).unwrap().into_plan().unwrap();
+            assert_eq!(plan.case().name(), name);
+        }
+    }
+}
+
+#[test]
+fn correctness_cases_compare_the_subject_and_baseline_receiving_their_own_load() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../test/correctness");
+    let cases = crate::CASE_LOADER
+        .discover_cases(&[root.join("cases"), root.join("disabled")])
+        .unwrap();
+    assert!(!cases.is_empty());
+    let mut planner = planner();
+    for case in cases {
+        let name = case.name();
+        let document: Value = serde_saphyr::from_str(&fs::read_to_string(case.source()).unwrap()).unwrap();
+        let comparisons: Vec<_> = document["procedure"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|node| {
+                node.get("parallel")
+                    .map_or(std::slice::from_ref(node), |steps| steps.as_array().unwrap().as_slice())
+            })
+            .filter(|step| step["step"] == "compare")
+            .collect();
+        assert_eq!(comparisons.len(), 1, "{name}: exactly one compare step");
+        let comparison = comparisons[0];
+        let subject_intake = comparison["subject"].as_str().unwrap();
+        let baseline_intake = comparison["baseline"].as_str().unwrap();
+        assert_ne!(subject_intake, baseline_intake, "{name}: distinct intakes");
+        let participants = document["participants"].as_object().unwrap();
+        let intakes: std::collections::BTreeSet<_> = participants
+            .iter()
+            .filter(|(_, entry)| entry["type"] == "datadog-intake")
+            .map(|(name, _)| name.as_str())
+            .collect();
+        assert_eq!(
+            intakes,
+            std::collections::BTreeSet::from([subject_intake, baseline_intake]),
+            "{name}: compare both intakes"
+        );
+        let subjects: Vec<_> = participants
+            .iter()
+            .filter(|(_, entry)| entry["subject"] == true)
+            .collect();
+        assert_eq!(subjects.len(), 1, "{name}: exactly one subject");
+        let (subject_name, subject) = subjects[0];
+        assert_eq!(subject["type"], "agent-adp", "{name}: subject type");
+        assert_eq!(
+            subject["connect"]["intake"],
+            format!("{subject_intake}.api"),
+            "{name}: subject intake"
+        );
+        let agents: Vec<_> = participants
+            .iter()
+            .filter(|(_, entry)| entry["type"] == "agent")
+            .collect();
+        assert_eq!(agents.len(), 1, "{name}: exactly one baseline Agent");
+        let (agent_name, agent) = agents[0];
+        assert_eq!(
+            agent["connect"]["intake"],
+            format!("{baseline_intake}.api"),
+            "{name}: baseline intake"
+        );
+        let loads: Vec<_> = participants
+            .values()
+            .filter(|entry| entry["type"] == "millstone")
+            .collect();
+        assert_eq!(loads.len(), 1, "{name}: one paired load generator");
+        for (connection, receiver) in [("target", subject_name), ("baseline_target", agent_name)] {
+            let target = loads[0]["connect"][connection].as_str().unwrap();
+            assert_eq!(
+                target.split_once('.').unwrap().0,
+                receiver,
+                "{name}: millstone {connection} must name {receiver}"
+            );
+        }
+        let os = *case.subject_os().first().unwrap();
+        planner.compile(case, os).unwrap().into_plan().unwrap();
+    }
 }

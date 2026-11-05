@@ -17,7 +17,7 @@ use self::{
     intake::CollectedData,
 };
 
-pub(crate) mod analysis;
+mod analysis;
 pub mod decoded;
 pub(crate) mod intake;
 

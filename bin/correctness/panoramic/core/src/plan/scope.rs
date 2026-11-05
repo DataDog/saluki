@@ -19,7 +19,7 @@ impl ScopeRegistry {
         }
     }
 
-    #[cfg(any(test, feature = "test-util"))]
+    #[cfg(test)]
     pub(crate) fn with_run(run: &str) -> Self {
         assert_eq!(run.len(), 8);
         Self {
@@ -354,8 +354,7 @@ mod tests {
             let yaml = format!("timeout: 1s\nsubject_os: [{}]\nparticipants:\n  a: {{type: every-kind-server, subject: true, config: {{env: {{KEY: '{{{{ self.facts.missing }}}}'}}}}}}\n  z: {{type: reserved}}\n{}", os.name(), minimal_procedure!());
             let case = loader
                 .load_content("cases", &yaml, "alpha", Path::new("cases/alpha/config.yaml"))
-                .unwrap()
-                .remove(0);
+                .unwrap();
             let error = Planner::with_run(registries, "testrun0")
                 .compile(case, os)
                 .err()

@@ -131,7 +131,7 @@ fn plan() -> CasePlan {
     let case = CaseLoader::new(registries)
         .load_content("cases", "timeout: 2m\nsubject_os: [linux]\nparticipants:\n  subject: {type: fixture, subject: true}\nprocedure: [{step: pass}]",
             "report", Path::new("cases/report/config.yaml"))
-        .unwrap().remove(0);
+        .unwrap();
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(3).unwrap();
     let courier = backend::artifacts(RealizationKind::LinuxContainer)
         .iter()

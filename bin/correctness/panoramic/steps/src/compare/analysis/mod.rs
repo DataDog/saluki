@@ -12,7 +12,7 @@ mod service_checks;
 mod traces;
 
 /// Types of analysis to perform on collected data
-#[derive(Clone, Debug, Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum AnalysisMode {
     /// Compares events between the baseline and comparison targets.

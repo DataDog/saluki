@@ -384,7 +384,6 @@ impl RuntimeParticipant for HostParticipant {
                 stderr,
                 capture_tx,
                 observation.lines.clone(),
-                self.name.clone().into(),
                 Some(child.name),
             ));
         }

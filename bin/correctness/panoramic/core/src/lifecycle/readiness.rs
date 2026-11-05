@@ -193,7 +193,6 @@ mod tests {
     use super::*;
     use crate::handle::{ExecOutput, FileStatus, HttpResponse};
     use crate::observe::{output::OutputLine, OutputPaths, ParticipantExit, ProcessOutput};
-    use crate::participant::OutputStream;
     use crate::{
         endpoint::{EndpointKind, Evidence, ResolvedAddress, RunnerHostRoute},
         handle::ExecCommand,
@@ -316,10 +315,7 @@ mod tests {
 
     fn push_line(server: &Server, process: Option<&'static str>, text: &str) {
         server.observation.lines.push(OutputLine {
-            participant: "server".into(),
             process,
-            stream: OutputStream::Stdout,
-            received: std::time::SystemTime::now(),
             text: text.into(),
         });
     }

@@ -27,15 +27,15 @@ pub(crate) mod template;
 #[cfg(test)]
 pub(crate) mod fixtures;
 
+#[cfg(test)]
+pub(crate) use self::file::ConnectionTarget;
+pub(crate) use self::file::{CaseFile, ParticipantConfig, ParticipantEntry};
 pub(crate) use self::participant_check::declared_names;
 pub(crate) use self::template::Template;
 use self::{config_references::FileTemplates, participant_check::check_participants, step_check::build_steps};
 pub use self::{
     duration::CaseDuration,
-    file::{
-        CaseFile, ConfigOverlay, ConnectionTarget, EndpointOverride, FileSource, ParticipantConfig, ParticipantEntry,
-        ProcedureNode, RequestedRealization, StepNode,
-    },
+    file::{FileSource, ProcedureNode, StepNode},
     template::StepTemplate,
 };
 
@@ -90,7 +90,7 @@ impl<'a> CaseLoader<'a> {
                     let config_path = path.join("config.yaml");
                     if std::fs::symlink_metadata(&config_path).is_ok() {
                         match self.load_file(&config_path) {
-                            Ok(loaded) => cases.extend(loaded),
+                            Ok(loaded) => cases.push(loaded),
                             // Continue loading so one report names every problem. Reject the whole list on error:
                             // a dropped case could make an incomplete run look like a passing run.
                             Err(e) => load_errors.push((config_path, e)),
@@ -145,7 +145,7 @@ impl<'a> CaseLoader<'a> {
     ///
     /// Returns path resolution and read errors, an error if the directory has no name or no suite ancestor,
     /// and every error of [`Self::load_content`].
-    pub fn load_file(&self, config_path: &Path) -> Result<Vec<CaseConfig>, GenericError> {
+    pub fn load_file(&self, config_path: &Path) -> Result<CaseConfig, GenericError> {
         let canonical_path = config_path.canonicalize().error_context(format!(
             "Failed to resolve configuration file: {}",
             config_path.display()
@@ -188,7 +188,7 @@ impl<'a> CaseLoader<'a> {
     /// are checked like environment values. Other sources are not read.
     pub fn load_content(
         &self, suite: &str, content: &str, directory: &str, source: &Path,
-    ) -> Result<Vec<CaseConfig>, GenericError> {
+    ) -> Result<CaseConfig, GenericError> {
         let file: CaseFile = deserialize_case(content, source)?;
         let name = case_name(file.name.as_deref(), directory, source)?;
         let subject_os = file.check(&name, source)?;
@@ -200,7 +200,7 @@ impl<'a> CaseLoader<'a> {
             &name,
             source,
         )?;
-        Ok(vec![CaseConfig {
+        Ok(CaseConfig {
             name,
             description: file.description.clone(),
             suite: suite.into(),
@@ -210,7 +210,7 @@ impl<'a> CaseLoader<'a> {
             file,
             procedure,
             file_templates,
-        }])
+        })
     }
 }
 
@@ -263,7 +263,7 @@ impl CaseConfig {
     }
 
     /// Returns the parsed participant case file.
-    pub fn file(&self) -> &CaseFile {
+    pub(crate) fn file(&self) -> &CaseFile {
         &self.file
     }
 
@@ -274,7 +274,7 @@ impl CaseConfig {
 }
 
 /// Deserializes case data and includes its source path in parse errors.
-pub fn deserialize_case<T>(content: &str, source: &Path) -> Result<T, GenericError>
+pub(crate) fn deserialize_case<T>(content: &str, source: &Path) -> Result<T, GenericError>
 where
     T: DeserializeOwned,
 {
@@ -296,7 +296,7 @@ fn participant_suite(source: &Path) -> Result<&str, GenericError> {
 }
 
 /// Names a case after its directory. A declared name must equal the directory name.
-pub fn case_name(declared: Option<&str>, directory: &str, source: &Path) -> Result<String, GenericError> {
+pub(crate) fn case_name(declared: Option<&str>, directory: &str, source: &Path) -> Result<String, GenericError> {
     match declared {
         Some(name) if name != directory => Err(generic_error!(
             "case name '{}' in {} does not match its directory '{}'; rename the directory or the name so they agree",
@@ -354,10 +354,10 @@ mod tests {
         assert_eq!(error.to_string(), "case 'alpha' in alpha/config.yaml: participant 'subject' has unknown type 'unregistered'; registered types: client, server");
 
         let content = PARTICIPANT_FIELDS.replace(minimal_procedure!(), "procedure: [{step: probe, on: subject}]");
-        let cases = fixtures::LOADER
+        let case = fixtures::LOADER
             .load_content("cases", &content, "alpha", source)
             .unwrap();
-        let procedure = cases[0].procedure();
+        let procedure = case.procedure();
         let [ProcedureNode::Step(step)] = procedure else {
             panic!("expected one built step");
         };
@@ -427,9 +427,7 @@ mod tests {
                     .replace("[linux]", "[linux, macos]")
             ),
         );
-        let cases = fixtures::LOADER.load_file(&path).unwrap();
-        assert_eq!(cases.len(), 1);
-        let case = &cases[0];
+        let case = fixtures::LOADER.load_file(&path).unwrap();
         assert_eq!(case.name(), "alpha");
         assert_eq!(case.description(), Some("A portable case"));
         assert_eq!(case.timeout(), Duration::from_secs(7));
@@ -485,21 +483,20 @@ mod tests {
             participant_suite(Path::new("suite/cases/case/config.yaml")).unwrap(),
             "suite"
         );
-        let cases = fixtures::LOADER
+        let case = fixtures::LOADER
             .load_content("explicit", PARTICIPANT_FIELDS, "alpha", Path::new("config.yaml"))
             .unwrap();
-        assert_eq!(cases[0].suite(), "explicit");
+        assert_eq!(case.suite(), "explicit");
     }
 
     #[test]
     fn load_content_names_the_case_after_the_given_directory() {
         let source = Path::new("alpha/config.yaml");
-        let cases = fixtures::LOADER
+        let case = fixtures::LOADER
             .load_content("cases", PARTICIPANT_FIELDS, "alpha", source)
             .unwrap();
-        assert_eq!(cases.len(), 1);
-        assert_eq!(cases[0].name(), "alpha");
-        assert_eq!(cases[0].source(), source);
+        assert_eq!(case.name(), "alpha");
+        assert_eq!(case.source(), source);
 
         let error = fixtures::LOADER
             .load_content("cases", &format!("name: beta\n{PARTICIPANT_FIELDS}"), "alpha", source)
@@ -536,10 +533,9 @@ procedure:
     values: [last]
 "#,
         );
-        let cases = fixtures::LOADER.load_file(&path).unwrap();
-        assert_eq!(cases.len(), 1);
-        let file = cases[0].file();
-        let procedure = cases[0].procedure();
+        let case = fixtures::LOADER.load_file(&path).unwrap();
+        let file = case.file();
+        let procedure = case.procedure();
         assert_eq!(file.participants["subject"].config.env["KEY"], "0000");
         assert_eq!(file.procedure.len(), 3);
         let [ProcedureNode::Step(first), ProcedureNode::Parallel(members), ProcedureNode::Step(last)] = procedure
@@ -608,7 +604,7 @@ procedure:
             "{message}"
         );
         let path = write_case(dir.path(), "alpha", PARTICIPANT_FIELDS);
-        assert_eq!(fixtures::LOADER.load_file(&path).unwrap().len(), 1);
+        assert_eq!(fixtures::LOADER.load_file(&path).unwrap().name(), "alpha");
     }
 
     #[test]
@@ -650,14 +646,14 @@ procedure:
     #[test]
     fn a_declared_case_name_must_match_its_directory_and_an_omitted_one_defaults_to_it() {
         let source = Path::new("cases/dir/config.yaml");
-        let cases = fixtures::LOADER
+        let case = fixtures::LOADER
             .load_content("cases", PARTICIPANT_FIELDS, "dir", source)
             .unwrap();
-        assert_eq!(cases[0].name(), "dir");
-        let cases = fixtures::LOADER
+        assert_eq!(case.name(), "dir");
+        let case = fixtures::LOADER
             .load_content("cases", &format!("name: dir\n{PARTICIPANT_FIELDS}"), "dir", source)
             .unwrap();
-        assert_eq!(cases[0].name(), "dir");
+        assert_eq!(case.name(), "dir");
         let message = fixtures::LOADER
             .load_content("cases", &format!("name: other\n{PARTICIPANT_FIELDS}"), "dir", source)
             .err()
@@ -691,11 +687,9 @@ procedure:
     fn source_is_canonical_when_the_file_is_named_through_a_non_canonical_path() {
         let dir = tempfile::tempdir().unwrap();
         let path = write_case(dir.path(), "case", PARTICIPANT_FIELDS);
-        let cases = fixtures::LOADER
+        let case = fixtures::LOADER
             .load_file(&dir.path().join("case/../case/config.yaml"))
             .unwrap();
-        assert_eq!(cases.len(), 1);
-        let case = &cases[0];
         assert_eq!(case.source(), path.canonicalize().unwrap());
         assert_eq!(case.name(), "case");
     }

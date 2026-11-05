@@ -11,7 +11,7 @@ use crate::{
     layout::{Realization, RealizationKind},
     ledger::random_id,
     lifecycle::NativeInputs,
-    participant::{ExitChannel, OutputChannel, OutputStream},
+    participant::{ExitChannel, OutputChannel},
     recipe::{HostProcess, RecipeFile},
     result::ReclaimResult,
 };
@@ -440,10 +440,10 @@ async fn pipes_are_separate_and_tagged_while_the_group_waits_for_every_process_t
     let (lines, _) = observation.lines_since(0).unwrap();
     assert!(lines
         .iter()
-        .any(|line| line.process == Some("first") && line.stream == OutputStream::Stdout && line.text == "out"));
+        .any(|line| line.process == Some("first") && line.text == "out"));
     assert!(lines
         .iter()
-        .any(|line| line.process == Some("first") && line.stream == OutputStream::Stderr && line.text == "err"));
+        .any(|line| line.process == Some("first") && line.text == "err"));
     std::fs::write(fixture.scope.directory.join("subject/release"), "").unwrap();
     assert_eq!(
         bounded(observation.stopped()).await,

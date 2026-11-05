@@ -204,10 +204,7 @@ mod tests {
                         format!("http://127.0.0.1:{boundary}")
                     );
                 } else {
-                    assert_eq!(
-                        plan.effective_config("server").unwrap().endpoints["extra"].port,
-                        boundary
-                    );
+                    assert_eq!(plan.effective_config("server").unwrap().endpoints["extra"], boundary);
                 }
             }
         }
@@ -231,7 +228,7 @@ mod tests {
             plan.effective_config("client").unwrap().env["UPSTREAM_URL"],
             "http://server:20000"
         );
-        assert_eq!(plan.effective_config("server").unwrap().endpoints["extra"].port, 25000);
+        assert_eq!(plan.effective_config("server").unwrap().endpoints["extra"], 25000);
         assert_eq!(planner.ports.allocate(), Ok(20000));
     }
 

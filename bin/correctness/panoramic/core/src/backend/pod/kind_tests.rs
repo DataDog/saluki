@@ -887,7 +887,7 @@ async fn observes_each_container_and_reads_final_node_files(
         assert!(
             lines
                 .iter()
-                .any(|line| line.process == Some(process) && line.text == text && line.stream == OutputStream::Merged),
+                .any(|line| line.process == Some(process) && line.text == text),
             "{lines:?}"
         );
     }
@@ -1097,8 +1097,7 @@ async fn runs_native_cases(
                 "case",
                 &directory.join("config.yaml"),
             )
-            .unwrap()
-            .remove(0);
+            .unwrap();
         let plan = Planner::with_run(registries, &scope.run)
             .compile(case, Os::Linux)
             .unwrap()

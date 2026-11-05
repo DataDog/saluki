@@ -856,8 +856,7 @@ mod tests {
             );
         let case = CaseLoader::new(registries)
             .load_content("cases", &yaml, "native", &dir.join("native/config.yaml"))
-            .unwrap()
-            .remove(0);
+            .unwrap();
         let bindings = ArtifactManifest::new(
             "fixture",
             BTreeMap::from([
@@ -1340,7 +1339,6 @@ mod tests {
             .unwrap()
             .discover_selection(&console, false)
             .unwrap();
-        assert_eq!(plans.len(), 46);
         assert!(excluded.is_empty());
         assert!(cmd.log_dir().starts_with(variables["PANORAMIC_LOG_DIR"]));
         select_cases(&cmd, &console, subject_os, &mut plans, &mut excluded).unwrap();

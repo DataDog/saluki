@@ -101,7 +101,7 @@ The macOS `agent-adp` participant cases use this participant lifecycle.
 Host participants run in a planned per-case state directory under `/tmp`, which must not already exist. Each process
 inherits only `PATH`, `HOME` and `TMPDIR` from the runner when set, then receives the participant's environment and its
 own overrides. Each leads its own process group. Its stdout and stderr reach separate files at
-`<log_dir>/<participant>/<process>.stdout.log` and `<process>.stderr.log`, with process and stream tags on captured
+`<log_dir>/<participant>/<process>.stdout.log` and `<process>.stderr.log`, with process tags on captured
 lines. The participant ends after every process has an observed exit; a failed wait leaves the exit undetermined.
 Host exec commands own their process groups: returning or cancelling an exec kills its remaining descendants,
 including background processes started by a successful command.
@@ -304,8 +304,8 @@ readiness wait fails as soon as its server's container exit is observed. Each st
 watched in case-owned tasks. Output reaches `<log_dir>/<participant>/container.stdout.log` and `container.stderr.log` as
 it arrives, keeping the streams separate. Each process declares either container output or a file in its participant's
 log directory. File output reaches `<process>.stdout.log`, `<process>.stderr.log` or `<process>.log` for merged streams;
-a final read after exit appends bytes the follower missed. Lines carry their participant, process, stream and receipt
-time. Output readiness waits for a regex match in the named process's lines and fails on that process's capture error.
+a final read after exit appends bytes the follower missed. Lines retain their owning process. Output readiness waits for
+a regex match in the named process's lines and fails on that process's capture error.
 Readiness and step readers share a 64 MiB line-text bound per participant across all output sources. After overflow,
 the buffer drops new lines, preserving existing cursors. Readers can consume the retained prefix, then get a capture
 error naming the bound and the output files. Empty lines count as one byte; unterminated lines are also bounded.

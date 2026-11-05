@@ -180,8 +180,7 @@ mod tests {
         );
         let case = CaseLoader::new(registries)
             .load_content("cases", &yaml, "alpha", source)
-            .map_err(|error| error.to_string())?
-            .remove(0);
+            .map_err(|error| error.to_string())?;
         // Template contents come from load; planning must not reopen them.
         std::fs::remove_file(source.parent().unwrap().join("settings.yaml")).unwrap();
         Planner::with_run(registries, "testrun0")

@@ -206,7 +206,7 @@ fn resolve_listeners(
         };
         let derived = match endpoint.listener {
             Listener::Port(Port::FromCase) => {
-                if overridden.port == 0 {
+                if *overridden == 0 {
                     return Err(format!("{holder} overrides endpoint '{name}' with port 0"));
                 }
                 continue;
@@ -234,7 +234,7 @@ fn resolve_listeners(
                         "{holder} serves endpoint '{name}', whose port the case must give as config.endpoints.{name}.port"
                     ));
                 };
-                endpoint.listener = Listener::Port(Port::Fixed(overridden.port));
+                endpoint.listener = Listener::Port(Port::Fixed(*overridden));
             }
             Listener::Port(Port::Fixed(0)) => {
                 return Err(format!(
@@ -632,8 +632,7 @@ participants:
         let yaml = CONNECTION_CASE.replace("type: client", "type: hooks, config: {env: {CASE: value}}");
         let case = loader
             .load_content("cases", &yaml, "alpha", Path::new("cases/alpha/config.yaml"))
-            .unwrap()
-            .remove(0);
+            .unwrap();
         let plan = Planner::with_run(registries, "testrun0")
             .compile(case, Os::Linux)
             .unwrap()
@@ -716,7 +715,7 @@ participants:
             "env: {CASE_PORT: required}, endpoints: {tcp: {port: 90}}",
         );
         let plan = compile_files(&yaml, &[], Os::Linux).unwrap();
-        assert_eq!(plan.effective_config("subject").unwrap().endpoints["tcp"].port, 90);
+        assert_eq!(plan.effective_config("subject").unwrap().endpoints["tcp"], 90);
     }
 
     #[test]
@@ -829,7 +828,7 @@ participants:
             "type: server, config: {endpoints: {extra: {port: 90}}}}",
         );
         let plan = compile(&yaml, Os::Linux).unwrap().unwrap();
-        assert_eq!(plan.effective_config("server").unwrap().endpoints["extra"].port, 90);
+        assert_eq!(plan.effective_config("server").unwrap().endpoints["extra"], 90);
         let message = compile(&yaml.replace("extra:", "typo:"), Os::Linux)
             .err()
             .unwrap()
@@ -916,7 +915,7 @@ participants:
         let source = write_case(dir.path(), "alpha", &yaml);
         std::fs::write(source.parent().unwrap().join("windows.yaml"), "port: 7").unwrap();
         for os in [Os::Linux, Os::Windows] {
-            let case = CONFIG_LOADER.load_file(&source).unwrap().remove(0);
+            let case = CONFIG_LOADER.load_file(&source).unwrap();
             let plan = Planner::with_run(CONFIG_REGISTRIES, "testrun0")
                 .compile(case, os)
                 .unwrap()
@@ -997,7 +996,7 @@ participants:
             ),
         ] {
             let yaml = format!("timeout: 1s\nsubject_os: [linux]\nparticipants:\n{participants}\n{}\n", minimal_procedure!());
-            let case = loader.load_content("cases", &yaml, "alpha", Path::new("cases/alpha/config.yaml")).unwrap().remove(0);
+            let case = loader.load_content("cases", &yaml, "alpha", Path::new("cases/alpha/config.yaml")).unwrap();
             let message = Planner::with_run(registries, "testrun0").compile(case, Os::Linux).err().unwrap().to_string();
             assert_eq!(message, format!("case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', {expected}"));
         }

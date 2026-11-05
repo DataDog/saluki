@@ -435,10 +435,10 @@ mod tests {
         );
         for name in ["details", "traffic-source"] {
             let yaml = yaml.replace("  traffic:", &format!("  {name}:"));
-            let cases = loader.load_content("cases", &yaml, "alpha", source).unwrap();
-            assert_eq!(cases.len(), 1);
-            assert!(cases[0].file().participants[name].subject);
-            assert_eq!(cases[0].file().participants[name].participant_type, "server");
+            let case = loader.load_content("cases", &yaml, "alpha", source).unwrap();
+            assert_eq!(case.name(), "alpha");
+            assert!(case.file().participants[name].subject);
+            assert_eq!(case.file().participants[name].participant_type, "server");
         }
     }
 
@@ -499,11 +499,10 @@ mod tests {
                 &format!("  subject: {{type: server, subject: true, realization: {{kind: linux-container, options: {{host_cgroup_namespace: {value}}}}}}}"),
                 "linux",
             );
-            let cases = loader()
+            let case = loader()
                 .load_content("cases", &yaml, "alpha", Path::new("config.yaml"))
                 .unwrap();
-            assert_eq!(cases.len(), 1);
-            let file = cases[0].file();
+            let file = case.file();
             let realization = file.participants["subject"].realization.as_ref().unwrap();
             assert_eq!(
                 realization.options,
@@ -572,11 +571,10 @@ mod tests {
             "subject: true",
             "subject: true, realization: {kind: linux-container, options: {}}",
         );
-        let cases = super::super::fixtures::LOADER
+        let case = super::super::fixtures::LOADER
             .load_content("cases", &yaml, "alpha", Path::new("config.yaml"))
             .unwrap();
-        assert_eq!(cases.len(), 1);
-        assert_eq!(cases[0].name(), "alpha");
+        assert_eq!(case.name(), "alpha");
     }
 
     #[test]
@@ -694,9 +692,8 @@ mod tests {
             ] {
                 let yaml = file_case("settings.yaml", Path::new(from), false, overlay);
                 std::fs::write(&source, yaml).unwrap();
-                let cases = FILE_LOADER.load_file(&source).unwrap();
-                assert_eq!(cases.len(), 1);
-                assert_eq!(cases[0].source(), source);
+                let case = FILE_LOADER.load_file(&source).unwrap();
+                assert_eq!(case.source(), source);
             }
         }
     }
@@ -719,9 +716,8 @@ mod tests {
                 ] {
                     let yaml = file_case(name, Path::new(from), template, overlay);
                     std::fs::write(&source, yaml).unwrap();
-                    let cases = FILE_LOADER.load_file(&source).unwrap();
-                    assert_eq!(cases.len(), 1);
-                    assert_eq!(cases[0].source(), source);
+                    let case = FILE_LOADER.load_file(&source).unwrap();
+                    assert_eq!(case.source(), source);
                 }
                 for from in ["../../../other/shared/input", "../../../example/shared/input"] {
                     let yaml = file_case("settings.yaml", Path::new(from), true, overlay);
@@ -761,7 +757,7 @@ mod tests {
             }
             let yaml = file_case("settings.yaml", Path::new("../../shared/inside"), true, overlay);
             std::fs::write(&source, yaml).unwrap();
-            assert_eq!(FILE_LOADER.load_file(&source).unwrap().len(), 1);
+            assert_eq!(FILE_LOADER.load_file(&source).unwrap().name(), "alpha");
         }
     }
 
@@ -784,18 +780,18 @@ mod tests {
                 ("settings.yaml", "directory", true, Some("regular file")),
             ] {
                 let yaml = file_case(name, Path::new(from), template, overlay);
-                let loaded = FILE_LOADER.load_content("cases", &yaml, "alpha", &source);
+                let case = FILE_LOADER.load_content("cases", &yaml, "alpha", &source);
                 if let Some(reason) = reason {
                     let kind = if name.ends_with('/') { "directory" } else { "file" };
                     assert_eq!(
-                        loaded.err().unwrap().to_string(),
+                        case.err().unwrap().to_string(),
                         format!(
                             "case 'alpha' in {}: participant 'subject' supplies configuration {kind} '{name}'{suffix} from '{from}', which is not a {reason}",
                             source.display(),
                         ),
                     );
                 } else {
-                    assert_eq!(loaded.unwrap().len(), 1);
+                    assert_eq!(case.unwrap().name(), "alpha");
                 }
             }
         }
@@ -841,8 +837,8 @@ mod tests {
                 ("settings.yaml", "input", true),
             ] {
                 let yaml = file_case(name, Path::new(from), template, overlay);
-                let loaded = FILE_LOADER.load_content("cases", &yaml, "alpha", &source).unwrap();
-                assert_eq!(loaded.len(), 1);
+                let case = FILE_LOADER.load_content("cases", &yaml, "alpha", &source).unwrap();
+                assert_eq!(case.name(), "alpha");
             }
         }
     }
@@ -1174,17 +1170,16 @@ mod tests {
         std::fs::write(source.parent().unwrap().join("empty"), "").unwrap();
         for from in ["binary", "literal", "empty"] {
             let config = format!("{{files: {{settings.yaml: {from}}}}}");
-            let loaded = loader
+            let case = loader
                 .load_content("cases", &template_case(&config), "alpha", &source)
                 .unwrap();
-            assert_eq!(loaded.len(), 1);
-            assert_eq!(loaded[0].name(), "alpha");
+            assert_eq!(case.name(), "alpha");
         }
         let config = "{files: {settings.yaml: {from: empty, template: true}}}";
-        let loaded = loader
+        let case = loader
             .load_content("cases", &template_case(config), "alpha", &source)
             .unwrap();
-        assert_eq!(loaded[0].file_templates().get(Path::new("empty")), &"".parse().unwrap());
+        assert_eq!(case.file_templates().get(Path::new("empty")), &"".parse().unwrap());
     }
 
     #[test]

@@ -4,7 +4,6 @@ use std::{
     collections::VecDeque,
     path::Path,
     sync::{Arc, Mutex},
-    time::SystemTime,
 };
 
 use serde_json::{json, Value};
@@ -19,7 +18,7 @@ use crate::{
     observe::{
         exit_record::RecordRefresh, output::OutputLine, Capture, ParticipantExit, ProcessObservation, ProcessOutput,
     },
-    participant::{EffectiveConfig, FactDeclaration, OpContext, Operation, OutputStream, ParticipantType},
+    participant::{EffectiveConfig, FactDeclaration, OpContext, Operation, ParticipantType},
     plan::Planner,
     probe::{AttemptLimits, ProbeAnswer},
 };
@@ -225,8 +224,7 @@ async fn run_step_using(
     .to_string();
     let case = CaseLoader::new(registries)
         .load_content("cases", &content, "case", Path::new("cases/case/config.yaml"))
-        .unwrap()
-        .remove(0);
+        .unwrap();
     let mut planner = Planner::new(registries, Default::default()).unwrap();
     if let Some(port) = port {
         planner = planner.with_port_range(port..=port);
@@ -280,8 +278,7 @@ pub async fn run_step_with_participants(
     .to_string();
     let case = CaseLoader::new(registries)
         .load_content("cases", &content, "case", Path::new("cases/case/config.yaml"))
-        .unwrap()
-        .remove(0);
+        .unwrap();
     let plan = Planner::new(registries, Default::default())
         .unwrap()
         .compile(case, Os::Linux)
@@ -527,10 +524,7 @@ impl FakeParticipant {
     /// Appends a line tagged with its process, or participant-wide output for `None`.
     pub fn push_line(&self, process: Option<&'static str>, text: &str) {
         self.observation.lines.push(OutputLine {
-            participant: "subject".into(),
             process,
-            stream: OutputStream::Merged,
-            received: SystemTime::now(),
             text: text.into(),
         });
     }

@@ -161,7 +161,7 @@ mod tests {
             (Os::MacOs, "config_dump", Some("calls operation 'config_dump' of participant 'subject', which type 'server' doesn't offer as host-process-group on macos; it offers: none")),
         ] {
             let yaml = format!("timeout: 1s\nsubject_os: [{}]\nparticipants:\n  subject: {{type: server, subject: true}}\nprocedure: [{{step: call, on: subject, operation: {operation}}}]", os.name());
-            let case = loader.load_content("cases", &yaml, "alpha", Path::new("cases/alpha/config.yaml")).unwrap().remove(0);
+            let case = loader.load_content("cases", &yaml, "alpha", Path::new("cases/alpha/config.yaml")).unwrap();
             let result = Planner::new(registries, Default::default()).unwrap().compile(case, os);
             if let Some(expected) = expected {
                 let error = result.err().unwrap().to_string();
@@ -191,8 +191,7 @@ mod tests {
             );
             let case = loader
                 .load_content("cases", &yaml, "alpha", Path::new("cases/alpha/config.yaml"))
-                .unwrap()
-                .remove(0);
+                .unwrap();
             let mut planner = Planner::new(registries, Default::default()).unwrap();
             let plan = planner.compile(case, os).unwrap().into_plan().unwrap();
             let port = if os == Os::Linux { 20000 } else { 1003 };
@@ -249,8 +248,7 @@ mod tests {
                 "alpha",
                 Path::new("cases/alpha/config.yaml"),
             )
-            .unwrap()
-            .remove(0);
+            .unwrap();
         let error = Planner::new(registries, Default::default())
             .unwrap()
             .compile(case, Os::Linux)
@@ -717,8 +715,7 @@ mod tests {
             .replace("subject.facts.file", "subject.late.pod_uid");
         let case = loader
             .load_content("cases", &yaml, "alpha", Path::new("cases/alpha/config.yaml"))
-            .unwrap()
-            .remove(0);
+            .unwrap();
         let plan = Planner::with_run(registries, "testrun0")
             .compile(case, Os::Linux)
             .unwrap()
@@ -735,8 +732,7 @@ mod tests {
                 "alpha",
                 Path::new("cases/alpha/config.yaml"),
             )
-            .unwrap()
-            .remove(0);
+            .unwrap();
         assert_eq!(Planner::with_run(registries, "testrun0").compile(case, Os::Linux).err().unwrap().to_string(),
             "case 'alpha' in cases/alpha/config.yaml: on subject OS 'linux', step 1 'probe' references late fact 'pod_uid' of participant 'subject', which a linux-container does not have; a linux-container has container_id, ip"
         );
@@ -782,8 +778,7 @@ mod tests {
         let yaml = FACT_CASE.replace("type: server", "type: pod-server, realization: {kind: kubernetes-pod}");
         let case = loader
             .load_content("cases", &yaml, "alpha", Path::new("cases/alpha/config.yaml"))
-            .unwrap()
-            .remove(0);
+            .unwrap();
         let message = Planner::with_run(registries, "testrun0")
             .compile(case, Os::Linux)
             .err()
@@ -799,8 +794,7 @@ mod tests {
                 "alpha",
                 Path::new("config.yaml"),
             )
-            .unwrap()
-            .remove(0);
+            .unwrap();
         let plan = Planner::with_run(registries, "testrun0")
             .compile(case, Os::Linux)
             .unwrap()

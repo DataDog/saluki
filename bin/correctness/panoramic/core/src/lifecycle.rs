@@ -780,8 +780,7 @@ mod tests {
                 "case",
                 Path::new("/cases/case/config.yaml"),
             )
-            .unwrap()
-            .remove(0);
+            .unwrap();
         let plan = Planner::with_run(fixtures::REGISTRIES, "testcase")
             .compile(case, Os::Windows)
             .unwrap()
@@ -843,7 +842,7 @@ mod tests {
             ),
         ] {
             let yaml = format!("timeout: 1s\nsubject_os: [{}]\nparticipants:\n{participants}\n{}\n", os.name(), fixtures::minimal_procedure!());
-            let case = loader.load_content("cases", &yaml, "case", Path::new("/cases/case/config.yaml")).unwrap().remove(0);
+            let case = loader.load_content("cases", &yaml, "case", Path::new("/cases/case/config.yaml")).unwrap();
             let plan = Planner::with_run(registries, "testcase").compile(case, os).unwrap().into_plan().unwrap();
             let api = FakeDocker::new(Some("linux"));
             let inputs = NativeInputs::new(Arc::new(RunBackends::with_docker(api.daemon())), &[], Path::new(".")).unwrap();
@@ -972,8 +971,7 @@ participants:
             );
             let case = crate::case::CaseLoader::new(registries)
                 .load_content("cases", &yaml, "case", &source)
-                .unwrap()
-                .remove(0);
+                .unwrap();
             let plan = Planner::with_run(registries, "testcase")
                 .compile(case, Os::Linux)
                 .unwrap()
@@ -1377,8 +1375,7 @@ participants:
         let yaml = fixtures::PARTICIPANT_FIELDS.replace("participants:\n", "participants:\n  z: {type: pod-server}\n");
         let case = crate::case::CaseLoader::new(registries)
             .load_content("cases", &yaml, "case", Path::new("/cases/case/config.yaml"))
-            .unwrap()
-            .remove(0);
+            .unwrap();
         let plan = Planner::with_run(registries, "testcase")
             .compile(case, Os::Linux)
             .unwrap()
@@ -1501,8 +1498,7 @@ participants:
                 "case",
                 Path::new("/cases/case/config.yaml"),
             )
-            .unwrap()
-            .remove(0);
+            .unwrap();
         Planner::with_run(fixtures::REGISTRIES, "testcase")
             .compile(case, Os::Linux)
             .unwrap()

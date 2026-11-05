@@ -363,8 +363,7 @@ pub(super) fn compile_files(yaml: &str, sources: &[(&str, &str)], os: Os) -> Res
     };
     let case = loader
         .load_content("cases", yaml, "alpha", &source)
-        .map_err(normalize)?
-        .remove(0);
+        .map_err(normalize)?;
     Planner::with_run(FILE_REGISTRIES, "testrun0")
         .compile(case, os)
         .map_err(normalize)
@@ -584,8 +583,7 @@ pub(super) fn compile_with(
 ) -> Result<Option<CasePlan>, GenericError> {
     let case = CONFIG_LOADER
         .load_content("cases", yaml, "alpha", Path::new("cases/alpha/config.yaml"))
-        .unwrap()
-        .remove(0);
+        .unwrap();
     planner.compile(case, os).map(super::Compiled::into_plan)
 }
 

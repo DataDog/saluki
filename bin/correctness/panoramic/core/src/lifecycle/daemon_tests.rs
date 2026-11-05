@@ -292,8 +292,7 @@ async fn with_case_control<F: Future<Output = ()> + Send + 'static>(
             "case",
             &files.path().join("config.yaml"),
         )
-        .unwrap()
-        .remove(0);
+        .unwrap();
     let plan = Planner::new(registries, Default::default())
         .unwrap()
         .with_port_range(ports)

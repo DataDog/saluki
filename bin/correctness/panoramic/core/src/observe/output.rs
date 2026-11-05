@@ -4,7 +4,7 @@ use std::{
     future::Future,
     path::PathBuf,
     sync::{Arc, Mutex},
-    time::{Duration, SystemTime},
+    time::Duration,
 };
 
 use airlock::exec::OutputChunk;
@@ -30,20 +30,11 @@ pub(crate) fn host_output_file(process: &str, output: OutputChannel) -> Option<S
 /// Time for the container wait to catch up with a follower that stopped.
 const FOLLOWER_EXIT_GRACE: Duration = Duration::from_secs(5);
 
-/// One line of output, tagged with where it came from and when its last chunk arrived.
+/// One output line and its owning process, or participant-wide output for `None`.
 #[derive(Clone, Debug)]
 pub(crate) struct OutputLine {
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "Log steps and reports read participant tags.")
-    )]
-    pub participant: Arc<str>,
-    pub process: Option<&'static str>,
-    #[cfg_attr(not(test), expect(dead_code, reason = "Log steps select output streams."))]
-    pub stream: OutputStream,
-    #[cfg_attr(not(test), expect(dead_code, reason = "Log reports read receipt times."))]
-    pub received: SystemTime,
-    pub text: String,
+    pub(crate) process: Option<&'static str>,
+    pub(crate) text: String,
 }
 
 /// Maximum retained line text per participant, shared by all its output sources.
@@ -115,32 +106,23 @@ impl OutputLines {
 /// Splits one source stream into lines, keeping an unterminated line until more bytes or the end of the source.
 pub(crate) struct LineBuffer {
     lines: OutputLines,
-    participant: Arc<str>,
     process: Option<&'static str>,
-    stream: OutputStream,
     pending: Vec<u8>,
-    received: SystemTime,
 }
 
 impl LineBuffer {
-    pub(crate) fn new(
-        lines: OutputLines, participant: Arc<str>, process: Option<&'static str>, stream: OutputStream,
-    ) -> Self {
+    pub(crate) fn new(lines: OutputLines, process: Option<&'static str>) -> Self {
         Self {
             lines,
-            participant,
             process,
-            stream,
             pending: Vec::new(),
-            received: SystemTime::now(),
         }
     }
 
-    pub(crate) fn push(&mut self, bytes: &[u8], received: SystemTime) {
+    pub(crate) fn push(&mut self, bytes: &[u8]) {
         if bytes.is_empty() {
             return;
         }
-        self.received = received;
         let mut remaining = bytes;
         while let Some(end) = remaining.iter().position(|byte| *byte == b'\n') {
             if !self.append(&remaining[..end]) {
@@ -172,10 +154,7 @@ impl LineBuffer {
 
     fn publish(&mut self) {
         self.lines.push(OutputLine {
-            participant: self.participant.clone(),
             process: self.process,
-            stream: self.stream,
-            received: self.received,
             text: String::from_utf8_lossy(&self.pending).into_owned(),
         });
         self.pending.clear();
@@ -185,11 +164,10 @@ impl LineBuffer {
 /// Written inside the container before following a file, distinguishing file bytes from exec-start errors.
 pub(crate) const FILE_OUTPUT_START: &str = panoramic_courier::FOLLOW_STARTED;
 
-/// One file source, copied to its host path and tagged as the declared process stream.
+/// One file source, copied to its host path and associated with its declared process.
 pub(crate) struct FileOutput {
     pub participant: Arc<str>,
     pub process: &'static str,
-    pub stream: OutputStream,
     pub source_path: String,
     pub host_path: PathBuf,
     pub lines: OutputLines,
@@ -206,12 +184,7 @@ impl FileOutput {
         S: Stream<Item = Result<OutputChunk, GenericError>>,
         F: Future<Output = Result<Option<Vec<u8>>, GenericError>>,
     {
-        let mut lines = LineBuffer::new(
-            self.lines.clone(),
-            self.participant.clone(),
-            Some(self.process),
-            self.stream,
-        );
+        let mut lines = LineBuffer::new(self.lines.clone(), Some(self.process));
         let result: Result<(), GenericError> = async {
             let mut file = File::create(&self.host_path).await.with_error_context(|| {
                 format!("cannot create output file '{}'", self.host_path.display())
@@ -294,14 +267,13 @@ impl FileOutput {
     }
 
     async fn append(&self, file: &mut File, lines: &mut LineBuffer, bytes: &[u8]) -> Result<(), GenericError> {
-        let received = SystemTime::now();
         file.write_all(bytes)
             .await
             .with_error_context(|| format!("cannot write output file '{}'", self.host_path.display()))?;
         file.flush()
             .await
             .with_error_context(|| format!("cannot flush output file '{}'", self.host_path.display()))?;
-        lines.push(bytes, received);
+        lines.push(bytes);
         Ok(())
     }
 }
@@ -332,17 +304,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lines_split_across_chunks_are_pushed_once_complete_with_their_tags() {
+    fn lines_split_across_chunks_keep_their_process_and_are_pushed_once_complete() {
         let lines = OutputLines::default();
-        let mut source = LineBuffer::new(lines.clone(), "p".into(), Some("worker"), OutputStream::Merged);
-        let first = SystemTime::UNIX_EPOCH + Duration::from_secs(1);
-        let second = first + Duration::from_secs(1);
-        source.push(b"one\ntw", first);
+        let mut source = LineBuffer::new(lines.clone(), Some("worker"));
+        source.push(b"one\ntw");
         let (read, cursor) = lines.since(0).unwrap();
         assert_eq!(cursor, 1);
         assert_eq!(read[0].text, "one");
-        assert_eq!(read[0].received, first);
-        source.push(b"o\nthree\n", second);
+
+        source.push(b"o\nthree\n");
         let (read, next) = lines.since(cursor).unwrap();
         assert_eq!(next, 3);
         assert_eq!(
@@ -350,10 +320,7 @@ mod tests {
             ["two", "three"]
         );
         for line in read {
-            assert_eq!(&*line.participant, "p");
             assert_eq!(line.process, Some("worker"));
-            assert_eq!(line.stream, OutputStream::Merged);
-            assert_eq!(line.received, second);
         }
         source.finish();
         assert!(lines.since(next).unwrap().0.is_empty());
@@ -362,29 +329,27 @@ mod tests {
     #[test]
     fn a_final_line_without_a_newline_is_kept_when_its_source_ends() {
         let lines = OutputLines::default();
-        let mut source = LineBuffer::new(lines.clone(), "p".into(), None, OutputStream::Stderr);
-        let received = SystemTime::UNIX_EPOCH;
-        source.push(b"partial", received);
+        let mut source = LineBuffer::new(lines.clone(), None);
+        source.push(b"partial");
         assert!(lines.since(0).unwrap().0.is_empty());
         source.finish();
         source.finish();
         let (read, cursor) = lines.since(0).unwrap();
         assert_eq!(cursor, 1);
         assert_eq!(read[0].text, "partial");
-        assert_eq!(read[0].received, received);
     }
 
     #[test]
     fn output_overflow_preserves_the_prefix_and_fails_every_cursor_at_the_gap() {
         let lines = OutputLines::new(6);
-        let mut stdout = LineBuffer::new(lines.clone(), "p".into(), Some("main"), OutputStream::Stdout);
-        let mut stderr = LineBuffer::new(lines.clone(), "p".into(), Some("worker"), OutputStream::Stderr);
-        stdout.push(b"abc\n", SystemTime::now());
+        let mut stdout = LineBuffer::new(lines.clone(), Some("main"));
+        let mut stderr = LineBuffer::new(lines.clone(), Some("worker"));
+        stdout.push(b"abc\n");
         let (_, cursor) = lines.since(0).unwrap();
-        stderr.push(b"def\n", SystemTime::now());
+        stderr.push(b"def\n");
         assert_eq!(lines.0.lock().unwrap().bytes, 6);
-        stdout.push(b"dropped\n", SystemTime::now());
-        stderr.push(b"x\n", SystemTime::now());
+        stdout.push(b"dropped\n");
+        stderr.push(b"x\n");
         let (prefix, end) = lines.since(0).unwrap();
         assert_eq!(
             prefix.iter().map(|line| line.text.as_str()).collect::<Vec<_>>(),
@@ -408,9 +373,9 @@ mod tests {
             vec![&b"\n\n\n\n"[..]],
         ] {
             let lines = OutputLines::new(3);
-            let mut source = LineBuffer::new(lines.clone(), "p".into(), None, OutputStream::Stdout);
+            let mut source = LineBuffer::new(lines.clone(), None);
             for chunk in chunks {
-                source.push(chunk, SystemTime::now());
+                source.push(chunk);
             }
             source.finish();
             let storage = lines.0.lock().unwrap();
@@ -453,7 +418,6 @@ mod tests {
             FileOutput {
                 participant: "p".into(),
                 process: "worker",
-                stream: OutputStream::Merged,
                 source_path: "/log/worker".into(),
                 host_path: self.dir.path().join("worker.log"),
                 lines: self.lines.clone(),
@@ -518,14 +482,14 @@ mod tests {
     #[test]
     fn split_and_empty_frames_keep_partial_lines_until_the_stream_ends() {
         let fixture = Fixture::new();
-        let mut stdout = LineBuffer::new(fixture.lines.clone(), "p".into(), Some("main"), OutputStream::Stdout);
-        let mut stderr = LineBuffer::new(fixture.lines.clone(), "p".into(), Some("main"), OutputStream::Stderr);
-        stdout.push(b"out\n", SystemTime::UNIX_EPOCH);
+        let mut stdout = LineBuffer::new(fixture.lines.clone(), Some("main"));
+        let mut stderr = LineBuffer::new(fixture.lines.clone(), Some("main"));
+        stdout.push(b"out\n");
         for frame in [b"e".as_slice(), b"", b"rr", b""] {
-            stderr.push(frame, SystemTime::UNIX_EPOCH);
+            stderr.push(frame);
             assert_eq!(fixture.texts(), ["out"]);
         }
-        stdout.push(b"", SystemTime::UNIX_EPOCH);
+        stdout.push(b"");
         stdout.finish();
         stderr.finish();
         stderr.finish();

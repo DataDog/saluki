@@ -827,8 +827,7 @@ async fn a_probe_of_an_unlistened_published_port_is_not_listening() {
             );
         let case = LOADER
             .load_content("cases", &yaml, "probe", Path::new("cases/probe/config.yaml"))
-            .unwrap()
-            .remove(0);
+            .unwrap();
         let plan = Planner::with_run(REGISTRIES, "testrun0")
             .compile(case, Os::Linux)
             .unwrap()
@@ -1094,7 +1093,6 @@ async fn a_processs_output_file_is_followed_while_it_runs_and_completed_after_it
         let (lines, _) = observation.lines.since(0).unwrap();
         let lines: Vec<_> = lines.iter().filter(|line| line.process == Some("svc")).collect();
         assert_eq!(lines.iter().map(|line| line.text.as_str()).collect::<Vec<_>>(), ["before", "during", "last"]);
-        assert!(lines.iter().all(|line| &*line.participant == "p" && line.stream == OutputStream::Merged));
     }).await;
 }
 
@@ -1186,7 +1184,7 @@ async fn the_output_of_a_process_that_exits_before_its_follower_starts_is_read_a
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs a Docker daemon; run with make test-panoramic-daemon"]
-async fn container_output_lines_are_tagged_with_their_process_and_stream() {
+async fn container_output_keeps_process_identity_and_separate_stream_files() {
     // A short-lived container can exit while its file follower is starting.
     for delay in ["0", "0.005", "0.05"] {
         in_scope(&["p"], courier_bytes(), move |scope, tasks| async move {
@@ -1214,15 +1212,10 @@ async fn container_output_lines_are_tagged_with_their_process_and_stream() {
             assert_eq!(std::fs::read(&output.paths[1]).unwrap(), b"err");
             let (lines, _) = observation.lines.since(0).unwrap();
             assert_eq!(lines.len(), 2, "delay={delay}; {lines:#?}");
-            assert!(lines
-                .iter()
-                .all(|line| line.process == Some("main") && &*line.participant == "p"));
+            assert!(lines.iter().all(|line| line.process == Some("main")));
             assert_eq!(
-                lines
-                    .iter()
-                    .map(|line| (line.stream, line.text.as_str()))
-                    .collect::<Vec<_>>(),
-                [(OutputStream::Stdout, "out"), (OutputStream::Stderr, "err")]
+                lines.iter().map(|line| line.text.as_str()).collect::<Vec<_>>(),
+                ["out", "err"]
             );
         })
         .await;

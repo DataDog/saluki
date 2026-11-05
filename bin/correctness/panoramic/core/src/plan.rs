@@ -142,8 +142,8 @@ impl<'a> Planner<'a> {
     /// # Panics
     ///
     /// Panics if the registries declare inconsistent artifact roles.
-    #[cfg(any(test, feature = "test-util"))]
-    pub fn with_run(registries: Registries<'a>, run: &str) -> Self {
+    #[cfg(test)]
+    pub(crate) fn with_run(registries: Registries<'a>, run: &str) -> Self {
         Self {
             scopes: ScopeRegistry::with_run(run),
             ..Self::new(registries, ArtifactManifest::default())
@@ -338,7 +338,8 @@ impl CasePlan {
     }
 
     /// Returns the substituted case values after the participant OS overlay, before defaults and deliveries.
-    pub fn case_values(&self, participant: &str) -> Option<&CaseValues> {
+    #[cfg(test)]
+    pub(crate) fn case_values(&self, participant: &str) -> Option<&CaseValues> {
         self.participants
             .planned
             .participants
@@ -1021,8 +1022,7 @@ procedure: [{step: probe, on: subject, path: '{{observer.facts.file}}'}]
         ] {
             let case = loader
                 .load_content("cases", &yaml, "alpha", Path::new("cases/alpha/config.yaml"))
-                .unwrap()
-                .remove(0);
+                .unwrap();
             let message = Planner::with_run(registries, "testrun0")
                 .compile(case, Os::Linux)
                 .err()
@@ -1034,8 +1034,7 @@ procedure: [{step: probe, on: subject, path: '{{observer.facts.file}}'}]
         }
         let case = loader
             .load_content("cases", &yaml, "alpha", Path::new("cases/alpha/config.yaml"))
-            .unwrap()
-            .remove(0);
+            .unwrap();
         let plan = Planner::with_run(registries, "testrun0")
             .compile(case, Os::Linux)
             .unwrap()
@@ -1087,8 +1086,7 @@ procedure: [{step: probe, on: subject, path: '{{observer.facts.file}}'}]
         ] {
             let case = LOADER
                 .load_content("cases", &yaml, "alpha", Path::new("cases/alpha/config.yaml"))
-                .unwrap()
-                .remove(0);
+                .unwrap();
             let mut planner = Planner::with_run(REGISTRIES, "testrun0");
             let Compiled::Excluded(case) = planner.compile(case, Os::MacOs).unwrap() else {
                 panic!("macOS is excluded");
@@ -1113,8 +1111,7 @@ procedure: [{step: probe, on: subject, path: '{{observer.facts.file}}'}]
                 "alpha",
                 Path::new("cases/alpha/config.yaml"),
             )
-            .unwrap()
-            .remove(0);
+            .unwrap();
         let mut planner = planner();
         let Compiled::Excluded(case) = planner.compile(case, Os::Linux).unwrap() else {
             panic!("Linux is excluded");
@@ -1135,8 +1132,7 @@ procedure: [{step: probe, on: subject, path: '{{observer.facts.file}}'}]
         for os in [Os::Linux, Os::MacOs, Os::Windows] {
             let case = LOADER
                 .load_content("cases", &yaml, "alpha", Path::new("cases/alpha/config.yaml"))
-                .unwrap()
-                .remove(0);
+                .unwrap();
             let message = Planner::with_run(REGISTRIES, "testrun0")
                 .compile(case, os)
                 .err()
@@ -1157,8 +1153,7 @@ procedure: [{step: probe, on: subject, path: '{{observer.facts.file}}'}]
         let yaml = PARTICIPANT_FIELDS.replace("subject: true", "subject: true, realization: {kind: kubernetes-pod}");
         let case = LOADER
             .load_content("cases", &yaml, "alpha", Path::new("cases/alpha/config.yaml"))
-            .unwrap()
-            .remove(0);
+            .unwrap();
         let message = Planner::with_run(REGISTRIES, "testrun0")
             .compile(case, Os::Linux)
             .err()

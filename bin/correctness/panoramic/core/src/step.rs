@@ -462,8 +462,7 @@ mod tests {
     fn compile(yaml: &str) -> CasePlan {
         let case = fixtures::LOADER
             .load_content("cases", yaml, "case", std::path::Path::new("case/config.yaml"))
-            .unwrap()
-            .remove(0);
+            .unwrap();
         Planner::new(fixtures::REGISTRIES, Default::default())
             .unwrap()
             .compile(case, Os::Linux)
@@ -634,7 +633,7 @@ mod tests {
         };
         let case = CaseLoader::new(registries).load_content("cases",
             "timeout: 30s\nsubject_os: [linux]\nparticipants:\n  subject: {type: server, subject: true}\nprocedure: [{step: call, on: subject, operation: config_dump}]", "case", std::path::Path::new("case/config.yaml"),
-        ).unwrap().remove(0);
+        ).unwrap();
         let plan = Planner::new(registries, Default::default())
             .unwrap()
             .compile(case, Os::Linux)
@@ -704,8 +703,7 @@ mod tests {
                 "case",
                 std::path::Path::new("case/config.yaml"),
             )
-            .unwrap()
-            .remove(0);
+            .unwrap();
         let plan = Planner::new(registries, Default::default())
             .unwrap()
             .with_port_range((port - 1)..=port)

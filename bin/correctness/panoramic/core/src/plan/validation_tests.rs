@@ -80,9 +80,8 @@ fn compile(declarations: &Declarations, yaml: &str, os: Os) -> Result<CasePlan, 
         participant_types: &[declarations],
         ..REGISTRIES
     };
-    let case = CaseLoader::new(registries)
-        .load_content("cases", yaml, "alpha", Path::new("cases/alpha/config.yaml"))?
-        .remove(0);
+    let case =
+        CaseLoader::new(registries).load_content("cases", yaml, "alpha", Path::new("cases/alpha/config.yaml"))?;
     Ok(Planner::new(registries, Default::default())?
         .compile(case, os)?
         .into_plan()
