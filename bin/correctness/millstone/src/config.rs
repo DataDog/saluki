@@ -388,6 +388,11 @@ mod tests {
             test_dir.display()
         );
 
+        assert!(
+            configs.contains(&test_dir.join("correctness/shared/dsd-origin-detection-matrix/millstone.yaml")),
+            "shared workloads must be parsed even when case directories reference them without local copies"
+        );
+
         for path in configs {
             let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e:?}", path.display()));
             let config: Config = serde_saphyr::from_str(&render_case_template(&raw))

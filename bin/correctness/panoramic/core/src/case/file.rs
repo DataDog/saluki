@@ -144,8 +144,9 @@ pub struct ConfigOverlay {
 /// A case-relative file or directory supplied to a participant.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FileSource {
-    /// Required nonempty path within the case directory, stored as written. Must resolve to an existing file or
-    /// directory; symlink targets may be outside the case directory. Has no default.
+    /// Required nonempty case-relative path, stored as written, to an existing file or directory. Paths and symlink
+    /// targets must stay inside the enclosing `test/<suite>/` tree. Standalone cases allow only case-local paths
+    /// but may follow symlinks outside the case directory. Has no default.
     pub from: PathBuf,
     /// Whether the source holds template references. When true, it must be a regular UTF-8 file.
     /// The loader reads only template sources, once each, and checks their references like `env` values.

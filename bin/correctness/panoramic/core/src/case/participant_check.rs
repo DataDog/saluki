@@ -26,7 +26,8 @@ use crate::{
 /// parameter key syntax then declarations, OS overlays (reachable OS, file names and sources, parameter key syntax
 /// then declarations), connection targets (existing participant), and configuration reference syntax
 /// and names (base, then overlays; `env`, `params`, then template files). Sources must be nonempty relative paths
-/// within the case directory. Names ending in `/` require directories; other names require regular files.
+/// within the enclosing `test/<suite>/` tree, or the case directory for standalone cases.
+/// Names ending in `/` require directories; other names require regular files.
 /// Template sources must be regular UTF-8 files; each is read and parsed once. Other sources are not read.
 /// Map keys and overlay OSes are checked in sorted order. Every error names the case and source.
 pub(super) fn check_participants(
@@ -168,12 +169,24 @@ pub(super) fn check_participants(
     Ok(templates)
 }
 
-/// Checks source paths and declared kinds, following top-level symlinks even outside the case directory.
+/// Checks source paths and kinds. Suite sources, including symlink targets, must stay inside the suite.
 /// Reads only `template: true` files, requiring UTF-8 and caching each path in `sources` once.
 fn check_file_sources(
     files: &BTreeMap<String, FileSource>, case_dir: &Path, holder: &str, suffix: &str,
     sources: &mut BTreeMap<PathBuf, String>,
 ) -> Result<(), String> {
+    let suite_dir = case_dir.ancestors().find(|path| {
+        path.parent()
+            .and_then(Path::file_name)
+            .is_some_and(|name| name == "test")
+    });
+    let root = suite_dir.unwrap_or(case_dir);
+    let initial_depth = case_dir.strip_prefix(root).unwrap().components().count();
+    let boundary = if suite_dir.is_some() {
+        "suite directory"
+    } else {
+        "case directory"
+    };
     for (name, source) in files {
         let from = source.from.display();
         if source.from.as_os_str().is_empty() {
@@ -191,7 +204,7 @@ fn check_file_sources(
         let depth = source
             .from
             .components()
-            .try_fold(0usize, |depth, component| match component {
+            .try_fold(initial_depth, |depth, component| match component {
                 Component::Normal(_) => Some(depth + 1),
                 Component::CurDir => Some(depth),
                 Component::ParentDir => depth.checked_sub(1),
@@ -199,7 +212,7 @@ fn check_file_sources(
             });
         if depth.is_none() {
             return Err(format!(
-                "{holder} supplies configuration file '{name}'{suffix} from '{from}', which leaves the case directory"
+                "{holder} supplies configuration file '{name}'{suffix} from '{from}', which leaves the {boundary}"
             ));
         }
         let directory = name.ends_with('/');
@@ -215,6 +228,19 @@ fn check_file_sources(
                 path.display()
             )
         })?;
+        if let Some(suite_dir) = suite_dir {
+            let resolved = path
+                .canonicalize()
+                .map_err(|error| format!("cannot resolve {}: {error}", path.display()))?;
+            let suite = suite_dir
+                .canonicalize()
+                .map_err(|error| format!("cannot resolve {}: {error}", suite_dir.display()))?;
+            if !resolved.starts_with(suite) {
+                return Err(format!(
+                    "{holder} supplies configuration file '{name}'{suffix} from '{from}', which resolves outside the suite directory"
+                ));
+            }
+        }
         if directory && !metadata.is_dir() {
             return Err(format!(
                 "{holder} supplies configuration directory '{name}'{suffix} from '{from}', which is not a directory"
@@ -669,6 +695,70 @@ mod tests {
                 assert_eq!(cases.len(), 1);
                 assert_eq!(cases[0].source(), source);
             }
+        }
+    }
+
+    #[test]
+    fn suite_configuration_sources_can_share_files_but_cannot_leave_the_suite() {
+        let dir = tempfile::tempdir().unwrap();
+        let suite = dir.path().join("test/example");
+        std::fs::create_dir_all(suite.join("shared")).unwrap();
+        std::fs::write(suite.join("shared/input"), "answer: 42\n").unwrap();
+        std::fs::create_dir_all(dir.path().join("test/other/shared")).unwrap();
+        std::fs::write(dir.path().join("test/other/shared/input"), "outside\n").unwrap();
+        for placement in ["cases", "disabled"] {
+            let source = write_case(&suite.join(placement), "alpha", "").canonicalize().unwrap();
+            for overlay in [false, true] {
+                for (name, from, template) in [
+                    ("settings.yaml", "../../shared/input", true),
+                    ("settings.yaml", "../../shared/input", false),
+                    ("files/", "../../shared", false),
+                ] {
+                    let yaml = file_case(name, Path::new(from), template, overlay);
+                    std::fs::write(&source, yaml).unwrap();
+                    let cases = FILE_LOADER.load_file(&source).unwrap();
+                    assert_eq!(cases.len(), 1);
+                    assert_eq!(cases[0].source(), source);
+                }
+                for from in ["../../../other/shared/input", "../../../example/shared/input"] {
+                    let yaml = file_case("settings.yaml", Path::new(from), true, overlay);
+                    std::fs::write(&source, yaml).unwrap();
+                    let error = FILE_LOADER.load_file(&source).err().unwrap().to_string();
+                    assert!(error.contains("which leaves the suite directory"), "{error}");
+                }
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn suite_configuration_sources_reject_symlink_escapes() {
+        let dir = tempfile::tempdir().unwrap();
+        let suite = dir.path().join("test/example");
+        let source = write_case(&suite.join("cases"), "alpha", "").canonicalize().unwrap();
+        std::fs::create_dir_all(suite.join("shared")).unwrap();
+        let outside = dir.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("input"), "outside\n").unwrap();
+        std::fs::write(suite.join("shared/input"), "inside\n").unwrap();
+        std::os::unix::fs::symlink(outside.join("input"), suite.join("shared/escape")).unwrap();
+        std::os::unix::fs::symlink(&outside, suite.join("shared/directory")).unwrap();
+        std::os::unix::fs::symlink("input", suite.join("shared/inside")).unwrap();
+        for overlay in [false, true] {
+            for (name, from, template) in [
+                ("settings.yaml", "../../shared/escape", true),
+                ("settings.yaml", "../../shared/escape", false),
+                ("settings.yaml", "../../shared/directory/input", true),
+                ("files/", "../../shared/directory", false),
+            ] {
+                let yaml = file_case(name, Path::new(from), template, overlay);
+                std::fs::write(&source, yaml).unwrap();
+                let error = FILE_LOADER.load_file(&source).err().unwrap().to_string();
+                assert!(error.contains("which resolves outside the suite directory"), "{error}");
+            }
+            let yaml = file_case("settings.yaml", Path::new("../../shared/inside"), true, overlay);
+            std::fs::write(&source, yaml).unwrap();
+            assert_eq!(FILE_LOADER.load_file(&source).unwrap().len(), 1);
         }
     }
 

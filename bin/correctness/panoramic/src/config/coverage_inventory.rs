@@ -18,7 +18,6 @@ use panoramic_core::case::{CaseFile, CaseSchema, ProcedureNode, StepNode};
 use panoramic_core::layout::Os;
 use panoramic_core::plan::Compiled;
 use panoramic_core::step::StepKind;
-use panoramic_participants::AgentAdp;
 use panoramic_steps::compare::analysis::AnalysisMode;
 use saluki_error::GenericError;
 use serde::Serialize;

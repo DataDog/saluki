@@ -180,7 +180,7 @@ the rendered manifest's path. Pass `PANORAMIC_ARTIFACTS=<file>` on the make comm
 manifest instead. Integration keeps the `testing-devel` default.
 
 The seven `dsd-origin-detection-matrix-<variant>` cases run as Kubernetes pods in kind. Each has its own directory
-under `test/correctness/cases/`, with symlinks to the configuration and workload files in
+under `test/correctness/cases/`, with relative `from` paths to the configuration and workload files in
 `test/correctness/shared/dsd-origin-detection-matrix/`. To run one with your artifact manifest:
 
 ```bash
@@ -806,7 +806,10 @@ source on the node and rejects missing sources. HostPath volumes pin the observe
 `cri_socket` requires a socket. Participant recipes own host mounts and their destination paths. Host process groups
 and Windows containers accept no options.
 A `config.files` source must be a nonempty path relative to the case directory that exists when the case loads.
-Parent-directory components must stay within the case directory; symlink targets may be outside it.
+Cases under `test/<suite>/` can reference shared files within that suite, such as
+`../../shared/workload.yaml`. Neither parent traversal nor symlink targets may escape the suite tree.
+Standalone cases keep parent traversal within the case directory, but may follow symlinks outside it.
+Tracked files under `test/` must not be symlinks: Windows checkouts can materialize them as link-target text.
 
 `panoramic list` shows each participant case's layout. A case whose layout is invalid on any OS it lists in
 `subject_os` fails discovery for `list` and `run`, whatever subject OS is selected.

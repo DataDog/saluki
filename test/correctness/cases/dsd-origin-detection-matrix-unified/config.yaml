@@ -13,7 +13,7 @@ participants:
     config:
       params: {host_view: true}
       files:
-        datadog.yaml: {from: datadog-base.yaml, template: true}
+        datadog.yaml: {from: ../../shared/dsd-origin-detection-matrix/datadog-base.yaml, template: true}
       env:
         DD_API_KEY: correctness-test
         DD_DATA_PLANE_ENABLED: "true"
@@ -29,7 +29,7 @@ participants:
     config:
       params: {host_view: true}
       files:
-        datadog.yaml: {from: datadog-base.yaml, template: true}
+        datadog.yaml: {from: ../../shared/dsd-origin-detection-matrix/datadog-base.yaml, template: true}
       env:
         DD_API_KEY: correctness-test
         DD_DOGSTATSD_ORIGIN_DETECTION: "true"
@@ -45,7 +45,7 @@ participants:
       baseline_target: agent.dogstatsd_uds
     config:
       files:
-        millstone.yaml: {from: millstone.yaml, template: true}
+        millstone.yaml: {from: ../../shared/dsd-origin-detection-matrix/millstone.yaml, template: true}
 procedure:
   - step: exits_with
     on: load

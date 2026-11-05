@@ -225,8 +225,9 @@ where
     /// Types and steps must be registered, their fields valid, and participant and process names declared.
     /// Connections must name another, existing participant. OS overlays must be reachable.
     /// Fact availability and endpoint and connection checks run in [`crate::plan::Planner::compile`].
-    /// Configuration file sources, including overlays, must be nonempty relative paths within the case directory
-    /// that resolve to existing files or directories. Symlink targets may be outside the directory.
+    /// Configuration sources, including overlays, are nonempty case-relative paths to existing files or directories.
+    /// Cases under `test/<suite>/` may share sources within that tree; symlink targets must also stay inside it.
+    /// Standalone cases keep paths within the case directory but may follow symlinks outside it.
     /// Sources marked `template: true` must be regular UTF-8 files; each is read and parsed once, and its references
     /// are checked like environment values. Other sources are not read.
     pub fn load_content(

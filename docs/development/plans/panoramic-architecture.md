@@ -57,7 +57,7 @@ equivalence, and migration proofs: their rows, CI links and comparison commit.
   The seven origin detection variants have separate `dsd-origin-detection-matrix-<variant>` directories: `legacy`,
   `legacy-high-cardinality`, `legacy-optout-disabled`, `legacy-with-client-fields`, `unified`,
   `unified-high-cardinality` and `unified-with-client-fields`. They share configuration and workload files through
-  symlinks into `test/correctness/shared/dsd-origin-detection-matrix/`.
+  relative `from` paths into `test/correctness/shared/dsd-origin-detection-matrix/`.
 - Integration has 27 cases on all three OSes, five on Linux/macOS, three on Linux/Windows, 10 Linux-only, one
   macOS-only and six Windows-only. Every integration `name` equals its directory name. The 52 files contain 218
   assertions, 23 actions and 42 parallel blocks.

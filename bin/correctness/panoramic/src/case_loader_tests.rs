@@ -17,6 +17,37 @@ use crate::config::{
 };
 
 #[test]
+fn tracked_test_files_are_not_symlinks() {
+    // Git can check out symlinks as plain link-target text on Windows. Check the index mode too.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    let output = std::process::Command::new("git")
+        .current_dir(&root)
+        .args(["ls-files", "--stage", "-z", "--", "test/"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let entries = String::from_utf8(output.stdout).unwrap();
+    assert!(!entries.is_empty(), "expected tracked test files");
+    let mut links = Vec::new();
+    for entry in entries.split('\0').filter(|entry| !entry.is_empty()) {
+        let (index, path) = entry.split_once('\t').unwrap();
+        let metadata = match fs::symlink_metadata(root.join(path)) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => panic!("{path}: {error}"),
+        };
+        if index.starts_with("120000 ") || metadata.is_symlink() {
+            links.push(path);
+        }
+    }
+    assert!(
+        links.is_empty(),
+        "test files must not be symlinks: {}",
+        links.join(", ")
+    );
+}
+
+#[test]
 fn apm_socket_file_templates_resolve_to_each_participants_shared_directory() {
     let root = tempfile::tempdir().unwrap();
     let directory = root.path().join("test/correctness/cases");
