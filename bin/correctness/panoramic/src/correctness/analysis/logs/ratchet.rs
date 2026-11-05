@@ -29,7 +29,8 @@ pub struct KnownDifference {
 
     /// Restricts the entry to logs whose baseline semantic view (see `stele::Log::semantic_view`) has, for every
     /// listed field, one of the listed values. For example, `{fixture_id: [a, b]}` scopes the entry to two fixtures.
-    /// When empty, the entry applies to every log.
+    /// When empty, the entry applies to every log. A non-empty `when` never covers a request header difference, since
+    /// those belong to no log.
     #[serde(default)]
     pub when: BTreeMap<String, Vec<Value>>,
 
