@@ -486,7 +486,7 @@ mod tests {
             ("linux-container", "host_pid", "host_cgroup_namespace"),
             ("windows-container", "host_cgroup_namespace", "none"),
             ("host-process-group", "host_cgroup_namespace", "none"),
-            ("kubernetes-pod", "host_cgroup_namespace", "none"),
+            ("kubernetes-pod", "host_cgroup_namespace", "host_pid, cri_socket"),
         ] {
             let yaml = case_yaml(
                 &format!("  subject: {{type: server, subject: true, realization: {{kind: {kind}, options: {{{key}: true}}}}}}"),

@@ -72,6 +72,13 @@ enum Resource {
     Process(UnixProcess),
     /// A Kubernetes namespace, removed through the client that created it.
     Namespace { name: String, client: Client },
+    /// Node storage removed after its namespace is gone.
+    PodDirectory {
+        node: crate::backend::pod::node::Node,
+        path: String,
+        client: Client,
+        namespace: String,
+    },
     /// A host directory whose removal depends on earlier results in the reclaim walk.
     Directory(PathBuf),
     #[cfg_attr(
@@ -84,6 +91,7 @@ enum Resource {
 /// Backend-owned resources needed to stop and remove a participant.
 pub(crate) enum ParticipantRemoval {
     Container(ContainerRef),
+    Pod(crate::backend::pod::PodRemoval),
     #[cfg(unix)]
     ProcessGroup(crate::backend::host_process::ProcessGroup),
 }
@@ -92,6 +100,7 @@ impl ParticipantRemoval {
     async fn stop(self, grace: Duration, deadline: Instant) -> Result<(), GenericError> {
         match self {
             Self::Container(container) => container.stop_and_remove(grace, deadline).await,
+            Self::Pod(pod) => pod.stop(grace, deadline).await,
             #[cfg(unix)]
             Self::ProcessGroup(group) => group.stop(grace, deadline).await,
         }
@@ -132,6 +141,20 @@ impl Resource {
                     Err(kube::Error::Api(status)) if status.is_not_found() => Ok(None),
                     Err(e) => Err(generic_error!("Failed to delete namespace '{}': {}", name, e)),
                 }
+            }
+            Self::PodDirectory {
+                node,
+                path,
+                client,
+                namespace,
+            } => {
+                Terminating {
+                    api: Api::all(client),
+                    name: namespace,
+                }
+                .gone()
+                .await?;
+                node.remove_directory(&path).await.map(|()| None)
             }
             Self::HostScope(path) => {
                 match std::fs::remove_dir_all(&path) {
@@ -179,6 +202,7 @@ impl fmt::Debug for Resource {
             Self::Namespace { name, .. } => f.debug_struct("Namespace").field("name", name).finish_non_exhaustive(),
             Self::Directory(path) => f.debug_tuple("Directory").field(path).finish(),
             Self::HostScope(path) => f.debug_tuple("HostScope").field(path).finish(),
+            Self::PodDirectory { path, .. } => f.debug_tuple("PodDirectory").field(path).finish(),
         }
     }
 }
@@ -193,6 +217,7 @@ impl fmt::Display for Resource {
             Self::Process(process) => write!(f, "process:{}", process.name()),
             Self::Namespace { name, .. } => write!(f, "namespace:{}", name),
             Self::Directory(path) | Self::HostScope(path) => write!(f, "directory:{}", path.display()),
+            Self::PodDirectory { node, path, .. } => write!(f, "node_directory:{}:{path}", node.container),
         }
     }
 }
@@ -238,10 +263,12 @@ async fn remove_entry(
         _ => None,
     };
     let removal = match (&resource, kept_by) {
-        (Resource::Directory(_) | Resource::HostScope(_), Some(kept_by)) => Removal::Settled((
-            ReclaimResult::Leaked,
-            Some(format!("kept because {} was not reclaimed", kept_by)),
-        )),
+        (Resource::Directory(_) | Resource::HostScope(_) | Resource::PodDirectory { .. }, Some(kept_by)) => {
+            Removal::Settled((
+                ReclaimResult::Leaked,
+                Some(format!("kept because {} was not reclaimed", kept_by)),
+            ))
+        }
         _ => match timeout_at(deadline, resource.remove(deadline)).await {
             Ok(Ok(Some(terminating))) => Removal::Terminating(terminating),
             Ok(Ok(None)) => Removal::Settled(removed(unsettled)),
@@ -328,6 +355,17 @@ impl ResourceLedger {
         self.register(Resource::Namespace { name, client });
     }
 
+    pub(crate) fn pod_directory(
+        &self, node: crate::backend::pod::node::Node, path: String, client: Client, namespace: String,
+    ) {
+        self.register(Resource::PodDirectory {
+            node,
+            path,
+            client,
+            namespace,
+        });
+    }
+
     /// Registers a directory the case created.
     pub fn directory(&self, path: PathBuf) {
         self.register(Resource::Directory(path));
@@ -340,7 +378,9 @@ impl ResourceLedger {
                 Resource::IsolationGroup(id) => id == name,
                 Resource::ContainerScope { scope, .. } => scope.id() == name,
                 Resource::Participant { name: participant, .. } => format!("participant:{participant}") == name,
-                Resource::Namespace { name: namespace, .. } => namespace == name,
+                Resource::Namespace { name: namespace, .. } | Resource::PodDirectory { namespace, .. } => {
+                    namespace == name
+                }
                 Resource::Process(_) | Resource::Directory(_) | Resource::HostScope(_) => false,
             };
             if named {

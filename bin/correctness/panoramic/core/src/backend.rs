@@ -10,6 +10,7 @@ pub(crate) mod docker;
 pub(crate) mod host_process;
 pub(crate) mod http;
 pub(crate) mod linux_container;
+pub(crate) mod pod;
 mod run;
 pub(crate) mod runtime;
 pub(crate) mod windows_container;
@@ -243,7 +244,14 @@ impl Backend for KubernetesPods {
     }
 
     fn artifacts(&self) -> &'static [ArtifactRole] {
-        &[]
+        &[COURIER_LINUX_BINARY]
+    }
+
+    fn options(&self) -> &'static [RealizationOption] {
+        &[
+            RealizationOption { name: "host_pid" },
+            RealizationOption { name: "cri_socket" },
+        ]
     }
 
     fn shared_root(&self, _os: Os, _scope: &ScopeLayout) -> String {
@@ -302,6 +310,7 @@ mod tests {
             let expected: &[ArtifactRole] = match backend.kind() {
                 RealizationKind::LinuxContainer => &[FIXUP_IMAGE, COURIER_LINUX_BINARY],
                 RealizationKind::WindowsContainer => &[COURIER_WINDOWS_BINARY],
+                RealizationKind::KubernetesPod => &[COURIER_LINUX_BINARY],
                 _ => &[],
             };
             assert_eq!(artifacts(backend.kind()), expected, "{:?}", backend.kind());

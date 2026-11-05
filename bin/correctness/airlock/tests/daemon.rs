@@ -808,6 +808,36 @@ async fn exec_feeds_stdin_and_env_and_returns_both_streams_and_a_nonzero_exit_as
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn exec_request_runs_in_a_named_container_with_stdin_env_and_a_nonzero_exit() {
+    let docker = daemon().await;
+    let id = unique_id();
+    in_group(id.clone(), async move {
+        start_exec_participant(docker.clone(), &id, "exec sleep 60").await;
+        let stdin = b"payload\0\xff\nwithout-eol".to_vec();
+        let greeting = "hello from exec";
+        let output = ExecRequest::new(vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            "cat; printf %s \"$GREETING\" >&2; exit 3".to_string(),
+        ])
+        .with_env_var("GREETING", greeting)
+        .with_stdin(stdin.clone())
+        .execute(&docker, &format!("airlock-{id}-subject"))
+        .await
+        .unwrap();
+        assert_eq!(
+            output,
+            ExecOutput {
+                stdout: stdin,
+                stderr: greeting.as_bytes().to_vec(),
+                exit_code: 3
+            }
+        );
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn exec_echoes_a_large_stdin_whole() {
     let docker = daemon().await;
     let id = unique_id();

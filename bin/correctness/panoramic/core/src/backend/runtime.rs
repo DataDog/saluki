@@ -57,7 +57,7 @@ pub(crate) fn implemented(kind: RealizationKind) -> Option<&'static [Os]> {
         #[cfg(not(unix))]
         RealizationKind::HostProcessGroup => None,
         RealizationKind::WindowsContainer => Some(&[Os::Windows]),
-        RealizationKind::KubernetesPod => None,
+        RealizationKind::KubernetesPod => Some(&[Os::Linux]),
     }
 }
 
@@ -120,7 +120,15 @@ pub(crate) async fn prepare(
                 Err("host process groups need a Unix runner host".into())
             }
         }
-        RealizationKind::KubernetesPod => Err(format!("panoramic cannot prepare {} scopes natively", kind.name())),
+        RealizationKind::KubernetesPod => {
+            let courier = inputs.container_binary(COURIER_LINUX_BINARY)?;
+            let scope = inputs
+                .backends
+                .prepare_pod_scope(scope, participants, courier.clone(), &control.ledger, &control.tasks)
+                .await
+                .map_err(|error| format!("failed to prepare pod scope: {error:#}"))?;
+            Ok(Box::new(scope))
+        }
     }
 }
 
@@ -132,7 +140,7 @@ mod tests {
     fn container_runtimes_support_only_their_container_os() {
         assert_eq!(implemented(RealizationKind::LinuxContainer), Some(&[Os::Linux][..]));
         assert_eq!(implemented(RealizationKind::WindowsContainer), Some(&[Os::Windows][..]));
-        assert_eq!(implemented(RealizationKind::KubernetesPod), None);
+        assert_eq!(implemented(RealizationKind::KubernetesPod), Some(&[Os::Linux][..]));
     }
 
     #[test]

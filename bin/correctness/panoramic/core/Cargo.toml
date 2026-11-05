@@ -22,7 +22,7 @@ http-body-util = { workspace = true }
 hyper = { workspace = true, features = ["client", "http1"] }
 hyper-util = { workspace = true, features = ["tokio"] }
 k8s-openapi = { workspace = true }
-kube = { workspace = true, features = ["client"] }
+kube = { workspace = true, features = ["client", "rustls-tls", "ws"] }
 panoramic-courier = { workspace = true }
 rand = { workspace = true, features = ["std", "thread_rng"] }
 regex = { workspace = true, features = ["std"] }

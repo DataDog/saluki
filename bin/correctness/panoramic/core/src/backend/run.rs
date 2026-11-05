@@ -6,7 +6,17 @@ use std::{
     path::Path,
 };
 
-use super::docker::DockerDaemon;
+use k8s_openapi::api::core::v1::Node as KubernetesNode;
+use kube::{api::ListParams, Api, Client};
+use saluki_error::{generic_error, GenericError};
+use tokio::sync::OnceCell;
+
+use super::{docker::DockerDaemon, pod::node::Node};
+
+pub(super) struct PodConnection {
+    pub(super) client: Client,
+    pub(super) node: Node,
+}
 use crate::{
     artifact::{self, ArtifactBinding, ArtifactVerification},
     layout::{Os, Realization, RealizationKind},
@@ -16,6 +26,7 @@ use crate::{
 #[derive(Default)]
 pub struct RunBackends {
     pub(super) docker: DockerDaemon,
+    pub(super) pods: OnceCell<PodConnection>,
     #[cfg(test)]
     providability_checks: std::sync::Mutex<BTreeMap<Realization, usize>>,
 }
@@ -25,8 +36,56 @@ impl RunBackends {
     pub(crate) fn with_docker(docker: DockerDaemon) -> Self {
         Self {
             docker,
+            pods: OnceCell::new(),
             providability_checks: std::sync::Mutex::default(),
         }
+    }
+
+    pub(super) async fn pod_connection(&self) -> Result<&PodConnection, GenericError> {
+        self.pods
+            .get_or_try_init(|| async { self.connect_pods(Client::try_default().await?).await })
+            .await
+    }
+
+    pub(super) async fn connect_pods(&self, client: Client) -> Result<PodConnection, GenericError> {
+        check_docker_context().await.map_err(|error| generic_error!(error))?;
+        let docker = self
+            .docker
+            .client(Os::Linux)
+            .await
+            .map_err(|error| generic_error!(error))?;
+        let nodes: Api<KubernetesNode> = Api::all(client.clone());
+        let nodes = nodes.list(&ListParams::default()).await?.items;
+        if nodes.len() != 1 {
+            return Err(generic_error!(
+                "Pod scopes require a single-node kind cluster; found {} nodes",
+                nodes.len()
+            ));
+        }
+        let container = nodes[0]
+            .metadata
+            .name
+            .clone()
+            .ok_or_else(|| generic_error!("Cluster node has no name"))?;
+        let inspected = docker.inspect_container(&container, None).await?;
+        if !inspected
+            .config
+            .as_ref()
+            .and_then(|config| config.labels.as_ref())
+            .is_some_and(|labels| {
+                labels
+                    .get("io.x-k8s.kind.role")
+                    .is_some_and(|role| role == "control-plane")
+            })
+        {
+            return Err(generic_error!(
+                "Kubernetes node '{container}' is not a kind control-plane container on the verified daemon"
+            ));
+        }
+        Ok(PodConnection {
+            client,
+            node: Node { docker, container },
+        })
     }
 
     /// Removes all scope resources, including partial preparation. Cancel-safe; the caller bounds it.
@@ -116,6 +175,38 @@ impl RunBackends {
     }
 }
 
+async fn check_docker_context() -> Result<(), String> {
+    let host = std::env::var_os("DOCKER_HOST");
+    if host.as_ref().is_some_and(|value| !value.is_empty()) {
+        return Ok(());
+    }
+    let output = tokio::time::timeout(
+        airlock::docker::DOCKER_DAEMON_TIMEOUT,
+        tokio::process::Command::new("docker")
+            .args(["context", "show"])
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .map_err(|_| "timed out checking the active Docker context".to_string())?
+    .map_err(|error| format!("cannot check the active Docker context: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "docker context show failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    validate_docker_context(host.as_deref(), String::from_utf8_lossy(&output.stdout).trim())
+}
+
+fn validate_docker_context(host: Option<&OsStr>, context: &str) -> Result<(), String> {
+    if host.is_some_and(|value| !value.is_empty()) || context == "default" {
+        Ok(())
+    } else {
+        Err(format!("Pod setup requires DOCKER_HOST when the active Docker context is '{context}', not 'default'; set it to the daemon kind uses"))
+    }
+}
+
 fn check_tools(path: Option<&OsStr>) -> Result<(), String> {
     for name in ["kind", "docker"] {
         if !on_path(name, path) {
@@ -138,6 +229,24 @@ mod tests {
         artifact::{ArtifactKind, ArtifactRole, BindingSource},
         backend::docker::test_util::FakeDocker,
     };
+
+    #[test]
+    fn pod_setup_rejects_an_implicit_nondefault_docker_context() {
+        for host in [None, Some(OsStr::new("")), Some(OsStr::new("unix:///socket"))] {
+            for context in ["default", "other", ""] {
+                let result = validate_docker_context(host, context);
+                if host.is_some_and(|value| !value.is_empty()) || context == "default" {
+                    assert_eq!(result, Ok(()));
+                } else {
+                    let message = result.unwrap_err();
+                    assert!(
+                        message.contains("DOCKER_HOST") && message.contains(context),
+                        "{message}"
+                    );
+                }
+            }
+        }
+    }
 
     #[tokio::test]
     async fn a_linux_scope_needs_a_daemon_running_linux_containers() {

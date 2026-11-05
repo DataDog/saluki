@@ -117,6 +117,7 @@ impl Observations {
 pub struct NativeInputs {
     pub(crate) backends: Arc<RunBackends>,
     images: BTreeMap<&'static str, String>,
+    image_references: BTreeMap<&'static str, String>,
     binaries: BTreeMap<&'static str, Bytes>,
     programs: BTreeMap<&'static str, PathBuf>,
 }
@@ -131,6 +132,7 @@ impl NativeInputs {
         let mut inputs = Self {
             backends,
             images: BTreeMap::new(),
+            image_references: BTreeMap::new(),
             binaries: BTreeMap::new(),
             programs: BTreeMap::new(),
         };
@@ -138,6 +140,9 @@ impl NativeInputs {
             match artifact.kind {
                 ArtifactKind::Image { .. } => {
                     inputs.images.insert(artifact.role, artifact.identity.clone());
+                    inputs
+                        .image_references
+                        .insert(artifact.role, artifact.reference.clone());
                 }
                 ArtifactKind::ContainerBinary { .. } => {
                     let path = base.join(&artifact.reference);
@@ -160,6 +165,13 @@ impl NativeInputs {
 
     pub(crate) fn image(&self, role: ArtifactRole) -> Result<&str, String> {
         self.images
+            .get(role.name)
+            .map(String::as_str)
+            .ok_or_else(|| format!("native inputs lack verified image role '{}'", role.name))
+    }
+
+    pub(crate) fn image_reference(&self, role: ArtifactRole) -> Result<&str, String> {
+        self.image_references
             .get(role.name)
             .map(String::as_str)
             .ok_or_else(|| format!("native inputs lack verified image role '{}'", role.name))
@@ -773,7 +785,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unsupported_realizations_name_every_participant_before_registering_any_scope() {
+    async fn pod_participants_need_process_specs_before_registering_any_scope() {
         const TYPES: &[&dyn ParticipantType] = &[&fixtures::Server, &fixtures::PodServer];
         let registries = crate::case::Registries {
             participant_types: TYPES,
@@ -784,18 +796,17 @@ mod tests {
             (
                 Os::Linux,
                 "  subject: {type: pod-server, subject: true, realization: {kind: kubernetes-pod}}",
-                "panoramic cannot create kubernetes-pod participants natively: 'subject' on linux",
+                "participant 'subject' of type 'pod-server' as kubernetes-pod on linux declares no exit channel for process 'server'",
             ),
             (
                 Os::Windows,
                 "  subject: {type: server, subject: true}\n  other: {type: pod-server, os: linux, realization: {kind: kubernetes-pod}}",
-                "panoramic cannot create kubernetes-pod participants natively: 'other' on linux",
+                "participant 'other' of type 'pod-server' as kubernetes-pod on linux declares no exit channel for process 'server'",
             ),
             (
                 Os::Linux,
                 "  subject: {type: server, subject: true}\n  other: {type: pod-server, os: linux, realization: {kind: kubernetes-pod}}\n  z: {type: pod-server, os: linux, realization: {kind: kubernetes-pod}}",
-                "panoramic cannot create kubernetes-pod participants natively: 'other' on linux; \
-                 panoramic cannot create kubernetes-pod participants natively: 'z' on linux",
+                "participant 'other' of type 'pod-server' as kubernetes-pod on linux declares no exit channel for process 'server'",
             ),
         ] {
             let yaml = format!("timeout: 1s\nsubject_os: [{}]\nparticipants:\n{participants}\n{}\n", os.name(), fixtures::minimal_procedure!());
@@ -835,11 +846,21 @@ mod tests {
                 [RealizationKind::LinuxContainer, other],
             ] {
                 let mut inputs = NativeInputs::new(Arc::default(), &[], Path::new(".")).unwrap();
-                assert_eq!(inputs.require_backends([other]), Ok(()));
+                let missing_courier = "native inputs lack verified binary role 'courier-linux-binary'";
                 assert_eq!(
-                    inputs.require_backends(kinds),
-                    Err("native inputs lack verified image role 'fixup-image'".into())
+                    inputs.require_backends([other]),
+                    if other == RealizationKind::KubernetesPod {
+                        Err(missing_courier.into())
+                    } else {
+                        Ok(())
+                    }
                 );
+                let first_missing = if kinds[0] == RealizationKind::KubernetesPod {
+                    missing_courier
+                } else {
+                    "native inputs lack verified image role 'fixup-image'"
+                };
+                assert_eq!(inputs.require_backends(kinds), Err(first_missing.into()));
                 inputs.images.insert(FIXUP_IMAGE.name, "sha256:fixup".into());
                 assert_eq!(
                     inputs.require_backends(kinds),

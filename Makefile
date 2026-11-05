@@ -624,8 +624,13 @@ test-airlock-daemon: ## Runs airlock's tests against a real Docker daemon (the i
 test-panoramic-daemon: check-rust-build-tools cargo-install-cargo-nextest build-courier-linux
 test-panoramic-daemon: ## Runs panoramic's backend, lifecycle and runner daemon tests against a real Docker daemon (the image in $PANORAMIC_TEST_IMAGE, default alpine:latest, must already be local)
 	@echo "[*] Running panoramic daemon tests..."
-	cargo nextest run -p panoramic-core --run-ignored only --no-fail-fast -E 'not test(/windows_container::daemon_tests::/)'
+	cargo nextest run -p panoramic-core --run-ignored only --no-fail-fast -E 'not test(/windows_container::daemon_tests::/) and not test(/^backend::pod::kind_tests::/)'
 	cargo nextest run -p panoramic --run-ignored only --no-fail-fast -E 'not test(/^runner::product_tests::/)'
+
+.PHONY: test-panoramic-kind
+test-panoramic-kind: check-rust-build-tools cargo-install-cargo-nextest build-courier-linux check-kind-tools
+test-panoramic-kind: ## Runs local pod backend tests in an ephemeral kind cluster ($PANORAMIC_TEST_IMAGE, default alpine:latest, must already be local)
+	cargo nextest run -p panoramic-core --run-ignored only --no-fail-fast --test-threads 1 -E 'test(/^backend::pod::kind_tests::/)'
 
 .PHONY: test-panoramic-products
 test-panoramic-products: check-rust-build-tools cargo-install-cargo-nextest build-courier-linux

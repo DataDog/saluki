@@ -10,6 +10,8 @@ pub enum Recipe {
     Container(ContainerRecipe),
     /// Processes sharing a host directory and environment.
     HostProcessGroup(HostRecipe),
+    /// Named containers sharing a pod's network and case storage.
+    Pod(PodRecipe),
 }
 
 impl Recipe {
@@ -17,8 +19,24 @@ impl Recipe {
         match self {
             Self::Container(recipe) => vec![recipe.image],
             Self::HostProcessGroup(recipe) => recipe.processes.iter().map(|process| process.program).collect(),
+            Self::Pod(recipe) => recipe
+                .containers
+                .iter()
+                .map(|container| container.recipe.image)
+                .collect(),
         }
     }
+}
+
+/// Containers sharing a pod. The first container supplies exec and the container-ID late fact.
+pub struct PodRecipe {
+    pub(crate) containers: Vec<PodContainer>,
+}
+
+pub(crate) struct PodContainer {
+    pub(crate) name: String,
+    pub(crate) recipe: ContainerRecipe,
+    pub(crate) ports: Vec<(crate::endpoint::Transport, u16)>,
 }
 
 /// Environment, relative files and processes for a host process group.
@@ -249,6 +267,19 @@ pub mod test_support {
         let files = match recipe {
             Recipe::Container(recipe) => &recipe.files,
             Recipe::HostProcessGroup(recipe) => &recipe.files,
+            Recipe::Pod(recipe) => {
+                return recipe
+                    .containers
+                    .iter()
+                    .flat_map(|container| {
+                        container
+                            .recipe
+                            .files
+                            .iter()
+                            .map(|file| (file.path.as_str(), file.mode, file.contents.as_slice()))
+                    })
+                    .collect();
+            }
         };
         files
             .iter()

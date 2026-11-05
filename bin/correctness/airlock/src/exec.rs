@@ -53,6 +53,17 @@ impl ExecRequest {
         self.stdin = Some(bytes.into());
         self
     }
+
+    /// Executes in a running container and collects stdout, stderr, and the exit code.
+    ///
+    /// Nonzero exits are data. See [`ExecStream`] for completion, cancellation, and timeout behavior.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid request, Docker API failure, invalid output, or unavailable exit code.
+    pub async fn execute(self, docker: &Docker, container: &str) -> Result<ExecOutput, GenericError> {
+        start(docker, container, self).await?.collect_output().await
+    }
 }
 
 /// A command's complete output and exit code. Nonzero codes are data, including a missing program
