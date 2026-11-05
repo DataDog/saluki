@@ -129,8 +129,9 @@ used to assert correctness.
 However, in our repository, *integration tests* refer to a specific set of smoke tests [below](#integration-tests-panoramic).
 
 Correctness test cases are specified by YAML configuration files found in `test/correctness/cases`.
-Cases that are kept but must not run live in `test/correctness/disabled/`. CI and the `test-correctness` targets select
-only `test/correctness/cases/`.
+Files under `test/correctness/disabled/` are ordinary cases that CI does not select. CI and the `test-correctness`
+targets select only `test/correctness/cases/`. `panoramic list -d test/correctness/disabled --subject-os linux`
+compiles the disabled cases without running them.
 
 ### Binaries and program flow
 
@@ -522,6 +523,12 @@ or `otlp_config.receiver.protocols.grpc.endpoint` and `otlp_config.receiver.prot
 values disable the endpoint. Connections keep the configured ports and wait for TCP acceptance. Linux `agent-adp`
 doesn't expose the Agent's OTLP receivers; its `otlp_grpc` and `otlp_http` belong to ADP.
 
+The `agent` type also accepts `otel-config.yaml`, placed at `/etc/datadog-agent/otel-config.yaml`.
+Enabling the embedded collector through `DD_OTELCOLLECTOR_ENABLED` or `otelcollector.enabled` in `datadog.yaml`
+requires that file. Its `receivers.otlp.protocols.grpc.endpoint` declares `otel_otlp_grpc`: a non-loopback
+`host:port` with a nonzero port, gated on TCP acceptance. It cannot share a port with `agent_otlp_grpc`.
+Only the receiver address must be available while planning; exporter URLs may use connection references.
+
 Both types accept `config.params.host_view: true` on Linux. This mounts `/proc`, `/sys/fs/cgroup`, and the Docker
 socket read-only and sets the corresponding Agent host paths. Rootless Docker can reject file placement with a
 `remount-ro /host/proc: operation not permitted` error. Removing host view can diagnose other behavior, but cannot
@@ -553,6 +560,8 @@ The definition derives these endpoints from the effective environment and, on Li
 | `dogstatsd_uds` | Unix datagram | `DD_DOGSTATSD_SOCKET` | Defaults to `/var/run/datadog/dsd.socket` on Linux; empty disables it; waits for the socket |
 | `dogstatsd_uds_stream` | Unix stream | `DD_DOGSTATSD_STREAM_SOCKET` | Nonempty enables it; waits for the socket |
 | `dogstatsd_pipe` | Named pipe | `DD_DOGSTATSD_PIPE_NAME` | Windows only; nonempty enables it when DogStatsD is enabled; reached through the courier at `\\.\pipe\<name>`; gate sends on ADP's `listen_addr:"npipe://<name>"` log line |
+| `apm_tcp` | HTTP | `DD_APM_RECEIVER_PORT` | Linux only; requires APM explicitly enabled and a nonzero port; waits for TCP acceptance |
+| `apm_uds` | Unix stream | `DD_APM_RECEIVER_SOCKET` | Linux only; requires APM explicitly enabled; defaults to `/var/run/datadog/apm.socket`; empty disables it; waits for the socket |
 | `api` | HTTP | `DD_DATA_PLANE_API_LISTEN_ADDRESS` | Requires ADP and a non-loopback host; waits for TCP acceptance |
 | `secure_api` | TCP | `DD_DATA_PLANE_SECURE_API_LISTEN_ADDRESS` | Requires ADP and a non-loopback host; waits for TCP acceptance; the listener uses TLS |
 | `otlp_grpc` | gRPC | `DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY` | Requires ADP and its OTLP pipeline, a nonzero port and a non-loopback host; waits for TCP acceptance |
@@ -568,6 +577,14 @@ The UDP and TCP endpoints require `DD_DOGSTATSD_NON_LOCAL_TRAFFIC=true` or a non
 follow the same owner precedence. With both unset, DogStatsD binds loopback and both endpoints are omitted.
 ADP API addresses use `tcp://host:port`; a loopback host is a configuration error, and port 0 disables the endpoint.
 Invalid listener values name the configuration key in their errors.
+
+On Linux, both `agent` and `agent-adp` declare APM endpoints only when `DD_APM_ENABLED` or `apm_config.enabled`
+explicitly enables APM. ADP owns these receivers when `DD_DATA_PLANE_ENABLED` and
+`DD_DATA_PLANE_EXPERIMENTAL_APM_ENABLED` are true; otherwise the trace-agent owns them. ADP-owned values prefer
+`ADP_DD_` over `DD_`, then the file. Setting `ADP_DD_APM_RECEIVER_PORT` also suppresses the injected Core Agent
+APM port default, whose config-stream value would otherwise mask the ADP-only override.
+The TCP endpoint is omitted when `bind_host` is loopback unless
+`apm_config.apm_non_local_traffic` enables non-local traffic. With neither key set, APM binds every interface.
 
 ADP's OTLP endpoints require `DD_DATA_PLANE_ENABLED=true` and an enabled OTLP pipeline. The OTLP switch defaults
 to false; `ADP_DD_DATA_PLANE_OTLP_ENABLED` takes precedence over `DD_DATA_PLANE_OTLP_ENABLED`. The receiver
@@ -622,7 +639,7 @@ ADP CLI output is never quoted on a nonzero exit. `config_set` includes trimmed 
 product failure; it uses the Agent's own client for its runtime configuration API.
 
 On Windows, the `agent-adp` definition runs the Agent and ADP in one container through its own entrypoint, using
-`agent-adp-windows-image`. It declares the Linux container listener table and fixed defaults above, except Unix
+`agent-adp-windows-image`. It declares the Linux container listener table and fixed defaults above, except APM and Unix
 sockets: their paths default to empty, and nonempty paths are rejected. Windows rejects `ADP_DD_` variables;
 listeners use the `DD_` keys. The named-pipe name must contain no slash, backslash or NUL.
 Loopback filtering and the DogStatsD non-local-traffic/bind-host rule match Linux.

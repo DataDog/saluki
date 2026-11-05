@@ -21,6 +21,7 @@ enum Owner {
     Adp,
     AdpOtlp,
     AdpDogStatsD,
+    Apm,
     AgentOtlpProxy,
     AgentOtlpGrpc,
     AgentOtlpHttp,
@@ -102,6 +103,26 @@ const LISTENERS: &[Listener] = &[
         owner: Owner::DogStatsD,
         macos_only: false,
         windows_only: true,
+    },
+    Listener {
+        name: "apm_tcp",
+        kind: EndpointKind::Http,
+        key: "APM_RECEIVER_PORT",
+        default: "8126",
+        value: ValueKind::Port(|port| BTreeMap::from([("DD_APM_RECEIVER_PORT".into(), port.to_string())])),
+        owner: Owner::Apm,
+        macos_only: false,
+        windows_only: false,
+    },
+    Listener {
+        name: "apm_uds",
+        kind: EndpointKind::UnixStream,
+        key: "APM_RECEIVER_SOCKET",
+        default: "/var/run/datadog/apm.socket",
+        value: ValueKind::Path,
+        owner: Owner::Apm,
+        macos_only: false,
+        windows_only: false,
     },
     Listener {
         name: "api",
@@ -311,6 +332,9 @@ pub(crate) fn endpoints(
     let proxy = platform == Platform::MacOsHost && otlp_proxy_enabled(env.values)?;
     let mut endpoints = BTreeMap::new();
     for listener in LISTENERS {
+        if matches!(listener.owner, Owner::Apm) && platform != Platform::LinuxContainer {
+            continue;
+        }
         if platform == Platform::WindowsContainer && matches!(listener.value, ValueKind::Path) {
             let (key, value) = env.value(Owner::Agent, listener.key, "")?;
             if !value.is_empty() {
@@ -325,6 +349,14 @@ pub(crate) fn endpoints(
             continue;
         }
         let owner = match listener.owner {
+            Owner::Apm if !env.enabled(Owner::Agent, "APM_ENABLED", "false")? => continue,
+            Owner::Apm => {
+                if adp && env.enabled(Owner::Agent, "DATA_PLANE_EXPERIMENTAL_APM_ENABLED", "false")? {
+                    Owner::Adp
+                } else {
+                    Owner::Agent
+                }
+            }
             Owner::AgentOtlpGrpc | Owner::AgentOtlpHttp
                 if platform == Platform::WindowsContainer
                     || (platform == Platform::LinuxContainer && product != Product::Agent) =>
@@ -410,23 +442,8 @@ pub(crate) fn endpoints(
                             if platform == Platform::LinuxContainer && value.is_empty() && listener.default.is_empty() {
                                 continue;
                             }
-                            let address = url::Url::parse(&format!("tcp://{value}"))
-                                .map_err(|_| invalid("must be host:port with no scheme"))?;
-                            if address.host_str().is_none()
-                                || !address.username().is_empty()
-                                || address.password().is_some()
-                                || !address.path().is_empty()
-                                || address.query().is_some()
-                                || address.fragment().is_some()
-                                || value.contains('@')
-                                || value.chars().any(char::is_whitespace)
-                            {
-                                return Err(invalid("must be host:port with no scheme"));
-                            }
-                            let port = address.port().ok_or_else(|| invalid("must specify a port"))?;
-                            let host = url::Host::parse(address.host_str().unwrap())
-                                .map_err(|_| invalid("must be host:port with no scheme"))?;
-                            if platform != Platform::MacOsHost && loopback_host(&host.to_string()) {
+                            let (host, port) = host_port(&value).map_err(invalid)?;
+                            if platform != Platform::MacOsHost && loopback_host(&host) {
                                 continue;
                             }
                             port
@@ -478,6 +495,12 @@ pub(crate) fn endpoints(
                         continue;
                     }
                 }
+                if listener.name == "apm_tcp" && !env.enabled(owner, "APM_NON_LOCAL_TRAFFIC", "false")? {
+                    let (_, host) = env.value(owner, "BIND_HOST", "")?;
+                    if loopback_host(&host) {
+                        continue;
+                    }
+                }
                 match listener.kind {
                     EndpointKind::Tcp => Endpoint::tcp(port).with_ready(Evidence::tcp_accepts(listener.name)),
                     EndpointKind::Http => Endpoint::http(port).with_ready(Evidence::tcp_accepts(listener.name)),
@@ -509,7 +532,25 @@ pub(crate) fn endpoints(
     Ok(endpoints)
 }
 
-fn loopback_host(host: &str) -> bool {
+pub(crate) fn host_port(value: &str) -> Result<(String, u16), &'static str> {
+    let address = url::Url::parse(&format!("tcp://{value}")).map_err(|_| "must be host:port with no scheme")?;
+    if address.host_str().is_none()
+        || !address.username().is_empty()
+        || address.password().is_some()
+        || !address.path().is_empty()
+        || address.query().is_some()
+        || address.fragment().is_some()
+        || value.contains('@')
+        || value.chars().any(char::is_whitespace)
+    {
+        return Err("must be host:port with no scheme");
+    }
+    let port = address.port().ok_or("must specify a port")?;
+    let host = url::Host::parse(address.host_str().unwrap()).map_err(|_| "must be host:port with no scheme")?;
+    Ok((host.to_string(), port))
+}
+
+pub(crate) fn loopback_host(host: &str) -> bool {
     let host = host.trim_matches(['[', ']']).trim_end_matches('.');
     host.eq_ignore_ascii_case("localhost")
         || host.to_ascii_lowercase().ends_with(".localhost")

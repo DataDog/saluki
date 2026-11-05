@@ -9,11 +9,8 @@ process_config:
   container_collection:
     enabled: false
 
-dd_url: "http://datadog-intake:2049"
-
 apm_config:
   enabled: true
-  apm_dd_url: "http://datadog-intake:2049"
   features: ["enable_otlp_compute_top_level_by_span_kind"]
   probabilistic_sampler:
     enabled: true

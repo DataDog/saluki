@@ -115,6 +115,10 @@ pub(crate) fn default_env(config: &CaseValues, mut env: BTreeMap<String, String>
     ConfigFile::parse(&config.file_contents)
         .expect("datadog.yaml was validated")
         .omit_defaults(&mut env);
+    // The Agent's config stream treats an injected receiver port as explicit, masking ADP-only overrides.
+    if config.env.contains_key("ADP_DD_APM_RECEIVER_PORT") {
+        env.remove("DD_APM_RECEIVER_PORT");
+    }
     env
 }
 
@@ -132,6 +136,8 @@ pub(crate) fn recipe(config: &RenderedConfig, with_adp: bool) -> Result<Recipe, 
     for (name, contents) in config.files() {
         let (path, mode) = if name == "datadog.yaml" {
             ("/etc/datadog-agent/datadog.yaml".into(), 0o644)
+        } else if name == "otel-config.yaml" && !with_adp {
+            ("/etc/datadog-agent/otel-config.yaml".into(), 0o644)
         } else if let Some(relative) = name.strip_prefix("files/") {
             (format!("{CASE_FILES_DIR}/{relative}"), 0o644)
         } else if let Some(hook) = name.strip_prefix("cont-init.d/") {
@@ -348,6 +354,21 @@ mod tests {
             assert_eq!(env["DD_PROC_ROOT"], "/env/proc");
             assert_eq!(env["DOCKER_HOST"], "unix:///override.sock");
         }
+    }
+
+    #[test]
+    fn apm_port_defaults_yield_to_an_adp_only_override() {
+        let values = CaseValues {
+            env: BTreeMap::from([("ADP_DD_APM_RECEIVER_PORT".into(), "0".into())]),
+            ..Default::default()
+        };
+        let defaults = AgentAdp.default_env(LINUX, &values);
+        assert!(!defaults.contains_key("DD_APM_RECEIVER_PORT"));
+        assert_eq!(defaults["DD_CMD_PORT"], "55001");
+        assert_eq!(
+            AgentAdp.default_env(LINUX, &CaseValues::default())["DD_APM_RECEIVER_PORT"],
+            "58126"
+        );
     }
 
     #[test]

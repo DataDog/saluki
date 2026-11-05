@@ -252,7 +252,17 @@ impl Inventory {
             let listed = crate::list_command::listing(&built, &[], os);
             for built in built {
                 let case = built.plan.case();
-                let status = if case.is_disabled() { DISABLED } else { SELECTED };
+                let status = if matches!(case.schema(), CaseSchema::Participants { .. }) {
+                    CASE_DIRS
+                        .iter()
+                        .find(|(dir, ..)| case.source().starts_with(root.join(dir)))
+                        .expect("discovered participant case belongs to an inventory directory")
+                        .2
+                } else if case.is_disabled() {
+                    DISABLED
+                } else {
+                    SELECTED
+                };
                 rows.push(Row::from_case(
                     root,
                     &built,
@@ -997,6 +1007,28 @@ fn inventory_records_a_case_in_the_disabled_directory_as_disabled_without_ci_job
 }
 
 #[test]
+fn participant_cases_in_the_disabled_directory_compile_without_ci_selection() {
+    let root = tempfile::tempdir().unwrap();
+    let root = root.path().canonicalize().unwrap();
+    create_case_dirs(&root);
+    write_case(
+        &root.join("test/correctness/disabled"),
+        "alpha",
+        "timeout: 1s\nsubject_os: [linux]\nparticipants: {adp: {type: agent-adp, subject: true}}\nprocedure: [{step: log_contains, on: adp, pattern: ready, timeout: 5s}]\n",
+    );
+    let inventory = Inventory::generate(&root);
+    assert_eq!(inventory.rows.len(), 1);
+    let row = &inventory.rows[0];
+    assert_eq!(row.status, DISABLED);
+    assert_eq!(row.schema, PARTICIPANTS);
+    assert_eq!(row.execution, NATIVE);
+    assert!(row.ci_jobs.is_empty());
+    assert!(row.ci_mixins.is_empty());
+    assert_eq!(row.source, "test/correctness/disabled/alpha/config.yaml");
+    inventory.assert_file_accounting(&root);
+}
+
+#[test]
 #[should_panic(expected = "a disabled correctness case belongs in test/correctness/disabled/")]
 fn inventory_rejects_a_disabled_case_in_the_selected_correctness_directory() {
     let root = tempfile::tempdir().unwrap();
@@ -1020,6 +1052,54 @@ fn inventory_rejects_an_enabled_case_in_the_disabled_directory() {
         "type: correctness\nruntime: docker\nanalysis_mode: metrics\nbaseline: {image: base}\ncomparison: {image: comp}\n",
     );
     Inventory::generate(&root.path().canonicalize().unwrap());
+}
+
+#[test]
+fn apm_socket_file_templates_resolve_to_each_participants_shared_directory() {
+    use panoramic_core::{
+        endpoint::{test_support::assert_socket_endpoint, EndpointKind, Evidence},
+        layout::{Realization, RealizationKind},
+        participant::ParticipantType,
+    };
+    use panoramic_participants::Agent;
+
+    let root = tempfile::tempdir().unwrap();
+    let directory = root.path().join("test/correctness/cases");
+    write_case(
+        &directory,
+        "alpha",
+        "timeout: 1s\nsubject_os: [linux]\nparticipants:\n  adp:\n    type: agent-adp\n    subject: true\n    config: {files: {datadog.yaml: {from: datadog.yaml, template: true}}}\n  agent:\n    type: agent\n    config: {files: {datadog.yaml: {from: datadog.yaml, template: true}}}\nprocedure: [{step: log_contains, on: adp, pattern: ready, timeout: 5s}]\n",
+    );
+    fs::write(
+        directory.join("alpha/datadog.yaml"),
+        "apm_config:\n  enabled: true\n  receiver_socket: '{{ self.facts.shared_dir }}/apm.socket'\n",
+    )
+    .unwrap();
+    let case = crate::CASE_LOADER.discover_cases(&[directory]).unwrap().pop().unwrap();
+    let plan = planner().compile(case, Os::Linux).unwrap().into_plan().unwrap();
+    for participant in [&AgentAdp as &dyn ParticipantType, &Agent] {
+        let name = if participant.name() == "agent-adp" {
+            "adp"
+        } else {
+            "agent"
+        };
+        let config = plan.effective_config(name).unwrap();
+        let endpoints = participant
+            .endpoints(
+                Realization {
+                    os: Os::Linux,
+                    kind: RealizationKind::LinuxContainer,
+                },
+                config,
+            )
+            .unwrap();
+        assert_socket_endpoint(
+            &endpoints["apm_uds"],
+            EndpointKind::UnixStream,
+            &format!("/airlock/{name}/shared/apm.socket"),
+            Some(Evidence::socket_exists("apm_uds")),
+        );
+    }
 }
 
 #[test]

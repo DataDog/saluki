@@ -1,36 +1,64 @@
-type: correctness
 # TODO(#2723): Re-enable once Saluki main pins an Agent with datadog-agent#56608 (7.85+)
 # and ADP's span concentrator clamps future span buckets the same way.
-disabled: true
-runtime: docker
-analysis_mode: traces
 # ADP emits http.status_code as a numeric (float) metric, matching the DD agent. For
 # string-typed sources the agent additionally keeps a string copy in meta (separate
 # Meta/Metrics maps); ADP holds only the numeric value, so ignore the agent-only meta variant.
-additional_span_ignore_fields:
-  - meta.http.status_code
-millstone:
-  image: saluki-images/correctness-tools:latest
-  config_path: millstone.yaml
-datadog_intake:
-  image: saluki-images/correctness-tools:latest
-  config_path: ../datadog-intake.yaml
-baseline:
-  image: saluki-images/datadog-agent:testing-release
-  files:
-    - datadog.yaml:/etc/datadog-agent/datadog.yaml
-  env:
-    DD_API_KEY: correctness-test
-comparison:
-  image: saluki-images/datadog-agent:testing-release
-  files:
-    - datadog.yaml:/etc/datadog-agent/datadog.yaml
-  env:
-    DD_API_KEY: correctness-test
-    DD_DATA_PLANE_ENABLED: "true"
-    DD_DATA_PLANE_STANDALONE_MODE: "true"
-    DD_DATA_PLANE_OTLP_ENABLED: "true"
-    # ADP must bind the generator's `4317` target; container initialization moves the Core Agent.
-    # TODO(#2177): Replace this ADP-only override with the canonical schema-provided endpoint key
-    # once endpoint ownership prevents both processes from attempting to bind the same port.
-    ADP_DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY: "0.0.0.0:4317"
+timeout: 20m
+subject_os: [linux]
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    connect: {intake: intake-adp.api}
+    config:
+      files:
+        datadog.yaml: {from: datadog.yaml, template: true}
+      env:
+        DD_API_KEY: correctness-test
+        DD_DATA_PLANE_ENABLED: "true"
+        DD_DATA_PLANE_STANDALONE_MODE: "true"
+        DD_DATA_PLANE_OTLP_ENABLED: "true"
+        # ADP must bind the generator's `4317` target; container initialization moves the Core Agent.
+        # TODO(#2177): Replace this ADP-only override with the canonical schema-provided endpoint key
+        # once endpoint ownership prevents both processes from attempting to bind the same port.
+        ADP_DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY: "0.0.0.0:4317"
+  agent:
+    type: agent
+    connect: {intake: intake-agent.api}
+    config:
+      files:
+        datadog.yaml: {from: datadog.yaml, template: true}
+      env:
+        DD_API_KEY: correctness-test
+  intake-adp:
+    type: datadog-intake
+  intake-agent:
+    type: datadog-intake
+  load:
+    type: millstone
+    connect:
+      target: adp.otlp_grpc
+      baseline_target: agent.agent_otlp_grpc
+    config:
+      files:
+        millstone.yaml: {from: millstone.yaml, template: true}
+procedure:
+  - step: log_contains
+    on: load
+    process: baseline
+    pattern: Millstone finished sending
+    timeout: 15m
+  - step: log_contains
+    on: load
+    process: subject
+    pattern: Millstone finished sending
+    timeout: 15m
+  - step: process_stable_for
+    on: load
+    duration: 32s
+  - step: compare
+    kind: traces
+    subject: intake-adp
+    baseline: intake-agent
+    ignore_fields:
+      - meta.http.status_code

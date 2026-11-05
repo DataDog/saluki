@@ -13,9 +13,9 @@ configuration. Use it to check coverage when changing case schemas or runners.
   A participant case must declare `subject_os`.
 - **Runtime:** the typed correctness runner's identifier (`docker` or `kubernetes_in_docker`),
   or the native subject participant's realization kind.
-- **Status:** selected by CI discovery, or disabled: the file sets `disabled: true` and lives in
-  `test/correctness/disabled/`, which CI does not list. The inventory requires each case's directory to match
-  its suite and status.
+- **Status:** selected by CI discovery, or disabled. Participant rows take their status from their directory:
+  `test/correctness/disabled/` is compiled but not selected by CI. Typed cases also require `disabled: true`
+  there. The inventory requires each case's directory to match its suite and status.
 - **CI job:** the job that selects this row. Correctness jobs belong to the `run-correctness-tests` child pipeline.
   Disabled rows have no job. macOS rows list both architectures.
 - **Schema:** the file's `type` value, or `participants` for a file that declares participants.
@@ -94,7 +94,7 @@ Use product `config_dump` output from CI runs to compare effective product confi
 | Suite | Files | Selected rows (subject OS / runtime) | Disabled rows | Assertions (subject OS) | Actions (subject OS) |
 | --- | --- | --- | --- | --- | --- |
 | integration | 52 | linux / linux-container: 45; macos / host-process-group: 33; windows / windows-container: 36 | 0 | linux: 193; macos: 141; windows: 155 | linux: 25; macos: 17; windows: 24 |
-| correctness | 42 | linux / docker: 6; linux / kubernetes_in_docker: 7; linux / linux-container: 33 | 2 | linux: 132 | linux: 0 |
+| correctness | 42 | linux / kubernetes_in_docker: 7; linux / linux-container: 39 | 2 | linux: 156 | linux: 0 |
 
 Total: 162 rows.
 
@@ -102,8 +102,8 @@ Total: 162 rows.
 
 | Case | Suite | Subject OS | Runtime | Status | CI job | Schema | Execution | Steps | Ignored |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| apm-trace | correctness | linux | docker | selected | test-correctness-apm-trace | correctness | old | compare traces | 0 |
-| apm-trace-uds | correctness | linux | docker | selected | test-correctness-apm-trace-uds | correctness | old | compare traces | 0 |
+| apm-trace | correctness | linux | linux-container | selected | test-correctness-apm-trace | participants | native | assertions: 4, actions: 0 | 0 |
+| apm-trace-uds | correctness | linux | linux-container | selected | test-correctness-apm-trace-uds | participants | native | assertions: 4, actions: 0 | 0 |
 | dsd-added-tags | correctness | linux | linux-container | selected | test-correctness-dsd-added-tags | participants | native | assertions: 4, actions: 0 | 0 |
 | dsd-events | correctness | linux | linux-container | selected | test-correctness-dsd-events | participants | native | assertions: 4, actions: 0 | 0 |
 | dsd-forwarding | correctness | linux | linux-container | selected | test-correctness-dsd-forwarding | participants | native | assertions: 4, actions: 0 | 0 |
@@ -144,12 +144,12 @@ Total: 162 rows.
 | otlp-metrics-resource-attributes | correctness | linux | linux-container | selected | test-correctness-otlp-metrics-resource-attributes | participants | native | assertions: 4, actions: 0 | 0 |
 | otlp-metrics-scope-metadata | correctness | linux | linux-container | selected | test-correctness-otlp-metrics-scope-metadata | participants | native | assertions: 4, actions: 0 | 0 |
 | otlp-metrics-summary-mode | correctness | linux | linux-container | selected | test-correctness-otlp-metrics-summary-mode | participants | native | assertions: 4, actions: 0 | 0 |
-| otlp-traces | correctness | linux | docker | disabled | — | correctness | old | compare traces | 1 |
-| otlp-traces-ets | correctness | linux | docker | disabled | — | correctness | old | compare traces | 1 |
-| otlp-traces-ottl-filtering | correctness | linux | docker | selected | test-correctness-otlp-traces-ottl-filtering | correctness | old | compare traces | 0 |
-| otlp-traces-ottl-transform | correctness | linux | docker | selected | test-correctness-otlp-traces-ottl-transform | correctness | old | compare traces | 0 |
-| otlp-traces-probabilistic | correctness | linux | docker | selected | test-correctness-otlp-traces-probabilistic | correctness | old | compare traces | 1 |
-| otlp-traces-probabilistic-full-trace-id | correctness | linux | docker | selected | test-correctness-otlp-traces-probabilistic-full-trace-id | correctness | old | compare traces | 1 |
+| otlp-traces | correctness | linux | linux-container | disabled | — | participants | native | assertions: 4, actions: 0 | 0 |
+| otlp-traces-ets | correctness | linux | linux-container | disabled | — | participants | native | assertions: 4, actions: 0 | 0 |
+| otlp-traces-ottl-filtering | correctness | linux | linux-container | selected | test-correctness-otlp-traces-ottl-filtering | participants | native | assertions: 4, actions: 0 | 0 |
+| otlp-traces-ottl-transform | correctness | linux | linux-container | selected | test-correctness-otlp-traces-ottl-transform | participants | native | assertions: 4, actions: 0 | 0 |
+| otlp-traces-probabilistic | correctness | linux | linux-container | selected | test-correctness-otlp-traces-probabilistic | participants | native | assertions: 4, actions: 0 | 0 |
+| otlp-traces-probabilistic-full-trace-id | correctness | linux | linux-container | selected | test-correctness-otlp-traces-probabilistic-full-trace-id | participants | native | assertions: 4, actions: 0 | 0 |
 | adp-cmd-port | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 6, actions: 0 | 0 |
 | adp-cmd-port | integration | macos | host-process-group | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | native | assertions: 6, actions: 0 | 0 |
 | adp-cmd-port | integration | windows | windows-container | selected | test-integration-windows-amd64 | participants | native | assertions: 6, actions: 0 | 0 |
@@ -609,6 +609,14 @@ Link CI runs; don't copy their logs into the repository.
 | otlp-metrics-resource-attributes | linux | native | Pending CI. Native Linux/lima passed (41.403 s wall); paired sender digests match. Plan-level env and product/workload bytes match after the address rewrites. Compared with `56bdfaf8fb`. |
 | otlp-metrics-scope-metadata | linux | native | Pending CI. Native Linux/lima passed (40.133 s wall); paired sender digests match. Plan-level env and product/workload bytes match after the address rewrites. Compared with `56bdfaf8fb`. |
 | otlp-metrics-summary-mode | linux | native | Pending CI. Native Linux/lima passed (40.285 s wall); paired sender digests match. Plan-level env and product/workload bytes match after the address rewrites. Compared with `56bdfaf8fb`. |
+| otlp-traces-ottl-filtering | linux | native | Pending CI. Legacy passed (68.330 s), as did an isolated dump-capture repeat (66.019 s); native passed (47.744 s). Inputs match; collector settings differ only in the delivered exporter URL. Configuration differences are limited to documented routing and type defaults. Compared with `4a461d30e5`. |
+| otlp-traces-ottl-transform | linux | native | Pending CI. Native Linux/lima passed (59.719 s). Paired input digests match; environments, collector processors, corpus, comparison mode and ignore fields preserve the legacy case. Compared with `4a461d30e5`. |
+| otlp-traces-probabilistic | linux | native | Pending CI. Legacy/native Linux/lima passed (69.378→47.945 s wall), with identical 1,000-payload input digests. Sampling settings and ignore fields are unchanged; ignored intake config_path removed. Compared with `4a461d30e5`. |
+| otlp-traces-probabilistic-full-trace-id | linux | native | Pending CI. Native Linux/lima passed (51.046 s). Paired input digests match; full-trace-ID sampling settings and ignore fields are unchanged; ignored intake config_path removed. Compared with `4a461d30e5`. |
+| apm-trace | linux | native | Pending CI. Legacy/native Linux/lima passed (65.064→46.667 s wall), with identical 100-payload input digests and unchanged TCP/socket ownership. Compared with `4a461d30e5`. |
+| apm-trace-uds | linux | native | Pending CI. Legacy passed (74.284 s); a dump-capture repeat was interrupted by the enclosing validation tool timeout before comparison; the next repeat passed (69.708 s). Checked-in native host view errored on the rootless /host/proc remount (2.087 s). No-host-view attempt 1 was interrupted after the injected APM port caused ADP to collide with the trace-agent (147.874 s); the participant default was fixed without changing the case or comparison. Attempt 2 errored because another invocation held runner ports 20000/20001 (4.089 s). Attempt 3 failed with 8 mismatched stats groups (58.304 s); unchanged attempt 4 passed (49.662 s). Legacy/final native inputs match; both have 17,057 spans per side and matching tag-key sets. Container enrichment remains unproven locally. Compared with `4a461d30e5`. |
+| otlp-traces | linux | native | Pending CI. Not selected; compiled only. Linux list reports runnable; the inventory retains disabled status and no CI jobs or mixins. The disabling TODO is retained and ignored intake config_path removed. Compared with `4a461d30e5`. |
+| otlp-traces-ets | linux | native | Pending CI. Not selected; compiled only. Linux list reports runnable; the inventory retains disabled status and no CI jobs or mixins. Error-tracking settings and the disabling TODO are retained; ignored intake config_path removed. Compared with `4a461d30e5`. |
 <!-- migration-proofs:end -->
 
 ### DogStatsD discovery and configuration evidence
@@ -640,6 +648,38 @@ In both runners, the baseline's file-defined gRPC ports stay 54317/54317/4317, a
 to loopback ports 14317/14318. ADP's OTLP runtime configuration is identical, including its gRPC ports 54317/54317/4317.
 The two standalone source dumps gain the native Agent HTTP default `0.0.0.0:54318`; ADP's HTTP receiver stays at
 `localhost:6318`. This source-only default does not change the receiver used by either sender.
+
+### OTLP trace and APM discovery and configuration evidence
+
+Compared with `4a461d30e5`, the six selected trace cases now declare five Linux-container participants. The same
+46 selected correctness names remain runnable with unchanged artifact-role arrays, and all 162 inventory rows keep
+their CI jobs and mixins. Only `dsd-origin-detection-matrix` remains typed. The two disabled OTLP files compile as
+ordinary participants: `list -d test/correctness/disabled --subject-os linux` reports both runnable, but their
+inventory status remains disabled and CI does not select them. Neither was executed. Their disabling TODOs remain.
+The two probabilistic cases and both disabled files drop `datadog_intake.config_path`, which the legacy loader ignored.
+
+All six selected cases pass locally, with `apm-trace-uds` run from a scratch copy omitting only host view. Its first
+completed comparison failed with eight stats-group differences; an unchanged retry passed. Every attempt, including
+setup errors and interrupted captures, is recorded in its proof row. No workload, comparison or ignore field was
+changed to obtain a pass. Host-view and container-enrichment proof remain pending CI.
+
+Legacy/native pairs for `otlp-traces-ottl-filtering`, `otlp-traces-probabilistic`, `apm-trace` and `apm-trace-uds`
+match seeds, counts, payload bytes and digests. Each OTLP pair contains 1,000 payloads and 1,000,824 bytes, digest
+`aee9ab0c871300e5`; each APM pair contains 100 payloads, digest `d580876d7e24944e`. Native sender pairs match too.
+The successful APM UDS pair has 17,057 spans on each side, with equal tag-key sets, without proving container tags.
+
+OTTL filtering and APM UDS configuration dumps differ only in delivered intake URLs, participant shared paths,
+existing type port/GUI defaults, baseline ADP disablement and the no-host-view copy's host roots. The OTTL collector
+settings differ only in the exporter URL; its listener port is derived from the placed file rather than a separate
+endpoint declaration. The standalone ADP source dump drops the unused file-only APM URL; the Agent receives it
+through its intake connection.
+
+APM receiver ownership matches legacy: TCP uses the baseline trace-agent on 8126 and ADP on 8126 proxying to the
+subject trace-agent on 8127. UDS uses the baseline trace-agent's shared socket and ADP's subject shared socket,
+proxying to `/var/run/datadog/apm.socket`; ADP's TCP receiver remains disabled. The native APM port default initially
+masked the case's ADP-only port `0` through the Agent config stream, causing both processes to bind 58126.
+The participant now omits that injected default whenever the case supplies `ADP_DD_APM_RECEIVER_PORT`.
+Explicit case environment values remain unchanged; a unit test guards the default-selection rule.
 
 ### Linux comparison evidence
 

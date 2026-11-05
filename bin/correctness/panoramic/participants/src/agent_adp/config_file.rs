@@ -69,7 +69,12 @@ impl ConfigFile {
 
 fn file_key(suffix: &str) -> String {
     match suffix {
+        "APM_ENABLED" => "apm_config.enabled",
         "APM_RECEIVER_PORT" => "apm_config.receiver_port",
+        "APM_RECEIVER_SOCKET" => "apm_config.receiver_socket",
+        "APM_NON_LOCAL_TRAFFIC" => "apm_config.apm_non_local_traffic",
+        "DATA_PLANE_EXPERIMENTAL_APM_ENABLED" => "data_plane.experimental.apm.enabled",
+        "OTELCOLLECTOR_ENABLED" => "otelcollector.enabled",
         "PROCESS_CONFIG_CMD_PORT" => "process_config.cmd_port",
         "AGENT_IPC_PORT" => "agent_ipc.port",
         "DATA_PLANE_ENABLED" => "data_plane.enabled",
@@ -426,6 +431,132 @@ mod tests {
                 AgentAdp.default_env(LINUX, &values),
                 AgentAdp.default_env(LINUX, &CaseValues::default())
             );
+        }
+    }
+    #[test]
+    fn apm_listeners_require_explicit_enablement_and_follow_receiver_ownership() {
+        for participant in [&Agent as &dyn ParticipantType, &AgentAdp] {
+            for enabled in ["", "apm_config: {enabled: false}"] {
+                let endpoints = participant
+                    .endpoints(LINUX, &effective(participant, case(enabled, &[])))
+                    .unwrap();
+                assert!(!endpoints.contains_key("apm_tcp"));
+                assert!(!endpoints.contains_key("apm_uds"));
+            }
+            for proxy in [false, true] {
+                let adp = participant.name() == "agent-adp";
+                let yaml = format!("apm_config: {{enabled: true, receiver_port: 8126, receiver_socket: /run/file.sock}}\ndata_plane: {{enabled: {adp}, experimental: {{apm: {{enabled: {proxy}}}}}}}");
+                let overrides = [
+                    ("DD_APM_RECEIVER_PORT", "8127"),
+                    ("DD_APM_RECEIVER_SOCKET", "/run/agent.sock"),
+                    ("ADP_DD_APM_RECEIVER_PORT", "8128"),
+                    ("ADP_DD_APM_RECEIVER_SOCKET", "/run/adp.sock"),
+                ];
+                for env in [&[][..], &overrides[..]] {
+                    let endpoints = participant
+                        .endpoints(LINUX, &effective(participant, case(&yaml, env)))
+                        .unwrap();
+                    let (port, path) = if env.is_empty() {
+                        (8126, "/run/file.sock")
+                    } else if adp && proxy {
+                        (8128, "/run/adp.sock")
+                    } else {
+                        (8127, "/run/agent.sock")
+                    };
+                    assert_network_endpoint(
+                        &endpoints["apm_tcp"],
+                        EndpointKind::Http,
+                        port,
+                        Some(Evidence::tcp_accepts("apm_tcp")),
+                    );
+                    assert_socket_endpoint(
+                        &endpoints["apm_uds"],
+                        EndpointKind::UnixStream,
+                        path,
+                        Some(Evidence::socket_exists("apm_uds")),
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn apm_environment_can_enable_disable_and_clear_file_listeners() {
+        for (env, tcp, socket) in [
+            (vec![("DD_APM_ENABLED", "true")], true, true),
+            (vec![("DD_APM_ENABLED", "false")], false, false),
+            (
+                vec![("DD_APM_RECEIVER_PORT", "0"), ("DD_APM_RECEIVER_SOCKET", "")],
+                false,
+                false,
+            ),
+            (
+                vec![("ADP_DD_APM_RECEIVER_PORT", "0"), ("ADP_DD_APM_RECEIVER_SOCKET", "")],
+                false,
+                false,
+            ),
+        ] {
+            let yaml = "apm_config: {enabled: true, receiver_port: 8126, receiver_socket: /run/apm.sock}\ndata_plane: {enabled: true, experimental: {apm: {enabled: true}}}";
+            let endpoints = AgentAdp
+                .endpoints(LINUX, &effective(&AgentAdp, case(yaml, &env)))
+                .unwrap();
+            assert_eq!(endpoints.contains_key("apm_tcp"), tcp);
+            assert_eq!(endpoints.contains_key("apm_uds"), socket);
+        }
+        let endpoints = Agent
+            .endpoints(LINUX, &effective(&Agent, case("", &[("DD_APM_ENABLED", "true")])))
+            .unwrap();
+        assert_network_endpoint(
+            &endpoints["apm_tcp"],
+            EndpointKind::Http,
+            8126,
+            Some(Evidence::tcp_accepts("apm_tcp")),
+        );
+        assert_socket_endpoint(
+            &endpoints["apm_uds"],
+            EndpointKind::UnixStream,
+            "/var/run/datadog/apm.socket",
+            Some(Evidence::socket_exists("apm_uds")),
+        );
+    }
+
+    #[test]
+    fn apm_tcp_accepts_unspecified_or_non_local_hosts_and_honors_non_local_traffic() {
+        for participant in [&Agent as &dyn ParticipantType, &AgentAdp] {
+            for (host, non_local, serves) in [
+                ("", false, true),
+                ("0.0.0.0", false, true),
+                ("127.0.0.1", false, false),
+                ("localhost", false, false),
+                ("::1", false, false),
+                ("127.0.0.1", true, true),
+            ] {
+                let yaml =
+                    format!("bind_host: '{host}'\napm_config: {{enabled: true, apm_non_local_traffic: {non_local}}}");
+                let endpoints = participant
+                    .endpoints(LINUX, &effective(participant, case(&yaml, &[])))
+                    .unwrap();
+                assert_eq!(endpoints.contains_key("apm_tcp"), serves, "{host} {non_local}");
+                assert!(endpoints.contains_key("apm_uds"));
+            }
+        }
+        for realization in [
+            Realization {
+                os: Os::MacOs,
+                kind: RealizationKind::HostProcessGroup,
+            },
+            Realization {
+                os: Os::Windows,
+                kind: RealizationKind::WindowsContainer,
+            },
+        ] {
+            let config = EffectiveConfig {
+                env: BTreeMap::from([("DD_APM_ENABLED".into(), "true".into())]),
+                ..Default::default()
+            };
+            let endpoints = AgentAdp.endpoints(realization, &config).unwrap();
+            assert!(!endpoints.contains_key("apm_tcp"));
+            assert!(!endpoints.contains_key("apm_uds"));
         }
     }
 }

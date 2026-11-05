@@ -22,7 +22,7 @@ exporters:
     api:
       key: correctness-test
     traces:
-      endpoint: http://datadog-intake:2049
+      endpoint: "{{ self.connections.intake.url }}"
 
 service:
   pipelines:

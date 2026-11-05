@@ -5,10 +5,11 @@ use std::collections::BTreeMap;
 use panoramic_core::{
     artifact::ArtifactRole,
     backend::LateFact,
-    endpoint::{ConsumedEndpoint, Endpoint},
+    endpoint::{ConsumedEndpoint, Endpoint, Evidence, Port},
     layout::{Os, Realization, RealizationKind},
     participant::{
-        CaseValues, EffectiveConfig, FactDeclaration, Operation, ParticipantType, ProcessSpec, RenderedConfig,
+        require_early_config_value, CaseValues, EffectiveConfig, FactDeclaration, Operation, ParticipantType,
+        ProcessSpec, RenderedConfig,
     },
     recipe::Recipe,
 };
@@ -22,6 +23,66 @@ pub struct Agent;
 impl Agent {
     /// Participant type name used in case files.
     pub const NAME: &'static str = "agent";
+
+    fn configured_endpoints(
+        realization: Realization, env: &BTreeMap<String, String>, files: &BTreeMap<String, Vec<u8>>,
+    ) -> Result<BTreeMap<String, Endpoint>, String> {
+        let file = ConfigFile::parse(files)?;
+        let mut endpoints = listeners::endpoints(realization, env, Some(&file), listeners::Product::Agent)?;
+        let enabled = match env.get("DD_OTELCOLLECTOR_ENABLED") {
+            Some(value) => value.clone(),
+            None => file
+                .value("OTELCOLLECTOR_ENABLED")?
+                .map_or_else(|| "false".into(), |(_, value)| value.into_owned()),
+        };
+        if !enabled
+            .parse::<bool>()
+            .map_err(|_| "DD_OTELCOLLECTOR_ENABLED / otelcollector.enabled must be true or false")?
+        {
+            return Ok(endpoints);
+        }
+        let name = "otel-config.yaml";
+        let key = "receivers.otlp.protocols.grpc.endpoint";
+        let bytes = files
+            .get(name)
+            .ok_or("an enabled collector requires config.files.otel-config.yaml")?;
+        let text = simdutf8::basic::from_utf8(bytes).map_err(|error| format!("{name} must be UTF-8: {error}"))?;
+        let document: serde_json::Value =
+            serde_saphyr::from_str(text).map_err(|error| format!("invalid {name}: {error}"))?;
+        let value = document
+            .pointer("/receivers/otlp/protocols/grpc/endpoint")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| format!("{name} key '{key}' must be a host:port string"))?;
+        require_early_config_value(name, key, value)?;
+        let (host, port) = listeners::host_port(value).map_err(|error| format!("{name} key '{key}' {error}"))?;
+        if listeners::loopback_host(&host) || port == 0 {
+            return Err(format!(
+                "{name} key '{key}' must use a non-loopback host and a nonzero port"
+            ));
+        }
+        if endpoints.contains_key("agent_otlp_grpc") {
+            let receiver = match env.get("DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT") {
+                Some(value) => value.clone(),
+                None => file
+                    .value("OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT")?
+                    .expect("the declared Agent listener has a configured address")
+                    .1
+                    .into_owned(),
+            };
+            if listeners::host_port(&receiver)
+                .expect("the Agent listener was validated")
+                .1
+                == port
+            {
+                return Err(format!("otel_otlp_grpc and agent_otlp_grpc cannot share port {port}"));
+            }
+        }
+        endpoints.insert(
+            "otel_otlp_grpc".into(),
+            Endpoint::grpc(Port::Fixed(port)).with_ready(Evidence::tcp_accepts("otel_otlp_grpc")),
+        );
+        Ok(endpoints)
+    }
 }
 
 impl ParticipantType for Agent {
@@ -53,7 +114,7 @@ impl ParticipantType for Agent {
     }
 
     fn config_files(&self) -> &'static [&'static str] {
-        AgentAdp.config_files()
+        &["datadog.yaml", "otel-config.yaml", "cont-init.d/", "files/"]
     }
 
     fn params(&self) -> &'static [&'static str] {
@@ -75,7 +136,7 @@ impl ParticipantType for Agent {
         }
         let mut env = self.default_env(realization, config);
         env.extend(config.env.clone());
-        listeners::endpoints(realization, &env, Some(&file), listeners::Product::Agent)?;
+        Self::configured_endpoints(realization, &env, &config.file_contents)?;
         Ok(())
     }
 
@@ -94,8 +155,7 @@ impl ParticipantType for Agent {
     ) -> Result<BTreeMap<String, Endpoint>, String> {
         match (realization.os, realization.kind) {
             (Os::Linux, RealizationKind::LinuxContainer) => {
-                let file = ConfigFile::parse(&config.files)?;
-                listeners::endpoints(realization, &config.env, Some(&file), listeners::Product::Agent)
+                Self::configured_endpoints(realization, &config.env, &config.files)
             }
             _ => Ok(BTreeMap::new()),
         }
@@ -147,6 +207,7 @@ impl ParticipantType for Agent {
 #[cfg(test)]
 mod tests {
     use panoramic_core::{
+        case::FileSource,
         endpoint::{
             test_support::{assert_network_endpoint, assert_tls_endpoint},
             EndpointKind, Evidence,
@@ -193,7 +254,11 @@ otlp_config:
         assert_eq!(Agent.name(), "agent");
         assert_eq!(Agent.supports(), &[(Os::Linux, RealizationKind::LinuxContainer)]);
         assert_eq!(Agent.artifacts(LINUX), &[AgentAdp::LINUX_IMAGE]);
-        assert_eq!(Agent.config_files(), AgentAdp.config_files());
+        assert_eq!(
+            Agent.config_files(),
+            &["datadog.yaml", "otel-config.yaml", "cont-init.d/", "files/"]
+        );
+        assert!(!AgentAdp.config_files().contains(&"otel-config.yaml"));
         assert_eq!(Agent.params(), &["extra_hosts", "host_view"]);
         for realization in [
             Realization {
@@ -444,5 +509,184 @@ otlp_config:
         let endpoints = Agent.endpoints(LINUX, &config(&[], Some(&file))).unwrap();
         assert!(!endpoints.contains_key("agent_otlp_grpc"));
         assert!(!endpoints.contains_key("agent_otlp_http"));
+    }
+    fn collector_case(endpoint: &str) -> CaseValues {
+        CaseValues {
+            files: ["datadog.yaml", "otel-config.yaml"]
+                .into_iter()
+                .map(|name| {
+                    (
+                        name.into(),
+                        FileSource {
+                            from: name.into(),
+                            template: true,
+                        },
+                    )
+                })
+                .collect(),
+            file_contents: BTreeMap::from([
+                ("datadog.yaml".into(), b"otelcollector: {enabled: true}".to_vec()),
+                (
+                    "otel-config.yaml".into(),
+                    serde_json::to_vec(
+                        &serde_json::json!({"receivers": {"otlp": {"protocols": {"grpc": {"endpoint": endpoint}}}}, "exporters": {"datadog": {"traces": {"endpoint": "{{ peer.late.address }}"}}}}),
+                    )
+                    .unwrap(),
+                ),
+            ]),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn collector_endpoint_uses_its_file_port_and_agent_only_recipe_path() {
+        for port in [4317, 12345] {
+            let mut values = collector_case(&format!("0.0.0.0:{port}"));
+            values.env.insert(
+                "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT".into(),
+                "0.0.0.0:9437".into(),
+            );
+            Agent.validate_config(LINUX, &values).unwrap();
+            let mut env = Agent.default_env(LINUX, &values);
+            env.extend(values.env);
+            let config = EffectiveConfig {
+                env,
+                files: values.file_contents,
+                ..Default::default()
+            };
+            let endpoints = Agent.endpoints(LINUX, &config).unwrap();
+            assert_network_endpoint(
+                &endpoints["otel_otlp_grpc"],
+                EndpointKind::Grpc,
+                port,
+                Some(Evidence::tcp_accepts("otel_otlp_grpc")),
+            );
+            assert_network_endpoint(
+                &endpoints["agent_otlp_grpc"],
+                EndpointKind::Grpc,
+                9437,
+                Some(Evidence::tcp_accepts("agent_otlp_grpc")),
+            );
+            let rendered = rendered(config.env, config.files.clone());
+            let recipe = Agent.recipe(LINUX, &rendered).unwrap();
+            assert!(files(&recipe).contains(&(
+                "/etc/datadog-agent/otel-config.yaml",
+                0o644,
+                config.files["otel-config.yaml"].as_slice()
+            )));
+            assert!(AgentAdp
+                .recipe(LINUX, &rendered)
+                .err()
+                .expect("collector file belongs to agent")
+                .contains("otel-config.yaml"));
+        }
+    }
+
+    #[test]
+    fn collector_enablement_uses_agent_environment_over_file_and_ignores_adp_overrides() {
+        for (file_enabled, env_enabled, adp_enabled, serves) in [
+            (false, None, "true", false),
+            (true, None, "false", true),
+            (true, Some("false"), "true", false),
+            (false, Some("true"), "false", true),
+        ] {
+            let mut values = collector_case("0.0.0.0:4317");
+            values.file_contents.insert(
+                "datadog.yaml".into(),
+                format!("otelcollector: {{enabled: {file_enabled}}}").into_bytes(),
+            );
+            if let Some(value) = env_enabled {
+                values.env.insert("DD_OTELCOLLECTOR_ENABLED".into(), value.into());
+            }
+            values
+                .env
+                .insert("ADP_DD_OTELCOLLECTOR_ENABLED".into(), adp_enabled.into());
+            if !serves {
+                values.file_contents.remove("otel-config.yaml");
+            }
+            Agent.validate_config(LINUX, &values).unwrap();
+            let mut env = Agent.default_env(LINUX, &values);
+            env.extend(values.env);
+            let endpoints = Agent
+                .endpoints(
+                    LINUX,
+                    &EffectiveConfig {
+                        env,
+                        files: values.file_contents,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            assert_eq!(endpoints.contains_key("otel_otlp_grpc"), serves);
+        }
+        assert!(!Agent
+            .endpoints(LINUX, &EffectiveConfig::default())
+            .unwrap()
+            .contains_key("otel_otlp_grpc"));
+    }
+
+    #[test]
+    fn enabled_collector_rejects_missing_invalid_or_late_receiver_configuration() {
+        for endpoint in [
+            "",
+            "localhost:4317",
+            "127.0.0.1:4317",
+            "[::1]:4317",
+            "0.0.0.0:0",
+            "0.0.0.0",
+            "http://0.0.0.0:4317",
+            "0.0.0.0:4317/path",
+            "{{ peer.late.address }}",
+        ] {
+            let error = Agent.validate_config(LINUX, &collector_case(endpoint)).unwrap_err();
+            assert!(
+                error.contains("otel-config.yaml") && error.contains("receivers.otlp.protocols.grpc.endpoint"),
+                "{endpoint}: {error}"
+            );
+        }
+        for contents in [
+            None,
+            Some("bad: ["),
+            Some("{}"),
+            Some("receivers: {otlp: {protocols: {grpc: {endpoint: 4317}}}}"),
+        ] {
+            let mut values = collector_case("0.0.0.0:4317");
+            if let Some(contents) = contents {
+                values
+                    .file_contents
+                    .insert("otel-config.yaml".into(), contents.as_bytes().to_vec());
+            } else {
+                values.file_contents.remove("otel-config.yaml");
+            }
+            assert!(Agent
+                .validate_config(LINUX, &values)
+                .unwrap_err()
+                .contains("otel-config.yaml"));
+        }
+        let mut values = collector_case("0.0.0.0:4317");
+        values.env.insert("DD_OTELCOLLECTOR_ENABLED".into(), "maybe".into());
+        assert!(Agent
+            .validate_config(LINUX, &values)
+            .unwrap_err()
+            .contains("must be true or false"));
+    }
+
+    #[test]
+    fn collector_and_core_agent_cannot_declare_the_same_grpc_port() {
+        for env_override in [false, true] {
+            let mut values = collector_case("0.0.0.0:4317");
+            if env_override {
+                values.env.insert(
+                    "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT".into(),
+                    "0.0.0.0:4317".into(),
+                );
+            } else {
+                values.file_contents.insert("datadog.yaml".into(), b"otelcollector: {enabled: true}\notlp_config: {receiver: {protocols: {grpc: {endpoint: '0.0.0.0:4317'}}}}".to_vec());
+            }
+            assert_eq!(
+                Agent.validate_config(LINUX, &values).unwrap_err(),
+                "otel_otlp_grpc and agent_otlp_grpc cannot share port 4317"
+            );
+        }
     }
 }
