@@ -1,4 +1,4 @@
-//! Commands offered by the Agent and ADP in Linux containers.
+//! Commands offered by the Agent and ADP on each realization.
 
 use async_trait::async_trait;
 use panoramic_core::{
@@ -8,17 +8,104 @@ use panoramic_core::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-const ADP: &str = "/opt/datadog-agent/embedded/bin/agent-data-plane";
-const AGENT: &str = "/opt/datadog-agent/bin/agent/agent";
+#[derive(Clone, Copy)]
+enum Programs {
+    /// Absolute image paths, run with `exec`.
+    Paths { adp: &'static str, agent: &'static str },
+    /// The participant's artifact-bound programs, run with `exec_process` and `-c` relative to its directory.
+    HostProcesses,
+}
 
-pub(super) enum Command {
+#[derive(Clone, Copy)]
+enum Program {
+    Adp,
+    Agent,
+}
+
+impl Programs {
+    async fn exec(&self, cx: &OpContext<'_>, program: Program, args: Vec<String>) -> Result<ExecOutput, HandleError> {
+        match self {
+            Self::Paths { adp, agent } => {
+                let path = match program {
+                    Program::Adp => adp,
+                    Program::Agent => agent,
+                };
+                cx.exec(std::iter::once((*path).into()).chain(args).collect()).await
+            }
+            Self::HostProcesses => {
+                let (process, config) = match program {
+                    Program::Adp => ("adp", "datadog.yaml"),
+                    Program::Agent => ("agent", "."),
+                };
+                cx.exec_process(process, ["-c".into(), config.into()].into_iter().chain(args).collect())
+                    .await
+            }
+        }
+    }
+}
+
+const LINUX: Programs = Programs::Paths {
+    adp: "/opt/datadog-agent/embedded/bin/agent-data-plane",
+    agent: "/opt/datadog-agent/bin/agent/agent",
+};
+const WINDOWS: Programs = Programs::Paths {
+    adp: r"C:\adp\agent-data-plane.exe",
+    agent: r"C:\Program Files\Datadog\Datadog Agent\bin\agent.exe",
+};
+
+struct AgentAdpOperation {
+    command: Command,
+    programs: Programs,
+}
+
+enum Command {
     CliAdp,
     CliAgent,
+    ConfigDump,
     ConfigSet,
     DogstatsdCapture,
     DogstatsdReplay,
     DogstatsdStats,
 }
+
+macro_rules! operations {
+    ($programs:expr) => {
+        &[
+            &AgentAdpOperation {
+                command: Command::CliAdp,
+                programs: $programs,
+            },
+            &AgentAdpOperation {
+                command: Command::CliAgent,
+                programs: $programs,
+            },
+            &AgentAdpOperation {
+                command: Command::ConfigDump,
+                programs: $programs,
+            },
+            &AgentAdpOperation {
+                command: Command::ConfigSet,
+                programs: $programs,
+            },
+            &AgentAdpOperation {
+                command: Command::DogstatsdCapture,
+                programs: $programs,
+            },
+            &AgentAdpOperation {
+                command: Command::DogstatsdReplay,
+                programs: $programs,
+            },
+            &AgentAdpOperation {
+                command: Command::DogstatsdStats,
+                programs: $programs,
+            },
+        ]
+    };
+}
+
+pub(super) const LINUX_OPERATIONS: &[&dyn Operation] = operations!(LINUX);
+pub(super) const MACOS_OPERATIONS: &[&dyn Operation] = operations!(Programs::HostProcesses);
+pub(super) const WINDOWS_OPERATIONS: &[&dyn Operation] = operations!(WINDOWS);
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -58,40 +145,58 @@ fn decode<T: serde::de::DeserializeOwned>(args: Value, expected: &str) -> Result
 }
 
 #[async_trait]
-impl Operation for Command {
+impl Operation for AgentAdpOperation {
     fn name(&self) -> &'static str {
-        match self {
-            Self::CliAdp => "cli_adp",
-            Self::CliAgent => "cli_agent",
-            Self::ConfigSet => "config_set",
-            Self::DogstatsdCapture => "dogstatsd_capture",
-            Self::DogstatsdReplay => "dogstatsd_replay",
-            Self::DogstatsdStats => "dogstatsd_stats",
+        match self.command {
+            Command::CliAdp => "cli_adp",
+            Command::CliAgent => "cli_agent",
+            Command::ConfigDump => "config_dump",
+            Command::ConfigSet => "config_set",
+            Command::DogstatsdCapture => "dogstatsd_capture",
+            Command::DogstatsdReplay => "dogstatsd_replay",
+            Command::DogstatsdStats => "dogstatsd_stats",
         }
     }
 
     async fn run(&self, cx: &OpContext<'_>, args: Value) -> Result<Value, HandleError> {
-        let (argv, label) = match self {
-            Self::CliAdp | Self::CliAgent => {
+        let (program, argv, label) = match self.command {
+            Command::CliAdp | Command::CliAgent => {
                 let args: CliArgs = decode(args, "{\"args\": [string]}")?;
-                let (binary, label) = match self {
-                    Self::CliAdp => (ADP, "ADP CLI"),
-                    _ => (AGENT, "Agent CLI"),
+                let (program, label) = match self.command {
+                    Command::CliAdp => (Program::Adp, "ADP CLI"),
+                    _ => (Program::Agent, "Agent CLI"),
                 };
-                (std::iter::once(binary.into()).chain(args.args).collect(), label)
+                (program, args.args, label)
             }
-            Self::ConfigSet => {
+            Command::ConfigDump => {
+                let view = args
+                    .as_object()
+                    .filter(|args| args.len() == 1)
+                    .and_then(|args| args.get("view"))
+                    .and_then(Value::as_str)
+                    .filter(|view| matches!(*view, "source" | "runtime"))
+                    .ok_or_else(|| HandleError::Harness {
+                        message: "config_dump requires exactly {\"view\": \"source\"|\"runtime\"}".into(),
+                    })?;
+                let mut argv = vec!["config".into(), "--json".into()];
+                if view == "runtime" {
+                    argv.push("--runtime".into());
+                }
+                (Program::Adp, argv, "ADP configuration CLI")
+            }
+            Command::ConfigSet => {
                 let args: ConfigSetArgs = decode(args, "{\"key\": string, \"value\": string}")?;
                 (
-                    vec![AGENT.into(), "config".into(), "set".into(), args.key, args.value],
+                    Program::Agent,
+                    vec!["config".into(), "set".into(), args.key, args.value],
                     "Agent config set",
                 )
             }
-            Self::DogstatsdCapture => {
+            Command::DogstatsdCapture => {
                 let args: CaptureArgs = decode(args, "{\"duration_ms\": unsigned integer}")?;
                 (
+                    Program::Adp,
                     vec![
-                        ADP.into(),
                         "dogstatsd".into(),
                         "capture".into(),
                         "--duration".into(),
@@ -102,24 +207,19 @@ impl Operation for Command {
                     "ADP DogStatsD capture",
                 )
             }
-            Self::DogstatsdReplay => {
+            Command::DogstatsdReplay => {
                 let args: ReplayArgs = decode(args, "{\"path\": string}")?;
                 (
-                    vec![
-                        ADP.into(),
-                        "dogstatsd".into(),
-                        "replay".into(),
-                        "--file".into(),
-                        args.path,
-                    ],
+                    Program::Adp,
+                    vec!["dogstatsd".into(), "replay".into(), "--file".into(), args.path],
                     "ADP DogStatsD replay",
                 )
             }
-            Self::DogstatsdStats => {
+            Command::DogstatsdStats => {
                 let args: StatsArgs = decode(args, "{\"seconds\": unsigned integer}")?;
                 (
+                    Program::Adp,
                     vec![
-                        ADP.into(),
                         "dogstatsd".into(),
                         "stats".into(),
                         "--duration-secs".into(),
@@ -129,7 +229,7 @@ impl Operation for Command {
                 )
             }
         };
-        let output = cx.exec(argv).await?;
+        let output = self.programs.exec(cx, program, argv).await?;
         match output.exit_code {
             0 => {}
             126 | 127 => {
@@ -139,7 +239,7 @@ impl Operation for Command {
             }
             code => {
                 let mut message = format!("{label} exited with {code}");
-                if matches!(self, Self::ConfigSet) {
+                if matches!(self.command, Command::ConfigSet) {
                     let stderr = String::from_utf8_lossy(&output.stderr);
                     let stderr = stderr.trim();
                     let stderr = &stderr[..stderr.floor_char_boundary(512)];
@@ -151,11 +251,14 @@ impl Operation for Command {
                 return Err(HandleError::Product { message });
             }
         }
-        match self {
-            Self::CliAdp | Self::CliAgent => Ok(json!({"output": combined_output(&output)})),
-            Self::ConfigSet | Self::DogstatsdReplay => Ok(json!({})),
-            Self::DogstatsdCapture => Ok(json!({"path": capture_path_from_output(&combined_output(&output))?})),
-            Self::DogstatsdStats => Ok(json!({"metrics": metric_names(&combined_output(&output))?})),
+        match self.command {
+            Command::CliAdp | Command::CliAgent => Ok(json!({"output": combined_output(&output)})),
+            Command::ConfigDump => serde_json::from_slice(&output.stdout).map_err(|_| HandleError::Product {
+                message: "ADP configuration CLI returned invalid JSON".into(),
+            }),
+            Command::ConfigSet | Command::DogstatsdReplay => Ok(json!({})),
+            Command::DogstatsdCapture => Ok(json!({"path": capture_path_from_output(&combined_output(&output))?})),
+            Command::DogstatsdStats => Ok(json!({"metrics": metric_names(&combined_output(&output))?})),
         }
     }
 }
@@ -202,9 +305,269 @@ fn metric_names(output: &str) -> Result<Vec<&str>, HandleError> {
 
 #[cfg(test)]
 mod tests {
-    use panoramic_core::participant::test_support::run_operation;
+    use panoramic_core::participant::test_support::{run_operation, run_operation_with_process};
 
     use super::*;
+
+    const ADP: &str = "/opt/datadog-agent/embedded/bin/agent-data-plane";
+    const AGENT: &str = "/opt/datadog-agent/bin/agent/agent";
+
+    #[tokio::test]
+    async fn operations_use_absolute_container_paths_or_declared_host_programs_with_relative_config() {
+        for (name, process, args, argv, stdout, expected) in [
+            (
+                "cli_adp",
+                "adp",
+                json!({"args": ["config", "a b"]}),
+                vec!["config", "a b"],
+                "ready",
+                json!({"output": "ready"}),
+            ),
+            (
+                "cli_agent",
+                "agent",
+                json!({"args": ["status"]}),
+                vec!["status"],
+                "ready",
+                json!({"output": "ready"}),
+            ),
+            (
+                "config_dump",
+                "adp",
+                json!({"view": "source"}),
+                vec!["config", "--json"],
+                r#"{"key":true}"#,
+                json!({"key": true}),
+            ),
+            (
+                "config_dump",
+                "adp",
+                json!({"view": "runtime"}),
+                vec!["config", "--json", "--runtime"],
+                r#"{"key":true}"#,
+                json!({"key": true}),
+            ),
+            (
+                "config_set",
+                "agent",
+                json!({"key": "log_level", "value": "debug"}),
+                vec!["config", "set", "log_level", "debug"],
+                "",
+                json!({}),
+            ),
+            (
+                "dogstatsd_capture",
+                "adp",
+                json!({"duration_ms": 1250}),
+                vec!["dogstatsd", "capture", "--duration", "1250ms", "--compressed", "false"],
+                "Data will be written to 'capture.dog'",
+                json!({"path": "capture.dog"}),
+            ),
+            (
+                "dogstatsd_replay",
+                "adp",
+                json!({"path": "capture with spaces.dog"}),
+                vec!["dogstatsd", "replay", "--file", "capture with spaces.dog"],
+                "",
+                json!({}),
+            ),
+            (
+                "dogstatsd_stats",
+                "adp",
+                json!({"seconds": 3}),
+                vec!["dogstatsd", "stats", "--duration-secs", "3"],
+                "| Metric | Count |\n| requests | 1 |",
+                json!({"metrics": ["requests"]}),
+            ),
+        ] {
+            for (operations, paths) in [
+                (LINUX_OPERATIONS, Some((ADP, AGENT))),
+                (MACOS_OPERATIONS, None),
+                (
+                    WINDOWS_OPERATIONS,
+                    Some((
+                        r"C:\adp\agent-data-plane.exe",
+                        r"C:\Program Files\Datadog\Datadog Agent\bin\agent.exe",
+                    )),
+                ),
+            ] {
+                let operation = operation(operations, name);
+                let calls = std::sync::atomic::AtomicUsize::new(0);
+                let result = run_operation_with_process(
+                    operation,
+                    args.clone(),
+                    |command| {
+                        let Some((adp, agent)) = paths else {
+                            panic!("host commands must use the declared process")
+                        };
+                        let binary = if process == "adp" { adp } else { agent };
+                        assert_eq!(
+                            command.argv,
+                            std::iter::once(binary).chain(argv.iter().copied()).collect::<Vec<_>>()
+                        );
+                        assert!(command.env.is_empty() && command.stdin.is_none());
+                        calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        Ok(output(0, stdout.as_bytes(), b""))
+                    },
+                    |actual_process, actual_args| {
+                        assert!(paths.is_none());
+                        assert_eq!(actual_process, process);
+                        let config = if process == "adp" { "datadog.yaml" } else { "." };
+                        assert_eq!(
+                            actual_args,
+                            ["-c", config]
+                                .into_iter()
+                                .chain(argv.iter().copied())
+                                .collect::<Vec<_>>()
+                        );
+                        calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        Ok(output(0, stdout.as_bytes(), b""))
+                    },
+                )
+                .await
+                .unwrap();
+                assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+                assert_eq!(result, expected, "{name}");
+            }
+        }
+    }
+
+    fn operation(operations: &[&'static dyn Operation], name: &str) -> &'static dyn Operation {
+        *operations
+            .iter()
+            .find(|operation| operation.name() == name)
+            .expect("a declared operation")
+    }
+
+    fn cli_output(exit_code: i64, stdout: &[u8]) -> ExecOutput {
+        ExecOutput {
+            stdout: stdout.into(),
+            stderr: b"stderr-secret".to_vec(),
+            exit_code,
+        }
+    }
+
+    #[tokio::test]
+    async fn config_dump_runs_the_cli_for_the_requested_view_and_returns_parsed_json() {
+        let expected = serde_json::json!({"domains": {"remote_configuration": {"enabled": true}}});
+        for view in ["source", "runtime"] {
+            let value = run_operation(
+                operation(LINUX_OPERATIONS, "config_dump"),
+                serde_json::json!({"view": view}),
+                |command| {
+                    let mut argv = vec!["/opt/datadog-agent/embedded/bin/agent-data-plane", "config", "--json"];
+                    if view == "runtime" {
+                        argv.push("--runtime");
+                    }
+                    assert_eq!(command.argv, argv);
+                    assert!(command.env.is_empty());
+                    assert!(command.stdin.is_none());
+                    Ok(cli_output(0, &serde_json::to_vec(&expected).unwrap()))
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(value, expected, "{view}");
+        }
+    }
+
+    #[tokio::test]
+    async fn config_dump_rejects_every_argument_shape_except_one_known_view_before_exec() {
+        for args in [
+            Value::Null,
+            serde_json::json!("source"),
+            serde_json::json!(["source"]),
+            serde_json::json!({}),
+            serde_json::json!({"view": "unknown-view-secret"}),
+            serde_json::json!({"view": null}),
+            serde_json::json!({"view": true}),
+            serde_json::json!({"view": 1}),
+            serde_json::json!({"view": ["source"]}),
+            serde_json::json!({"view": {"source": true}}),
+            serde_json::json!({"view": "source", "extra": "argument-secret"}),
+            serde_json::json!({"view": "runtime", "extra": "argument-secret"}),
+            serde_json::json!({"extra": "argument-secret"}),
+        ] {
+            let error = run_operation(operation(LINUX_OPERATIONS, "config_dump"), args.clone(), |_| {
+                panic!("invalid arguments must not exec")
+            })
+            .await
+            .unwrap_err();
+            assert!(matches!(error, HandleError::Harness { .. }), "{args}: {error}");
+            assert!(error.to_string().contains("view"));
+            assert!(!error.to_string().contains("secret"), "{error}");
+        }
+    }
+
+    #[tokio::test]
+    async fn config_dump_classifies_cli_exits_without_disclosing_output() {
+        for code in [1, 3, 10, 125, 126, 127, 128, 255] {
+            let error = run_operation(
+                operation(LINUX_OPERATIONS, "config_dump"),
+                serde_json::json!({"view": "runtime"}),
+                |_| Ok(cli_output(code, b"stdout-secret")),
+            )
+            .await
+            .unwrap_err();
+            let expected = match code {
+                126 | 127 => HandleError::Harness {
+                    message: format!("ADP configuration CLI could not run (exit {code})"),
+                },
+                _ => HandleError::Product {
+                    message: format!("ADP configuration CLI exited with {code}"),
+                },
+            };
+            assert_eq!(error, expected);
+            assert!(!error.to_string().contains("secret"), "{error}");
+        }
+    }
+
+    #[tokio::test]
+    async fn config_dump_reports_invalid_json_as_a_product_error_without_disclosing_output() {
+        for stdout in [
+            b"stdout-secret".as_slice(),
+            b"{\"stdout-secret\":}".as_slice(),
+            b"{\"api_key\":\"stdout-secret\"} trailing".as_slice(),
+            b"\xffstdout-secret".as_slice(),
+            b"".as_slice(),
+        ] {
+            let error = run_operation(
+                operation(LINUX_OPERATIONS, "config_dump"),
+                serde_json::json!({"view": "source"}),
+                |_| Ok(cli_output(0, stdout)),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(
+                error,
+                HandleError::Product {
+                    message: "ADP configuration CLI returned invalid JSON".into(),
+                }
+            );
+            assert!(!error.to_string().contains("secret"), "{error}");
+        }
+    }
+
+    #[tokio::test]
+    async fn config_dump_preserves_exec_failure_classification() {
+        for error in [
+            HandleError::Harness {
+                message: "exec unavailable".into(),
+            },
+            HandleError::Product {
+                message: "exec timed out".into(),
+            },
+        ] {
+            let actual = run_operation(
+                operation(LINUX_OPERATIONS, "config_dump"),
+                serde_json::json!({"view": "source"}),
+                |_| Err(error.clone()),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(actual, error);
+        }
+    }
 
     fn output(code: i64, stdout: &[u8], stderr: &[u8]) -> ExecOutput {
         ExecOutput {
@@ -216,7 +579,10 @@ mod tests {
 
     #[tokio::test]
     async fn adp_and_agent_cli_operations_run_their_binary_and_return_combined_lossy_output() {
-        for (operation, binary) in [(&Command::CliAdp, ADP), (&Command::CliAgent, AGENT)] {
+        for (operation, binary) in [
+            (operation(LINUX_OPERATIONS, "cli_adp"), ADP),
+            (operation(LINUX_OPERATIONS, "cli_agent"), AGENT),
+        ] {
             for args in [json!([]), json!(["config", "a b", "'quoted'"])] {
                 let value = run_operation(operation, json!({"args": args}), |command| {
                     let expected = std::iter::once(binary)
@@ -235,7 +601,10 @@ mod tests {
 
     #[tokio::test]
     async fn cli_operations_classify_nonzero_exits_without_disclosing_output() {
-        for (operation, label) in [(&Command::CliAdp, "ADP CLI"), (&Command::CliAgent, "Agent CLI")] {
+        for (operation, label) in [
+            (operation(LINUX_OPERATIONS, "cli_adp"), "ADP CLI"),
+            (operation(LINUX_OPERATIONS, "cli_agent"), "Agent CLI"),
+        ] {
             for code in [1, 10, 125, 126, 127, 128, 255] {
                 let error = run_operation(operation, json!({"args": []}), |_| {
                     Ok(output(code, b"stdout-secret", b"stderr-secret"))
@@ -259,57 +628,66 @@ mod tests {
 
     #[tokio::test]
     async fn operations_reject_missing_extra_and_wrongly_typed_arguments_before_exec() {
-        for (operation, valid) in [
-            (&Command::CliAdp, json!({"args": ["config"]})),
-            (&Command::CliAgent, json!({"args": []})),
-            (&Command::ConfigSet, json!({"key": "log_level", "value": "debug"})),
-            (&Command::DogstatsdCapture, json!({"duration_ms": 1250})),
-            (&Command::DogstatsdReplay, json!({"path": "/capture.dog"})),
-            (&Command::DogstatsdStats, json!({"seconds": 3})),
-        ] {
-            let mut invalid = vec![Value::Null, json!("argument-secret"), json!([]), json!({})];
-            let mut extra = valid.clone();
-            extra["extra"] = "argument-secret".into();
-            invalid.push(extra);
-            for key in valid.as_object().unwrap().keys() {
-                let mut missing = valid.clone();
-                missing.as_object_mut().unwrap().remove(key);
-                invalid.push(missing);
-                for value in [
-                    Value::Null,
-                    json!(false),
-                    json!({"secret": 1}),
-                    json!([1]),
-                    json!(-1),
-                    json!(1.5),
-                ] {
-                    let mut wrong = valid.clone();
-                    wrong[key] = value;
-                    invalid.push(wrong);
-                }
-                if key == "args" {
-                    for value in [json!("config"), json!(["config", true])] {
+        for operations in [LINUX_OPERATIONS, MACOS_OPERATIONS, WINDOWS_OPERATIONS] {
+            for (operation, valid) in [
+                (operation(operations, "cli_adp"), json!({"args": ["config"]})),
+                (operation(operations, "cli_agent"), json!({"args": []})),
+                (operation(operations, "config_dump"), json!({"view": "source"})),
+                (
+                    operation(operations, "config_set"),
+                    json!({"key": "log_level", "value": "debug"}),
+                ),
+                (operation(operations, "dogstatsd_capture"), json!({"duration_ms": 1250})),
+                (
+                    operation(operations, "dogstatsd_replay"),
+                    json!({"path": "/capture.dog"}),
+                ),
+                (operation(operations, "dogstatsd_stats"), json!({"seconds": 3})),
+            ] {
+                let mut invalid = vec![Value::Null, json!("argument-secret"), json!([]), json!({})];
+                let mut extra = valid.clone();
+                extra["extra"] = "argument-secret".into();
+                invalid.push(extra);
+                for key in valid.as_object().unwrap().keys() {
+                    let mut missing = valid.clone();
+                    missing.as_object_mut().unwrap().remove(key);
+                    invalid.push(missing);
+                    for value in [
+                        Value::Null,
+                        json!(false),
+                        json!({"secret": 1}),
+                        json!([1]),
+                        json!(-1),
+                        json!(1.5),
+                    ] {
                         let mut wrong = valid.clone();
                         wrong[key] = value;
                         invalid.push(wrong);
                     }
+                    if key == "args" {
+                        for value in [json!("config"), json!(["config", true])] {
+                            let mut wrong = valid.clone();
+                            wrong[key] = value;
+                            invalid.push(wrong);
+                        }
+                    }
+                    if matches!(key.as_str(), "duration_ms" | "seconds") {
+                        let mut wrong = valid.clone();
+                        wrong[key] = "3".into();
+                        invalid.push(wrong);
+                    }
                 }
-                if matches!(key.as_str(), "duration_ms" | "seconds") {
-                    let mut wrong = valid.clone();
-                    wrong[key] = "3".into();
-                    invalid.push(wrong);
+                for args in invalid {
+                    let error = run_operation(operation, args.clone(), |_| panic!("invalid arguments must not exec"))
+                        .await
+                        .unwrap_err();
+                    assert!(
+                        matches!(error, HandleError::Harness { .. }),
+                        "{} {args}: {error}",
+                        operation.name()
+                    );
+                    assert!(!error.to_string().contains("secret"));
                 }
-            }
-            for args in invalid {
-                let error = run_operation(operation, args.clone(), |_| panic!("invalid arguments must not exec"))
-                    .await
-                    .unwrap_err();
-                assert!(
-                    matches!(error, HandleError::Harness { .. }),
-                    "{} {args}: {error}",
-                    operation.name()
-                );
-                assert!(!error.to_string().contains("secret"));
             }
         }
     }
@@ -317,7 +695,7 @@ mod tests {
     #[tokio::test]
     async fn config_set_runs_the_agent_command_and_bounds_failure_stderr_on_a_character_boundary() {
         let result = run_operation(
-            &Command::ConfigSet,
+            operation(LINUX_OPERATIONS, "config_set"),
             json!({"key": "log_level", "value": "debug"}),
             |command| {
                 assert_eq!(command.argv, [AGENT, "config", "set", "log_level", "debug"]);
@@ -328,9 +706,11 @@ mod tests {
         .unwrap();
         assert_eq!(result, json!({}));
         let stderr = format!("  {}suffix  ", "é".repeat(300));
-        let error = run_operation(&Command::ConfigSet, json!({"key": "some.key", "value": "a b"}), |_| {
-            Ok(output(1, b"stdout-secret", stderr.as_bytes()))
-        })
+        let error = run_operation(
+            operation(LINUX_OPERATIONS, "config_set"),
+            json!({"key": "some.key", "value": "a b"}),
+            |_| Ok(output(1, b"stdout-secret", stderr.as_bytes())),
+        )
         .await
         .unwrap_err();
         assert_eq!(
@@ -340,9 +720,11 @@ mod tests {
             }
         );
         for code in [126, 127] {
-            let error = run_operation(&Command::ConfigSet, json!({"key": "x", "value": "y"}), |_| {
-                Ok(output(code, b"stdout-secret", b"stderr-secret"))
-            })
+            let error = run_operation(
+                operation(LINUX_OPERATIONS, "config_set"),
+                json!({"key": "x", "value": "y"}),
+                |_| Ok(output(code, b"stdout-secret", b"stderr-secret")),
+            )
             .await
             .unwrap_err();
             assert!(matches!(error, HandleError::Harness { .. }));
@@ -352,26 +734,30 @@ mod tests {
 
     #[tokio::test]
     async fn capture_duration_uses_go_milliseconds_and_capture_returns_the_reported_path() {
-        // The CLI's path marker and millisecond duration are also used by actions/dogstatsd_replay.rs.
-        let result = run_operation(&Command::DogstatsdCapture, json!({"duration_ms": 1250}), |command| {
-            assert_eq!(
-                command.argv,
-                [
-                    ADP,
-                    "dogstatsd",
-                    "capture",
-                    "--duration",
-                    "1250ms",
-                    "--compressed",
-                    "false"
-                ]
-            );
-            Ok(output(
-                0,
-                b"log\n",
-                b"Capture started. Data will be written to '/capture with spaces.dog'.\n",
-            ))
-        })
+        // ADP's capture command reports its path as `Data will be written to '<path>'`.
+        let result = run_operation(
+            operation(LINUX_OPERATIONS, "dogstatsd_capture"),
+            json!({"duration_ms": 1250}),
+            |command| {
+                assert_eq!(
+                    command.argv,
+                    [
+                        ADP,
+                        "dogstatsd",
+                        "capture",
+                        "--duration",
+                        "1250ms",
+                        "--compressed",
+                        "false"
+                    ]
+                );
+                Ok(output(
+                    0,
+                    b"log\n",
+                    b"Capture started. Data will be written to '/capture with spaces.dog'.\n",
+                ))
+            },
+        )
         .await
         .unwrap();
         assert_eq!(result, json!({"path": "/capture with spaces.dog"}));
@@ -384,9 +770,11 @@ mod tests {
             ("Data will be written to '/capture", "unterminated"),
             ("Data will be written to ''", "empty"),
         ] {
-            let error = run_operation(&Command::DogstatsdCapture, json!({"duration_ms": 1000}), |_| {
-                Ok(output(0, text.as_bytes(), b""))
-            })
+            let error = run_operation(
+                operation(LINUX_OPERATIONS, "dogstatsd_capture"),
+                json!({"duration_ms": 1000}),
+                |_| Ok(output(0, text.as_bytes(), b"")),
+            )
             .await
             .unwrap_err();
             assert!(matches!(error, HandleError::Product { .. }));
@@ -401,7 +789,7 @@ mod tests {
     #[tokio::test]
     async fn replay_passes_the_capture_path_as_one_argument() {
         let result = run_operation(
-            &Command::DogstatsdReplay,
+            operation(LINUX_OPERATIONS, "dogstatsd_replay"),
             json!({"path": "/capture with spaces.dog"}),
             |command| {
                 assert_eq!(
@@ -418,7 +806,7 @@ mod tests {
 
     #[tokio::test]
     async fn statistics_list_exact_metric_names_after_the_table_header() {
-        // The table shape comes from the CLI summary exercised by actions/dogstatsd_replay.rs.
+        // ADP's stats summary prints a table whose header's first cell is `Metric`.
         let table = concat!(
             "logs\n+------------------+------+-------+-----------+\n",
             "| Metric           | Tags | Count | Last Seen |\n",
@@ -427,10 +815,14 @@ mod tests {
             "| other.metric     |      | 2     |           |\n",
             "+------------------+------+-------+-----------+\n",
         );
-        let result = run_operation(&Command::DogstatsdStats, json!({"seconds": 3}), |command| {
-            assert_eq!(command.argv, [ADP, "dogstatsd", "stats", "--duration-secs", "3"]);
-            Ok(output(0, table.as_bytes(), b""))
-        })
+        let result = run_operation(
+            operation(LINUX_OPERATIONS, "dogstatsd_stats"),
+            json!({"seconds": 3}),
+            |command| {
+                assert_eq!(command.argv, [ADP, "dogstatsd", "stats", "--duration-secs", "3"]);
+                Ok(output(0, table.as_bytes(), b""))
+            },
+        )
         .await
         .unwrap();
         assert_eq!(result, json!({"metrics": ["replay.requests", "other.metric"]}));
@@ -442,9 +834,11 @@ mod tests {
             Vec::<&str>::new()
         );
         for text in ["", "not a table", "| wrong header | count |"] {
-            let error = run_operation(&Command::DogstatsdStats, json!({"seconds": 1}), |_| {
-                Ok(output(0, text.as_bytes(), b""))
-            })
+            let error = run_operation(
+                operation(LINUX_OPERATIONS, "dogstatsd_stats"),
+                json!({"seconds": 1}),
+                |_| Ok(output(0, text.as_bytes(), b"")),
+            )
             .await
             .unwrap_err();
             assert!(matches!(error, HandleError::Product { .. }));
@@ -454,9 +848,15 @@ mod tests {
     #[tokio::test]
     async fn capture_replay_and_statistics_classify_exits_and_preserve_mechanism_errors() {
         for (operation, args) in [
-            (&Command::DogstatsdCapture, json!({"duration_ms": 1000})),
-            (&Command::DogstatsdReplay, json!({"path": "/capture"})),
-            (&Command::DogstatsdStats, json!({"seconds": 1})),
+            (
+                operation(LINUX_OPERATIONS, "dogstatsd_capture"),
+                json!({"duration_ms": 1000}),
+            ),
+            (
+                operation(LINUX_OPERATIONS, "dogstatsd_replay"),
+                json!({"path": "/capture"}),
+            ),
+            (operation(LINUX_OPERATIONS, "dogstatsd_stats"), json!({"seconds": 1})),
         ] {
             for code in [1, 126, 127] {
                 let error = run_operation(operation, args.clone(), |_| {

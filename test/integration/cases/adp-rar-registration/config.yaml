@@ -1,40 +1,45 @@
-type: integration
 name: "adp-rar-registration"
 description: "Verify registration and a real Core Agent to ADP status gRPC call over inbound mTLS"
 timeout: 180s
-runtimes: [linux, mac, windows]
+subject_os: [linux, macos, windows]
 
-env:
-  DD_API_KEY: "00000000000000000000000000000000"
-  DD_HOSTNAME: "integration-test-rar"
-  DD_DATA_PLANE_ENABLED: "true"
-  DD_DATA_PLANE_STANDALONE_MODE: "false"
-  DD_DATA_PLANE_REMOTE_AGENT_ENABLED: "true"
-  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-
-container:
-  exposed_ports:
-    - "58125/udp"
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    config:
+      env:
+        DD_API_KEY: "00000000000000000000000000000000"
+        DD_HOSTNAME: "integration-test-rar"
+        DD_DATA_PLANE_ENABLED: "true"
+        DD_DATA_PLANE_STANDALONE_MODE: "false"
+        DD_DATA_PLANE_REMOTE_AGENT_ENABLED: "true"
+        DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
 
 procedure:
   # ADP should report registration success. Allow 15s (matching adp-cmd-port): registration can only
   # succeed once the Core Agent's CMD/IPC API server is listening, which can take ~10s to come up on
   # slower hosts.
-  - assertion: log_contains
+  - step: log_contains
+    on: adp
     pattern: "Successfully registered with the Datadog Agent."
     timeout: 60s
   # Registration creates a lazy client. Force the Core Agent to collect ADP's status and require a
   # DogStatsD runtime field emitted by ADP's live response, proving a real inbound gRPC request was
   # authenticated with the shared IPC client certificate.
-  - action: core_agent_cli
+  - step: cli
+    on: adp
+    process: agent
     args: ["status"]
     output_contains: "Uds Packet Reading Errors"
     timeout: 60s
   # Make sure the process becomes healthy, and stays up without errors, for ~10 seconds after.
   - parallel:
-      - assertion: process_stable_for
+      - step: process_stable_for
+        on: adp
         duration: 10s
-      - assertion: log_not_contains
+      - step: log_not_contains
+        on: adp
         pattern: "panic|PANIC"
         regex: true
         during: 10s

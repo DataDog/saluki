@@ -65,7 +65,7 @@ impl Step for Cli {
                     } else {
                         (AssertionStatus::Passed, "completed")
                     };
-                    (status, format!("{operation} {summary}; output: {:?}", output.trim()))
+                    (status, format!("{operation} {summary}; output: {}", output.trim()))
                 }
                 None => (
                     AssertionStatus::Errored,
@@ -121,7 +121,7 @@ mod tests {
             fields.insert("args".into(), json!(["status", "a b"]));
             let report = run_step_with(&CliFactory, &fields, Some(&fake)).await;
             assert_eq!(report.status, status, "{report:?}");
-            assert!(report.message.ends_with("output: \"ready\""), "{report:?}");
+            assert!(report.message.ends_with("output: ready"), "{report:?}");
             fake.assert_executed(&[(
                 ExecCommand {
                     argv: vec!["cli_main".into(), json!({"args": ["status", "a b"]}).to_string()],
@@ -131,6 +131,15 @@ mod tests {
                 Duration::from_secs(30),
             )]);
         }
+    }
+
+    #[tokio::test]
+    async fn cli_quotes_trimmed_output_verbatim_including_newlines_and_quotes() {
+        let fake = FakeParticipant::default().with_operations(OPERATIONS);
+        fake.push_exec(Ok(output(json!({"output": "  first\n\"second\"\tthird  "}))));
+        let report = run_step_with(&CliFactory, &valid_fields(Cli::NAME), Some(&fake)).await;
+        assert_eq!(report.status, AssertionStatus::Passed);
+        assert_eq!(report.message, "cli_main completed; output: first\n\"second\"\tthird");
     }
 
     #[tokio::test]

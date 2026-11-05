@@ -75,7 +75,10 @@ async fn a_tcp_send_delivers_stdin_unchanged_on_its_own_connection() {
         for payload in payloads {
             assert_eq!(
                 execute(
-                    &invocation(Command::Send { to: to.clone() }),
+                    &invocation(Command::Send {
+                        to: to.clone(),
+                        stdin_len: payload.len() as u64
+                    }),
                     payload,
                     tokio::io::sink()
                 )
@@ -111,7 +114,15 @@ async fn a_unix_stream_send_delivers_stdin_unchanged_and_closes_its_connection()
         });
         let payload = b"metric:1|c\nother:2|g\0\xff";
         assert_eq!(
-            execute(&invocation(Command::Send { to }), payload.as_slice(), tokio::io::sink()).await,
+            execute(
+                &invocation(Command::Send {
+                    to,
+                    stdin_len: payload.len() as u64
+                }),
+                payload.as_slice(),
+                tokio::io::sink()
+            )
+            .await,
             Report::Sent {
                 bytes: payload.len() as u64
             }
@@ -129,7 +140,15 @@ async fn a_udp_send_delivers_stdin_as_one_datagram() {
         let to = Target::parse(&format!("udp://{}", socket.local_addr().unwrap())).unwrap();
         let payload = b"first\nsecond\nthird\0\xff";
         assert_eq!(
-            execute(&invocation(Command::Send { to }), payload.as_slice(), tokio::io::sink()).await,
+            execute(
+                &invocation(Command::Send {
+                    to,
+                    stdin_len: payload.len() as u64
+                }),
+                payload.as_slice(),
+                tokio::io::sink()
+            )
+            .await,
             Report::Sent {
                 bytes: payload.len() as u64
             }
@@ -154,7 +173,15 @@ async fn a_unix_datagram_send_delivers_stdin_as_one_datagram() {
         let to = unix_target(&directory, "s", true);
         let payload = b"first\nsecond\nthird\0\xff";
         assert_eq!(
-            execute(&invocation(Command::Send { to }), payload.as_slice(), tokio::io::sink()).await,
+            execute(
+                &invocation(Command::Send {
+                    to,
+                    stdin_len: payload.len() as u64
+                }),
+                payload.as_slice(),
+                tokio::io::sink()
+            )
+            .await,
             Report::Sent {
                 bytes: payload.len() as u64
             }
@@ -176,7 +203,12 @@ async fn an_empty_stdin_sends_an_empty_datagram() {
         let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let to = Target::parse(&format!("udp://{}", socket.local_addr().unwrap())).unwrap();
         assert_eq!(
-            execute(&invocation(Command::Send { to }), tokio::io::empty(), tokio::io::sink()).await,
+            execute(
+                &invocation(Command::Send { to, stdin_len: 0 }),
+                tokio::io::empty(),
+                tokio::io::sink()
+            )
+            .await,
             Report::Sent { bytes: 0 }
         );
         assert_eq!(socket.recv(&mut [0; 1]).await.unwrap(), 0);
@@ -186,7 +218,12 @@ async fn an_empty_stdin_sends_an_empty_datagram() {
             let socket = tokio::net::UnixDatagram::bind(directory.path().join("s")).unwrap();
             let to = unix_target(&directory, "s", true);
             assert_eq!(
-                execute(&invocation(Command::Send { to }), tokio::io::empty(), tokio::io::sink()).await,
+                execute(
+                    &invocation(Command::Send { to, stdin_len: 0 }),
+                    tokio::io::empty(),
+                    tokio::io::sink()
+                )
+                .await,
                 Report::Sent { bytes: 0 }
             );
             assert_eq!(socket.recv(&mut [0; 1]).await.unwrap(), 0);
@@ -196,11 +233,68 @@ async fn an_empty_stdin_sends_an_empty_datagram() {
 }
 
 #[tokio::test]
+async fn a_send_reads_exactly_its_length_while_stdin_stays_open() {
+    within(async {
+        for payload in [b"".as_slice(), b"payload\0\xff\r\n".as_slice()] {
+            let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let to = Target::parse(&format!("udp://{}", socket.local_addr().unwrap())).unwrap();
+            let invocation = invocation(Command::Send {
+                to,
+                stdin_len: payload.len() as u64,
+            });
+            let (mut reader, mut writer) = tokio::io::duplex(64);
+            writer.write_all(payload).await.unwrap();
+            writer.write_all(b"extra").await.unwrap();
+            assert_eq!(
+                execute(&invocation, &mut reader, tokio::io::sink()).await,
+                Report::Sent {
+                    bytes: payload.len() as u64
+                }
+            );
+            let mut received = [0; 64];
+            let read = socket.recv(&mut received).await.unwrap();
+            assert_eq!(&received[..read], payload);
+            let mut extra = [0; 5];
+            reader.read_exact(&mut extra).await.unwrap();
+            assert_eq!(&extra, b"extra");
+            writer.write_all(b"still open").await.unwrap();
+        }
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn stdin_ending_before_its_declared_length_is_a_local_failure() {
+    let to = closed_tcp_target().await;
+    for input in [b"".as_slice(), b"short".as_slice()] {
+        let report = execute(
+            &invocation(Command::Send {
+                to: to.clone(),
+                stdin_len: 7,
+            }),
+            input,
+            tokio::io::sink(),
+        )
+        .await;
+        assert_eq!(
+            report,
+            Report::Failed {
+                reason: format!("{to}: stdin ended after {} bytes, expected 7", input.len()),
+            }
+        );
+        assert_eq!(report.exit_code(), 13);
+    }
+}
+
+#[tokio::test]
 async fn a_send_to_nothing_listening_is_unreachable() {
     let to = closed_tcp_target().await;
     assert_unreachable(
         execute(
-            &closed_port_invocation(Command::Send { to: to.clone() }),
+            &closed_port_invocation(Command::Send {
+                to: to.clone(),
+                stdin_len: 7,
+            }),
             &b"payload"[..],
             tokio::io::sink(),
         )
@@ -220,7 +314,10 @@ async fn a_send_to_nothing_listening_is_unreachable() {
         ] {
             assert_unreachable(
                 execute(
-                    &invocation(Command::Send { to: to.clone() }),
+                    &invocation(Command::Send {
+                        to: to.clone(),
+                        stdin_len: 7,
+                    }),
                     &b"payload"[..],
                     tokio::io::sink(),
                 )
@@ -238,11 +335,14 @@ async fn a_send_the_server_never_reads_times_out_within_its_limit() {
         let directory = tempfile::tempdir().unwrap();
         let listener = tokio::net::UnixListener::bind(directory.path().join("s")).unwrap();
         let to = unix_target(&directory, "s", false);
+        let payload = vec![b'x'; 16 * 1024 * 1024];
         let invocation = Invocation {
-            command: Command::Send { to },
+            command: Command::Send {
+                to,
+                stdin_len: payload.len() as u64,
+            },
             timeout: Some(Duration::from_millis(300)),
         };
-        let payload = vec![b'x'; 16 * 1024 * 1024];
         let started = Instant::now();
         let (report, connection) = tokio::join!(
             execute(&invocation, payload.as_slice(), tokio::io::sink()),
@@ -256,12 +356,15 @@ async fn a_send_the_server_never_reads_times_out_within_its_limit() {
 }
 
 #[tokio::test]
-async fn stdin_left_open_past_the_limit_is_a_local_failure() {
-    // An exec transport leaving stdin open must fail locally, rather than blame the endpoint for timing out.
+async fn incomplete_stdin_past_the_limit_is_a_local_failure() {
+    // A short input is a local transport failure, even if the destination is unreachable.
     let (reader, _writer) = tokio::io::duplex(64);
     let to = closed_tcp_target().await;
     let invocation = Invocation {
-        command: Command::Send { to: to.clone() },
+        command: Command::Send {
+            to: to.clone(),
+            stdin_len: 7,
+        },
         timeout: Some(Duration::from_millis(100)),
     };
     let started = Instant::now();
@@ -269,7 +372,7 @@ async fn stdin_left_open_past_the_limit_is_a_local_failure() {
     assert_eq!(
         report,
         Report::Failed {
-            reason: format!("{to}: stdin was still open after the 100 ms limit")
+            reason: format!("{to}: stdin did not supply 7 bytes within the 100 ms limit")
         }
     );
     assert_eq!(report.exit_code(), 13);
@@ -281,11 +384,12 @@ async fn stdin_and_the_send_share_one_time_limit() {
     let invocation = Invocation {
         command: Command::Send {
             to: Target::parse("tcp://127.0.0.1:9000").unwrap(),
+            stdin_len: 7,
         },
         timeout: Some(Duration::from_millis(200)),
     };
     let (reader, mut writer) = tokio::io::duplex(64);
-    writer.write_all(b"payload").await.unwrap();
+    writer.write_all(b"pay").await.unwrap();
     let started = tokio::time::Instant::now();
     let (report, ()) = tokio::join!(
         execute_with(&invocation, reader, async |_, payload| {
@@ -294,7 +398,7 @@ async fn stdin_and_the_send_share_one_time_limit() {
         }),
         async {
             tokio::time::sleep(Duration::from_millis(120)).await;
-            drop(writer);
+            writer.write_all(b"load").await.unwrap();
         },
     );
     assert_eq!(report, Report::TimedOut { limit_ms: 200 });
@@ -425,7 +529,10 @@ async fn an_oversized_datagram_is_a_send_failure_without_payload_bytes() {
     };
     for to in targets {
         let report = execute(
-            &invocation(Command::Send { to: to.clone() }),
+            &invocation(Command::Send {
+                to: to.clone(),
+                stdin_len: payload.len() as u64,
+            }),
             payload.as_slice(),
             tokio::io::sink(),
         )
@@ -453,7 +560,10 @@ async fn a_stdin_failure_is_local_and_names_the_target() {
     let to = closed_tcp_target().await;
     assert_eq!(
         execute(
-            &invocation(Command::Send { to: to.clone() }),
+            &invocation(Command::Send {
+                to: to.clone(),
+                stdin_len: 1
+            }),
             BrokenStdin,
             tokio::io::sink()
         )
@@ -471,7 +581,13 @@ async fn unix_targets_report_an_unsupported_platform() {
         Target::parse("unix:///run/s").unwrap(),
         Target::parse("unixgram:///run/s").unwrap(),
     ] {
-        for command in [Command::Send { to: to.clone() }, Command::Probe { to }] {
+        for command in [
+            Command::Send {
+                to: to.clone(),
+                stdin_len: 0,
+            },
+            Command::Probe { to },
+        ] {
             assert_eq!(
                 execute(&invocation(command), tokio::io::empty(), tokio::io::sink()).await,
                 Report::Failed {
@@ -486,7 +602,13 @@ async fn unix_targets_report_an_unsupported_platform() {
 #[tokio::test]
 async fn named_pipe_sends_and_probes_are_unsupported_outside_windows() {
     let to = Target::parse("npipe://listener").unwrap();
-    for command in [Command::Send { to: to.clone() }, Command::Probe { to }] {
+    for command in [
+        Command::Send {
+            to: to.clone(),
+            stdin_len: 0,
+        },
+        Command::Probe { to },
+    ] {
         assert_eq!(
             execute(&invocation(command), tokio::io::empty(), tokio::io::sink()).await,
             Report::Failed {
@@ -511,6 +633,7 @@ async fn named_pipe_send_delivers_the_payload_on_one_connection() {
         let payload = b"one\0\xff\r\ntwo";
         let sender = invocation(Command::Send {
             to: Target::NamedPipe { name },
+            stdin_len: payload.len() as u64,
         });
         let receive = async {
             server.connect().await.unwrap();
@@ -593,7 +716,13 @@ async fn a_missing_named_pipe_is_unreachable() {
     let to = Target::NamedPipe {
         name: format!("panoramic-courier-missing-{}", std::process::id()),
     };
-    for command in [Command::Send { to: to.clone() }, Command::Probe { to: to.clone() }] {
+    for command in [
+        Command::Send {
+            to: to.clone(),
+            stdin_len: 0,
+        },
+        Command::Probe { to: to.clone() },
+    ] {
         assert_unreachable(
             execute(&invocation(command), tokio::io::empty(), tokio::io::sink()).await,
             &to,

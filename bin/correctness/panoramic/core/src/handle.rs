@@ -20,9 +20,10 @@ pub struct ExecCommand {
     pub argv: Vec<String>,
     /// Variables added to the participant's environment.
     pub env: Vec<(String, String)>,
-    /// Bytes written to stdin, which is then closed; `None` runs with no stdin.
+    /// Bytes written to stdin; `None` runs with no stdin.
     ///
-    /// The backend writes all bytes and closes stdin, even for an empty payload.
+    /// The backend requests a write-side shutdown after all bytes, including an empty payload. Windows engine
+    /// named pipes only flush on shutdown; commands must use an explicit input length or framing.
     pub stdin: Option<Vec<u8>>,
 }
 
@@ -91,6 +92,14 @@ pub enum FileKind {
 pub(crate) trait Primitives: Send + Sync {
     /// Runs a command, abandoning it after `limit`. Any exit code is data.
     async fn exec(&self, command: ExecCommand, limit: Duration) -> Result<ExecOutput, HandleError>;
+    /// Runs a declared process's program with replacement arguments on the runner host.
+    async fn exec_process(
+        &self, _process: &str, _args: Vec<String>, _limit: Duration,
+    ) -> Result<ExecOutput, HandleError> {
+        Err(HandleError::Harness {
+            message: "participant cannot run its processes' programs; its type names its own commands".into(),
+        })
+    }
     /// Reads a regular file; `None` when the path is missing.
     async fn read_file(&self, path: &str) -> Result<Option<Vec<u8>>, HandleError>;
     /// Reports a path's kind, mode and size; `None` when the path is missing.
@@ -319,6 +328,20 @@ mod tests {
             )
             .await
         }
+    }
+
+    #[tokio::test]
+    async fn primitives_reject_running_declared_programs_by_default() {
+        let error = server(false)
+            .exec_process("main", vec![], Duration::from_secs(1))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            HandleError::Harness {
+                message: "participant cannot run its processes' programs; its type names its own commands".into(),
+            }
+        );
     }
 
     fn server(exited: bool) -> Server {

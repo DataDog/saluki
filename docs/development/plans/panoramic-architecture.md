@@ -77,9 +77,6 @@ equivalence, and migration proofs: their rows, CI links and comparison commit.
   also run on macOS with `intake-host-binary` and on Windows with `saluki-images/correctness-tools:testing-windows`
   through `tools-windows-image`.
 - Both `dsd-forwarding` and `dsd-forwarding-burst` require captured forwarded DogStatsD packets.
-- `privileged-api-endpoints` declares five `output_contains` keys on `adp_cli` actions that the loader ignores:
-  `procedure[6].output_contains`, `procedure[7].output_contains`, `procedure[8].output_contains`,
-  `procedure[9].output_contains` and `procedure[10].output_contains`. These keys appear in all three OS rows.
 - `datadog_intake.config_path` is ignored in `otlp-traces`, `otlp-traces-ets`, `otlp-traces-probabilistic` and
   `otlp-traces-probabilistic-full-trace-id`, including the two enabled probabilistic cases. The `apm-trace` cases set
   `millstone.config_path`, which the loader consumes.
@@ -97,7 +94,7 @@ Use product `config_dump` output from CI runs to compare effective product confi
 
 | Suite | Files | Selected rows (subject OS / runtime) | Disabled rows | Assertions (subject OS) | Actions (subject OS) |
 | --- | --- | --- | --- | --- | --- |
-| integration | 52 | linux / linux: 30; linux / linux-container: 15; macos / host-process-group: 7; macos / mac: 26; windows / windows: 31; windows / windows-container: 5 | 0 | linux: 192; macos: 140; windows: 154 | linux: 25; macos: 17; windows: 19 |
+| integration | 52 | linux / linux: 23; linux / linux-container: 22; macos / host-process-group: 14; macos / mac: 19; windows / windows: 24; windows / windows-container: 12 | 0 | linux: 192; macos: 140; windows: 154 | linux: 25; macos: 17; windows: 19 |
 | correctness | 42 | linux / docker: 39; linux / kubernetes_in_docker: 7 | 2 | — | — |
 
 Total: 162 rows.
@@ -166,18 +163,18 @@ Total: 162 rows.
 | adp-config-check-warn | integration | linux | linux | selected | test-integration | integration | old | assertions: 3, actions: 0 | 0 |
 | adp-config-check-warn | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 3, actions: 0 | 0 |
 | adp-config-check-warn | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 3, actions: 0 | 0 |
-| adp-config-dynamic-basic | integration | linux | linux | selected | test-integration | integration | old | assertions: 5, actions: 1 | 0 |
-| adp-config-dynamic-basic | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 5, actions: 1 | 0 |
-| adp-config-dynamic-basic | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 5, actions: 1 | 0 |
-| adp-config-dynamic-runtime | integration | linux | linux | selected | test-integration | integration | old | assertions: 5, actions: 1 | 0 |
-| adp-config-dynamic-runtime | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 5, actions: 1 | 0 |
-| adp-config-dynamic-runtime | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 5, actions: 1 | 0 |
-| adp-config-otlp | integration | linux | linux | selected | test-integration | integration | old | assertions: 26, actions: 0 | 0 |
-| adp-config-otlp | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 26, actions: 0 | 0 |
-| adp-config-otlp | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 26, actions: 0 | 0 |
-| adp-config-stream | integration | linux | linux | selected | test-integration | integration | old | assertions: 9, actions: 0 | 0 |
-| adp-config-stream | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 9, actions: 0 | 0 |
-| adp-config-stream | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 9, actions: 0 | 0 |
+| adp-config-dynamic-basic | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 5, actions: 1 | 0 |
+| adp-config-dynamic-basic | integration | macos | host-process-group | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | native | assertions: 5, actions: 1 | 0 |
+| adp-config-dynamic-basic | integration | windows | windows-container | selected | test-integration-windows-amd64 | participants | native | assertions: 5, actions: 1 | 0 |
+| adp-config-dynamic-runtime | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 5, actions: 1 | 0 |
+| adp-config-dynamic-runtime | integration | macos | host-process-group | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | native | assertions: 5, actions: 1 | 0 |
+| adp-config-dynamic-runtime | integration | windows | windows-container | selected | test-integration-windows-amd64 | participants | native | assertions: 5, actions: 1 | 0 |
+| adp-config-otlp | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 26, actions: 0 | 0 |
+| adp-config-otlp | integration | macos | host-process-group | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | native | assertions: 26, actions: 0 | 0 |
+| adp-config-otlp | integration | windows | windows-container | selected | test-integration-windows-amd64 | participants | native | assertions: 26, actions: 0 | 0 |
+| adp-config-stream | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 9, actions: 0 | 0 |
+| adp-config-stream | integration | macos | host-process-group | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | native | assertions: 9, actions: 0 | 0 |
+| adp-config-stream | integration | windows | windows-container | selected | test-integration-windows-amd64 | participants | native | assertions: 9, actions: 0 | 0 |
 | adp-disabled-exit | integration | linux | linux | selected | test-integration | integration | old | assertions: 1, actions: 0 | 0 |
 | adp-disabled-exit | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 1, actions: 0 | 0 |
 | adp-disabled-exit | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 1, actions: 0 | 0 |
@@ -209,9 +206,9 @@ Total: 162 rows.
 | adp-no-pipelines-exit | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 1, actions: 0 | 0 |
 | adp-no-pipelines-exit | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 1, actions: 0 | 0 |
 | adp-rar-disabled | integration | linux | linux | selected | test-integration | integration | old | assertions: 3, actions: 0 | 0 |
-| adp-rar-registration | integration | linux | linux | selected | test-integration | integration | old | assertions: 3, actions: 1 | 0 |
-| adp-rar-registration | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 3, actions: 1 | 0 |
-| adp-rar-registration | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 3, actions: 1 | 0 |
+| adp-rar-registration | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 3, actions: 1 | 0 |
+| adp-rar-registration | integration | macos | host-process-group | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | native | assertions: 3, actions: 1 | 0 |
+| adp-rar-registration | integration | windows | windows-container | selected | test-integration-windows-amd64 | participants | native | assertions: 3, actions: 1 | 0 |
 | adp-rc-core-disabled | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 5, actions: 0 | 0 |
 | adp-rc-no-products | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 4, actions: 0 | 0 |
 | apm-bind-custom-hostname | integration | linux | linux | selected | test-integration | integration | old | assertions: 3, actions: 0 | 0 |
@@ -245,9 +242,9 @@ Total: 162 rows.
 | dogstatsd-non-local-overrides-bind-host | integration | linux | linux | selected | test-integration | integration | old | assertions: 3, actions: 0 | 0 |
 | dogstatsd-non-local-overrides-bind-host | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 3, actions: 0 | 0 |
 | dogstatsd-non-local-overrides-bind-host | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 3, actions: 0 | 0 |
-| dogstatsd-replay-unix | integration | linux | linux | selected | test-integration | integration | old | assertions: 3, actions: 1 | 0 |
-| dogstatsd-replay-unix | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 3, actions: 1 | 0 |
-| dogstatsd-replay-windows | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 3, actions: 1 | 0 |
+| dogstatsd-replay-unix | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 3, actions: 1 | 0 |
+| dogstatsd-replay-unix | integration | macos | host-process-group | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | native | assertions: 3, actions: 1 | 0 |
+| dogstatsd-replay-windows | integration | windows | windows-container | selected | test-integration-windows-amd64 | participants | native | assertions: 3, actions: 1 | 0 |
 | dogstatsd-require-listener-exit | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 3, actions: 0 | 0 |
 | dogstatsd-require-listener-exit | integration | macos | host-process-group | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | native | assertions: 3, actions: 0 | 0 |
 | dogstatsd-skip-failed-listener | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 4, actions: 0 | 0 |
@@ -259,9 +256,9 @@ Total: 162 rows.
 | otlp-traces-enabled | integration | linux | linux | selected | test-integration | integration | old | assertions: 4, actions: 0 | 0 |
 | otlp-traces-enabled | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 4, actions: 0 | 0 |
 | otlp-traces-enabled | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 4, actions: 0 | 0 |
-| privileged-api-endpoints | integration | linux | linux | selected | test-integration | integration | old | assertions: 3, actions: 10 | 5 |
-| privileged-api-endpoints | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 3, actions: 10 | 5 |
-| privileged-api-endpoints | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 3, actions: 10 | 5 |
+| privileged-api-endpoints | integration | linux | linux-container | selected | test-integration | participants | native | assertions: 3, actions: 10 | 0 |
+| privileged-api-endpoints | integration | macos | host-process-group | selected | test-integration-macos-arm64, test-integration-macos-amd64 | participants | native | assertions: 3, actions: 10 | 0 |
+| privileged-api-endpoints | integration | windows | windows-container | selected | test-integration-windows-amd64 | participants | native | assertions: 3, actions: 10 | 0 |
 | telemetry-endpoint | integration | linux | linux | selected | test-integration | integration | old | assertions: 5, actions: 0 | 0 |
 | telemetry-endpoint | integration | macos | mac | selected | test-integration-macos-arm64, test-integration-macos-amd64 | integration | old | assertions: 5, actions: 0 | 0 |
 | telemetry-endpoint | integration | windows | windows | selected | test-integration-windows-amd64 | integration | old | assertions: 5, actions: 0 | 0 |
@@ -376,6 +373,26 @@ Stability now observes both ADP and Agent exit records. The case timeout rises f
 participant startup. ADP shares the host cgroup namespace to discover its own container ID, with no host binds.
 Assertion and action counts remain four and one.
 
+`adp-config-dynamic-basic`, `adp-config-dynamic-runtime`, `adp-config-otlp`, `adp-config-stream`,
+`adp-rar-registration` and `privileged-api-endpoints` use native participant execution on all three OSes.
+Configuration assertions use `config_dump` with the source/runtime view, and mutations use the Agent's
+`config_set` operation with a 30-second timeout. CLI operations check output, including all five
+`privileged-api-endpoints` assertions. CLI mechanism failures, including timeouts, error rather than fail.
+Stability observes both ADP and Agent processes. The OTLP ports under test are pinned product configuration,
+including on macOS.
+
+`dogstatsd-replay-unix` uses native execution on Linux and macOS; `dogstatsd-replay-windows` uses it on Windows.
+The Unix socket lives in the participant's shared directory. Endpoint sends carry the payload bytes, with a
+one-second delay between Unix sends. Capture, replay and statistics use participant operations. Unix payloads
+use one connection per send; Windows sends its two newline-terminated metrics together. Mechanism failures
+error, product failures fail, and stability watches both processes.
+
+## Host operation execution
+
+With `OpContext::exec_process`, host operations run a declared process's
+artifact-bound program with replacement arguments, in its environment and participant directory. Other realizations
+return a harness error. This keeps host artifact paths inside the backend and product CLI forms inside the type.
+
 ## Migration proofs
 
 When changing a case's schema or runner, add CI evidence per (case, subject OS, execution). Native rows may say
@@ -414,6 +431,27 @@ Link CI runs; don't copy their logs into the repository.
 | dogstatsd-host-tag | windows | native | Pending CI. Before: none; the case ran only on Linux. Compared with the inventory at `1f4685d997`. |
 | dogstatsd-intake-metric | macos | native | Pending CI. Before: none; the case ran only on Linux. Compared with the inventory at `1f4685d997`. |
 | dogstatsd-intake-metric | windows | native | Pending CI. Before: none; the case ran only on Linux. Compared with the inventory at `1f4685d997`. |
+| adp-config-dynamic-basic | linux | native | Pending CI. Compared with the inventory at `4e9948b5ed` (execution `old`). |
+| adp-config-dynamic-basic | macos | native | Pending CI. Compared with the inventory at `4e9948b5ed` (execution `old`). |
+| adp-config-dynamic-basic | windows | native | Pending CI. Compared with the inventory at `4e9948b5ed` (execution `old`). |
+| adp-config-dynamic-runtime | linux | native | Pending CI. Compared with the inventory at `4e9948b5ed` (execution `old`). |
+| adp-config-dynamic-runtime | macos | native | Pending CI. Compared with the inventory at `4e9948b5ed` (execution `old`). |
+| adp-config-dynamic-runtime | windows | native | Pending CI. Compared with the inventory at `4e9948b5ed` (execution `old`). |
+| adp-config-otlp | linux | native | Pending CI. Compared with the inventory at `4e9948b5ed` (execution `old`). |
+| adp-config-otlp | macos | native | Pending CI. Compared with the inventory at `4e9948b5ed` (execution `old`). |
+| adp-config-otlp | windows | native | Pending CI. Compared with the inventory at `4e9948b5ed` (execution `old`). |
+| adp-config-stream | linux | native | Pending CI. Compared with the inventory at `4e9948b5ed` (execution `old`). |
+| adp-config-stream | macos | native | Pending CI. Compared with the inventory at `4e9948b5ed` (execution `old`). |
+| adp-config-stream | windows | native | Pending CI. Compared with the inventory at `4e9948b5ed` (execution `old`). |
+| adp-rar-registration | linux | native | Pending CI. Compared with the inventory at `4e9948b5ed` (execution `old`). |
+| adp-rar-registration | macos | native | Pending CI. Compared with the inventory at `4e9948b5ed` (execution `old`). |
+| adp-rar-registration | windows | native | Pending CI. Compared with the inventory at `4e9948b5ed` (execution `old`). |
+| privileged-api-endpoints | linux | native | Pending CI. Compared with the inventory at `4e9948b5ed` (execution `old`). |
+| privileged-api-endpoints | macos | native | Pending CI. Compared with the inventory at `4e9948b5ed` (execution `old`). |
+| privileged-api-endpoints | windows | native | Pending CI. Compared with the inventory at `4e9948b5ed` (execution `old`). |
+| dogstatsd-replay-unix | linux | native | Pending CI. Compared with the inventory at `4e9948b5ed` (execution `old`). |
+| dogstatsd-replay-unix | macos | native | Pending CI. Compared with the inventory at `4e9948b5ed` (execution `old`). |
+| dogstatsd-replay-windows | windows | native | Pending CI. Compared with the inventory at `4e9948b5ed` (execution `old`). |
 <!-- migration-proofs:end -->
 
 Native runs use fresh participant directories and reclaim them after each case.

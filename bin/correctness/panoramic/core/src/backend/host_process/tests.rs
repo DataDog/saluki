@@ -558,6 +558,135 @@ async fn exec_uses_the_participant_environment_and_stdin_and_kills_a_timed_out_g
 }
 
 #[tokio::test]
+async fn exec_command_pipes_supplied_input_without_caller_setup() {
+    let directory = tempfile::tempdir().unwrap();
+    let participant = HostParticipant {
+        name: "subject".into(),
+        directory: directory.path().into(),
+        recipe: HostRecipe::new(vec![]),
+        programs: vec![],
+        specs: &[],
+        group: Arc::new(Mutex::new(Processes {
+            children: vec![],
+            armed: true,
+        })),
+    };
+    for input in [b"".as_slice(), b"input\0\xff".as_slice()] {
+        let output = participant
+            .exec_command(participant.command("/bin/cat"), Some(input.to_vec()), BOUND)
+            .await
+            .unwrap();
+        assert_eq!(
+            output,
+            ExecOutput {
+                stdout: input.to_vec(),
+                stderr: vec![],
+                exit_code: 0
+            }
+        );
+    }
+}
+
+#[tokio::test]
+async fn exec_process_runs_the_artifact_bound_program_with_replacement_arguments() {
+    let mut fixture = Fixture::new();
+    fixture.inputs = inputs(SHELL, Path::new("/bin/echo"));
+    let recipe = HostRecipe::new(vec![fixture.process("first", "declared arguments")]);
+    let participant = fixture.participant(recipe, &SPECS[..1], Duration::ZERO);
+    participant.create().await.unwrap();
+    let result = participant
+        .exec_process("first", vec!["replacement".into(), "a b".into()], BOUND)
+        .await
+        .unwrap();
+    assert_eq!(
+        result,
+        ExecOutput {
+            stdout: b"replacement a b\n".to_vec(),
+            stderr: vec![],
+            exit_code: 0,
+        }
+    );
+    fixture.reclaim().await;
+}
+
+#[tokio::test]
+async fn exec_process_replaces_arguments_in_the_participant_directory_with_its_process_environment() {
+    let mut fixture = Fixture::new();
+    let mut process = fixture.process("first", "exit 99");
+    process.env.insert("CHOICE".into(), "process".into());
+    process.env.insert("OWN".into(), "own".into());
+    let mut recipe = HostRecipe::new(vec![fixture.process("second", "exit 88"), process]);
+    recipe.env.insert("SHARED".into(), "group".into());
+    recipe.env.insert("CHOICE".into(), "group".into());
+    let participant = fixture.participant(recipe, SPECS, Duration::ZERO);
+    participant.create().await.unwrap();
+    let result = participant
+        .exec_process(
+            "first",
+            vec![
+                "-c".into(),
+                "printf '%s:%s:%s' \"$SHARED\" \"$CHOICE\" \"$OWN\"; printf working > marker; printf error >&2; exit 7"
+                    .into(),
+            ],
+            BOUND,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        result,
+        ExecOutput {
+            stdout: b"group:process:own".to_vec(),
+            stderr: b"error".to_vec(),
+            exit_code: 7
+        }
+    );
+    assert_eq!(
+        std::fs::read(fixture.scope.directory.join("subject/marker")).unwrap(),
+        b"working"
+    );
+    let error = participant.exec_process("unknown", vec![], BOUND).await.unwrap_err();
+    assert_eq!(
+        error,
+        HandleError::Harness {
+            message: "participant 'subject' has no declared process 'unknown'".into()
+        }
+    );
+    fixture.reclaim().await;
+}
+
+#[tokio::test]
+async fn exec_process_kills_its_process_group_at_its_limit() {
+    let mut fixture = Fixture::new();
+    let recipe = HostRecipe::new(vec![fixture.process("first", "exit 0")]);
+    let participant = fixture.participant(recipe, &SPECS[..1], Duration::ZERO);
+    participant.create().await.unwrap();
+    let error = participant
+        .exec_process(
+            "first",
+            vec![
+                "-c".into(),
+                "echo $$ > exec-pid; trap '' TERM; while :; do sleep 1; done".into(),
+                format!("panoramic-host-{}-exec-process", fixture.layout.run),
+            ],
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, HandleError::Harness { ref message } if message.contains("killed its process group")),
+        "{error}"
+    );
+    let pid: i32 = std::fs::read_to_string(fixture.scope.directory.join("subject/exec-pid"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let _cleanup = ExecGroup(pid);
+    until(|| !group_exists(pid)).await;
+    fixture.reclaim().await;
+}
+
+#[tokio::test]
 async fn files_report_absence_content_modes_and_kinds_including_links_and_sockets() {
     let mut fixture = Fixture::new();
     let participant = fixture.participant(HostRecipe::new(vec![]), &[], Duration::ZERO);

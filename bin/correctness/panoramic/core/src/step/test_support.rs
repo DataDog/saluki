@@ -34,16 +34,6 @@ struct Fixture {
 
 const DEFAULT_OPERATIONS: &[&dyn Operation] = &[&ConfigDump, &Dump];
 
-fn with_default_operations(operations: &'static [&'static dyn Operation]) -> &'static [&'static dyn Operation] {
-    if operations.is_empty() {
-        return DEFAULT_OPERATIONS;
-    }
-    let mut operations = DEFAULT_OPERATIONS.iter().chain(operations).copied().collect::<Vec<_>>();
-    operations.sort_by_key(|operation| operation.name());
-    // Participant declarations require a static slice; each test process owns these fixture declarations.
-    Box::leak(operations.into_boxed_slice())
-}
-
 impl ParticipantType for Fixture {
     fn name(&self) -> &'static str {
         "fixture"
@@ -76,7 +66,8 @@ impl ParticipantType for Fixture {
     }
 }
 
-pub(crate) struct ConfigDump;
+/// Executes a configuration dump command and decodes its JSON output.
+pub struct ConfigDump;
 
 #[async_trait]
 impl Operation for ConfigDump {
@@ -98,7 +89,8 @@ impl Operation for ConfigDump {
     }
 }
 
-struct Dump;
+/// Executes a record dump command and decodes its JSON output.
+pub struct Dump;
 
 #[async_trait]
 impl Operation for Dump {
@@ -158,7 +150,7 @@ pub async fn run_step(factory: &dyn StepFactory, fields: &StepFields) -> StepRep
     run_step_with(factory, fields, None).await
 }
 
-/// Runs a step without a started participant, offering additional operations alongside the defaults.
+/// Runs a step without a started participant, offering the complete operation slice in place of the defaults.
 ///
 /// # Panics
 ///
@@ -166,7 +158,7 @@ pub async fn run_step(factory: &dyn StepFactory, fields: &StepFields) -> StepRep
 pub async fn run_step_offering(
     factory: &dyn StepFactory, fields: &StepFields, operations: &'static [&'static dyn Operation],
 ) -> StepReport {
-    run_step_using(factory, fields, None, None, false, with_default_operations(operations)).await
+    run_step_using(factory, fields, None, None, false, operations).await
 }
 
 /// Runs a step with a scripted started participant, or no handle when `fake` is `None`.
@@ -391,9 +383,9 @@ impl FakeParticipant {
         }
     }
 
-    /// Offers additional operations alongside `config_dump` and `dump`.
+    /// Replaces the default operations with the complete supplied slice.
     pub fn with_operations(mut self, operations: &'static [&'static dyn Operation]) -> Self {
-        self.operations = with_default_operations(operations);
+        self.operations = operations;
         self
     }
 
@@ -619,8 +611,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_fake_participant_offers_additional_operations_to_steps_alongside_the_defaults() {
-        let fake = FakeParticipant::default().with_operations(&[&ExecOperation("extra")]);
+    async fn a_fake_participant_offers_the_supplied_complete_operation_slice() {
+        let fake = FakeParticipant::default().with_operations(&[&ConfigDump, &Dump, &ExecOperation("extra")]);
         fake.push_exec(Ok(ExecOutput {
             stdout: br#"{"answer":42}"#.to_vec(),
             stderr: vec![],
@@ -643,7 +635,12 @@ mod tests {
             command(&["dump", "records"]),
             command(&["extra", r#"{"value":1}"#]),
         ]);
-        let report = run_step_offering(&CallFactory, &StepFields::new(), &[&ExecOperation("extra")]).await;
+        let report = run_step_offering(
+            &CallFactory,
+            &StepFields::new(),
+            &[&ConfigDump, &Dump, &ExecOperation("extra")],
+        )
+        .await;
         assert_eq!(report.status, AssertionStatus::Errored);
         assert_eq!(report.message, "not started");
     }

@@ -80,7 +80,7 @@ where
 }
 
 fn probe_answer(command: &Command, report: Report) -> Result<ProbeAnswer, HandleError> {
-    let (Command::Probe { to } | Command::Send { to }) = command else {
+    let (Command::Probe { to } | Command::Send { to, .. }) = command else {
         unreachable!()
     };
     match report {
@@ -112,12 +112,12 @@ where
     E: FnOnce(ExecCommand) -> F,
     F: Future<Output = Result<ExecOutput, GenericError>>,
 {
-    let command = send_command(address)?;
+    let command = send_command(address, payload.len())?;
     let (report, _) = invoke(exec, executable, &command, Some(payload.to_vec()), limits).await?;
     send_outcome(&command, report, payload.len())
 }
 
-fn send_command(address: &ResolvedAddress) -> Result<Command, HandleError> {
+fn send_command(address: &ResolvedAddress, payload_len: usize) -> Result<Command, HandleError> {
     if matches!(address.kind, EndpointKind::Http | EndpointKind::Grpc) {
         return Err(HandleError::Harness {
             message: format!(
@@ -127,11 +127,14 @@ fn send_command(address: &ResolvedAddress) -> Result<Command, HandleError> {
             ),
         });
     }
-    Ok(Command::Send { to: target(address)? })
+    Ok(Command::Send {
+        to: target(address)?,
+        stdin_len: payload_len as u64,
+    })
 }
 
 fn send_outcome(command: &Command, report: Report, payload_len: usize) -> Result<(), HandleError> {
-    let (Command::Probe { to } | Command::Send { to }) = command else {
+    let (Command::Probe { to } | Command::Send { to, .. }) = command else {
         unreachable!()
     };
     match report {
@@ -168,7 +171,7 @@ pub(crate) async fn send_in_process(
     address: &ResolvedAddress, payload: &[u8], limits: &AttemptLimits,
 ) -> Result<(), HandleError> {
     let invocation = Invocation {
-        command: send_command(address)?,
+        command: send_command(address, payload.len())?,
         timeout: Some(limits.request),
     };
     let report = panoramic_courier::execute(&invocation, payload, tokio::io::sink()).await;
@@ -296,7 +299,7 @@ where
 fn harness_error(command: &Command, problem: impl fmt::Display) -> HandleError {
     let (name, to) = match command {
         Command::Probe { to } => ("probe", to.to_string()),
-        Command::Send { to } => ("send", to.to_string()),
+        Command::Send { to, .. } => ("send", to.to_string()),
         Command::Http { url, .. } => ("http", url.clone()),
         Command::Follow { path } => ("follow", path.clone()),
     };
@@ -577,7 +580,16 @@ mod tests {
             let request = recorded.expect("the courier should run");
             assert_eq!(
                 request.argv,
-                ["/courier", "send", "--to", "udp://server:80", "--timeout-ms", "1500"]
+                [
+                    "/courier",
+                    "send",
+                    "--to",
+                    "udp://server:80",
+                    "--stdin-len",
+                    &payload.len().to_string(),
+                    "--timeout-ms",
+                    "1500"
+                ]
             );
             assert_eq!(request.stdin.as_deref(), Some(payload));
             assert!(request.env.is_empty());
@@ -938,6 +950,8 @@ mod tests {
                         "send",
                         "--to",
                         "npipe://listener",
+                        "--stdin-len",
+                        &PAYLOAD.len().to_string(),
                         "--timeout-ms",
                         "1500"
                     ]

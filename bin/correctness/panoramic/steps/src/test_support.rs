@@ -51,10 +51,12 @@ pub(crate) fn exited(code: Option<i32>, signal: Option<i32>) -> panoramic_core::
 #[cfg(test)]
 pub(crate) const OPERATIONS: &[&dyn panoramic_core::participant::Operation] = &[
     &panoramic_core::step::test_support::ExecOperation("cli_main"),
+    &panoramic_core::step::test_support::ConfigDump,
     &panoramic_core::step::test_support::ExecOperation("config_set"),
     &panoramic_core::step::test_support::ExecOperation("dogstatsd_capture"),
     &panoramic_core::step::test_support::ExecOperation("dogstatsd_replay"),
     &panoramic_core::step::test_support::ExecOperation("dogstatsd_stats"),
+    &panoramic_core::step::test_support::Dump,
 ];
 
 #[cfg(test)]

@@ -202,7 +202,9 @@ impl ParticipantType for AgentAdp {
 
     fn operations(&self, realization: Realization) -> &'static [&'static dyn Operation] {
         match (realization.os, realization.kind) {
-            (Os::Linux, RealizationKind::LinuxContainer) => linux::OPERATIONS,
+            (Os::Linux, RealizationKind::LinuxContainer) => operations::LINUX_OPERATIONS,
+            (Os::MacOs, RealizationKind::HostProcessGroup) => operations::MACOS_OPERATIONS,
+            (Os::Windows, RealizationKind::WindowsContainer) => operations::WINDOWS_OPERATIONS,
             _ => &[],
         }
     }
@@ -385,7 +387,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_adp_offers_its_operations_only_in_linux_containers() {
+    fn agent_adp_offers_the_same_seven_operations_on_every_supported_realization() {
         for os in [Os::Linux, Os::MacOs, Os::Windows] {
             for kind in [
                 RealizationKind::LinuxContainer,
@@ -398,7 +400,7 @@ mod tests {
                     .iter()
                     .map(|operation| operation.name())
                     .collect::<Vec<_>>();
-                let expected = if (os, kind) == (Os::Linux, RealizationKind::LinuxContainer) {
+                let expected = if AgentAdp.supports().contains(&(os, kind)) {
                     vec![
                         "cli_adp",
                         "cli_agent",

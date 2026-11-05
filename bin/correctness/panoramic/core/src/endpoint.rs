@@ -402,6 +402,18 @@ pub mod test_support {
         assert_eq!(endpoint.ready, ready);
     }
 
+    /// Checks a named-pipe endpoint's name and readiness evidence.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any declaration differs from the expected value.
+    #[track_caller]
+    pub fn assert_pipe_endpoint(endpoint: &Endpoint, name: &str, ready: Option<Evidence>) {
+        assert_eq!(endpoint.kind, EndpointKind::NamedPipe);
+        assert!(matches!(&endpoint.listener, Listener::Pipe(actual) if actual == name));
+        assert_eq!(endpoint.ready, ready);
+    }
+
     /// Checks an assigned endpoint's kind and returns its environment delivery.
     ///
     /// # Panics

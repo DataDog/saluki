@@ -25,6 +25,7 @@ enum ValueKind {
     Address(fn(u16) -> BTreeMap<String, String>),
     HostPort(fn(u16) -> BTreeMap<String, String>),
     Path,
+    Pipe,
 }
 
 struct Listener {
@@ -35,6 +36,7 @@ struct Listener {
     value: ValueKind,
     owner: Owner,
     macos_only: bool,
+    windows_only: bool,
 }
 
 // Owners select DATA_PLANE_ENABLED, DATA_PLANE_DOGSTATSD_ENABLED, DATA_PLANE_OTLP_ENABLED and USE_DOGSTATSD.
@@ -48,6 +50,7 @@ const LISTENERS: &[Listener] = &[
         value: ValueKind::Port(|port| BTreeMap::from([("DD_DOGSTATSD_PORT".into(), port.to_string())])),
         owner: Owner::DogStatsD,
         macos_only: false,
+        windows_only: false,
     },
     Listener {
         name: "dogstatsd_tcp",
@@ -57,6 +60,7 @@ const LISTENERS: &[Listener] = &[
         value: ValueKind::Port(|port| BTreeMap::from([("DD_DOGSTATSD_TCP_PORT".into(), port.to_string())])),
         owner: Owner::AdpDogStatsD,
         macos_only: false,
+        windows_only: false,
     },
     Listener {
         name: "dogstatsd_uds",
@@ -66,6 +70,7 @@ const LISTENERS: &[Listener] = &[
         value: ValueKind::Path,
         owner: Owner::DogStatsD,
         macos_only: false,
+        windows_only: false,
     },
     Listener {
         name: "dogstatsd_uds_stream",
@@ -75,6 +80,17 @@ const LISTENERS: &[Listener] = &[
         value: ValueKind::Path,
         owner: Owner::DogStatsD,
         macos_only: false,
+        windows_only: false,
+    },
+    Listener {
+        name: "dogstatsd_pipe",
+        kind: EndpointKind::NamedPipe,
+        key: "DOGSTATSD_PIPE_NAME",
+        default: "",
+        value: ValueKind::Pipe,
+        owner: Owner::DogStatsD,
+        macos_only: false,
+        windows_only: true,
     },
     Listener {
         name: "api",
@@ -89,6 +105,7 @@ const LISTENERS: &[Listener] = &[
         }),
         owner: Owner::Adp,
         macos_only: false,
+        windows_only: false,
     },
     Listener {
         name: "secure_api",
@@ -103,6 +120,7 @@ const LISTENERS: &[Listener] = &[
         }),
         owner: Owner::Adp,
         macos_only: false,
+        windows_only: false,
     },
     Listener {
         name: "otlp_grpc",
@@ -117,6 +135,7 @@ const LISTENERS: &[Listener] = &[
         }),
         owner: Owner::AdpOtlp,
         macos_only: false,
+        windows_only: false,
     },
     Listener {
         name: "otlp_http",
@@ -131,6 +150,7 @@ const LISTENERS: &[Listener] = &[
         }),
         owner: Owner::AdpOtlp,
         macos_only: false,
+        windows_only: false,
     },
     Listener {
         name: "agent_cmd",
@@ -140,6 +160,7 @@ const LISTENERS: &[Listener] = &[
         value: ValueKind::Port(|port| BTreeMap::from([("DD_CMD_PORT".into(), port.to_string())])),
         owner: Owner::Agent,
         macos_only: false,
+        windows_only: false,
     },
     Listener {
         name: "agent_ipc",
@@ -149,6 +170,7 @@ const LISTENERS: &[Listener] = &[
         value: ValueKind::PositivePort(|port| BTreeMap::from([("DD_AGENT_IPC_PORT".into(), port.to_string())])),
         owner: Owner::Agent,
         macos_only: false,
+        windows_only: false,
     },
     Listener {
         name: "agent_expvar",
@@ -158,6 +180,7 @@ const LISTENERS: &[Listener] = &[
         value: ValueKind::Port(|port| BTreeMap::from([("DD_EXPVAR_PORT".into(), port.to_string())])),
         owner: Owner::Agent,
         macos_only: true,
+        windows_only: false,
     },
     Listener {
         name: "agent_otlp_grpc",
@@ -172,6 +195,7 @@ const LISTENERS: &[Listener] = &[
         }),
         owner: Owner::AgentOtlpGrpc,
         macos_only: true,
+        windows_only: false,
     },
     Listener {
         name: "agent_otlp_http",
@@ -186,6 +210,7 @@ const LISTENERS: &[Listener] = &[
         }),
         owner: Owner::Agent,
         macos_only: true,
+        windows_only: false,
     },
     Listener {
         name: "agent_otlp_proxy_grpc",
@@ -200,6 +225,7 @@ const LISTENERS: &[Listener] = &[
         }),
         owner: Owner::AgentOtlpProxy,
         macos_only: true,
+        windows_only: false,
     },
 ];
 
@@ -271,7 +297,9 @@ pub(super) fn endpoints(
                 ));
             }
         }
-        if listener.macos_only && platform != Platform::MacOsHost {
+        if (listener.macos_only && platform != Platform::MacOsHost)
+            || (listener.windows_only && platform != Platform::WindowsContainer)
+        {
             continue;
         }
         let owner = match listener.owner {
@@ -318,6 +346,15 @@ pub(super) fn endpoints(
         let (key, value) = env.value(owner, listener.key, default);
         let invalid = |reason: &str| format!("{key}='{value}' {reason}");
         let endpoint = match listener.value {
+            ValueKind::Pipe => {
+                if value.is_empty() {
+                    continue;
+                }
+                if value.contains(['\\', '/', '\0']) {
+                    return Err(invalid("must be a pipe name without separators or NUL"));
+                }
+                Endpoint::named_pipe(value)
+            }
             ValueKind::Path => {
                 if value.is_empty() {
                     continue;
@@ -450,12 +487,55 @@ fn loopback_host(host: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use panoramic_core::{
-        endpoint::test_support::{assert_network_endpoint, assert_socket_endpoint, assigned_delivery},
+        endpoint::test_support::{
+            assert_network_endpoint, assert_pipe_endpoint, assert_socket_endpoint, assigned_delivery,
+        },
         participant::{CaseValues, EffectiveConfig, ParticipantType},
     };
 
     use super::*;
     use crate::AgentAdp;
+
+    #[test]
+    fn only_windows_declares_dogstatsd_pipe_and_validates_its_name() {
+        for &(os, kind) in AgentAdp.supports() {
+            let realization = Realization { os, kind };
+            for name in ["", "metrics-pipe", "bad/name", r"bad\name", "bad\0name"] {
+                let values = CaseValues {
+                    env: BTreeMap::from([("DD_DOGSTATSD_PIPE_NAME".into(), name.into())]),
+                    ..Default::default()
+                };
+                let config = EffectiveConfig {
+                    env: values.env.clone(),
+                    ..Default::default()
+                };
+                let result = AgentAdp.endpoints(realization, &config);
+                if os == Os::Windows && name.contains(['\\', '/', '\0']) {
+                    let error = result.unwrap_err();
+                    assert!(error.contains("DD_DOGSTATSD_PIPE_NAME"), "{error}");
+                    assert_eq!(AgentAdp.validate_config(realization, &values).unwrap_err(), error);
+                } else {
+                    let endpoints = result.unwrap();
+                    if os == Os::Windows && !name.is_empty() {
+                        assert_pipe_endpoint(&endpoints["dogstatsd_pipe"], name, None);
+                    } else {
+                        assert!(!endpoints.contains_key("dogstatsd_pipe"));
+                    }
+                }
+            }
+            let config = EffectiveConfig {
+                env: BTreeMap::from([
+                    ("DD_DOGSTATSD_PIPE_NAME".into(), "metrics".into()),
+                    ("DD_USE_DOGSTATSD".into(), "false".into()),
+                ]),
+                ..Default::default()
+            };
+            assert!(!AgentAdp
+                .endpoints(realization, &config)
+                .unwrap()
+                .contains_key("dogstatsd_pipe"));
+        }
+    }
 
     const MACOS: Realization = Realization {
         os: Os::MacOs,

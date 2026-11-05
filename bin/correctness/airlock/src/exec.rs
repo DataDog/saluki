@@ -46,7 +46,9 @@ impl ExecRequest {
         self
     }
 
-    /// Supplies stdin bytes, followed by EOF, including for an empty input.
+    /// Supplies stdin bytes and requests a write-side shutdown, including for an empty input.
+    ///
+    /// Windows engine named pipes only flush on shutdown; commands must use an explicit input length or framing.
     pub fn with_stdin(mut self, bytes: impl Into<Vec<u8>>) -> Self {
         self.stdin = Some(bytes.into());
         self

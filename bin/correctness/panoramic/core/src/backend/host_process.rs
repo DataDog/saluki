@@ -154,6 +154,81 @@ impl HostParticipant {
             .stderr(Stdio::piped());
         command
     }
+
+    async fn exec_command(
+        &self, mut builder: Command, input: Option<Vec<u8>>, limit: Duration,
+    ) -> Result<ExecOutput, HandleError> {
+        let failure = |message| HandleError::Harness {
+            message: format!("exec in participant '{}': {message}", self.name),
+        };
+        if input.is_some() {
+            builder.stdin(Stdio::piped());
+        }
+        let mut child = builder.spawn().map_err(|error| {
+            failure(format!(
+                "cannot start '{}': {error}",
+                builder.as_std().get_program().to_string_lossy()
+            ))
+        })?;
+        let group = ExecGroup(child.id().expect("a newly spawned command has a PID") as i32);
+        let mut stdout = child.stdout.take().expect("stdout is piped");
+        let mut stderr = child.stderr.take().expect("stderr is piped");
+        let stdin = child.stdin.take();
+        let result = timeout(limit, async {
+            let (status, (), out, err) = tokio::try_join!(
+                child.wait(),
+                async {
+                    if let Some(mut stdin) = stdin {
+                        let written = async {
+                            stdin.write_all(input.as_deref().unwrap_or_default()).await?;
+                            stdin.shutdown().await
+                        }
+                        .await;
+                        if let Err(error) = written {
+                            if error.kind() != io::ErrorKind::BrokenPipe {
+                                return Err(error);
+                            }
+                        }
+                    }
+                    Ok::<_, io::Error>(())
+                },
+                async {
+                    let mut out = Vec::new();
+                    stdout.read_to_end(&mut out).await?;
+                    Ok::<_, io::Error>(out)
+                },
+                async {
+                    let mut err = Vec::new();
+                    stderr.read_to_end(&mut err).await?;
+                    Ok::<_, io::Error>(err)
+                },
+            )?;
+            let code = status
+                .code()
+                .or_else(|| status.signal().map(|signal| 128 + signal))
+                .ok_or_else(|| io::Error::other("command ended without a code or signal"))?;
+            Ok::<_, io::Error>(ExecOutput {
+                stdout: out,
+                stderr: err,
+                exit_code: i64::from(code),
+            })
+        })
+        .await;
+        drop(group);
+        match result {
+            Ok(Ok(output)) => Ok(output),
+            failed => {
+                tokio::spawn(async move {
+                    let _ = child.wait().await;
+                });
+                match failed {
+                    Ok(Err(error)) => Err(failure(error.to_string())),
+                    Err(_) => Err(failure(format!("killed its process group after {limit:?}"))),
+                    Ok(Ok(_)) => unreachable!(),
+                }
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -521,76 +596,24 @@ impl Primitives for HostParticipant {
         let failure = |message| HandleError::Harness {
             message: format!("exec in participant '{}': {message}", self.name),
         };
-        let (program, args) = command
-            .argv
-            .split_first()
-            .ok_or_else(|| failure("empty command".into()))?;
+        let (program, args) = command.argv.split_first().ok_or_else(|| failure("empty command"))?;
         let mut builder = self.command(program);
         builder.args(args).envs(command.env);
-        if command.stdin.is_some() {
-            builder.stdin(Stdio::piped());
-        }
-        let mut child = builder
-            .spawn()
-            .map_err(|error| failure(format!("cannot start '{program}': {error}")))?;
-        let group = ExecGroup(child.id().expect("a newly spawned command has a PID") as i32);
-        let mut stdout = child.stdout.take().expect("stdout is piped");
-        let mut stderr = child.stderr.take().expect("stderr is piped");
-        let stdin = child.stdin.take();
-        let result = timeout(limit, async {
-            let (status, (), out, err) = tokio::try_join!(
-                child.wait(),
-                async {
-                    if let Some(mut stdin) = stdin {
-                        let written = async {
-                            stdin.write_all(command.stdin.as_deref().unwrap_or_default()).await?;
-                            stdin.shutdown().await
-                        }
-                        .await;
-                        if let Err(error) = written {
-                            if error.kind() != io::ErrorKind::BrokenPipe {
-                                return Err(error);
-                            }
-                        }
-                    }
-                    Ok::<_, io::Error>(())
-                },
-                async {
-                    let mut out = Vec::new();
-                    stdout.read_to_end(&mut out).await?;
-                    Ok::<_, io::Error>(out)
-                },
-                async {
-                    let mut err = Vec::new();
-                    stderr.read_to_end(&mut err).await?;
-                    Ok::<_, io::Error>(err)
-                },
-            )?;
-            let code = status
-                .code()
-                .or_else(|| status.signal().map(|signal| 128 + signal))
-                .ok_or_else(|| io::Error::other("command ended without a code or signal"))?;
-            Ok::<_, io::Error>(ExecOutput {
-                stdout: out,
-                stderr: err,
-                exit_code: i64::from(code),
-            })
-        })
-        .await;
-        drop(group);
-        match result {
-            Ok(Ok(output)) => Ok(output),
-            failed => {
-                tokio::spawn(async move {
-                    let _ = child.wait().await;
-                });
-                match failed {
-                    Ok(Err(error)) => Err(failure(error.to_string())),
-                    Err(_) => Err(failure(format!("killed its process group after {limit:?}"))),
-                    Ok(Ok(_)) => unreachable!(),
-                }
-            }
-        }
+        self.exec_command(builder, command.stdin, limit).await
+    }
+
+    async fn exec_process(&self, process: &str, args: Vec<String>, limit: Duration) -> Result<ExecOutput, HandleError> {
+        let index = self
+            .recipe
+            .processes
+            .iter()
+            .position(|declared| declared.name == process)
+            .ok_or_else(|| HandleError::Harness {
+                message: format!("participant '{}' has no declared process '{process}'", self.name),
+            })?;
+        let mut builder = self.command(&self.programs[index]);
+        builder.envs(&self.recipe.processes[index].env).args(args);
+        self.exec_command(builder, None, limit).await
     }
 
     async fn read_file(&self, path: &str) -> Result<Option<Vec<u8>>, HandleError> {

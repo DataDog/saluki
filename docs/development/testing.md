@@ -69,9 +69,13 @@ CI: the `test-container-daemon` job in `.gitlab/e2e.yml` runs them after airlock
 
 The `windows_container::daemon_tests` module in `panoramic-core` exercises the Windows container backend against a
 Windows Docker daemon: participants reach each other by name on a `nat` network, the archive API reads and stats files
-in running and stopped containers, exec stdin reaches end of file, and the courier reaches named pipes, TCP, UDP and
+in running and stopped containers, exec delivers length-bounded stdin, and the courier reaches named pipes, TCP, UDP and
 HTTP and follows files. They also check exit record and output observation, including a container that stops without a
 record. Each test prints the daemon's isolation mode and OS version first.
+
+The courier's `send` command requires `--stdin-len N` and reads exactly N bytes, including zero for an empty payload.
+This lets sends finish over Windows engine named pipes, whose write-side shutdown only flushes. Short or timed-out
+stdin is a harness error; network timeouts remain product failures. The stdin read and send share one time budget.
 
 Set `PANORAMIC_TEST_WINDOWS_IMAGE` to a local Windows image and
 `PANORAMIC_TEST_WINDOWS_COURIER` to the path of a natively built `panoramic-courier.exe`. The Windows integration job
@@ -360,7 +364,9 @@ keeping product-specific commands inside the participant definition. Steps decla
 plan compilation rejects an operation the participant's type does not offer for its realization, so `panoramic list`
 reports the error before anything starts. Operations run commands through the participant's exec primitive or request
 their own declared HTTP endpoints through planned routes. On Windows, HTTP requests run through the courier inside
-the server participant. Planning validates those endpoints and allocates request routes and any published ports.
+the server participant. Host operations can use `exec_process` to run a declared process's program with replacement
+arguments, its own environment and the participant directory. Other realizations reject this primitive.
+Planning validates those endpoints and allocates request routes and any published ports.
 An operation can request only the HTTP endpoints it declares.
 Argument and mechanism problems are harness errors; a product answer that does not satisfy the operation is a
 product error.
@@ -505,6 +511,7 @@ The definition derives these endpoints from the effective environment:
 | `dogstatsd_tcp` | TCP | `DD_DOGSTATSD_TCP_PORT` | Requires ADP-owned DogStatsD, a nonzero port and a non-loopback bind; defaults to 0 (disabled); waits for TCP acceptance |
 | `dogstatsd_uds` | Unix datagram | `DD_DOGSTATSD_SOCKET` | Defaults to `/var/run/datadog/dsd.socket` on Linux; empty disables it; waits for the socket |
 | `dogstatsd_uds_stream` | Unix stream | `DD_DOGSTATSD_STREAM_SOCKET` | Nonempty enables it; waits for the socket |
+| `dogstatsd_pipe` | Named pipe | `DD_DOGSTATSD_PIPE_NAME` | Windows only; nonempty enables it when DogStatsD is enabled; reached through the courier at `\\.\pipe\<name>`; gate sends on ADP's `listen_addr:"npipe://<name>"` log line |
 | `api` | HTTP | `DD_DATA_PLANE_API_LISTEN_ADDRESS` | Requires ADP and a non-loopback host; waits for TCP acceptance |
 | `secure_api` | TCP | `DD_DATA_PLANE_SECURE_API_LISTEN_ADDRESS` | Requires ADP and a non-loopback host; waits for TCP acceptance; the listener uses TLS |
 | `otlp_grpc` | gRPC | `DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY` | Requires ADP and its OTLP pipeline, a nonzero port and a non-loopback host; waits for TCP acceptance |
@@ -545,8 +552,16 @@ disablement after a clean exit. Each run script merges stderr into stdout, and i
 These merged process logs include the run and finish scripts' own messages. Container stdout and stderr are also
 captured separately. The default ten-second stop grace covers the measured roughly 2.6-second supervisor shutdown.
 
-The `agent-adp` Linux container realization offers seven operations. ADP commands use
-`/opt/datadog-agent/embedded/bin/agent-data-plane`; Agent commands use `/opt/datadog-agent/bin/agent/agent`.
+The `agent-adp` definition offers the same seven operations on all three realizations:
+
+| Realization | ADP program | Agent program |
+| --- | --- | --- |
+| Linux container | `/opt/datadog-agent/embedded/bin/agent-data-plane` | `/opt/datadog-agent/bin/agent/agent` |
+| Windows container | `C:\adp\agent-data-plane.exe` | `C:\Program Files\Datadog\Datadog Agent\bin\agent.exe` |
+| macOS host process group | The participant's own `adp` program, with `-c datadog.yaml` | The participant's own `agent` program, with `-c .` |
+
+On macOS, configuration arguments are relative to the participant directory. Each command receives the declared
+process's environment over the group environment, including the Agent's run path and force-enable setting.
 
 | Operation | Arguments | Command and result |
 | --- | --- | --- |
@@ -568,7 +583,8 @@ product failure; it uses the Agent's own client for its runtime configuration AP
 On Windows, the `agent-adp` definition runs the Agent and ADP in one container through its own entrypoint, using
 `agent-adp-windows-image`. It declares the Linux container listener table and fixed defaults above, except Unix
 sockets: their paths default to empty, and nonempty paths are rejected. Windows rejects `ADP_DD_` variables;
-listeners use the `DD_` keys. Loopback filtering and the DogStatsD non-local-traffic/bind-host rule match Linux.
+listeners use the `DD_` keys. The named-pipe name must contain no slash, backslash or NUL.
+Loopback filtering and the DogStatsD non-local-traffic/bind-host rule match Linux.
 
 The `PANORAMIC_` environment-variable prefix is reserved. Plan compilation rejects keys with this prefix in the
 case's effective environment after OS overlays, in type defaults, and in connection deliveries. Errors identify

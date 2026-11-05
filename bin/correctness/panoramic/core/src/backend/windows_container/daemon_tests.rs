@@ -721,8 +721,20 @@ $err.Flush()
 exit 7";
 
 const STDIN_SCRIPT: &str = r"
-$text = [Console]::In.ReadToEnd()
-[Console]::Out.Write('got:' + $text)
+param([int]$Length)
+$inputStream = [Console]::OpenStandardInput()
+$bytes = [byte[]]::new($Length)
+$offset = 0
+while ($offset -lt $Length) {
+    $read = $inputStream.Read($bytes, $offset, $Length - $offset)
+    if ($read -eq 0) { throw 'stdin ended before the declared length' }
+    $offset += $read
+}
+$outputStream = [Console]::OpenStandardOutput()
+$prefix = [System.Text.Encoding]::ASCII.GetBytes('got:')
+$outputStream.Write($prefix, 0, $prefix.Length)
+$outputStream.Write($bytes, 0, $bytes.Length)
+$outputStream.Flush()
 exit 5";
 
 const BINARY_ERR: &[u8] = b"\xff\r\n\x00e";
@@ -791,7 +803,7 @@ async fn exec_returns_separate_streams_environment_and_exit_codes_as_data() {
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs a Windows Docker daemon; run in the Windows integration job"]
-async fn exec_stdin_reaches_end_of_file_for_payloads_and_empty_input() {
+async fn exec_stdin_delivers_length_bounded_payloads_and_empty_input() {
     in_scope(&["p"], |scope, _tasks| async move {
         let participant = start_participant(
             &scope,
@@ -805,11 +817,12 @@ async fn exec_stdin_reaches_end_of_file_for_payloads_and_empty_input() {
         for (stdin, expected) in [
             (b"payload\r\nsecond".as_slice(), b"got:payload\r\nsecond".as_slice()),
             (b"".as_slice(), b"got:".as_slice()),
+            (b"\0\xff\r\n".as_slice(), b"got:\0\xff\r\n".as_slice()),
         ] {
-            let mut exec = pwsh_file(r"C:\test\stdin.ps1", &[]);
+            let mut exec = pwsh_file(r"C:\test\stdin.ps1", &[&stdin.len().to_string()]);
             exec.stdin = Some(stdin.to_vec());
             let output = primitives.exec(exec, EXEC_TIME).await.unwrap_or_else(|error| {
-                panic!("stdin {stdin:?} did not reach end of file over the engine connection: {error}")
+                panic!("stdin {stdin:?} did not reach its declared length over the engine connection: {error}")
             });
             assert_eq!(
                 output,

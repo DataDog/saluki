@@ -16,7 +16,20 @@ pub async fn run_operation(
     operation: &dyn Operation, args: Value,
     exec: impl Fn(&ExecCommand) -> Result<ExecOutput, HandleError> + Send + Sync,
 ) -> Result<Value, HandleError> {
-    let primitives = ScriptedExec(exec);
+    run_operation_with_process(operation, args, exec, |_, _| panic!("the operation must use exec")).await
+}
+
+/// Runs an operation with scripted command and declared-process output and a ten-second execution limit.
+///
+/// # Errors
+///
+/// Returns the operation's error unchanged.
+pub async fn run_operation_with_process(
+    operation: &dyn Operation, args: Value,
+    exec: impl Fn(&ExecCommand) -> Result<ExecOutput, HandleError> + Send + Sync,
+    exec_process: impl Fn(&str, &[String]) -> Result<ExecOutput, HandleError> + Send + Sync,
+) -> Result<Value, HandleError> {
+    let primitives = ScriptedExec(exec, exec_process);
     operation
         .run(
             &OpContext {
@@ -39,7 +52,10 @@ pub async fn run_operation(
 ///
 /// Panics if the operation uses a participant primitive instead of HTTP.
 pub async fn run_http_operation(operation: &dyn Operation, args: Value, port: u16) -> Result<Value, HandleError> {
-    let primitives = ScriptedExec(|_: &ExecCommand| panic!("the operation must use HTTP"));
+    let primitives = ScriptedExec(
+        |_: &ExecCommand| panic!("the operation must use HTTP"),
+        |_: &str, _: &[String]| panic!("the operation must use HTTP"),
+    );
     let requests = operation
         .http_endpoints()
         .iter()
@@ -68,17 +84,21 @@ pub async fn run_http_operation(operation: &dyn Operation, args: Value, port: u1
         .await
 }
 
-struct ScriptedExec<F>(F)
-where
-    F: Fn(&ExecCommand) -> Result<ExecOutput, HandleError> + Send + Sync;
+struct ScriptedExec<F, G>(F, G);
 
 #[async_trait]
-impl<F> Primitives for ScriptedExec<F>
+impl<F, G> Primitives for ScriptedExec<F, G>
 where
     F: Fn(&ExecCommand) -> Result<ExecOutput, HandleError> + Send + Sync,
+    G: Fn(&str, &[String]) -> Result<ExecOutput, HandleError> + Send + Sync,
 {
     async fn exec(&self, command: ExecCommand, _: Duration) -> Result<ExecOutput, HandleError> {
         (self.0)(&command)
+    }
+
+    async fn exec_process(&self, process: &str, args: Vec<String>, limit: Duration) -> Result<ExecOutput, HandleError> {
+        assert_eq!(limit, Duration::from_secs(10));
+        (self.1)(process, &args)
     }
 
     async fn read_file(&self, _: &str) -> Result<Option<Vec<u8>>, HandleError> {

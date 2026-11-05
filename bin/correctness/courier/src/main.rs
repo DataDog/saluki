@@ -68,12 +68,14 @@ mod tests {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let to = Target::parse(&format!("tcp://{}", listener.local_addr().unwrap())).unwrap();
             let mut stderr = Vec::new();
-            let args = invocation(Command::Send { to })
+            let args = invocation(Command::Send { to, stdin_len: 7 })
                 .args()
                 .into_iter()
                 .map(OsString::from)
                 .collect();
-            let code = run(args, &b"payload"[..], tokio::io::sink(), &mut stderr).await;
+            let (reader, mut writer) = tokio::io::duplex(64);
+            writer.write_all(b"payloadextra").await.unwrap();
+            let code = run(args, reader, tokio::io::sink(), &mut stderr).await;
             assert_eq!(code, 0);
             assert_eq!(stderr.iter().filter(|byte| **byte == b'\n').count(), 1);
             assert_eq!(stderr.last(), Some(&b'\n'));

@@ -1362,8 +1362,9 @@ impl Driver {
     /// Executes a command and returns stdout and stderr frames as they arrive.
     ///
     /// The command uses the container's default user and working directory, without a TTY. Request environment
-    /// variables extend the container's environment. Polling the stream also writes stdin and closes it after the
-    /// supplied bytes. Every exit code is data; read it with [`ExecStream::exit_code`] once the stream has ended.
+    /// variables extend the container's environment. Polling the stream writes stdin and requests a write-side
+    /// shutdown after the supplied bytes; see [`ExecRequest::with_stdin`] for transport limits. Every exit code
+    /// is data; read it with [`ExecStream::exit_code`] once the stream has ended.
     ///
     /// The stream ends when output closes; a background child holding stdout or stderr open keeps it open. Dropping
     /// this future or the stream stops reading and writing, but the command runs until it exits or the container

@@ -7,10 +7,12 @@ use crate::Target;
 /// An operation performed in one courier process.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Command {
-    /// Send stdin through one connection or as one datagram.
+    /// Send exactly `stdin_len` bytes from stdin through one connection or as one datagram.
     Send {
         /// Destination endpoint.
         to: Target,
+        /// Number of input bytes to read; zero sends an empty payload.
+        stdin_len: u64,
     },
     /// Connect to an endpoint without sending data.
     Probe {
@@ -50,7 +52,13 @@ impl Invocation {
     /// Renders arguments after the executable name, rounding the budget up to whole milliseconds.
     pub fn args(&self) -> Vec<String> {
         let mut args = match &self.command {
-            Command::Send { to } => vec!["send".into(), "--to".into(), to.to_string()],
+            Command::Send { to, stdin_len } => vec![
+                "send".into(),
+                "--to".into(),
+                to.to_string(),
+                "--stdin-len".into(),
+                stdin_len.to_string(),
+            ],
             Command::Probe { to } => vec!["probe".into(), "--to".into(), to.to_string()],
             Command::Http { url, headers_only } => {
                 let mut args = vec!["http".into(), "--url".into(), url.clone()];
@@ -85,6 +93,7 @@ impl Invocation {
         }
         let mut destination = None;
         let mut timeout = None;
+        let mut stdin_len = None;
         let mut headers_only = false;
         while let Some(flag) = args.next() {
             let flag = flag.as_ref();
@@ -92,6 +101,7 @@ impl Invocation {
                 ("send" | "probe", "--to") | ("http", "--url") | ("follow", "--path") => destination.is_some(),
                 ("send" | "probe" | "http", "--timeout-ms") => timeout.is_some(),
                 ("http", "--headers-only") => headers_only,
+                ("send", "--stdin-len") => stdin_len.is_some(),
                 _ => {
                     return Err(UsageError {
                         reason: format!("unknown flag {flag:?} for {command}"),
@@ -128,6 +138,19 @@ impl Invocation {
                         ),
                     })?;
                 timeout = Some(Duration::from_millis(milliseconds));
+            } else if flag == "--stdin-len" {
+                stdin_len = Some(
+                    value
+                        .parse::<u64>()
+                        .ok()
+                        .filter(|_| value.bytes().all(|byte| byte.is_ascii_digit()))
+                        .ok_or_else(|| UsageError {
+                            reason: format!(
+                                "--stdin-len must be a decimal integer from 0 through {}; got {value:?}",
+                                u64::MAX
+                            ),
+                        })?,
+                );
             } else {
                 destination = Some(value.to_owned());
             }
@@ -145,6 +168,9 @@ impl Invocation {
         let command = match command {
             "send" => Command::Send {
                 to: Target::parse(&destination)?,
+                stdin_len: stdin_len.ok_or_else(|| UsageError {
+                    reason: "missing --stdin-len".into(),
+                })?,
             },
             "probe" => Command::Probe {
                 to: Target::parse(&destination)?,
@@ -195,14 +221,20 @@ mod tests {
             "npipe://listener",
         ] {
             let to = Target::parse(url).unwrap();
-            for command in [Command::Send { to: to.clone() }, Command::Probe { to }] {
+            for command in [
+                Command::Send {
+                    to: to.clone(),
+                    stdin_len: 7,
+                },
+                Command::Probe { to },
+            ] {
                 let invocation = Invocation {
                     command,
                     timeout: Some(Duration::from_millis(1500)),
                 };
                 let args = invocation.args();
                 assert_eq!(Invocation::parse(&args).unwrap(), invocation);
-                let reversed_flags = [&args[0], &args[3], &args[4], &args[1], &args[2]];
+                let reversed_flags = std::iter::once(&args[0]).chain(args[1..].chunks_exact(2).rev().flatten());
                 assert_eq!(Invocation::parse(reversed_flags).unwrap(), invocation);
             }
         }
@@ -218,6 +250,18 @@ mod tests {
             ("send --to tcp://h:1 --to tcp://h:2", "--to"),
             ("probe --timeout-ms 1 --timeout-ms 2", "--timeout-ms"),
             ("send --wat 1", "--wat"),
+            ("send --to tcp://h:1 --timeout-ms 1", "missing --stdin-len"),
+            ("send --stdin-len", "--stdin-len"),
+            ("send --stdin-len --to tcp://h:1", "--stdin-len"),
+            ("send --stdin-len 0 --stdin-len 1", "repeated"),
+            ("probe --stdin-len 0", "unknown flag"),
+            ("http --stdin-len 0", "unknown flag"),
+            ("follow --stdin-len 0", "unknown flag"),
+            ("send --stdin-len -1", "--stdin-len"),
+            ("send --stdin-len +1", "--stdin-len"),
+            ("send --stdin-len 1.5", "--stdin-len"),
+            ("send --stdin-len abc", "--stdin-len"),
+            ("send --stdin-len 18446744073709551616", "--stdin-len"),
             ("send --to", "--to"),
             ("send --timeout-ms", "--timeout-ms"),
             ("send --to --timeout-ms 1", "--to"),
@@ -245,6 +289,20 @@ mod tests {
         ] {
             let error = Invocation::parse(args.split_whitespace()).unwrap_err().to_string();
             assert!(error.contains(problem), "{args:?}: {error:?} must name {problem:?}");
+        }
+    }
+
+    #[test]
+    fn send_accepts_zero_and_the_largest_wire_length() {
+        for stdin_len in [0, u64::MAX] {
+            let invocation = Invocation {
+                command: Command::Send {
+                    to: Target::parse("tcp://h:1").unwrap(),
+                    stdin_len,
+                },
+                timeout: Some(Duration::from_millis(1)),
+            };
+            assert_eq!(Invocation::parse(invocation.args()).unwrap(), invocation);
         }
     }
 

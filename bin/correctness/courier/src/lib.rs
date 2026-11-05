@@ -26,7 +26,7 @@ pub const FOLLOW_STARTED: &str = "panoramic-file-output\n";
 
 /// Executes a command, streaming HTTP bodies and followed files to stdout.
 ///
-/// Stdin left open at the deadline is a local failure; a network deadline produces a timeout report.
+/// Incomplete stdin at the deadline is a local failure; a network deadline produces a timeout report.
 pub async fn execute(
     invocation: &Invocation, stdin: impl AsyncRead + Unpin, mut stdout: impl AsyncWrite + Unpin,
 ) -> Report {
@@ -39,7 +39,7 @@ pub async fn execute(
         return follow::follow(path, &mut stdout).await;
     }
     execute_with(invocation, stdin, async |command, payload| match command {
-        Command::Send { to } => send::send(to, payload).await,
+        Command::Send { to, .. } => send::send(to, payload).await,
         Command::Probe { to } => probe::probe(to).await,
         Command::Http { url, headers_only } => http::get(url, *headers_only, &mut stdout).await,
         Command::Follow { .. } => unreachable!(),
@@ -48,7 +48,7 @@ pub async fn execute(
 }
 
 async fn execute_with(
-    invocation: &Invocation, mut stdin: impl AsyncRead + Unpin, run: impl AsyncFnOnce(&Command, &[u8]) -> Report,
+    invocation: &Invocation, stdin: impl AsyncRead + Unpin, run: impl AsyncFnOnce(&Command, &[u8]) -> Report,
 ) -> Report {
     let Some(limit_ms) = invocation.timeout_ms() else {
         return Report::Usage {
@@ -57,9 +57,15 @@ async fn execute_with(
     };
     let deadline = tokio::time::Instant::now() + Duration::from_millis(limit_ms);
     let mut payload = Vec::new();
-    if let Command::Send { to } = &invocation.command {
-        match tokio::time::timeout_at(deadline, stdin.read_to_end(&mut payload)).await {
-            Ok(Ok(_)) => {}
+    if let Command::Send { to, stdin_len } = &invocation.command {
+        // Docker's Windows named-pipe transport only flushes on shutdown; the length bounds the read.
+        match tokio::time::timeout_at(deadline, stdin.take(*stdin_len).read_to_end(&mut payload)).await {
+            Ok(Ok(read)) if read as u64 == *stdin_len => {}
+            Ok(Ok(read)) => {
+                return Report::Failed {
+                    reason: format!("{to}: stdin ended after {read} bytes, expected {stdin_len}"),
+                };
+            }
             Ok(Err(error)) => {
                 return Report::Failed {
                     reason: format!("{to}: reading stdin: {error}"),
@@ -67,7 +73,7 @@ async fn execute_with(
             }
             Err(_) => {
                 return Report::Failed {
-                    reason: format!("{to}: stdin was still open after the {limit_ms} ms limit"),
+                    reason: format!("{to}: stdin did not supply {stdin_len} bytes within the {limit_ms} ms limit"),
                 };
             }
         }

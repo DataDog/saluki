@@ -1418,14 +1418,16 @@
       "name": "adp-config-dynamic-basic",
       "suite": "integration",
       "subject_os": "linux",
-      "runtime": "linux",
+      "runtime": "linux-container",
       "source": "test/integration/cases/adp-config-dynamic-basic/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/datadog-agent:testing-devel"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest"
       },
       "ci_jobs": [
         "test-integration"
@@ -1437,13 +1439,16 @@
       "name": "adp-config-dynamic-basic",
       "suite": "integration",
       "subject_os": "macos",
-      "runtime": "mac",
+      "runtime": "host-process-group",
       "source": "test/integration/cases/adp-config-dynamic-basic/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
-      "images": {},
+      "images": {
+        "adp-host-binary": "target/release/agent-data-plane",
+        "agent-host-install": "/tmp/saluki-dda/datadog-agent"
+      },
       "ci_jobs": [
         "test-integration-macos-arm64",
         "test-integration-macos-amd64"
@@ -1455,14 +1460,15 @@
       "name": "adp-config-dynamic-basic",
       "suite": "integration",
       "subject_os": "windows",
-      "runtime": "windows",
+      "runtime": "windows-container",
       "source": "test/integration/cases/adp-config-dynamic-basic/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/agent-data-plane:testing-windows"
+        "agent-adp-windows-image": "saluki-images/agent-data-plane:testing-windows",
+        "courier-windows-binary": "target/release/panoramic-courier.exe"
       },
       "ci_jobs": [
         "test-integration-windows-amd64"
@@ -1474,14 +1480,16 @@
       "name": "adp-config-dynamic-runtime",
       "suite": "integration",
       "subject_os": "linux",
-      "runtime": "linux",
+      "runtime": "linux-container",
       "source": "test/integration/cases/adp-config-dynamic-runtime/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/datadog-agent:testing-devel"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest"
       },
       "ci_jobs": [
         "test-integration"
@@ -1493,13 +1501,16 @@
       "name": "adp-config-dynamic-runtime",
       "suite": "integration",
       "subject_os": "macos",
-      "runtime": "mac",
+      "runtime": "host-process-group",
       "source": "test/integration/cases/adp-config-dynamic-runtime/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
-      "images": {},
+      "images": {
+        "adp-host-binary": "target/release/agent-data-plane",
+        "agent-host-install": "/tmp/saluki-dda/datadog-agent"
+      },
       "ci_jobs": [
         "test-integration-macos-arm64",
         "test-integration-macos-amd64"
@@ -1511,14 +1522,15 @@
       "name": "adp-config-dynamic-runtime",
       "suite": "integration",
       "subject_os": "windows",
-      "runtime": "windows",
+      "runtime": "windows-container",
       "source": "test/integration/cases/adp-config-dynamic-runtime/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/agent-data-plane:testing-windows"
+        "agent-adp-windows-image": "saluki-images/agent-data-plane:testing-windows",
+        "courier-windows-binary": "target/release/panoramic-courier.exe"
       },
       "ci_jobs": [
         "test-integration-windows-amd64"
@@ -1530,14 +1542,16 @@
       "name": "adp-config-otlp",
       "suite": "integration",
       "subject_os": "linux",
-      "runtime": "linux",
+      "runtime": "linux-container",
       "source": "test/integration/cases/adp-config-otlp/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "180s",
       "images": {
-        "container": "saluki-images/datadog-agent:testing-devel"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest"
       },
       "ci_jobs": [
         "test-integration"
@@ -1549,13 +1563,16 @@
       "name": "adp-config-otlp",
       "suite": "integration",
       "subject_os": "macos",
-      "runtime": "mac",
+      "runtime": "host-process-group",
       "source": "test/integration/cases/adp-config-otlp/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "180s",
-      "images": {},
+      "images": {
+        "adp-host-binary": "target/release/agent-data-plane",
+        "agent-host-install": "/tmp/saluki-dda/datadog-agent"
+      },
       "ci_jobs": [
         "test-integration-macos-arm64",
         "test-integration-macos-amd64"
@@ -1567,14 +1584,15 @@
       "name": "adp-config-otlp",
       "suite": "integration",
       "subject_os": "windows",
-      "runtime": "windows",
+      "runtime": "windows-container",
       "source": "test/integration/cases/adp-config-otlp/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "180s",
       "images": {
-        "container": "saluki-images/agent-data-plane:testing-windows"
+        "agent-adp-windows-image": "saluki-images/agent-data-plane:testing-windows",
+        "courier-windows-binary": "target/release/panoramic-courier.exe"
       },
       "ci_jobs": [
         "test-integration-windows-amd64"
@@ -1586,14 +1604,16 @@
       "name": "adp-config-stream",
       "suite": "integration",
       "subject_os": "linux",
-      "runtime": "linux",
+      "runtime": "linux-container",
       "source": "test/integration/cases/adp-config-stream/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/datadog-agent:testing-devel"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest"
       },
       "ci_jobs": [
         "test-integration"
@@ -1605,13 +1625,16 @@
       "name": "adp-config-stream",
       "suite": "integration",
       "subject_os": "macos",
-      "runtime": "mac",
+      "runtime": "host-process-group",
       "source": "test/integration/cases/adp-config-stream/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
-      "images": {},
+      "images": {
+        "adp-host-binary": "target/release/agent-data-plane",
+        "agent-host-install": "/tmp/saluki-dda/datadog-agent"
+      },
       "ci_jobs": [
         "test-integration-macos-arm64",
         "test-integration-macos-amd64"
@@ -1623,14 +1646,15 @@
       "name": "adp-config-stream",
       "suite": "integration",
       "subject_os": "windows",
-      "runtime": "windows",
+      "runtime": "windows-container",
       "source": "test/integration/cases/adp-config-stream/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/agent-data-plane:testing-windows"
+        "agent-adp-windows-image": "saluki-images/agent-data-plane:testing-windows",
+        "courier-windows-binary": "target/release/panoramic-courier.exe"
       },
       "ci_jobs": [
         "test-integration-windows-amd64"
@@ -2239,14 +2263,16 @@
       "name": "adp-rar-registration",
       "suite": "integration",
       "subject_os": "linux",
-      "runtime": "linux",
+      "runtime": "linux-container",
       "source": "test/integration/cases/adp-rar-registration/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "180s",
       "images": {
-        "container": "saluki-images/datadog-agent:testing-devel"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest"
       },
       "ci_jobs": [
         "test-integration"
@@ -2258,13 +2284,16 @@
       "name": "adp-rar-registration",
       "suite": "integration",
       "subject_os": "macos",
-      "runtime": "mac",
+      "runtime": "host-process-group",
       "source": "test/integration/cases/adp-rar-registration/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "180s",
-      "images": {},
+      "images": {
+        "adp-host-binary": "target/release/agent-data-plane",
+        "agent-host-install": "/tmp/saluki-dda/datadog-agent"
+      },
       "ci_jobs": [
         "test-integration-macos-arm64",
         "test-integration-macos-amd64"
@@ -2276,14 +2305,15 @@
       "name": "adp-rar-registration",
       "suite": "integration",
       "subject_os": "windows",
-      "runtime": "windows",
+      "runtime": "windows-container",
       "source": "test/integration/cases/adp-rar-registration/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "180s",
       "images": {
-        "container": "saluki-images/agent-data-plane:testing-windows"
+        "agent-adp-windows-image": "saluki-images/agent-data-plane:testing-windows",
+        "courier-windows-binary": "target/release/panoramic-courier.exe"
       },
       "ci_jobs": [
         "test-integration-windows-amd64"
@@ -2944,14 +2974,16 @@
       "name": "dogstatsd-replay-unix",
       "suite": "integration",
       "subject_os": "linux",
-      "runtime": "linux",
+      "runtime": "linux-container",
       "source": "test/integration/cases/dogstatsd-replay-unix/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "150s",
       "images": {
-        "container": "saluki-images/datadog-agent:testing-devel"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest"
       },
       "ci_jobs": [
         "test-integration"
@@ -2963,13 +2995,16 @@
       "name": "dogstatsd-replay-unix",
       "suite": "integration",
       "subject_os": "macos",
-      "runtime": "mac",
+      "runtime": "host-process-group",
       "source": "test/integration/cases/dogstatsd-replay-unix/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "150s",
-      "images": {},
+      "images": {
+        "adp-host-binary": "target/release/agent-data-plane",
+        "agent-host-install": "/tmp/saluki-dda/datadog-agent"
+      },
       "ci_jobs": [
         "test-integration-macos-arm64",
         "test-integration-macos-amd64"
@@ -2981,14 +3016,15 @@
       "name": "dogstatsd-replay-windows",
       "suite": "integration",
       "subject_os": "windows",
-      "runtime": "windows",
+      "runtime": "windows-container",
       "source": "test/integration/cases/dogstatsd-replay-windows/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "150s",
       "images": {
-        "container": "saluki-images/agent-data-plane:testing-windows"
+        "agent-adp-windows-image": "saluki-images/agent-data-plane:testing-windows",
+        "courier-windows-binary": "target/release/panoramic-courier.exe"
       },
       "ci_jobs": [
         "test-integration-windows-amd64"
@@ -3223,14 +3259,16 @@
       "name": "privileged-api-endpoints",
       "suite": "integration",
       "subject_os": "linux",
-      "runtime": "linux",
+      "runtime": "linux-container",
       "source": "test/integration/cases/privileged-api-endpoints/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/datadog-agent:testing-devel"
+        "agent-adp-linux-image": "saluki-images/datadog-agent:testing-devel",
+        "courier-linux-binary": "target/x86_64-unknown-linux-musl/release/panoramic-courier",
+        "fixup-image": "alpine:latest"
       },
       "ci_jobs": [
         "test-integration"
@@ -3242,13 +3280,16 @@
       "name": "privileged-api-endpoints",
       "suite": "integration",
       "subject_os": "macos",
-      "runtime": "mac",
+      "runtime": "host-process-group",
       "source": "test/integration/cases/privileged-api-endpoints/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
-      "images": {},
+      "images": {
+        "adp-host-binary": "target/release/agent-data-plane",
+        "agent-host-install": "/tmp/saluki-dda/datadog-agent"
+      },
       "ci_jobs": [
         "test-integration-macos-arm64",
         "test-integration-macos-amd64"
@@ -3260,14 +3301,15 @@
       "name": "privileged-api-endpoints",
       "suite": "integration",
       "subject_os": "windows",
-      "runtime": "windows",
+      "runtime": "windows-container",
       "source": "test/integration/cases/privileged-api-endpoints/config.yaml",
-      "schema": "integration",
-      "execution": "old",
+      "schema": "participants",
+      "execution": "native",
       "status": "selected",
       "timeout": "120s",
       "images": {
-        "container": "saluki-images/agent-data-plane:testing-windows"
+        "agent-adp-windows-image": "saluki-images/agent-data-plane:testing-windows",
+        "courier-windows-binary": "target/release/panoramic-courier.exe"
       },
       "ci_jobs": [
         "test-integration-windows-amd64"
@@ -6267,80 +6309,201 @@
     },
     "integration/adp-config-dynamic-basic": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [],
-          "exposed_ports": [
-            "55101/tcp"
-          ],
-          "files": [],
-          "host_cgroup_namespace": false
-        },
-        "description": "Verifies a Core Agent runtime config mutation propagates to ADP's /config endpoint.",
-        "env": {
-          "DD_API_KEY": "00000000000000000000000000000000",
-          "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_STANDALONE_MODE": "false",
-          "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT": "true",
-          "DD_HOSTNAME": "integration-test-dynamic-config",
-          "DD_LOG_LEVEL": "info"
-        },
-        "intake": {
-          "enabled": false
-        },
-        "name": "adp-config-dynamic-basic",
-        "procedure": [
-          {
-            "assertion": "adp_config_key_equals",
-            "endpoint": "https://localhost:55101/config",
-            "key": "log_level",
-            "timeout": "60s",
-            "value": "info"
-          },
-          {
-            "action": "core_agent_config_set",
-            "endpoint": "https://localhost:55001/agent/config/{key}",
-            "key": "log_level",
-            "timeout": "30s",
-            "value": "debug"
-          },
-          {
-            "assertion": "adp_config_key_equals",
-            "endpoint": "https://localhost:55101/config",
-            "key": "log_level",
-            "timeout": "60s",
-            "value": "debug"
-          },
-          {
-            "parallel": [
-              {
-                "assertion": "process_stable_for",
-                "duration": "10s"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT": "true",
+                "DD_HOSTNAME": "integration-test-dynamic-config",
+                "DD_LOG_LEVEL": "info"
               },
-              {
-                "assertion": "log_not_contains",
-                "during": "10s",
-                "pattern": "Error while reading config event stream",
-                "regex": false,
-                "stream": "both"
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "key": "log_level",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": "info",
+              "view": "source"
+            },
+            {
+              "key": "log_level",
+              "on": "adp",
+              "step": "config_set",
+              "timeout": "30s",
+              "value": "debug"
+            },
+            {
+              "key": "log_level",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": "debug",
+              "view": "source"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "Error while reading config event stream",
+                  "step": "log_not_contains"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        },
+        "macos": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT": "true",
+                "DD_HOSTNAME": "integration-test-dynamic-config",
+                "DD_LOG_LEVEL": "info"
               },
-              {
-                "assertion": "log_not_contains",
-                "during": "10s",
-                "pattern": "panic|PANIC",
-                "regex": true,
-                "stream": "both"
-              }
-            ]
-          }
-        ],
-        "runtimes": [
-          "linux",
-          "mac",
-          "windows"
-        ],
-        "timeout": "120s"
+              "realization": "host-process-group",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "key": "log_level",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": "info",
+              "view": "source"
+            },
+            {
+              "key": "log_level",
+              "on": "adp",
+              "step": "config_set",
+              "timeout": "30s",
+              "value": "debug"
+            },
+            {
+              "key": "log_level",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": "debug",
+              "view": "source"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "Error while reading config event stream",
+                  "step": "log_not_contains"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        },
+        "windows": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT": "true",
+                "DD_HOSTNAME": "integration-test-dynamic-config",
+                "DD_LOG_LEVEL": "info"
+              },
+              "realization": "windows-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "key": "log_level",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": "info",
+              "view": "source"
+            },
+            {
+              "key": "log_level",
+              "on": "adp",
+              "step": "config_set",
+              "timeout": "30s",
+              "value": "debug"
+            },
+            {
+              "key": "log_level",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": "debug",
+              "view": "source"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "Error while reading config event stream",
+                  "step": "log_not_contains"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        }
       },
       "steps": {
         "single_assertions": 2,
@@ -6348,8 +6511,8 @@
         "parallel_assertions": 3,
         "actions": 1,
         "by_kind": {
-          "adp_config_key_equals": 2,
-          "core_agent_config_set": 1,
+          "config_key_equals": 2,
+          "config_set": 1,
           "log_not_contains": 2,
           "process_stable_for": 1
         }
@@ -6358,80 +6521,201 @@
     },
     "integration/adp-config-dynamic-runtime": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [],
-          "exposed_ports": [
-            "55101/tcp"
-          ],
-          "files": [],
-          "host_cgroup_namespace": false
-        },
-        "description": "Verifies a Core Agent runtime config mutation propagates through translation to ADP's /config/runtime endpoint.",
-        "env": {
-          "DD_API_KEY": "00000000000000000000000000000000",
-          "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_STANDALONE_MODE": "false",
-          "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT": "true",
-          "DD_HOSTNAME": "integration-test-dynamic-config-runtime",
-          "DD_LOG_LEVEL": "info"
-        },
-        "intake": {
-          "enabled": false
-        },
-        "name": "adp-config-dynamic-runtime",
-        "procedure": [
-          {
-            "assertion": "adp_config_key_equals",
-            "endpoint": "https://localhost:55101/config/runtime",
-            "key": "control.logging.level",
-            "timeout": "60s",
-            "value": "info"
-          },
-          {
-            "action": "core_agent_config_set",
-            "endpoint": "https://localhost:55001/agent/config/{key}",
-            "key": "log_level",
-            "timeout": "30s",
-            "value": "debug"
-          },
-          {
-            "assertion": "adp_config_key_equals",
-            "endpoint": "https://localhost:55101/config/runtime",
-            "key": "control.logging.level",
-            "timeout": "60s",
-            "value": "debug"
-          },
-          {
-            "parallel": [
-              {
-                "assertion": "process_stable_for",
-                "duration": "10s"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT": "true",
+                "DD_HOSTNAME": "integration-test-dynamic-config-runtime",
+                "DD_LOG_LEVEL": "info"
               },
-              {
-                "assertion": "log_not_contains",
-                "during": "10s",
-                "pattern": "Error while reading config event stream",
-                "regex": false,
-                "stream": "both"
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "key": "control.logging.level",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": "info",
+              "view": "runtime"
+            },
+            {
+              "key": "log_level",
+              "on": "adp",
+              "step": "config_set",
+              "timeout": "30s",
+              "value": "debug"
+            },
+            {
+              "key": "control.logging.level",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": "debug",
+              "view": "runtime"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "Error while reading config event stream",
+                  "step": "log_not_contains"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        },
+        "macos": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT": "true",
+                "DD_HOSTNAME": "integration-test-dynamic-config-runtime",
+                "DD_LOG_LEVEL": "info"
               },
-              {
-                "assertion": "log_not_contains",
-                "during": "10s",
-                "pattern": "panic|PANIC",
-                "regex": true,
-                "stream": "both"
-              }
-            ]
-          }
-        ],
-        "runtimes": [
-          "linux",
-          "mac",
-          "windows"
-        ],
-        "timeout": "120s"
+              "realization": "host-process-group",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "key": "control.logging.level",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": "info",
+              "view": "runtime"
+            },
+            {
+              "key": "log_level",
+              "on": "adp",
+              "step": "config_set",
+              "timeout": "30s",
+              "value": "debug"
+            },
+            {
+              "key": "control.logging.level",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": "debug",
+              "view": "runtime"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "Error while reading config event stream",
+                  "step": "log_not_contains"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        },
+        "windows": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT": "true",
+                "DD_HOSTNAME": "integration-test-dynamic-config-runtime",
+                "DD_LOG_LEVEL": "info"
+              },
+              "realization": "windows-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "key": "control.logging.level",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": "info",
+              "view": "runtime"
+            },
+            {
+              "key": "log_level",
+              "on": "adp",
+              "step": "config_set",
+              "timeout": "30s",
+              "value": "debug"
+            },
+            {
+              "key": "control.logging.level",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": "debug",
+              "view": "runtime"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "Error while reading config event stream",
+                  "step": "log_not_contains"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        }
       },
       "steps": {
         "single_assertions": 2,
@@ -6439,8 +6723,8 @@
         "parallel_assertions": 3,
         "actions": 1,
         "by_kind": {
-          "adp_config_key_equals": 2,
-          "core_agent_config_set": 1,
+          "config_key_equals": 2,
+          "config_set": 1,
           "log_not_contains": 2,
           "process_stable_for": 1
         }
@@ -6449,245 +6733,765 @@
     },
     "integration/adp-config-otlp": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [],
-          "exposed_ports": [
-            "55101/tcp"
-          ],
-          "files": [],
-          "host_cgroup_namespace": false
-        },
-        "description": "Verifies OTLP config env vars reach ADP's /config/runtime endpoint in connected mode.",
-        "env": {
-          "DD_API_KEY": "00000000000000000000000000000000",
-          "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY": "0.0.0.0:16317",
-          "DD_DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY": "0.0.0.0:16318",
-          "DD_DATA_PLANE_STANDALONE_MODE": "false",
-          "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT": "true",
-          "DD_HOSTNAME": "integration-test-otlp-config-connected",
-          "DD_LOG_LEVEL": "info",
-          "DD_OTLP_ALLOW_CONTEXT_HEAP_ALLOCS": "false",
-          "DD_OTLP_CACHED_CONTEXTS_LIMIT": "123456",
-          "DD_OTLP_CACHED_TAGSETS_LIMIT": "234567",
-          "DD_OTLP_CONFIG_LOGS_ENABLED": "true",
-          "DD_OTLP_CONFIG_METRICS_ENABLED": "false",
-          "DD_OTLP_CONFIG_METRICS_HISTOGRAMS_MODE": "counters",
-          "DD_OTLP_CONFIG_METRICS_HISTOGRAMS_SEND_AGGREGATION_METRICS": "true",
-          "DD_OTLP_CONFIG_METRICS_RESOURCE_ATTRIBUTES_AS_TAGS": "true",
-          "DD_OTLP_CONFIG_METRICS_SUMS_CUMULATIVE_MONOTONIC_MODE": "raw_value",
-          "DD_OTLP_CONFIG_METRICS_SUMS_INITIAL_CUMULATIVE_MONOTONIC_VALUE": "drop",
-          "DD_OTLP_CONFIG_METRICS_TAGS": "env:integration-otlp,team:agent-dataplane",
-          "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT": "0.0.0.0:14317",
-          "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_MAX_RECV_MSG_SIZE_MIB": "7",
-          "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TRANSPORT": "unix",
-          "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT": "0.0.0.0:14318",
-          "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TRANSPORT": "unix",
-          "DD_OTLP_CONFIG_TRACES_ENABLED": "false",
-          "DD_OTLP_CONFIG_TRACES_ENABLE_OTLP_COMPUTE_TOP_LEVEL_BY_SPAN_KIND": "false",
-          "DD_OTLP_CONFIG_TRACES_IGNORE_MISSING_DATADOG_FIELDS": "true",
-          "DD_OTLP_CONFIG_TRACES_INTERNAL_PORT": "5017",
-          "DD_OTLP_CONFIG_TRACES_PROBABILISTIC_SAMPLER_SAMPLING_PERCENTAGE": "42.5",
-          "DD_OTLP_CONFIG_TRACES_STRING_INTERNER_SIZE": "1MiB",
-          "DD_OTLP_STRING_INTERNER_SIZE": "3MiB"
-        },
-        "intake": {
-          "enabled": false
-        },
-        "name": "adp-config-otlp",
-        "procedure": [
-          {
-            "assertion": "adp_config_key_equals",
-            "endpoint": "https://localhost:55101/config/runtime",
-            "key": "control.logging.level",
-            "timeout": "60s",
-            "value": "info"
-          },
-          {
-            "assertion": "adp_config_key_equals",
-            "endpoint": "https://localhost:55101/config/runtime",
-            "key": "domains.otlp.receiver.logs_enabled",
-            "timeout": "60s",
-            "value": true
-          },
-          {
-            "assertion": "adp_config_key_equals",
-            "endpoint": "https://localhost:55101/config/runtime",
-            "key": "domains.otlp.receiver.metrics_enabled",
-            "timeout": "60s",
-            "value": false
-          },
-          {
-            "assertion": "adp_config_key_equals",
-            "endpoint": "https://localhost:55101/config/runtime",
-            "key": "domains.otlp.metrics.histogram_mode",
-            "timeout": "60s",
-            "value": "Counters"
-          },
-          {
-            "assertion": "adp_config_key_equals",
-            "endpoint": "https://localhost:55101/config/runtime",
-            "key": "domains.otlp.metrics.send_histogram_aggregations",
-            "timeout": "60s",
-            "value": true
-          },
-          {
-            "assertion": "adp_config_key_equals",
-            "endpoint": "https://localhost:55101/config/runtime",
-            "key": "domains.otlp.metrics.resource_attributes_as_tags",
-            "timeout": "60s",
-            "value": true
-          },
-          {
-            "assertion": "adp_config_key_equals",
-            "endpoint": "https://localhost:55101/config/runtime",
-            "key": "domains.otlp.metrics.sums.cumulative_monotonic_mode",
-            "timeout": "60s",
-            "value": "RawValue"
-          },
-          {
-            "assertion": "adp_config_key_equals",
-            "endpoint": "https://localhost:55101/config/runtime",
-            "key": "domains.otlp.metrics.sums.initial_cumulative_monotonic_value",
-            "timeout": "60s",
-            "value": "Drop"
-          },
-          {
-            "assertion": "adp_config_key_equals",
-            "endpoint": "https://localhost:55101/config/runtime",
-            "key": "domains.otlp.metrics.tags",
-            "timeout": "60s",
-            "value": "env:integration-otlp,team:agent-dataplane"
-          },
-          {
-            "assertion": "adp_config_key_equals",
-            "endpoint": "https://localhost:55101/config/runtime",
-            "key": "domains.otlp.receiver.grpc.endpoint",
-            "timeout": "60s",
-            "value": "0.0.0.0:16317"
-          },
-          {
-            "assertion": "adp_config_key_equals",
-            "endpoint": "https://localhost:55101/config/runtime",
-            "key": "domains.otlp.receiver.grpc.max_recv_msg_size_mib",
-            "timeout": "60s",
-            "value": 7
-          },
-          {
-            "assertion": "adp_config_key_equals",
-            "endpoint": "https://localhost:55101/config/runtime",
-            "key": "domains.otlp.receiver.grpc.transport",
-            "timeout": "60s",
-            "value": "unix"
-          },
-          {
-            "assertion": "adp_config_key_equals",
-            "endpoint": "https://localhost:55101/config/runtime",
-            "key": "domains.otlp.receiver.http.endpoint",
-            "timeout": "60s",
-            "value": "0.0.0.0:16318"
-          },
-          {
-            "assertion": "adp_config_key_equals",
-            "endpoint": "https://localhost:55101/config/runtime",
-            "key": "domains.otlp.traces.enabled",
-            "timeout": "60s",
-            "value": false
-          },
-          {
-            "assertion": "adp_config_key_equals",
-            "endpoint": "https://localhost:55101/config/runtime",
-            "key": "domains.otlp.traces.internal_port",
-            "timeout": "60s",
-            "value": 5017
-          },
-          {
-            "assertion": "adp_config_key_equals",
-            "endpoint": "https://localhost:55101/config/runtime",
-            "key": "domains.otlp.traces.probabilistic_sampler_sampling_percentage",
-            "timeout": "60s",
-            "value": 42.5
-          },
-          {
-            "assertion": "adp_config_key_equals",
-            "endpoint": "https://localhost:55101/config/runtime",
-            "key": "domains.otlp.traces.string_interner_size",
-            "timeout": "60s",
-            "value": 1048576
-          },
-          {
-            "assertion": "adp_config_key_equals",
-            "endpoint": "https://localhost:55101/config/runtime",
-            "key": "domains.otlp.traces.enable_compute_top_level_by_span_kind",
-            "timeout": "60s",
-            "value": false
-          },
-          {
-            "assertion": "adp_config_key_equals",
-            "endpoint": "https://localhost:55101/config/runtime",
-            "key": "domains.otlp.traces.ignore_missing_datadog_fields",
-            "timeout": "60s",
-            "value": true
-          },
-          {
-            "assertion": "adp_config_key_equals",
-            "endpoint": "https://localhost:55101/config/runtime",
-            "key": "domains.otlp.receiver.http.transport",
-            "timeout": "60s",
-            "value": "unix"
-          },
-          {
-            "assertion": "adp_config_key_equals",
-            "endpoint": "https://localhost:55101/config/runtime",
-            "key": "domains.otlp.contexts.string_interner_size",
-            "timeout": "60s",
-            "value": 3145728
-          },
-          {
-            "assertion": "adp_config_key_equals",
-            "endpoint": "https://localhost:55101/config/runtime",
-            "key": "domains.otlp.contexts.cached_contexts_limit",
-            "timeout": "60s",
-            "value": 123456
-          },
-          {
-            "assertion": "adp_config_key_equals",
-            "endpoint": "https://localhost:55101/config/runtime",
-            "key": "domains.otlp.contexts.cached_tagsets_limit",
-            "timeout": "60s",
-            "value": 234567
-          },
-          {
-            "assertion": "adp_config_key_equals",
-            "endpoint": "https://localhost:55101/config/runtime",
-            "key": "domains.otlp.contexts.allow_context_heap_allocs",
-            "timeout": "60s",
-            "value": false
-          },
-          {
-            "parallel": [
-              {
-                "assertion": "process_stable_for",
-                "duration": "10s"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY": "0.0.0.0:16317",
+                "DD_DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY": "0.0.0.0:16318",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT": "true",
+                "DD_HOSTNAME": "integration-test-otlp-config-connected",
+                "DD_LOG_LEVEL": "info",
+                "DD_OTLP_ALLOW_CONTEXT_HEAP_ALLOCS": "false",
+                "DD_OTLP_CACHED_CONTEXTS_LIMIT": "123456",
+                "DD_OTLP_CACHED_TAGSETS_LIMIT": "234567",
+                "DD_OTLP_CONFIG_LOGS_ENABLED": "true",
+                "DD_OTLP_CONFIG_METRICS_ENABLED": "false",
+                "DD_OTLP_CONFIG_METRICS_HISTOGRAMS_MODE": "counters",
+                "DD_OTLP_CONFIG_METRICS_HISTOGRAMS_SEND_AGGREGATION_METRICS": "true",
+                "DD_OTLP_CONFIG_METRICS_RESOURCE_ATTRIBUTES_AS_TAGS": "true",
+                "DD_OTLP_CONFIG_METRICS_SUMS_CUMULATIVE_MONOTONIC_MODE": "raw_value",
+                "DD_OTLP_CONFIG_METRICS_SUMS_INITIAL_CUMULATIVE_MONOTONIC_VALUE": "drop",
+                "DD_OTLP_CONFIG_METRICS_TAGS": "env:integration-otlp,team:agent-dataplane",
+                "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT": "0.0.0.0:14317",
+                "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_MAX_RECV_MSG_SIZE_MIB": "7",
+                "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TRANSPORT": "unix",
+                "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT": "0.0.0.0:14318",
+                "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TRANSPORT": "unix",
+                "DD_OTLP_CONFIG_TRACES_ENABLED": "false",
+                "DD_OTLP_CONFIG_TRACES_ENABLE_OTLP_COMPUTE_TOP_LEVEL_BY_SPAN_KIND": "false",
+                "DD_OTLP_CONFIG_TRACES_IGNORE_MISSING_DATADOG_FIELDS": "true",
+                "DD_OTLP_CONFIG_TRACES_INTERNAL_PORT": "5017",
+                "DD_OTLP_CONFIG_TRACES_PROBABILISTIC_SAMPLER_SAMPLING_PERCENTAGE": "42.5",
+                "DD_OTLP_CONFIG_TRACES_STRING_INTERNER_SIZE": "1MiB",
+                "DD_OTLP_STRING_INTERNER_SIZE": "3MiB"
               },
-              {
-                "assertion": "log_not_contains",
-                "during": "10s",
-                "pattern": "panic|PANIC",
-                "regex": true,
-                "stream": "both"
-              }
-            ]
-          }
-        ],
-        "runtimes": [
-          "linux",
-          "mac",
-          "windows"
-        ],
-        "timeout": "180s"
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "key": "control.logging.level",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": "info",
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.receiver.logs_enabled",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": true,
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.receiver.metrics_enabled",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": false,
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.metrics.histogram_mode",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": "Counters",
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.metrics.send_histogram_aggregations",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": true,
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.metrics.resource_attributes_as_tags",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": true,
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.metrics.sums.cumulative_monotonic_mode",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": "RawValue",
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.metrics.sums.initial_cumulative_monotonic_value",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": "Drop",
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.metrics.tags",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": "env:integration-otlp,team:agent-dataplane",
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.receiver.grpc.endpoint",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": "0.0.0.0:16317",
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.receiver.grpc.max_recv_msg_size_mib",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": 7,
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.receiver.grpc.transport",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": "unix",
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.receiver.http.endpoint",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": "0.0.0.0:16318",
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.traces.enabled",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": false,
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.traces.internal_port",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": 5017,
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.traces.probabilistic_sampler_sampling_percentage",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": 42.5,
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.traces.string_interner_size",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": 1048576,
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.traces.enable_compute_top_level_by_span_kind",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": false,
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.traces.ignore_missing_datadog_fields",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": true,
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.receiver.http.transport",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": "unix",
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.contexts.string_interner_size",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": 3145728,
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.contexts.cached_contexts_limit",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": 123456,
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.contexts.cached_tagsets_limit",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": 234567,
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.contexts.allow_context_heap_allocs",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": false,
+              "view": "runtime"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        },
+        "macos": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY": "0.0.0.0:16317",
+                "DD_DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY": "0.0.0.0:16318",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT": "true",
+                "DD_HOSTNAME": "integration-test-otlp-config-connected",
+                "DD_LOG_LEVEL": "info",
+                "DD_OTLP_ALLOW_CONTEXT_HEAP_ALLOCS": "false",
+                "DD_OTLP_CACHED_CONTEXTS_LIMIT": "123456",
+                "DD_OTLP_CACHED_TAGSETS_LIMIT": "234567",
+                "DD_OTLP_CONFIG_LOGS_ENABLED": "true",
+                "DD_OTLP_CONFIG_METRICS_ENABLED": "false",
+                "DD_OTLP_CONFIG_METRICS_HISTOGRAMS_MODE": "counters",
+                "DD_OTLP_CONFIG_METRICS_HISTOGRAMS_SEND_AGGREGATION_METRICS": "true",
+                "DD_OTLP_CONFIG_METRICS_RESOURCE_ATTRIBUTES_AS_TAGS": "true",
+                "DD_OTLP_CONFIG_METRICS_SUMS_CUMULATIVE_MONOTONIC_MODE": "raw_value",
+                "DD_OTLP_CONFIG_METRICS_SUMS_INITIAL_CUMULATIVE_MONOTONIC_VALUE": "drop",
+                "DD_OTLP_CONFIG_METRICS_TAGS": "env:integration-otlp,team:agent-dataplane",
+                "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT": "0.0.0.0:14317",
+                "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_MAX_RECV_MSG_SIZE_MIB": "7",
+                "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TRANSPORT": "unix",
+                "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT": "0.0.0.0:14318",
+                "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TRANSPORT": "unix",
+                "DD_OTLP_CONFIG_TRACES_ENABLED": "false",
+                "DD_OTLP_CONFIG_TRACES_ENABLE_OTLP_COMPUTE_TOP_LEVEL_BY_SPAN_KIND": "false",
+                "DD_OTLP_CONFIG_TRACES_IGNORE_MISSING_DATADOG_FIELDS": "true",
+                "DD_OTLP_CONFIG_TRACES_INTERNAL_PORT": "5017",
+                "DD_OTLP_CONFIG_TRACES_PROBABILISTIC_SAMPLER_SAMPLING_PERCENTAGE": "42.5",
+                "DD_OTLP_CONFIG_TRACES_STRING_INTERNER_SIZE": "1MiB",
+                "DD_OTLP_STRING_INTERNER_SIZE": "3MiB"
+              },
+              "realization": "host-process-group",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "key": "control.logging.level",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": "info",
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.receiver.logs_enabled",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": true,
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.receiver.metrics_enabled",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": false,
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.metrics.histogram_mode",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": "Counters",
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.metrics.send_histogram_aggregations",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": true,
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.metrics.resource_attributes_as_tags",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": true,
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.metrics.sums.cumulative_monotonic_mode",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": "RawValue",
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.metrics.sums.initial_cumulative_monotonic_value",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": "Drop",
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.metrics.tags",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": "env:integration-otlp,team:agent-dataplane",
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.receiver.grpc.endpoint",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": "0.0.0.0:16317",
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.receiver.grpc.max_recv_msg_size_mib",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": 7,
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.receiver.grpc.transport",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": "unix",
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.receiver.http.endpoint",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": "0.0.0.0:16318",
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.traces.enabled",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": false,
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.traces.internal_port",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": 5017,
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.traces.probabilistic_sampler_sampling_percentage",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": 42.5,
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.traces.string_interner_size",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": 1048576,
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.traces.enable_compute_top_level_by_span_kind",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": false,
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.traces.ignore_missing_datadog_fields",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": true,
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.receiver.http.transport",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": "unix",
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.contexts.string_interner_size",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": 3145728,
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.contexts.cached_contexts_limit",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": 123456,
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.contexts.cached_tagsets_limit",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": 234567,
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.contexts.allow_context_heap_allocs",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": false,
+              "view": "runtime"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        },
+        "windows": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY": "0.0.0.0:16317",
+                "DD_DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY": "0.0.0.0:16318",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT": "true",
+                "DD_HOSTNAME": "integration-test-otlp-config-connected",
+                "DD_LOG_LEVEL": "info",
+                "DD_OTLP_ALLOW_CONTEXT_HEAP_ALLOCS": "false",
+                "DD_OTLP_CACHED_CONTEXTS_LIMIT": "123456",
+                "DD_OTLP_CACHED_TAGSETS_LIMIT": "234567",
+                "DD_OTLP_CONFIG_LOGS_ENABLED": "true",
+                "DD_OTLP_CONFIG_METRICS_ENABLED": "false",
+                "DD_OTLP_CONFIG_METRICS_HISTOGRAMS_MODE": "counters",
+                "DD_OTLP_CONFIG_METRICS_HISTOGRAMS_SEND_AGGREGATION_METRICS": "true",
+                "DD_OTLP_CONFIG_METRICS_RESOURCE_ATTRIBUTES_AS_TAGS": "true",
+                "DD_OTLP_CONFIG_METRICS_SUMS_CUMULATIVE_MONOTONIC_MODE": "raw_value",
+                "DD_OTLP_CONFIG_METRICS_SUMS_INITIAL_CUMULATIVE_MONOTONIC_VALUE": "drop",
+                "DD_OTLP_CONFIG_METRICS_TAGS": "env:integration-otlp,team:agent-dataplane",
+                "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT": "0.0.0.0:14317",
+                "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_MAX_RECV_MSG_SIZE_MIB": "7",
+                "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TRANSPORT": "unix",
+                "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT": "0.0.0.0:14318",
+                "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TRANSPORT": "unix",
+                "DD_OTLP_CONFIG_TRACES_ENABLED": "false",
+                "DD_OTLP_CONFIG_TRACES_ENABLE_OTLP_COMPUTE_TOP_LEVEL_BY_SPAN_KIND": "false",
+                "DD_OTLP_CONFIG_TRACES_IGNORE_MISSING_DATADOG_FIELDS": "true",
+                "DD_OTLP_CONFIG_TRACES_INTERNAL_PORT": "5017",
+                "DD_OTLP_CONFIG_TRACES_PROBABILISTIC_SAMPLER_SAMPLING_PERCENTAGE": "42.5",
+                "DD_OTLP_CONFIG_TRACES_STRING_INTERNER_SIZE": "1MiB",
+                "DD_OTLP_STRING_INTERNER_SIZE": "3MiB"
+              },
+              "realization": "windows-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "key": "control.logging.level",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": "info",
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.receiver.logs_enabled",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": true,
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.receiver.metrics_enabled",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": false,
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.metrics.histogram_mode",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": "Counters",
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.metrics.send_histogram_aggregations",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": true,
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.metrics.resource_attributes_as_tags",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": true,
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.metrics.sums.cumulative_monotonic_mode",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": "RawValue",
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.metrics.sums.initial_cumulative_monotonic_value",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": "Drop",
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.metrics.tags",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": "env:integration-otlp,team:agent-dataplane",
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.receiver.grpc.endpoint",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": "0.0.0.0:16317",
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.receiver.grpc.max_recv_msg_size_mib",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": 7,
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.receiver.grpc.transport",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": "unix",
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.receiver.http.endpoint",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": "0.0.0.0:16318",
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.traces.enabled",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": false,
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.traces.internal_port",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": 5017,
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.traces.probabilistic_sampler_sampling_percentage",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": 42.5,
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.traces.string_interner_size",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": 1048576,
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.traces.enable_compute_top_level_by_span_kind",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": false,
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.traces.ignore_missing_datadog_fields",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": true,
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.receiver.http.transport",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": "unix",
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.contexts.string_interner_size",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": 3145728,
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.contexts.cached_contexts_limit",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": 123456,
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.contexts.cached_tagsets_limit",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": 234567,
+              "view": "runtime"
+            },
+            {
+              "key": "domains.otlp.contexts.allow_context_heap_allocs",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": false,
+              "view": "runtime"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        }
       },
       "steps": {
         "single_assertions": 24,
@@ -6695,7 +7499,7 @@
         "parallel_assertions": 2,
         "actions": 0,
         "by_kind": {
-          "adp_config_key_equals": 24,
+          "config_key_equals": 24,
           "log_not_contains": 1,
           "process_stable_for": 1
         }
@@ -6704,104 +7508,258 @@
     },
     "integration/adp-config-stream": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [],
-          "exposed_ports": [
-            "58125/udp",
-            "55101/tcp"
-          ],
-          "files": [],
-          "host_cgroup_namespace": false
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_ADDITIONAL_ENDPOINTS": "{\"https://additional-endpoint.test\": [\"11111111111111111111111111111111\"]}",
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT": "true",
+                "DD_HOSTNAME": "integration-test-configstream",
+                "DD_LOG_LEVEL": "debug",
+                "DD_SITE": "datadoghq.eu"
+              },
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "Waiting for initial configuration from Datadog Agent",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "on": "adp",
+              "pattern": "configured_endpoint:\"https://app\\.datadoghq\\.eu\"",
+              "regex": true,
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "on": "adp",
+              "pattern": "configured_endpoint:\"https://additional-endpoint\\.test\"",
+              "regex": true,
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "key": "shared.endpoints.site",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": "datadoghq.eu",
+              "view": "runtime"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "on": "adp",
+                  "pattern": "Topology healthy",
+                  "step": "log_contains",
+                  "timeout": "60s"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "Error while reading config event stream",
+                  "step": "log_not_contains"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "Unsupported configuration key",
+                  "step": "log_not_contains"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
         },
-        "description": "Verify ADP receives configuration from Core Agent via config stream, and resolves its primary endpoint from the streamed site",
-        "env": {
-          "DD_ADDITIONAL_ENDPOINTS": "{\"https://additional-endpoint.test\": [\"11111111111111111111111111111111\"]}",
-          "DD_API_KEY": "00000000000000000000000000000000",
-          "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_STANDALONE_MODE": "false",
-          "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT": "true",
-          "DD_HOSTNAME": "integration-test-configstream",
-          "DD_LOG_LEVEL": "debug",
-          "DD_SITE": "datadoghq.eu"
+        "macos": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_ADDITIONAL_ENDPOINTS": "{\"https://additional-endpoint.test\": [\"11111111111111111111111111111111\"]}",
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT": "true",
+                "DD_HOSTNAME": "integration-test-configstream",
+                "DD_LOG_LEVEL": "debug",
+                "DD_SITE": "datadoghq.eu"
+              },
+              "realization": "host-process-group",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "Waiting for initial configuration from Datadog Agent",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "on": "adp",
+              "pattern": "configured_endpoint:\"https://app\\.datadoghq\\.eu\"",
+              "regex": true,
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "on": "adp",
+              "pattern": "configured_endpoint:\"https://additional-endpoint\\.test\"",
+              "regex": true,
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "key": "shared.endpoints.site",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": "datadoghq.eu",
+              "view": "runtime"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "on": "adp",
+                  "pattern": "Topology healthy",
+                  "step": "log_contains",
+                  "timeout": "60s"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "Error while reading config event stream",
+                  "step": "log_not_contains"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "Unsupported configuration key",
+                  "step": "log_not_contains"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
         },
-        "intake": {
-          "enabled": false
-        },
-        "name": "adp-config-stream",
-        "procedure": [
-          {
-            "assertion": "log_contains",
-            "pattern": "Waiting for initial configuration from Datadog Agent",
-            "regex": false,
-            "stream": "both",
-            "timeout": "60s"
-          },
-          {
-            "assertion": "log_contains",
-            "pattern": "configured_endpoint:\"https://app\\.datadoghq\\.eu\"",
-            "regex": true,
-            "stream": "both",
-            "timeout": "60s"
-          },
-          {
-            "assertion": "log_contains",
-            "pattern": "configured_endpoint:\"https://additional-endpoint\\.test\"",
-            "regex": true,
-            "stream": "both",
-            "timeout": "60s"
-          },
-          {
-            "assertion": "adp_config_key_equals",
-            "endpoint": "https://localhost:55101/config/runtime",
-            "key": "shared.endpoints.site",
-            "timeout": "60s",
-            "value": "datadoghq.eu"
-          },
-          {
-            "parallel": [
-              {
-                "assertion": "process_stable_for",
-                "duration": "10s"
+        "windows": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_ADDITIONAL_ENDPOINTS": "{\"https://additional-endpoint.test\": [\"11111111111111111111111111111111\"]}",
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT": "true",
+                "DD_HOSTNAME": "integration-test-configstream",
+                "DD_LOG_LEVEL": "debug",
+                "DD_SITE": "datadoghq.eu"
               },
-              {
-                "assertion": "log_contains",
-                "pattern": "Topology healthy",
-                "regex": false,
-                "stream": "both",
-                "timeout": "60s"
-              },
-              {
-                "assertion": "log_not_contains",
-                "during": "10s",
-                "pattern": "Error while reading config event stream",
-                "regex": false,
-                "stream": "both"
-              },
-              {
-                "assertion": "log_not_contains",
-                "during": "10s",
-                "pattern": "Unsupported configuration key",
-                "regex": false,
-                "stream": "both"
-              },
-              {
-                "assertion": "log_not_contains",
-                "during": "10s",
-                "pattern": "panic|PANIC",
-                "regex": true,
-                "stream": "both"
-              }
-            ]
-          }
-        ],
-        "runtimes": [
-          "linux",
-          "mac",
-          "windows"
-        ],
-        "timeout": "120s"
+              "realization": "windows-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "Waiting for initial configuration from Datadog Agent",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "on": "adp",
+              "pattern": "configured_endpoint:\"https://app\\.datadoghq\\.eu\"",
+              "regex": true,
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "on": "adp",
+              "pattern": "configured_endpoint:\"https://additional-endpoint\\.test\"",
+              "regex": true,
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "key": "shared.endpoints.site",
+              "on": "adp",
+              "step": "config_key_equals",
+              "timeout": "60s",
+              "value": "datadoghq.eu",
+              "view": "runtime"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "on": "adp",
+                  "pattern": "Topology healthy",
+                  "step": "log_contains",
+                  "timeout": "60s"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "Error while reading config event stream",
+                  "step": "log_not_contains"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "Unsupported configuration key",
+                  "step": "log_not_contains"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        }
       },
       "steps": {
         "single_assertions": 4,
@@ -6809,7 +7767,7 @@
         "parallel_assertions": 5,
         "actions": 0,
         "by_kind": {
-          "adp_config_key_equals": 1,
+          "config_key_equals": 1,
           "log_contains": 4,
           "log_not_contains": 3,
           "process_stable_for": 1
@@ -7740,66 +8698,159 @@
     },
     "integration/adp-rar-registration": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [],
-          "exposed_ports": [
-            "58125/udp"
-          ],
-          "files": [],
-          "host_cgroup_namespace": false
-        },
-        "description": "Verify registration and a real Core Agent to ADP status gRPC call over inbound mTLS",
-        "env": {
-          "DD_API_KEY": "00000000000000000000000000000000",
-          "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_REMOTE_AGENT_ENABLED": "true",
-          "DD_DATA_PLANE_STANDALONE_MODE": "false",
-          "DD_HOSTNAME": "integration-test-rar"
-        },
-        "intake": {
-          "enabled": false
-        },
-        "name": "adp-rar-registration",
-        "procedure": [
-          {
-            "assertion": "log_contains",
-            "pattern": "Successfully registered with the Datadog Agent.",
-            "regex": false,
-            "stream": "both",
-            "timeout": "60s"
-          },
-          {
-            "action": "core_agent_cli",
-            "args": [
-              "status"
-            ],
-            "output_contains": "Uds Packet Reading Errors",
-            "timeout": "60s"
-          },
-          {
-            "parallel": [
-              {
-                "assertion": "process_stable_for",
-                "duration": "10s"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_REMOTE_AGENT_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_HOSTNAME": "integration-test-rar"
               },
-              {
-                "assertion": "log_not_contains",
-                "during": "10s",
-                "pattern": "panic|PANIC",
-                "regex": true,
-                "stream": "both"
-              }
-            ]
-          }
-        ],
-        "runtimes": [
-          "linux",
-          "mac",
-          "windows"
-        ],
-        "timeout": "180s"
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "Successfully registered with the Datadog Agent.",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "args": [
+                "status"
+              ],
+              "on": "adp",
+              "output_contains": "Uds Packet Reading Errors",
+              "process": "agent",
+              "step": "cli",
+              "timeout": "60s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        },
+        "macos": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_REMOTE_AGENT_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_HOSTNAME": "integration-test-rar"
+              },
+              "realization": "host-process-group",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "Successfully registered with the Datadog Agent.",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "args": [
+                "status"
+              ],
+              "on": "adp",
+              "output_contains": "Uds Packet Reading Errors",
+              "process": "agent",
+              "step": "cli",
+              "timeout": "60s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        },
+        "windows": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_REMOTE_AGENT_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_HOSTNAME": "integration-test-rar"
+              },
+              "realization": "windows-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "Successfully registered with the Datadog Agent.",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "args": [
+                "status"
+              ],
+              "on": "adp",
+              "output_contains": "Uds Packet Reading Errors",
+              "process": "agent",
+              "step": "cli",
+              "timeout": "60s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        }
       },
       "steps": {
         "single_assertions": 1,
@@ -7807,7 +8858,7 @@
         "parallel_assertions": 2,
         "actions": 1,
         "by_kind": {
-          "core_agent_cli": 1,
+          "cli": 1,
           "log_contains": 1,
           "log_not_contains": 1,
           "process_stable_for": 1
@@ -9453,71 +10504,132 @@
     },
     "integration/dogstatsd-replay-unix": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [],
-          "exposed_ports": [],
-          "files": [],
-          "host_cgroup_namespace": false
-        },
-        "description": "Verifies Unix DogStatsD capture and replay through a Unix datagram socket",
-        "env": {
-          "DD_API_KEY": "00000000000000000000000000000000",
-          "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_STANDALONE_MODE": "false",
-          "DD_DOGSTATSD_PORT": "0",
-          "DD_DOGSTATSD_SOCKET": "/tmp/saluki-dogstatsd-replay-unix.sock",
-          "DD_HOSTNAME": "integration-test-dsd-replay-unix"
-        },
-        "intake": {
-          "enabled": false
-        },
-        "name": "dogstatsd-replay-unix",
-        "procedure": [
-          {
-            "assertion": "log_contains",
-            "pattern": "listen_addr:\"unixgram:///tmp/saluki-dogstatsd-replay-unix.sock\"",
-            "regex": false,
-            "stream": "both",
-            "timeout": "30s"
-          },
-          {
-            "action": "dogstatsd_replay",
-            "capture_duration": "3s",
-            "expected_metrics": [
-              "integration.replay.unix.one",
-              "integration.replay.unix.two"
-            ],
-            "sender": [
-              "python3",
-              "-c",
-              "import socket\nimport time\n\nsocket_path = \"/tmp/saluki-dogstatsd-replay-unix.sock\"\nclient = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)\ntry:\n    client.connect(socket_path)\n    client.send(b\"integration.replay.unix.one:1|c\")\n    time.sleep(1)\n    client.send(b\"integration.replay.unix.two:1|c\")\nfinally:\n    client.close()\n"
-            ],
-            "stats_duration_secs": 3,
-            "timeout": "30s"
-          },
-          {
-            "parallel": [
-              {
-                "assertion": "process_stable_for",
-                "duration": "10s"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DOGSTATSD_PORT": "0",
+                "DD_DOGSTATSD_SOCKET": "/airlock/adp/shared/dsd.sock",
+                "DD_HOSTNAME": "integration-test-dsd-replay-unix"
               },
-              {
-                "assertion": "log_not_contains",
-                "during": "10s",
-                "pattern": "panic|PANIC",
-                "regex": true,
-                "stream": "both"
-              }
-            ]
-          }
-        ],
-        "runtimes": [
-          "linux",
-          "mac"
-        ],
-        "timeout": "150s"
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "listen_addr:\"unixgram://{{ adp.facts.shared_dir }}/dsd.sock\"",
+              "step": "log_contains",
+              "timeout": "30s"
+            },
+            {
+              "capture_duration": "3s",
+              "endpoint": "dogstatsd_uds",
+              "expected_metrics": [
+                "integration.replay.unix.one",
+                "integration.replay.unix.two"
+              ],
+              "on": "adp",
+              "payloads": [
+                {
+                  "data": "integration.replay.unix.one:1|c"
+                },
+                {
+                  "after": "1s",
+                  "data": "integration.replay.unix.two:1|c"
+                }
+              ],
+              "stats_duration": "3s",
+              "step": "dogstatsd_replay",
+              "timeout": "30s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        },
+        "macos": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DOGSTATSD_PORT": "0",
+                "DD_DOGSTATSD_SOCKET": "/tmp/panoramic-inventry/0000/adp/shared/dsd.sock",
+                "DD_HOSTNAME": "integration-test-dsd-replay-unix"
+              },
+              "realization": "host-process-group",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "listen_addr:\"unixgram://{{ adp.facts.shared_dir }}/dsd.sock\"",
+              "step": "log_contains",
+              "timeout": "30s"
+            },
+            {
+              "capture_duration": "3s",
+              "endpoint": "dogstatsd_uds",
+              "expected_metrics": [
+                "integration.replay.unix.one",
+                "integration.replay.unix.two"
+              ],
+              "on": "adp",
+              "payloads": [
+                {
+                  "data": "integration.replay.unix.one:1|c"
+                },
+                {
+                  "after": "1s",
+                  "data": "integration.replay.unix.two:1|c"
+                }
+              ],
+              "stats_duration": "3s",
+              "step": "dogstatsd_replay",
+              "timeout": "30s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        }
       },
       "steps": {
         "single_assertions": 1,
@@ -9535,73 +10647,66 @@
     },
     "integration/dogstatsd-replay-windows": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [],
-          "exposed_ports": [],
-          "files": [],
-          "host_cgroup_namespace": false
-        },
-        "description": "Verifies Windows DogStatsD named-pipe capture and replay",
-        "env": {
-          "DD_API_KEY": "00000000000000000000000000000000",
-          "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_STANDALONE_MODE": "false",
-          "DD_DOGSTATSD_EOL_REQUIRED": "named_pipe",
-          "DD_DOGSTATSD_PIPE_NAME": "datadog-dogstatsd-replay-integration",
-          "DD_DOGSTATSD_PORT": "0",
-          "DD_HOSTNAME": "integration-test-dsd-replay-windows"
-        },
-        "intake": {
-          "enabled": false
-        },
-        "name": "dogstatsd-replay-windows",
-        "procedure": [
-          {
-            "assertion": "log_contains",
-            "pattern": "listen_addr:\"npipe://datadog-dogstatsd-replay-integration\"",
-            "regex": false,
-            "stream": "both",
-            "timeout": "30s"
-          },
-          {
-            "action": "dogstatsd_replay",
-            "capture_duration": "3s",
-            "expected_metrics": [
-              "integration.replay.windows.one",
-              "integration.replay.windows.two"
-            ],
-            "sender": [
-              "pwsh",
-              "-NoProfile",
-              "-NonInteractive",
-              "-Command",
-              "$ErrorActionPreference = \"Stop\"\nSet-StrictMode -Version 3.0\n\n$pipe = [System.IO.Pipes.NamedPipeClientStream]::new(\n  \".\",\n  \"datadog-dogstatsd-replay-integration\",\n  [System.IO.Pipes.PipeDirection]::Out\n)\ntry {\n  $pipe.Connect(30000)\n  $payload = [System.Text.Encoding]::UTF8.GetBytes(\n    \"integration.replay.windows.one:1|c`nintegration.replay.windows.two:1|c`n\"\n  )\n  $pipe.Write($payload, 0, $payload.Length)\n  $pipe.Flush()\n} finally {\n  $pipe.Dispose()\n}\n"
-            ],
-            "stats_duration_secs": 3,
-            "timeout": "30s"
-          },
-          {
-            "parallel": [
-              {
-                "assertion": "process_stable_for",
-                "duration": "10s"
+        "windows": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_DOGSTATSD_EOL_REQUIRED": "named_pipe",
+                "DD_DOGSTATSD_PIPE_NAME": "datadog-dogstatsd-replay-integration",
+                "DD_DOGSTATSD_PORT": "0",
+                "DD_HOSTNAME": "integration-test-dsd-replay-windows"
               },
-              {
-                "assertion": "log_not_contains",
-                "during": "10s",
-                "pattern": "panic|PANIC",
-                "regex": true,
-                "stream": "both"
-              }
-            ]
-          }
-        ],
-        "runtimes": [
-          "windows"
-        ],
-        "timeout": "150s"
+              "realization": "windows-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "listen_addr:\"npipe://datadog-dogstatsd-replay-integration\"",
+              "step": "log_contains",
+              "timeout": "30s"
+            },
+            {
+              "capture_duration": "3s",
+              "endpoint": "dogstatsd_pipe",
+              "expected_metrics": [
+                "integration.replay.windows.one",
+                "integration.replay.windows.two"
+              ],
+              "on": "adp",
+              "payloads": [
+                {
+                  "data": "integration.replay.windows.one:1|c\nintegration.replay.windows.two:1|c\n"
+                }
+              ],
+              "stats_duration": "3s",
+              "step": "dogstatsd_replay",
+              "timeout": "30s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        }
       },
       "steps": {
         "single_assertions": 1,
@@ -10270,153 +11375,489 @@
     },
     "integration/privileged-api-endpoints": {
       "config": {
-        "container": {
-          "command": [],
-          "entrypoint": [],
-          "exposed_ports": [
-            "55101/tcp"
-          ],
-          "files": [],
-          "host_cgroup_namespace": false
-        },
-        "description": "Executes privileged API routes through the ADP CLI to verify authenticated mTLS access after the workers assert them dynamically.",
-        "env": {
-          "DD_API_KEY": "00000000000000000000000000000000",
-          "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
-          "DD_DATA_PLANE_ENABLED": "true",
-          "DD_DATA_PLANE_STANDALONE_MODE": "false",
-          "DD_HOSTNAME": "integration-test-privileged-api",
-          "RUST_BACKTRACE": "full"
-        },
-        "intake": {
-          "enabled": false
-        },
-        "name": "privileged-api-endpoints",
-        "procedure": [
-          {
-            "assertion": "log_contains",
-            "pattern": "Agent Data Plane running.",
-            "regex": false,
-            "stream": "both",
-            "timeout": "60s"
-          },
-          {
-            "action": "adp_cli",
-            "args": [
-              "config"
-            ],
-            "timeout": "30s"
-          },
-          {
-            "action": "adp_cli",
-            "args": [
-              "debug",
-              "set-log-level",
-              "--filter-directives",
-              "INFO",
-              "--duration-secs",
-              "30"
-            ],
-            "timeout": "30s"
-          },
-          {
-            "action": "adp_cli",
-            "args": [
-              "debug",
-              "reset-log-level"
-            ],
-            "timeout": "30s"
-          },
-          {
-            "action": "adp_cli",
-            "args": [
-              "debug",
-              "set-metric-level",
-              "--level",
-              "INFO",
-              "--duration-secs",
-              "30"
-            ],
-            "timeout": "30s"
-          },
-          {
-            "action": "adp_cli",
-            "args": [
-              "debug",
-              "reset-metric-level"
-            ],
-            "timeout": "30s"
-          },
-          {
-            "action": "adp_cli",
-            "args": [
-              "debug",
-              "runtime",
-              "show-processes"
-            ],
-            "timeout": "30s"
-          },
-          {
-            "action": "adp_cli",
-            "args": [
-              "debug",
-              "runtime",
-              "show-processes"
-            ],
-            "timeout": "30s"
-          },
-          {
-            "action": "adp_cli",
-            "args": [
-              "debug",
-              "runtime",
-              "show-processes"
-            ],
-            "timeout": "30s"
-          },
-          {
-            "action": "adp_cli",
-            "args": [
-              "debug",
-              "runtime",
-              "show-processes",
-              "--json"
-            ],
-            "timeout": "30s"
-          },
-          {
-            "action": "adp_cli",
-            "args": [
-              "debug",
-              "runtime",
-              "show-processes",
-              "--format",
-              "dot"
-            ],
-            "timeout": "30s"
-          },
-          {
-            "parallel": [
-              {
-                "assertion": "process_stable_for",
-                "duration": "10s"
+        "linux": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_HOSTNAME": "integration-test-privileged-api",
+                "RUST_BACKTRACE": "full"
               },
-              {
-                "assertion": "log_not_contains",
-                "during": "10s",
-                "pattern": "panic|PANIC",
-                "regex": true,
-                "stream": "both"
-              }
-            ]
-          }
-        ],
-        "runtimes": [
-          "linux",
-          "mac",
-          "windows"
-        ],
-        "timeout": "120s"
+              "realization": "linux-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "Agent Data Plane running.",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "args": [
+                "config"
+              ],
+              "on": "adp",
+              "process": "adp",
+              "step": "cli",
+              "timeout": "30s"
+            },
+            {
+              "args": [
+                "debug",
+                "set-log-level",
+                "--filter-directives",
+                "INFO",
+                "--duration-secs",
+                "30"
+              ],
+              "on": "adp",
+              "process": "adp",
+              "step": "cli",
+              "timeout": "30s"
+            },
+            {
+              "args": [
+                "debug",
+                "reset-log-level"
+              ],
+              "on": "adp",
+              "process": "adp",
+              "step": "cli",
+              "timeout": "30s"
+            },
+            {
+              "args": [
+                "debug",
+                "set-metric-level",
+                "--level",
+                "INFO",
+                "--duration-secs",
+                "30"
+              ],
+              "on": "adp",
+              "process": "adp",
+              "step": "cli",
+              "timeout": "30s"
+            },
+            {
+              "args": [
+                "debug",
+                "reset-metric-level"
+              ],
+              "on": "adp",
+              "process": "adp",
+              "step": "cli",
+              "timeout": "30s"
+            },
+            {
+              "args": [
+                "debug",
+                "runtime",
+                "show-processes"
+              ],
+              "on": "adp",
+              "output_contains": "Supervision tree for 'adp-root'",
+              "process": "adp",
+              "step": "cli",
+              "timeout": "30s"
+            },
+            {
+              "args": [
+                "debug",
+                "runtime",
+                "show-processes"
+              ],
+              "on": "adp",
+              "output_contains": "topology.primary",
+              "process": "adp",
+              "step": "cli",
+              "timeout": "30s"
+            },
+            {
+              "args": [
+                "debug",
+                "runtime",
+                "show-processes"
+              ],
+              "on": "adp",
+              "output_contains": "ctrl-pln",
+              "process": "adp",
+              "step": "cli",
+              "timeout": "30s"
+            },
+            {
+              "args": [
+                "debug",
+                "runtime",
+                "show-processes",
+                "--json"
+              ],
+              "on": "adp",
+              "output_contains": "\"resource_tracking_enabled\":true",
+              "process": "adp",
+              "step": "cli",
+              "timeout": "30s"
+            },
+            {
+              "args": [
+                "debug",
+                "runtime",
+                "show-processes",
+                "--format",
+                "dot"
+              ],
+              "on": "adp",
+              "output_contains": "digraph supervision_tree",
+              "process": "adp",
+              "step": "cli",
+              "timeout": "30s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        },
+        "macos": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_HOSTNAME": "integration-test-privileged-api",
+                "RUST_BACKTRACE": "full"
+              },
+              "realization": "host-process-group",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "Agent Data Plane running.",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "args": [
+                "config"
+              ],
+              "on": "adp",
+              "process": "adp",
+              "step": "cli",
+              "timeout": "30s"
+            },
+            {
+              "args": [
+                "debug",
+                "set-log-level",
+                "--filter-directives",
+                "INFO",
+                "--duration-secs",
+                "30"
+              ],
+              "on": "adp",
+              "process": "adp",
+              "step": "cli",
+              "timeout": "30s"
+            },
+            {
+              "args": [
+                "debug",
+                "reset-log-level"
+              ],
+              "on": "adp",
+              "process": "adp",
+              "step": "cli",
+              "timeout": "30s"
+            },
+            {
+              "args": [
+                "debug",
+                "set-metric-level",
+                "--level",
+                "INFO",
+                "--duration-secs",
+                "30"
+              ],
+              "on": "adp",
+              "process": "adp",
+              "step": "cli",
+              "timeout": "30s"
+            },
+            {
+              "args": [
+                "debug",
+                "reset-metric-level"
+              ],
+              "on": "adp",
+              "process": "adp",
+              "step": "cli",
+              "timeout": "30s"
+            },
+            {
+              "args": [
+                "debug",
+                "runtime",
+                "show-processes"
+              ],
+              "on": "adp",
+              "output_contains": "Supervision tree for 'adp-root'",
+              "process": "adp",
+              "step": "cli",
+              "timeout": "30s"
+            },
+            {
+              "args": [
+                "debug",
+                "runtime",
+                "show-processes"
+              ],
+              "on": "adp",
+              "output_contains": "topology.primary",
+              "process": "adp",
+              "step": "cli",
+              "timeout": "30s"
+            },
+            {
+              "args": [
+                "debug",
+                "runtime",
+                "show-processes"
+              ],
+              "on": "adp",
+              "output_contains": "ctrl-pln",
+              "process": "adp",
+              "step": "cli",
+              "timeout": "30s"
+            },
+            {
+              "args": [
+                "debug",
+                "runtime",
+                "show-processes",
+                "--json"
+              ],
+              "on": "adp",
+              "output_contains": "\"resource_tracking_enabled\":true",
+              "process": "adp",
+              "step": "cli",
+              "timeout": "30s"
+            },
+            {
+              "args": [
+                "debug",
+                "runtime",
+                "show-processes",
+                "--format",
+                "dot"
+              ],
+              "on": "adp",
+              "output_contains": "digraph supervision_tree",
+              "process": "adp",
+              "step": "cli",
+              "timeout": "30s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        },
+        "windows": {
+          "participants": {
+            "adp": {
+              "env": {
+                "DD_API_KEY": "00000000000000000000000000000000",
+                "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+                "DD_DATA_PLANE_ENABLED": "true",
+                "DD_DATA_PLANE_STANDALONE_MODE": "false",
+                "DD_HOSTNAME": "integration-test-privileged-api",
+                "RUST_BACKTRACE": "full"
+              },
+              "realization": "windows-container",
+              "subject": true,
+              "type": "agent-adp"
+            }
+          },
+          "procedure": [
+            {
+              "on": "adp",
+              "pattern": "Agent Data Plane running.",
+              "step": "log_contains",
+              "timeout": "60s"
+            },
+            {
+              "args": [
+                "config"
+              ],
+              "on": "adp",
+              "process": "adp",
+              "step": "cli",
+              "timeout": "30s"
+            },
+            {
+              "args": [
+                "debug",
+                "set-log-level",
+                "--filter-directives",
+                "INFO",
+                "--duration-secs",
+                "30"
+              ],
+              "on": "adp",
+              "process": "adp",
+              "step": "cli",
+              "timeout": "30s"
+            },
+            {
+              "args": [
+                "debug",
+                "reset-log-level"
+              ],
+              "on": "adp",
+              "process": "adp",
+              "step": "cli",
+              "timeout": "30s"
+            },
+            {
+              "args": [
+                "debug",
+                "set-metric-level",
+                "--level",
+                "INFO",
+                "--duration-secs",
+                "30"
+              ],
+              "on": "adp",
+              "process": "adp",
+              "step": "cli",
+              "timeout": "30s"
+            },
+            {
+              "args": [
+                "debug",
+                "reset-metric-level"
+              ],
+              "on": "adp",
+              "process": "adp",
+              "step": "cli",
+              "timeout": "30s"
+            },
+            {
+              "args": [
+                "debug",
+                "runtime",
+                "show-processes"
+              ],
+              "on": "adp",
+              "output_contains": "Supervision tree for 'adp-root'",
+              "process": "adp",
+              "step": "cli",
+              "timeout": "30s"
+            },
+            {
+              "args": [
+                "debug",
+                "runtime",
+                "show-processes"
+              ],
+              "on": "adp",
+              "output_contains": "topology.primary",
+              "process": "adp",
+              "step": "cli",
+              "timeout": "30s"
+            },
+            {
+              "args": [
+                "debug",
+                "runtime",
+                "show-processes"
+              ],
+              "on": "adp",
+              "output_contains": "ctrl-pln",
+              "process": "adp",
+              "step": "cli",
+              "timeout": "30s"
+            },
+            {
+              "args": [
+                "debug",
+                "runtime",
+                "show-processes",
+                "--json"
+              ],
+              "on": "adp",
+              "output_contains": "\"resource_tracking_enabled\":true",
+              "process": "adp",
+              "step": "cli",
+              "timeout": "30s"
+            },
+            {
+              "args": [
+                "debug",
+                "runtime",
+                "show-processes",
+                "--format",
+                "dot"
+              ],
+              "on": "adp",
+              "output_contains": "digraph supervision_tree",
+              "process": "adp",
+              "step": "cli",
+              "timeout": "30s"
+            },
+            {
+              "parallel": [
+                {
+                  "duration": "10s",
+                  "on": "adp",
+                  "step": "process_stable_for"
+                },
+                {
+                  "during": "10s",
+                  "on": "adp",
+                  "pattern": "panic|PANIC",
+                  "regex": true,
+                  "step": "log_not_contains"
+                }
+              ]
+            }
+          ]
+        }
       },
       "steps": {
         "single_assertions": 1,
@@ -10424,19 +11865,13 @@
         "parallel_assertions": 2,
         "actions": 10,
         "by_kind": {
-          "adp_cli": 10,
+          "cli": 10,
           "log_contains": 1,
           "log_not_contains": 1,
           "process_stable_for": 1
         }
       },
-      "ignored_fields": [
-        "procedure[10].output_contains",
-        "procedure[6].output_contains",
-        "procedure[7].output_contains",
-        "procedure[8].output_contains",
-        "procedure[9].output_contains"
-      ]
+      "ignored_fields": []
     },
     "integration/telemetry-endpoint": {
       "config": {

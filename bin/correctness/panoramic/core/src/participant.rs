@@ -245,6 +245,17 @@ impl OpContext<'_> {
             .await
     }
 
+    /// Runs one of the participant's declared processes' programs with `args` in place of its declared
+    /// arguments, in that process's environment and the participant's directory. Realizations whose
+    /// programs are not runner-host files return a harness error.
+    ///
+    /// # Errors
+    ///
+    /// Returns a harness error for an unknown process, unsupported realization, execution failure or timeout.
+    pub async fn exec_process(&self, process: &str, args: Vec<String>) -> Result<ExecOutput, HandleError> {
+        self.primitives.exec_process(process, args, self.limit).await
+    }
+
     /// Gets an HTTP response from a declared endpoint, using the operation's limit for the whole request.
     ///
     /// # Errors

@@ -2,66 +2,14 @@
 
 use std::collections::BTreeMap;
 
-use async_trait::async_trait;
 use panoramic_core::{
     endpoint::{ConsumedEndpoint, Delivery, EndpointKind},
-    participant::{ExitChannel, OpContext, Operation, OutputChannel, OutputStream, ProcessSpec, RenderedConfig},
+    participant::{ExitChannel, OutputChannel, OutputStream, ProcessSpec, RenderedConfig},
     recipe::{ContainerRecipe, Recipe},
-    step::HandleError,
 };
-use serde_json::Value;
 
 use super::AgentAdp;
 use crate::CASE_FILES_DIR;
-
-const ADP_CLI_BINARY_PATH: &str = "/opt/datadog-agent/embedded/bin/agent-data-plane";
-
-pub(super) const OPERATIONS: &[&dyn Operation] = &[
-    &super::operations::Command::CliAdp,
-    &super::operations::Command::CliAgent,
-    &ConfigDump,
-    &super::operations::Command::ConfigSet,
-    &super::operations::Command::DogstatsdCapture,
-    &super::operations::Command::DogstatsdReplay,
-    &super::operations::Command::DogstatsdStats,
-];
-
-struct ConfigDump;
-
-#[async_trait]
-impl Operation for ConfigDump {
-    fn name(&self) -> &'static str {
-        "config_dump"
-    }
-
-    async fn run(&self, cx: &OpContext<'_>, args: Value) -> Result<Value, HandleError> {
-        let view = args
-            .as_object()
-            .filter(|args| args.len() == 1)
-            .and_then(|args| args.get("view"))
-            .and_then(Value::as_str)
-            .filter(|view| matches!(*view, "source" | "runtime"))
-            .ok_or_else(|| HandleError::Harness {
-                message: "config_dump requires exactly {\"view\": \"source\"|\"runtime\"}".into(),
-            })?;
-        let mut argv = vec![ADP_CLI_BINARY_PATH.into(), "config".into(), "--json".into()];
-        if view == "runtime" {
-            argv.push("--runtime".into());
-        }
-        let output = cx.exec(argv).await?;
-        match output.exit_code {
-            0 => serde_json::from_slice(&output.stdout).map_err(|_| HandleError::Product {
-                message: "ADP configuration CLI returned invalid JSON".into(),
-            }),
-            126 | 127 => Err(HandleError::Harness {
-                message: format!("ADP configuration CLI could not run (exit {})", output.exit_code),
-            }),
-            code => Err(HandleError::Product {
-                message: format!("ADP configuration CLI exited with {code}"),
-            }),
-        }
-    }
-}
 
 pub(super) fn consumes() -> BTreeMap<String, ConsumedEndpoint> {
     BTreeMap::from([
@@ -226,9 +174,8 @@ mod tests {
             Evidence,
         },
         layout::{Os, Realization, RealizationKind},
-        participant::{test_support::run_operation, CaseValues, EffectiveConfig, ParticipantType},
+        participant::{CaseValues, EffectiveConfig, ParticipantType},
         recipe::test_support::{assert_image_recipe, files, rendered},
-        step::ExecOutput,
     };
 
     use super::*;
@@ -258,124 +205,6 @@ mod tests {
             .env
             .extend(overrides.iter().map(|(key, value)| ((*key).into(), (*value).into())));
         config
-    }
-
-    fn cli_output(exit_code: i64, stdout: &[u8]) -> ExecOutput {
-        ExecOutput {
-            stdout: stdout.into(),
-            stderr: b"stderr-secret".to_vec(),
-            exit_code,
-        }
-    }
-
-    #[tokio::test]
-    async fn config_dump_runs_the_cli_for_the_requested_view_and_returns_parsed_json() {
-        let expected = serde_json::json!({"domains": {"remote_configuration": {"enabled": true}}});
-        for view in ["source", "runtime"] {
-            let value = run_operation(&ConfigDump, serde_json::json!({"view": view}), |command| {
-                let mut argv = vec!["/opt/datadog-agent/embedded/bin/agent-data-plane", "config", "--json"];
-                if view == "runtime" {
-                    argv.push("--runtime");
-                }
-                assert_eq!(command.argv, argv);
-                assert!(command.env.is_empty());
-                assert!(command.stdin.is_none());
-                Ok(cli_output(0, &serde_json::to_vec(&expected).unwrap()))
-            })
-            .await
-            .unwrap();
-            assert_eq!(value, expected, "{view}");
-        }
-    }
-
-    #[tokio::test]
-    async fn config_dump_rejects_every_argument_shape_except_one_known_view_before_exec() {
-        for args in [
-            Value::Null,
-            serde_json::json!("source"),
-            serde_json::json!(["source"]),
-            serde_json::json!({}),
-            serde_json::json!({"view": "unknown-view-secret"}),
-            serde_json::json!({"view": null}),
-            serde_json::json!({"view": true}),
-            serde_json::json!({"view": 1}),
-            serde_json::json!({"view": ["source"]}),
-            serde_json::json!({"view": {"source": true}}),
-            serde_json::json!({"view": "source", "extra": "argument-secret"}),
-            serde_json::json!({"view": "runtime", "extra": "argument-secret"}),
-            serde_json::json!({"extra": "argument-secret"}),
-        ] {
-            let error = run_operation(&ConfigDump, args.clone(), |_| panic!("invalid arguments must not exec"))
-                .await
-                .unwrap_err();
-            assert!(matches!(error, HandleError::Harness { .. }), "{args}: {error}");
-            assert!(error.to_string().contains("view"));
-            assert!(!error.to_string().contains("secret"), "{error}");
-        }
-    }
-
-    #[tokio::test]
-    async fn config_dump_classifies_cli_exits_without_disclosing_output() {
-        for code in [1, 3, 10, 125, 126, 127, 128, 255] {
-            let error = run_operation(&ConfigDump, serde_json::json!({"view": "runtime"}), |_| {
-                Ok(cli_output(code, b"stdout-secret"))
-            })
-            .await
-            .unwrap_err();
-            let expected = match code {
-                126 | 127 => HandleError::Harness {
-                    message: format!("ADP configuration CLI could not run (exit {code})"),
-                },
-                _ => HandleError::Product {
-                    message: format!("ADP configuration CLI exited with {code}"),
-                },
-            };
-            assert_eq!(error, expected);
-            assert!(!error.to_string().contains("secret"), "{error}");
-        }
-    }
-
-    #[tokio::test]
-    async fn config_dump_reports_invalid_json_as_a_product_error_without_disclosing_output() {
-        for stdout in [
-            b"stdout-secret".as_slice(),
-            b"{\"stdout-secret\":}".as_slice(),
-            b"{\"api_key\":\"stdout-secret\"} trailing".as_slice(),
-            b"\xffstdout-secret".as_slice(),
-            b"".as_slice(),
-        ] {
-            let error = run_operation(&ConfigDump, serde_json::json!({"view": "source"}), |_| {
-                Ok(cli_output(0, stdout))
-            })
-            .await
-            .unwrap_err();
-            assert_eq!(
-                error,
-                HandleError::Product {
-                    message: "ADP configuration CLI returned invalid JSON".into(),
-                }
-            );
-            assert!(!error.to_string().contains("secret"), "{error}");
-        }
-    }
-
-    #[tokio::test]
-    async fn config_dump_preserves_exec_failure_classification() {
-        for error in [
-            HandleError::Harness {
-                message: "exec unavailable".into(),
-            },
-            HandleError::Product {
-                message: "exec timed out".into(),
-            },
-        ] {
-            let actual = run_operation(&ConfigDump, serde_json::json!({"view": "source"}), |_| {
-                Err(error.clone())
-            })
-            .await
-            .unwrap_err();
-            assert_eq!(actual, error);
-        }
     }
 
     #[test]
