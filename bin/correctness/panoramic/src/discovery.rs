@@ -1,4 +1,4 @@
-//! Checks directories, subject OS and artifact manifests, then discovers cases for CLI commands.
+//! Checks directories and artifact manifests, then discovers cases for the selected subject OS.
 
 use std::path::{Path, PathBuf};
 
@@ -26,14 +26,13 @@ pub(crate) struct Selection {
     pub(crate) discovered: Discovered,
 }
 
-/// Checks the directories, then the subject OS, then the artifact manifest.
+/// Checks the directories, then the artifact manifest.
 pub(crate) fn prepare_discovery<'a>(
-    dirs: &'a [PathBuf], subject_os: Result<Os, String>, manifest: Option<&Path>,
+    dirs: &'a [PathBuf], subject_os: Os, manifest: Option<&Path>,
 ) -> Result<PreparedDiscovery<'a>, SetupFailure> {
     if dirs.is_empty() {
         return Err(SetupFailure::harness(NO_TEST_DIRECTORIES));
     }
-    let subject_os = subject_os.map_err(SetupFailure::harness)?;
     let planner = load_planner(manifest).map_err(SetupFailure::harness)?;
     Ok(PreparedDiscovery {
         dirs,
@@ -66,27 +65,17 @@ mod tests {
     use crate::config::tests::write_case;
 
     #[test]
-    fn discovery_preparation_checks_directories_then_subject_os_then_manifest() {
+    fn discovery_preparation_checks_directories_then_manifest() {
         let dir = tempfile::tempdir().unwrap();
         let dirs = [dir.path().to_path_buf()];
         let manifest = dir.path().join("missing.toml");
-        let os_error = "conflicting subject OS";
-        for (dirs, subject_os, expected) in [
-            (&[][..], Err(os_error.to_string()), NO_TEST_DIRECTORIES.to_string()),
-            (&dirs[..], Err(os_error.to_string()), os_error.to_string()),
-            (&dirs[..], Ok(Os::Linux), load_planner(Some(&manifest)).err().unwrap()),
+        for (dirs, expected) in [
+            (&[][..], NO_TEST_DIRECTORIES.to_string()),
+            (&dirs[..], load_planner(Some(&manifest)).err().unwrap()),
         ] {
-            let checking_manifest = subject_os.is_ok();
-            let failure = prepare_discovery(dirs, subject_os, Some(&manifest)).err().unwrap();
+            let failure = prepare_discovery(dirs, Os::Linux, Some(&manifest)).err().unwrap();
             assert_eq!(failure.message, expected);
             assert_eq!(failure.exit, ExitCode::from(2));
-            if checking_manifest {
-                assert!(
-                    failure.message.starts_with("failed to read artifact manifest"),
-                    "{}",
-                    failure.message
-                );
-            }
         }
     }
 
@@ -104,7 +93,7 @@ mod tests {
                 .with_writer(std::sync::Mutex::new(output.reopen().unwrap()))
                 .finish();
             let selection = tracing::subscriber::with_default(subscriber, || {
-                prepare_discovery(&dirs, Ok(Os::Windows), None)
+                prepare_discovery(&dirs, Os::Windows, None)
                     .unwrap()
                     .discover_selection(&Console { use_tui: false }, announce)
                     .unwrap()
@@ -130,7 +119,7 @@ mod tests {
     fn discover_selection_reports_a_malformed_case_as_failed_discovery() {
         let dir = tempfile::tempdir().unwrap();
         let path = write_case(dir.path(), "bad", "type: bogus\n");
-        let failure = prepare_discovery(&[dir.path().to_path_buf()], Ok(Os::Linux), None)
+        let failure = prepare_discovery(&[dir.path().to_path_buf()], Os::Linux, None)
             .unwrap()
             .discover_selection(&Console { use_tui: false }, false)
             .err()

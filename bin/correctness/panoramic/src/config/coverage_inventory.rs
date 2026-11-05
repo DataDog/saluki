@@ -1527,20 +1527,35 @@ fn ci_jobs_in_the_inventory_are_defined() {
             r#"PANORAMIC_ARTIFACTS_ARG = $(if $(filter environment%,$(origin PANORAMIC_ARTIFACTS)),$(error PANORAMIC_ARTIFACTS must be set on the make command line, not in the environment),$(if $(PANORAMIC_ARTIFACTS),--artifacts "$(PANORAMIC_ARTIFACTS)"))"#,
         ],
     );
+    assert_lines_in_order(
+        "Makefile",
+        &makefile,
+        &[r#"CORRECTNESS_TEST_ARTIFACTS ?= $(CURDIR)/target/panoramic-artifacts-correctness.toml"#],
+    );
     assert_ci_block_lines_in_order(
         "Makefile",
         &makefile,
         &[
-            r#"test-correctness: build-panoramic build-courier-linux build-correctness-tools-image build-datadog-agent-image-release"#,
-            r#"@target/release/panoramic run --subject-os linux -d $(shell pwd)/test/correctness/cases $(if $(PANORAMIC_PARALLELISM),-p $(PANORAMIC_PARALLELISM)) $(PANORAMIC_ARTIFACTS_ARG)"#,
+            r#"render-correctness-test-artifacts: build-panoramic"#,
+            r#"@target/release/panoramic artifacts render"#,
+            r#"--set agent-adp-linux-image=saluki-images/datadog-agent:testing-release"#,
+            r#"--output "$(CORRECTNESS_TEST_ARTIFACTS)""#,
         ],
     );
     assert_ci_block_lines_in_order(
         "Makefile",
         &makefile,
         &[
-            r#"test-correctness-case: build-panoramic build-courier-linux build-correctness-tools-image build-datadog-agent-image-release"#,
-            r#"@target/release/panoramic run --subject-os linux -d $(shell pwd)/test/correctness/cases -t $(CASE) --no-tui $(PANORAMIC_ARTIFACTS_ARG)"#,
+            r#"test-correctness: render-correctness-test-artifacts build-courier-linux build-correctness-tools-image build-datadog-agent-image-release"#,
+            r#"@target/release/panoramic run --subject-os linux -d $(shell pwd)/test/correctness/cases $(if $(PANORAMIC_PARALLELISM),-p $(PANORAMIC_PARALLELISM)) $(or $(PANORAMIC_ARTIFACTS_ARG),--artifacts "$(CORRECTNESS_TEST_ARTIFACTS)")"#,
+        ],
+    );
+    assert_ci_block_lines_in_order(
+        "Makefile",
+        &makefile,
+        &[
+            r#"test-correctness-case: render-correctness-test-artifacts build-courier-linux build-correctness-tools-image build-datadog-agent-image-release"#,
+            r#"@target/release/panoramic run --subject-os linux -d $(shell pwd)/test/correctness/cases -t $(CASE) --no-tui $(or $(PANORAMIC_ARTIFACTS_ARG),--artifacts "$(CORRECTNESS_TEST_ARTIFACTS)")"#,
         ],
     );
     assert_ci_block_lines_in_order(

@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 use super::{
     create_case_dirs, read_text, repository_root, Inventory, INTEGRATION, JSON_PATH, NATIVE, OLD, PARTICIPANTS,
 };
-use crate::config::{os_for_runtime, tests::write_case};
+use crate::config::tests::write_case;
 
 const LOGGING_CASES: [&str; 7] = [
     "adp-logging-default-path",
@@ -65,9 +65,9 @@ fn participant_twin(config: &Value) -> Result<(String, bool), String> {
         .ok_or("runtimes must be an array")?
         .iter()
         .map(|runtime| {
-            runtime
-                .as_str()
-                .and_then(os_for_runtime)
+            [Os::Linux, Os::MacOs, Os::Windows]
+                .into_iter()
+                .find(|os| Some(crate::config::runtime_for_os(*os)) == runtime.as_str())
                 .ok_or_else(|| format!("unsupported runtime {runtime}"))
         })
         .collect::<Result<Vec<_>, _>>()?;

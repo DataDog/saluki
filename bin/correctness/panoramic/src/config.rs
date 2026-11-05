@@ -17,33 +17,12 @@ use crate::correctness::config::Config as CorrectnessConfig;
 use crate::image_override::ImageOverrides;
 use crate::test::Test;
 
-/// Runtime identifier for integration tests that run as host processes on macOS (no Docker, no
-/// virtualization). Validated on macOS only today; future host-process runtimes for other Unix
-/// platforms will get their own identifiers.
-pub const MAC_RUNTIME: &str = "mac";
-
-/// Runtime identifier for integration tests that run inside a Linux container.
-pub const LINUX_RUNTIME: &str = "linux";
-
-/// Runtime identifier for integration tests that run inside a Windows container.
-pub const WINDOWS_RUNTIME: &str = "windows";
-
-/// Returns the integration runtime identifier that runs cases for `os`.
+/// Returns `run.json`'s `runtime` value for `os`.
 pub(crate) fn runtime_for_os(os: Os) -> &'static str {
     match os {
-        Os::Linux => LINUX_RUNTIME,
-        Os::MacOs => MAC_RUNTIME,
-        Os::Windows => WINDOWS_RUNTIME,
-    }
-}
-
-/// Maps an integration runtime identifier to its subject OS, or `None` for other identifiers, such as `docker`.
-pub(crate) fn os_for_runtime(runtime: &str) -> Option<Os> {
-    match runtime {
-        LINUX_RUNTIME => Some(Os::Linux),
-        MAC_RUNTIME => Some(Os::MacOs),
-        WINDOWS_RUNTIME => Some(Os::Windows),
-        _ => None,
+        Os::Linux => "linux",
+        Os::MacOs => "mac",
+        Os::Windows => "windows",
     }
 }
 
@@ -432,13 +411,9 @@ procedure:
     }
 
     #[test]
-    fn every_subject_os_maps_to_its_runtime_and_back() {
+    fn every_subject_os_maps_to_its_runtime() {
         for (os, runtime) in [(Os::Linux, "linux"), (Os::MacOs, "mac"), (Os::Windows, "windows")] {
             assert_eq!(runtime_for_os(os), runtime);
-            assert_eq!(os_for_runtime(runtime), Some(os));
-        }
-        for runtime in ["docker", "kubernetes_in_docker", "macos", ""] {
-            assert_eq!(os_for_runtime(runtime), None, "{runtime}");
         }
     }
 
@@ -459,9 +434,8 @@ procedure:
     }
 
     fn discover_runners(
-        dirs: &[PathBuf], runtime: &str, image_overrides: &[ImageOverride],
+        dirs: &[PathBuf], os: Os, image_overrides: &[ImageOverride],
     ) -> Result<Vec<BuiltCase>, GenericError> {
-        let os = os_for_runtime(runtime).unwrap();
         let plans = discover_in_scope(&mut planner(), dirs, os)?.plans;
         build_runners(plans, &RunnerArtifacts::Overrides(image_overrides))
     }
@@ -947,7 +921,7 @@ variants:
 "#,
         );
 
-        let runners = discover_runners(&[base_dir.path().to_path_buf()], "linux", &[]).unwrap();
+        let runners = discover_runners(&[base_dir.path().to_path_buf()], Os::Linux, &[]).unwrap();
 
         assert_eq!(runners.len(), 2);
         // Canonicalized, because the loader canonicalizes the config path it derives this from.
@@ -1355,7 +1329,7 @@ variants: [{name: one, env: {QUOTED: "true"}}]
         let ordinary: CorrectnessConfig = load_case(&path).unwrap();
         let matrix: MatrixVariants = serde_saphyr::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         let expanded = matrix.expand(&ordinary, "scalars");
-        let runners = discover_runners(&[dir.path().to_path_buf()], LINUX_RUNTIME, &[]).unwrap();
+        let runners = discover_runners(&[dir.path().to_path_buf()], Os::Linux, &[]).unwrap();
         assert_eq!(runners.len(), 1);
         assert_eq!(runners[0].plan.case().name(), "scalars/one");
         for config in [&ordinary, &expanded[0].1] {
@@ -1499,7 +1473,7 @@ comparison: {{image: comp}}
 "#
                 ),
             );
-            let runners = discover_runners(&[dir.path().to_path_buf()], LINUX_RUNTIME, &entries).unwrap();
+            let runners = discover_runners(&[dir.path().to_path_buf()], Os::Linux, &entries).unwrap();
             assert_eq!(runners.len(), count);
             for built in runners {
                 let images = built.runner().unwrap().images();

@@ -49,6 +49,7 @@ export GO_APP_IMAGE ?= ubuntu:24.04
 # TODO: move this to test/output when everyone has it in their gitignore
 SALUKI_TEST_OUTPUT_DIR ?= $(CURDIR)/target/test-output
 export PANORAMIC_LOG_DIR ?= $(SALUKI_TEST_OUTPUT_DIR)/panoramic
+CORRECTNESS_TEST_ARTIFACTS ?= $(CURDIR)/target/panoramic-artifacts-correctness.toml
 
 # Pass a manifest on the make command line: `make test-integration PANORAMIC_ARTIFACTS=artifacts.toml`.
 # Environment values, including empty ones, stop make when a run target expands this argument.
@@ -642,17 +643,24 @@ test-panoramic-products: ## Runs native product tests with local images ($PANORA
 test-all: ## Test everything
 test-all: test test-property test-docs test-miri test-loom
 
+.PHONY: render-correctness-test-artifacts
+render-correctness-test-artifacts: build-panoramic
+render-correctness-test-artifacts: ## Binds the release Agent image for local correctness tests
+	@target/release/panoramic artifacts render \
+		--set agent-adp-linux-image=saluki-images/datadog-agent:testing-release \
+		--output "$(CORRECTNESS_TEST_ARTIFACTS)"
+
 .PHONY: test-correctness
-test-correctness: build-panoramic build-courier-linux build-correctness-tools-image build-datadog-agent-image-release
+test-correctness: render-correctness-test-artifacts build-courier-linux build-correctness-tools-image build-datadog-agent-image-release
 test-correctness: ## Runs the complete correctness suite (all test cases in parallel)
 	@echo "[*] Running correctness test suite..."
-	@target/release/panoramic run --subject-os linux -d $(shell pwd)/test/correctness/cases $(if $(PANORAMIC_PARALLELISM),-p $(PANORAMIC_PARALLELISM)) $(PANORAMIC_ARTIFACTS_ARG)
+	@target/release/panoramic run --subject-os linux -d $(shell pwd)/test/correctness/cases $(if $(PANORAMIC_PARALLELISM),-p $(PANORAMIC_PARALLELISM)) $(or $(PANORAMIC_ARTIFACTS_ARG),--artifacts "$(CORRECTNESS_TEST_ARTIFACTS)")
 
 .PHONY: test-correctness-case
-test-correctness-case: build-panoramic build-courier-linux build-correctness-tools-image build-datadog-agent-image-release
+test-correctness-case: render-correctness-test-artifacts build-courier-linux build-correctness-tools-image build-datadog-agent-image-release
 test-correctness-case: ## Runs a single correctness test case by name (usage: make test-correctness-case CASE=dsd-plain)
 	@echo "[*] Running '$(CASE)' correctness test case..."
-	@target/release/panoramic run --subject-os linux -d $(shell pwd)/test/correctness/cases -t $(CASE) --no-tui $(PANORAMIC_ARTIFACTS_ARG)
+	@target/release/panoramic run --subject-os linux -d $(shell pwd)/test/correctness/cases -t $(CASE) --no-tui $(or $(PANORAMIC_ARTIFACTS_ARG),--artifacts "$(CORRECTNESS_TEST_ARTIFACTS)")
 
 .PHONY: build-panoramic
 build-panoramic: check-rust-build-tools

@@ -59,7 +59,7 @@ pub(crate) fn render(cmd: RenderCommand) -> ExitCode {
 }
 
 fn needed_bindings(cmd: &ArtifactCasesCommand) -> Result<(Os, Vec<ArtifactBinding>, PathBuf), SetupFailure> {
-    let prepared = prepare_discovery(&cmd.test_dirs, Ok(cmd.subject_os), cmd.artifacts.as_deref())?;
+    let prepared = prepare_discovery(&cmd.test_dirs, cmd.subject_os, cmd.artifacts.as_deref())?;
     let base = std::env::current_dir()
         .map_err(|error| SetupFailure::harness(format!("Cannot read the current directory: {error}")))?;
     let selection = prepared.discover_selection(&Console { use_tui: false }, true)?;

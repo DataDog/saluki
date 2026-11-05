@@ -76,7 +76,7 @@ async fn prepare_run(cmd: &cli::RunCommand, console: &Console) -> Result<Prepare
     let Selection {
         subject_os,
         discovered: Discovered { plans, mut excluded },
-    } = prepare_discovery(&cmd.test_dirs, cmd.subject_os.resolve(), cmd.artifacts.as_deref())?
+    } = prepare_discovery(&cmd.test_dirs, cmd.subject_os, cmd.artifacts.as_deref())?
         .discover_selection(console, false)?;
     let (mut built, settings, artifacts) = build_cases(cmd, plans)?;
     check_legacy_inputs(cmd, &built, &settings, &artifacts)?;
@@ -712,22 +712,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_validates_directories_then_subject_os_then_manifest() {
+    async fn run_validates_directories_then_manifest() {
         use tracing::instrument::WithSubscriber as _;
 
         let dir = tempfile::tempdir().unwrap();
         let manifest = dir.path().join("missing.toml");
         let logs = dir.path().join("logs");
-        for (has_dirs, conflicts, expected) in [
-            (false, true, NO_TEST_DIRECTORIES.to_string()),
+        for (has_dirs, expected) in [
+            (false, NO_TEST_DIRECTORIES.to_string()),
             (
                 true,
-                true,
-                "--runtime linux selects subject OS 'linux', which conflicts with --subject-os windows".into(),
-            ),
-            (
-                true,
-                false,
                 format!("failed to read artifact manifest {}:", manifest.display()),
             ),
         ] {
@@ -742,9 +736,6 @@ mod tests {
             ];
             if has_dirs {
                 args.extend(["-d", dir.path().to_str().unwrap()]);
-            }
-            if conflicts {
-                args.extend(["--runtime", "linux", "--subject-os", "windows"]);
             }
             let Command::Run(cmd) = Cli::try_parse_from(args).unwrap().command else {
                 panic!("expected run")
@@ -1755,7 +1746,7 @@ comparison: {image: comp}
                 "run",
                 "-d",
                 dir.path().to_str().unwrap(),
-                "--runtime",
+                "--subject-os",
                 "linux",
                 "-l",
                 logs.to_str().unwrap(),
@@ -1818,7 +1809,7 @@ comparison: {image: comp}
             "run",
             "-d",
             dir.path().to_str().unwrap(),
-            "--runtime",
+            "--subject-os",
             "windows",
             "-t",
             "disabled",

@@ -152,7 +152,6 @@ Write-Host "[*] Running Windows integration tests..."
 $PanoramicArgs = @(
     "run",
     "-d", $TestDir,
-    "--runtime", "windows",
     "--subject-os", "windows",
     "--artifacts", $Manifest,
     "--no-tui",

@@ -141,22 +141,10 @@ test-integration:
       - integration-logs/
     when: always
   variables:
-    # Looks weird but we need to set this so that the test runner knows the right image path to pull the `alpine` image, which is required by
-    # `airlock` to properly configure some permissions on the shared volume before the target container is started. We don't have access to
-    # Docker Hub so the default of `alpine:latest` is insufficient.
-    PANORAMIC_ALPINE_IMAGE: registry.ddbuild.io/alpine:latest
     PANORAMIC_LOG_DIR: integration-logs
   script:
-    # Also tag pipeline images with the Makefile's local names; the image list below shows their IDs.
-    # correctness-tools provides the optional intake sidecar.
-    - docker pull ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}-${CI_PIPELINE_ID}
-    - docker tag ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}-${CI_PIPELINE_ID} saluki-images/datadog-agent:testing-devel
-    - docker pull ${SALUKI_IMAGE_REPO_BASE}/correctness-tools:${CI_COMMIT_SHA}
-    - docker tag ${SALUKI_IMAGE_REPO_BASE}/correctness-tools:${CI_COMMIT_SHA} saluki-images/correctness-tools:latest
-    # Compare these IDs with run.json's artifact identities.
-    - docker image ls --no-trunc --format '{{.Repository}}:{{.Tag}} {{.ID}}'
-    # Bind artifacts and pull pipeline images. PANORAMIC_ALPINE_IMAGE must agree with fixup-image.
-    # Both binaries come from build-panoramic-binary.
+    # Bind the pipeline images, permission fix-up image and Linux courier.
+    # panoramic and the courier come from build-panoramic-binary.
     - target/release/panoramic artifacts render
       --set agent-adp-linux-image=${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}-${CI_PIPELINE_ID}
       --set tools-linux-image=${SALUKI_IMAGE_REPO_BASE}/correctness-tools:${CI_COMMIT_SHA}
@@ -166,7 +154,7 @@ test-integration:
     - target/release/panoramic artifacts pull -d test/integration/cases --subject-os linux --artifacts target/panoramic-artifacts.toml
     - make run-integration-quick PANORAMIC_ARTIFACTS=target/panoramic-artifacts.toml
 
-# Runs the subset of integration tests that have opted in to the `mac` runtime
+# Runs the subset of integration tests that list `macos` in `subject_os`
 # directly on a bare-metal macOS runner. No Docker, no virtualization: panoramic spawns ADP
 # (and the Core Agent for converged tests) as real macOS processes against a per-test temp
 # state directory. The Datadog Agent is installed into a sandbox under /tmp/saluki-dda by

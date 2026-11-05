@@ -141,7 +141,7 @@ mod tests {
 
     use super::*;
     use crate::config::{
-        discover_in_scope, runtime_for_os,
+        discover_in_scope,
         tests::{planner, write_case, PARTICIPANT_FIELDS},
     };
 
@@ -220,7 +220,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn conflicting_runtime_and_subject_os_exit_2_for_run_list_and_list_json_before_discovery_or_logs() {
+    async fn a_missing_manifest_exits_2_for_run_list_and_list_json_before_discovery_or_logs() {
         use tracing::instrument::WithSubscriber as _;
 
         let dir = tempfile::tempdir().unwrap();
@@ -231,6 +231,7 @@ mod tests {
             "name: case\ntimeout: 1s\nsubject_os: [linux, windows]\nparticipants: {adp: {type: agent-adp, subject: true}}\nprocedure: [{step: log_contains, on: adp, pattern: ready, timeout: 5s}]\n",
         );
         write_case(&cases, "bad", "type: bogus\n");
+        let manifest = dir.path().join("missing.toml");
         let logs = dir.path().join("logs");
         for (command, extra, use_tui) in [
             ("run", vec!["-t", "not-selected", "-l", logs.to_str().unwrap()], false),
@@ -243,10 +244,8 @@ mod tests {
                 command,
                 "-d",
                 cases.to_str().unwrap(),
-                "--runtime",
-                "linux",
-                "--subject-os",
-                "windows",
+                "--artifacts",
+                manifest.to_str().unwrap(),
             ];
             args.extend(extra);
             let output = tempfile::NamedTempFile::new().unwrap();
@@ -268,12 +267,7 @@ mod tests {
             assert!(!logs.exists());
             if !use_tui {
                 let diagnostic = std::fs::read_to_string(output.path()).unwrap();
-                assert!(
-                    diagnostic.contains(
-                        "--runtime linux selects subject OS 'linux', which conflicts with --subject-os windows"
-                    ),
-                    "{diagnostic}"
-                );
+                assert!(diagnostic.contains("failed to read artifact manifest"), "{diagnostic}");
                 assert!(!diagnostic.contains("Failed to discover"), "{diagnostic}");
             }
         }
@@ -324,7 +318,7 @@ mod tests {
                 "list",
                 "-d",
                 dir.path().to_str().unwrap(),
-                "--runtime",
+                "--subject-os",
                 "windows",
             ];
             if json {
@@ -385,8 +379,8 @@ mod tests {
                     command,
                     "-d",
                     dir.path().to_str().unwrap(),
-                    "--runtime",
-                    runtime_for_os(os),
+                    "--subject-os",
+                    os.name(),
                 ];
                 args.extend(extra);
                 let cli = Cli::try_parse_from(args).unwrap();

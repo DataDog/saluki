@@ -11,9 +11,7 @@ use clap::{
 };
 use panoramic_core::layout::Os;
 
-use crate::config::{
-    os_for_runtime, runner_artifacts::LegacyArtifactInputs, runtime_for_os, LINUX_RUNTIME, MAC_RUNTIME, WINDOWS_RUNTIME,
-};
+use crate::config::runner_artifacts::LegacyArtifactInputs;
 use crate::text_output::OutputFormat;
 use crate::{image_override::ImageOverride, test::RunnerSettings};
 
@@ -34,12 +32,6 @@ Environment variables:
 /// These are tracing target names, which are crate names with underscores rather than dashes.
 const FIRST_PARTY_LOG_TARGETS: &[&str] = &["panoramic", "airlock", "stele", "saluki_common", "saluki_error"];
 
-/// Parses `--runtime`, accepting only the runtime identifiers and returning the subject OS each selects.
-fn runtime_parser() -> impl TypedValueParser<Value = Os> {
-    PossibleValuesParser::new([LINUX_RUNTIME, MAC_RUNTIME, WINDOWS_RUNTIME])
-        .map(|value| os_for_runtime(&value).expect("only runtime identifiers are possible values"))
-}
-
 fn subject_os_parser() -> impl TypedValueParser<Value = Os> {
     let systems = [Os::Linux, Os::MacOs, Os::Windows];
     PossibleValuesParser::new(systems.map(Os::name)).map(move |value| {
@@ -48,45 +40,6 @@ fn subject_os_parser() -> impl TypedValueParser<Value = Os> {
             .find(|os| os.name() == value)
             .expect("only OS names are possible values")
     })
-}
-
-/// Subject OS selection shared by `run` and `list`.
-#[derive(Args, Debug)]
-pub struct SubjectOsArgs {
-    /// Subject OS selection using runtime names: `linux`, `mac` or `windows`;
-    /// `mac` selects `macos`. Participant cases run only if their `subject_os` list
-    /// contains its OS. Defaults to the host's OS. Correctness cases run only for subject OS
-    /// `linux`; other selections report them as skipped.
-    #[arg(long, verbatim_doc_comment, value_parser = runtime_parser())]
-    pub runtime: Option<Os>,
-
-    /// Subject OS to select cases for: `linux`, `macos` or `windows`. Defaults to the OS
-    /// that --runtime selects, then the host's OS. Must agree with --runtime when both
-    /// are given. Correctness cases run only for subject OS `linux`; other selections
-    /// report them as skipped.
-    #[arg(long, verbatim_doc_comment, value_parser = subject_os_parser())]
-    pub subject_os: Option<Os>,
-}
-
-impl SubjectOsArgs {
-    /// Returns the selected subject OS.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when --runtime and --subject-os select different OSes.
-    pub fn resolve(&self) -> Result<Os, String> {
-        if let (Some(runtime), Some(subject_os)) = (self.runtime, self.subject_os) {
-            if runtime != subject_os {
-                return Err(format!(
-                    "--runtime {} selects subject OS '{}', which conflicts with --subject-os {}",
-                    runtime_for_os(runtime),
-                    runtime.name(),
-                    subject_os.name()
-                ));
-            }
-        }
-        Ok(self.subject_os.or(self.runtime).unwrap_or_else(Os::host))
-    }
 }
 
 /// Verbosity selected by `--log-level`.
@@ -264,8 +217,11 @@ pub struct RunCommand {
     #[arg(short = 't', long)]
     pub tests: Option<String>,
 
-    #[command(flatten)]
-    pub subject_os: SubjectOsArgs,
+    /// Subject OS to select cases for: `linux`, `macos` or `windows`. Defaults to the
+    /// host's OS. Correctness cases run only for subject OS `linux`; other selections
+    /// report them as skipped.
+    #[arg(long, verbatim_doc_comment, value_parser = subject_os_parser(), default_value = Os::host().name())]
+    pub subject_os: Os,
 
     /// Artifact manifest (TOML) binding artifact roles to image references and paths.
     /// Roles it omits use their local defaults; a role no participant type, backend or
@@ -370,8 +326,11 @@ pub struct ListCommand {
     #[arg(short = 'd', long)]
     pub test_dirs: Vec<PathBuf>,
 
-    #[command(flatten)]
-    pub subject_os: SubjectOsArgs,
+    /// Subject OS to select cases for: `linux`, `macos` or `windows`. Defaults to the
+    /// host's OS. Correctness cases run only for subject OS `linux`; other selections
+    /// report them as skipped.
+    #[arg(long, verbatim_doc_comment, value_parser = subject_os_parser(), default_value = Os::host().name())]
+    pub subject_os: Os,
 
     /// Artifact manifest (TOML) binding artifact roles to image references and paths.
     /// Roles it omits use their local defaults; a role no participant type, backend or
@@ -415,31 +374,18 @@ mod tests {
     }
 
     #[test]
-    fn run_and_list_reject_an_unknown_runtime() {
+    fn run_and_list_reject_the_runtime_flag() {
         for command in ["run", "list"] {
-            let error = Cli::try_parse_from(["panoramic", command, "--runtime", "docker"])
+            let error = Cli::try_parse_from(["panoramic", command, "--runtime", "linux"])
                 .err()
                 .unwrap();
+            assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
             assert_eq!(error.exit_code(), 2);
-            let message = error.to_string();
-            assert!(message.contains("docker"), "{message}");
-            assert!(message.contains("[possible values: linux, mac, windows]"), "{message}");
-            for (runtime, expected) in [("linux", Os::Linux), ("mac", Os::MacOs), ("windows", Os::Windows)] {
-                let cli = Cli::try_parse_from(["panoramic", command, "--runtime", runtime]).unwrap();
-                let os = match cli.command {
-                    Command::Run(cmd) => cmd.subject_os.runtime,
-                    Command::List(cmd) => cmd.subject_os.runtime,
-                    Command::Artifacts(_) => panic!("expected run or list"),
-                };
-                assert_eq!(os, Some(expected));
-            }
-            for runtime in ["macos", "Linux", "unknown"] {
-                assert!(Cli::try_parse_from(["panoramic", command, "--runtime", runtime]).is_err());
-            }
+            assert!(error.to_string().contains("--runtime"), "{error}");
         }
     }
 
-    fn os_args(cli: Cli) -> SubjectOsArgs {
+    fn subject_os_of(cli: Cli) -> Os {
         match cli.command {
             Command::Run(cmd) => cmd.subject_os,
             Command::List(cmd) => cmd.subject_os,
@@ -451,8 +397,9 @@ mod tests {
     fn subject_os_accepts_only_case_file_os_names_on_run_and_list() {
         for command in ["run", "list"] {
             for os in [Os::Linux, Os::MacOs, Os::Windows] {
-                let args = os_args(Cli::try_parse_from(["panoramic", command, "--subject-os", os.name()]).unwrap());
-                assert_eq!(args.resolve(), Ok(os));
+                let selected =
+                    subject_os_of(Cli::try_parse_from(["panoramic", command, "--subject-os", os.name()]).unwrap());
+                assert_eq!(selected, os);
             }
             for name in ["mac", "docker", "Linux"] {
                 let error = Cli::try_parse_from(["panoramic", command, "--subject-os", name])
@@ -464,49 +411,23 @@ mod tests {
     }
 
     #[test]
-    fn the_subject_os_defaults_to_the_runtime_then_the_host() {
+    fn the_subject_os_defaults_to_the_host() {
         for command in ["run", "list"] {
             assert_eq!(
-                os_args(Cli::try_parse_from(["panoramic", command]).unwrap()).resolve(),
-                Ok(Os::host())
+                subject_os_of(Cli::try_parse_from(["panoramic", command]).unwrap()),
+                Os::host()
             );
-            for os in [Os::Linux, Os::MacOs, Os::Windows] {
-                let args =
-                    os_args(Cli::try_parse_from(["panoramic", command, "--runtime", runtime_for_os(os)]).unwrap());
-                assert_eq!(args.resolve(), Ok(os));
-            }
         }
     }
 
     #[test]
-    fn a_subject_os_that_conflicts_with_the_runtime_is_an_error_and_an_equal_one_is_not() {
+    fn run_and_list_help_describe_subject_os_without_a_runtime_flag() {
+        let mut cli = Cli::command();
         for command in ["run", "list"] {
-            for runtime in [Os::Linux, Os::MacOs, Os::Windows] {
-                for subject_os in [Os::Linux, Os::MacOs, Os::Windows] {
-                    let args = os_args(
-                        Cli::try_parse_from([
-                            "panoramic",
-                            command,
-                            "--runtime",
-                            runtime_for_os(runtime),
-                            "--subject-os",
-                            subject_os.name(),
-                        ])
-                        .unwrap(),
-                    );
-                    let expected = if runtime == subject_os {
-                        Ok(subject_os)
-                    } else {
-                        Err(format!(
-                            "--runtime {} selects subject OS '{}', which conflicts with --subject-os {}",
-                            runtime_for_os(runtime),
-                            runtime.name(),
-                            subject_os.name()
-                        ))
-                    };
-                    assert_eq!(args.resolve(), expected);
-                }
-            }
+            let help = cli.find_subcommand_mut(command).unwrap().render_long_help().to_string();
+            assert!(help.contains("--subject-os"), "{help}");
+            assert!(help.contains("host's OS"), "{help}");
+            assert!(!help.contains("--runtime"), "{help}");
         }
     }
 
@@ -655,7 +576,7 @@ mod tests {
         assert_eq!(cmd.parallelism.get(), 4);
         assert!(matches!(cmd.output, OutputFormat::Text));
         assert_eq!(cmd.kind_cluster_name, crate::kind::DEFAULT_CLUSTER_NAME);
-        assert!(cmd.subject_os.runtime.is_none());
+        assert_eq!(cmd.subject_os, Os::host());
         assert!(cmd.tests.is_none());
         assert!(!cmd.fail_fast);
         assert!(!cmd.verbose);
@@ -743,8 +664,8 @@ mod tests {
             "two",
             "-f",
             "-v",
-            "--runtime",
-            "mac",
+            "--subject-os",
+            "macos",
             "--kind-cluster-name",
             "custom",
             "--no-delete-kind-cluster",
@@ -761,7 +682,7 @@ mod tests {
         assert_eq!(cmd.tests.as_deref(), Some("two"));
         assert!(cmd.fail_fast);
         assert!(cmd.verbose);
-        assert_eq!(cmd.subject_os.runtime, Some(Os::MacOs));
+        assert_eq!(cmd.subject_os, Os::MacOs);
         assert_eq!(cmd.kind_cluster_name, "custom");
         assert!(cmd.no_delete_kind_cluster);
     }

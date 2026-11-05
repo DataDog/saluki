@@ -21,7 +21,7 @@ pub(crate) async fn list_tests(cmd: cli::ListCommand) -> ExitCode {
     let Selection {
         subject_os,
         discovered: Discovered { plans, excluded },
-    } = match prepare_discovery(&cmd.test_dirs, cmd.subject_os.resolve(), cmd.artifacts.as_deref())
+    } = match prepare_discovery(&cmd.test_dirs, cmd.subject_os, cmd.artifacts.as_deref())
         .and_then(|prepared| prepared.discover_selection(&console, !cmd.json))
     {
         Ok(selection) => selection,
@@ -439,35 +439,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_and_list_json_validate_directories_then_subject_os_then_manifest() {
+    async fn list_and_list_json_validate_directories_then_manifest() {
         use tracing::instrument::WithSubscriber as _;
 
         let dir = tempfile::tempdir().unwrap();
         let manifest = dir.path().join("missing.toml");
         for json in [false, true] {
-            for (has_dirs, conflicts, expected) in [
+            for (has_dirs, expected) in [
                 (
                     false,
-                    true,
                     "No test directories specified. Use -d <path> to specify one or more directories.".to_string(),
                 ),
                 (
                     true,
-                    true,
-                    "--runtime linux selects subject OS 'linux', which conflicts with --subject-os windows".to_string(),
-                ),
-                (
-                    true,
-                    false,
                     format!("failed to read artifact manifest {}:", manifest.display()),
                 ),
             ] {
                 let mut args = vec!["panoramic", "list", "--artifacts", manifest.to_str().unwrap()];
                 if has_dirs {
                     args.extend(["-d", dir.path().to_str().unwrap()]);
-                }
-                if conflicts {
-                    args.extend(["--runtime", "linux", "--subject-os", "windows"]);
                 }
                 if json {
                     args.push("--json");

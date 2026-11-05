@@ -178,7 +178,10 @@ make test-correctness
 make test-correctness-case CASE=dsd-plain
 ```
 
-The `test-correctness` target handles building all of the necessary prerequisites -- `millstone`, `datadog-intake`, `panoramic`, the bundled Agent/ADP image, and so on -- before running the test cases.
+Both targets build the prerequisites and render `target/panoramic-artifacts-correctness.toml`, binding
+`agent-adp-linux-image` to `saluki-images/datadog-agent:testing-release`. Set `CORRECTNESS_TEST_ARTIFACTS` to change
+the rendered manifest's path. Pass `PANORAMIC_ARTIFACTS=<file>` on the make command line to run with your own
+manifest instead. Integration keeps the `testing-devel` default.
 
 The seven `dsd-origin-detection-matrix-<variant>` cases run as Kubernetes pods in kind. Each has its own directory
 under `test/correctness/cases/`, with symlinks to the configuration and workload files in
@@ -802,7 +805,7 @@ A `config.files` source must be a nonempty path relative to the case directory t
 Parent-directory components must stay within the case directory; symlink targets may be outside it.
 
 `panoramic list` shows each participant case's layout. A case whose layout is invalid on any OS it lists in
-`subject_os` fails discovery for `list` and `run`, whatever runtime is selected.
+`subject_os` fails discovery for `list` and `run`, whatever subject OS is selected.
 Plan compilation checks fact availability for both steps and configuration on every OS in `subject_os`.
 A referenced fact missing for a participant's realization fails planning and therefore discovery.
 It also checks every declared process name: it must be a plain file name, not empty, `.` or `..`, and contain no
@@ -1015,10 +1018,9 @@ authentication token. ADP retries the token read while the Agent starts. Only th
 when ADP is enabled, the macOS force-enable switch. Each process's output goes to `<process>.stdout.log` and
 `<process>.stderr.log` under the participant's log directory.
 
-`--subject-os linux|macos|windows` selects which cases run. It defaults to the OS selected by `--runtime`, then the
-host's OS. Conflicting values exit 2 before discovery. Correctness cases run only for subject OS `linux` and are
-reported as `skipped` for other subject OSes. Pass `--subject-os linux` to run them from another host; the
-correctness Make targets do this.
+`--subject-os linux|macos|windows` selects which cases run. It defaults to the host's OS. Correctness cases run only
+for subject OS `linux` and are reported as `skipped` for other subject OSes. Pass `--subject-os linux` to run them
+from another host; the correctness Make targets do this.
 
 A case whose `subject_os` omits the selected OS appears in `run.json` with outcome `skipped` and `skip_reason`
 `subject_os excludes <os>`. It counts in `totals.skipped`. Only executed cases receive a log directory and
