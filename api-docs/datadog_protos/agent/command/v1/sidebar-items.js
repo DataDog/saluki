@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["ParameterType"],"mod":["execute_command_response","remote_command_provider_client","remote_command_provider_server"],"struct":["Command","CommandParameter","CommandProvider","ExecuteCommandRequest","ExecuteCommandResponse","ListCommandsRequest","ListCommandsResponse"]};
