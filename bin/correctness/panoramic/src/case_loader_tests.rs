@@ -215,7 +215,10 @@ fn registered_template_fields_match_step_types_and_other_fields_reject_reference
             .all(|field| fields.contains_key(*field)));
         for field in fields.keys().filter(|field| {
             (fields[*field].is_string() || field.as_str() == "argv")
-                && !matches!(field.as_str(), "duration" | "during" | "timeout")
+                && !matches!(
+                    field.as_str(),
+                    "duration" | "during" | "timeout" | "capture_duration" | "stats_duration"
+                )
         }) {
             let mut referenced = fields.clone();
             let reference = if field == "path" {
@@ -292,11 +295,11 @@ fn participant_step_errors_name_the_canonical_file_and_step() {
     for (fields, expected) in [
         (
             "step: wait_ready",
-            "names unknown step 'wait_ready'; registered steps: config_key_equals, exec, exits_with, file_contains, http_check, intake_has_forwarded_packets, intake_has_metric, intake_has_service_check, log_contains, log_not_contains, port_listening, process_stable_for, send",
+            "names unknown step 'wait_ready'; registered steps: cli, config_key_equals, config_set, dogstatsd_replay, exec, exits_with, file_contains, http_check, intake_has_forwarded_packets, intake_has_metric, intake_has_service_check, log_contains, log_not_contains, port_listening, process_stable_for, send",
         ),
         (
             "step: adp_cli, on: adp, args: [status]",
-            "names unknown step 'adp_cli'; registered steps: config_key_equals, exec, exits_with, file_contains, http_check, intake_has_forwarded_packets, intake_has_metric, intake_has_service_check, log_contains, log_not_contains, port_listening, process_stable_for, send",
+            "names unknown step 'adp_cli'; registered steps: cli, config_key_equals, config_set, dogstatsd_replay, exec, exits_with, file_contains, http_check, intake_has_forwarded_packets, intake_has_metric, intake_has_service_check, log_contains, log_not_contains, port_listening, process_stable_for, send",
         ),
         (
             "step: port_listening, on: adp, timeout: 1s",

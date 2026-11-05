@@ -297,6 +297,34 @@ Native process and endpoint steps also require `on`:
   if only harness failures occurred. UDP cannot confirm a listener, so gate UDP sends on the participant's listener
   output.
 
+Three native actions use participant operations:
+
+- `cli` requires `on`, `process`, `args` (a list of strings, which may be empty) and a positive `timeout`.
+  It calls `cli_<process>` once. Planning rejects a process whose CLI operation is unavailable.
+  Optional `output_contains` requires a literal substring in the complete output. Success passes; a missing
+  substring or product error fails. A harness error, including an abandoned command at timeout, errors the step.
+  This differs from the integration runner's CLI timeout, which fails. Successful calls and substring mismatches
+  quote trimmed output; messages are capped at 4096 bytes without splitting UTF-8 characters.
+- `config_set` requires `on`, a nonempty `key`, `value` (any JSON value) and a positive `timeout`.
+  It sends strings unchanged and other values as JSON text to `config_set`. It retries every 500 ms until accepted,
+  giving each call the remaining budget. At timeout, any product error makes the step fail; only harness errors
+  make it error. The diagnostic includes the last attempt.
+- `dogstatsd_replay` requires `on`, `endpoint`, a nonempty `payloads` list, `capture_duration`, `stats_duration`,
+  a nonempty `expected_metrics` list and a positive `timeout`. Each payload has string `data` and an optional
+  positive `after` duration, waited before that payload. Statistics duration must be whole seconds, at least `1s`.
+  The action starts capture, sends each payload once through the endpoint, waits the capture duration, then runs
+  statistics and replay concurrently. It repeats that pair every 50 ms until the statistics contain every expected
+  metric name exactly. Each command gets `timeout`; sends use the endpoint's attempt limits and are not retried.
+  A capture or send error ends the action: product errors fail and harness errors error. A statistics error after
+  a successful replay ends the action; an earlier completed replay/statistics attempt or replay product error
+  keeps the result failed. Otherwise the statistics error's classification decides the result. If replay itself
+  fails, the action retries even if statistics failed too. At the replay deadline, a completed replay/statistics
+  attempt or replay product error makes the step fail; only replay harness errors make it error. Diagnostics
+  retain the latest replay error or missing metrics. Dropping the action cancels every wait.
+
+The replay step budget is `timeout × (3 + number of payloads) + capture_duration + sum(after) + 50 ms`.
+It covers capture, each send, and a final statistics/replay pair that starts at the replay deadline.
+
 An undetermined process exit errors stability and exit assertions. A process's first recorded exit remains final
 across supervised restarts. The integration bridge translates only `log_contains`, `log_not_contains` and
 `file_contains`; log steps on the bridge must omit `process`.
@@ -481,12 +509,25 @@ disablement after a clean exit. Each run script merges stderr into stdout, and i
 These merged process logs include the run and finish scripts' own messages. Container stdout and stderr are also
 captured separately. The default ten-second stop grace covers the measured roughly 2.6-second supervisor shutdown.
 
-Only the `agent-adp` Linux container realization offers the `config_dump` operation. Its arguments are exactly
-`{"view": "source"}` or `{"view": "runtime"}`. It runs
-`/opt/datadog-agent/embedded/bin/agent-data-plane config --json`, adding `--runtime` for the runtime view.
-Unknown views or extra arguments are harness errors. Exit codes 126 and 127 mean the CLI could not run and are
-harness errors; other nonzero exits and non-JSON stdout are product errors. Error messages omit stdout and stderr
-because configuration can contain secrets.
+The `agent-adp` Linux container realization offers seven operations. ADP commands use
+`/opt/datadog-agent/embedded/bin/agent-data-plane`; Agent commands use `/opt/datadog-agent/bin/agent/agent`.
+
+| Operation | Arguments | Command and result |
+| --- | --- | --- |
+| `cli_adp` | `args`: list of strings | ADP with those arguments; returns `output`, stdout followed by stderr using lossy UTF-8. |
+| `cli_agent` | `args`: list of strings | Agent with those arguments; returns `output` the same way. |
+| `config_dump` | `view`: `source` or `runtime` | ADP `config --json`, adding `--runtime` for runtime view; returns parsed JSON stdout. |
+| `config_set` | `key`, `value`: strings | Agent `config set <key> <value>`; returns an empty object. |
+| `dogstatsd_capture` | `duration_ms`: unsigned integer | ADP `dogstatsd capture --duration <ms>ms --compressed false`; returns the reported capture `path`. |
+| `dogstatsd_replay` | `path`: string | ADP `dogstatsd replay --file <path>`; returns an empty object. |
+| `dogstatsd_stats` | `seconds`: unsigned integer | ADP `dogstatsd stats --duration-secs <n>`; returns `metrics`, the names in the table's first column after its header. |
+
+Arguments are exact: missing, unknown or wrongly typed keys are harness errors. Exit codes 126 and 127 mean the
+command could not run and are harness errors; other nonzero exits are product errors. An abandoned exec at its
+limit is a harness error. Invalid JSON from `config_dump`, a missing or incomplete capture path, and a malformed
+statistics table are product errors. CLI failure messages omit output, which may contain secrets. In particular,
+ADP CLI output is never quoted on a nonzero exit. `config_set` includes trimmed stderr capped at 512 bytes on
+product failure; it uses the Agent's own client for its runtime configuration API.
 
 The `PANORAMIC_` environment-variable prefix is reserved. Plan compilation rejects keys with this prefix in the
 case's effective environment after OS overlays, in type defaults, and in connection deliveries. Errors identify

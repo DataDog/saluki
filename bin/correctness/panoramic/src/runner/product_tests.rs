@@ -564,3 +564,109 @@ async fn agent_adp_maps_an_extra_host_to_its_own_ip_for_dogstatsd_and_apm_binds(
     config["env"]["DD_APM_ENABLED"] = "false".into();
     assert_bind_case(config, &[("udp", 58125), ("tcp", 58126)]).await;
 }
+
+fn operation_case(procedure: serde_json::Value) -> serde_json::Value {
+    json!({
+        "timeout": "180s", "subject_os": ["linux"],
+        "participants": {"adp": {"type": "agent-adp", "subject": true, "config": {"env": {
+            "DD_API_KEY": "00000000000000000000000000000000", "DD_HOSTNAME": "panoramic-operations",
+            "DD_DATA_PLANE_ENABLED": "true", "DD_DATA_PLANE_STANDALONE_MODE": "false",
+            "DD_DATA_PLANE_DOGSTATSD_ENABLED": "true",
+        }}}},
+        "procedure": procedure,
+    })
+}
+
+async fn assert_operation_case(case: serde_json::Value, count: usize) {
+    let _ = crate::default_crypto_provider().install_default();
+    let (_logs, report) = run_native_case(
+        panoramic_participants::REGISTERED_TYPES,
+        panoramic_steps::REGISTERED_STEPS,
+        case,
+        product_bindings(),
+        CancellationToken::new(),
+    )
+    .await;
+    assert_eq!(report["outcome"], "passed", "{report:#}");
+    let assertions = report["assertions"].as_array().unwrap();
+    assert_eq!(assertions.len(), count);
+    assert!(assertions.iter().all(|step| step["status"] == "passed"), "{report:#}");
+}
+
+#[tokio::test]
+#[ignore = "needs product images; run with make test-panoramic-products"]
+async fn privileged_api_cli_commands_pass_with_their_output_checks() {
+    let case = operation_case(json!([
+        {"step": "log_contains", "on": "adp", "pattern": "Agent Data Plane running.", "timeout": "60s"},
+        {"step": "cli", "on": "adp", "process": "adp", "args": ["config"], "timeout": "30s"},
+        {"step": "cli", "on": "adp", "process": "adp", "args": ["debug", "set-log-level", "--filter-directives", "INFO", "--duration-secs", "30"], "timeout": "30s"},
+        {"step": "cli", "on": "adp", "process": "adp", "args": ["debug", "reset-log-level"], "timeout": "30s"},
+        {"step": "cli", "on": "adp", "process": "adp", "args": ["debug", "set-metric-level", "--level", "INFO", "--duration-secs", "30"], "timeout": "30s"},
+        {"step": "cli", "on": "adp", "process": "adp", "args": ["debug", "reset-metric-level"], "timeout": "30s"},
+        {"step": "cli", "on": "adp", "process": "adp", "args": ["debug", "runtime", "show-processes"], "output_contains": "Supervision tree for 'adp-root'", "timeout": "30s"},
+        {"step": "cli", "on": "adp", "process": "adp", "args": ["debug", "runtime", "show-processes"], "output_contains": "topology.primary", "timeout": "30s"},
+        {"step": "cli", "on": "adp", "process": "adp", "args": ["debug", "runtime", "show-processes"], "output_contains": "ctrl-pln", "timeout": "30s"},
+        {"step": "cli", "on": "adp", "process": "adp", "args": ["debug", "runtime", "show-processes", "--json"], "output_contains": "\"resource_tracking_enabled\":true", "timeout": "30s"},
+        {"step": "cli", "on": "adp", "process": "adp", "args": ["debug", "runtime", "show-processes", "--format", "dot"], "output_contains": "digraph supervision_tree", "timeout": "30s"},
+        {"parallel": [
+            {"step": "process_stable_for", "on": "adp", "duration": "10s"},
+            {"step": "log_not_contains", "on": "adp", "pattern": "panic|PANIC", "regex": true, "during": "10s"},
+        ]},
+    ]));
+    assert_operation_case(case, 13).await;
+}
+
+#[tokio::test]
+#[ignore = "needs product images; run with make test-panoramic-products"]
+async fn agent_cli_status_reports_adp_dogstatsd_fields_after_registration() {
+    let mut case = operation_case(json!([
+        {"step": "log_contains", "on": "adp", "pattern": "Successfully registered with the Datadog Agent.", "timeout": "60s"},
+        {"step": "cli", "on": "adp", "process": "agent", "args": ["status"], "output_contains": "Uds Packet Reading Errors", "timeout": "60s"},
+        {"parallel": [
+            {"step": "process_stable_for", "on": "adp", "duration": "10s"},
+            {"step": "log_not_contains", "on": "adp", "pattern": "panic|PANIC", "regex": true, "during": "10s"},
+        ]},
+    ]));
+    case["participants"]["adp"]["config"]["env"]["DD_DATA_PLANE_REMOTE_AGENT_ENABLED"] = "true".into();
+    assert_operation_case(case, 4).await;
+}
+
+#[tokio::test]
+#[ignore = "needs product images; run with make test-panoramic-products"]
+async fn a_core_agent_runtime_setting_reaches_both_adp_configuration_views() {
+    let mut case = operation_case(json!([
+        {"step": "config_key_equals", "on": "adp", "key": "log_level", "value": "info", "view": "source", "timeout": "60s"},
+        {"step": "config_key_equals", "on": "adp", "key": "control.logging.level", "value": "info", "view": "runtime", "timeout": "60s"},
+        {"step": "config_set", "on": "adp", "key": "log_level", "value": "debug", "timeout": "30s"},
+        {"step": "config_key_equals", "on": "adp", "key": "log_level", "value": "debug", "view": "source", "timeout": "60s"},
+        {"step": "config_key_equals", "on": "adp", "key": "control.logging.level", "value": "debug", "view": "runtime", "timeout": "60s"},
+        {"parallel": [
+            {"step": "process_stable_for", "on": "adp", "duration": "10s"},
+            {"step": "log_not_contains", "on": "adp", "pattern": "Error while reading config event stream", "during": "10s"},
+            {"step": "log_not_contains", "on": "adp", "pattern": "panic|PANIC", "regex": true, "during": "10s"},
+        ]},
+    ]));
+    let env = &mut case["participants"]["adp"]["config"]["env"];
+    env["DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT"] = "true".into();
+    env["DD_LOG_LEVEL"] = "info".into();
+    assert_operation_case(case, 8).await;
+}
+
+#[tokio::test]
+#[ignore = "needs product images; run with make test-panoramic-products"]
+async fn dogstatsd_capture_replays_unix_datagram_payloads() {
+    let mut case = operation_case(json!([
+        {"step": "log_contains", "on": "adp", "pattern": "listen_addr:\"unixgram://{{ adp.facts.shared_dir }}/dsd.sock\"", "timeout": "30s"},
+        {"step": "dogstatsd_replay", "on": "adp", "endpoint": "dogstatsd_uds",
+            "payloads": [{"data": "integration.replay.unix.one:1|c"}, {"data": "integration.replay.unix.two:1|c", "after": "1s"}],
+            "capture_duration": "3s", "stats_duration": "3s", "expected_metrics": ["integration.replay.unix.one", "integration.replay.unix.two"], "timeout": "30s"},
+        {"parallel": [
+            {"step": "process_stable_for", "on": "adp", "duration": "10s"},
+            {"step": "log_not_contains", "on": "adp", "pattern": "panic|PANIC", "regex": true, "during": "10s"},
+        ]},
+    ]));
+    let env = &mut case["participants"]["adp"]["config"]["env"];
+    env["DD_DOGSTATSD_PORT"] = "0".into();
+    env["DD_DOGSTATSD_SOCKET"] = "{{ self.facts.shared_dir }}/dsd.sock".into();
+    assert_operation_case(case, 4).await;
+}

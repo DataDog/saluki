@@ -19,7 +19,15 @@ use crate::CASE_FILES_DIR;
 
 const ADP_CLI_BINARY_PATH: &str = "/opt/datadog-agent/embedded/bin/agent-data-plane";
 
-pub(super) const OPERATIONS: &[&dyn Operation] = &[&ConfigDump];
+pub(super) const OPERATIONS: &[&dyn Operation] = &[
+    &super::operations::Command::CliAdp,
+    &super::operations::Command::CliAgent,
+    &ConfigDump,
+    &super::operations::Command::ConfigSet,
+    &super::operations::Command::DogstatsdCapture,
+    &super::operations::Command::DogstatsdReplay,
+    &super::operations::Command::DogstatsdStats,
+];
 
 struct ConfigDump;
 

@@ -3,9 +3,9 @@
 use panoramic_core::step::StepFields;
 
 use crate::{
-    config_key_equals::ConfigKeyEquals, exec::Exec, exits_with::ExitsWith, http_check::HttpCheck,
-    intake_has_forwarded_packets::IntakeHasForwardedPackets, intake_has_metric::IntakeHasMetric,
-    intake_has_service_check::IntakeHasServiceCheck, port_listening::PortListening,
+    cli::Cli, config_key_equals::ConfigKeyEquals, config_set::ConfigSet, dogstatsd_replay::DogstatsdReplay, exec::Exec,
+    exits_with::ExitsWith, http_check::HttpCheck, intake_has_forwarded_packets::IntakeHasForwardedPackets,
+    intake_has_metric::IntakeHasMetric, intake_has_service_check::IntakeHasServiceCheck, port_listening::PortListening,
     process_stable_for::ProcessStableFor, send::Send, FileContains, LogContains, LogNotContains,
 };
 
@@ -16,6 +16,9 @@ use crate::{
 /// Panics if `name` is not a registered step.
 pub fn valid_fields(name: &str) -> StepFields {
     let yaml = match name {
+        Cli::NAME => "on: subject\nprocess: main\nargs: []\ntimeout: 30s",
+        ConfigSet::NAME => "on: subject\nkey: log_level\nvalue: debug\ntimeout: 30s",
+        DogstatsdReplay::NAME => "on: subject\nendpoint: udp\npayloads: [{data: packet}]\ncapture_duration: 1s\nstats_duration: 1s\nexpected_metrics: [metric]\ntimeout: 30s",
         ConfigKeyEquals::NAME => "on: subject\nkey: domains.enabled\nvalue: true\nview: runtime\ntimeout: 30s",
         Exec::NAME => "on: subject\nargv: [tool, argument]\ntimeout: 30s",
         ExitsWith::NAME => "on: subject\nprocess: main\ncode: 1\ntimeout: 30s",
@@ -43,4 +46,22 @@ pub(crate) fn exited(code: Option<i32>, signal: Option<i32>) -> panoramic_core::
         reason: None,
         recorded_at: None,
     })
+}
+
+#[cfg(test)]
+pub(crate) const OPERATIONS: &[&dyn panoramic_core::participant::Operation] = &[
+    &panoramic_core::step::test_support::ExecOperation("cli_main"),
+    &panoramic_core::step::test_support::ExecOperation("config_set"),
+    &panoramic_core::step::test_support::ExecOperation("dogstatsd_capture"),
+    &panoramic_core::step::test_support::ExecOperation("dogstatsd_replay"),
+    &panoramic_core::step::test_support::ExecOperation("dogstatsd_stats"),
+];
+
+#[cfg(test)]
+pub(crate) fn output(value: serde_json::Value) -> panoramic_core::step::ExecOutput {
+    panoramic_core::step::ExecOutput {
+        stdout: serde_json::to_vec(&value).unwrap(),
+        stderr: Vec::new(),
+        exit_code: 0,
+    }
 }

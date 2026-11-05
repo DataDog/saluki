@@ -15,6 +15,7 @@ use panoramic_core::recipe::Recipe;
 
 mod late;
 mod linux;
+mod operations;
 
 /// The Core Agent and ADP running together.
 pub struct AgentAdp;
@@ -307,7 +308,7 @@ mod tests {
     }
 
     #[test]
-    fn config_dump_is_offered_only_for_linux_containers() {
+    fn agent_adp_offers_its_operations_only_in_linux_containers() {
         for os in [Os::Linux, Os::MacOs, Os::Windows] {
             for kind in [
                 RealizationKind::LinuxContainer,
@@ -321,7 +322,15 @@ mod tests {
                     .map(|operation| operation.name())
                     .collect::<Vec<_>>();
                 let expected = if (os, kind) == (Os::Linux, RealizationKind::LinuxContainer) {
-                    vec!["config_dump"]
+                    vec![
+                        "cli_adp",
+                        "cli_agent",
+                        "config_dump",
+                        "config_set",
+                        "dogstatsd_capture",
+                        "dogstatsd_replay",
+                        "dogstatsd_stats",
+                    ]
                 } else {
                     vec![]
                 };

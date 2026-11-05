@@ -25,7 +25,24 @@ use crate::{
     probe::{AttemptLimits, ProbeAnswer},
 };
 
-struct Fixture(&'static [&'static str], bool);
+#[derive(Clone, Copy)]
+struct Fixture {
+    processes: &'static [&'static str],
+    tls: bool,
+    operations: &'static [&'static dyn Operation],
+}
+
+const DEFAULT_OPERATIONS: &[&dyn Operation] = &[&ConfigDump, &Dump];
+
+fn with_default_operations(operations: &'static [&'static dyn Operation]) -> &'static [&'static dyn Operation] {
+    if operations.is_empty() {
+        return DEFAULT_OPERATIONS;
+    }
+    let mut operations = DEFAULT_OPERATIONS.iter().chain(operations).copied().collect::<Vec<_>>();
+    operations.sort_by_key(|operation| operation.name());
+    // Participant declarations require a static slice; each test process owns these fixture declarations.
+    Box::leak(operations.into_boxed_slice())
+}
 
 impl ParticipantType for Fixture {
     fn name(&self) -> &'static str {
@@ -40,7 +57,7 @@ impl ParticipantType for Fixture {
     fn endpoints(&self, _: Realization, _: &EffectiveConfig) -> Result<BTreeMap<String, Endpoint>, String> {
         let http = Endpoint::http(Port::Fixed(1003));
         Ok(BTreeMap::from([
-            ("http".into(), if self.1 { http.with_tls() } else { http }),
+            ("http".into(), if self.tls { http.with_tls() } else { http }),
             ("tcp".into(), Endpoint::tcp(Port::Fixed(1001))),
             ("udp".into(), Endpoint::udp(Port::Fixed(1002))),
         ]))
@@ -52,10 +69,10 @@ impl ParticipantType for Fixture {
         }]
     }
     fn operations(&self, _: Realization) -> &'static [&'static dyn Operation] {
-        &[&ConfigDump, &Dump]
+        self.operations
     }
     fn processes(&self) -> &'static [&'static str] {
-        self.0
+        self.processes
     }
 }
 
@@ -103,6 +120,28 @@ impl Operation for Dump {
     }
 }
 
+/// An operation that executes its name and JSON arguments, returning stdout as JSON.
+pub struct ExecOperation(pub &'static str);
+
+#[async_trait]
+impl Operation for ExecOperation {
+    fn name(&self) -> &'static str {
+        self.0
+    }
+
+    async fn run(&self, cx: &OpContext<'_>, args: Value) -> Result<Value, HandleError> {
+        let output = cx.exec(vec![self.0.into(), args.to_string()]).await?;
+        if output.exit_code != 0 {
+            return Err(HandleError::Product {
+                message: format!("{} exited with {}", self.0, output.exit_code),
+            });
+        }
+        serde_json::from_slice(&output.stdout).map_err(|_| HandleError::Product {
+            message: format!("{} returned invalid JSON", self.0),
+        })
+    }
+}
+
 impl TypedCaseLoader for Fixture {
     type Config = ();
     fn load(&self, _: &Value, _: &str, _: &str, _: &Path) -> Result<Vec<TypedCase<()>>, GenericError> {
@@ -117,6 +156,17 @@ impl TypedCaseLoader for Fixture {
 /// Panics if the fields cannot load or compile with the fixture participant.
 pub async fn run_step(factory: &dyn StepFactory, fields: &StepFields) -> StepReport {
     run_step_with(factory, fields, None).await
+}
+
+/// Runs a step without a started participant, offering additional operations alongside the defaults.
+///
+/// # Panics
+///
+/// Panics if the fields cannot load or compile with the fixture participant.
+pub async fn run_step_offering(
+    factory: &dyn StepFactory, fields: &StepFields, operations: &'static [&'static dyn Operation],
+) -> StepReport {
+    run_step_using(factory, fields, None, None, false, with_default_operations(operations)).await
 }
 
 /// Runs a step with a scripted started participant, or no handle when `fake` is `None`.
@@ -155,7 +205,26 @@ pub async fn run_step_reaching_tls(
 async fn run_step_with_port(
     factory: &dyn StepFactory, fields: &StepFields, fake: Option<&FakeParticipant>, port: Option<u16>, tls: bool,
 ) -> StepReport {
-    let fixture = Fixture(fake.map_or(&["main", "worker"][..], |fake| fake.process_names), tls);
+    run_step_using(
+        factory,
+        fields,
+        fake,
+        port,
+        tls,
+        fake.map_or(DEFAULT_OPERATIONS, |fake| fake.operations),
+    )
+    .await
+}
+
+async fn run_step_using(
+    factory: &dyn StepFactory, fields: &StepFields, fake: Option<&FakeParticipant>, port: Option<u16>, tls: bool,
+    operations: &'static [&'static dyn Operation],
+) -> StepReport {
+    let fixture = Fixture {
+        processes: fake.map_or(&["main", "worker"][..], |fake| fake.process_names),
+        tls,
+        operations,
+    };
     let registries = Registries {
         participant_types: &[&fixture],
         steps: &[factory],
@@ -169,7 +238,7 @@ async fn run_step_with_port(
         "procedure": [fields],
     })
     .to_string();
-    let case = CaseLoader::new(registries, Fixture(fixture.0, tls), "fixture")
+    let case = CaseLoader::new(registries, fixture, "fixture")
         .load_content(&content, "case", Path::new("cases/case/config.yaml"))
         .unwrap()
         .remove(0);
@@ -232,6 +301,7 @@ struct FakeProcess {
 
 /// A participant with scripted output, exits, file reads, command output, probe answers and sends.
 pub struct FakeParticipant {
+    operations: &'static [&'static dyn Operation],
     late: BTreeMap<LateFact, &'static str>,
     observation: ParticipantObservation,
     exit: watch::Sender<ParticipantExit>,
@@ -303,6 +373,7 @@ impl FakeParticipant {
             })
             .collect();
         Self {
+            operations: DEFAULT_OPERATIONS,
             late: BTreeMap::new(),
             observation,
             exit,
@@ -318,6 +389,12 @@ impl FakeParticipant {
             sends: Mutex::new(VecDeque::new()),
             sent: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Offers additional operations alongside `config_dump` and `dump`.
+    pub fn with_operations(mut self, operations: &'static [&'static dyn Operation]) -> Self {
+        self.operations = with_default_operations(operations);
+        self
     }
 
     /// Supplies a late fact to steps running with this participant.
@@ -487,6 +564,125 @@ mod tests {
         fake.set_file("192.0.2.7", Ok(Some(b"ready".to_vec())));
         let report = run_step_with(*factory, &fields, Some(&fake)).await;
         assert_eq!(report.status, AssertionStatus::Passed, "{report:?}");
+    }
+
+    struct CallFactory;
+
+    impl StepFactory for CallFactory {
+        fn name(&self) -> &'static str {
+            "call"
+        }
+        fn build(&self, _: &StepFields) -> Result<Box<dyn Step>, String> {
+            Ok(Box::new(Call))
+        }
+    }
+
+    #[derive(Debug)]
+    struct Call;
+
+    #[async_trait]
+    impl Step for Call {
+        fn name(&self) -> &'static str {
+            "call"
+        }
+        fn needs(&self) -> Vec<Need> {
+            ["config_dump", "dump", "extra"]
+                .into_iter()
+                .map(|operation| Need::Operation("subject".into(), operation.into()))
+                .collect()
+        }
+        fn budget(&self) -> Duration {
+            Duration::from_secs(1)
+        }
+        async fn run(&self, cx: &StepContext<'_>) -> StepReport {
+            let started = tokio::time::Instant::now();
+            let Some(handle) = cx.handle("subject") else {
+                return StepReport::new(started, AssertionStatus::Errored, "not started");
+            };
+            for (name, args) in [
+                ("config_dump", json!({"view": "source"})),
+                ("dump", json!({"kind": "records"})),
+                ("extra", json!({"value": 1})),
+            ] {
+                assert_eq!(
+                    handle.op(name, args, self.budget()).await.unwrap(),
+                    json!({"answer": 42})
+                );
+            }
+            StepReport::new(started, AssertionStatus::Passed, "operations returned their answers")
+        }
+    }
+
+    #[tokio::test]
+    async fn a_fake_participant_offers_additional_operations_to_steps_alongside_the_defaults() {
+        let fake = FakeParticipant::default().with_operations(&[&ExecOperation("extra")]);
+        fake.push_exec(Ok(ExecOutput {
+            stdout: br#"{"answer":42}"#.to_vec(),
+            stderr: vec![],
+            exit_code: 0,
+        }));
+        let report = run_step_with(&CallFactory, &StepFields::new(), Some(&fake)).await;
+        assert_eq!(report.status, AssertionStatus::Passed);
+        let command = |argv: &[&str]| {
+            (
+                ExecCommand {
+                    argv: argv.iter().map(|arg| (*arg).into()).collect(),
+                    env: vec![],
+                    stdin: None,
+                },
+                Duration::from_secs(1),
+            )
+        };
+        fake.assert_executed(&[
+            command(&["dump", "source"]),
+            command(&["dump", "records"]),
+            command(&["extra", r#"{"value":1}"#]),
+        ]);
+        let report = run_step_offering(&CallFactory, &StepFields::new(), &[&ExecOperation("extra")]).await;
+        assert_eq!(report.status, AssertionStatus::Errored);
+        assert_eq!(report.message, "not started");
+    }
+
+    #[tokio::test]
+    async fn an_exec_operation_returns_command_json_and_classifies_bad_output_and_exits() {
+        use crate::participant::test_support::run_operation;
+        for (code, text, expected) in [
+            (0, r#"{"ready":true}"#, Ok(json!({"ready": true}))),
+            (
+                0,
+                "not JSON",
+                Err(HandleError::Product {
+                    message: "extra returned invalid JSON".into(),
+                }),
+            ),
+            (
+                7,
+                r#"{"ready":true}"#,
+                Err(HandleError::Product {
+                    message: "extra exited with 7".into(),
+                }),
+            ),
+        ] {
+            let result = run_operation(&ExecOperation("extra"), json!({"key": "value"}), |command| {
+                assert_eq!(command.argv, ["extra", r#"{"key":"value"}"#]);
+                Ok(ExecOutput {
+                    stdout: text.as_bytes().to_vec(),
+                    stderr: vec![],
+                    exit_code: code,
+                })
+            })
+            .await;
+            assert_eq!(result, expected);
+        }
+        let error = HandleError::Harness {
+            message: "unavailable".into(),
+        };
+        assert_eq!(
+            run_operation(&ExecOperation("extra"), json!({}), |_| Err(error.clone()))
+                .await
+                .unwrap_err(),
+            error
+        );
     }
 
     struct RequestFactory(EndpointOperation);

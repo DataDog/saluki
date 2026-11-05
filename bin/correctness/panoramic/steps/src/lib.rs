@@ -9,7 +9,10 @@
 use panoramic_core::step::StepFactory;
 
 mod attempts;
+mod cli;
 mod config_key_equals;
+mod config_set;
+mod dogstatsd_replay;
 mod exec;
 mod exits_with;
 mod file_contains;
@@ -31,7 +34,10 @@ pub use self::{
 
 /// Steps available to case files, sorted by name.
 pub const REGISTERED_STEPS: &[&dyn StepFactory] = &[
+    &cli::CliFactory,
     &config_key_equals::ConfigKeyEqualsFactory,
+    &config_set::ConfigSetFactory,
+    &dogstatsd_replay::DogstatsdReplayFactory,
     &exec::ExecFactory,
     &exits_with::ExitsWithFactory,
     &file_contains::FileContainsFactory,
@@ -98,7 +104,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        config_key_equals::ConfigKeyEquals, exec::Exec, exits_with::ExitsWith, http_check::HttpCheck,
+        cli::Cli, config_key_equals::ConfigKeyEquals, config_set::ConfigSet, dogstatsd_replay::DogstatsdReplay,
+        exec::Exec, exits_with::ExitsWith, http_check::HttpCheck,
         intake_has_forwarded_packets::IntakeHasForwardedPackets, intake_has_metric::IntakeHasMetric,
         intake_has_service_check::IntakeHasServiceCheck, port_listening::PortListening,
         process_stable_for::ProcessStableFor, send::Send, test_support::valid_fields,
@@ -122,7 +129,12 @@ mod tests {
     #[tokio::test]
     async fn every_step_errors_when_its_participant_did_not_start() {
         for factory in REGISTERED_STEPS {
-            let report = panoramic_core::step::test_support::run_step(*factory, &valid_fields(factory.name())).await;
+            let report = panoramic_core::step::test_support::run_step_offering(
+                *factory,
+                &valid_fields(factory.name()),
+                crate::test_support::OPERATIONS,
+            )
+            .await;
             assert_eq!(report.status, panoramic_core::record::AssertionStatus::Errored);
             assert_eq!(report.message, "participant 'subject' has not started");
         }
@@ -148,7 +160,12 @@ mod tests {
             fields.insert(duration_field(factory.name()).into(), Value::String("7s".into()));
             let step = factory.build(&fields).unwrap();
             assert_eq!(step.name(), factory.name());
-            assert_eq!(step.budget(), std::time::Duration::from_secs(7));
+            let expected = if factory.name() == DogstatsdReplay::NAME {
+                std::time::Duration::from_millis(29_050)
+            } else {
+                std::time::Duration::from_secs(7)
+            };
+            assert_eq!(step.budget(), expected);
         }
     }
 
@@ -158,7 +175,10 @@ mod tests {
         assert_eq!(
             names,
             [
+                "cli",
                 "config_key_equals",
+                "config_set",
+                "dogstatsd_replay",
                 "exec",
                 "exits_with",
                 "file_contains",
@@ -184,7 +204,10 @@ mod tests {
                 .map(|factory| factory.name())
                 .collect::<Vec<_>>(),
             [
+                Cli::NAME,
                 ConfigKeyEquals::NAME,
+                ConfigSet::NAME,
+                DogstatsdReplay::NAME,
                 Exec::NAME,
                 ExitsWith::NAME,
                 FileContains::NAME,
@@ -202,14 +225,17 @@ mod tests {
     }
 
     #[test]
-    fn exec_and_send_are_registered_actions() {
+    fn registered_steps_declare_their_action_or_assertion_kind() {
         assert_eq!(
             REGISTERED_STEPS
                 .iter()
                 .map(|factory| (factory.name(), factory.kind()))
                 .collect::<Vec<_>>(),
             [
+                (Cli::NAME, StepKind::Action),
                 (ConfigKeyEquals::NAME, StepKind::Assertion),
+                (ConfigSet::NAME, StepKind::Action),
+                (DogstatsdReplay::NAME, StepKind::Action),
                 (Exec::NAME, StepKind::Action),
                 (ExitsWith::NAME, StepKind::Assertion),
                 (FileContains::NAME, StepKind::Assertion),
@@ -232,7 +258,15 @@ mod tests {
             let mut fields = valid_fields(factory.name());
             let step = factory.build(&fields).unwrap();
             let needs = match factory.name() {
+                Cli::NAME => vec![Need::Operation("subject".into(), "cli_main".into())],
                 ConfigKeyEquals::NAME => vec![Need::Operation("subject".into(), "config_dump".into())],
+                ConfigSet::NAME => vec![Need::Operation("subject".into(), "config_set".into())],
+                DogstatsdReplay::NAME => vec![
+                    Need::Operation("subject".into(), "dogstatsd_capture".into()),
+                    Need::Operation("subject".into(), "dogstatsd_replay".into()),
+                    Need::Operation("subject".into(), "dogstatsd_stats".into()),
+                    Need::Endpoint("subject".into(), "udp".into(), EndpointOperation::Send),
+                ],
                 IntakeHasForwardedPackets::NAME | IntakeHasMetric::NAME | IntakeHasServiceCheck::NAME => {
                     vec![Need::Operation("subject".into(), "dump".into())]
                 }
@@ -261,7 +295,9 @@ mod tests {
     fn string_fields_reject_yaml_booleans_and_numbers() {
         for factory in REGISTERED_STEPS {
             let string_fields: &[&str] = match factory.name() {
-                ConfigKeyEquals::NAME => &["on", "key"],
+                Cli::NAME => &["on", "process", "output_contains"],
+                ConfigKeyEquals::NAME | ConfigSet::NAME => &["on", "key"],
+                DogstatsdReplay::NAME => &["on", "endpoint"],
                 IntakeHasMetric::NAME => &["on", "name"],
                 IntakeHasServiceCheck::NAME => &["on", "name", "hostname"],
                 Exec::NAME | IntakeHasForwardedPackets::NAME => &["on"],
