@@ -72,15 +72,35 @@ if (-not $env:APP_GIT_HASH) {
 # the linux/darwin flows.
 Invoke-Native cargo build --release --package panoramic
 Invoke-Native cargo build --profile $env:BUILD_PROFILE --package agent-data-plane
+# Build the courier for execution inside Windows containers.
+Invoke-Native cargo build --release --package panoramic-courier --bin panoramic-courier
 
 $ImageTag = if ($env:WINDOWS_ADP_IMAGE_TAG) { $env:WINDOWS_ADP_IMAGE_TAG } else { "saluki-images/agent-data-plane:testing-windows" }
 Build-WindowsAdpImage -ImageTag $ImageTag
 
+# The isolation mode (process or hyperv) and OS version decide which file operations a running container allows.
+Write-Host "[*] Docker isolation and OS version:"
+Invoke-Native docker info --format "{{.Isolation}} {{.OperatingSystem}} {{.KernelVersion}}"
+
 $Panoramic = Join-Path $env:CARGO_TARGET_DIR "release\panoramic.exe"
+$Courier = Join-Path $env:CARGO_TARGET_DIR "release\panoramic-courier.exe"
 $Manifest = Join-Path $env:CARGO_TARGET_DIR "panoramic-artifacts.toml"
 
 Write-Host "[*] Rendering the artifact manifest for ${ImageTag}..."
-Invoke-Native -FilePath $Panoramic -Arguments @("artifacts", "render", "--set", "agent-adp-windows-image=$ImageTag", "--output", $Manifest)
+Invoke-Native -FilePath $Panoramic -Arguments @("artifacts", "render", "--set", "agent-adp-windows-image=$ImageTag", "--set", "courier-windows-binary=$Courier", "--output", $Manifest)
+
+# Run both daemon tests and integration cases before reporting a daemon-test failure.
+Write-Host "[*] Running Windows container daemon tests..."
+$DaemonTestError = $null
+try {
+    $env:PANORAMIC_TEST_WINDOWS_IMAGE = $ImageTag
+    $env:PANORAMIC_TEST_WINDOWS_COURIER = $Courier
+    # Pass the arguments as an array: PowerShell consumes a bare `--` when binding function parameters.
+    Invoke-Native -FilePath cargo -Arguments @("test", "--release", "-p", "panoramic-core", "--lib", "--", "--ignored", "--test-threads", "1", "windows_container::daemon_tests")
+} catch {
+    $DaemonTestError = $_
+    Write-Host "[!] Windows container daemon tests failed; running the integration cases before reporting the failure."
+}
 
 if (-not $env:PANORAMIC_LOG_DIR) {
     $env:PANORAMIC_LOG_DIR = "integration-logs"
@@ -110,3 +130,7 @@ $PanoramicArgs = @(
     "-l", $env:PANORAMIC_LOG_DIR
 )
 Invoke-Native -FilePath $Panoramic -Arguments $PanoramicArgs
+
+if ($DaemonTestError) {
+    throw $DaemonTestError
+}

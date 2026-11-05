@@ -319,7 +319,7 @@ mod tests {
             &[("z", "z"), ("a", "a")],
             "--set: no participant type or backend declares role 'a', 'z'; declared roles: \
              adp-host-binary, agent-adp-linux-image, agent-adp-windows-image, agent-host-install, \
-             courier-linux-binary, fixup-image",
+             courier-linux-binary, courier-windows-binary, fixup-image",
         );
         assert_render_rejected(&[("", "x")], "--set: no participant type or backend declares role '';");
     }
@@ -595,7 +595,7 @@ mod tests {
                 ],
             ),
             (Os::MacOs, vec!["adp-host-binary", "agent-host-install"]),
-            (Os::Windows, vec!["agent-adp-windows-image"]),
+            (Os::Windows, vec!["agent-adp-windows-image", "courier-windows-binary"]),
         ] {
             let plans = discover_in_scope(&mut planner(), &[dir.path().to_path_buf()], os)
                 .unwrap()

@@ -18,6 +18,7 @@ pub(crate) struct RecordRefresh {
 }
 
 /// Polls the first record line, waiting for its newline while the participant is running.
+/// A line ending in `\r\n` loses its `\r`; Windows tools write CRLF.
 /// Reads once more when the participant exits or its wait fails, accepting a final line without a newline.
 /// Publishes one terminal state: the first exit, or an error for a missing, unreadable or malformed record.
 pub(crate) async fn watch_record<F>(
@@ -44,6 +45,10 @@ pub(crate) async fn watch_record<F>(
             let end = contents.iter().position(|byte| *byte == b'\n');
             if end.is_some() || final_read {
                 let line = &contents[..end.unwrap_or(contents.len())];
+                let line = match end {
+                    Some(_) => line.strip_suffix(b"\r").unwrap_or(line),
+                    None => line,
+                };
                 let status = String::from_utf8(line.to_vec())
                     .map_err(|error| format!("record is not UTF-8: {error}"))
                     .and_then(|line| parse(&line));
@@ -85,7 +90,10 @@ pub(crate) async fn watch_record<F>(
     tx.send_replace(observation);
 }
 
-/// Parses the code, signal and container-clock timestamp from one complete record line.
+/// Parses the code, signal and container-clock timestamp from one complete record line, without its line ending.
+///
+/// With signal 0, any `u32` code is accepted on every OS, including codes above 255, and stored as an `i32` with the
+/// same bits to preserve Windows NTSTATUS values. Code 256 with a positive signal records a signal death instead.
 fn parse(line: &str) -> Result<ExitStatus, String> {
     let mut fields = line.split(' ');
     let (Some(code), Some(signal), Some(timestamp), None) =
@@ -96,17 +104,16 @@ fn parse(line: &str) -> Result<ExitStatus, String> {
     if code.is_empty() || !code.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err("code must contain only decimal digits".into());
     }
-    let code: u16 = code.parse().map_err(|_| "code must be between 0 and 256")?;
+    let code: u32 = code.parse().map_err(|_| "code must be between 0 and 4294967295")?;
     if signal.is_empty() || !signal.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err("signal must contain only decimal digits".into());
     }
     let signal: i32 = signal.parse().map_err(|_| "signal is outside the i32 range")?;
     let (code, signal) = match (code, signal) {
-        (0..=255, 0) => (Some(i32::from(code)), None),
+        (_, 0) => (Some(code as i32), None),
         (256, 1..) => (None, Some(signal)),
-        (256, 0) => return Err("code 256 requires a positive signal".into()),
         (0..=255, _) => return Err("a normal exit requires signal 0".into()),
-        _ => return Err("code must be between 0 and 256".into()),
+        _ => return Err("a signal requires code 256".into()),
     };
     let Some((seconds, fraction)) = timestamp.split_once('.') else {
         return Err("timestamp must have seconds and 1–9 fractional digits".into());
@@ -158,6 +165,12 @@ mod tests {
             ("255 0 1.125", Some(255), None, 1, 125000000),
             ("0 0 0.5", Some(0), None, 0, 500000000),
             ("0 0 0.0", Some(0), None, 0, 0),
+            ("256 0 1.5", Some(256), None, 1, 500000000),
+            ("257 0 1.5", Some(257), None, 1, 500000000),
+            ("2147483647 0 1.5", Some(i32::MAX), None, 1, 500000000),
+            ("2147483648 0 1.5", Some(i32::MIN), None, 1, 500000000),
+            ("3221225477 0 1.5", Some(0xC0000005_u32 as i32), None, 1, 500000000),
+            ("4294967295 0 1.5", Some(-1), None, 1, 500000000),
         ] {
             assert_eq!(
                 parse(line),
@@ -175,9 +188,12 @@ mod tests {
     #[test]
     fn malformed_exit_records_are_rejected() {
         for line in [
-            "256 0 1.5",
             "3 9 1.5",
-            "257 0 1.5",
+            "257 9 1.5",
+            "4294967295 9 1.5",
+            "4294967296 0 1.5",
+            "4294967296 9 1.5",
+            "256 -1 1.5",
             "-1 0 1.5",
             "x 0 1.5",
             "1 0",
@@ -298,6 +314,37 @@ mod tests {
             reason: None,
             recorded_at: Some(SystemTime::UNIX_EPOCH + Duration::from_millis(1500)),
         })
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_record_line_ending_in_crlf_is_read() {
+        for (contents, expected) in [
+            (b"3 0 1.5\r\n".as_slice(), exited(3)),
+            (
+                b"3221225477 0 1.5\r\n3 0 1.5\r\n".as_slice(),
+                exited(0xC0000005_u32 as i32),
+            ),
+        ] {
+            let fixture = Fixture::new(Some(contents), false);
+            assert_eq!(fixture.settled().await, expected);
+            assert_eq!(fixture.file.lock().unwrap().reads, 1);
+            fixture.finish().await;
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn only_one_carriage_return_before_the_newline_is_a_line_ending() {
+        for contents in [b"3 0 1.5\r\r\n".as_slice(), b"3 0 1.5\r".as_slice()] {
+            let fixture = Fixture::new(Some(contents), false);
+            fixture
+                .exit_tx
+                .send_replace(ParticipantExit::Exited { code: 0, error: None });
+            let ExitObservation::Undetermined(reason) = fixture.settled().await else {
+                panic!("a stray carriage return must be malformed");
+            };
+            assert!(reason.starts_with("malformed exit record '3 0 1.5"), "{reason}");
+            fixture.finish().await;
+        }
     }
 
     #[tokio::test(start_paused = true)]
@@ -538,11 +585,11 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_malformed_first_record_is_final_even_when_a_later_record_is_valid() {
-        let fixture = Fixture::new(Some(b"256 0 1.5\n3 0 1.5\n"), false);
+        let fixture = Fixture::new(Some(b"257 9 1.5\n3 0 1.5\n"), false);
         assert_eq!(
             fixture.settled().await,
             ExitObservation::Undetermined(
-                "malformed exit record '256 0 1.5' in '/exit/svc': code 256 requires a positive signal".into()
+                "malformed exit record '257 9 1.5' in '/exit/svc': a signal requires code 256".into()
             )
         );
         assert_eq!(fixture.file.lock().unwrap().reads, 1);

@@ -457,6 +457,9 @@ mod tests {
                 (Os::MacOs, vec![AgentAdp::ADP_HOST_BINARY, AgentAdp::AGENT_HOST_INSTALL]),
                 (Os::Windows, vec![AgentAdp::WINDOWS_IMAGE]),
             ] {
+                if os == Os::Windows {
+                    expected.extend_from_slice(backend::artifacts(RealizationKind::WindowsContainer));
+                }
                 if os == Os::Linux {
                     expected.extend_from_slice(backend::artifacts(RealizationKind::LinuxContainer));
                     if intake {

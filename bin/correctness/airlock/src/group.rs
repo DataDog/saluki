@@ -1,4 +1,5 @@
-//! Shared networks, volumes, and participant directories for Linux containers.
+//! Shared networks, volumes, and participant directories for Linux containers, and shared networks for Windows
+//! containers.
 
 use std::collections::HashSet;
 
@@ -11,7 +12,10 @@ use saluki_error::{generic_error, GenericError};
 use tracing::warn;
 
 use crate::{
-    driver::{get_default_airlock_labels, group_resource_name, is_not_found, ContainerOs, Driver, DriverConfig},
+    driver::{
+        get_default_airlock_labels, group_resource_name, is_not_found, with_transient_error_retry, ContainerOs, Driver,
+        DriverConfig,
+    },
     observe, removal,
 };
 
@@ -20,11 +24,14 @@ use crate::{
 /// Participant directories are `<SHARED_ROOT>/<participant>/{exit,log,shared}`.
 pub const SHARED_ROOT: &str = "/airlock";
 
-/// A prepared isolation group with a network, shared volume, and per-participant directories.
+/// A prepared isolation group.
+///
+/// Linux groups prepare a network, shared volume, and participant directories. Windows groups prepare a NAT network.
 pub struct IsolationGroup {
     docker: Docker,
     id: String,
     participants: Vec<String>,
+    container_os: ContainerOs,
 }
 
 impl IsolationGroup {
@@ -82,9 +89,65 @@ impl IsolationGroup {
             docker,
             id,
             participants,
+            container_os: ContainerOs::Linux,
         };
         group.prepare_directories(fixup_image).await?;
         Ok(group)
+    }
+
+    /// Prepares a labeled `nat` network for a group of Windows containers.
+    ///
+    /// Each Windows container keeps its files in its own filesystem, placed with [`Driver::place_files`].
+    /// Collisions in the Windows Host Network Service while creating the network are retried.
+    /// IDs and participant names follow the rules of [`Self::prepare`].
+    ///
+    /// Register the supplied ID for cleanup before calling: errors or cancellation can leave the network. Remove it
+    /// with [`IsolationGroup::remove`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid DNS labels, duplicate participants, an empty participant list, a network
+    /// already in use, or Docker failures.
+    pub async fn prepare_windows(
+        docker: Docker, id: impl Into<String>, participants: &[impl AsRef<str>],
+    ) -> Result<Self, GenericError> {
+        let id = id.into();
+        let participants = validate_names(&id, participants)?;
+        let name = group_resource_name(&id);
+
+        match docker.inspect_network(&name, None).await {
+            Ok(_) => return Err(generic_error!("Isolation group '{id}' already has network '{name}'")),
+            Err(error) if is_not_found(&error) => {}
+            Err(error) => return Err(error.into()),
+        }
+
+        with_transient_error_retry("network creation", &id, || async {
+            match docker.inspect_network(&name, None).await {
+                Ok(_) => return Ok(()),
+                Err(error) if is_not_found(&error) => {}
+                Err(error) => return Err(error.into()),
+            }
+            docker
+                .create_network(NetworkCreateRequest {
+                    name: name.clone(),
+                    driver: Some("nat".to_string()),
+                    ipam: Some(Ipam::default()),
+                    enable_ipv6: Some(false),
+                    labels: Some(get_default_airlock_labels(&id)),
+                    ..Default::default()
+                })
+                .await
+                .map(|_| ())
+                .map_err(GenericError::from)
+        })
+        .await?;
+
+        Ok(Self {
+            docker,
+            id,
+            participants,
+            container_os: ContainerOs::Windows,
+        })
     }
 
     /// Force-removes a group's containers and their anonymous volumes, then its shared volume and network.
@@ -103,12 +166,15 @@ impl IsolationGroup {
     /// Builds a container driver for one of this group's prepared participants.
     ///
     /// The container is named `airlock-<id>-<participant>`, with the participant name as its hostname and DNS alias
-    /// on the group network. Its only default mount is the group volume. It keeps its own PID namespace unless
-    /// [`DriverConfig::with_host_pid_namespace`] is set to `true`. Published ports require an explicit host port.
+    /// on the group network. Linux containers mount the group volume by default; Windows containers use explicitly
+    /// configured mounts. Each keeps its own PID namespace unless [`DriverConfig::with_host_pid_namespace`] is set
+    /// to `true`, which Windows containers ignore. Published ports require an explicit host port, which Windows containers
+    /// reject when created.
     ///
     /// # Errors
     ///
-    /// Returns an error for a participant outside this group, Windows containers, or settings only
+    /// Returns an error for a participant outside this group, a [`DriverConfig::with_container_os`] that differs
+    /// from the group's OS, or settings only
     /// [`Driver::from_config`] supports: `with_alpine_image`, `with_network`, `with_volume_mount`, `with_logging`,
     /// and `with_exposed_port`.
     /// The fix-up image comes from [`Self::prepare`].
@@ -120,12 +186,13 @@ impl IsolationGroup {
                 self.id
             ));
         }
-        if config.container_os != ContainerOs::Linux {
+        if config.container_os != self.container_os {
             return Err(generic_error!(
-                "Participant '{}' selects {:?} containers; isolation group '{}' requires Linux",
+                "Participant '{}' selects {:?} containers; isolation group '{}' requires {:?}",
                 config.driver_id,
                 config.container_os,
-                self.id
+                self.id,
+                self.container_os
             ));
         }
         let legacy_only_settings = config.legacy_only_settings();
@@ -274,6 +341,7 @@ mod tests {
             docker: daemon.docker.clone(),
             id: "group".to_string(),
             participants: vec!["alpha".to_string()],
+            container_os: ContainerOs::Linux,
         };
         let error = group
             .driver(DriverConfig::from_image("bravo", "local:latest".to_string()))
@@ -297,12 +365,146 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_windows_isolation_group_accepts_only_windows_drivers_for_its_participants() {
+        let daemon = FakeDaemon::start(|_, _| (500, r#"{"message":"unexpected request"}"#)).await;
+        let group = IsolationGroup {
+            docker: daemon.docker.clone(),
+            id: "group".to_string(),
+            participants: vec!["alpha".to_string()],
+            container_os: ContainerOs::Windows,
+        };
+        let windows =
+            DriverConfig::from_image("alpha", "local:latest".to_string()).with_container_os(ContainerOs::Windows);
+        let error = group
+            .driver(DriverConfig::from_image("alpha", "local:latest".to_string()))
+            .err()
+            .expect("Linux containers must be rejected")
+            .to_string();
+        assert!(
+            error.contains("'alpha'") && error.contains("Linux") && error.contains("Windows"),
+            "{error}"
+        );
+        let error = group
+            .driver(
+                DriverConfig::from_image("bravo", "local:latest".to_string()).with_container_os(ContainerOs::Windows),
+            )
+            .err()
+            .expect("an unprepared participant must be rejected")
+            .to_string();
+        assert!(error.contains("'bravo'"), "{error}");
+        let error = group
+            .driver(windows.clone().with_exposed_port(Protocol::Tcp, 9000))
+            .err()
+            .expect("legacy-only settings must be rejected")
+            .to_string();
+        assert!(error.contains("with_exposed_port"), "{error}");
+        let driver = group.driver(windows).unwrap();
+        assert_eq!(driver.driver_id(), "alpha");
+        assert!(daemon.requests.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn preparing_a_windows_group_creates_only_a_labeled_nat_network() {
+        let daemon = FakeDaemon::start(|method, path| match (method, path.split('?').next().unwrap()) {
+            ("GET", "/networks/airlock-group") => (404, r#"{"message":"missing"}"#),
+            ("POST", "/networks/create") => (201, r#"{"Id":"network","Warning":""}"#),
+            _ => (500, r#"{"message":"unexpected request"}"#),
+        })
+        .await;
+        let group = IsolationGroup::prepare_windows(daemon.docker.clone(), "group", &["alpha", "bravo"])
+            .await
+            .unwrap();
+        assert_eq!(group.container_os, ContainerOs::Windows);
+        assert_eq!(group.participants, ["alpha", "bravo"]);
+        let requests = daemon.requests.lock().unwrap();
+        assert_eq!(
+            requests.as_slice(),
+            [
+                "GET /networks/airlock-group",
+                "GET /networks/airlock-group",
+                "POST /networks/create"
+            ]
+        );
+        let bodies = daemon.bodies.lock().unwrap();
+        let body = &bodies[2];
+        assert!(body.contains(r#""Name":"airlock-group""#), "{body}");
+        assert!(body.contains(r#""Driver":"nat""#), "{body}");
+        assert!(body.contains(r#""created_by":"airlock""#), "{body}");
+        assert!(body.contains(r#""airlock-isolation-group":"group""#), "{body}");
+    }
+
+    #[tokio::test]
+    async fn a_windows_network_stored_before_an_hns_error_is_reused_on_retry() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        // A failed HNS response can still leave the network on the daemon.
+        static CREATED: AtomicBool = AtomicBool::new(false);
+        let daemon = FakeDaemon::start(|method, path| match (method, path.split('?').next().unwrap()) {
+            ("GET", "/networks/airlock-group") if CREATED.load(Ordering::SeqCst) => {
+                (200, r#"{"Name":"airlock-group"}"#)
+            }
+            ("GET", "/networks/airlock-group") => (404, r#"{"message":"missing"}"#),
+            ("POST", "/networks/create") => {
+                CREATED.store(true, Ordering::SeqCst);
+                (
+                    500,
+                    r#"{"message":"hnsCall failed in Win32: The object already exists. (0x1392)"}"#,
+                )
+            }
+            _ => (500, r#"{"message":"unexpected request"}"#),
+        })
+        .await;
+        let group = IsolationGroup::prepare_windows(daemon.docker.clone(), "group", &["alpha"])
+            .await
+            .unwrap();
+        assert_eq!(group.container_os, ContainerOs::Windows);
+        assert_eq!(
+            daemon.requests.lock().unwrap().as_slice(),
+            [
+                "GET /networks/airlock-group",
+                "GET /networks/airlock-group",
+                "POST /networks/create",
+                "GET /networks/airlock-group"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn preparing_a_windows_group_validates_names_and_refuses_an_existing_network() {
+        let daemon = FakeDaemon::start(|method, path| match (method, path.split('?').next().unwrap()) {
+            ("GET", "/networks/airlock-group") => (200, r#"{"Name":"airlock-group"}"#),
+            _ => (500, r#"{"message":"unexpected request"}"#),
+        })
+        .await;
+        for (id, participants) in [
+            ("Group", vec!["alpha"]),
+            ("group", vec![]),
+            ("group", vec!["alpha", "alpha"]),
+        ] {
+            assert!(
+                IsolationGroup::prepare_windows(daemon.docker.clone(), id, &participants)
+                    .await
+                    .is_err()
+            );
+        }
+        assert!(daemon.requests.lock().unwrap().is_empty());
+        let error = IsolationGroup::prepare_windows(daemon.docker.clone(), "group", &["alpha"])
+            .await
+            .err()
+            .expect("an existing network must be rejected")
+            .to_string();
+        assert!(error.contains("'group'") && error.contains("network"), "{error}");
+        assert_eq!(daemon.requests.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
     async fn a_driver_with_settings_only_legacy_drivers_support_is_rejected() {
         let daemon = FakeDaemon::start(|_, _| (500, r#"{"message":"unexpected request"}"#)).await;
         let group = IsolationGroup {
             docker: daemon.docker.clone(),
             id: "group".to_string(),
             participants: vec!["alpha".to_string()],
+            container_os: ContainerOs::Linux,
         };
         let config = DriverConfig::from_image("alpha", "local:latest".to_string());
         for (config, settings) in [

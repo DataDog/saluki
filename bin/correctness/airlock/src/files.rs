@@ -1,4 +1,4 @@
-//! File placement, status, and reads through the Docker archive API for Linux containers.
+//! File placement, status, and reads through the Docker archive API for Linux and Windows containers.
 
 use std::{
     collections::HashSet,
@@ -19,6 +19,14 @@ use bytes::Bytes;
 use futures::StreamExt as _;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tar::{Archive, Builder, EntryType, Header};
+
+use crate::driver::ContainerOs;
+
+/// The only drive Windows container paths may name.
+const WINDOWS_ROOT: &str = "C:\\";
+
+/// Characters, besides `/` and control characters, that Windows forbids in file names.
+const WINDOWS_RESERVED_CHARACTERS: &str = "<>:\"|?*";
 
 /// A container path's kind, permission bits, and size.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -51,15 +59,19 @@ pub enum FileKind {
     Other,
 }
 
-/// A file's absolute container path, permission bits, and contents.
+/// A file or directory's absolute container path, permission bits, and contents.
 ///
-/// Paths must name a file below `/`, with no empty, `.` or `..` components or NUL bytes.
-/// Validation happens when placing files. Clones share the contents' storage.
-#[derive(Clone)]
+/// Linux paths must name an entry below `/`, with no empty, `.` or `..` components or NUL bytes. Windows paths
+/// must name an entry below `C:\`, with backslash separators, no empty, `.` or `..` components, no `/`, and none
+/// of `<>:"|?*` or control characters in a component. Validation happens when placing files. Clones share the
+/// contents' storage.
+///
+/// `Debug` output includes the contents.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ContainerFile {
     path: String,
     mode: u32,
-    contents: Bytes,
+    contents: Option<Bytes>,
 }
 
 impl ContainerFile {
@@ -68,30 +80,45 @@ impl ContainerFile {
         Self {
             path: path.into(),
             mode: 0o644,
-            contents: contents.into(),
+            contents: Some(contents.into()),
+        }
+    }
+
+    /// Creates a directory with mode `0755`.
+    ///
+    /// Placement creates missing parents, and an existing directory keeps its contents.
+    pub fn directory(path: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            mode: 0o755,
+            contents: None,
         }
     }
 
     /// Sets the permission bits, including `setuid`, `setgid`, and sticky bits (`0000`–`7777`).
+    ///
+    /// Windows containers ignore the bits, but airlock still sends and validates them.
     pub fn with_mode(mut self, mode: u32) -> Self {
         self.mode = mode;
         self
     }
 }
 
-pub(crate) async fn place(docker: &Docker, container: &str, files: &[ContainerFile]) -> Result<(), GenericError> {
+pub(crate) async fn place(
+    docker: &Docker, os: ContainerOs, container: &str, files: &[ContainerFile],
+) -> Result<(), GenericError> {
     if files.is_empty() {
         return Ok(());
     }
-    validate_files(files).with_error_context(|| format!("Invalid files for container '{container}'"))?;
-    let archive = build_archive(files)
+    validate_files(os, files).with_error_context(|| format!("Invalid files for container '{container}'"))?;
+    let archive = build_archive(os, files)
         .with_error_context(|| format!("Failed to build file archive for container '{container}'"))?;
     docker
         .upload_to_container(
             container,
             Some(
                 UploadToContainerOptionsBuilder::default()
-                    .path("/")
+                    .path(upload_root(os))
                     .no_overwrite_dir_non_dir("true")
                     .build(),
             ),
@@ -101,8 +128,10 @@ pub(crate) async fn place(docker: &Docker, container: &str, files: &[ContainerFi
         .with_error_context(|| format!("Failed to place files in container '{container}'"))
 }
 
-pub(crate) async fn read(docker: &Docker, container: &str, path: &str) -> Result<Option<Vec<u8>>, GenericError> {
-    validate_path(path)?;
+pub(crate) async fn read(
+    docker: &Docker, os: ContainerOs, container: &str, path: &str,
+) -> Result<Option<Vec<u8>>, GenericError> {
+    entry_name(os, path)?;
     let mut stream = docker.download_from_container(
         container,
         Some(DownloadFromContainerOptionsBuilder::default().path(path).build()),
@@ -125,8 +154,10 @@ pub(crate) async fn read(docker: &Docker, container: &str, path: &str) -> Result
     read_archive(&archive, container, path).map(Some)
 }
 
-pub(crate) async fn stat(docker: &Docker, container: &str, path: &str) -> Result<Option<FileStat>, GenericError> {
-    validate_path(path)?;
+pub(crate) async fn stat(
+    docker: &Docker, os: ContainerOs, container: &str, path: &str,
+) -> Result<Option<FileStat>, GenericError> {
+    entry_name(os, path)?;
     match docker
         .get_container_archive_info(
             container,
@@ -203,21 +234,49 @@ fn file_stat(path: &str, response: PathStatResponse) -> Result<FileStat, Generic
     })
 }
 
-fn validate_path(path: &str) -> Result<&str, GenericError> {
-    let relative = path.strip_prefix('/').filter(|relative| {
-        !relative.contains('\0') && relative.split('/').all(|part| !matches!(part, "" | "." | ".."))
-    });
-    relative.ok_or_else(|| {
-        generic_error!(
+/// The archive API path that placed entries are relative to.
+fn upload_root(os: ContainerOs) -> &'static str {
+    match os {
+        ContainerOs::Linux => "/",
+        ContainerOs::Windows => WINDOWS_ROOT,
+    }
+}
+
+/// Validates an absolute container path and returns its archive entry name: the components joined by `/`.
+fn entry_name(os: ContainerOs, path: &str) -> Result<String, GenericError> {
+    let name = match os {
+        ContainerOs::Linux => path
+            .strip_prefix('/')
+            .filter(|relative| {
+                !relative.contains('\0') && relative.split('/').all(|part| !matches!(part, "" | "." | ".."))
+            })
+            .map(str::to_string),
+        ContainerOs::Windows => path
+            .strip_prefix(WINDOWS_ROOT)
+            .filter(|relative| relative.split('\\').all(is_windows_component))
+            .map(|relative| relative.replace('\\', "/")),
+    };
+    name.ok_or_else(|| match os {
+        ContainerOs::Linux => generic_error!(
             "Invalid container file path '{path}': expected an absolute file path with no empty, '.' or '..' components or NUL bytes"
-        )
+        ),
+        ContainerOs::Windows => generic_error!(
+            "Invalid container file path '{path}': expected a path below C:\\ with backslash separators, no empty, '.' or '..' components, and no '/', control characters or any of {WINDOWS_RESERVED_CHARACTERS}"
+        ),
     })
 }
 
-fn validate_files(files: &[ContainerFile]) -> Result<(), GenericError> {
+fn is_windows_component(component: &str) -> bool {
+    !matches!(component, "" | "." | "..")
+        && !component
+            .chars()
+            .any(|c| c == '/' || c.is_ascii_control() || WINDOWS_RESERVED_CHARACTERS.contains(c))
+}
+
+fn validate_files(os: ContainerOs, files: &[ContainerFile]) -> Result<(), GenericError> {
     let mut paths = HashSet::new();
     for file in files {
-        let path = validate_path(&file.path)?;
+        let mut name = entry_name(os, &file.path)?;
         if file.mode & !0o7777 != 0 {
             return Err(generic_error!(
                 "Invalid mode {:#o} for '{}': only permission bits 0000–7777 are allowed",
@@ -225,31 +284,45 @@ fn validate_files(files: &[ContainerFile]) -> Result<(), GenericError> {
                 file.path
             ));
         }
-        if !paths.insert(path) {
+        // Windows paths are case-insensitive.
+        if os == ContainerOs::Windows {
+            name.make_ascii_lowercase();
+        }
+        if !paths.insert(name) {
             return Err(generic_error!("Duplicate container file path '{}'", file.path));
         }
     }
     Ok(())
 }
 
-fn build_archive(files: &[ContainerFile]) -> Result<Vec<u8>, GenericError> {
+fn build_archive(os: ContainerOs, files: &[ContainerFile]) -> Result<Vec<u8>, GenericError> {
     let mtime = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .error_context("Failed to get file modification time")?
         .as_secs();
     let mut archive = Builder::new(Vec::new());
     for file in files {
-        let path = validate_path(&file.path)?;
+        let mut name = entry_name(os, &file.path)?;
         let mut header = Header::new_gnu();
-        header.set_entry_type(EntryType::Regular);
         header.set_mode(file.mode);
         header.set_uid(0);
         header.set_gid(0);
         header.set_mtime(mtime);
-        header.set_size(file.contents.len() as u64);
-        // File-only archives preserve existing directory modes and ownership.
+        // Archives that hold only files preserve existing directory modes and ownership.
+        let contents = match &file.contents {
+            Some(contents) => {
+                header.set_entry_type(EntryType::Regular);
+                contents.as_ref()
+            }
+            None => {
+                header.set_entry_type(EntryType::Directory);
+                name.push('/');
+                &[]
+            }
+        };
+        header.set_size(contents.len() as u64);
         archive
-            .append_data(&mut header, path, file.contents.as_ref())
+            .append_data(&mut header, name, contents)
             .with_error_context(|| format!("Failed to archive '{}'", file.path))?;
     }
     archive.into_inner().error_context("Failed to finish file archive")
@@ -296,11 +369,11 @@ mod tests {
     #[test]
     fn container_paths_must_be_absolute_and_normalized() {
         for path in ["", "etc/x", "/", "/a/", "/a//b", "/a/./b", "/a/../b", "/a\0b"] {
-            assert!(validate_path(path).is_err(), "{path:?}");
+            assert!(entry_name(ContainerOs::Linux, path).is_err(), "{path:?}");
         }
         let long = format!("/opt/{}/file", "a".repeat(210));
         for path in ["/a", "/etc/services.d/data-plane/finish", &long] {
-            assert_eq!(validate_path(path).unwrap(), &path[1..]);
+            assert_eq!(entry_name(ContainerOs::Linux, path).unwrap(), &path[1..]);
         }
     }
 
@@ -313,7 +386,10 @@ mod tests {
             (0o755, true),
             (0, true),
         ] {
-            let result = validate_files(&[ContainerFile::new("/file", "secret").with_mode(mode)]);
+            let result = validate_files(
+                ContainerOs::Linux,
+                &[ContainerFile::new("/file", "secret").with_mode(mode)],
+            );
             assert_eq!(result.is_ok(), valid, "{mode:o}");
             if let Err(error) = result {
                 assert!(
@@ -327,10 +403,13 @@ mod tests {
 
     #[test]
     fn a_placement_with_a_duplicate_path_is_rejected() {
-        let error = validate_files(&[
-            ContainerFile::new("/file", "secret"),
-            ContainerFile::new("/file", "other secret"),
-        ])
+        let error = validate_files(
+            ContainerOs::Linux,
+            &[
+                ContainerFile::new("/file", "secret"),
+                ContainerFile::new("/file", "other secret"),
+            ],
+        )
         .unwrap_err();
         assert!(error.to_string().contains("Duplicate container file path '/file'"));
         assert!(!format!("{error:?}").contains("secret"));
@@ -343,7 +422,7 @@ mod tests {
             ContainerFile::new("/etc/config", "configuration"),
             ContainerFile::new(long, Bytes::from_static(b"\0\xffbinary")).with_mode(0o755),
         ];
-        let bytes = build_archive(&files).unwrap();
+        let bytes = build_archive(ContainerOs::Linux, &files).unwrap();
         let mut archive = Archive::new(bytes.as_slice());
         let mut entries = archive.entries().unwrap();
         for file in files {
@@ -356,7 +435,7 @@ mod tests {
             assert!(entry.header().mtime().unwrap() > 0);
             let mut contents = Vec::new();
             entry.read_to_end(&mut contents).unwrap();
-            assert_eq!(contents, file.contents);
+            assert_eq!(Some(contents.into()), file.contents);
         }
         assert!(entries.next().is_none());
     }
@@ -364,7 +443,11 @@ mod tests {
     #[test]
     fn an_archive_of_one_regular_file_yields_its_contents() {
         let contents = b"\0\xfffile bytes";
-        let bytes = build_archive(&[ContainerFile::new("/file", Bytes::from_static(contents))]).unwrap();
+        let bytes = build_archive(
+            ContainerOs::Linux,
+            &[ContainerFile::new("/file", Bytes::from_static(contents))],
+        )
+        .unwrap();
         assert_eq!(read_archive(&bytes, "container", "/file").unwrap(), contents);
 
         let long = format!("/opt/{}/file", "a".repeat(210));
@@ -398,7 +481,7 @@ mod tests {
             assert!(error.to_string().contains(reason), "{error}");
         }
         let empty = Builder::new(Vec::new()).into_inner().unwrap();
-        let file = build_archive(&[ContainerFile::new("/file", "secret".repeat(200))]).unwrap();
+        let file = build_archive(ContainerOs::Linux, &[ContainerFile::new("/file", "secret".repeat(200))]).unwrap();
         for bytes in [empty.as_slice(), &[], &b"secret".repeat(100), &file[..1024]] {
             let error = read_archive(bytes, "container", "/file").unwrap_err();
             assert!(error.to_string().contains("'/file' in container 'container'"));
@@ -410,7 +493,9 @@ mod tests {
     #[tokio::test]
     async fn placing_no_files_sends_no_request() {
         let daemon = FakeDaemon::start(|_, _| (500, r#"{"message":"unexpected request"}"#)).await;
-        place(&daemon.docker, "container", &[]).await.unwrap();
+        place(&daemon.docker, ContainerOs::Linux, "container", &[])
+            .await
+            .unwrap();
         assert!(daemon.requests.lock().unwrap().is_empty());
     }
 
@@ -424,6 +509,7 @@ mod tests {
         ] {
             let error = place(
                 &daemon.docker,
+                ContainerOs::Linux,
                 "container",
                 &[ContainerFile::new("/file", "secret"), file],
             )
@@ -432,8 +518,12 @@ mod tests {
             assert_eq!(error.to_string(), "Invalid files for container 'container'");
             assert!(!format!("{error:?}").contains("secret"));
         }
-        assert!(read(&daemon.docker, "container", "/a/../b").await.is_err());
-        assert!(stat(&daemon.docker, "container", "/a/../b").await.is_err());
+        assert!(read(&daemon.docker, ContainerOs::Linux, "container", "/a/../b")
+            .await
+            .is_err());
+        assert!(stat(&daemon.docker, ContainerOs::Linux, "container", "/a/../b")
+            .await
+            .is_err());
         assert!(daemon.requests.lock().unwrap().is_empty());
     }
 
@@ -442,6 +532,7 @@ mod tests {
         let daemon = FakeDaemon::start(|_, _| (500, r#"{"message":"cannot overwrite directory"}"#)).await;
         let error = place(
             &daemon.docker,
+            ContainerOs::Linux,
             "container",
             &[
                 ContainerFile::new("/etc", Bytes::from_static(b"\0\xffsecret")),
@@ -478,11 +569,22 @@ mod tests {
             },
         )
         .await;
-        assert_eq!(read(&daemon.docker, "present", "/file").await.unwrap(), None);
-        let error = read(&daemon.docker, "missing", "/file").await.unwrap_err();
+        assert_eq!(
+            read(&daemon.docker, ContainerOs::Linux, "present", "/file")
+                .await
+                .unwrap(),
+            None
+        );
+        let error = read(&daemon.docker, ContainerOs::Linux, "missing", "/file")
+            .await
+            .unwrap_err();
         assert_eq!(error.to_string(), "no such container 'missing'");
-        assert!(read(&daemon.docker, "uninspectable", "/file").await.is_err());
-        assert!(read(&daemon.docker, "broken", "/file").await.is_err());
+        assert!(read(&daemon.docker, ContainerOs::Linux, "uninspectable", "/file")
+            .await
+            .is_err());
+        assert!(read(&daemon.docker, ContainerOs::Linux, "broken", "/file")
+            .await
+            .is_err());
         let requests = daemon.requests.lock().unwrap();
         let paths: Vec<_> = requests
             .iter()
@@ -516,16 +618,27 @@ mod tests {
             },
         )
         .await;
-        assert_eq!(stat(&daemon.docker, "present", "/file").await.unwrap(), None);
-        let error = stat(&daemon.docker, "missing", "/file").await.unwrap_err();
+        assert_eq!(
+            stat(&daemon.docker, ContainerOs::Linux, "present", "/file")
+                .await
+                .unwrap(),
+            None
+        );
+        let error = stat(&daemon.docker, ContainerOs::Linux, "missing", "/file")
+            .await
+            .unwrap_err();
         assert_eq!(error.to_string(), "no such container 'missing'");
-        let error = stat(&daemon.docker, "uninspectable", "/file").await.unwrap_err();
+        let error = stat(&daemon.docker, ContainerOs::Linux, "uninspectable", "/file")
+            .await
+            .unwrap_err();
         assert_eq!(
             error.to_string(),
             "Failed to inspect container 'uninspectable' after checking '/file'"
         );
         assert!(error.downcast_ref::<Error>().is_some());
-        let error = stat(&daemon.docker, "broken", "/file").await.unwrap_err();
+        let error = stat(&daemon.docker, ContainerOs::Linux, "broken", "/file")
+            .await
+            .unwrap_err();
         assert_eq!(error.to_string(), "Failed to stat '/file' in container 'broken'");
         assert!(error.downcast_ref::<Error>().is_some());
         let requests = daemon.requests.lock().unwrap();
@@ -550,7 +663,9 @@ mod tests {
     #[tokio::test]
     async fn a_stat_without_a_path_stat_header_is_an_error() {
         let daemon = FakeDaemon::start(|_, _| (200, "")).await;
-        let error = stat(&daemon.docker, "container", "/file").await.unwrap_err();
+        let error = stat(&daemon.docker, ContainerOs::Linux, "container", "/file")
+            .await
+            .unwrap_err();
         assert_eq!(error.to_string(), "Failed to stat '/file' in container 'container'");
         assert!(error.downcast_ref::<Error>().is_some());
         assert_eq!(
@@ -607,5 +722,187 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.to_string(), "Negative file size for '/negative'");
+    }
+
+    #[test]
+    fn windows_container_paths_must_be_drive_rooted_with_backslashes_and_no_traversal() {
+        let invalid = [
+            "",
+            "C:",
+            "C:\\",
+            "c:\\file",
+            "D:\\file",
+            "\\file",
+            "/file",
+            "C:/file",
+            "file",
+            "C:\\a\\",
+            "C:\\a\\\\b",
+            "C:\\a\\.\\b",
+            "C:\\a\\..\\b",
+            "C:\\a/b",
+            "C:\\a\\b:stream",
+            "C:\\a\\b<",
+            "C:\\a\\b>",
+            "C:\\a\\\"b",
+            "C:\\a\\b|",
+            "C:\\a\\b?",
+            "C:\\a\\b*",
+            "C:\\a\\b\0",
+            "C:\\a\\b\n",
+        ];
+        for path in invalid {
+            let error = entry_name(ContainerOs::Windows, path).unwrap_err().to_string();
+            assert!(error.contains(&format!("'{path}'")), "{path:?}: {error}");
+        }
+        for (path, name) in [
+            ("C:\\a", "a"),
+            ("C:\\airlock\\p\\exit", "airlock/p/exit"),
+            ("C:\\Program Files\\x.exe", "Program Files/x.exe"),
+            ("C:\\a\\b.c\\d-e_f", "a/b.c/d-e_f"),
+        ] {
+            assert_eq!(entry_name(ContainerOs::Windows, path).unwrap(), name);
+        }
+        // Each OS accepts only its own paths.
+        assert!(entry_name(ContainerOs::Linux, "C:\\a").is_err());
+        assert!(entry_name(ContainerOs::Windows, "/a").is_err());
+    }
+
+    #[test]
+    fn windows_duplicate_paths_ignore_case() {
+        let error = validate_files(
+            ContainerOs::Windows,
+            &[
+                ContainerFile::new("C:\\a\\File", "x"),
+                ContainerFile::directory("C:\\A\\file"),
+            ],
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("Duplicate container file path 'C:\\A\\file'"));
+        validate_files(
+            ContainerOs::Linux,
+            &[ContainerFile::new("/a/File", "x"), ContainerFile::new("/a/file", "x")],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn windows_files_and_directories_become_one_archive_uploaded_at_the_drive_root() {
+        let files = [
+            ContainerFile::directory("C:\\airlock\\p\\exit"),
+            ContainerFile::directory("C:\\airlock\\p\\log").with_mode(0o700),
+            ContainerFile::new("C:\\panoramic\\courier.exe", Bytes::from_static(b"MZ\0\xff")).with_mode(0o755),
+        ];
+        assert_eq!(upload_root(ContainerOs::Windows), "C:\\");
+        assert_eq!(upload_root(ContainerOs::Linux), "/");
+        validate_files(ContainerOs::Windows, &files).unwrap();
+        let bytes = build_archive(ContainerOs::Windows, &files).unwrap();
+        let mut archive = Archive::new(bytes.as_slice());
+        let mut entries = archive.entries().unwrap();
+        for (name, kind, mode) in [
+            ("airlock/p/exit/", EntryType::Directory, 0o755),
+            ("airlock/p/log/", EntryType::Directory, 0o700),
+            ("panoramic/courier.exe", EntryType::Regular, 0o755),
+        ] {
+            let mut entry = entries.next().unwrap().unwrap();
+            assert_eq!(entry.path_bytes(), name.as_bytes());
+            assert_eq!(entry.header().entry_type(), kind);
+            assert_eq!(entry.header().mode().unwrap(), mode);
+            assert_eq!(entry.header().uid().unwrap(), 0);
+            let mut contents = Vec::new();
+            entry.read_to_end(&mut contents).unwrap();
+            assert_eq!(contents, if kind.is_dir() { &b""[..] } else { b"MZ\0\xff" });
+        }
+        assert!(entries.next().is_none());
+    }
+
+    #[test]
+    fn linux_directories_are_archived_as_directory_entries() {
+        let bytes = build_archive(ContainerOs::Linux, &[ContainerFile::directory("/airlock/p")]).unwrap();
+        let mut archive = Archive::new(bytes.as_slice());
+        let entry = archive.entries().unwrap().next().unwrap().unwrap();
+        assert_eq!(entry.path_bytes(), b"airlock/p/".as_slice());
+        assert_eq!(entry.header().entry_type(), EntryType::Directory);
+        assert_eq!(entry.header().mode().unwrap(), 0o755);
+    }
+
+    #[tokio::test]
+    async fn a_windows_placement_uploads_to_the_drive_root_and_invalid_paths_send_nothing() {
+        let daemon = FakeDaemon::start(|_, _| (200, "")).await;
+        place(
+            &daemon.docker,
+            ContainerOs::Windows,
+            "container",
+            &[ContainerFile::directory("C:\\airlock\\p\\exit")],
+        )
+        .await
+        .unwrap();
+        {
+            let requests = daemon.requests.lock().unwrap();
+            assert_eq!(requests.len(), 1, "{requests:?}");
+            assert!(
+                requests[0].starts_with("PUT /containers/container/archive?"),
+                "{requests:?}"
+            );
+            assert!(
+                requests[0].contains("path=C%3A%5C&") || requests[0].ends_with("path=C%3A%5C"),
+                "{requests:?}"
+            );
+            let bodies = daemon.bodies.lock().unwrap();
+            assert!(bodies[0].contains("airlock/p/exit/"), "{bodies:?}");
+        }
+        let error = place(
+            &daemon.docker,
+            ContainerOs::Windows,
+            "container",
+            &[ContainerFile::new("/airlock/file", "secret")],
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.to_string(), "Invalid files for container 'container'");
+        assert!(read(&daemon.docker, ContainerOs::Windows, "container", "C:/file")
+            .await
+            .is_err());
+        assert!(stat(&daemon.docker, ContainerOs::Windows, "container", "C:\\a\\..\\b")
+            .await
+            .is_err());
+        assert_eq!(daemon.requests.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn windows_reads_and_stats_pass_the_path_to_docker_as_written() {
+        let daemon = FakeDaemon::start(
+            |method, path| match (method, path.split('?').next().unwrap_or_default()) {
+                ("GET" | "HEAD", "/containers/present/archive") => (404, r#"{"message":"unavailable"}"#),
+                ("GET", "/containers/present/json") => (200, "{}"),
+                _ => (500, r#"{"message":"failed"}"#),
+            },
+        )
+        .await;
+        let path = "C:\\airlock\\p\\exit\\adp";
+        assert_eq!(
+            read(&daemon.docker, ContainerOs::Windows, "present", path)
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            stat(&daemon.docker, ContainerOs::Windows, "present", path)
+                .await
+                .unwrap(),
+            None
+        );
+        let requests = daemon.requests.lock().unwrap();
+        let encoded = "path=C%3A%5Cairlock%5Cp%5Cexit%5Cadp";
+        assert!(
+            requests[0].starts_with("GET /containers/present/archive?") && requests[0].contains(encoded),
+            "{requests:?}"
+        );
+        assert!(
+            requests[2].starts_with("HEAD /containers/present/archive?") && requests[2].contains(encoded),
+            "{requests:?}"
+        );
     }
 }

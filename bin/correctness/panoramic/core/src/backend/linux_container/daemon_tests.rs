@@ -20,10 +20,10 @@ use super::*;
 use crate::{
     backend::COURIER_LINUX_BINARY,
     endpoint::{EndpointKind, EndpointOperation, RunnerHostRoute},
-    handle::{probe_from_runner_host, send_from_runner_host},
+    handle::{probe_from_runner_host, send_from_runner_host, FileKind},
     ledger::{self, ResourceLedger},
-    observe::ExitStatus,
-    participant::{OutputChannel, OutputStream},
+    observe::{Capture, ExitObservation, ExitStatus, ParticipantExit, ProcessOutput},
+    participant::{ExitChannel, OutputChannel, OutputStream},
     probe::ProbeAnswer,
     recipe::HostMount,
     result::{IssueKind, ReclaimResult},
@@ -95,7 +95,7 @@ where
     let participants: Vec<_> = participants.iter().map(|name| (*name).to_owned()).collect();
     eprintln!("Daemon test scope: {}", scope.id());
     let ledger = ResourceLedger::default();
-    ledger.linux_scope(backends.clone(), (*scope).clone());
+    ledger.container_scope(backends.clone(), (*scope).clone(), Os::Linux);
     let tasks = CaseTasks::new(&CancellationToken::new());
     let outcome = tokio::spawn({
         let tasks = tasks.clone();

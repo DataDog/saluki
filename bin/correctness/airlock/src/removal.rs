@@ -12,7 +12,7 @@ use tracing::{debug, warn};
 
 use crate::{
     docker::redacted_docker_error,
-    driver::{group_resource_name, is_not_found},
+    driver::{group_resource_name, is_not_found, with_transient_error_retry},
 };
 
 /// Time kept before a removal deadline for the forced removal after SIGKILL.
@@ -94,8 +94,18 @@ pub(crate) async fn remove_group(docker: &Docker, isolation_group_id: &str) -> R
         _ => debug!("Removed shared volume '{}'.", isolation_group_name),
     }
 
-    match docker.remove_network(&isolation_group_name).await {
-        Err(e) if !is_not_found(&e) => failures.push(format!("network '{}': {}", isolation_group_name, e)),
+    // Windows NAT removals can collide with other Host Network Service calls.
+    let network_removal = with_transient_error_retry("network removal", isolation_group_id, || async {
+        docker
+            .remove_network(&isolation_group_name)
+            .await
+            .map_err(GenericError::from)
+    })
+    .await;
+    match network_removal {
+        Err(e) if !e.downcast_ref().is_some_and(is_not_found) => {
+            failures.push(format!("network '{}': {}", isolation_group_name, e))
+        }
         _ => debug!("Removed shared network '{}'.", isolation_group_name),
     }
 
@@ -383,5 +393,37 @@ mod tests {
             requests[1].contains("force=true") && requests[1].contains("v=true"),
             "{requests:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_network_removal_that_collides_in_the_host_network_service_is_retried() {
+        static REMOVALS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let daemon = FakeDaemon::start(
+            |method, path| match (method, path.split('?').next().unwrap_or_default()) {
+                ("GET", "/containers/json") => (200, "[]"),
+                ("DELETE", "/volumes/airlock-ab12cd34") => (404, r#"{"message": "no such volume"}"#),
+                ("DELETE", "/networks/airlock-ab12cd34") => {
+                    if REMOVALS.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                        (
+                            500,
+                            r#"{"message": "hnsCall failed in Win32: The object already exists. (0x1392)"}"#,
+                        )
+                    } else {
+                        (204, "")
+                    }
+                }
+                _ => (500, r#"{"message": "unexpected request"}"#),
+            },
+        )
+        .await;
+
+        let (removed, requests) = daemon.remove_isolation_group().await;
+
+        removed.expect("the retried removal should succeed");
+        let network_removals = requests
+            .iter()
+            .filter(|request| request.starts_with("DELETE /networks/"))
+            .count();
+        assert_eq!(network_removals, 2, "{requests:?}");
     }
 }

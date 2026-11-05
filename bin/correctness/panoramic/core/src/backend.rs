@@ -3,6 +3,7 @@
 //! The static backend list describes what each kind needs for planning.
 //! [`RunBackends`] checks and uses the runner host.
 
+mod container;
 pub(crate) mod courier;
 pub(crate) mod docker;
 #[cfg(unix)]
@@ -11,6 +12,7 @@ pub(crate) mod http;
 pub(crate) mod linux_container;
 mod run;
 pub(crate) mod runtime;
+pub(crate) mod windows_container;
 pub use run::RunBackends;
 pub(crate) use runtime::{ParticipantRequest, RuntimeParticipant, ScopeRuntime};
 
@@ -42,6 +44,13 @@ pub(crate) const COURIER_LINUX_BINARY: ArtifactRole = ArtifactRole {
     } else {
         ""
     },
+};
+
+/// Native Windows courier executable, verified against the container daemon's architecture.
+pub(crate) const COURIER_WINDOWS_BINARY: ArtifactRole = ArtifactRole {
+    name: "courier-windows-binary",
+    kind: ArtifactKind::ContainerBinary { os: Os::Windows },
+    local_default: "target/release/panoramic-courier.exe",
 };
 
 /// A value known once a participant exists or runs.
@@ -113,7 +122,7 @@ pub(crate) trait Backend: Send + Sync {
         &[]
     }
 
-    /// Root of the filesystem shared by participants in this scope.
+    /// Root of participant state; Windows containers each keep their own filesystem.
     fn shared_root(&self, os: Os, scope: &ScopeLayout) -> String;
 
     /// Late facts and their availability, sorted by fact.
@@ -195,11 +204,11 @@ impl Backend for WindowsContainers {
     }
 
     fn artifacts(&self) -> &'static [ArtifactRole] {
-        &[]
+        &[COURIER_WINDOWS_BINARY]
     }
 
     fn shared_root(&self, _os: Os, _scope: &ScopeLayout) -> String {
-        r"C:\airlock".into()
+        windows_container::SHARED_ROOT.into()
     }
 
     fn late_facts(&self) -> &'static [(LateFact, LateFactTiming)] {
@@ -259,7 +268,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_linux_containers_declare_the_fixup_image_and_the_courier() {
+    fn containers_declare_their_os_courier_and_only_linux_needs_a_fixup_image() {
         assert_eq!(
             FIXUP_IMAGE,
             ArtifactRole {
@@ -281,11 +290,19 @@ mod tests {
                 _ => "",
             }
         );
+        assert_eq!(
+            COURIER_WINDOWS_BINARY,
+            ArtifactRole {
+                name: "courier-windows-binary",
+                kind: ArtifactKind::ContainerBinary { os: Os::Windows },
+                local_default: "target/release/panoramic-courier.exe",
+            }
+        );
         for backend in BACKENDS {
-            let expected: &[ArtifactRole] = if backend.kind() == RealizationKind::LinuxContainer {
-                &[FIXUP_IMAGE, COURIER_LINUX_BINARY]
-            } else {
-                &[]
+            let expected: &[ArtifactRole] = match backend.kind() {
+                RealizationKind::LinuxContainer => &[FIXUP_IMAGE, COURIER_LINUX_BINARY],
+                RealizationKind::WindowsContainer => &[COURIER_WINDOWS_BINARY],
+                _ => &[],
             };
             assert_eq!(artifacts(backend.kind()), expected, "{:?}", backend.kind());
         }

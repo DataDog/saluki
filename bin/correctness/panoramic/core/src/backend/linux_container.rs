@@ -14,23 +14,19 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde_json::Value;
-use tokio::sync::watch;
 
-use super::{courier, LateFact, ParticipantRequest, RunBackends, RuntimeParticipant, ScopeRuntime};
+use super::{
+    container::{exec_request, ContainerObserver},
+    courier, LateFact, ParticipantRequest, RunBackends, RuntimeParticipant, ScopeRuntime,
+};
 use crate::{
     artifact::ArtifactKind,
     endpoint::{ResolvedAddress, RunnerHostPort, Transport},
-    handle::{ExecCommand, ExecOutput, FileKind, FileStatus, HandleError, HttpResponse, Primitives},
+    handle::{ExecCommand, ExecOutput, FileStatus, HandleError, HttpResponse, Primitives},
     layout::{Os, RealizationKind},
     ledger::ParticipantRemoval,
-    observe::{
-        exit_record::{watch_record, RecordRefresh},
-        follow_output,
-        output::{host_output_file, FileOutput, FILE_OUTPUT_START},
-        watch_exit, Capture, ExitObservation, ParticipantExit, ParticipantObservation, ProcessObservation,
-        ProcessOutput,
-    },
-    participant::{ExitChannel, OutputChannel, ProcessSpec},
+    observe::{output::FILE_OUTPUT_START, ParticipantObservation},
+    participant::ProcessSpec,
     plan::ScopeLayout,
     probe::{AttemptLimits, ProbeAnswer},
     recipe::{ContainerRecipe, Recipe, RecipeFile},
@@ -65,16 +61,6 @@ impl RunBackends {
             group,
             courier: ContainerFile::new(COURIER_PATH, courier).with_mode(0o755),
         })
-    }
-
-    /// Removes all scope resources, including partial preparation. Cancel-safe; the caller bounds it.
-    pub(crate) async fn remove_linux_scope(&self, scope: &ScopeLayout) -> Result<(), GenericError> {
-        let client = self
-            .docker
-            .client(Os::Linux)
-            .await
-            .map_err(|error| generic_error!(error))?;
-        IsolationGroup::remove(&client, &scope.id()).await
     }
 }
 
@@ -147,7 +133,7 @@ impl LinuxScope {
             .with_error_context(|| format!("Invalid files for participant '{name}'"))?;
         Ok(LinuxParticipant {
             name: name.into(),
-            driver,
+            driver: Arc::new(driver),
             files,
             ports: ports.to_vec(),
             specs,
@@ -176,7 +162,7 @@ fn container_env(name: &str, recipe_env: &BTreeMap<String, String>) -> Result<BT
 /// A scope participant whose removal reference is available before container creation.
 pub(crate) struct LinuxParticipant {
     name: String,
-    driver: Driver,
+    driver: Arc<Driver>,
     files: Vec<ContainerFile>,
     ports: Vec<RunnerHostPort>,
     specs: &'static [ProcessSpec],
@@ -227,122 +213,27 @@ impl RuntimeParticipant for LinuxParticipant {
     }
 
     async fn observe(self: Arc<Self>, tasks: &CaseTasks, output_dir: &Path) -> ParticipantObservation {
-        let (exit_tx, exit_rx) = watch::channel(ParticipantExit::Running);
-        let (capture_tx, capture_rx) = watch::channel(Capture::Following);
-        let mut observation = ParticipantObservation::new(
-            exit_rx.clone(),
-            capture_rx.clone(),
-            output_dir.join("container.stdout.log"),
-            output_dir.join("container.stderr.log"),
-        );
-        #[cfg(any(test, feature = "test-util"))]
-        if let Some(limit) = self.output_line_bytes {
-            observation.lines = crate::observe::output::OutputLines::new(limit);
+        ContainerObserver {
+            driver: self.driver.clone(),
+            name: self.name.clone(),
+            specs: self.specs,
+            exit_dir: format!("{SHARED_ROOT}/{}/exit/", self.name),
+            log_dir: format!("{SHARED_ROOT}/{}/log/", self.name),
+            follower: |path| {
+                ExecRequest::new(vec![
+                    "sh".into(),
+                    "-c".into(),
+                    "printf '%s' \"$1\"; exec tail -n +1 -F \"$2\"".into(),
+                    "sh".into(),
+                    FILE_OUTPUT_START.into(),
+                    path.into(),
+                ])
+            },
+            #[cfg(any(test, feature = "test-util"))]
+            output_line_bytes: self.output_line_bytes,
         }
-        tasks.spawn(watch_exit(self.driver.wait_exit(), exit_tx));
-        let mut container_output = None;
-        for spec in self.specs {
-            let process = match spec.exit {
-                ExitChannel::Wait => unreachable!("host process exit channels are rejected during preparation"),
-                ExitChannel::Container => ProcessObservation::Container(exit_rx.clone()),
-                ExitChannel::Record { file } => {
-                    let path = format!("{SHARED_ROOT}/{}/exit/{file}", self.name);
-                    let participant = self.clone();
-                    let name = spec.name;
-                    let exit = exit_rx.clone();
-                    let (tx, rx) = watch::channel(ExitObservation::Running);
-                    let (requests, requests_rx) = watch::channel(0);
-                    let (served_tx, served) = watch::channel(0);
-                    tasks.spawn(async move {
-                        watch_record(
-                            || participant.driver.read_file(&path),
-                            exit,
-                            tx,
-                            &participant.name,
-                            name,
-                            &path,
-                            (requests_rx, served_tx),
-                        )
-                        .await;
-                    });
-                    ProcessObservation::Record {
-                        status: rx,
-                        refresh: Some(Arc::new(RecordRefresh { requests, served })),
-                    }
-                }
-            };
-            observation.processes.insert(spec.name, process);
-            let output = match spec.output {
-                OutputChannel::Pipes => unreachable!("host process output channels are rejected during preparation"),
-                OutputChannel::Container => {
-                    container_output = Some(spec.name);
-                    ProcessOutput {
-                        capture: capture_rx.clone(),
-                        paths: vec![
-                            observation.stdout_path.clone().expect("container stdout path"),
-                            observation.stderr_path.clone().expect("container stderr path"),
-                        ],
-                    }
-                }
-                OutputChannel::File { file, stream } => {
-                    let path = format!("{SHARED_ROOT}/{}/log/{file}", self.name);
-                    let filename = host_output_file(spec.name, spec.output).expect("file output has a host file name");
-                    let host_path = output_dir.join(filename);
-                    let output = FileOutput {
-                        participant: self.name.clone().into(),
-                        process: spec.name,
-                        stream,
-                        source_path: path.clone(),
-                        host_path: host_path.clone(),
-                        lines: observation.lines.clone(),
-                    };
-                    let participant = self.clone();
-                    let exit = exit_rx.clone();
-                    let (tx, rx) = watch::channel(Capture::Following);
-                    tasks.spawn(async move {
-                        output
-                            .follow(
-                                participant.driver.exec_stream(ExecRequest::new(vec![
-                                    "sh".into(),
-                                    "-c".into(),
-                                    "printf '%s' \"$1\"; exec tail -n +1 -F \"$2\"".into(),
-                                    "sh".into(),
-                                    FILE_OUTPUT_START.into(),
-                                    path.clone(),
-                                ])),
-                                || participant.driver.read_file(&path),
-                                exit,
-                                tx,
-                            )
-                            .await;
-                    });
-                    ProcessOutput {
-                        capture: rx,
-                        paths: vec![host_path],
-                    }
-                }
-            };
-            observation.outputs.insert(spec.name, output);
-        }
-        match self.driver.logs().await {
-            Ok(stream) => {
-                tasks.spawn(follow_output(
-                    stream,
-                    observation.stdout_path.clone().expect("container stdout path"),
-                    observation.stderr_path.clone().expect("container stderr path"),
-                    capture_tx,
-                    observation.lines.clone(),
-                    self.name.clone().into(),
-                    container_output,
-                ));
-            }
-            Err(error) => {
-                capture_tx.send_replace(Capture::Failed {
-                    reason: format!("{error:#}"),
-                });
-            }
-        }
-        observation
+        .observe(tasks, output_dir)
+        .await
     }
 }
 
@@ -415,51 +306,11 @@ impl Primitives for LinuxParticipant {
     }
 }
 
-impl From<airlock::exec::ExecOutput> for ExecOutput {
-    fn from(output: airlock::exec::ExecOutput) -> Self {
-        Self {
-            stdout: output.stdout,
-            stderr: output.stderr,
-            exit_code: output.exit_code,
-        }
-    }
-}
-
-impl From<airlock::files::FileStat> for FileStatus {
-    fn from(status: airlock::files::FileStat) -> Self {
-        use airlock::files::FileKind as BackendKind;
-        let kind = match status.kind {
-            BackendKind::File => FileKind::File,
-            BackendKind::Directory => FileKind::Directory,
-            BackendKind::Symlink { target } => FileKind::Symlink { target },
-            BackendKind::Socket => FileKind::Socket,
-            BackendKind::NamedPipe => FileKind::NamedPipe,
-            BackendKind::Other => FileKind::Other,
-        };
-        Self {
-            kind,
-            mode: status.mode,
-            size: status.size,
-        }
-    }
-}
-
 fn protocol(transport: Transport) -> Protocol {
     match transport {
         Transport::Tcp => Protocol::Tcp,
         Transport::Udp => Protocol::Udp,
     }
-}
-
-fn exec_request(command: ExecCommand) -> ExecRequest {
-    let mut request = ExecRequest::new(command.argv);
-    for (key, value) in command.env {
-        request = request.with_env_var(key, value);
-    }
-    if let Some(stdin) = command.stdin {
-        request = request.with_stdin(stdin);
-    }
-    request
 }
 
 fn checked_recipe_files(files: &[RecipeFile]) -> Result<&[RecipeFile], GenericError> {
@@ -489,6 +340,7 @@ pub(crate) mod daemon_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::handle::FileKind;
 
     #[test]
     fn command_output_preserves_backend_bytes_and_exit_code() {

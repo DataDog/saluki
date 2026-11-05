@@ -180,7 +180,7 @@ mod tests {
 
     use crate::{
         artifact::{ArtifactBinding, ArtifactKind, ArtifactManifest, ArtifactRole, BindingSource},
-        backend::COURIER_LINUX_BINARY,
+        backend::{COURIER_LINUX_BINARY, COURIER_WINDOWS_BINARY},
         case::{
             fixtures::{minimal_procedure, FixtureConfig, FixtureTypesWithRoles, PARTICIPANT_FIELDS},
             CaseConfig, CaseLoader, Registries,
@@ -335,7 +335,14 @@ mod tests {
             .unwrap();
         assert_eq!(
             needed_artifacts([&windows, &typed, &linux, &another]),
-            local_bindings(&[COURIER_LINUX_BINARY, FIXUP, RESOURCES, TOOL, WINDOWS_TOOL])
+            local_bindings(&[
+                COURIER_LINUX_BINARY,
+                COURIER_WINDOWS_BINARY,
+                FIXUP,
+                RESOURCES,
+                TOOL,
+                WINDOWS_TOOL
+            ])
         );
         assert_eq!(needed_artifacts([&typed]), local_bindings(&[TOOL]));
     }
@@ -708,7 +715,7 @@ mod tests {
         assert_eq!(
             message,
             "artifact manifest artifacts.toml: no participant type or backend declares role 'a', 'z'; \
-             declared roles: courier-linux-binary, fixup-image, resources, tool, windows-tool"
+             declared roles: courier-linux-binary, courier-windows-binary, fixup-image, resources, tool, windows-tool"
         );
     }
 
@@ -734,7 +741,7 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "--set: no participant type or backend declares role 'a', 'z'; \
-             declared roles: courier-linux-binary, fixup-image, resources, tool, windows-tool"
+             declared roles: courier-linux-binary, courier-windows-binary, fixup-image, resources, tool, windows-tool"
         );
     }
 
@@ -921,6 +928,9 @@ mod tests {
             local_bindings(&[COURIER_LINUX_BINARY, FIXUP, RESOURCES, TOOL]).as_slice()
         );
         let windows = compile_with(&mut planner, &yaml, Os::Windows).unwrap().unwrap();
-        assert_eq!(windows.artifacts(), local_bindings(&[WINDOWS_TOOL]).as_slice());
+        assert_eq!(
+            windows.artifacts(),
+            local_bindings(&[COURIER_WINDOWS_BINARY, WINDOWS_TOOL]).as_slice()
+        );
     }
 }

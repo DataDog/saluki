@@ -529,21 +529,22 @@ impl DriverConfig {
     ///
     /// Prepared Linux drivers mount only the shared `/airlock` volume by default. Linux drivers built with
     /// [`Driver::from_config`] also receive read-only host mounts for origin detection (`/proc`, `/sys/fs/cgroup`,
-    /// the Docker socket). Windows containers use the shared `C:\airlock` volume.
-    fn container_binds_from(
-        &self, isolation_group_name: &str, mut binds: Vec<String>, host_resources: bool,
-    ) -> Vec<String> {
+    /// the Docker socket). Windows drivers built with [`Driver::from_config`] use the shared `C:\airlock` volume;
+    /// prepared Windows drivers use explicitly configured mounts.
+    fn container_binds_from(&self, isolation_group_name: &str, mut binds: Vec<String>, legacy: bool) -> Vec<String> {
         match self.container_os {
             ContainerOs::Linux => {
                 binds.push(format!("{isolation_group_name}:{SHARED_ROOT}:z"));
-                if host_resources {
+                if legacy {
                     binds.push("/proc:/host/proc:ro".to_string());
                     binds.push("/sys/fs/cgroup:/host/sys/fs/cgroup:ro".to_string());
                     binds.push("/var/run/docker.sock:/var/run/docker.sock:ro".to_string());
                 }
             }
             ContainerOs::Windows => {
-                binds.push(format!("{}:C:\\airlock", isolation_group_name));
+                if legacy {
+                    binds.push(format!("{}:C:\\airlock", isolation_group_name));
+                }
             }
         }
 
@@ -1143,7 +1144,8 @@ impl Driver {
     /// mount host resources for origin detection and share the host PID namespace. Drivers from an
     /// [`IsolationGroup`] reuse its prepared resources, require a local image, and
     /// keep their own PID namespace unless [`DriverConfig::with_host_pid_namespace`] is set to `true`.
-    /// Their only default mount is the group volume.
+    /// Prepared Linux drivers mount the group volume by default; prepared Windows drivers use explicitly
+    /// configured mounts.
     ///
     /// # Errors
     ///
@@ -1297,58 +1299,48 @@ impl Driver {
         Ok(exit_status)
     }
 
-    /// Places files in a Linux container between create and start.
+    /// Places files and directories in a container between create and start.
     ///
-    /// Files are owned by root and keep their mode. Missing parent directories are created with mode `0755`,
+    /// Linux files are owned by root and keep their mode. Missing parent directories are created with mode `0755`,
     /// owned by root. Existing files are replaced, but a file cannot replace a directory. Paths resolve inside
-    /// the container, including through symlinks. An empty slice sends no request.
+    /// the container, including through symlinks. Windows containers take `C:\`-rooted paths with backslash
+    /// separators, ignore modes, and create missing parent directories. An empty slice sends no request.
     ///
     /// # Errors
     ///
-    /// Returns an error for Windows containers, invalid or duplicate paths, modes beyond `07777`, archive
-    /// construction failures, or Docker API failures. Every file is validated before contacting Docker.
+    /// Returns an error for paths invalid for the container's OS (see [`ContainerFile`]), duplicate paths, modes
+    /// beyond `07777`, archive construction failures, or Docker API failures. Every file is validated before
+    /// contacting Docker.
     pub async fn place_files(&self, files: &[ContainerFile]) -> Result<(), GenericError> {
-        self.ensure_linux_for_files()?;
-        files::place(&self.docker, &self.container_name, files).await
+        files::place(&self.docker, self.config.container_os, &self.container_name, files).await
     }
 
-    /// Reads a regular file from a created, running, or exited Linux container, including its mounted volumes.
+    /// Reads a regular file from a created, running, or exited container, including its mounted volumes.
     ///
-    /// Returns `None` if the path is missing and the container exists. Paths follow [`ContainerFile`]'s rules.
-    /// The entire file is read into memory without a size cap. Callers can impose their own timeout.
+    /// Returns `None` if the path is missing and the container exists. Paths follow [`ContainerFile`]'s rules for
+    /// the container's OS. The entire file is read into memory without a size cap. Callers can impose their own
+    /// timeout.
     ///
     /// # Errors
     ///
-    /// Returns an error for Windows containers, invalid paths, a missing container, Docker API failures,
-    /// empty or malformed archives, or a path naming a directory, symbolic link, or other non-regular file.
+    /// Returns an error for invalid paths, a missing container, Docker API failures, empty or malformed archives,
+    /// or a path naming a directory, symbolic link, or other non-regular file.
     pub async fn read_file(&self, path: &str) -> Result<Option<Vec<u8>>, GenericError> {
-        self.ensure_linux_for_files()?;
-        files::read(&self.docker, &self.container_name, path).await
+        files::read(&self.docker, self.config.container_os, &self.container_name, path).await
     }
 
-    /// Reports a path's status in a created, running, or exited Linux container, including mounted volumes.
+    /// Reports a path's status in a created, running, or exited container, including mounted volumes.
     ///
     /// Reports a final symlink itself. Returns `None` for a missing path in an existing container.
-    /// Paths follow [`ContainerFile`]'s rules. Paths on the container's own `tmpfs` or `proc` mounts, such as
-    /// `/dev` and `/proc`, can appear missing.
+    /// Paths follow [`ContainerFile`]'s rules for the container's OS. Paths on a Linux container's own `tmpfs` or
+    /// `proc` mounts, such as `/dev` and `/proc`, can appear missing.
     ///
     /// # Errors
     ///
-    /// Returns an error for Windows containers, invalid paths, a missing container, a path through a
-    /// non-directory, Docker API failures, negative file sizes, or header-decoding failures.
+    /// Returns an error for invalid paths, a missing container, a path through a non-directory, Docker API
+    /// failures, negative file sizes, or header-decoding failures.
     pub async fn stat(&self, path: &str) -> Result<Option<FileStat>, GenericError> {
-        self.ensure_linux_for_files()?;
-        files::stat(&self.docker, &self.container_name, path).await
-    }
-
-    fn ensure_linux_for_files(&self) -> Result<(), GenericError> {
-        if self.config.container_os == ContainerOs::Windows {
-            return Err(generic_error!(
-                "Participant '{}' runs in a Windows container; airlock places, reads, and stats files only in Linux containers",
-                self.config.driver_id
-            ));
-        }
-        Ok(())
+        files::stat(&self.docker, self.config.container_os, &self.container_name, path).await
     }
 
     /// Executes a command and collects stdout and stderr bytes with its exit code.
@@ -1620,7 +1612,7 @@ fn transient_error_retry_backoff(attempt: u32, seed: &str) -> Duration {
 ///
 /// Each retry is logged at warning level so that runs which only passed because of a retry stay visible in CI output,
 /// rather than the mitigation quietly hiding how often the collision fires.
-async fn with_transient_error_retry<F, Fut, T>(
+pub(crate) async fn with_transient_error_retry<F, Fut, T>(
     operation: &str, seed: &str, mut run_attempt: F,
 ) -> Result<T, GenericError>
 where
@@ -1861,13 +1853,28 @@ mod tests {
             DriverConfig::from_image("target", "example:latest".to_string()).with_container_os(ContainerOs::Windows);
 
         // Host-resource selection applies only to Linux containers.
-        let binds = config.container_binds_from("airlock-test", config.binds.clone(), false);
+        let binds = config.container_binds_from("airlock-test", config.binds.clone(), true);
 
         assert!(binds.contains(&"airlock-test:C:\\airlock".to_string()));
         assert!(!binds.iter().any(|bind| bind.contains("/proc")));
         assert!(!binds.iter().any(|bind| bind.contains("/sys/fs/cgroup")));
         assert!(!binds.iter().any(|bind| bind.contains("/var/run/docker.sock")));
         assert!(!binds.iter().any(|bind| bind.ends_with(":z")));
+    }
+
+    #[test]
+    fn prepared_windows_container_binds_include_only_configured_mounts() {
+        let config =
+            DriverConfig::from_image("target", "example:latest".to_string()).with_container_os(ContainerOs::Windows);
+        assert!(config
+            .container_binds_from("airlock-test", config.binds.clone(), false)
+            .is_empty());
+
+        let config = config.with_readonly_bind_mount("C:\\host", "C:\\guest");
+        assert_eq!(
+            config.container_binds_from("airlock-test", config.binds.clone(), false),
+            ["C:\\host:C:\\guest:ro"]
+        );
     }
 
     #[tokio::test]
@@ -2146,29 +2153,91 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_windows_container_neither_places_reads_nor_stats_files() {
-        let daemon = FakeDaemon::start(|_, _| (500, r#"{"message":"unexpected request"}"#)).await;
+    async fn a_windows_driver_places_reads_and_stats_files_through_the_archive_api() {
+        let daemon = FakeDaemon::start(
+            |method, path| match (method, path.split('?').next().unwrap_or_default()) {
+                ("PUT", "/containers/airlock-ab12cd34-subject/archive") => (200, ""),
+                ("GET" | "HEAD", "/containers/airlock-ab12cd34-subject/archive") => (404, r#"{"message":"missing"}"#),
+                ("GET", "/containers/airlock-ab12cd34-subject/json") => (200, "{}"),
+                _ => (500, r#"{"message":"unexpected request"}"#),
+            },
+        )
+        .await;
         let driver = Driver::in_group(
             daemon.docker.clone(),
             GROUP.to_string(),
             DriverConfig::from_image("subject", "example:latest".to_string()).with_container_os(ContainerOs::Windows),
         );
-        let placement = driver.place_files(&[ContainerFile::new("/file", "secret")]).await;
-        let empty_placement = driver.place_files(&[]).await;
-        let read = driver.read_file("/file").await;
-        let stat = driver.stat("/file").await;
-        for error in [
-            placement.unwrap_err(),
-            empty_placement.unwrap_err(),
-            read.unwrap_err(),
-            stat.unwrap_err(),
-        ] {
-            let message = error.to_string();
-            assert!(message.contains("Participant 'subject'"), "{message}");
-            assert!(message.contains("Windows"), "{message}");
-            assert!(!format!("{error:?}").contains("secret"));
+        driver.place_files(&[]).await.unwrap();
+        driver
+            .place_files(&[
+                ContainerFile::directory("C:\\airlock\\subject\\exit"),
+                ContainerFile::new("C:\\panoramic\\courier.exe", "MZ").with_mode(0o755),
+            ])
+            .await
+            .unwrap();
+        assert_eq!(driver.read_file("C:\\airlock\\subject\\exit\\adp").await.unwrap(), None);
+        assert_eq!(driver.stat("C:\\airlock\\subject\\exit").await.unwrap(), None);
+        let error = driver
+            .place_files(&[ContainerFile::new("/file", "secret")])
+            .await
+            .unwrap_err();
+        assert!(!format!("{error:?}").contains("secret"));
+        assert!(driver.read_file("/file").await.is_err());
+        assert!(driver.stat("/file").await.is_err());
+
+        let requests = daemon.requests.lock().unwrap();
+        assert_eq!(requests.len(), 5, "{requests:?}");
+        assert!(requests[0].starts_with("PUT /containers/airlock-ab12cd34-subject/archive?"));
+        assert!(requests[0].contains("path=C%3A%5C"), "{requests:?}");
+        assert!(
+            requests[1].contains("path=C%3A%5Cairlock%5Csubject%5Cexit%5Cadp"),
+            "{requests:?}"
+        );
+        assert!(requests[3].starts_with("HEAD "), "{requests:?}");
+        assert!(
+            requests[3].contains("path=C%3A%5Cairlock%5Csubject%5Cexit"),
+            "{requests:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_prepared_windows_driver_mounts_nothing_and_publishes_nothing() {
+        let daemon = FakeDaemon::start(
+            |method, path| match (method, path.split('?').next().unwrap_or_default()) {
+                ("POST", "/containers/create") => (201, r#"{"Id":"c1","Warnings":[]}"#),
+                _ => (500, r#"{"message":"unexpected request"}"#),
+            },
+        )
+        .await;
+        let config = DriverConfig::from_image("subject", "example:latest".to_string())
+            .with_container_os(ContainerOs::Windows)
+            .with_host_pid_namespace(true)
+            .with_host_cgroup_namespace(true);
+        let driver = Driver::in_group(daemon.docker.clone(), GROUP.to_string(), config.clone());
+
+        driver.create().await.unwrap();
+
+        {
+            let bodies = daemon.bodies.lock().unwrap();
+            assert_eq!(bodies.len(), 1);
+            let body = &bodies[0];
+            assert!(body.contains(r#""NetworkMode":"airlock-ab12cd34""#), "{body}");
+            assert!(body.contains(r#""Aliases":["subject"]"#), "{body}");
+            assert!(body.contains(r#""Binds":[]"#), "{body}");
+            for absent in ["PortBindings", "ExposedPorts", "PidMode", "CgroupnsMode", "Mounts"] {
+                assert!(!body.contains(absent), "{absent}: {body}");
+            }
         }
-        assert!(daemon.requests.lock().unwrap().is_empty());
+
+        let driver = Driver::in_group(
+            daemon.docker.clone(),
+            GROUP.to_string(),
+            config.with_published_port(Protocol::Tcp, 9000, 24100),
+        );
+        let error = driver.create().await.unwrap_err().to_string();
+        assert!(error.contains("Windows containers don't publish ports"), "{error}");
+        assert_eq!(daemon.requests.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]

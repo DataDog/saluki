@@ -12,7 +12,7 @@ use crate::{
     layout::{Os, Realization, RealizationKind},
 };
 
-/// Runtime checks, artifact verification and Linux container scopes sharing one lazily connected Docker daemon.
+/// Runtime checks, artifact verification and container scopes sharing one lazily connected Docker daemon.
 #[derive(Default)]
 pub struct RunBackends {
     pub(super) docker: DockerDaemon,
@@ -27,6 +27,18 @@ impl RunBackends {
             docker,
             providability_checks: std::sync::Mutex::default(),
         }
+    }
+
+    /// Removes all scope resources, including partial preparation. Cancel-safe; the caller bounds it.
+    pub(crate) async fn remove_container_scope(
+        &self, os: Os, scope: &crate::plan::ScopeLayout,
+    ) -> Result<(), saluki_error::GenericError> {
+        let client = self
+            .docker
+            .client(os)
+            .await
+            .map_err(|error| saluki_error::generic_error!(error))?;
+        airlock::group::IsolationGroup::remove(&client, &scope.id()).await
     }
 
     /// Returns each realization this runner host cannot provide, with the reason.
@@ -141,6 +153,28 @@ mod tests {
             let backends = RunBackends::with_docker(api.daemon());
             let error = backends
                 .prepare_linux_scope(&scope, &["p"], "local:latest", bytes::Bytes::new())
+                .await
+                .err()
+                .unwrap();
+            assert_eq!(error.to_string(), expected);
+            assert_eq!(*api.calls.lock().unwrap(), ["connect", "info"]);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_windows_scope_needs_a_daemon_running_windows_containers() {
+        let scope = crate::plan::ScopeLayout {
+            run: "abcd1234".into(),
+            index: 0,
+        };
+        for (os, expected) in [
+            ("linux", "the Docker daemon runs linux containers, not windows"),
+            ("windows", "this Docker connection cannot create containers"),
+        ] {
+            let api = FakeDocker::new(Some(os));
+            let backends = RunBackends::with_docker(api.daemon());
+            let error = backends
+                .prepare_windows_scope(&scope, &["p"], bytes::Bytes::new())
                 .await
                 .err()
                 .unwrap();

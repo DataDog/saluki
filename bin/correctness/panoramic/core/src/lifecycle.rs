@@ -497,7 +497,7 @@ fn undeclared_role(participant: &str, type_name: &str, role: ArtifactRole, reali
 mod tests {
     use super::*;
     use crate::{
-        backend::{docker::test_util::FakeDocker, COURIER_LINUX_BINARY, FIXUP_IMAGE},
+        backend::{docker::test_util::FakeDocker, COURIER_LINUX_BINARY, COURIER_WINDOWS_BINARY, FIXUP_IMAGE},
         case::fixtures,
         deadline::Budget,
         layout::Os,
@@ -688,7 +688,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_participant_on_a_realization_without_a_native_backend_is_a_setup_error_before_any_docker_call() {
+    async fn a_windows_participant_without_process_specs_is_a_setup_error_before_any_docker_call() {
         let api = FakeDocker::new(Some("linux"));
         let inputs = NativeInputs::new(Arc::new(RunBackends::with_docker(api.daemon())), &[], Path::new(".")).unwrap();
         let case = fixtures::LOADER
@@ -721,7 +721,7 @@ mod tests {
         assert_eq!(error.kind, ErrorKind::Setup);
         assert_eq!(
             error.message,
-            "panoramic cannot create windows-container participants natively: 'subject' on windows"
+            "participant 'subject' of type 'server' as windows-container on windows declares no exit channel for process 'server'"
         );
         assert!(api.calls.lock().unwrap().is_empty());
         assert!(control.ledger.labels().is_empty());
@@ -737,11 +737,6 @@ mod tests {
         let loader = crate::case::CaseLoader::new(registries, fixtures::FixtureTypes, "fixture-participants");
         for (os, participants, expected) in [
             (
-                Os::Windows,
-                "  subject: {type: server, subject: true}",
-                "panoramic cannot create windows-container participants natively: 'subject' on windows",
-            ),
-            (
                 Os::Linux,
                 "  subject: {type: pod-server, subject: true, realization: {kind: kubernetes-pod}}",
                 "panoramic cannot create kubernetes-pod participants natively: 'subject' on linux",
@@ -749,14 +744,13 @@ mod tests {
             (
                 Os::Windows,
                 "  subject: {type: server, subject: true}\n  other: {type: pod-server, os: linux, realization: {kind: kubernetes-pod}}",
-                "panoramic cannot create kubernetes-pod participants natively: 'other' on linux; \
-                 panoramic cannot create windows-container participants natively: 'subject' on windows",
+                "panoramic cannot create kubernetes-pod participants natively: 'other' on linux",
             ),
             (
                 Os::Linux,
-                "  subject: {type: server, subject: true}\n  other: {type: server, os: windows}\n  z: {type: server, os: windows}",
-                "panoramic cannot create windows-container participants natively: 'other' on windows; \
-                 panoramic cannot create windows-container participants natively: 'z' on windows",
+                "  subject: {type: server, subject: true}\n  other: {type: pod-server, os: linux, realization: {kind: kubernetes-pod}}\n  z: {type: pod-server, os: linux, realization: {kind: kubernetes-pod}}",
+                "panoramic cannot create kubernetes-pod participants natively: 'other' on linux; \
+                 panoramic cannot create kubernetes-pod participants natively: 'z' on linux",
             ),
         ] {
             let yaml = format!("timeout: 1s\nsubject_os: [{}]\nparticipants:\n{participants}\n{}\n", os.name(), fixtures::minimal_procedure!());
@@ -789,11 +783,7 @@ mod tests {
 
     #[test]
     fn backend_inputs_are_checked_for_each_kind_including_after_a_kind_without_artifacts() {
-        for other in [
-            RealizationKind::HostProcessGroup,
-            RealizationKind::WindowsContainer,
-            RealizationKind::KubernetesPod,
-        ] {
+        for other in [RealizationKind::HostProcessGroup, RealizationKind::KubernetesPod] {
             for kinds in [
                 [other, RealizationKind::LinuxContainer],
                 [RealizationKind::LinuxContainer, other],
@@ -813,6 +803,17 @@ mod tests {
                 assert_eq!(inputs.require_backends(kinds), Ok(()));
             }
         }
+    }
+
+    #[test]
+    fn windows_backend_inputs_require_the_verified_windows_courier() {
+        let mut inputs = NativeInputs::new(Arc::default(), &[], Path::new(".")).unwrap();
+        assert_eq!(
+            inputs.require_backends([RealizationKind::WindowsContainer]),
+            Err("native inputs lack verified binary role 'courier-windows-binary'".into())
+        );
+        inputs.binaries.insert(COURIER_WINDOWS_BINARY.name, Bytes::new());
+        assert_eq!(inputs.require_backends([RealizationKind::WindowsContainer]), Ok(()));
     }
 
     #[tokio::test]

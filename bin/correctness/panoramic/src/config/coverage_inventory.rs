@@ -1466,7 +1466,7 @@ fn ci_jobs_in_the_inventory_are_defined() {
         &windows_script,
         &[
             r#"$Manifest = Join-Path $env:CARGO_TARGET_DIR "panoramic-artifacts.toml""#,
-            r#"Invoke-Native -FilePath $Panoramic -Arguments @("artifacts", "render", "--set", "agent-adp-windows-image=$ImageTag", "--output", $Manifest)"#,
+            r#"Invoke-Native -FilePath $Panoramic -Arguments @("artifacts", "render", "--set", "agent-adp-windows-image=$ImageTag", "--set", "courier-windows-binary=$Courier", "--output", $Manifest)"#,
             r#""run","#,
             r#""--subject-os", "windows","#,
             r#""--artifacts", $Manifest,"#,

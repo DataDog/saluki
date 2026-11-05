@@ -65,6 +65,18 @@ The target runs the ignored backend, lifecycle, runner failure and report tests 
 CI: the `test-container-daemon` job in `.gitlab/e2e.yml` runs them after airlock's daemon tests, with
 `PANORAMIC_TEST_IMAGE` set to the same local Alpine image.
 
+#### Windows daemon tests
+
+The `windows_container::daemon_tests` module in `panoramic-core` exercises the Windows container backend against a
+Windows Docker daemon: participants reach each other by name on a `nat` network, the archive API reads and stats files
+in running and stopped containers, exec stdin reaches end of file, and the courier reaches named pipes, TCP, UDP and
+HTTP and follows files. They also check exit record and output observation, including a container that stops without a
+record. Each test prints the daemon's isolation mode and OS version first.
+
+Set `PANORAMIC_TEST_WINDOWS_IMAGE` to a local Windows image and
+`PANORAMIC_TEST_WINDOWS_COURIER` to the path of a natively built `panoramic-courier.exe`. The Windows integration job
+sets both and runs them before the integration cases. `make test-panoramic-daemon` excludes them on Linux.
+
 ### Panoramic host process tests
 
 The `panoramic-core` unit tests run host process groups through the native lifecycle on Unix hosts, using `/bin/sh`.

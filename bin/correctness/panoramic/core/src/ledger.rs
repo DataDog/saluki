@@ -63,9 +63,10 @@ enum Resource {
         grace: Duration,
     },
     /// Native scope resources removed through the run's Docker connection.
-    LinuxScope {
+    ContainerScope {
         backends: Arc<RunBackends>,
         scope: ScopeLayout,
+        os: crate::layout::Os,
     },
     /// A host process and its process group.
     Process(UnixProcess),
@@ -119,7 +120,9 @@ impl Resource {
     async fn remove(self, deadline: Instant) -> Result<Option<Terminating>, GenericError> {
         match self {
             Self::Participant { removal, grace, .. } => removal.stop(grace, deadline).await.map(|()| None),
-            Self::LinuxScope { backends, scope } => backends.remove_linux_scope(&scope).await.map(|()| None),
+            Self::ContainerScope { backends, scope, os } => {
+                backends.remove_container_scope(os, &scope).await.map(|()| None)
+            }
             Self::IsolationGroup(id) => Driver::clean_related_resources(id).await.map(|()| None),
             Self::Process(process) => process.cleanup().await.map(|()| None),
             Self::Namespace { name, client } => {
@@ -170,7 +173,7 @@ impl fmt::Debug for Resource {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Participant { name, .. } => f.debug_tuple("Participant").field(name).finish(),
-            Self::LinuxScope { scope, .. } => f.debug_tuple("LinuxScope").field(scope).finish(),
+            Self::ContainerScope { scope, .. } => f.debug_tuple("ContainerScope").field(scope).finish(),
             Self::IsolationGroup(id) => f.debug_tuple("IsolationGroup").field(id).finish(),
             Self::Process(process) => f.debug_tuple("Process").field(process).finish(),
             Self::Namespace { name, .. } => f.debug_struct("Namespace").field("name", name).finish_non_exhaustive(),
@@ -185,7 +188,7 @@ impl fmt::Display for Resource {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Participant { name, .. } => write!(f, "participant:{name}"),
-            Self::LinuxScope { scope, .. } => write!(f, "isolation_group:{}", scope.id()),
+            Self::ContainerScope { scope, .. } => write!(f, "isolation_group:{}", scope.id()),
             Self::IsolationGroup(id) => write!(f, "isolation_group:{}", id),
             Self::Process(process) => write!(f, "process:{}", process.name()),
             Self::Namespace { name, .. } => write!(f, "namespace:{}", name),
@@ -276,8 +279,8 @@ impl ResourceLedger {
     }
 
     /// Registers the native scope before preparation.
-    pub(crate) fn linux_scope(&self, backends: Arc<RunBackends>, scope: ScopeLayout) {
-        self.register(Resource::LinuxScope { backends, scope });
+    pub(crate) fn container_scope(&self, backends: Arc<RunBackends>, scope: ScopeLayout, os: crate::layout::Os) {
+        self.register(Resource::ContainerScope { backends, scope, os });
     }
 
     #[cfg(unix)]
@@ -335,7 +338,7 @@ impl ResourceLedger {
         for entry in self.lock().iter_mut() {
             let named = match &entry.resource {
                 Resource::IsolationGroup(id) => id == name,
-                Resource::LinuxScope { scope, .. } => scope.id() == name,
+                Resource::ContainerScope { scope, .. } => scope.id() == name,
                 Resource::Participant { name: participant, .. } => format!("participant:{participant}") == name,
                 Resource::Namespace { name: namespace, .. } => namespace == name,
                 Resource::Process(_) | Resource::Directory(_) | Resource::HostScope(_) => false,
@@ -482,6 +485,36 @@ mod tests {
 
     use super::*;
     use crate::tasks::{CaseTasks, TASK_STOP_TIME};
+
+    #[tokio::test]
+    async fn a_container_scope_is_removed_through_the_backend_of_its_os() {
+        use crate::{backend::docker::test_util::FakeDocker, layout::Os};
+
+        for (daemon_os, scope_os) in [("linux", Os::Windows), ("windows", Os::Linux)] {
+            let api = FakeDocker::new(Some(daemon_os));
+            let backends = Arc::new(RunBackends::with_docker(api.daemon()));
+            let ledger = ResourceLedger::default();
+            let scope = ScopeLayout {
+                run: "abcd1234".into(),
+                index: 0,
+            };
+            ledger.container_scope(backends, scope.clone(), scope_os);
+            let (reclaimed, issues) = ledger.reclaim(Instant::now() + Duration::from_secs(1)).await;
+            assert_eq!(reclaimed.len(), 1);
+            assert_eq!(reclaimed[0].resource, format!("isolation_group:{}", scope.id()));
+            assert_eq!(reclaimed[0].result, ReclaimResult::Leaked);
+            assert_eq!(issues.len(), 1);
+            assert!(
+                issues[0].message.contains(&format!(
+                    "the Docker daemon runs {daemon_os} containers, not {}",
+                    scope_os.name()
+                )),
+                "{:?}",
+                issues[0]
+            );
+            assert_eq!(*api.calls.lock().unwrap(), ["connect", "info"]);
+        }
+    }
 
     /// Bounds every reclaim in these tests.
     const BOUND: Duration = Duration::from_secs(10);
