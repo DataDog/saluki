@@ -20,6 +20,7 @@ pub struct RemapperRule {
     existing_name: &'static str,
     existing_tags: &'static [&'static str],
     required_tag_keys: Vec<&'static str>,
+    excluded_tags: Vec<&'static str>,
     new_name: &'static str,
     remapped_tags: Vec<(&'static str, &'static str)>,
     additional_tags: Vec<MetaString>,
@@ -35,6 +36,7 @@ impl RemapperRule {
             existing_name,
             existing_tags: &[],
             required_tag_keys: Vec::new(),
+            excluded_tags: Vec::new(),
             new_name,
             remapped_tags: Vec::new(),
             additional_tags: Vec::new(),
@@ -52,6 +54,7 @@ impl RemapperRule {
             existing_name,
             existing_tags,
             required_tag_keys: Vec::new(),
+            excluded_tags: Vec::new(),
             new_name,
             remapped_tags: Vec::new(),
             additional_tags: Vec::new(),
@@ -72,6 +75,24 @@ impl RemapperRule {
         I: IntoIterator<Item = &'static str>,
     {
         self.required_tag_keys.extend(required_tag_keys);
+        self
+    }
+
+    /// Adds a set of tags that make this rule reject a source metric that carries any of them.
+    ///
+    /// Tags are matched exactly, in the same `key:value` (or bare) form as the tags given to
+    /// [`by_name_and_tags`][Self::by_name_and_tags]. This is useful when a metric is emitted by components for
+    /// different purposes and only some of them should be remapped.
+    ///
+    /// A metric this rule rejects is still offered to the rules that follow it, so excluding a metric from a set of
+    /// rules requires excluding it on every rule that could match it.
+    ///
+    /// This method is additive, so it can be called multiple times to add more excluded tags.
+    pub fn without_tags<I>(mut self, excluded_tags: I) -> Self
+    where
+        I: IntoIterator<Item = &'static str>,
+    {
+        self.excluded_tags.extend(excluded_tags);
         self
     }
 
@@ -186,6 +207,14 @@ impl RemapperRule {
             if !metric_tags.has_tag(existing_tag) {
                 return None;
             }
+        }
+
+        if self
+            .excluded_tags
+            .iter()
+            .any(|excluded_tag| metric_tags.has_tag(excluded_tag))
+        {
+            return None;
         }
 
         if self
@@ -320,6 +349,32 @@ mod tests {
                 description: "with_required_tag_keys rejects when the tag key is absent",
                 rule: RemapperRule::by_name("src.metric", "dst.metric").with_required_tag_keys(["domain"]),
                 context: Context::from_static_parts("src.metric", &["component_id:forwarder"]),
+                expected_name: None,
+            },
+            MatchCase {
+                description: "without_tags rejects a metric that carries an excluded tag",
+                rule: RemapperRule::by_name("src.metric", "dst.metric").without_tags(["purpose:validation"]),
+                context: Context::from_static_parts("src.metric", &["domain:example.com", "purpose:validation"]),
+                expected_name: None,
+            },
+            MatchCase {
+                description: "without_tags matches when the excluded tag is absent",
+                rule: RemapperRule::by_name("src.metric", "dst.metric").without_tags(["purpose:validation"]),
+                context: Context::from_static_parts("src.metric", &["domain:example.com"]),
+                expected_name: Some("dst.metric"),
+            },
+            MatchCase {
+                description: "without_tags only rejects the exact excluded tag value",
+                rule: RemapperRule::by_name("src.metric", "dst.metric").without_tags(["purpose:validation"]),
+                context: Context::from_static_parts("src.metric", &["purpose:other"]),
+                expected_name: Some("dst.metric"),
+            },
+            MatchCase {
+                description: "without_tags rejects when any of several excluded tags is present",
+                rule: RemapperRule::by_name("src.metric", "dst.metric")
+                    .without_tags(["purpose:validation"])
+                    .without_tags(["purpose:probe"]),
+                context: Context::from_static_parts("src.metric", &["purpose:probe"]),
                 expected_name: None,
             },
         ];

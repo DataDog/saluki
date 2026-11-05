@@ -1,7 +1,14 @@
 use super::RemapperRule;
 
+/// The tag the API key validation HTTP client puts on all of its telemetry.
+///
+/// Validation requests aren't forwarder transactions, and the Core Agent doesn't count them as such. The client emits
+/// the same HTTP metrics as the forwarder's client, distinguished only by this tag, so the transaction rules must
+/// reject it. See `API_KEY_VALIDATION_PURPOSE` in `saluki-components`.
+const API_KEY_VALIDATION_TAG: &str = "purpose:api_key_validation";
+
 pub fn get_transaction_remappings() -> Vec<RemapperRule> {
-    vec![
+    let rules = vec![
         // Transaction metrics.
         RemapperRule::by_name(
             "adp.network_http_requests_input_bytes_total",
@@ -49,5 +56,13 @@ pub fn get_transaction_remappings() -> Vec<RemapperRule> {
         RemapperRule::by_name("adp.network_http_requests_errors_total", "transactions.errors")
             .with_original_tags(["domain", "endpoint", "error_type"])
             .with_help_text("Count of transactions errored grouped by type of error"),
-    ]
+    ];
+
+    // Exclude validation traffic on every rule, not only the ones that read HTTP client metrics: a series that one rule
+    // rejects is offered to the next rule that matches its name, which for `network_http_requests_errors_total` would
+    // otherwise count a validation `client_error` series under `transactions.errors`.
+    rules
+        .into_iter()
+        .map(|rule| rule.without_tags([API_KEY_VALIDATION_TAG]))
+        .collect()
 }
