@@ -78,7 +78,9 @@ pub struct LogsAnalysisOptions {
     /// Defaults to `DD-PROTOCOL`, `DD-EVP-ORIGIN`, and `Content-Encoding`, compared exactly; `DD-EVP-ORIGIN-VERSION`,
     /// compared by presence; and `dd-message-timestamp` and `dd-current-timestamp`, compared as timestamps. Setting
     /// this replaces the defaults rather than extending them, and an empty list compares no headers at all.
-    /// Differences are reported at `headers.<name>`, with the name lowercased, and can be covered by known differences.
+    /// Differences are reported at `headers.<name>`, with the name lowercased, and can be covered by known
+    /// differences. A header difference belongs to no log, so an entry scoped with `when` never covers one, and its
+    /// header paths are reported as stale.
     pub headers: Vec<HeaderRule>,
 
     /// Differences that are expected, each tagged with the gap that explains it.
