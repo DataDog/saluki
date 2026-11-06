@@ -102,7 +102,6 @@ struct AgentMetadata {
     env: MetaString,
     agent_version: MetaString,
     client_computed: bool,
-    split_payload: bool,
 }
 
 impl From<&proto::StatsPayload> for AgentMetadata {
@@ -112,7 +111,6 @@ impl From<&proto::StatsPayload> for AgentMetadata {
             env: (*payload.agentEnv).into(),
             agent_version: (*payload.agentVersion).into(),
             client_computed: payload.clientComputed,
-            split_payload: payload.splitPayload,
         }
     }
 }
@@ -480,5 +478,51 @@ impl ClientStatisticsAggregator {
     /// Returns a reference to the aggregated statistics groups.
     pub fn groups(&self) -> &FastHashMap<AggregationKey, BucketedClientStatistics> {
         &self.groups
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use protobuf::Message as _;
+
+    use super::{proto, ClientStatisticsAggregator, DDSketch};
+
+    fn sketch_bytes() -> Vec<u8> {
+        let mut sketch = DDSketch::with_relative_accuracy(0.01).expect("relative accuracy should be valid");
+        sketch.add(1.0);
+        sketch.to_proto().write_to_bytes().expect("sketch should serialize")
+    }
+
+    fn stats_payload(split_payload: bool) -> proto::StatsPayload {
+        let mut grouped = proto::ClientGroupedStats::new();
+        grouped.set_service("svc".to_string());
+        grouped.set_name("op".to_string());
+        grouped.set_resource("res".to_string());
+        grouped.set_hits(1);
+        grouped.set_okSummary(sketch_bytes());
+        grouped.set_errorSummary(sketch_bytes());
+
+        let mut bucket = proto::ClientStatsBucket::new();
+        bucket.set_start(0);
+        bucket.set_duration(10);
+        bucket.set_stats(vec![grouped]);
+
+        let mut client = proto::ClientStatsPayload::new();
+        client.set_hostname("host".to_string());
+        client.set_stats(vec![bucket]);
+
+        let mut payload = proto::StatsPayload::new();
+        payload.set_agentHostname("agent".to_string());
+        payload.set_splitPayload(split_payload);
+        payload.set_stats(vec![client]);
+        payload
+    }
+
+    #[test]
+    fn split_payload_flag_does_not_have_to_match_across_payloads() {
+        let mut aggregator = ClientStatisticsAggregator::default();
+
+        aggregator.merge_payload(&stats_payload(false)).unwrap();
+        aggregator.merge_payload(&stats_payload(true)).unwrap();
     }
 }
