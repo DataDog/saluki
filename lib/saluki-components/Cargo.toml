@@ -78,6 +78,7 @@ simdutf8 = { workspace = true }
 smallvec = { workspace = true }
 snafu = { workspace = true }
 stringtheory = { workspace = true }
+thingbuf = { workspace = true, features = ["alloc"] }
 tokio = { workspace = true, features = [
   "io-util",
   "macros",
