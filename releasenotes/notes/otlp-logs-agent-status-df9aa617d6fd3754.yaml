@@ -2,8 +2,8 @@
 fixes:
   - |
     OTLP logs handled natively now get the same status as in the Datadog Agent: the status attribute or the severity
-    text is sent as it is, rather than being dropped when it isn't a known status, and a log with no status and a
-    severity number of 0 is sent as ``info`` rather than ``Trace``. Statuses are sent in lowercase, as the Agent sends
-    them.
+    text is sent as it is, keeping its case, rather than being dropped when it isn't a known status. A status derived
+    from the severity number uses a lowercase name such as ``warn``, and a log with no status and a severity number of 0
+    is sent as ``info`` rather than ``Trace``.
   - |
-    Check logs are sent with the Datadog Agent's lowercase statuses, such as ``warn`` and ``error``.
+    Check logs are sent with lowercase statuses, such as ``warn`` and ``error``.
