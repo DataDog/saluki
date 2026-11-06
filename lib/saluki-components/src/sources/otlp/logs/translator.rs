@@ -311,6 +311,18 @@ mod tests {
     }
 
     #[test]
+    fn test_k8s_node_name_maps_to_kube_node_tag() {
+        let lr = otlp_logs_v1::LogRecord::default();
+        let resource = otlp_resource_v1::Resource {
+            attributes: vec![key_value_string_to_otlp_common_key_value("k8s.node.name", "node-1")],
+            dropped_attributes_count: 0,
+            entity_refs: vec![],
+        };
+        let log = translate_log(lr, resource, None);
+        assert!(log.tags().has_tag("kube_node:node-1"));
+    }
+
+    #[test]
     fn test_transform_service_from_log_attribute() {
         let lr = otlp_logs_v1::LogRecord {
             time_unix_nano: 0,
