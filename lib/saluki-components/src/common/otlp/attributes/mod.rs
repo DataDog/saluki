@@ -29,6 +29,7 @@ static CORE_MAPPING: LazyLock<FastHashMap<&'static str, &'static str>> = LazyLoc
     m.insert(DEPLOYMENT_ENVIRONMENT_NAME, "env");
     m.insert(SERVICE_NAME, "service");
     m.insert(SERVICE_VERSION, "version");
+    m.insert(SERVICE_NAMESPACE, "service.namespace");
     m.insert(SERVICE_INSTANCE_ID, "service.instance.id");
     m
 });
@@ -410,6 +411,15 @@ mod tests {
     }
 
     #[test]
+    fn mapped_mode_maps_service_namespace() {
+        let attributes = vec![attr(SERVICE_NAMESPACE, Value::StringValue("shop".into()))];
+
+        let tags = tags_from_attributes(&attributes, ResourceAttributeTagMode::Mapped);
+
+        assert!(has(&tags, "service.namespace:shop"));
+    }
+
+    #[test]
     fn mapped_mode_maps_k8s_node_name_to_kube_node() {
         let attributes = vec![attr(K8S_NODE_NAME, Value::StringValue("node-1".into()))];
 
@@ -425,6 +435,7 @@ mod tests {
             attr("service.name", Value::StringValue(String::new())),
             attr("service.version", Value::StringValue(String::new())),
             attr("service.instance.id", Value::StringValue(String::new())),
+            attr("service.namespace", Value::StringValue(String::new())),
             attr("deployment.environment.name", Value::StringValue(String::new())),
             attr("deployment.environment", Value::StringValue(String::new())),
         ];
