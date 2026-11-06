@@ -340,6 +340,8 @@ fn split_into_trace_stats(client_payloads: Vec<ClientStatsPayload>, max_entries_
         return vec![TraceStats::new(client_payloads)];
     }
 
+    // The fewest events these entries can need. Whole client payloads are never divided while packing, so it can take
+    // more.
     let mut finished_events = Vec::with_capacity(total_grouped_entries.div_ceil(max_entries_per_event));
     let mut current_client_payloads = Vec::new();
     let mut current_event_entries = 0;
@@ -1545,7 +1547,7 @@ mod tests {
     }
 
     #[test]
-    fn test_split_into_trace_stats_marks_and_balances_by_group_count() {
+    fn split_into_trace_stats_marks_and_balances_by_group_count() {
         // The sizes the backend sees for a single client payload, using the production limit.
         let cases: [(usize, &[usize]); 4] = [
             (1, &[1]),
@@ -1571,7 +1573,7 @@ mod tests {
     }
 
     #[test]
-    fn test_split_into_trace_stats_balances_entries_with_one_bucket_per_window() {
+    fn split_into_trace_stats_balances_entries_with_one_bucket_per_window() {
         // 15 entries over three buckets of the same time window, max 12: two events of 8 and 7 entries, each with a
         // single client payload holding a single bucket.
         let buckets = vec![
@@ -1596,7 +1598,7 @@ mod tests {
     }
 
     #[test]
-    fn test_split_into_trace_stats_keeps_one_bucket_per_window_for_each_split_payload() {
+    fn split_into_trace_stats_keeps_one_bucket_per_window_for_each_split_payload() {
         // Two windows of 300 entries each, max 400: two split payloads, each holding one bucket for each window.
         let window_a = ClientStatsBucket::new(
             1000,
@@ -1626,7 +1628,7 @@ mod tests {
     }
 
     #[test]
-    fn test_split_into_trace_stats_no_split_leaves_buckets_and_flag_unset() {
+    fn split_into_trace_stats_no_split_leaves_buckets_and_flag_unset() {
         let buckets = vec![
             make_bucket_with_stats(5),
             make_bucket_with_stats(5),

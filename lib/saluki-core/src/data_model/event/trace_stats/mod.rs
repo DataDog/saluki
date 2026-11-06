@@ -8,7 +8,8 @@ use crate::data_model::tags::TagSet;
 ///
 /// Contains pre-aggregated trace statistics grouped by client/tracer. The encoder wraps this
 /// in a `StatsPayload` protobuf and adds agent-level metadata (`agentHostname`, `agentEnv`,
-/// `agentVersion`, `clientComputed`, `splitPayload`) from ADP configuration.
+/// `agentVersion`, `clientComputed`) from ADP configuration. `splitPayload` comes from this event, which records
+/// whether it is one of several events produced by splitting a flush.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct TraceStats {
     /// Multiple client payloads, one per PayloadAggregationKey (hostname/env/version/container).
