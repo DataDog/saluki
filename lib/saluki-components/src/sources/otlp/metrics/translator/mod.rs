@@ -36,6 +36,7 @@ use super::telemetry::OtlpMetricsTranslatorMetrics;
 use crate::common::otlp::attributes::translator::AttributeTranslator;
 use crate::common::otlp::attributes::ResourceAttributeTagMode;
 use crate::common::otlp::origin::OtlpOriginTagResolver;
+use crate::common::otlp::source::is_gcp_serverless;
 use crate::common::otlp::util::{Source, SourceKind};
 use crate::sources::otlp::Metrics;
 
@@ -179,13 +180,16 @@ impl OtlpMetricsTranslator {
         let mut resource_tags = self.metric_tags.clone();
         resource_tags.extend_from_shared(&resource_attribute_tags);
 
+        // An empty hostname stays empty rather than falling back to the default host, as in the Agent's
+        // `MapMetrics`. Logs instead treat it as missing and fall back to the record's `host.name`.
         let host = match source {
             Some(Source {
                 kind: SourceKind::Hostname,
                 identifier,
             }) => Some(MetaString::from(identifier)),
-            // Every other source, such as ECS Fargate, reports no host.
             Some(_) => None,
+            // A Cloud Run or Cloud Functions resource without a complete identity has no host.
+            None if is_gcp_serverless(&resource.attributes) => None,
             None => Some(self.default_hostname.clone()),
         };
 
@@ -627,6 +631,87 @@ mod tests {
 
         let metric = events[0].try_as_metric().expect("metric event");
         assert_eq!(metric.context().host(), Some("resource-host"));
+    }
+
+    /// A named host resolution case: the resource attributes and the expected metric host.
+    type HostCase = (&'static str, Vec<(&'static str, String)>, Option<&'static str>);
+
+    #[test]
+    fn translate_metrics_resolves_the_host_of_serverless_resources() {
+        let azure = |platform: &str| {
+            vec![
+                ("cloud.platform", platform.to_string()),
+                ("service.name", "app".to_string()),
+                ("cloud.account.id", "sub".to_string()),
+                ("azure.resource_group.name", "rg".to_string()),
+                ("host.name", "resource-host".to_string()),
+            ]
+        };
+        let cases: Vec<HostCase> = vec![
+            ("Azure App Service", azure("azure.app_service"), None),
+            ("Azure Functions", azure("azure.functions"), None),
+            (
+                "Azure Container Apps without an identity falls back to the resource host",
+                vec![
+                    ("cloud.platform", "azure.container_apps".to_string()),
+                    ("host.name", "resource-host".to_string()),
+                ],
+                Some("resource-host"),
+            ),
+            (
+                "incomplete Azure Functions falls back to the resource host",
+                azure("azure.functions")
+                    .into_iter()
+                    .filter(|(key, _)| *key != "azure.resource_group.name")
+                    .collect(),
+                Some("resource-host"),
+            ),
+            (
+                "incomplete Cloud Run has no host",
+                vec![
+                    ("cloud.platform", "gcp_cloud_run".to_string()),
+                    ("host.name", "resource-host".to_string()),
+                ],
+                None,
+            ),
+            (
+                "incomplete Cloud Run doesn't fall back to the default host",
+                vec![("cloud.platform", "gcp_cloud_run".to_string())],
+                None,
+            ),
+            (
+                "an unknown platform falls back to the default host",
+                vec![("cloud.platform", "other".to_string())],
+                Some("default-host"),
+            ),
+        ];
+
+        for (name, attributes, expected) in cases {
+            let metrics = Metrics::for_tests();
+            let mut translator = OtlpMetricsTranslator::for_tests();
+            let mut resource_metrics = single_gauge_resource_metrics(None);
+            resource_metrics.resource = Some(otlp_protos::opentelemetry::proto::resource::v1::Resource {
+                attributes: attributes
+                    .into_iter()
+                    .map(|(key, value)| OtlpKeyValue {
+                        key: key.to_string(),
+                        value: Some(otlp_protos::opentelemetry::proto::common::v1::AnyValue {
+                            value: Some(
+                                otlp_protos::opentelemetry::proto::common::v1::any_value::Value::StringValue(value),
+                            ),
+                        }),
+                    })
+                    .collect(),
+                ..Default::default()
+            });
+
+            let (events_iter, _) = translator
+                .translate_metrics(resource_metrics, &metrics)
+                .expect("translation should succeed");
+            let events = events_iter.collect::<Vec<_>>();
+            let metric = events[0].try_as_metric().expect("metric event");
+            assert_eq!(metric.context().host(), expected, "{name}");
+        }
     }
 
     #[test]

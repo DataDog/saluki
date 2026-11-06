@@ -11,6 +11,7 @@ use saluki_core::data_model::{event::trace::AttributeValue, tags::SharedTagSet, 
 use stringtheory::interning::Interner;
 use stringtheory::MetaString;
 
+use crate::common::otlp::source::resolve_source_from_attributes;
 use crate::common::otlp::traces::translator::ContainerTagPromotion;
 use crate::common::otlp::value::{otlp_value_as_string, otlp_value_to_string};
 
@@ -39,9 +40,9 @@ pub enum SourceKind {
     AzureAppService,
     /// Azure Functions source.
     AzureFunctions,
-    /// Google Cloud Run service source.
+    /// Cloud Run service source.
     GcpCloudRun,
-    /// Google Cloud Functions (v2) source.
+    /// Cloud Functions source.
     GcpCloudFunctions,
     /// Google Cloud Run job source.
     GcpCloudRunJobs,
@@ -608,67 +609,15 @@ pub(super) fn hostname_from_attributes(attributes: &[otlp_common::KeyValue]) -> 
 }
 
 /// Resolves the source metadata from OTLP metric resource attributes.
-///
-/// Keeps resolution scoped to the metrics pipeline
 pub fn resource_to_metric_source(
     resource: &otlp_protos::opentelemetry::proto::resource::v1::Resource,
 ) -> Option<Source> {
-    let attributes = &resource.attributes;
-
-    //If the metric comes from an AWS ECS Fargate resource and a task_arn is present, we omit the hostname
-    if get_string_attribute(attributes, AWS_ECS_LAUNCHTYPE) == Some("fargate") {
-        if let Some(task_arn) = get_string_attribute(attributes, AWS_ECS_TASK_ARN) {
-            return Some(Source {
-                kind: SourceKind::AwsEcsFargate,
-                identifier: task_arn.to_string(),
-            });
-        }
-    }
-
-    hostname_from_attributes(attributes).map(|identifier| Source {
-        kind: SourceKind::Hostname,
-        identifier,
-    })
-}
-
-/// Resolves the source metadata from OTLP resource attributes.
-///
-/// This determines whether the telemetry came from a hostname or serverless environment.
-pub fn resource_to_source(resource: &otlp_protos::opentelemetry::proto::resource::v1::Resource) -> Option<Source> {
-    let attributes = &resource.attributes;
-
-    // AWS ECS Fargate
-    if get_string_attribute(attributes, CLOUD_PROVIDER) == Some("aws")
-        && get_string_attribute(attributes, opentelemetry_semantic_conventions::resource::CLOUD_PLATFORM)
-            == Some("aws_ecs")
-        && get_string_attribute(
-            attributes,
-            opentelemetry_semantic_conventions::resource::AWS_ECS_LAUNCHTYPE,
-        ) == Some("fargate")
-    {
-        if let Some(task_arn) = get_string_attribute(attributes, AWS_ECS_TASK_ARN) {
-            return Some(Source {
-                kind: SourceKind::AwsEcsFargate,
-                identifier: task_arn.to_string(),
-            });
-        }
-    }
-
-    // Hostname from attributes
-    if let Some(host_name) = get_string_attribute(attributes, opentelemetry_semantic_conventions::resource::HOST_NAME) {
-        return Some(Source {
-            kind: SourceKind::Hostname,
-            identifier: host_name.to_string(),
-        });
-    }
-
-    None
+    resolve_source_from_attributes(&resource.attributes)
 }
 
 /// Resolves the source metadata from a typed attributes map.
 ///
-/// This is equivalent to `resource_to_source`, but works on the unified trace attribute map
-/// instead of the OTLP protobuf resource type.
+/// The trace encoder only resolves AWS ECS Fargate tasks and `host.name` hosts.
 pub fn attributes_to_source(attributes: &FastHashMap<MetaString, AttributeValue>) -> Option<Source> {
     let get = |key: &str| -> Option<&str> {
         attributes
@@ -1173,26 +1122,6 @@ mod tests {
             string_attribute(K8S_NODE_NAME, "node-name"),
         ])
         .is_none());
-    }
-
-    #[test]
-    fn metric_source_resolution_does_not_change_the_shared_logs_resolver() {
-        let resource = Resource {
-            attributes: vec![
-                string_attribute(CLOUD_PROVIDER, "azure"),
-                string_attribute(HOST_ID, "vm-id"),
-                string_attribute(HOST_NAME, "host-name"),
-            ],
-            ..Default::default()
-        };
-
-        let logs_source = resource_to_source(&resource).expect("logs source should resolve");
-        assert_eq!(logs_source.kind, SourceKind::Hostname);
-        assert_eq!(logs_source.identifier, "host-name");
-
-        let metric_source = resource_to_metric_source(&resource).expect("metric source should resolve");
-        assert_eq!(metric_source.kind, SourceKind::Hostname);
-        assert_eq!(metric_source.identifier, "vm-id");
     }
 
     fn attribute_value(key: &str, value: Value) -> KeyValue {

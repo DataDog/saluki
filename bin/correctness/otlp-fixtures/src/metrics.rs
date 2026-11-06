@@ -108,7 +108,8 @@ fn host_name(name: &str) -> Option<Resource> {
 
 /// Host fallbacks: no resource, an empty `host.name`, the Agent's own hostname, and a custom one, then Azure VM-ID
 /// precedence over `host.name` and the `host.name` fallback without a VM ID. Then one `otlpsource.<case>` gauge per
-/// source case.
+/// serverless source case: those sources have no host, and an incomplete identity falls back to `host.name`, except on
+/// Cloud Run, which never falls back.
 pub fn host_fixture() -> Vec<u8> {
     let mut resources = vec![
         host_gauge(None, 1.0),
@@ -146,6 +147,28 @@ pub fn host_fixture() -> Vec<u8> {
 
 /// Source cases for `host_fixture`, each named for its gauge.
 fn source_cases() -> Vec<(&'static str, Vec<KeyValue>)> {
+    let azure = |platform: &str| {
+        vec![
+            kv("cloud.platform", string(platform)),
+            kv("service.name", string("fixture-app")),
+            kv("cloud.account.id", string("sub-1")),
+            kv("azure.resource_group.name", string("rg-1")),
+        ]
+    };
+    let gcp = |platform: &str| {
+        vec![
+            kv("cloud.platform", string(platform)),
+            kv("cloud.account.id", string("project-1")),
+            kv("cloud.region", string("us-central1")),
+            kv("faas.name", string("svc-1")),
+            kv("faas.instance", string("instance-1")),
+            kv("faas.version", string("rev-1")),
+        ]
+    };
+    let without = |mut attributes: Vec<KeyValue>, key: &str| {
+        attributes.retain(|attribute| attribute.key != key);
+        attributes
+    };
     let with_host = |mut attributes: Vec<KeyValue>| {
         attributes.push(kv("host.name", string("source-host")));
         attributes
@@ -153,6 +176,28 @@ fn source_cases() -> Vec<(&'static str, Vec<KeyValue>)> {
 
     vec![
         ("host_name", with_host(vec![])),
+        ("azure_functions", with_host(azure("azure.functions"))),
+        (
+            "azure_functions_incomplete",
+            with_host(without(azure("azure.functions"), "azure.resource_group.name")),
+        ),
+        (
+            "azure_app_service_incomplete",
+            with_host(without(azure("azure.app_service"), "cloud.account.id")),
+        ),
+        (
+            "azure_container_apps_no_replica",
+            with_host(azure("azure.container_apps")),
+        ),
+        (
+            "gcp_cloud_run_incomplete",
+            with_host(without(gcp("gcp_cloud_run"), "faas.instance")),
+        ),
+        (
+            "gcp_cloud_run_incomplete_no_host",
+            without(gcp("gcp_cloud_run"), "faas.instance"),
+        ),
+        ("unknown_platform_no_host", vec![kv("cloud.platform", string("other"))]),
         (
             "non_string_datadog_host_name",
             with_host(vec![kv("datadog.host.name", int(1))]),
