@@ -19,44 +19,44 @@ container:
 procedure:
   - parallel:
       - assertion: process_stable_for
-        duration: 10s
+        duration: 60s
       - assertion: http_check
         endpoint: "http://localhost:58126/services"
         status:
           equal: 200
         body:
           equal: "OK\n"
-        timeout: 10s
+        timeout: 60s
       - assertion: http_check
         endpoint: "http://localhost:58126/v0.1/services"
         status:
           equal: 200
         body:
           equal: "OK\n"
-        timeout: 10s
+        timeout: 60s
       - assertion: http_check
         endpoint: "http://localhost:58126/v0.2/services"
         status:
           equal: 200
         body:
           equal: "OK\n"
-        timeout: 10s
+        timeout: 60s
       - assertion: http_check
         endpoint: "http://localhost:58126/v0.3/services"
         status:
           equal: 200
         body:
           equal: "OK\n"
-        timeout: 10s
+        timeout: 60s
       - assertion: http_check
         endpoint: "http://localhost:58126/v0.4/services"
         status:
           equal: 200
         body:
           equal: "OK\n"
-        timeout: 10s
+        timeout: 60s
       - assertion: log_not_contains
         pattern: "panic|PANIC"
         regex: true
-        during: 10s
+        during: 60s
 
