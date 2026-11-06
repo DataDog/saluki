@@ -78,7 +78,23 @@ impl<'a> DatadogTranslator<'a> {
         let datadog = self.datadog;
         let errors = drive(datadog, &mut self).err();
         self.apply_deprecated_max_tps_alias();
+        self.resolve_v3_sketch_payload_limits();
         (self.config, errors)
+    }
+
+    // Resolve after the witness has supplied both generic limits and sketch overrides.
+    fn resolve_v3_sketch_payload_limits(&mut self) {
+        let metrics = &mut self.config.shared.metrics_encoding;
+        let sketches = &mut metrics.v3_api.sketches;
+        if sketches.max_compressed_payload_size == 0 {
+            sketches.max_compressed_payload_size = metrics.max_payload_size;
+        }
+        if sketches.max_uncompressed_payload_size == 0 {
+            sketches.max_uncompressed_payload_size = metrics.max_uncompressed_payload_size;
+        }
+        if sketches.max_points_per_payload == 0 {
+            sketches.max_points_per_payload = usize::MAX;
+        }
     }
 
     /// Applies the deprecated `max_traces_per_second` alias to the target rate.
@@ -1716,6 +1732,33 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
 
     fn consume_serializer_experimental_use_v3_api_sketches_endpoints(&mut self, value: Vec<String>) {
         self.config.shared.metrics_encoding.v3_api.sketches.endpoints = value;
+    }
+
+    fn consume_serializer_experimental_use_v3_api_sketches_max_compressed_payload_size(&mut self, value: i64) {
+        self.config
+            .shared
+            .metrics_encoding
+            .v3_api
+            .sketches
+            .max_compressed_payload_size = value.max(0) as usize;
+    }
+
+    fn consume_serializer_experimental_use_v3_api_sketches_max_points_per_payload(&mut self, value: i64) {
+        self.config
+            .shared
+            .metrics_encoding
+            .v3_api
+            .sketches
+            .max_points_per_payload = value.max(0) as usize;
+    }
+
+    fn consume_serializer_experimental_use_v3_api_sketches_max_uncompressed_payload_size(&mut self, value: i64) {
+        self.config
+            .shared
+            .metrics_encoding
+            .v3_api
+            .sketches
+            .max_uncompressed_payload_size = value.max(0) as usize;
     }
 
     fn consume_serializer_max_payload_size(&mut self, value: i64) {

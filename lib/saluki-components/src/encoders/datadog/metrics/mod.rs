@@ -138,7 +138,7 @@ pub struct DatadogMetricsConfiguration {
 
     /// Maximum compressed size, in bytes, of generic payloads.
     ///
-    /// This applies to V1 JSON series payloads and sketch payloads, matching the Datadog Agent's generic payload
+    /// This applies to V1 JSON series payloads and V2 sketch payloads, matching the Datadog Agent's generic payload
     /// builder. V2 series payloads use the series-specific limit instead. The effective value is clamped to
     /// the Agent's default intake-safe limit of 2,621,440 bytes, so larger configured values do not allow payloads that
     /// intake may reject. If set to `0`, every non-empty compressed payload exceeds the limit and is dropped during
@@ -147,7 +147,7 @@ pub struct DatadogMetricsConfiguration {
 
     /// Maximum uncompressed size, in bytes, of generic payloads.
     ///
-    /// This applies to V1 JSON series payloads and sketch payloads, matching the Datadog Agent's generic payload
+    /// This applies to V1 JSON series payloads and V2 sketch payloads, matching the Datadog Agent's generic payload
     /// builder. V2 series payloads use the series-specific limit instead. The effective value
     /// is clamped to the Agent's default intake-safe limit of 4,194,304 bytes, so larger configured values do not allow
     /// payloads that intake may reject. Values smaller than the minimum endpoint framing size prevent the request
@@ -277,12 +277,22 @@ impl DatadogMetricsConfiguration {
         self
     }
 
-    fn v3_payload_limits(&self) -> V3PayloadLimits {
+    fn v3_series_payload_limits(&self) -> V3PayloadLimits {
         V3PayloadLimits::new(
             self.max_series_payload_size,
             self.max_series_uncompressed_payload_size,
             self.max_metrics_per_payload,
             self.max_series_points_per_payload,
+        )
+    }
+
+    fn v3_sketch_payload_limits(&self) -> V3PayloadLimits {
+        let sketches = &self.v3_api.sketches;
+        V3PayloadLimits::new(
+            sketches.max_compressed_payload_size,
+            sketches.max_uncompressed_payload_size,
+            self.max_metrics_per_payload,
+            sketches.max_points_per_payload,
         )
     }
 
@@ -400,7 +410,7 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
             v2_compression_scheme
         };
         let series_endpoint_uri = METRICS_SERIES_V3_PATH.to_string();
-        let payload_limits = self.v3_payload_limits();
+        let series_payload_limits = self.v3_series_payload_limits();
 
         let v2_endpoint_config = EndpointConfiguration::new(
             v2_compression_scheme,
@@ -430,7 +440,8 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
         };
         let v3_runtime_config = V3RuntimeConfig {
             endpoint_config,
-            payload_limits,
+            series_payload_limits,
+            sketch_payload_limits: self.v3_sketch_payload_limits(),
             series_endpoint_uri,
             serializer_telemetry: v3_serializer_telemetry,
         };
@@ -537,7 +548,8 @@ pub struct DatadogMetrics {
 
 struct V3RuntimeConfig {
     endpoint_config: EndpointConfiguration,
-    payload_limits: V3PayloadLimits,
+    series_payload_limits: V3PayloadLimits,
+    sketch_payload_limits: V3PayloadLimits,
     series_endpoint_uri: String,
     serializer_telemetry: V3SerializerTelemetry,
 }
@@ -707,12 +719,16 @@ async fn run_request_builder(
 
     let tag_series = series_mode.needs_tagging();
     let tag_sketches = sketches_mode.needs_tagging();
-    let v3_flush_context = V3FlushContext {
+    let v3_series_flush_context = V3FlushContext {
         endpoint_config: &v3_runtime_config.endpoint_config,
-        payload_limits: v3_runtime_config.payload_limits,
+        payload_limits: v3_runtime_config.series_payload_limits,
         series_endpoint_uri: &v3_runtime_config.series_endpoint_uri,
         serializer_telemetry: &v3_runtime_config.serializer_telemetry,
         telemetry: &telemetry,
+    };
+    let v3_sketch_flush_context = V3FlushContext {
+        payload_limits: v3_runtime_config.sketch_payload_limits,
+        ..v3_series_flush_context
     };
 
     loop {
@@ -751,6 +767,10 @@ async fn run_request_builder(
                             &mut v3_sketch_metrics,
                             &mut v3_sketch_points,
                         ),
+                    };
+                    let v3_flush_context = match endpoint {
+                        MetricsEndpoint::SeriesV1 | MetricsEndpoint::SeriesV2 => v3_series_flush_context,
+                        MetricsEndpoint::Sketches => v3_sketch_flush_context,
                     };
                     let metric_point_count = metric.values().len();
                     let should_buffer_v3 = endpoint_mode.needs_v3();
@@ -881,7 +901,7 @@ async fn run_request_builder(
                 if let Some(metrics) = &mut v3_series_metrics {
                     if v2_series_flush_succeeded || matches!(series_mode, MetricsEncoderMode::V3Enabled) {
                         if let Err(e) = encode_and_flush_v3_series_metrics(
-                            v3_flush_context,
+                            v3_series_flush_context,
                             metrics,
                             &mut v3_series_ratio,
                             &mut payloads_tx,
@@ -913,7 +933,7 @@ async fn run_request_builder(
                 if let Some(metrics) = &mut v3_sketch_metrics {
                     if v2_sketches_flush_succeeded || matches!(sketches_mode, MetricsEncoderMode::V3Enabled) {
                         if let Err(e) = encode_and_flush_v3_sketch_metrics(
-                            v3_flush_context,
+                            v3_sketch_flush_context,
                             metrics,
                             &mut v3_sketch_ratio,
                             &mut payloads_tx,
@@ -2935,7 +2955,8 @@ mod tests {
                 self.sketches_mode,
                 V3RuntimeConfig {
                     endpoint_config: v3_endpoint_config,
-                    payload_limits: self.payload_limits,
+                    series_payload_limits: self.payload_limits,
+                    sketch_payload_limits: self.payload_limits,
                     series_endpoint_uri: METRICS_SERIES_V3_PATH.to_string(),
                     serializer_telemetry,
                 },
@@ -2997,6 +3018,41 @@ mod tests {
                 .expect("request builder task should complete")
                 .expect("request builder should stop cleanly");
         }
+    }
+
+    #[tokio::test]
+    async fn v3_sketches_do_not_inherit_series_size_or_point_limits() {
+        use crate::common::datadog::METRICS_SKETCHES_PATH;
+
+        // Regression for Core PR #57176: a sketch that fits its own limits must survive smaller series limits.
+        let mut config = datadog_metrics_configuration();
+        config.use_v3_api.series.enabled = V3SeriesMode::Enabled;
+        config.v3_api.sketches.endpoints = vec![config.primary_endpoint.clone()];
+        config.max_series_payload_size = 1;
+        config.max_series_uncompressed_payload_size = 1;
+        config.max_series_points_per_payload = 1;
+        config.flush_timeout = Duration::from_millis(10);
+        let (control, mut output) = TestComponentDriver::encoder(config).await.unwrap();
+        control
+            .send_events([
+                Event::Metric(Metric::counter("series.too.large", 1.0)),
+                Event::Metric(Metric::distribution("sketch.fits", [(123, 1.0), (124, 2.0)])),
+            ])
+            .await;
+        let (result, payloads) = tokio::join!(control.shutdown(), output.collect());
+        result.unwrap();
+
+        // V2 copies are routed separately; inspect only authoritative V3 output.
+        let requests: Vec<_> = payloads
+            .into_iter()
+            .map(|p| p.try_into_http_payload().unwrap().into_parts())
+            .filter(|(_, request)| request.uri() != METRICS_SKETCHES_PATH)
+            .collect();
+        assert_eq!(requests.len(), 1, "only the V3 sketch should fit");
+        let (metadata, request) = &requests[0];
+        assert_eq!(request.uri(), METRICS_SKETCHES_V3_PATH);
+        assert_eq!(metadata.event_count(), 1);
+        assert_eq!(metadata.data_point_count(), 2);
     }
 
     #[tokio::test]
@@ -3277,7 +3333,7 @@ mod payload_limits {
         config.max_series_uncompressed_payload_size = 5678;
         config.max_series_points_per_payload = 500;
 
-        let limits = config.v3_payload_limits();
+        let limits = config.v3_series_payload_limits();
 
         assert_eq!(1234, limits.max_compressed_size);
         assert_eq!(5678, limits.max_uncompressed_size);

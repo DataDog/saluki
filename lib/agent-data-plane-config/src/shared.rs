@@ -546,6 +546,21 @@ pub struct V3ApiEncoding {
 pub struct V3ApiSettings {
     /// Endpoints enabled for the V3 intake.
     pub endpoints: Vec<String>,
+
+    /// Maximum compressed V3 sketch payload size, in bytes.
+    ///
+    /// Defaults to `serializer_max_payload_size` (2,621,440 bytes).
+    pub max_compressed_payload_size: usize,
+
+    /// Maximum uncompressed V3 sketch payload size, in bytes.
+    ///
+    /// Defaults to `serializer_max_uncompressed_payload_size` (4,194,304 bytes).
+    pub max_uncompressed_payload_size: usize,
+
+    /// Maximum number of sketch points per V3 payload.
+    ///
+    /// Defaults to unlimited (`usize::MAX`).
+    pub max_points_per_payload: usize,
 }
 
 /// Whether series are routed to the V3 metrics intake (`use_v3_api.series.*`).

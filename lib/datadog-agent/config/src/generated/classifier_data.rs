@@ -695,24 +695,6 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         default: DefaultValue::Json("\"/api/intake/metrics/v3beta/sketches\""),
     },
     ClassifierEntry {
-        yaml_path: "serializer_experimental_use_v3_api.sketches.max_compressed_payload_size",
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-        default: DefaultValue::Json("0"),
-    },
-    ClassifierEntry {
-        yaml_path: "serializer_experimental_use_v3_api.sketches.max_points_per_payload",
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-        default: DefaultValue::Json("0"),
-    },
-    ClassifierEntry {
-        yaml_path: "serializer_experimental_use_v3_api.sketches.max_uncompressed_payload_size",
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-        default: DefaultValue::Json("0"),
-    },
-    ClassifierEntry {
         yaml_path: "serializer_experimental_use_v3_api.sketches.shadow_sample_rate",
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
