@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::HashMap};
+use std::collections::HashMap;
 
 use chrono::DateTime;
 use otlp_common::any_value::Value::StringValue as OtlpStringValue;
@@ -164,23 +164,28 @@ pub fn flatten_attribute(base_key: &str, av: &otlp_common::AnyValue, depth: usiz
     vec![(base_key.to_string(), to_leaf_json(av))]
 }
 
+/// The length of the longest reserved record attribute key, `contextmap.traceid`.
+const MAX_RESERVED_KEY_LEN: usize = 18;
+
 /// Lowercases an attribute key the way Go's `strings.ToLower` does, for matching against reserved keys.
 ///
 /// Go maps each character to its simple lowercase, so unlike `str::to_lowercase`, `İ` (U+0130) becomes a plain `i`
-/// and a final `Σ` becomes `σ`. Returns the key as is when lowercasing doesn't change it.
-fn lowercase_key(key: &str) -> Cow<'_, str> {
-    fn lowercase_char(c: char) -> char {
-        match c {
+/// and a final `Σ` becomes `σ`. Reserved keys are short and ASCII, so this returns `None`, without lowercasing the
+/// rest, as soon as the key can't be one.
+fn lowercase_reserved_key<'a>(key: &str, buf: &'a mut [u8; MAX_RESERVED_KEY_LEN]) -> Option<&'a str> {
+    let mut len = 0;
+    for c in key.chars() {
+        let lower = match c {
             '\u{130}' => 'i',
             c => c.to_lowercase().next().unwrap_or(c),
+        };
+        if !lower.is_ascii() || len == buf.len() {
+            return None;
         }
+        buf[len] = lower as u8;
+        len += 1;
     }
-
-    if key.chars().all(|c| lowercase_char(c) == c) {
-        Cow::Borrowed(key)
-    } else {
-        Cow::Owned(key.chars().map(lowercase_char).collect())
-    }
+    std::str::from_utf8(&buf[..len]).ok()
 }
 
 // Helper to insert safely avoid overwriting fields that are already set
@@ -202,9 +207,10 @@ pub fn transform_log_record(
     // Single-pass over record attributes: handle special keys and flatten others
     let mut status_text_from_attrs: Option<String> = None;
     let mut msg_from_attrs: Option<String> = None;
+    let mut key_buf = [0u8; MAX_RESERVED_KEY_LEN];
     for kv in &lr.attributes {
         // Reserved keys match in any case, but every other key keeps its original spelling.
-        match lowercase_key(&kv.key).as_ref() {
+        match lowercase_reserved_key(&kv.key, &mut key_buf).unwrap_or_default() {
             // Message keys
             k if MESSAGE_KEYS.contains(&k) => {
                 if let Some(av) = kv.value.as_ref() {
@@ -413,23 +419,43 @@ mod tests {
     }
 
     #[test]
-    fn lowercase_key_matches_go_strings_to_lower() {
+    fn lowercase_reserved_key_matches_go_strings_to_lower() {
         let cases = [
-            ("message", "message"),
-            ("Message", "message"),
-            ("SYSLOG.Severity", "syslog.severity"),
-            // Go maps each character on its own: `İ` becomes a plain `i`, and a final `Σ` becomes `σ`.
-            ("TRACE\u{130}D", "traceid"),
-            ("\u{3a3}\u{3a3}", "\u{3c3}\u{3c3}"),
-            // The Kelvin sign lowercases to an ASCII `k`.
-            ("\u{212a}ey", "key"),
-            ("", ""),
+            ("message", Some("message")),
+            ("Message", Some("message")),
+            ("SYSLOG.Severity", Some("syslog.severity")),
+            ("ContextMap.TraceID", Some("contextmap.traceid")),
+            // Go maps each character on its own: `İ` becomes a plain `i`, and the Kelvin sign an ASCII `k`.
+            ("TRACE\u{130}D", Some("traceid")),
+            ("\u{212a}ey", Some("key")),
+            ("", Some("")),
+            // Keys that can't be reserved: too long, or not ASCII once lowercased.
+            ("ContextMap.TraceIDs", None),
+            ("\u{3a3}", None),
         ];
 
         for (key, expected) in cases {
-            assert_eq!(lowercase_key(key), expected, "lowercase_key({:?})", key);
+            let mut buf = [0u8; MAX_RESERVED_KEY_LEN];
+            assert_eq!(
+                lowercase_reserved_key(key, &mut buf),
+                expected,
+                "lowercase_reserved_key({:?})",
+                key
+            );
         }
-        assert!(matches!(lowercase_key("already_lower"), Cow::Borrowed(_)));
+
+        let longest = [
+            MESSAGE_KEYS,
+            STATUS_KEYS,
+            TRACE_ID_ATTR_KEYS,
+            SPAN_ID_ATTR_KEYS,
+            &[DDTAGS_ATTR],
+        ]
+        .concat()
+        .iter()
+        .map(|key| key.len())
+        .max();
+        assert_eq!(longest, Some(MAX_RESERVED_KEY_LEN));
     }
 
     #[test]
