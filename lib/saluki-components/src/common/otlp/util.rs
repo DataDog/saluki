@@ -378,7 +378,7 @@ const INVALID_HOSTNAMES: [&str; 6] = [
     "ip6-localhost",
 ];
 
-/// Returns the value of the first attribute named `key`, like pdata's `Map.Get`.
+/// Returns the value of the first attribute named `key`, like `Map.Get` in `pdata`.
 ///
 /// The inner `Option` is `None` for an attribute that is present but has an empty value.
 fn get_attribute<'a>(attributes: &'a [otlp_common::KeyValue], key: &str) -> Option<Option<&'a Value>> {
@@ -388,7 +388,7 @@ fn get_attribute<'a>(attributes: &'a [otlp_common::KeyValue], key: &str) -> Opti
         .map(|kv| kv.value.as_ref().and_then(|v| v.value.as_ref()))
 }
 
-/// Returns the first attribute named `key` as pdata's `Map.Get` followed by `Value.Str` would.
+/// Returns the first attribute named `key` as `Map.Get` followed by `Value.Str` in `pdata` would.
 ///
 /// Unlike [`get_string_attribute`], a present attribute that isn't a string yields `Some("")`, so
 /// presence checks match the Agent's.
@@ -399,12 +399,12 @@ fn get_attribute_str<'a>(attributes: &'a [otlp_common::KeyValue], key: &str) -> 
     })
 }
 
-/// Returns the attribute as pdata's `Value.Str` would, but only when it isn't empty.
+/// Returns the attribute as `Value.Str` in `pdata` would, but only when it isn't empty.
 fn get_non_empty_attribute_str<'a>(attributes: &'a [otlp_common::KeyValue], key: &str) -> Option<&'a str> {
     get_attribute_str(attributes, key).filter(|s_val| !s_val.is_empty())
 }
 
-/// Renders the literal `host` attribute as pdata's `Value.AsString` does.
+/// Renders the literal `host` attribute as `Value.AsString` in `pdata` does.
 ///
 /// Doubles, bytes, arrays, and maps return `None` because their `AsString` formatting isn't
 /// implemented yet, so resolution falls through to the next hostname source for them.
