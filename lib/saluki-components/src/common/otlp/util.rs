@@ -24,6 +24,8 @@ pub const KEY_DATADOG_CONTAINER_TAGS: &str = "datadog.container_tags";
 pub const DEPLOYMENT_ENVIRONMENT_KEY: &str = "deployment.environment";
 
 /// The kind of source that produced telemetry data.
+// The variant names follow the Agent's `source.Kind` constants.
+#[allow(clippy::enum_variant_names)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum SourceKind {
     /// Hostname-based source.
@@ -1352,6 +1354,9 @@ mod tests {
         }
     }
 
+    /// A named source resolution case: the attributes and the expected kind and identifier.
+    type SourceCase = (&'static str, Vec<KeyValue>, Option<(SourceKind, String)>);
+
     fn resolved_source(attributes: Vec<KeyValue>) -> Option<(SourceKind, String)> {
         source_from_attributes(&attributes).map(|source| (source.kind, source.identifier))
     }
@@ -1363,7 +1368,7 @@ mod tests {
     #[test]
     fn source_from_attributes_resolves_hostnames_in_agent_order() {
         let s = string_attribute;
-        let cases: Vec<(&str, Vec<KeyValue>, Option<(SourceKind, String)>)> = vec![
+        let cases: Vec<SourceCase> = vec![
             (
                 "literal host beats datadog.host.name",
                 vec![s(ATTRIBUTE_DATADOG_HOSTNAME, "custom"), s(ATTRIBUTE_HOST, "literal")],
@@ -1559,7 +1564,7 @@ mod tests {
         };
         let kind = |kind: SourceKind, identifier: &str| Some((kind, identifier.to_string()));
 
-        let cases: Vec<(&str, Vec<KeyValue>, Option<(SourceKind, String)>)> = vec![
+        let cases: Vec<SourceCase> = vec![
             (
                 "Azure Functions",
                 azure("azure.functions"),
