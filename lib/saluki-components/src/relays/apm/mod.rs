@@ -86,6 +86,7 @@ pub struct ApmRelayConfiguration {
 struct Metrics {
     requests_relayed_total: Counter,
     requests_failed_total: Counter,
+    requests_handled_total: Counter,
 }
 
 impl ApmRelayConfiguration {
@@ -333,7 +334,8 @@ impl ApmRelayAPIHandler {
         result
     }
 
-    async fn handle_services() -> impl IntoResponse {
+    async fn handle_services(State(RelayState { metrics, .. }): State<RelayState>) -> impl IntoResponse {
+        metrics.requests_handled_total().increment(1);
         "OK\n"
     }
 }
