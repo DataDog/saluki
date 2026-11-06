@@ -282,6 +282,8 @@ async fn otlp_logs_golden_vectors() {
 
     // The vectors and the paths for which each manifest entry matched a diff.
     let mut used_vectors = BTreeSet::<(usize, &str)>::new();
+    // Vectors whose logs couldn't be paired with the target, and so weren't diffed.
+    let mut undiffed_vectors = BTreeSet::<&str>::new();
     let mut used_paths = BTreeSet::<(usize, &str)>::new();
 
     let (control, mut logs, mut client) = start_source().await;
@@ -315,6 +317,7 @@ async fn otlp_logs_golden_vectors() {
                 current_logs.len(),
                 target_logs.len()
             ));
+            undiffed_vectors.insert(vector.name);
             continue;
         }
         for (index, (target_log, current_log)) in target_logs.iter().zip(&current_logs).enumerate() {
@@ -351,10 +354,12 @@ async fn otlp_logs_golden_vectors() {
     }
     control.shutdown().await.expect("OTLP source should stop cleanly");
 
-    // Every vector and every path of an entry must still match a diff, so that a fix has to remove them.
+    // Every vector and every path of an entry must still match a diff, so that a fix has to remove them. A vector that
+    // couldn't be diffed has already failed, so its entries aren't reported as stale too.
     for (entry_index, gap) in KNOWN_GAPS.iter().enumerate() {
+        let names_undiffed_vector = gap.vectors.iter().any(|vector| undiffed_vectors.contains(vector));
         for vector in gap.vectors {
-            if !used_vectors.contains(&(entry_index, *vector)) {
+            if !undiffed_vectors.contains(vector) && !used_vectors.contains(&(entry_index, *vector)) {
                 failures.push(format!(
                     "{}: manifest entry for {} ({}) no longer matches; remove the vector from it",
                     vector, gap.gap, gap.reason
@@ -362,7 +367,7 @@ async fn otlp_logs_golden_vectors() {
             }
         }
         for pattern in gap.paths {
-            if !used_paths.contains(&(entry_index, *pattern)) {
+            if !names_undiffed_vector && !used_paths.contains(&(entry_index, *pattern)) {
                 failures.push(format!(
                     "manifest entry for {} ({}) no longer matches path `{}`; remove the path from it",
                     gap.gap, gap.reason, pattern
