@@ -2,7 +2,7 @@
 //!
 //! This module contains helpers used by both the OTLP source (translator) and the Datadog trace encoder.
 
-use std::sync::LazyLock;
+use std::{borrow::Cow, sync::LazyLock};
 
 use opentelemetry_semantic_conventions::resource::*;
 use otlp_protos::opentelemetry::proto::common::v1::{self as otlp_common, any_value::Value};
@@ -572,15 +572,15 @@ fn kubernetes_hostname(attributes: &[otlp_common::KeyValue]) -> Option<String> {
 ///
 /// Checks, in order: the literal `host` attribute, `datadog.host.name`, ECS Fargate (which has no
 /// hostname), the cloud provider's hostname, the Kubernetes node name, `host.id`, and `host.name`.
-fn unsanitized_hostname_from_attributes(attributes: &[otlp_common::KeyValue]) -> Option<String> {
+fn unsanitized_hostname_from_attributes(attributes: &[otlp_common::KeyValue]) -> Option<Cow<'_, str>> {
     // A literal `host` of any type stops resolution, rendered as `Value.AsString` in `pdata` does. Only
     // the JSON layout of arrays and maps is approximate.
     if let Some(hostname) = first_attribute(attributes, ATTRIBUTE_HOST) {
-        return Some(otlp_value_as_string(hostname).into_owned());
+        return Some(otlp_value_as_string(hostname));
     }
 
     if let Some(hostname) = first_attribute_str(attributes, ATTRIBUTE_DATADOG_HOSTNAME) {
-        return Some(hostname.to_string());
+        return Some(Cow::Borrowed(hostname));
     }
 
     if first_attribute_str(attributes, AWS_ECS_LAUNCHTYPE) == Some("fargate") {
@@ -588,23 +588,24 @@ fn unsanitized_hostname_from_attributes(attributes: &[otlp_common::KeyValue]) ->
     }
 
     match first_attribute_str(attributes, CLOUD_PROVIDER) {
-        Some("aws") => return ec2_hostname(attributes).map(str::to_owned),
-        Some("gcp") => return gcp_hostname(attributes),
-        Some("azure") => return azure_hostname(attributes).map(str::to_owned),
+        Some("aws") => return ec2_hostname(attributes).map(Cow::Borrowed),
+        Some("gcp") => return gcp_hostname(attributes).map(Cow::Owned),
+        Some("azure") => return azure_hostname(attributes).map(Cow::Borrowed),
         _ => {}
     }
 
     kubernetes_hostname(attributes)
-        .or_else(|| first_attribute_str(attributes, HOST_ID).map(str::to_owned))
-        .or_else(|| first_attribute_str(attributes, HOST_NAME).map(str::to_owned))
+        .map(Cow::Owned)
+        .or_else(|| first_attribute_str(attributes, HOST_ID).map(Cow::Borrowed))
+        .or_else(|| first_attribute_str(attributes, HOST_NAME).map(Cow::Borrowed))
 }
 
 /// Resolves a valid hostname from resource attributes.
 ///
 /// The hostname can be empty, for example when `datadog.host.name` isn't a string.
-pub(super) fn hostname_from_attributes(attributes: &[otlp_common::KeyValue]) -> Option<String> {
+pub(super) fn hostname_from_attributes(attributes: &[otlp_common::KeyValue]) -> Option<Cow<'_, str>> {
     let hostname = unsanitized_hostname_from_attributes(attributes)?;
-    (!INVALID_HOSTNAMES.contains(&hostname.as_str())).then_some(hostname)
+    (!INVALID_HOSTNAMES.contains(&hostname.as_ref())).then_some(hostname)
 }
 
 /// Resolves the source metadata from a typed attributes map.
