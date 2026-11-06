@@ -7,8 +7,7 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 use serde_json::Value;
-
-use super::{DiffKind, FieldDiff};
+use stele::{path_matches, DiffKind, FieldDiff};
 
 /// A known difference, set in the `logs.known_differences` section of a correctness case.
 #[derive(Clone, Debug, Deserialize)]
@@ -99,24 +98,6 @@ impl<'a> Ratchet<'a> {
     }
 }
 
-/// Returns `true` if `path` matches the glob `pattern`.
-fn path_matches(pattern: &str, path: &str) -> bool {
-    let pattern = pattern.split('.').collect::<Vec<_>>();
-    let path = path.split('.').collect::<Vec<_>>();
-    segments_match(&pattern, &path)
-}
-
-fn segments_match(pattern: &[&str], path: &[&str]) -> bool {
-    match (pattern.split_first(), path.split_first()) {
-        (None, _) => path.is_empty(),
-        (Some((&"**", rest)), _) => (0..=path.len()).any(|skip| segments_match(rest, &path[skip..])),
-        (Some((segment, rest)), Some((path_segment, path_rest))) => {
-            (*segment == "*" || segment == path_segment) && segments_match(rest, path_rest)
-        }
-        (Some(_), None) => false,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -144,26 +125,6 @@ mod tests {
 
     fn no_view() -> BTreeMap<String, Value> {
         BTreeMap::new()
-    }
-
-    #[test]
-    fn globs_match_segment_by_segment() {
-        let cases = [
-            ("envelope.status", "envelope.status", true),
-            ("envelope.status", "envelope.status.extra", false),
-            ("content.*", "content.attr", true),
-            ("content.*", "content.attr.nested", false),
-            ("content.otel.*", "content.otel.trace_id", true),
-            ("content.otel.*", "content.otelx.trace_id", false),
-            ("content.**", "content.attr.nested.deep", true),
-            ("content.**", "content", true),
-            ("content.**", "envelope_properties.attr", false),
-            ("**.trace_id", "envelope_properties.otel.trace_id", true),
-        ];
-
-        for (pattern, path, expected) in cases {
-            assert_eq!(path_matches(pattern, path), expected, "{} vs {}", pattern, path);
-        }
     }
 
     #[test]

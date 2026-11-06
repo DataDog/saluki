@@ -9,6 +9,9 @@ pub use self::events::*;
 mod logs;
 pub use self::logs::*;
 
+mod logs_diff;
+pub use self::logs_diff::*;
+
 mod metrics;
 pub use self::metrics::*;
 
