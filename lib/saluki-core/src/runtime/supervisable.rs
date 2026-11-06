@@ -22,7 +22,8 @@ pub type SupervisorFuture = Pin<Box<dyn Future<Output = Result<(), GenericError>
 #[snafu(context(suffix(false)))]
 pub enum InitializationError {
     /// The process couldn't be initialized due to an error.
-    #[snafu(display("Process failed to initialize: {}", source))]
+    // The alternate format includes the full cause chain, such as the OS error behind a failed bind.
+    #[snafu(display("Process failed to initialize: {:#}", source))]
     Failed {
         /// The underlying error that caused initialization to fail.
         source: GenericError,

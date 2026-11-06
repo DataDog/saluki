@@ -118,6 +118,12 @@ Test cases live in `test/integration/cases/` as `config.yaml` files. The runner 
 Each test defines a container and a list of high-level assertions. Assertions run sequentially by default but can also
 be configured to run in `parallel`.
 
+Panoramic moves every port the Core Agent and ADP bind off its default value, so tests don't collide with an Agent
+already running on the host. The defaults live in `bin/correctness/panoramic/src/test_env.rs`. A port that a test binds
+**MUST** be below 49152. On macOS, tests run as host processes, and ports from 49152 up are handed out as source ports
+for outbound connections. macOS refuses to bind a port that another user's process holds, so a listener in that range
+fails intermittently.
+
 CI: `.gitlab/e2e.yml`—same file as correctness, `e2e` stage, 10 min timeout, retry 2.
 
 ### Step deadlines

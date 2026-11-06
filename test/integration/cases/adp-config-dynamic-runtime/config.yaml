@@ -15,11 +15,11 @@ env:
 
 container:
   exposed_ports:
-    - "55101/tcp"
+    - "45101/tcp"
 
 procedure:
   - assertion: adp_config_key_equals
-    endpoint: "https://localhost:55101/config/runtime"
+    endpoint: "https://localhost:45101/config/runtime"
     key: control.logging.level
     value: info
     timeout: 60s
@@ -27,7 +27,7 @@ procedure:
     key: log_level
     value: debug
   - assertion: adp_config_key_equals
-    endpoint: "https://localhost:55101/config/runtime"
+    endpoint: "https://localhost:45101/config/runtime"
     key: control.logging.level
     value: debug
     timeout: 60s

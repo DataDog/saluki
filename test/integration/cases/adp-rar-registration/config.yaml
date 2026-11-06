@@ -14,7 +14,7 @@ env:
 
 container:
   exposed_ports:
-    - "58125/udp"
+    - "48125/udp"
 
 procedure:
   # ADP should report registration success. Allow 15s (matching adp-cmd-port): registration can only

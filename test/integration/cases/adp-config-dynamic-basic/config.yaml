@@ -15,7 +15,7 @@ env:
 
 container:
   exposed_ports:
-    - "55101/tcp"
+    - "45101/tcp"
 
 procedure:
   - assertion: adp_config_key_equals
