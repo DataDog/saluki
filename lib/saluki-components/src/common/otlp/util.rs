@@ -591,7 +591,17 @@ fn azure_container_apps_identifier(attributes: &[otlp_common::KeyValue]) -> Opti
 struct GcpServerlessIdentity<'a> {
     kind: SourceKind,
     instance: &'a str,
-    dimensions: Vec<(&'static str, &'a str)>,
+    required_dimensions: [(&'static str, &'a str); 4],
+    revision: Option<&'a str>,
+}
+
+impl<'a> GcpServerlessIdentity<'a> {
+    fn dimensions(&self) -> impl Iterator<Item = (&'static str, &'a str)> + '_ {
+        self.required_dimensions
+            .iter()
+            .copied()
+            .chain(self.revision.map(|revision| ("revision_name", revision)))
+    }
 }
 
 fn is_gcp_serverless(attributes: &[otlp_common::KeyValue]) -> bool {
@@ -624,20 +634,18 @@ fn gcp_serverless_identity(attributes: &[otlp_common::KeyValue]) -> Option<GcpSe
         _ => None,
     };
     let instance = required(FAAS_INSTANCE)?;
-    let mut dimensions = vec![
+    let required_dimensions = [
         ("project_id", required(CLOUD_ACCOUNT_ID)?),
         ("location", required(CLOUD_REGION)?),
         ("service_name", required(FAAS_NAME)?),
         ("instance", instance),
     ];
-    if let Some(revision) = get_non_empty_attribute_str(attributes, FAAS_VERSION) {
-        dimensions.push(("revision_name", revision));
-    }
 
     Some(GcpServerlessIdentity {
         kind,
         instance,
-        dimensions,
+        required_dimensions,
+        revision: get_non_empty_attribute_str(attributes, FAAS_VERSION),
     })
 }
 
@@ -651,7 +659,7 @@ pub fn extract_serverless_tags_from_resource_attributes(attributes: &[otlp_commo
     }
 
     if let Some(identity) = gcp_serverless_identity(attributes) {
-        for (key, value) in identity.dimensions {
+        for (key, value) in identity.dimensions() {
             tags.insert_tag(format!("{key}:{value}"));
         }
     }
