@@ -24,6 +24,8 @@ on:
     # `opened` catches the initial PR creation.
     # `synchronize` catches subsequent pushes.
     types: [opened, synchronize]
+    branches-ignore:
+      - "**/graphite-base/**"
 
 jobs:
   sync-licenses:
