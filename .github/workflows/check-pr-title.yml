@@ -6,6 +6,8 @@ name: "Semantic PR Title Check"
 on:
   pull_request_target:
     types: [opened, edited, synchronize, labeled, unlabeled]
+    branches-ignore:
+      - "**/graphite-base/**"
 
 jobs:
   main:

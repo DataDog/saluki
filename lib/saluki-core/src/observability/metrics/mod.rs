@@ -22,7 +22,10 @@ use metrics::{
     Recorder, SetRecorderError, SharedString, Unit,
 };
 use metrics_util::storage::AtomicBucket;
-use saluki_common::{collections::FastHashMap, sync::shutdown::ShutdownHandle};
+use saluki_common::{
+    collections::{FastHashMap, FastHashSet},
+    sync::shutdown::ShutdownHandle,
+};
 use saluki_error::GenericError;
 use tokio::{
     select,
@@ -242,7 +245,11 @@ struct RegistryMaps {
     gauges: FastHashMap<Key, Arc<Handle<GaugeInner>>>,
     histograms: FastHashMap<Key, Arc<Handle<HistogramInner>>>,
     // Explicitly deleted counters whose resolver cache entries the next flush must retire.
-    deleted_counters: Vec<Key>,
+    //
+    // This is a set so that a counter deleted repeatedly between two flushes (for example, origin telemetry cycling
+    // more origins than it retains) is queued once: the queue is bounded by the number of distinct keys, not by the
+    // number of deletions.
+    deleted_counters: FastHashSet<Key>,
 }
 
 impl MetricsRegistry {
@@ -267,7 +274,10 @@ impl MetricsRegistry {
     fn remove_counter(&self, key: &Key) -> Option<Arc<Handle<CounterInner>>> {
         let mut maps = self.maps.lock().unwrap();
         let handle = maps.counters.remove(key)?;
-        maps.deleted_counters.push(key.clone());
+        // Only clone the key the first time it's queued.
+        if !maps.deleted_counters.contains(key) {
+            maps.deleted_counters.insert(key.clone());
+        }
         Some(handle)
     }
 
@@ -570,7 +580,7 @@ fn flush_once(state: &State, context_resolver: &mut MetricsContextResolver, flus
             histograms,
             deleted_counters,
         } = &mut *maps;
-        for key in deleted_counters.drain(..) {
+        for key in deleted_counters.drain() {
             // The resolver cache is keyed by `Key` alone, so a gauge or histogram sharing the key still needs it.
             if counters.contains_key(&key) || gauges.contains_key(&key) || histograms.contains_key(&key) {
                 continue;
@@ -811,7 +821,6 @@ pub(crate) fn aggregate_upserts(upserts: Vec<Event>) -> AggregatedMetricsState {
 #[cfg(test)]
 mod tests {
     use metrics::Label;
-    use saluki_common::collections::FastHashSet;
 
     use super::*;
 
@@ -960,6 +969,32 @@ mod tests {
             assert_eq!(resolver.key_context_cache.len(), 1);
             delete_counter_from_state(&state, &key).expect("counter should be deleted");
         }
+        flush_once(&state, &mut resolver, &mut flush_state);
+        drain(&mut rx);
+        assert!(resolver.key_context_cache.is_empty());
+        assert!(state.registry.maps.lock().unwrap().deleted_counters.is_empty());
+    }
+
+    #[tokio::test]
+    async fn repeated_deletions_of_one_counter_between_flushes_are_queued_once() {
+        let (state, mut rx) = make_state(IDLE_EVICT_INTERVALS);
+        let mut resolver = resolver();
+        let mut flush_state = FlushState::default();
+        let key = Key::from_parts("churned_counter", vec![Label::new("origin", "container_id://churned")]);
+
+        // Publish the counter once so the resolver caches its context.
+        state.registry.get_or_create_counter(&key, Level::INFO).increment(1);
+        flush_once(&state, &mut resolver, &mut flush_state);
+        assert_eq!(resolver.key_context_cache.len(), 1);
+
+        // Re-register and delete the same counter many times within a single flush interval.
+        for _ in 0..1_000 {
+            state.registry.get_or_create_counter(&key, Level::INFO).increment(1);
+            delete_counter_from_state(&state, &key).expect("counter should be deleted");
+        }
+        assert_eq!(state.registry.maps.lock().unwrap().deleted_counters.len(), 1);
+
+        // The single queued entry still retires the cached context, and the queue is empty afterwards.
         flush_once(&state, &mut resolver, &mut flush_state);
         drain(&mut rx);
         assert!(resolver.key_context_cache.is_empty());
