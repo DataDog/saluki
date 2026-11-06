@@ -1,4 +1,8 @@
-//! A common, simplified representation for various types of telemetry data.
+//! A common, simplified representation for various types of telemetry data, and how to compare them.
+//!
+//! Besides the data types, the crate owns their comparison semantics: approximate equality of metric values, the
+//! semantic view of a log, and the field-by-field differences between two logs, with the path patterns that select
+//! them.
 
 #![deny(warnings)]
 #![deny(missing_docs)]

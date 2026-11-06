@@ -11,10 +11,8 @@ use std::{collections::BTreeSet, ops::RangeInclusive};
 
 use serde::Deserialize;
 use serde_json::Value;
-use stele::LogsRequest;
+use stele::{DiffKind, FieldDiff, LogsRequest};
 use tracing::warn;
-
-use super::{DiffKind, FieldDiff};
 
 /// Path prefix used for header differences, followed by the lowercased header name.
 const HEADER_PATH_PREFIX: &str = "headers";

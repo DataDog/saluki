@@ -18,7 +18,7 @@ const RAW_ENVELOPE_FIELDS: &[&str] = &["message", "status", "hostname", "service
 ///
 /// Envelope fields are always at the top level, so they have no location of their own.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FieldLocation {
+enum FieldLocation {
     /// A top-level key other than the envelope fields.
     EnvelopeProperties,
 
@@ -28,7 +28,7 @@ pub enum FieldLocation {
 
 impl FieldLocation {
     /// Returns the path prefix used for fields in this location.
-    pub const fn prefix(self) -> &'static str {
+    const fn prefix(self) -> &'static str {
         match self {
             Self::EnvelopeProperties => "envelope_properties",
             Self::Content => "content",
@@ -253,7 +253,7 @@ fn diff_values(path: String, baseline: &Value, comparison: &Value, diffs: &mut V
 ///
 /// Both are split into segments on `.`. A segment of `*` matches any one segment, a segment of `**` matches any number
 /// of segments, including none, and any other segment matches only itself.
-pub fn path_matches(pattern: &str, path: &str) -> bool {
+pub fn field_path_matches(pattern: &str, path: &str) -> bool {
     let pattern = pattern.split('.').collect::<Vec<_>>();
     let path = path.split('.').collect::<Vec<_>>();
     segments_match(&pattern, &path)
@@ -406,7 +406,19 @@ mod tests {
         ];
 
         for (pattern, path, expected) in cases {
-            assert_eq!(path_matches(pattern, path), expected, "{} vs {}", pattern, path);
+            assert_eq!(field_path_matches(pattern, path), expected, "{} vs {}", pattern, path);
         }
+    }
+
+    #[test]
+    fn raw_envelope_fields_cover_every_envelope_field_but_ddtags() {
+        // `ddtags` is compared as a set of tags rather than as a raw value, so it's the only envelope field left out.
+        let raw = RAW_ENVELOPE_FIELDS.iter().copied().collect::<BTreeSet<_>>();
+        let all = crate::LOG_ENVELOPE_FIELDS
+            .iter()
+            .copied()
+            .filter(|name| *name != "ddtags")
+            .collect::<BTreeSet<_>>();
+        assert_eq!(raw, all);
     }
 }

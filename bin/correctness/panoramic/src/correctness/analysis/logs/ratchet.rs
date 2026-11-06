@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 use serde_json::Value;
-use stele::{path_matches, DiffKind, FieldDiff};
+use stele::{field_path_matches, DiffKind, FieldDiff};
 
 /// A known difference, set in the `logs.known_differences` section of a correctness case.
 #[derive(Clone, Debug, Deserialize)]
@@ -72,7 +72,7 @@ impl<'a> Ratchet<'a> {
                 continue;
             }
             for (pattern, used) in entry.paths.iter().zip(used.iter_mut()) {
-                if path_matches(pattern, &diff.path) {
+                if field_path_matches(pattern, &diff.path) {
                     *used = true;
                     allowed = true;
                 }
