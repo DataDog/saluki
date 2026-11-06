@@ -364,7 +364,7 @@ pub fn transform_log_record(
     if !lr.event_name.is_empty() {
         additional_properties.insert(
             MetaString::from_static("otel.event_name"),
-            JsonValue::String(lr.event_name.clone()),
+            JsonValue::String(lr.event_name),
         );
     }
 
