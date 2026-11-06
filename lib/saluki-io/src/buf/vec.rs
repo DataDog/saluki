@@ -4,7 +4,7 @@ use bytes::{buf::UninitSlice, Buf, BufMut};
 use saluki_core::pooling::{helpers::pooled_newtype, Clearable, ReclaimStrategy};
 use triomphe::{Arc as TriompheArc, UniqueArc};
 
-use super::{ClearableIoBuffer, CollapsibleReadWriteIoBuffer, ReadIoBuffer};
+use super::{ClearableIoBuffer, CollapsibleReadWriteIoBuffer, ReadCursor, ReadIoBuffer};
 
 /// A fixed-size bytes buffer.
 ///
@@ -70,6 +70,13 @@ pooled_newtype! {
 }
 
 impl BytesBuffer {
+    /// Returns a cursor over the unread bytes, which advances this buffer as bytes are taken.
+    pub fn cursor(&mut self) -> ReadCursor<'_> {
+        let FixedSizeVec { data, read_idx } = self.data_mut();
+        let capacity = data.capacity();
+        ReadCursor::new(&data[..], read_idx, capacity)
+    }
+
     /// Consumes this buffer and returns a read-only version of it.
     pub fn freeze(mut self) -> FrozenBytesBuffer {
         let data = self.data.take().unwrap().freeze();
@@ -272,6 +279,22 @@ mod tests {
         buf.data_mut().clear();
         assert_eq!(buf.remaining(), 0);
         assert_eq!(buf.remaining_mut(), 13);
+    }
+
+    #[test]
+    fn cursor() {
+        let mut buf = get_pooled_object_via_builder::<_, BytesBuffer>(|| FixedSizeVec::with_capacity(16));
+        buf.put_slice(b"hello, world!");
+        buf.advance(2);
+
+        let taken = {
+            let mut cursor = buf.cursor();
+            assert_eq!(cursor.capacity(), 16);
+            assert_eq!(cursor.unread(), b"llo, world!");
+            cursor.take(5)
+        };
+        assert_eq!(taken, b"llo, ");
+        assert_eq!(buf.chunk(), b"world!");
     }
 
     #[test]
