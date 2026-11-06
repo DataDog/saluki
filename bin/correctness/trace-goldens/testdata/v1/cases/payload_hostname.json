@@ -1,0 +1,24 @@
+{
+  "comment": "Payload-level hostname: pins the hostname aggregation key and its propagation (payload hostname wins over the agent hostname).",
+  "payload": {
+    "hostname": "golden-host-1",
+    "chunks": [
+      {
+        "priority": 1,
+        "spans": [
+          {
+            "span_id": 1,
+            "parent_id": 0,
+            "service": "web",
+            "name": "web.request",
+            "resource": "GET /hostname",
+            "type": "web",
+            "start": "-2s",
+            "duration": "30ms"
+          }
+        ]
+      }
+    ]
+  },
+  "name": "payload_hostname"
+}

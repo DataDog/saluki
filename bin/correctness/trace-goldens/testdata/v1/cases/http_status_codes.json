@@ -1,0 +1,37 @@
+{
+  "comment": "HTTP status code extraction and validation: a numeric attribute value (parsed into the grouped stats HTTPStatusCode field) and an invalid string value (dropped by validateAndFixHTTPStatusCode).",
+  "payload": {
+    "chunks": [
+      {
+        "priority": 1,
+        "spans": [
+          {
+            "span_id": 1,
+            "parent_id": 0,
+            "service": "web",
+            "name": "http.ok",
+            "type": "web",
+            "start": "-2s",
+            "duration": "20ms",
+            "attributes": {
+              "http.status_code": 201
+            }
+          },
+          {
+            "span_id": 2,
+            "parent_id": 0,
+            "service": "web",
+            "name": "http.invalid",
+            "type": "web",
+            "start": "-2s",
+            "duration": "20ms",
+            "attributes": {
+              "http.status_code": "not-a-number"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "name": "http_status_codes"
+}
