@@ -1,5 +1,6 @@
 mod rules;
 pub use self::rules::get_datadog_agent_remappings;
+pub(crate) use self::rules::API_KEY_VALIDATION_TAG;
 
 #[cfg(test)]
 mod tests {
@@ -684,6 +685,112 @@ mod tests {
             rar_output.contains("dogstatsd__uds_origin_detection_error{reason=\"invalid_credentials\"} 3"),
             "{rar_output}"
         );
+    }
+
+    #[test]
+    fn rar_transaction_telemetry_excludes_api_key_validation_series() {
+        // The API key validation client emits the same HTTP metrics as the forwarder's client, tagged with
+        // `purpose:api_key_validation`. Its error counters carry no endpoint, so that tag is the only thing that tells a
+        // failed validation request apart from a failed forwarding request. Without the exclusion, the validation series
+        // would also be merged into the forwarder's, since the remapping drops every tag but `domain`, `endpoint` and
+        // `error_type`.
+        let counter = |name: &'static str, tags: &'static [&'static str], value: f64| {
+            Event::Metric(Metric::counter(Context::from_static_parts(name, tags), value))
+        };
+        let metrics = vec![
+            // Forwarding traffic.
+            counter(
+                "adp.network_http_requests_errors_total",
+                &["component_id:dd_out", "error_type:cant_send", "error_scope:transaction"],
+                2.0,
+            ),
+            counter(
+                "adp.network_http_requests_errors_total",
+                &[
+                    "component_id:dd_out",
+                    "domain:https://api.datadoghq.com",
+                    "endpoint:series_v2",
+                    "error_type:client_error",
+                    "code:500",
+                ],
+                3.0,
+            ),
+            counter(
+                "adp.network_http_requests_success_total",
+                &[
+                    "component_id:dd_out",
+                    "domain:https://api.datadoghq.com",
+                    "endpoint:series_v2",
+                    "proto_version:HTTP/2.0",
+                ],
+                10.0,
+            ),
+            // API key validation traffic.
+            counter(
+                "adp.network_http_requests_errors_total",
+                &[
+                    "component_id:dd_out",
+                    "purpose:api_key_validation",
+                    "error_type:cant_send",
+                    "error_scope:transaction",
+                ],
+                100.0,
+            ),
+            counter(
+                "adp.network_http_requests_errors_total",
+                &[
+                    "component_id:dd_out",
+                    "purpose:api_key_validation",
+                    "error_type:connection_error",
+                    "error_scope:phase",
+                ],
+                50.0,
+            ),
+            counter(
+                "adp.network_http_requests_errors_total",
+                &[
+                    "component_id:dd_out",
+                    "purpose:api_key_validation",
+                    "domain:https://api.datadoghq.com",
+                    "endpoint:/api/v1/validate",
+                    "error_type:client_error",
+                    "code:500",
+                ],
+                7.0,
+            ),
+            counter(
+                "adp.network_http_requests_success_total",
+                &[
+                    "component_id:dd_out",
+                    "purpose:api_key_validation",
+                    "domain:https://api.datadoghq.com",
+                    "endpoint:/api/v1/validate",
+                    "proto_version:HTTP/2.0",
+                ],
+                9.0,
+            ),
+        ];
+
+        let output = render_with(get_datadog_agent_remappings(), metrics);
+        let has_sample = |prefix: &str, value: &str| {
+            output
+                .lines()
+                .any(|line| line.starts_with(prefix) && line.ends_with(value))
+        };
+
+        // The forwarder's own series keep their values, unmixed with the validation series that share their remapped
+        // tags (which would make the `cant_send` sample 102).
+        assert!(
+            output.contains("transactions__errors{error_type=\"cant_send\"} 2"),
+            "{output}"
+        );
+        assert!(has_sample("transactions__http_errors{", " 3"), "{output}");
+        assert!(has_sample("transactions__success{", " 10"), "{output}");
+
+        // No validation series is exported, including the ones that carry the validation endpoint, and the ones a
+        // rejecting rule would otherwise pass on to a later rule.
+        assert!(!output.contains("/api/v1/validate"), "{output}");
+        assert!(!output.contains("connection_error"), "{output}");
     }
 
     #[test]
