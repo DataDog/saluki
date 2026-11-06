@@ -106,6 +106,7 @@ saluki-core = { workspace = true, features = ["test-util"] }
 saluki-env = { workspace = true, features = ["test-util"] }
 saluki-metrics = { workspace = true, features = ["test"] }
 saluki-tls = { workspace = true, features = ["test-util"] }
+stele = { workspace = true }
 tempfile = { workspace = true }
 test-strategy = { workspace = true }
 tokio = { workspace = true, features = ["time", "io-util", "net", "rt", "test-util"] }
