@@ -283,10 +283,8 @@ async fn drops_a_single_log_over_the_compressed_size_limit() {
     let messages = requests.iter().map(EncodedRequest::messages).collect::<Vec<_>>();
     assert_eq!(messages, vec![vec!["before".to_string()], vec!["after".to_string()]]);
 
-    // NOTE: the dropped log isn't counted (DataDog/saluki#3045). The encoder only logs the error of a split half it can't
-    // send, while a log it can't encode counts toward `component_events_dropped_total`. Once the drop is counted, this
-    // should become 1.
-    assert_eq!(encoder_failure_drops(&recorder), Some(0));
+    // The dropped log counts toward `component_events_dropped_total`.
+    assert_eq!(encoder_failure_drops(&recorder), Some(1));
 }
 
 #[tokio::test]
