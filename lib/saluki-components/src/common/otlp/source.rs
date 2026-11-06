@@ -8,7 +8,7 @@
 //! Logs, metrics, and the OTLP trace translator resolve their source here. The trace encoder uses the narrower
 //! `attributes_to_source` in [`super::util`].
 
-use std::sync::LazyLock;
+use std::{borrow::Cow, sync::LazyLock};
 
 use otlp_protos::opentelemetry::proto::common::v1::KeyValue;
 use regex::Regex;
@@ -73,6 +73,42 @@ static GCP_CLOUD_RUN_JOB_RESOURCE: LazyLock<Regex> = LazyLock::new(|| {
 /// Returns `None` when no source can be determined, and also for a GCP Cloud Run or Cloud Functions resource whose
 /// identity is incomplete. Callers decide whether to fall back to a default hostname; see [`is_gcp_serverless`].
 pub fn resolve_source_from_attributes(attributes: &[KeyValue]) -> Option<Source> {
+    resolve_source_ref(attributes).map(SourceRef::into_source)
+}
+
+/// Resolves the hostname of telemetry from OTLP resource attributes, when its source is a host.
+///
+/// Uses the same precedence as [`resolve_source_from_attributes`], but other kinds of source resolve to `None`, and
+/// the hostname is only allocated when it has to be built.
+pub fn hostname_from_source_attributes(attributes: &[KeyValue]) -> Option<Cow<'_, str>> {
+    match resolve_source_ref(attributes)? {
+        SourceRef::Host(hostname) => Some(hostname),
+        SourceRef::Other(..) => None,
+    }
+}
+
+/// A resolved source whose identifier borrows from the attributes where it can.
+enum SourceRef<'a> {
+    Host(Cow<'a, str>),
+    Other(SourceKind, Cow<'a, str>),
+}
+
+impl SourceRef<'_> {
+    fn into_source(self) -> Source {
+        match self {
+            SourceRef::Host(identifier) => Source {
+                kind: SourceKind::Hostname,
+                identifier: identifier.into_owned(),
+            },
+            SourceRef::Other(kind, identifier) => Source {
+                kind,
+                identifier: identifier.into_owned(),
+            },
+        }
+    }
+}
+
+fn resolve_source_ref(attributes: &[KeyValue]) -> Option<SourceRef<'_>> {
     if let Some(source) = azure_functions_source(attributes) {
         return Some(source);
     }
@@ -100,10 +136,7 @@ pub fn resolve_source_from_attributes(attributes: &[KeyValue]) -> Option<Source>
         return Some(source);
     }
 
-    hostname_from_attributes(attributes).map(|identifier| Source {
-        kind: SourceKind::Hostname,
-        identifier,
-    })
+    hostname_from_attributes(attributes).map(SourceRef::Host)
 }
 
 /// Returns whether the resource declares a GCP Cloud Run or Cloud Functions platform.
@@ -159,11 +192,8 @@ fn attr<'a>(attributes: &'a [KeyValue], key: &str) -> &'a str {
     first_attribute_str(attributes, key).unwrap_or_default()
 }
 
-fn source(kind: SourceKind, identifier: impl Into<String>) -> Option<Source> {
-    Some(Source {
-        kind,
-        identifier: identifier.into(),
-    })
+fn source<'a>(kind: SourceKind, identifier: impl Into<Cow<'a, str>>) -> Option<SourceRef<'a>> {
+    Some(SourceRef::Other(kind, identifier.into()))
 }
 
 // ============================================================================
@@ -265,7 +295,7 @@ fn is_azure_cloud_platform(platform: &str, suffix: &str) -> bool {
     })
 }
 
-fn azure_functions_source(attributes: &[KeyValue]) -> Option<Source> {
+fn azure_functions_source(attributes: &[KeyValue]) -> Option<SourceRef<'_>> {
     if !is_azure_cloud_platform(attr(attributes, CLOUD_PLATFORM), "functions") {
         return None;
     }
@@ -281,14 +311,14 @@ fn azure_app_service_identity(attributes: &[KeyValue]) -> Option<AzureIdentity<'
     AzureIdentity::from_attributes(attributes, AZURE_WEB_NAMESPACE, AZURE_WEB_SITES)
 }
 
-fn azure_app_service_source(attributes: &[KeyValue]) -> Option<Source> {
+fn azure_app_service_source(attributes: &[KeyValue]) -> Option<SourceRef<'_>> {
     source(
         SourceKind::AzureAppService,
         azure_app_service_identity(attributes)?.name,
     )
 }
 
-fn azure_container_apps_source(attributes: &[KeyValue]) -> Option<Source> {
+fn azure_container_apps_source(attributes: &[KeyValue]) -> Option<SourceRef<'_>> {
     if !is_azure_cloud_platform(attr(attributes, CLOUD_PLATFORM), "container_apps") {
         return None;
     }
@@ -348,11 +378,11 @@ fn aws_lambda_function(attributes: &[KeyValue]) -> Option<LambdaFunction<'_>> {
     })
 }
 
-fn aws_lambda_source(attributes: &[KeyValue]) -> Option<Source> {
+fn aws_lambda_source(attributes: &[KeyValue]) -> Option<SourceRef<'_>> {
     source(SourceKind::AwsLambda, aws_lambda_function(attributes)?.arn)
 }
 
-fn ecs_fargate_source(attributes: &[KeyValue]) -> Option<Source> {
+fn ecs_fargate_source(attributes: &[KeyValue]) -> Option<SourceRef<'_>> {
     if !attr(attributes, AWS_ECS_LAUNCHTYPE).eq_ignore_ascii_case("fargate") {
         return None;
     }
@@ -441,7 +471,7 @@ fn gcp_cloud_run_job(attributes: &[KeyValue]) -> Option<GcpWorkload<'_>> {
     })
 }
 
-fn gcp_cloud_run_jobs_source(attributes: &[KeyValue]) -> Option<Source> {
+fn gcp_cloud_run_jobs_source(attributes: &[KeyValue]) -> Option<SourceRef<'_>> {
     source(SourceKind::GcpCloudRunJobs, gcp_cloud_run_job(attributes)?.instance)
 }
 
@@ -487,12 +517,12 @@ fn gcp_serverless_workload(attributes: &[KeyValue]) -> Option<GcpWorkload<'_>> {
     })
 }
 
-fn gcp_serverless_source(attributes: &[KeyValue]) -> Option<Source> {
+fn gcp_serverless_source(attributes: &[KeyValue]) -> Option<SourceRef<'_>> {
     let workload = gcp_serverless_workload(attributes)?;
     source(workload.kind, workload.instance)
 }
 
-fn gke_autopilot_source(attributes: &[KeyValue]) -> Option<Source> {
+fn gke_autopilot_source(attributes: &[KeyValue]) -> Option<SourceRef<'_>> {
     if attr(attributes, CLOUD_PROVIDER) != "gcp" || attr(attributes, CLOUD_PLATFORM) != PLATFORM_GKE {
         return None;
     }
@@ -967,5 +997,34 @@ mod tests {
             ]
         );
         assert!(tags(&cloud_run[..4]).is_empty());
+    }
+
+    #[test]
+    fn hostname_from_source_attributes_borrows_and_skips_other_sources() {
+        assert!(matches!(
+            hostname_from_source_attributes(&attrs(&[("host.name", "name")])),
+            Some(Cow::Borrowed("name"))
+        ));
+        assert_eq!(
+            hostname_from_source_attributes(&attrs(&[("k8s.node.name", "node"), ("k8s.cluster.name", "cluster")]))
+                .as_deref(),
+            Some("node-cluster")
+        );
+        assert_eq!(
+            hostname_from_source_attributes(&attrs(&[
+                ("aws.ecs.launchtype", "fargate"),
+                ("aws.ecs.task.arn", "arn"),
+                ("host.name", "name"),
+            ])),
+            None
+        );
+        assert_eq!(
+            hostname_from_source_attributes(&attrs(&[("cloud.provider", "aws"), ("faas.id", FUNCTION_ARN)])),
+            None
+        );
+        assert_eq!(
+            hostname_from_source_attributes(&attrs(&[("host.name", "localhost")])),
+            None
+        );
     }
 }
