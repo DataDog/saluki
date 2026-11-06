@@ -185,7 +185,7 @@ fn lowercase_reserved_key<'a>(key: &str, buf: &'a mut [u8; MAX_RESERVED_KEY_LEN]
         buf[len] = lower as u8;
         len += 1;
     }
-    std::str::from_utf8(&buf[..len]).ok()
+    simdutf8::basic::from_utf8(&buf[..len]).ok()
 }
 
 // Helper to insert safely avoid overwriting fields that are already set
