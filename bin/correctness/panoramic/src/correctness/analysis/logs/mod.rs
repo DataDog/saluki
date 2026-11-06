@@ -18,7 +18,7 @@ use std::{
 use saluki_error::{generic_error, GenericError};
 use serde::Deserialize;
 use serde_json::Value;
-use stele::{diff_logs, DiffKind, FieldDiff, Log, LogsRequest};
+use stele::{diff_logs, FieldDiff, Log, LogsRequest};
 use tracing::{error, info};
 
 pub use self::headers::HeaderRule;
@@ -346,6 +346,7 @@ fn timestamp_header_range(now: SystemTime) -> RangeInclusive<u64> {
 #[cfg(test)]
 mod tests {
     use serde_json::json;
+    use stele::DiffKind;
 
     use super::*;
 
