@@ -1,7 +1,8 @@
 //! APM relay.
 //!
-//! Listens on TCP and/or a Unix domain socket where the trace-agent normally listens and forwards every request
-//! to the relocated trace-agent.
+//! Listens on TCP and/or a Unix domain socket where the trace-agent normally listens. The relay answers the legacy
+//! `/services` endpoints itself, forwards tracer flares to Datadog, and forwards every other request to the relocated
+//! trace-agent.
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, LazyLock};
@@ -9,11 +10,12 @@ use std::sync::{Arc, LazyLock};
 use async_trait::async_trait;
 use axum::extract::{ConnectInfo, Request as AxumRequest, State};
 use axum::response::IntoResponse;
-use axum::routing::get;
+use axum::routing::{any, get};
 use axum::Router;
 use http::{HeaderName, HeaderValue};
 use metrics::Counter;
 use saluki_api::APIHandler;
+use saluki_common::sync::live::Live;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::components::relays::{Relay, RelayBuilder, RelayContext};
 use saluki_core::components::BuildContext;
@@ -31,6 +33,10 @@ use tracing::debug;
 
 mod proxy;
 use self::proxy::{Destination, TraceAgentProxy};
+
+mod tracer_flare;
+pub use self::tracer_flare::TracerFlareConfiguration;
+use self::tracer_flare::TracerFlareProxy;
 
 /// Header a tracer sends its container ID in.
 const CONTAINER_ID_HEADER: HeaderName = HeaderName::from_static("datadog-container-id");
@@ -79,6 +85,9 @@ pub struct ApmRelayConfiguration {
     ///
     /// `0` disables the TCP listener.
     pub receiver_port: u16,
+
+    /// Settings for forwarding tracer flares to Datadog.
+    pub tracer_flare: TracerFlareConfiguration,
 }
 
 #[static_metrics(prefix = component, labels(component_id, component_type))]
@@ -210,10 +219,14 @@ impl RelayBuilder for ApmRelayConfiguration {
             ));
         }
 
+        let tracer_flare = TracerFlareProxy::from_config(&self.tracer_flare)?;
+
         Ok(Box::new(ApmRelay {
             tcp_endpoint,
             uds_endpoint,
             proxy,
+            tracer_flare,
+            tracer_flare_api_key: self.tracer_flare.api_key.clone(),
             capture_entity_resolver: self.capture_entity_resolver.clone(),
             metrics: Metrics::new(context.component_id(), context.component_type().as_category_str()),
         }))
@@ -227,6 +240,8 @@ pub struct ApmRelay {
     tcp_endpoint: Option<ListenAddress>,
     uds_endpoint: Option<ListenAddress>,
     proxy: TraceAgentProxy,
+    tracer_flare: TracerFlareProxy,
+    tracer_flare_api_key: Live<String>,
     capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
     metrics: Metrics,
 }
@@ -238,6 +253,8 @@ impl Relay for ApmRelay {
             tcp_endpoint,
             uds_endpoint,
             proxy,
+            tracer_flare,
+            mut tracer_flare_api_key,
             capture_entity_resolver,
             metrics,
         } = *self;
@@ -250,6 +267,7 @@ impl Relay for ApmRelay {
         let api_handler = ApmRelayAPIHandler::new(RelayState {
             metrics,
             proxy,
+            tracer_flare: tracer_flare.clone(),
             capture_entity_resolver,
         });
         let router = api_handler
@@ -289,6 +307,7 @@ impl Relay for ApmRelay {
                     break
                 },
                 _ = health.live() => continue,
+                api_key = tracer_flare_api_key.changed() => tracer_flare.refresh_api_key(&api_key),
             }
         }
 
@@ -302,6 +321,7 @@ impl Relay for ApmRelay {
 #[derive(Clone)]
 struct RelayState {
     proxy: TraceAgentProxy,
+    tracer_flare: TracerFlareProxy,
     capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
     metrics: Metrics,
 }
@@ -320,6 +340,7 @@ impl ApmRelayAPIHandler {
             proxy,
             capture_entity_resolver,
             metrics,
+            ..
         }): State<RelayState>,
         mut request: AxumRequest,
     ) -> impl IntoResponse {
@@ -337,6 +358,19 @@ impl ApmRelayAPIHandler {
     async fn handle_services(State(RelayState { metrics, .. }): State<RelayState>) -> impl IntoResponse {
         metrics.requests_handled_total().increment(1);
         "OK\n"
+    }
+
+    async fn handle_tracer_flare(
+        State(RelayState {
+            tracer_flare, metrics, ..
+        }): State<RelayState>, request: AxumRequest,
+    ) -> impl IntoResponse {
+        let result = tracer_flare.forward(request).await;
+        match &result {
+            Ok(_) => metrics.requests_handled_total().increment(1),
+            Err(_) => metrics.requests_failed_total().increment(1),
+        }
+        result
     }
 }
 
@@ -379,7 +413,8 @@ impl APIHandler for ApmRelayAPIHandler {
         self.state.clone()
     }
 
-    /// Forwards every request to the trace-agent.
+    /// Answers the legacy `/services` endpoints, forwards tracer flares to Datadog, and forwards every other request to
+    /// the trace-agent.
     fn generate_routes(&self) -> Router<Self::State> {
         Router::new()
             .route("/services", get(Self::handle_services))
@@ -387,6 +422,7 @@ impl APIHandler for ApmRelayAPIHandler {
             .route("/v0.2/services", get(Self::handle_services))
             .route("/v0.3/services", get(Self::handle_services))
             .route("/v0.4/services", get(Self::handle_services))
+            .route("/tracer_flare/v1", any(Self::handle_tracer_flare))
             .fallback(Self::proxy_request)
     }
 }
@@ -424,9 +460,15 @@ mod tests {
             .with_state(api_handler.generate_initial_state())
     }
 
+    /// A flare proxy whose intake is not listening, so a forwarded flare is answered `502 Bad Gateway`.
+    fn unreachable_tracer_flare() -> TracerFlareProxy {
+        tracer_flare::plain_http_proxy("http://127.0.0.1:1", "test-api-key")
+    }
+
     fn test_router() -> Router {
         build_router(RelayState {
             proxy: unreachable_proxy(),
+            tracer_flare: unreachable_tracer_flare(),
             capture_entity_resolver: None,
             metrics: Metrics::new("dd_traces_relay", "relays"),
         })
@@ -542,6 +584,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn forwards_tracer_flares_to_datadog_rather_than_the_trace_agent() {
+        let recorder = saluki_metrics::test::TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let router = test_router();
+
+        for method in ["POST", "GET"] {
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri("/tracer_flare/v1")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        }
+
+        let metric_key = |name| {
+            metrics::Key::from_parts(
+                name,
+                vec![
+                    metrics::Label::new("component_id", "dd_traces_relay"),
+                    metrics::Label::new("component_type", "relays"),
+                ],
+            )
+        };
+        assert_eq!(recorder.counter(metric_key("component_requests_failed_total")), Some(2));
+        assert_eq!(
+            recorder.counter(metric_key("component_requests_relayed_total")),
+            Some(0)
+        );
+    }
+
+    #[tokio::test]
     async fn binds_and_serves_over_tcp() {
         const BOUND_ADDRESS_ID: &str = "apm-relay-tcp-test-bound-address";
 
@@ -617,6 +696,7 @@ mod tests {
         let router = build_router(RelayState {
             proxy: TraceAgentProxy::from_destination(&format!("http://127.0.0.1:{port}"))
                 .expect("destination should parse"),
+            tracer_flare: unreachable_tracer_flare(),
             capture_entity_resolver: None,
             metrics: Metrics::new("dd_traces_relay", "relays"),
         });
@@ -724,7 +804,17 @@ mod tests {
         );
     }
 
+    /// Loads the TLS settings the relay's HTTPS client for tracer flares is built with.
+    fn init_tls() {
+        static INIT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+        INIT.get_or_init(|| {
+            let _ = saluki_tls::initialize_default_crypto_provider();
+            saluki_tls::load_platform_root_certificates().expect("failed to load platform root certificates");
+        });
+    }
+
     fn test_config(bind_host: Option<&str>, non_local_traffic: bool, receiver_port: u16) -> ApmRelayConfiguration {
+        init_tls();
         ApmRelayConfiguration {
             receiver_socket: String::new(),
             proxy_destination: "http://127.0.0.1:8127".to_string(),
@@ -732,6 +822,11 @@ mod tests {
             bind_host: bind_host.map(str::to_string),
             non_local_traffic,
             receiver_port,
+            tracer_flare: TracerFlareConfiguration {
+                site: "datadoghq.com".to_string(),
+                api_key: Live::new_fixed("test-api-key".to_string()),
+                forwarder: crate::common::datadog::test_util::forwarder_configuration(),
+            },
         }
     }
 
