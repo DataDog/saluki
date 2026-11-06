@@ -1,0 +1,4 @@
+---
+fixes:
+  - |
+    OTLP logs handled natively now carry the log's event name as ``otel.event_name``, as the Datadog Agent does.
