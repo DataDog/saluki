@@ -33,8 +33,11 @@ impl OtlpLogsTranslator {
     pub fn from_resource_logs(resource_logs: OtlpResourceLogs, origin_tag_resolver: &OtlpOriginTagResolver) -> Self {
         let resource = resource_logs.resource.unwrap_or_default();
         let source = resource_to_source(&resource);
+        // An empty host counts as missing, so the record fallback still applies, as in the Agent.
         let host = match &source {
-            Some(src) if matches!(src.kind, SourceKind::Hostname) => Some(MetaString::from(src.identifier.as_str())),
+            Some(src) if matches!(src.kind, SourceKind::HostnameKind) && !src.identifier.is_empty() => {
+                Some(MetaString::from(src.identifier.as_str()))
+            }
             _ => None,
         };
 
@@ -349,6 +352,27 @@ mod tests {
             hostname(vec![("cloud.platform", "gcp_cloud_run"), ("host.name", "name")]),
             ""
         );
+    }
+
+    #[test]
+    fn test_empty_resource_host_falls_back_to_the_record() {
+        let lr = otlp_logs_v1::LogRecord {
+            attributes: vec![key_value_string_to_otlp_common_key_value("host.name", "record-host")],
+            ..Default::default()
+        };
+        let resource = otlp_resource_v1::Resource {
+            attributes: vec![otlp_common::KeyValue {
+                key: "datadog.host.name".to_string(),
+                value: Some(otlp_common::AnyValue {
+                    value: Some(otlp_common::any_value::Value::IntValue(1)),
+                }),
+            }],
+            dropped_attributes_count: 0,
+            entity_refs: vec![],
+        };
+
+        let log = translate_log(lr, resource, None);
+        assert_eq!(log.hostname(), "record-host");
     }
 
     #[test]
