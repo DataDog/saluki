@@ -41,7 +41,7 @@ const FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
 struct EncodedRequest {
     method: http::Method,
     path: String,
-    /// Header names and values, in the order the encoder set them.
+    /// Header names and values, in `HeaderMap` iteration order, which is arbitrary.
     headers: Vec<(String, String)>,
     /// The number of events in the payload metadata.
     event_count: usize,
@@ -137,7 +137,7 @@ fn incompressible_logs(count: usize, len: usize) -> Vec<Log> {
         .collect()
 }
 
-/// Sorts header pairs, so that comparisons don't depend on the order the encoder set them in.
+/// Sorts header pairs, so that comparisons don't depend on `HeaderMap` iteration order.
 fn sorted(mut headers: Vec<(String, String)>) -> Vec<(String, String)> {
     headers.sort();
     headers
@@ -248,7 +248,8 @@ async fn splits_requests_by_compressed_size() {
         );
     }
 
-    // Every request is a valid JSON array, and no log is lost or reordered across the requests.
+    // No request is cut off mid-log. `all_messages` parses every request as a JSON array of logs, and checks that no log
+    // is lost or reordered across the requests.
     for request in &requests {
         assert!(request.body.ends_with(b"}]"), "a request should end with its last log");
     }
