@@ -193,6 +193,33 @@ only a default output, and the other has multiple named outputs:
                                     └──────────────────────────────────────────────────▶
 ```
 
+### Conditional connections
+
+Some components are only useful some of the time. A debugging destination might only care about events while a
+diagnostic is running, and a whole branch of the topology might only matter when a feature is enabled. Sending events
+to these components while they ignore them still costs CPU and memory, since events are cloned for every downstream
+connection.
+
+To avoid that cost, you can make a connection conditional with `TopologyBlueprint::connect_components_when`, which takes
+an `EdgeCondition` in addition to the two component identifiers. Any connection can be conditional, including
+connections that carry payloads. Conditions come in two kinds, which are resolved at different times:
+
+- **Fixed conditions** are resolved when the topology is built. A connection whose condition is `false` is removed
+  entirely. If that leaves the downstream component without any inbound connections, the component is removed as well,
+  along with any components only reachable through it. Removed components are never built or spawned, and they don't
+  count toward the memory bounds of the topology. A fixed condition of `true` is the same as a regular connection.
+- **Dynamic conditions** are resolved at runtime, and can be created from a stream of values or from a watch channel.
+  The connection always exists, but events are only sent over it while its condition is `true`. While the condition is
+  `false`, the upstream component skips that connection entirely: it neither clones nor sends events to it, and counts
+  the skipped events in the `component_events_elided_total` metric.
+
+Dynamic conditions only control whether events are sent to the downstream component. The downstream component keeps
+running, and simply receives nothing while its input is inactive. When a condition changes to `true`, events dispatched
+from that point on are sent to the downstream component: events dispatched while the condition was `false` are never
+replayed. Conditions are also updated independently of the components themselves, so a component that watches the same
+setting might see a change slightly before or after its connection does. Only use conditional connections where
+dropping events on an inactive connection is the intended behavior.
+
 ### Shutdown
 
 A topology stops in dependency order. Two things set that order: the channels that connect the

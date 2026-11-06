@@ -19,7 +19,9 @@ use datadog_agent_runtime::{
     env::RemoteAgentEnvironmentProvider,
     facade::{Initialized, RemoteAgent},
 };
+use futures::StreamExt as _;
 use saluki_app::bootstrap::BootstrapGuard;
+use saluki_common::sync::live::Live;
 use saluki_components::{
     config::{
         AgentEnv, AutoscalingFailoverConfiguration, ClusterAgentConfiguration, MetricsEndpointRoutingConfiguration,
@@ -49,7 +51,10 @@ use saluki_components::{
         TraceTagReplacerConfiguration,
     },
 };
-use saluki_core::{runtime::Supervisor, topology::TopologyBlueprint};
+use saluki_core::{
+    runtime::Supervisor,
+    topology::{EdgeCondition, TopologyBlueprint},
+};
 use saluki_env::{features, EnvironmentProvider as _, HostProvider as _};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::net::ListenAddress;
@@ -354,12 +359,16 @@ fn add_mrf_metrics_pipeline_to_blueprint(
         return Ok(());
     };
 
-    let mrf_gateway_config = MetricFilterConfiguration::for_mrf(
-        mrf_config.is_enabled(),
-        config_system
-            .live(|config| &config.domains.multi_region_failover.metric_mirroring)
-            .map(metric_mirroring),
-    );
+    // Only send metrics to the MRF branch while metric mirroring is active. When MRF is disabled at startup, the
+    // connection can never be active, so the branch is never built.
+    let mirroring_config = config_system.live(|config| &config.domains.multi_region_failover.metric_mirroring);
+    let mrf_condition = if mrf_config.is_enabled() {
+        live_condition(&mirroring_config, |mirroring| mirroring.enabled)
+    } else {
+        EdgeCondition::fixed(false)
+    };
+    let mrf_gateway_config =
+        MetricFilterConfiguration::for_mrf(mrf_config.is_enabled(), mirroring_config.map(metric_mirroring));
     let mrf_metrics_config = datadog_metrics_configuration(shared).with_metrics_endpoint_override(mrf_dd_url.clone());
 
     let mrf_forwarder_config = DatadogForwarderConfiguration::for_endpoint_override(
@@ -374,12 +383,8 @@ fn add_mrf_metrics_pipeline_to_blueprint(
         .add_transform("mrf_metrics_gateway", mrf_gateway_config)?
         .add_encoder("mrf_metrics_encode", mrf_metrics_config)?
         .add_forwarder("mrf_dd_out", mrf_forwarder_config)?
-        .connect_components_in_order([
-            "metrics_enrich",
-            "mrf_metrics_gateway",
-            "mrf_metrics_encode",
-            "mrf_dd_out",
-        ])?;
+        .connect_components_when("metrics_enrich", "mrf_metrics_gateway", mrf_condition)?
+        .connect_components_in_order(["mrf_metrics_gateway", "mrf_metrics_encode", "mrf_dd_out"])?;
 
     Ok(())
 }
@@ -888,6 +893,7 @@ async fn add_dsd_pipeline_to_blueprint(
     let dsd_stats_config = DogStatsDStatisticsConfiguration::new();
 
     let stats_api_handler = dsd_stats_config.api_handler();
+    let dsd_stats_collection_active = dsd_stats_config.collection_active();
     let capture_api_handler = DogStatsDCaptureAPIHandler::new(dsd_capture_control);
     let replay_api_handler = DogStatsDReplayAPIHandler::new(dsd_replay_control);
     let context_dump_api_handler = DogStatsDContextDumpAPIHandler::new(
@@ -915,8 +921,12 @@ async fn add_dsd_pipeline_to_blueprint(
             "service_checks_enrich",
             "dd_service_checks_encode",
         ])?
-        // DogStatsD Stats.
-        .connect_components("dsd_in.metrics", "dsd_stats_out")?
+        // DogStatsD Stats. Metrics are only used while a statistics collection is in progress, so only send them then.
+        .connect_components_when(
+            "dsd_in.metrics",
+            "dsd_stats_out",
+            EdgeCondition::from_watch(dsd_stats_collection_active),
+        )?
         // Post-aggregation client telemetry for RAR/COAT.
         .connect_components("dsd_post_agg_filter", "dsd_client_telemetry_out")?;
 
@@ -953,12 +963,16 @@ async fn add_dsd_pipeline_to_blueprint(
         ])?;
     }
 
-    if debug_log.logging_enabled {
-        blueprint
-            // DogStatsD debug log.
-            .add_destination("dsd_debug_log_out", dsd_debug_log_config)?
-            .connect_components("dsd_in.metrics", "dsd_debug_log_out")?;
-    }
+    // DogStatsD debug log. Metrics are only used while metrics stats logging is enabled, so only send them then. When
+    // debug logging is disabled entirely, the connection can never be active, so the destination is never built.
+    let debug_log_condition = if debug_log.logging_enabled {
+        live_condition(&dsd_debug_log_config.metrics_stats_enabled, |enabled| *enabled)
+    } else {
+        EdgeCondition::fixed(false)
+    };
+    blueprint
+        .add_destination("dsd_debug_log_out", dsd_debug_log_config)?
+        .connect_components_when("dsd_in.metrics", "dsd_debug_log_out", debug_log_condition)?;
     Ok(DogStatsDAPIWorker {
         stats_api_handler,
         capture_api_handler,
@@ -1075,6 +1089,22 @@ async fn add_otlp_pipeline_to_blueprint(
             .connect_components("otlp_in.traces", "traces_enrich")?;
     }
     Ok(())
+}
+
+/// Builds a connection condition from a live configuration value.
+///
+/// A value that never changes becomes a fixed condition, which the topology resolves when it's built.
+fn live_condition<T>(live: &Live<T>, predicate: impl Fn(&T) -> bool + Send + 'static) -> EdgeCondition
+where
+    T: Clone + PartialEq + Send + 'static,
+{
+    let initial = predicate(live);
+    if live.is_fixed() {
+        return EdgeCondition::fixed(initial);
+    }
+
+    let updates = live.clone().into_stream().map(move |value| predicate(&value));
+    EdgeCondition::dynamic(initial, updates)
 }
 
 #[cfg(test)]
