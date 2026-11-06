@@ -5,15 +5,13 @@ use std::collections::BTreeMap;
 use saluki_core::observability::metrics::{AggregatedMetricValue, AggregatedMetricsState};
 
 use super::{StatusBuilder, StatusSectionWriter};
+use crate::state::metrics::API_KEY_VALIDATION_TAG;
 
 const HTTP_RETRY_QUEUE_SIZE: &str = "adp.network_http_retry_queue_size";
 const HTTP_REQUESTS_REQUEUED: &str = "adp.network_http_requests_requeued_total";
 const HTTP_REQUESTS_RETRIED: &str = "adp.network_http_requests_retries_total";
 const HTTP_REQUESTS_SUCCESS: &str = "adp.network_http_requests_success_total";
 const HTTP_REQUESTS_ERRORS: &str = "adp.network_http_requests_errors_total";
-// The HTTP client used for API key validation tags all of its telemetry with this. The Core Agent does not count
-// validation requests as forwarder transactions, so neither do we.
-const VALIDATION_PURPOSE: &str = "purpose:api_key_validation";
 const ERROR_TYPE_CLIENT: &str = "client_error";
 const ERROR_TYPE_CANT_SEND: &str = "cant_send";
 const ERROR_TYPE_GT_400: &str = "gt_400";
@@ -73,7 +71,7 @@ pub(super) fn write_forwarder_section(builder: &mut StatusBuilder, metrics: &Agg
         AggregatedMetricValue::Counter(value) if context.name() == HTTP_REQUESTS_REQUEUED => requeued += value,
         AggregatedMetricValue::Counter(value) if context.name() == HTTP_REQUESTS_RETRIED => retried += value,
         AggregatedMetricValue::Counter(value)
-            if context.name() == HTTP_REQUESTS_SUCCESS && !context.tags().has_tag(VALIDATION_PURPOSE) =>
+            if context.name() == HTTP_REQUESTS_SUCCESS && !context.tags().has_tag(API_KEY_VALIDATION_TAG) =>
         {
             success += value;
             if let Some(endpoint) = context.tags().get_single_tag("endpoint").and_then(|tag| tag.value()) {
@@ -81,7 +79,7 @@ pub(super) fn write_forwarder_section(builder: &mut StatusBuilder, metrics: &Agg
             }
         }
         AggregatedMetricValue::Counter(value)
-            if context.name() == HTTP_REQUESTS_ERRORS && !context.tags().has_tag(VALIDATION_PURPOSE) =>
+            if context.name() == HTTP_REQUESTS_ERRORS && !context.tags().has_tag(API_KEY_VALIDATION_TAG) =>
         {
             let Some(error_type) = context.tags().get_single_tag("error_type").and_then(|tag| tag.value()) else {
                 return;
@@ -222,7 +220,11 @@ mod tests {
             // API key validation is excluded everywhere, as in the Core Agent.
             counter(
                 HTTP_REQUESTS_SUCCESS,
-                &["component_id:dd_out", "endpoint:/api/v1/validate", VALIDATION_PURPOSE],
+                &[
+                    "component_id:dd_out",
+                    "endpoint:/api/v1/validate",
+                    API_KEY_VALIDATION_TAG,
+                ],
                 100.0,
             ),
             counter(HTTP_REQUESTS_REQUEUED, SERIES, 2.0),
@@ -266,34 +268,38 @@ mod tests {
                     "error_type:client_error",
                     "code:500",
                     "endpoint:/api/v1/validate",
-                    VALIDATION_PURPOSE,
+                    API_KEY_VALIDATION_TAG,
                 ],
                 100.0,
             ),
             counter(
                 HTTP_REQUESTS_ERRORS,
-                &["error_type:cant_send", VALIDATION_PURPOSE],
-                100.0,
-            ),
-            counter(HTTP_REQUESTS_ERRORS, &["error_type:gt_400", VALIDATION_PURPOSE], 100.0),
-            counter(
-                HTTP_REQUESTS_ERRORS,
-                &["error_type:dns_error", VALIDATION_PURPOSE],
+                &["error_type:cant_send", API_KEY_VALIDATION_TAG],
                 100.0,
             ),
             counter(
                 HTTP_REQUESTS_ERRORS,
-                &["error_type:tls_error", VALIDATION_PURPOSE],
+                &["error_type:gt_400", API_KEY_VALIDATION_TAG],
                 100.0,
             ),
             counter(
                 HTTP_REQUESTS_ERRORS,
-                &["error_type:connection_error", VALIDATION_PURPOSE],
+                &["error_type:dns_error", API_KEY_VALIDATION_TAG],
                 100.0,
             ),
             counter(
                 HTTP_REQUESTS_ERRORS,
-                &["error_type:wrote_request_error", VALIDATION_PURPOSE],
+                &["error_type:tls_error", API_KEY_VALIDATION_TAG],
+                100.0,
+            ),
+            counter(
+                HTTP_REQUESTS_ERRORS,
+                &["error_type:connection_error", API_KEY_VALIDATION_TAG],
+                100.0,
+            ),
+            counter(
+                HTTP_REQUESTS_ERRORS,
+                &["error_type:wrote_request_error", API_KEY_VALIDATION_TAG],
                 100.0,
             ),
             // Unmapped error types must not change a status field.

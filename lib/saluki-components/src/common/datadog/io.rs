@@ -346,6 +346,12 @@ impl TlsCertificateValidation {
 /// tell the two apart.
 pub(crate) const API_KEY_VALIDATION_PURPOSE: &str = "api_key_validation";
 
+/// The `purpose` tag on API key validation telemetry, in `key:value` form.
+///
+/// Consumers of the HTTP client's telemetry reject this tag to exclude validation requests. It is the same tag that
+/// `API_KEY_VALIDATION_PURPOSE` is applied as, so the two must stay in sync.
+pub const API_KEY_VALIDATION_PURPOSE_TAG: &str = "purpose:api_key_validation";
+
 /// Returns an HTTP client builder for Datadog intake traffic, emitting telemetry through `metrics_builder`.
 fn http_client_builder(
     config: &ForwarderConfiguration, metrics_builder: MetricsBuilder, endpoint_name: Arc<EndpointNameFn>,
@@ -2757,5 +2763,13 @@ mod tests {
         }
 
         drain_test_forwarder(supervisor, handle).await;
+    }
+
+    #[test]
+    fn api_key_validation_tag_matches_the_purpose_the_client_applies() {
+        assert_eq!(
+            API_KEY_VALIDATION_PURPOSE_TAG,
+            format!("purpose:{API_KEY_VALIDATION_PURPOSE}")
+        );
     }
 }
