@@ -27,9 +27,19 @@ pub const DEPLOYMENT_ENVIRONMENT_KEY: &str = "deployment.environment";
 #[derive(Debug, Clone, PartialEq)]
 pub enum SourceKind {
     /// Hostname-based source.
-    Hostname,
+    HostnameKind,
     /// AWS ECS Fargate source.
-    AwsEcsFargate,
+    AwsEcsFargateKind,
+    /// Azure Container Apps source.
+    AzureContainerAppsKind,
+    /// Azure App Service source.
+    AzureAppServiceKind,
+    /// Azure Functions source.
+    AzureFunctionsKind,
+    /// Cloud Run service source.
+    GcpCloudRunKind,
+    /// Cloud Functions source.
+    GcpCloudFunctionsKind,
 }
 
 /// Represents the source of telemetry data.
@@ -51,8 +61,13 @@ impl Source {
 impl SourceKind {
     fn as_str(&self) -> &'static str {
         match self {
-            SourceKind::Hostname => "host",
-            SourceKind::AwsEcsFargate => "task_arn",
+            SourceKind::HostnameKind => "host",
+            SourceKind::AwsEcsFargateKind => "task_arn",
+            SourceKind::AzureContainerAppsKind => "azure_container_apps",
+            SourceKind::AzureAppServiceKind => "azure_app_service",
+            SourceKind::AzureFunctionsKind => "azure_functions",
+            SourceKind::GcpCloudRunKind => "gcp_cloud_run",
+            SourceKind::GcpCloudFunctionsKind => "gcp_cloud_functions",
         }
     }
 }
@@ -341,7 +356,16 @@ fn is_recognized_tag_key(key: &str) -> bool {
 
 const ATTRIBUTE_DATADOG_HOSTNAME: &str = "datadog.host.name";
 const ATTRIBUTE_HOST: &str = "host";
+const ATTRIBUTE_AZURE_CONTAINER_APP_INSTANCE_ID: &str = "azure.container_app.instance.id";
+// The Azure resource group key differs between cluster-name resolution and serverless identities.
 const AZURE_RESOURCE_GROUP_NAME: &str = "azure.resourcegroup.name";
+const AZURE_SERVERLESS_RESOURCE_GROUP_NAME: &str = "azure.resource_group.name";
+const AZURE_APP_SERVICE_PLATFORMS: [&str; 2] = ["azure.app_service", "azure_app_service"];
+const AZURE_FUNCTIONS_PLATFORMS: [&str; 2] = ["azure.functions", "azure_functions"];
+const AZURE_CONTAINER_APPS_PLATFORMS: [&str; 2] = ["azure.container_apps", "azure_container_apps"];
+const GCP_CLOUD_FUNCTIONS_PLATFORM: &str = "gcp_cloud_functions";
+const GCP_CLOUD_RUN_PLATFORM: &str = "gcp_cloud_run";
+const GCP_CLOUD_RUN_JOB_ATTRIBUTES: [&str; 2] = ["gcp.cloud_run.job.execution", "gcp.cloud_run.job.task_index"];
 const EC2_CLUSTER_TAG_PREFIX: &str = "ec2.tag.kubernetes.io/cluster/";
 const INVALID_HOSTNAMES: [&str; 6] = [
     "0.0.0.0",
@@ -351,6 +375,46 @@ const INVALID_HOSTNAMES: [&str; 6] = [
     "localhost6.localdomain6",
     "ip6-localhost",
 ];
+
+/// Returns the value of the first attribute named `key`, like pdata's `Map.Get`.
+///
+/// The inner `Option` is `None` for an attribute that is present but has an empty value.
+fn get_attribute<'a>(attributes: &'a [otlp_common::KeyValue], key: &str) -> Option<Option<&'a Value>> {
+    attributes
+        .iter()
+        .find(|kv| kv.key == key)
+        .map(|kv| kv.value.as_ref().and_then(|v| v.value.as_ref()))
+}
+
+/// Returns the first attribute named `key` as pdata's `Map.Get` followed by `Value.Str` would.
+///
+/// Unlike [`get_string_attribute`], a present attribute that isn't a string yields `Some("")`, so
+/// presence checks match the Agent's.
+fn get_attribute_str<'a>(attributes: &'a [otlp_common::KeyValue], key: &str) -> Option<&'a str> {
+    get_attribute(attributes, key).map(|value| match value {
+        Some(Value::StringValue(s_val)) => s_val.as_str(),
+        _ => "",
+    })
+}
+
+/// Returns the attribute as pdata's `Value.Str` would, but only when it isn't empty.
+fn get_non_empty_attribute_str<'a>(attributes: &'a [otlp_common::KeyValue], key: &str) -> Option<&'a str> {
+    get_attribute_str(attributes, key).filter(|s_val| !s_val.is_empty())
+}
+
+/// Renders the literal `host` attribute as pdata's `Value.AsString` does.
+///
+/// Doubles, bytes, arrays, and maps return `None` because their `AsString` formatting isn't
+/// implemented yet, so resolution falls through to the next hostname source for them.
+fn literal_host_as_string(value: Option<&Value>) -> Option<String> {
+    match value {
+        None => Some(String::new()),
+        Some(Value::StringValue(s_val)) => Some(s_val.clone()),
+        Some(Value::BoolValue(b_val)) => Some(b_val.to_string()),
+        Some(Value::IntValue(i_val)) => Some(i_val.to_string()),
+        Some(_) => None,
+    }
+}
 
 /// Resolves an AKS cluster name from an Azure managed resource group name.
 fn aks_cluster_name(resource_group_name: &str) -> Option<&str> {
@@ -363,50 +427,55 @@ fn aks_cluster_name(resource_group_name: &str) -> Option<&str> {
 }
 
 /// Resolves an EKS cluster name from an EC2 Kubernetes cluster tag key.
+///
+/// The Agent scans every attribute without stopping, so the last matching key wins.
 fn ec2_cluster_name(attributes: &[otlp_common::KeyValue]) -> Option<&str> {
     attributes
         .iter()
+        .rev()
         .find(|attribute| attribute.key.starts_with(EC2_CLUSTER_TAG_PREFIX))
         .and_then(|attribute| attribute.key.split('/').nth(2))
 }
 
 /// Resolves the Kubernetes cluster name from resource attributes.
 fn kubernetes_cluster_name(attributes: &[otlp_common::KeyValue]) -> Option<&str> {
-    get_string_attribute(attributes, K8S_CLUSTER_NAME).or_else(|| {
-        match get_string_attribute(attributes, CLOUD_PROVIDER) {
-            Some("azure") => get_string_attribute(attributes, AZURE_RESOURCE_GROUP_NAME).and_then(aks_cluster_name),
-            Some("aws") => ec2_cluster_name(attributes),
-            _ => None,
-        }
-    })
+    if let Some(cluster_name) = get_attribute_str(attributes, K8S_CLUSTER_NAME) {
+        return Some(cluster_name);
+    }
+
+    match get_attribute_str(attributes, CLOUD_PROVIDER) {
+        Some("azure") => get_attribute_str(attributes, AZURE_RESOURCE_GROUP_NAME).and_then(aks_cluster_name),
+        Some("aws") => ec2_cluster_name(attributes),
+        _ => None,
+    }
 }
 
 /// Resolves the hostname for an Azure resource.
 fn azure_hostname(attributes: &[otlp_common::KeyValue]) -> Option<&str> {
-    get_string_attribute(attributes, HOST_ID).or_else(|| get_string_attribute(attributes, HOST_NAME))
+    get_attribute_str(attributes, HOST_ID).or_else(|| get_attribute_str(attributes, HOST_NAME))
 }
 
 /// Resolves the hostname for an EC2 resource.
 fn ec2_hostname(attributes: &[otlp_common::KeyValue]) -> Option<&str> {
-    get_string_attribute(attributes, HOST_ID)
+    get_attribute_str(attributes, HOST_ID)
 }
 
 /// Resolves the hostname for a GCP resource.
 fn gcp_hostname(attributes: &[otlp_common::KeyValue]) -> Option<String> {
-    let host_name = get_string_attribute(attributes, HOST_NAME)?;
-    let cloud_account_id = get_string_attribute(attributes, CLOUD_ACCOUNT_ID)?;
+    let host_name = get_attribute_str(attributes, HOST_NAME)?;
     let host_name = if host_name.matches('.').count() >= 3 {
         host_name.split_once('.').map_or(host_name, |(name, _)| name)
     } else {
         host_name
     };
+    let cloud_account_id = get_attribute_str(attributes, CLOUD_ACCOUNT_ID)?;
 
     Some(format!("{host_name}.{cloud_account_id}"))
 }
 
 /// Resolves a Kubernetes hostname from resource attributes.
 fn kubernetes_hostname(attributes: &[otlp_common::KeyValue]) -> Option<String> {
-    let node_name = get_string_attribute(attributes, K8S_NODE_NAME)?;
+    let node_name = get_attribute_str(attributes, K8S_NODE_NAME)?;
     let cluster_name = kubernetes_cluster_name(attributes);
 
     Some(match cluster_name {
@@ -415,21 +484,22 @@ fn kubernetes_hostname(attributes: &[otlp_common::KeyValue]) -> Option<String> {
     })
 }
 
-/// Resolves an unfiltered hostname from resource attributes.
+/// Resolves an unfiltered hostname from resource attributes, like the Agent's
+/// `unsanitizedHostnameFromAttributes`.
 fn unsanitized_hostname_from_attributes(attributes: &[otlp_common::KeyValue]) -> Option<String> {
-    if let Some(hostname) = get_string_attribute(attributes, ATTRIBUTE_HOST) {
+    if let Some(hostname) = get_attribute(attributes, ATTRIBUTE_HOST).and_then(literal_host_as_string) {
+        return Some(hostname);
+    }
+
+    if let Some(hostname) = get_attribute_str(attributes, ATTRIBUTE_DATADOG_HOSTNAME) {
         return Some(hostname.to_string());
     }
 
-    if let Some(hostname) = get_string_attribute(attributes, ATTRIBUTE_DATADOG_HOSTNAME) {
-        return Some(hostname.to_string());
-    }
-
-    if get_string_attribute(attributes, AWS_ECS_LAUNCHTYPE) == Some("fargate") {
+    if get_attribute_str(attributes, AWS_ECS_LAUNCHTYPE) == Some("fargate") {
         return None;
     }
 
-    match get_string_attribute(attributes, CLOUD_PROVIDER) {
+    match get_attribute_str(attributes, CLOUD_PROVIDER) {
         Some("aws") => return ec2_hostname(attributes).map(str::to_owned),
         Some("gcp") => return gcp_hostname(attributes),
         Some("azure") => return azure_hostname(attributes).map(str::to_owned),
@@ -437,78 +507,210 @@ fn unsanitized_hostname_from_attributes(attributes: &[otlp_common::KeyValue]) ->
     }
 
     kubernetes_hostname(attributes)
-        .or_else(|| get_string_attribute(attributes, HOST_ID).map(str::to_owned))
-        .or_else(|| get_string_attribute(attributes, HOST_NAME).map(str::to_owned))
+        .or_else(|| get_attribute_str(attributes, HOST_ID).map(str::to_owned))
+        .or_else(|| get_attribute_str(attributes, HOST_NAME).map(str::to_owned))
 }
 
 /// Resolves a valid hostname from resource attributes.
+///
+/// The hostname can be empty, for example when `datadog.host.name` isn't a string.
 fn hostname_from_attributes(attributes: &[otlp_common::KeyValue]) -> Option<String> {
     let hostname = unsanitized_hostname_from_attributes(attributes)?;
     (!INVALID_HOSTNAMES.contains(&hostname.as_str())).then_some(hostname)
 }
 
-/// Resolves the source metadata from OTLP metric resource attributes.
-///
-/// Keeps resolution scoped to the metrics pipeline
-pub fn resource_to_metric_source(
-    resource: &otlp_protos::opentelemetry::proto::resource::v1::Resource,
-) -> Option<Source> {
-    let attributes = &resource.attributes;
-
-    //If the metric comes from an AWS ECS Fargate resource and a task_arn is present, we omit the hostname
-    if get_string_attribute(attributes, AWS_ECS_LAUNCHTYPE) == Some("fargate") {
-        if let Some(task_arn) = get_string_attribute(attributes, AWS_ECS_TASK_ARN) {
-            return Some(Source {
-                kind: SourceKind::AwsEcsFargate,
-                identifier: task_arn.to_string(),
-            });
-        }
-    }
-
+fn hostname_source(attributes: &[otlp_common::KeyValue]) -> Option<Source> {
     hostname_from_attributes(attributes).map(|identifier| Source {
-        kind: SourceKind::Hostname,
+        kind: SourceKind::HostnameKind,
         identifier,
     })
 }
 
-/// Resolves the source metadata from OTLP resource attributes.
-///
-/// This determines whether the telemetry came from a hostname or serverless environment.
-pub fn resource_to_source(resource: &otlp_protos::opentelemetry::proto::resource::v1::Resource) -> Option<Source> {
-    let attributes = &resource.attributes;
-
-    // AWS ECS Fargate
-    if get_string_attribute(attributes, CLOUD_PROVIDER) == Some("aws")
-        && get_string_attribute(attributes, opentelemetry_semantic_conventions::resource::CLOUD_PLATFORM)
-            == Some("aws_ecs")
-        && get_string_attribute(
-            attributes,
-            opentelemetry_semantic_conventions::resource::AWS_ECS_LAUNCHTYPE,
-        ) == Some("fargate")
-    {
-        if let Some(task_arn) = get_string_attribute(attributes, AWS_ECS_TASK_ARN) {
-            return Some(Source {
-                kind: SourceKind::AwsEcsFargate,
-                identifier: task_arn.to_string(),
-            });
-        }
+fn aws_ecs_fargate_source(attributes: &[otlp_common::KeyValue]) -> Option<Source> {
+    if get_attribute_str(attributes, AWS_ECS_LAUNCHTYPE) != Some("fargate") {
+        return None;
     }
 
-    // Hostname from attributes
-    if let Some(host_name) = get_string_attribute(attributes, opentelemetry_semantic_conventions::resource::HOST_NAME) {
+    get_attribute_str(attributes, AWS_ECS_TASK_ARN).map(|task_arn| Source {
+        kind: SourceKind::AwsEcsFargateKind,
+        identifier: task_arn.to_string(),
+    })
+}
+
+/// An Azure App Service or Azure Functions app identity.
+struct AzureAppIdentity<'a> {
+    name: &'a str,
+    subscription_id: &'a str,
+    resource_group: &'a str,
+}
+
+/// Resolves a complete Azure app identity for a resource on one of `platforms`.
+fn azure_app_identity<'a>(attributes: &'a [otlp_common::KeyValue], platforms: &[&str]) -> Option<AzureAppIdentity<'a>> {
+    let platform = get_attribute_str(attributes, CLOUD_PLATFORM)?;
+    if !platforms.contains(&platform) {
+        return None;
+    }
+
+    Some(AzureAppIdentity {
+        name: get_non_empty_attribute_str(attributes, SERVICE_NAME)?,
+        subscription_id: get_non_empty_attribute_str(attributes, CLOUD_ACCOUNT_ID)?,
+        resource_group: get_non_empty_attribute_str(attributes, AZURE_SERVERLESS_RESOURCE_GROUP_NAME)?,
+    })
+}
+
+/// Returns the name segment of an Azure resource ID such as
+/// `/subscriptions/{sub}/resourceGroups/{rg}/providers/{provider}/{type}/{name}`.
+fn azure_resource_id_name(resource_id: &str) -> Option<&str> {
+    resource_id.split('/').nth(8)
+}
+
+/// Resolves the identifier of an Azure Container Apps resource: its replica, or else its app name.
+///
+/// As in Agent 7.85, any resource on the Container Apps platform is a Container Apps source, even
+/// when the identifier resolves to an empty string.
+fn azure_container_apps_identifier(attributes: &[otlp_common::KeyValue]) -> Option<String> {
+    let platform = get_attribute_str(attributes, CLOUD_PLATFORM)?;
+    if !AZURE_CONTAINER_APPS_PLATFORMS.contains(&platform) {
+        return None;
+    }
+
+    let replica = get_non_empty_attribute_str(attributes, ATTRIBUTE_AZURE_CONTAINER_APP_INSTANCE_ID)
+        .or_else(|| get_non_empty_attribute_str(attributes, SERVICE_INSTANCE_ID));
+    let name = || {
+        get_non_empty_attribute_str(attributes, SERVICE_NAME).or_else(|| {
+            get_non_empty_attribute_str(attributes, CLOUD_RESOURCE_ID)
+                .and_then(azure_resource_id_name)
+                .filter(|name| !name.is_empty())
+        })
+    };
+
+    Some(replica.or_else(name).unwrap_or_default().to_string())
+}
+
+/// A Cloud Run or Cloud Functions identity, with the dimensions the Agent also emits as tags.
+struct GcpServerlessIdentity<'a> {
+    kind: SourceKind,
+    instance: &'a str,
+    dimensions: Vec<(&'static str, &'a str)>,
+}
+
+fn is_gcp_serverless(attributes: &[otlp_common::KeyValue]) -> bool {
+    matches!(
+        get_attribute_str(attributes, CLOUD_PLATFORM),
+        Some(GCP_CLOUD_FUNCTIONS_PLATFORM | GCP_CLOUD_RUN_PLATFORM)
+    )
+}
+
+/// Resolves a complete Cloud Run service or Cloud Functions identity.
+///
+/// Cloud Run jobs and incomplete identities resolve to `None`.
+fn gcp_serverless_identity(attributes: &[otlp_common::KeyValue]) -> Option<GcpServerlessIdentity<'_>> {
+    let kind = match get_attribute_str(attributes, CLOUD_PLATFORM)? {
+        GCP_CLOUD_FUNCTIONS_PLATFORM => SourceKind::GcpCloudFunctionsKind,
+        GCP_CLOUD_RUN_PLATFORM => SourceKind::GcpCloudRunKind,
+        _ => return None,
+    };
+
+    if GCP_CLOUD_RUN_JOB_ATTRIBUTES
+        .iter()
+        .any(|key| get_attribute(attributes, key).is_some())
+    {
+        return None;
+    }
+
+    // Unlike elsewhere, the Agent requires these to be strings, not just present.
+    let required = |key| match get_attribute(attributes, key) {
+        Some(Some(Value::StringValue(s_val))) if !s_val.is_empty() => Some(s_val.as_str()),
+        _ => None,
+    };
+    let instance = required(FAAS_INSTANCE)?;
+    let mut dimensions = vec![
+        ("project_id", required(CLOUD_ACCOUNT_ID)?),
+        ("location", required(CLOUD_REGION)?),
+        ("service_name", required(FAAS_NAME)?),
+        ("instance", instance),
+    ];
+    if let Some(revision) = get_non_empty_attribute_str(attributes, FAAS_VERSION) {
+        dimensions.push(("revision_name", revision));
+    }
+
+    Some(GcpServerlessIdentity {
+        kind,
+        instance,
+        dimensions,
+    })
+}
+
+/// Adds the serverless identity tags that the Agent's `TagsFromAttributes` derives from resource
+/// attributes: Azure App Service app identities and Cloud Run or Cloud Functions dimensions.
+pub fn extract_serverless_tags_from_resource_attributes(attributes: &[otlp_common::KeyValue], tags: &mut TagSet) {
+    if let Some(app) = azure_app_identity(attributes, &AZURE_APP_SERVICE_PLATFORMS) {
+        tags.insert_tag(format!("name:{}", app.name));
+        tags.insert_tag(format!("subscription_id:{}", app.subscription_id));
+        tags.insert_tag(format!("resource_group:{}", app.resource_group));
+    }
+
+    if let Some(identity) = gcp_serverless_identity(attributes) {
+        for (key, value) in identity.dimensions {
+            tags.insert_tag(format!("{key}:{value}"));
+        }
+    }
+}
+
+/// Resolves the source metadata from OTLP metric resource attributes.
+///
+/// Metrics only distinguish AWS ECS Fargate tasks from hosts.
+pub fn resource_to_metric_source(
+    resource: &otlp_protos::opentelemetry::proto::resource::v1::Resource,
+) -> Option<Source> {
+    let attributes = &resource.attributes;
+    aws_ecs_fargate_source(attributes).or_else(|| hostname_source(attributes))
+}
+
+/// Resolves the source of telemetry from attributes, like the Agent's `SourceFromAttrs`.
+///
+/// Serverless platforms are checked first, in the Agent's order. A resource on a Cloud Run or
+/// Cloud Functions platform never falls back to a host, even when its identity is incomplete.
+pub fn source_from_attributes(attributes: &[otlp_common::KeyValue]) -> Option<Source> {
+    if let Some(app) = azure_app_identity(attributes, &AZURE_FUNCTIONS_PLATFORMS) {
         return Some(Source {
-            kind: SourceKind::Hostname,
-            identifier: host_name.to_string(),
+            kind: SourceKind::AzureFunctionsKind,
+            identifier: app.name.to_string(),
         });
     }
 
-    None
+    if is_gcp_serverless(attributes) {
+        return gcp_serverless_identity(attributes).map(|identity| Source {
+            kind: identity.kind,
+            identifier: identity.instance.to_string(),
+        });
+    }
+
+    if let Some(app) = azure_app_identity(attributes, &AZURE_APP_SERVICE_PLATFORMS) {
+        return Some(Source {
+            kind: SourceKind::AzureAppServiceKind,
+            identifier: app.name.to_string(),
+        });
+    }
+
+    if let Some(identifier) = azure_container_apps_identifier(attributes) {
+        return Some(Source {
+            kind: SourceKind::AzureContainerAppsKind,
+            identifier,
+        });
+    }
+
+    aws_ecs_fargate_source(attributes).or_else(|| hostname_source(attributes))
+}
+
+/// Resolves the source metadata from OTLP resource attributes with [`source_from_attributes`].
+pub fn resource_to_source(resource: &otlp_protos::opentelemetry::proto::resource::v1::Resource) -> Option<Source> {
+    source_from_attributes(&resource.attributes)
 }
 
 /// Resolves the source metadata from a typed attributes map.
 ///
-/// This is equivalent to `resource_to_source`, but works on the unified trace attribute map
-/// instead of the OTLP protobuf resource type.
+/// The trace encoder only resolves AWS ECS Fargate tasks and `host.name` hosts.
 pub fn attributes_to_source(attributes: &FastHashMap<MetaString, AttributeValue>) -> Option<Source> {
     let get = |key: &str| -> Option<&str> {
         attributes
@@ -524,7 +726,7 @@ pub fn attributes_to_source(attributes: &FastHashMap<MetaString, AttributeValue>
     {
         if let Some(task_arn) = get(AWS_ECS_TASK_ARN) {
             return Some(Source {
-                kind: SourceKind::AwsEcsFargate,
+                kind: SourceKind::AwsEcsFargateKind,
                 identifier: task_arn.to_string(),
             });
         }
@@ -533,7 +735,7 @@ pub fn attributes_to_source(attributes: &FastHashMap<MetaString, AttributeValue>
     // Hostname from attributes
     if let Some(host_name) = get(opentelemetry_semantic_conventions::resource::HOST_NAME) {
         return Some(Source {
-            kind: SourceKind::Hostname,
+            kind: SourceKind::HostnameKind,
             identifier: host_name.to_string(),
         });
     }
@@ -569,7 +771,7 @@ mod tests {
 
     fn assert_hostname(attributes: Vec<KeyValue>, expected: &str) {
         let source = metric_source(attributes).expect("hostname source should resolve");
-        assert_eq!(source.kind, SourceKind::Hostname);
+        assert_eq!(source.kind, SourceKind::HostnameKind);
         assert_eq!(source.identifier, expected);
     }
 
@@ -1007,7 +1209,7 @@ mod tests {
         ])
         .expect("Fargate source should resolve");
 
-        assert_eq!(source.kind, SourceKind::AwsEcsFargate);
+        assert_eq!(source.kind, SourceKind::AwsEcsFargateKind);
         assert_eq!(source.identifier, "task-arn");
     }
 
@@ -1108,22 +1310,418 @@ mod tests {
     }
 
     #[test]
-    fn metric_source_resolution_does_not_change_the_shared_logs_resolver() {
+    fn metric_source_resolution_ignores_serverless_platforms() {
         let resource = Resource {
             attributes: vec![
-                string_attribute(CLOUD_PROVIDER, "azure"),
-                string_attribute(HOST_ID, "vm-id"),
+                string_attribute(CLOUD_PLATFORM, "azure.app_service"),
+                string_attribute(SERVICE_NAME, "app"),
+                string_attribute(CLOUD_ACCOUNT_ID, "sub"),
+                string_attribute("azure.resource_group.name", "rg"),
                 string_attribute(HOST_NAME, "host-name"),
             ],
             ..Default::default()
         };
 
-        let logs_source = resource_to_source(&resource).expect("logs source should resolve");
-        assert_eq!(logs_source.kind, SourceKind::Hostname);
-        assert_eq!(logs_source.identifier, "host-name");
+        let source = resource_to_source(&resource).expect("source should resolve");
+        assert_eq!(source.kind, SourceKind::AzureAppServiceKind);
 
         let metric_source = resource_to_metric_source(&resource).expect("metric source should resolve");
-        assert_eq!(metric_source.kind, SourceKind::Hostname);
-        assert_eq!(metric_source.identifier, "vm-id");
+        assert_eq!(metric_source.kind, SourceKind::HostnameKind);
+        assert_eq!(metric_source.identifier, "host-name");
+    }
+
+    fn attribute_value(key: &str, value: Value) -> KeyValue {
+        KeyValue {
+            key: key.to_string(),
+            value: Some(AnyValue { value: Some(value) }),
+        }
+    }
+
+    fn empty_attribute(key: &str) -> KeyValue {
+        KeyValue {
+            key: key.to_string(),
+            value: Some(AnyValue { value: None }),
+        }
+    }
+
+    fn resolved_source(attributes: Vec<KeyValue>) -> Option<(SourceKind, String)> {
+        source_from_attributes(&attributes).map(|source| (source.kind, source.identifier))
+    }
+
+    fn host(identifier: &str) -> Option<(SourceKind, String)> {
+        Some((SourceKind::HostnameKind, identifier.to_string()))
+    }
+
+    #[test]
+    fn source_from_attributes_resolves_hostnames_in_agent_order() {
+        let s = string_attribute;
+        let cases: Vec<(&str, Vec<KeyValue>, Option<(SourceKind, String)>)> = vec![
+            (
+                "literal host beats datadog.host.name",
+                vec![s(ATTRIBUTE_DATADOG_HOSTNAME, "custom"), s(ATTRIBUTE_HOST, "literal")],
+                host("literal"),
+            ),
+            (
+                "integer literal host",
+                vec![
+                    attribute_value(ATTRIBUTE_HOST, Value::IntValue(5)),
+                    s(HOST_NAME, "name"),
+                ],
+                host("5"),
+            ),
+            (
+                "boolean literal host",
+                vec![attribute_value(ATTRIBUTE_HOST, Value::BoolValue(true))],
+                host("true"),
+            ),
+            (
+                "empty literal host",
+                vec![empty_attribute(ATTRIBUTE_HOST), s(HOST_NAME, "name")],
+                host(""),
+            ),
+            (
+                "double literal host falls through until AsString exists",
+                vec![
+                    attribute_value(ATTRIBUTE_HOST, Value::DoubleValue(1.5)),
+                    s(HOST_NAME, "name"),
+                ],
+                host("name"),
+            ),
+            (
+                "invalid literal host doesn't fall through",
+                vec![s(ATTRIBUTE_HOST, "localhost"), s(HOST_NAME, "name")],
+                None,
+            ),
+            (
+                "datadog.host.name beats Fargate and cloud providers",
+                vec![
+                    s(AWS_ECS_LAUNCHTYPE, "fargate"),
+                    s(CLOUD_PROVIDER, "aws"),
+                    s(HOST_ID, "i-123"),
+                    s(ATTRIBUTE_DATADOG_HOSTNAME, "custom"),
+                ],
+                host("custom"),
+            ),
+            (
+                "non-string datadog.host.name is an empty host",
+                vec![
+                    attribute_value(ATTRIBUTE_DATADOG_HOSTNAME, Value::IntValue(1)),
+                    s(HOST_NAME, "name"),
+                ],
+                host(""),
+            ),
+            (
+                "Fargate task",
+                vec![
+                    s(AWS_ECS_LAUNCHTYPE, "fargate"),
+                    s(AWS_ECS_TASK_ARN, "arn"),
+                    s(HOST_NAME, "name"),
+                ],
+                Some((SourceKind::AwsEcsFargateKind, "arn".to_string())),
+            ),
+            (
+                "Fargate without a task ARN has no host",
+                vec![s(AWS_ECS_LAUNCHTYPE, "fargate"), s(HOST_NAME, "name")],
+                None,
+            ),
+            (
+                "AWS uses host.id",
+                vec![s(CLOUD_PROVIDER, "aws"), s(HOST_ID, "i-123"), s(HOST_NAME, "name")],
+                host("i-123"),
+            ),
+            (
+                "AWS without host.id doesn't fall back",
+                vec![s(CLOUD_PROVIDER, "aws"), s(K8S_NODE_NAME, "node"), s(HOST_NAME, "name")],
+                None,
+            ),
+            (
+                "GCP shortens a qualified host.name",
+                vec![
+                    s(CLOUD_PROVIDER, "gcp"),
+                    s(HOST_NAME, "vm.zone.c.project.internal"),
+                    s(CLOUD_ACCOUNT_ID, "project"),
+                ],
+                host("vm.project"),
+            ),
+            (
+                "GCP keeps a short host.name",
+                vec![
+                    s(CLOUD_PROVIDER, "gcp"),
+                    s(HOST_NAME, "vm.zone"),
+                    s(CLOUD_ACCOUNT_ID, "project"),
+                ],
+                host("vm.zone.project"),
+            ),
+            (
+                "GCP needs the project",
+                vec![s(CLOUD_PROVIDER, "gcp"), s(HOST_NAME, "vm")],
+                None,
+            ),
+            (
+                "Azure prefers host.id",
+                vec![s(CLOUD_PROVIDER, "azure"), s(HOST_NAME, "name"), s(HOST_ID, "vm-id")],
+                host("vm-id"),
+            ),
+            (
+                "Azure falls back to host.name",
+                vec![s(CLOUD_PROVIDER, "azure"), s(HOST_NAME, "name")],
+                host("name"),
+            ),
+            (
+                "Kubernetes node and cluster",
+                vec![
+                    s(K8S_CLUSTER_NAME, "cluster"),
+                    s(K8S_NODE_NAME, "node"),
+                    s(HOST_ID, "id"),
+                ],
+                host("node-cluster"),
+            ),
+            (
+                "Kubernetes node with an empty cluster name",
+                vec![s(K8S_NODE_NAME, "node"), s(K8S_CLUSTER_NAME, "")],
+                host("node-"),
+            ),
+            (
+                "Kubernetes node without a cluster",
+                vec![s(K8S_NODE_NAME, "node"), s(HOST_NAME, "name")],
+                host("node"),
+            ),
+            (
+                "host.id beats host.name",
+                vec![s(HOST_NAME, "name"), s(HOST_ID, "id")],
+                host("id"),
+            ),
+            ("host.name", vec![s(HOST_NAME, "name")], host("name")),
+            (
+                "first duplicate wins even when it isn't a string",
+                vec![attribute_value(HOST_NAME, Value::IntValue(1)), s(HOST_NAME, "name")],
+                host(""),
+            ),
+            ("localhost", vec![s(HOST_NAME, "localhost")], None),
+            ("0.0.0.0", vec![s(HOST_NAME, "0.0.0.0")], None),
+            ("127.0.0.1", vec![s(HOST_NAME, "127.0.0.1")], None),
+            (
+                "localhost.localdomain",
+                vec![s(HOST_NAME, "localhost.localdomain")],
+                None,
+            ),
+            (
+                "localhost6.localdomain6",
+                vec![s(HOST_NAME, "localhost6.localdomain6")],
+                None,
+            ),
+            ("ip6-localhost", vec![s(HOST_NAME, "ip6-localhost")], None),
+            ("no hostname attributes", vec![s("other", "value")], None),
+        ];
+
+        for (name, attributes, expected) in cases {
+            assert_eq!(resolved_source(attributes), expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn source_from_attributes_resolves_serverless_platforms() {
+        let s = string_attribute;
+        let azure = |platform: &str| {
+            vec![
+                s(CLOUD_PLATFORM, platform),
+                s(SERVICE_NAME, "app"),
+                s(CLOUD_ACCOUNT_ID, "sub"),
+                s("azure.resource_group.name", "rg"),
+                s(HOST_NAME, "name"),
+            ]
+        };
+        let gcp = |platform: &str| {
+            vec![
+                s(CLOUD_PLATFORM, platform),
+                s(CLOUD_ACCOUNT_ID, "project"),
+                s(CLOUD_REGION, "us-central1"),
+                s(FAAS_NAME, "svc"),
+                s(FAAS_INSTANCE, "instance-1"),
+                s(HOST_NAME, "name"),
+            ]
+        };
+        let without = |mut attributes: Vec<KeyValue>, key: &str| {
+            attributes.retain(|attribute| attribute.key != key);
+            attributes
+        };
+        let with = |mut attributes: Vec<KeyValue>, attribute: KeyValue| {
+            attributes.insert(0, attribute);
+            attributes
+        };
+        let kind = |kind: SourceKind, identifier: &str| Some((kind, identifier.to_string()));
+
+        let cases: Vec<(&str, Vec<KeyValue>, Option<(SourceKind, String)>)> = vec![
+            (
+                "Azure Functions",
+                azure("azure.functions"),
+                kind(SourceKind::AzureFunctionsKind, "app"),
+            ),
+            (
+                "legacy Azure Functions platform",
+                azure("azure_functions"),
+                kind(SourceKind::AzureFunctionsKind, "app"),
+            ),
+            (
+                "incomplete Azure Functions falls back to the host",
+                without(azure("azure.functions"), "azure.resource_group.name"),
+                host("name"),
+            ),
+            (
+                "Azure App Service",
+                azure("azure.app_service"),
+                kind(SourceKind::AzureAppServiceKind, "app"),
+            ),
+            (
+                "legacy Azure App Service platform",
+                azure("azure_app_service"),
+                kind(SourceKind::AzureAppServiceKind, "app"),
+            ),
+            (
+                "Azure App Service with an empty subscription falls back to the host",
+                with(
+                    without(azure("azure.app_service"), CLOUD_ACCOUNT_ID),
+                    s(CLOUD_ACCOUNT_ID, ""),
+                ),
+                host("name"),
+            ),
+            (
+                "Azure Container Apps replica",
+                with(
+                    azure("azure.container_apps"),
+                    s("azure.container_app.instance.id", "replica"),
+                ),
+                kind(SourceKind::AzureContainerAppsKind, "replica"),
+            ),
+            (
+                "Azure Container Apps replica from service.instance.id",
+                with(azure("azure_container_apps"), s(SERVICE_INSTANCE_ID, "instance")),
+                kind(SourceKind::AzureContainerAppsKind, "instance"),
+            ),
+            (
+                "Azure Container Apps without a replica uses the app name",
+                azure("azure.container_apps"),
+                kind(SourceKind::AzureContainerAppsKind, "app"),
+            ),
+            (
+                "Azure Container Apps name from the resource ID",
+                vec![
+                    s(CLOUD_PLATFORM, "azure.container_apps"),
+                    s(
+                        CLOUD_RESOURCE_ID,
+                        "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.App/containerApps/from-id",
+                    ),
+                ],
+                kind(SourceKind::AzureContainerAppsKind, "from-id"),
+            ),
+            (
+                "Azure Container Apps without an identity still has no host",
+                vec![s(CLOUD_PLATFORM, "azure.container_apps"), s(HOST_NAME, "name")],
+                kind(SourceKind::AzureContainerAppsKind, ""),
+            ),
+            (
+                "Cloud Run service",
+                gcp("gcp_cloud_run"),
+                kind(SourceKind::GcpCloudRunKind, "instance-1"),
+            ),
+            (
+                "Cloud Functions",
+                gcp("gcp_cloud_functions"),
+                kind(SourceKind::GcpCloudFunctionsKind, "instance-1"),
+            ),
+            (
+                "incomplete Cloud Run identity has no host",
+                without(gcp("gcp_cloud_run"), FAAS_INSTANCE),
+                None,
+            ),
+            (
+                "non-string Cloud Run region has no host",
+                with(
+                    without(gcp("gcp_cloud_run"), CLOUD_REGION),
+                    attribute_value(CLOUD_REGION, Value::IntValue(1)),
+                ),
+                None,
+            ),
+            (
+                "Cloud Run job has no host",
+                with(gcp("gcp_cloud_run"), s("gcp.cloud_run.job.execution", "")),
+                None,
+            ),
+            (
+                "Azure Functions beats Fargate",
+                with(
+                    with(azure("azure.functions"), s(AWS_ECS_LAUNCHTYPE, "fargate")),
+                    s(AWS_ECS_TASK_ARN, "arn"),
+                ),
+                kind(SourceKind::AzureFunctionsKind, "app"),
+            ),
+        ];
+
+        for (name, attributes, expected) in cases {
+            assert_eq!(resolved_source(attributes), expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn ec2_cluster_name_uses_the_last_cluster_tag() {
+        let attributes = vec![
+            string_attribute("ec2.tag.kubernetes.io/cluster/first", "owned"),
+            string_attribute("ec2.tag.kubernetes.io/cluster/second", "owned"),
+        ];
+
+        assert_eq!(ec2_cluster_name(&attributes), Some("second"));
+    }
+
+    #[test]
+    fn serverless_tags_come_from_app_service_and_gcp_identities() {
+        let s = string_attribute;
+        let tags = |attributes: Vec<KeyValue>| {
+            let mut tags = TagSet::default();
+            extract_serverless_tags_from_resource_attributes(&attributes, &mut tags);
+            let mut got: Vec<String> = tags.into_iter().map(|tag| tag.as_str().to_string()).collect();
+            got.sort();
+            got
+        };
+
+        assert_eq!(
+            tags(vec![
+                s(CLOUD_PLATFORM, "azure.app_service"),
+                s(SERVICE_NAME, "app"),
+                s(CLOUD_ACCOUNT_ID, "sub"),
+                s("azure.resource_group.name", "rg"),
+            ]),
+            vec!["name:app", "resource_group:rg", "subscription_id:sub"]
+        );
+        assert!(tags(vec![
+            s(CLOUD_PLATFORM, "azure.functions"),
+            s(SERVICE_NAME, "app"),
+            s(CLOUD_ACCOUNT_ID, "sub"),
+            s("azure.resource_group.name", "rg"),
+        ])
+        .is_empty());
+        assert_eq!(
+            tags(vec![
+                s(CLOUD_PLATFORM, "gcp_cloud_run"),
+                s(CLOUD_ACCOUNT_ID, "project"),
+                s(CLOUD_REGION, "us-central1"),
+                s(FAAS_NAME, "svc"),
+                s(FAAS_INSTANCE, "instance-1"),
+                s(FAAS_VERSION, "rev-1"),
+            ]),
+            vec![
+                "instance:instance-1",
+                "location:us-central1",
+                "project_id:project",
+                "revision_name:rev-1",
+                "service_name:svc",
+            ]
+        );
+        assert!(tags(vec![
+            s(CLOUD_PLATFORM, "gcp_cloud_run"),
+            s(CLOUD_ACCOUNT_ID, "project"),
+            s(CLOUD_REGION, "us-central1"),
+            s(FAAS_NAME, "svc"),
+        ])
+        .is_empty());
     }
 }

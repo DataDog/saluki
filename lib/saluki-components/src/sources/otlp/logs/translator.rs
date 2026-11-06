@@ -321,6 +321,37 @@ mod tests {
     }
 
     #[test]
+    fn test_resource_host_uses_the_full_source_resolution() {
+        let resource = |attributes: Vec<(&str, &str)>| otlp_resource_v1::Resource {
+            attributes: attributes
+                .into_iter()
+                .map(|(key, value)| key_value_string_to_otlp_common_key_value(key, value))
+                .collect(),
+            dropped_attributes_count: 0,
+            entity_refs: vec![],
+        };
+        let hostname = |attributes| {
+            translate_log(otlp_logs_v1::LogRecord::default(), resource(attributes), None)
+                .hostname()
+                .to_string()
+        };
+
+        assert_eq!(
+            hostname(vec![("host.name", "name"), ("datadog.host.name", "custom")]),
+            "custom"
+        );
+        assert_eq!(
+            hostname(vec![("k8s.node.name", "node"), ("k8s.cluster.name", "cluster")]),
+            "node-cluster"
+        );
+        assert_eq!(hostname(vec![("host.name", "localhost")]), "");
+        assert_eq!(
+            hostname(vec![("cloud.platform", "gcp_cloud_run"), ("host.name", "name")]),
+            ""
+        );
+    }
+
+    #[test]
     fn test_transform_service_from_log_attribute() {
         let lr = otlp_logs_v1::LogRecord {
             time_unix_nano: 0,

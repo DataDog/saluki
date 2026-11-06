@@ -1,0 +1,12 @@
+---
+fixes:
+  - |
+    OTLP logs now resolve their hostname from resource attributes the way the Datadog Agent does, including
+    ``datadog.host.name``, the literal ``host`` attribute, cloud provider host IDs, Kubernetes node and cluster names,
+    and ``host.id``. Logs no longer use ``localhost`` and similar loopback names as their hostname, and logs from Azure
+    Functions, Azure App Service, Azure Container Apps, Cloud Run, and Cloud Functions resources no longer take a
+    hostname from their resource attributes.
+  - |
+    OTLP metrics and logs from Azure App Service, Cloud Run, and Cloud Functions resources now get the serverless
+    identity tags that the Datadog Agent adds, such as ``subscription_id``, ``resource_group``, ``project_id``, and
+    ``location``.

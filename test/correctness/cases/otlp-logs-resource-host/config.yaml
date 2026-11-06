@@ -81,23 +81,11 @@ logs:
       when:
         fixture_id: [carry-over-second, carry-over-next-scope]
       reason: ADP doesn't carry the record-level host and service fallbacks over to later records of the resource.
-    - gap: gap/host-resolution
-      paths: ["envelope.hostname"]
-      kinds: [value]
-      when:
-        fixture_id: [host-datadog-over-host-name, host-aws-host-id, host-localhost]
-      reason: ADP's logs host resolution only knows ECS Fargate and `host.name`, and doesn't filter `localhost`.
-    - gap: gap/host-resolution
-      paths: ["envelope.hostname"]
-      kinds: [missing]
-      when:
-        fixture_id: [host-k8s-node-and-cluster, host-id-only]
-      reason: ADP's logs host resolution doesn't know `k8s.node.name` or `host.id`.
     - gap: gap/default-hostname
       paths: ["envelope.hostname"]
       kinds: [missing]
       when:
-        fixture_id: [no-host]
+        fixture_id: [no-host, host-localhost]
       reason: ADP doesn't fall back to the Agent's hostname when the log has none.
     - gap: gap/missing-headers
       paths:
