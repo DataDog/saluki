@@ -9,6 +9,7 @@ use std::sync::{Arc, LazyLock};
 use async_trait::async_trait;
 use axum::extract::{ConnectInfo, Request as AxumRequest, State};
 use axum::response::IntoResponse;
+use axum::routing::get;
 use axum::Router;
 use http::{HeaderName, HeaderValue};
 use metrics::Counter;
@@ -85,6 +86,7 @@ pub struct ApmRelayConfiguration {
 struct Metrics {
     requests_relayed_total: Counter,
     requests_failed_total: Counter,
+    requests_handled_total: Counter,
 }
 
 impl ApmRelayConfiguration {
@@ -331,6 +333,11 @@ impl ApmRelayAPIHandler {
         }
         result
     }
+
+    async fn handle_services(State(RelayState { metrics, .. }): State<RelayState>) -> impl IntoResponse {
+        metrics.requests_handled_total().increment(1);
+        "OK\n"
+    }
 }
 
 /// Sets `Datadog-Container-ID` to the container of the tracer that sent `request`, when the tracer is connected over the
@@ -374,7 +381,13 @@ impl APIHandler for ApmRelayAPIHandler {
 
     /// Forwards every request to the trace-agent.
     fn generate_routes(&self) -> Router<Self::State> {
-        Router::new().fallback(Self::proxy_request)
+        Router::new()
+            .route("/services", get(Self::handle_services))
+            .route("/v0.1/services", get(Self::handle_services))
+            .route("/v0.2/services", get(Self::handle_services))
+            .route("/v0.3/services", get(Self::handle_services))
+            .route("/v0.4/services", get(Self::handle_services))
+            .fallback(Self::proxy_request)
     }
 }
 
