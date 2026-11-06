@@ -22,10 +22,12 @@ use async_compression::tokio::bufread::GzipDecoder;
 use http_body_util::BodyExt as _;
 use saluki_core::components::test_util::TestComponentDriver;
 use saluki_core::data_model::event::{log::Log, Event};
+use saluki_metrics::test::TestRecorder;
 use serde_json::Value;
 use tokio::io::AsyncReadExt as _;
 
 use super::{DatadogLogsConfiguration, MAX_LOGS_PER_PAYLOAD};
+use crate::common::datadog::test_util::incompressible_string;
 use crate::common::datadog::DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT;
 use crate::encoders::BufferedIncrementalConfiguration;
 
@@ -126,24 +128,12 @@ fn compressible_logs(count: usize, len: usize) -> Vec<Log> {
         .collect()
 }
 
-/// Returns `count` logs with messages of `len` pseudo-random characters, which barely compress.
+/// Returns `count` logs with messages of `len` pseudo-random alphanumeric characters, which barely compress.
 ///
-/// The characters come from a pseudo-random generator with a fixed seed, so every run produces the same logs.
+/// Each log's characters come from a generator seeded with its index, so every run produces the same logs.
 fn incompressible_logs(count: usize, len: usize) -> Vec<Log> {
-    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut state = 0x2545_f491_4f6c_dd1d_u64;
     (0..count)
-        .map(|_| {
-            let message = (0..len)
-                .map(|_| {
-                    state ^= state << 13;
-                    state ^= state >> 7;
-                    state ^= state << 17;
-                    ALPHABET[(state % ALPHABET.len() as u64) as usize] as char
-                })
-                .collect::<String>();
-            Log::new(message)
-        })
+        .map(|index| Log::new(incompressible_string(len, index as u64)))
         .collect()
 }
 
@@ -222,7 +212,13 @@ async fn splits_requests_by_compressed_size() {
     let requests = encode("zstd", logs.clone()).await;
 
     let counts = requests.iter().map(|request| request.event_count).collect::<Vec<_>>();
-    assert_eq!(counts, vec![256, 144]);
+    assert_eq!(
+        counts,
+        vec![257, 143],
+        "the request builder starts a new request once its compressed size estimate, about the realized zstd ratio \
+         times the logs written, would pass 99% of the compressed limit, so the split point moves if that ratio \
+         changes"
+    );
     for request in &requests {
         assert!(
             request.compressed_len <= DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT,
@@ -246,12 +242,15 @@ async fn does_not_split_compressible_requests_by_content_size() {
     let requests = encode("zstd", logs.clone()).await;
 
     assert_eq!(requests.len(), 1);
-    assert!(requests[0].body.len() > 2 * TARGET_BATCH_MAX_CONTENT_SIZE);
+    assert!(requests[0].body.len() > TARGET_BATCH_MAX_CONTENT_SIZE);
     assert_eq!(all_messages(&requests), messages_of(&logs));
 }
 
 #[tokio::test]
 async fn drops_a_single_log_over_the_compressed_size_limit() {
+    let recorder = TestRecorder::default();
+    let _local = metrics::set_default_local_recorder(&recorder);
+
     let oversized = incompressible_logs(1, DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT * 3 / 2).remove(0);
     let logs = vec![Log::new("before"), oversized, Log::new("after")];
     let requests = encode("zstd", logs).await;
@@ -261,6 +260,19 @@ async fn drops_a_single_log_over_the_compressed_size_limit() {
     // holds only the oversized log is dropped.
     let messages = requests.iter().map(EncodedRequest::messages).collect::<Vec<_>>();
     assert_eq!(messages, vec![vec!["before".to_string()], vec!["after".to_string()]]);
+
+    // NOTE: the dropped log isn't counted. The encoder only logs the error of a split half it can't send, while a log it
+    // can't encode counts toward `component_events_dropped_total`. Once the drop is counted, this should become 1.
+    let dropped = recorder.counter((
+        "component_events_dropped_total",
+        &[
+            ("component_id", "test"),
+            ("component_type", "encoder"),
+            ("intentional", "false"),
+            ("drop_reason", "encoder_failure"),
+        ][..],
+    ));
+    assert_eq!(dropped, Some(0));
 }
 
 #[tokio::test]
