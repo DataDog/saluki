@@ -394,6 +394,24 @@ mod tests {
     }
 
     #[test]
+    fn encode_timestamps_are_compared_with_the_encode_tolerance() {
+        let base = 1_793_268_000_000u64;
+        let at = |timestamp: u64| log(json!({"message": "{}", "status": "info", "timestamp": timestamp}));
+
+        let result = compare_logs(&[&at(base)], &[&at(base + 30_000)], &defaults());
+        assert_eq!(result.pairs.len(), 1);
+        assert!(result.pairs[0].diffs.is_empty(), "{:?}", result.pairs[0].diffs);
+
+        let result = compare_logs(
+            &[&at(base)],
+            &[&at(base + ENCODE_TIMESTAMP_TOLERANCE_MS + 1)],
+            &defaults(),
+        );
+        assert_eq!(result.pairs.len(), 1);
+        assert_eq!(paths(&result.pairs[0].diffs), vec!["envelope.timestamp"]);
+    }
+
+    #[test]
     fn a_property_regression_still_pairs_and_is_reported_as_a_field_diff() {
         let baseline = agent_log(json!({"message": "a", "otel.timestamp": "1", "attr": {"k": 1, "list": [1, 2]}}));
         let comparison = agent_log(json!({"message": "a", "otel.timestamp": "1", "attr": {"k": 2, "list": [1, 3]}}));
