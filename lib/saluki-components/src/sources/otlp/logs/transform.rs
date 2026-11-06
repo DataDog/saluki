@@ -16,6 +16,10 @@ pub const STATUS_KEYS: &[&str] = &["status", "severity", "level", "syslog.severi
 pub const MESSAGE_KEYS: &[&str] = &["msg", "message", "log"];
 pub const TRACE_ID_ATTR_KEYS: &[&str] = &["traceid", "trace_id", "contextmap.traceid", "oteltraceid"];
 pub const SPAN_ID_ATTR_KEYS: &[&str] = &["spanid", "span_id", "contextmap.spanid", "otelspanid"];
+const OTEL_SCOPE_NAME: &str = "otel.scope.name";
+const OTEL_SCOPE_VERSION: &str = "otel.scope.version";
+const OTEL_LIBRARY_NAME: &str = "otel.library.name";
+const OTEL_LIBRARY_VERSION: &str = "otel.library.version";
 
 static DEFAULT_SOURCE: MetaString = MetaString::from_static("otlp_log_ingestion");
 
@@ -184,6 +188,19 @@ fn string_value_or_empty(kv: &otlp_common::KeyValue) -> &str {
     }
 }
 
+/// Maps a deprecated `otel.library.*` attribute to its canonical `otel.scope.*` key, unless the attribute's own
+/// collection also has the canonical key, spelled exactly.
+fn insert_scope_alias(
+    map: &mut HashMap<MetaString, JsonValue>, collection: &[otlp_common::KeyValue], canonical: &'static str,
+    kv: &otlp_common::KeyValue,
+) {
+    if collection.iter().any(|other| other.key == canonical) {
+        return;
+    }
+    let value = kv.value.as_ref().map(any_value_to_message_string).unwrap_or_default();
+    map.insert(MetaString::from_static(canonical), JsonValue::String(value));
+}
+
 // Helper to insert safely avoid overwriting fields that are already set
 fn safe_insert(map: &mut HashMap<MetaString, JsonValue>, key: &str, value: JsonValue) {
     if key == "hostname" || key == "service" {
@@ -252,6 +269,12 @@ pub fn transform_log_record(
             }
             // ddtags aggregation
             k if k.eq_ignore_ascii_case(DDTAGS_ATTR) => ddtags_from_attrs = Some(string_value_or_empty(kv)),
+            k if k.eq_ignore_ascii_case(OTEL_LIBRARY_NAME) => {
+                insert_scope_alias(&mut additional_properties, &lr.attributes, OTEL_SCOPE_NAME, kv)
+            }
+            k if k.eq_ignore_ascii_case(OTEL_LIBRARY_VERSION) => {
+                insert_scope_alias(&mut additional_properties, &lr.attributes, OTEL_SCOPE_VERSION, kv)
+            }
             // Default: flatten map and insert safely
             _ => {
                 if let Some(av) = kv.value.as_ref() {
@@ -276,8 +299,19 @@ pub fn transform_log_record(
         }
     }
 
-    // Resource attributes
+    // Resource attributes overwrite record attributes. Unlike record attributes, their aliases match case-sensitively.
     for kv in &resource.attributes {
+        match kv.key.as_str() {
+            OTEL_LIBRARY_NAME => {
+                insert_scope_alias(&mut additional_properties, &resource.attributes, OTEL_SCOPE_NAME, kv);
+                continue;
+            }
+            OTEL_LIBRARY_VERSION => {
+                insert_scope_alias(&mut additional_properties, &resource.attributes, OTEL_SCOPE_VERSION, kv);
+                continue;
+            }
+            _ => {}
+        }
         if let Some(av) = kv.value.as_ref() {
             let val: JsonValue = match av.value.as_ref() {
                 Some(OtlpStringValue(s)) => JsonValue::String(s.clone()),
@@ -289,7 +323,8 @@ pub fn transform_log_record(
         }
     }
 
-    // Scope attributes
+    // Scope attributes overwrite both, under their own keys: the Agent neither maps their aliases nor prefixes
+    // `hostname` and `service`. The scope's name and version then fill in only what's still missing.
     if let Some(scope) = scope {
         for kv in &scope.attributes {
             if let Some(av) = kv.value.as_ref() {
@@ -298,8 +333,15 @@ pub fn transform_log_record(
                     _ => any_value_to_json(av),
                 };
                 if !val.is_null() {
-                    safe_insert(&mut additional_properties, &kv.key, val);
+                    additional_properties.insert(kv.key.as_str().into(), val);
                 }
+            }
+        }
+        for (key, value) in [(OTEL_SCOPE_NAME, &scope.name), (OTEL_SCOPE_VERSION, &scope.version)] {
+            if !value.is_empty() {
+                additional_properties
+                    .entry(MetaString::from_static(key))
+                    .or_insert_with(|| JsonValue::String(value.clone()));
             }
         }
     }
@@ -768,6 +810,175 @@ mod tests {
                 resource_attr,
                 scope_attr
             );
+        }
+    }
+
+    #[test]
+    fn scope_metadata_follows_the_reference_precedence() {
+        type Attributes = &'static [(&'static str, &'static str)];
+        struct Case {
+            name: &'static str,
+            record: Attributes,
+            resource: Attributes,
+            scope_attributes: Attributes,
+            scope_name: &'static str,
+            scope_version: &'static str,
+            expected: Attributes,
+        }
+        const NONE: Attributes = &[];
+        let case = |name| Case {
+            name,
+            record: NONE,
+            resource: NONE,
+            scope_attributes: NONE,
+            scope_name: "",
+            scope_version: "",
+            expected: NONE,
+        };
+
+        let cases = [
+            // Record attributes: an alias maps to its canonical key, unless the record also has the canonical key.
+            Case {
+                record: &[("otel.library.name", "alias")],
+                expected: &[("otel.scope.name", "alias")],
+                ..case("a record alias maps to the canonical key")
+            },
+            Case {
+                record: &[("otel.scope.name", "canonical"), ("otel.library.name", "alias")],
+                expected: &[("otel.scope.name", "canonical")],
+                ..case("a record alias defers to an earlier record canonical key")
+            },
+            Case {
+                record: &[("otel.library.name", "alias"), ("otel.scope.name", "canonical")],
+                expected: &[("otel.scope.name", "canonical")],
+                ..case("a record alias defers to a later record canonical key")
+            },
+            Case {
+                record: &[("OTEL.Library.Version", "alias")],
+                expected: &[("otel.scope.version", "alias")],
+                ..case("a record alias matches in any case")
+            },
+            Case {
+                record: &[("otel.library.name", "alias"), ("OTEL.SCOPE.NAME", "canonical")],
+                expected: &[("otel.scope.name", "alias"), ("OTEL.SCOPE.NAME", "canonical")],
+                ..case("a record alias defers only to a canonical key spelled exactly")
+            },
+            // Resource attributes: the same within the resource, and they overwrite record-derived values.
+            Case {
+                resource: &[("otel.library.version", "alias")],
+                expected: &[("otel.scope.version", "alias")],
+                ..case("a resource alias maps to the canonical key")
+            },
+            Case {
+                resource: &[("otel.library.name", "alias"), ("otel.scope.name", "canonical")],
+                expected: &[("otel.scope.name", "canonical")],
+                ..case("a resource alias defers to a resource canonical key")
+            },
+            Case {
+                resource: &[("OTEL.LIBRARY.NAME", "alias")],
+                expected: &[("OTEL.LIBRARY.NAME", "alias")],
+                ..case("a resource alias matches only in lowercase")
+            },
+            Case {
+                record: &[("otel.scope.name", "record")],
+                resource: &[("otel.library.name", "resource")],
+                expected: &[("otel.scope.name", "resource")],
+                ..case("a resource alias overwrites a record canonical key")
+            },
+            Case {
+                record: &[("otel.library.name", "record")],
+                resource: &[("otel.scope.name", "resource")],
+                expected: &[("otel.scope.name", "resource")],
+                ..case("a resource canonical key overwrites a record alias")
+            },
+            // Scope attributes: they overwrite both, under their own keys.
+            Case {
+                record: &[("otel.scope.name", "record")],
+                resource: &[("otel.scope.name", "resource")],
+                scope_attributes: &[("otel.scope.name", "scope")],
+                expected: &[("otel.scope.name", "scope")],
+                ..case("a scope attribute overwrites record and resource values")
+            },
+            Case {
+                scope_attributes: &[("otel.library.name", "alias")],
+                expected: &[("otel.library.name", "alias")],
+                ..case("a scope attribute alias keeps its key")
+            },
+            Case {
+                resource: &[("hostname", "resource")],
+                scope_attributes: &[("hostname", "scope")],
+                expected: &[("otel.hostname", "resource"), ("hostname", "scope")],
+                ..case("a scope attribute hostname isn't prefixed")
+            },
+            // The instrumentation scope's name and version: they only fill in missing keys.
+            Case {
+                scope_name: "name",
+                scope_version: "version",
+                expected: &[("otel.scope.name", "name"), ("otel.scope.version", "version")],
+                ..case("the scope name and version fill in missing keys")
+            },
+            Case {
+                record: &[("otel.scope.name", "record")],
+                scope_name: "name",
+                expected: &[("otel.scope.name", "record")],
+                ..case("the scope name defers to a record canonical key")
+            },
+            Case {
+                record: &[("otel.library.name", "alias")],
+                scope_name: "name",
+                expected: &[("otel.scope.name", "alias")],
+                ..case("the scope name defers to a record alias")
+            },
+            Case {
+                resource: &[("otel.scope.version", "resource")],
+                scope_version: "version",
+                expected: &[("otel.scope.version", "resource")],
+                ..case("the scope version defers to a resource canonical key")
+            },
+            Case {
+                scope_attributes: &[("otel.scope.name", "scope")],
+                scope_name: "name",
+                expected: &[("otel.scope.name", "scope")],
+                ..case("the scope name defers to a scope attribute")
+            },
+            Case {
+                scope_attributes: &[("otel.library.name", "alias")],
+                scope_name: "name",
+                expected: &[("otel.library.name", "alias"), ("otel.scope.name", "name")],
+                ..case("the scope name doesn't defer to a scope attribute alias")
+            },
+        ];
+
+        let attributes =
+            |attrs: Attributes| -> Vec<KeyValue> { attrs.iter().map(|(k, v)| key_value(k, string(v))).collect() };
+        for case in cases {
+            let lr = LogRecord {
+                attributes: attributes(case.record),
+                ..Default::default()
+            };
+            let resource = Resource {
+                attributes: attributes(case.resource),
+                ..Default::default()
+            };
+            let scope = otlp_common::InstrumentationScope {
+                name: case.scope_name.to_string(),
+                version: case.scope_version.to_string(),
+                attributes: attributes(case.scope_attributes),
+                ..Default::default()
+            };
+            let log = transform_log_record(lr, &resource, Some(&scope), None, None, TagSet::default());
+
+            let actual = log
+                .additional_properties()
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.clone()))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            let expected = case
+                .expected
+                .iter()
+                .map(|(k, v)| (k.to_string(), json!(v)))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            assert_eq!(actual, expected, "{}", case.name);
         }
     }
 
