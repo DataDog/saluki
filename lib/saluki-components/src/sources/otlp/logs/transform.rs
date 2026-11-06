@@ -167,10 +167,10 @@ pub fn flatten_attribute(base_key: &str, av: &otlp_common::AnyValue, depth: usiz
 /// The length of the longest reserved record attribute key, `contextmap.traceid`.
 const MAX_RESERVED_KEY_LEN: usize = 18;
 
-/// Lowercases an attribute key the way Go's `strings.ToLower` does, for matching against reserved keys.
+/// Converts an attribute key to lowercase the way Go's `strings.ToLower` does, for matching against reserved keys.
 ///
 /// Go maps each character to its simple lowercase, so unlike `str::to_lowercase`, `İ` (U+0130) becomes a plain `i`
-/// and a final `Σ` becomes `σ`. Reserved keys are short and ASCII, so this returns `None`, without lowercasing the
+/// and a final `Σ` becomes `σ`. Reserved keys are short and ASCII, so this returns `None`, without converting the
 /// rest, as soon as the key can't be one.
 fn lowercase_reserved_key<'a>(key: &str, buf: &'a mut [u8; MAX_RESERVED_KEY_LEN]) -> Option<&'a str> {
     let mut len = 0;
