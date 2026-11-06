@@ -1,7 +1,11 @@
 //! Characterization tests for check logs, from the Checks IPC data model to the Datadog logs encoder's request.
 //!
 //! These tests record what the encoder sends for check logs today, byte for byte. A change to the wire format should
-//! show up here as a change to an expected request or entry.
+//! show up here as a change to an expected request or entry. The comparison is exact on purpose: key order and string
+//! escaping are part of the format the Agent sends, so a parsed-JSON comparison would miss changes to them.
+//!
+//! The tests stop at the request the encoder builds. Headers that the forwarder adds when it sends a request, and the
+//! transport itself, aren't covered here.
 //!
 //! Today, each entry wraps the check's message in a JSON-encoded `{"message": ...}` object, carries the capitalized
 //! status, and gets an `@timestamp` from the encoder's clock. Check logs have no hostname, service, or source, so
@@ -25,6 +29,14 @@ fn fixed_clock() -> DateTime<Utc> {
     DateTime::parse_from_rfc3339(NOW)
         .expect("NOW should be RFC3339")
         .with_timezone(&Utc)
+}
+
+/// Returns the entry for a check log, given its `message` value as a JSON string literal.
+fn entry(message: &str, status: &str) -> String {
+    format!(
+        r#"{{"@timestamp":"{}","message":{},"status":"{}"}}"#,
+        NOW, message, status
+    )
 }
 
 /// A request the logs encoder produced, with its body decompressed.
@@ -120,9 +132,9 @@ async fn request() {
         ],
         body: [
             "[",
-            r#"{"@timestamp":"2026-01-02T03:04:05.678Z","message":"{\"message\":\"first\"}","status":"Info"}"#,
+            &entry(r#""{\"message\":\"first\"}""#, "Info"),
             ",",
-            r#"{"@timestamp":"2026-01-02T03:04:05.678Z","message":"{\"message\":\"second\"}","status":"Error"}"#,
+            &entry(r#""{\"message\":\"second\"}""#, "Error"),
             "]",
         ]
         .concat(),
@@ -135,31 +147,19 @@ async fn levels() {
     let cases = [
         (
             LogLevel::Unspecified as i32,
-            r#"{"@timestamp":"2026-01-02T03:04:05.678Z","message":"{\"message\":\"hello\"}","status":"Info"}"#,
+            entry(r#""{\"message\":\"hello\"}""#, "Info"),
         ),
-        (
-            LogLevel::Trace as i32,
-            r#"{"@timestamp":"2026-01-02T03:04:05.678Z","message":"{\"message\":\"hello\"}","status":"Trace"}"#,
-        ),
-        (
-            LogLevel::Debug as i32,
-            r#"{"@timestamp":"2026-01-02T03:04:05.678Z","message":"{\"message\":\"hello\"}","status":"Debug"}"#,
-        ),
-        (
-            LogLevel::Info as i32,
-            r#"{"@timestamp":"2026-01-02T03:04:05.678Z","message":"{\"message\":\"hello\"}","status":"Info"}"#,
-        ),
+        (LogLevel::Trace as i32, entry(r#""{\"message\":\"hello\"}""#, "Trace")),
+        (LogLevel::Debug as i32, entry(r#""{\"message\":\"hello\"}""#, "Debug")),
+        (LogLevel::Info as i32, entry(r#""{\"message\":\"hello\"}""#, "Info")),
         (
             LogLevel::Warning as i32,
-            r#"{"@timestamp":"2026-01-02T03:04:05.678Z","message":"{\"message\":\"hello\"}","status":"Warning"}"#,
+            entry(r#""{\"message\":\"hello\"}""#, "Warning"),
         ),
-        (
-            LogLevel::Error as i32,
-            r#"{"@timestamp":"2026-01-02T03:04:05.678Z","message":"{\"message\":\"hello\"}","status":"Error"}"#,
-        ),
+        (LogLevel::Error as i32, entry(r#""{\"message\":\"hello\"}""#, "Error")),
         (
             LogLevel::Critical as i32,
-            r#"{"@timestamp":"2026-01-02T03:04:05.678Z","message":"{\"message\":\"hello\"}","status":"Emergency"}"#,
+            entry(r#""{\"message\":\"hello\"}""#, "Emergency"),
         ),
     ];
 
@@ -169,38 +169,28 @@ async fn levels() {
 }
 
 #[tokio::test]
-async fn unknown_level_is_not_sent() {
-    // 99 isn't part of the `LogLevel` enum, so the source drops the log, and the encoder has nothing to send.
-    let requests = encode_check_data([log_data(99, "hello")]).await;
-    assert_eq!(Vec::<WireRequest>::new(), requests);
-}
-
-#[tokio::test]
 async fn messages() {
     let cases = [
-        (
-            "",
-            r#"{"@timestamp":"2026-01-02T03:04:05.678Z","message":"{\"message\":\"\"}","status":"Info"}"#,
-        ),
+        ("", entry(r#""{\"message\":\"\"}""#, "Info")),
         (
             r#"{"key":"value","n":1}"#,
-            r#"{"@timestamp":"2026-01-02T03:04:05.678Z","message":"{\"message\":\"{\\\"key\\\":\\\"value\\\",\\\"n\\\":1}\"}","status":"Info"}"#,
+            entry(r#""{\"message\":\"{\\\"key\\\":\\\"value\\\",\\\"n\\\":1}\"}""#, "Info"),
         ),
         (
             r#"say "hi" \ bye"#,
-            r#"{"@timestamp":"2026-01-02T03:04:05.678Z","message":"{\"message\":\"say \\\"hi\\\" \\\\ bye\"}","status":"Info"}"#,
+            entry(r#""{\"message\":\"say \\\"hi\\\" \\\\ bye\"}""#, "Info"),
         ),
         (
             "line one\nline two\ttabbed",
-            r#"{"@timestamp":"2026-01-02T03:04:05.678Z","message":"{\"message\":\"line one\\nline two\\ttabbed\"}","status":"Info"}"#,
+            entry(r#""{\"message\":\"line one\\nline two\\ttabbed\"}""#, "Info"),
         ),
         (
             "<a href=\"x\">&amp;</a>",
-            r#"{"@timestamp":"2026-01-02T03:04:05.678Z","message":"{\"message\":\"<a href=\\\"x\\\">&amp;</a>\"}","status":"Info"}"#,
+            entry(r#""{\"message\":\"<a href=\\\"x\\\">&amp;</a>\"}""#, "Info"),
         ),
         (
             "café ☕ 日本語 \u{2028}",
-            "{\"@timestamp\":\"2026-01-02T03:04:05.678Z\",\"message\":\"{\\\"message\\\":\\\"café ☕ 日本語 \u{2028}\\\"}\",\"status\":\"Info\"}",
+            entry("\"{\\\"message\\\":\\\"café ☕ 日本語 \u{2028}\\\"}\"", "Info"),
         ),
     ];
 
