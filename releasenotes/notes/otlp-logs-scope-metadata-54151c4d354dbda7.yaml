@@ -1,0 +1,9 @@
+---
+fixes:
+  - |
+    OTLP logs handled natively now carry the instrumentation scope's name and version as ``otel.scope.name`` and
+    ``otel.scope.version``, and map the deprecated ``otel.library.name`` and ``otel.library.version`` log and resource
+    attributes to them, with the same precedence as the Datadog Agent.
+  - |
+    OTLP logs handled natively now keep ``hostname`` and ``service`` scope attributes under their own names, as the
+    Datadog Agent does, rather than renaming them to ``otel.hostname`` and ``otel.service``.
