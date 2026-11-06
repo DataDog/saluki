@@ -914,6 +914,9 @@ mod tests {
         );
     }
 
+    /// A named map extraction case: the attributes and the expected sorted tags.
+    type MapTagCase = (&'static str, Vec<(&'static str, AttributeValue)>, Vec<&'static str>);
+
     #[test]
     fn map_extraction_maps_container_image_tags() {
         let array = |values: &[&str]| {
@@ -924,7 +927,7 @@ mod tests {
                     .collect(),
             )
         };
-        let cases: Vec<(&str, Vec<(&str, AttributeValue)>, Vec<&str>)> = vec![
+        let cases: Vec<MapTagCase> = vec![
             (
                 "array takes the first element",
                 vec![(CONTAINER_IMAGE_TAGS, array(&["v1", "latest"]))],
