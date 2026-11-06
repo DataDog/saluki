@@ -23,6 +23,7 @@ pub struct KnownGap {
     pub reason: &'static str,
 }
 
+/// The known differences between the target and the current output of the vectors.
 pub const KNOWN_GAPS: &[KnownGap] = &[
     KnownGap {
         gap: "gap/content-in-message",
@@ -140,7 +141,7 @@ pub const KNOWN_GAPS: &[KnownGap] = &[
         reason: "The current content holds only `message` and `service`.",
     },
     KnownGap {
-        gap: "gap/content-in-message",
+        gap: "gap/empty-service",
         vectors: &[
             "translator/basic",
             "translator/reserved-resource-attributes",

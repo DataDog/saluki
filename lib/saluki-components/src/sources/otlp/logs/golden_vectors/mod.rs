@@ -21,9 +21,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
-use chrono::DateTime;
+use chrono::{DateTime, Utc};
 use http_body_util::BodyExt as _;
 use otlp_protos::opentelemetry::proto::collector::logs::v1::logs_service_client::LogsServiceClient;
 use saluki_core::components::test_util::{ComponentControl, NoInput, Output, TestComponentDriver};
@@ -31,7 +31,7 @@ use saluki_core::runtime::state::{DataspaceUpdate, IdentifierFilter};
 use saluki_core::topology::EventsBuffer;
 use saluki_io::net::BoundListenAddress;
 use serde_json::Value;
-use stele::{diff_logs, path_matches, FieldDiff, Log};
+use stele::{diff_logs, field_path_matches, FieldDiff, Log};
 use tonic::transport::Channel;
 
 use crate::encoders::{BufferedIncrementalConfiguration, DatadogLogsConfiguration};
@@ -48,6 +48,15 @@ const ENCODE_TIME_MS: &str = "<encode-time-ms>";
 
 /// Placeholder for an `@timestamp` that the encoder sets to the time the log was encoded.
 const ENCODE_TIME_RFC3339: &str = "<encode-time-rfc3339>";
+
+/// The encoder's clock in the test, which sets ADP's `@timestamp` and the envelope `timestamp`.
+const ENCODE_TIME: &str = "2026-01-02T03:04:05.678Z";
+
+fn encode_clock() -> DateTime<Utc> {
+    DateTime::parse_from_rfc3339(ENCODE_TIME)
+        .expect("ENCODE_TIME should be RFC3339")
+        .with_timezone(&Utc)
+}
 
 /// The default hostname, which the target uses when a log has none.
 const DEFAULT_HOSTNAME: &str = "default-hostname";
@@ -129,15 +138,15 @@ async fn current_output(
     );
 
     // The topology connects the encoder like this, with the same compression settings and flush timeout by default.
-    let encoder =
-        BufferedIncrementalConfiguration::new(DatadogLogsConfiguration::new("zstd", 3), Duration::from_secs(2));
-    let encode_start_ms = unix_millis();
+    let encoder = BufferedIncrementalConfiguration::new(
+        DatadogLogsConfiguration::new("zstd", 3).with_clock(encode_clock),
+        Duration::from_secs(2),
+    );
     let (encoder, mut payloads) = TestComponentDriver::encoder(encoder)
         .await
         .expect("logs encoder should build");
     encoder.send_events(events).await;
     encoder.shutdown().await.expect("logs encoder should stop cleanly");
-    let encode_end_ms = unix_millis();
 
     let mut output = Vec::new();
     for payload in payloads.collect().await {
@@ -164,40 +173,23 @@ async fn current_output(
         // Parse the payload as the intake does first, so that a malformed payload fails here.
         Log::try_from_payload(&body).unwrap_or_else(|e| panic!("{}: payload should parse: {}", vector.name, e));
         let items: Vec<Value> = serde_json::from_slice(&body).expect("payload should be a JSON array");
-        output.extend(
-            items
-                .into_iter()
-                .map(|item| normalize_encode_times(item, encode_start_ms, encode_end_ms)),
-        );
+        output.extend(items.into_iter().map(normalize_encode_times));
     }
     output
 }
 
-fn unix_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock should be after the epoch")
-        .as_millis() as u64
-}
-
-/// Replaces the encode-time timestamps of a log with placeholders.
+/// Replaces the encode-time timestamps of a log with placeholders, if they're the encoder's clock.
 ///
-/// The envelope `timestamp` and the encoder's `@timestamp` are replaced only when they fall within the time the log was being
-/// encoded, so a timestamp taken from the OTLP record stays as it is.
-fn normalize_encode_times(mut item: Value, start_ms: u64, end_ms: u64) -> Value {
+/// A timestamp taken from the OTLP record is never the encoder's clock, so it stays as it is.
+fn normalize_encode_times(mut item: Value) -> Value {
     let object = item.as_object_mut().expect("a log should be a JSON object");
-    let during_encode = |ms: u64| (start_ms..=end_ms).contains(&ms);
-
     if let Some(timestamp) = object.get_mut("timestamp") {
-        if timestamp.as_u64().is_some_and(during_encode) {
+        if timestamp.as_i64() == Some(encode_clock().timestamp_millis()) {
             *timestamp = Value::String(ENCODE_TIME_MS.to_string());
         }
     }
     if let Some(timestamp) = object.get_mut("@timestamp") {
-        let parsed = timestamp
-            .as_str()
-            .and_then(|raw| DateTime::parse_from_rfc3339(raw).ok());
-        if parsed.is_some_and(|parsed| u64::try_from(parsed.timestamp_millis()).is_ok_and(during_encode)) {
+        if timestamp.as_str() == Some(ENCODE_TIME) {
             *timestamp = Value::String(ENCODE_TIME_RFC3339.to_string());
         }
     }
@@ -242,7 +234,7 @@ impl KnownGap {
     fn covers(&self, vector: &str, diff: &FieldDiff) -> bool {
         self.vectors.contains(&vector)
             && (self.kinds.is_empty() || self.kinds.contains(&diff.kind))
-            && self.paths.iter().any(|pattern| path_matches(pattern, &diff.path))
+            && self.paths.iter().any(|pattern| field_path_matches(pattern, &diff.path))
     }
 }
 
@@ -336,7 +328,7 @@ async fn otlp_logs_golden_vectors() {
                     covered = true;
                     used_vectors.insert((entry_index, vector.name));
                     for pattern in gap.paths {
-                        if path_matches(pattern, &diff.path) {
+                        if field_path_matches(pattern, &diff.path) {
                             used_paths.insert((entry_index, pattern));
                         }
                     }
