@@ -11,7 +11,13 @@
 //! queued for a worker stay with that worker, so a worker that stops making progress holds on to its backlog. Workers
 //! that have stopped, by dropping their receiver, are skipped, and items queued for them are dropped.
 
-use std::{fmt, num::NonZeroUsize, sync::Arc};
+use std::{
+    fmt,
+    future::{poll_fn, Future as _},
+    num::NonZeroUsize,
+    sync::Arc,
+    task::Poll,
+};
 
 use tokio::sync::mpsc;
 
@@ -50,8 +56,8 @@ pub struct WorkQueueSender<T> {
 impl<T> WorkQueueSender<T> {
     /// Sends an item to one of the workers.
     ///
-    /// Workers that have stopped are skipped. If every running worker's queue is full, waits for room in a running
-    /// worker's queue.
+    /// Workers that have stopped are skipped. If every running worker's queue is full, waits until any running worker
+    /// has room.
     ///
     /// # Errors
     ///
@@ -72,16 +78,42 @@ impl<T> WorkQueueSender<T> {
             }
         }
 
-        // Every running worker's queue is full. Wait for room, moving on to the next worker if one stops while waiting.
-        for offset in 0..workers {
-            let index = (self.current + offset) % workers;
-            match self.senders[index].send(item).await {
-                Ok(()) => return Ok(()),
-                Err(mpsc::error::SendError(returned)) => item = returned,
+        // Every running worker's queue is full, so wait for room in whichever worker frees up first. Waiting on a single
+        // worker could leave this send blocked behind a slow worker while another worker sits idle.
+        let senders = Arc::clone(&self.senders);
+        let mut reservations: Vec<_> = (0..workers)
+            .map(|offset| (self.current + offset) % workers)
+            .map(|index| (index, Box::pin(senders[index].reserve())))
+            .collect();
+        let reserved = poll_fn(|cx| {
+            let mut i = 0;
+            while i < reservations.len() {
+                match reservations[i].1.as_mut().poll(cx) {
+                    Poll::Ready(Ok(permit)) => return Poll::Ready(Some((reservations[i].0, permit))),
+                    // The worker stopped while waiting, so stop waiting on it.
+                    Poll::Ready(Err(_)) => {
+                        drop(reservations.remove(i));
+                    }
+                    Poll::Pending => i += 1,
+                }
             }
-        }
 
-        Err(SendError(item))
+            if reservations.is_empty() {
+                Poll::Ready(None)
+            } else {
+                Poll::Pending
+            }
+        })
+        .await;
+
+        match reserved {
+            Some((index, permit)) => {
+                permit.send(item);
+                self.current = index;
+                Ok(())
+            }
+            None => Err(SendError(item)),
+        }
     }
 
     /// Returns `true` if the given worker has stopped.
@@ -290,6 +322,25 @@ mod tests {
         assert_eq!(receivers[0].recv().await, Some(1));
         blocked.await.unwrap().unwrap();
         assert_eq!(receivers[0].recv().await, Some(2));
+    }
+
+    #[tokio::test]
+    async fn sends_to_whichever_worker_frees_up_first() {
+        let (mut sender, mut receivers) = bounded(workers(2), 2);
+        sender.send(1).await.unwrap();
+        sender.send(2).await.unwrap();
+
+        // Both queues are full, and the current worker is the first one.
+        let blocked = tokio::spawn(async move { sender.send(3).await });
+        tokio::task::yield_now().await;
+        assert!(!blocked.is_finished(), "send should wait while every queue is full");
+
+        // Only the second worker frees up, so the send goes there rather than waiting on the first worker.
+        assert_eq!(receivers[1].recv().await, Some(2));
+        blocked.await.unwrap().unwrap();
+        assert_eq!(receivers[1].recv().await, Some(3));
+        assert_eq!(receivers[0].recv().await, Some(1));
+        assert!(receivers[0].try_recv().is_none());
     }
 
     #[tokio::test]
