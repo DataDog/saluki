@@ -1,7 +1,7 @@
 use std::vec::IntoIter;
 
-use opentelemetry_semantic_conventions::resource::{HOST_NAME, SERVICE_NAME};
-use otlp_protos::opentelemetry::proto::common::v1::InstrumentationScope;
+use opentelemetry_semantic_conventions::resource::SERVICE_NAME;
+use otlp_protos::opentelemetry::proto::common::v1::{InstrumentationScope, KeyValue};
 use otlp_protos::opentelemetry::proto::logs::v1::{LogRecord, ResourceLogs as OtlpResourceLogs, ScopeLogs};
 use otlp_protos::opentelemetry::proto::resource::v1::Resource;
 use saluki_core::data_model::{
@@ -14,7 +14,7 @@ use stringtheory::MetaString;
 use crate::common::otlp::attributes::raw_origin_from_attributes;
 use crate::common::otlp::attributes::{tags_from_attributes, ResourceAttributeTagMode};
 use crate::common::otlp::origin::OtlpOriginTagResolver;
-use crate::common::otlp::util::{get_string_attribute, resource_to_source, SourceKind};
+use crate::common::otlp::util::{get_string_attribute, resource_to_source, source_from_attributes, Source, SourceKind};
 use crate::sources::otlp::logs::transform::transform_log_record;
 
 static OTEL_SOURCE_TAG: Tag = Tag::from_static("otel_source:datadog_agent");
@@ -33,15 +33,10 @@ impl OtlpLogsTranslator {
     pub fn from_resource_logs(resource_logs: OtlpResourceLogs, origin_tag_resolver: &OtlpOriginTagResolver) -> Self {
         let resource = resource_logs.resource.unwrap_or_default();
         let source = resource_to_source(&resource);
-        // An empty host counts as missing, so the record fallback still applies.
-        let host = match &source {
-            Some(src) if matches!(src.kind, SourceKind::Hostname) && !src.identifier.is_empty() => {
-                Some(MetaString::from(src.identifier.as_str()))
-            }
-            _ => None,
-        };
+        // An empty host or service counts as missing, so the record fallbacks still apply.
+        let host = host_from_source(source);
 
-        let service = get_string_attribute(&resource.attributes, SERVICE_NAME).map(MetaString::from);
+        let service = non_empty_string_attribute(&resource.attributes, SERVICE_NAME);
         let mut attribute_tags = tags_from_attributes(&resource.attributes, ResourceAttributeTagMode::Mapped);
         attribute_tags.insert_tag(OTEL_SOURCE_TAG.clone());
         let origin = raw_origin_from_attributes(&resource.attributes);
@@ -73,21 +68,21 @@ impl OtlpLogsTranslator {
 
             match current_log_records.next() {
                 Some(log_record) => {
-                    let record_host = self
-                        .host
-                        .clone()
-                        .or_else(|| get_string_attribute(&log_record.attributes, HOST_NAME).map(MetaString::from));
-                    let record_service = self
-                        .service
-                        .clone()
-                        .or_else(|| get_string_attribute(&log_record.attributes, SERVICE_NAME).map(MetaString::from));
+                    // As in the Agent, a host or service found on a record sticks for the rest of the
+                    // resource's records, across scopes.
+                    if self.host.is_none() {
+                        self.host = hostname_from_record_attributes(&log_record.attributes);
+                    }
+                    if self.service.is_none() {
+                        self.service = non_empty_string_attribute(&log_record.attributes, SERVICE_NAME);
+                    }
 
                     let log = transform_log_record(
                         log_record,
                         &self.resource,
                         current_scope.as_ref(),
-                        record_host,
-                        record_service,
+                        self.host.clone(),
+                        self.service.clone(),
                         self.attribute_tags.clone(),
                     );
 
@@ -99,6 +94,28 @@ impl OtlpLogsTranslator {
             }
         }
     }
+}
+
+/// Resolves a host from a source identifier, treating an empty hostname as missing.
+fn host_from_source(source: Option<Source>) -> Option<MetaString> {
+    match source {
+        Some(src) if matches!(src.kind, SourceKind::HostnameKind) && !src.identifier.is_empty() => {
+            Some(MetaString::from(src.identifier))
+        }
+        _ => None,
+    }
+}
+
+/// Resolves the record-level host fallback, which applies the full source resolution to record
+/// attributes.
+fn hostname_from_record_attributes(attributes: &[KeyValue]) -> Option<MetaString> {
+    host_from_source(source_from_attributes(attributes))
+}
+
+fn non_empty_string_attribute(attributes: &[KeyValue], key: &str) -> Option<MetaString> {
+    get_string_attribute(attributes, key)
+        .filter(|value| !value.is_empty())
+        .map(MetaString::from)
 }
 
 impl Iterator for OtlpLogsTranslator {
@@ -373,6 +390,150 @@ mod tests {
 
         let log = translate_log(lr, resource, None);
         assert_eq!(log.hostname(), "record-host");
+    }
+
+    fn string_record(attributes: &[(&str, &str)]) -> otlp_logs_v1::LogRecord {
+        otlp_logs_v1::LogRecord {
+            attributes: attributes
+                .iter()
+                .map(|(key, value)| key_value_string_to_otlp_common_key_value(key, value))
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    /// Translates one resource's scopes of records and returns each log's hostname and service.
+    fn translate_hosts_and_services(
+        resource_attributes: &[(&str, &str)], scopes: Vec<Vec<otlp_logs_v1::LogRecord>>,
+    ) -> Vec<(String, String)> {
+        let resource_logs = otlp_logs_v1::ResourceLogs {
+            resource: Some(otlp_resource_v1::Resource {
+                attributes: resource_attributes
+                    .iter()
+                    .map(|(key, value)| key_value_string_to_otlp_common_key_value(key, value))
+                    .collect(),
+                dropped_attributes_count: 0,
+                entity_refs: vec![],
+            }),
+            scope_logs: scopes
+                .into_iter()
+                .map(|log_records| otlp_logs_v1::ScopeLogs {
+                    scope: None,
+                    log_records,
+                    schema_url: String::new(),
+                })
+                .collect(),
+            schema_url: String::new(),
+        };
+
+        OtlpLogsTranslator::from_resource_logs(
+            resource_logs,
+            &OtlpOriginTagResolver::new(std::sync::Arc::new(
+                saluki_env::workload::providers::NoopWorkloadProvider,
+            )),
+        )
+        .map(|event| match event {
+            Event::Log(log) => (log.hostname().to_string(), log.service().to_string()),
+            other => panic!("expected log event, got {:?}", other),
+        })
+        .collect()
+    }
+
+    #[test]
+    fn test_host_and_service_carry_over() {
+        let pair = |host: &str, service: &str| (host.to_string(), service.to_string());
+        let cases: Vec<(
+            &str,
+            Vec<(&str, &str)>,
+            Vec<Vec<otlp_logs_v1::LogRecord>>,
+            Vec<(String, String)>,
+        )> = vec![
+            (
+                "resource beats record",
+                vec![("host.name", "res-host"), ("service.name", "res-service")],
+                vec![vec![string_record(&[
+                    ("host.name", "rec-host"),
+                    ("service.name", "rec-service"),
+                ])]],
+                vec![pair("res-host", "res-service")],
+            ),
+            (
+                "first record's host sticks",
+                vec![],
+                vec![vec![string_record(&[("host.name", "first")]), string_record(&[])]],
+                vec![pair("first", ""), pair("first", "")],
+            ),
+            (
+                "first record's service sticks",
+                vec![],
+                vec![vec![string_record(&[("service.name", "first")]), string_record(&[])]],
+                vec![pair("", "first"), pair("", "first")],
+            ),
+            (
+                "a later record can't replace the carried values",
+                vec![],
+                vec![vec![
+                    string_record(&[("host.name", "first"), ("service.name", "first")]),
+                    string_record(&[("host.name", "second"), ("service.name", "second")]),
+                ]],
+                vec![pair("first", "first"), pair("first", "first")],
+            ),
+            (
+                "reversed order only affects later records",
+                vec![],
+                vec![vec![
+                    string_record(&[]),
+                    string_record(&[("host.name", "second"), ("service.name", "second")]),
+                ]],
+                vec![pair("", ""), pair("second", "second")],
+            ),
+            (
+                "carry-over crosses a scope boundary",
+                vec![],
+                vec![
+                    vec![string_record(&[("host.name", "first"), ("service.name", "first")])],
+                    vec![string_record(&[])],
+                ],
+                vec![pair("first", "first"), pair("first", "first")],
+            ),
+            (
+                "record fallback uses the full hostname resolution",
+                vec![],
+                vec![vec![string_record(&[
+                    ("host.name", "name"),
+                    ("datadog.host.name", "custom"),
+                ])]],
+                vec![pair("custom", "")],
+            ),
+            (
+                "an invalid record host doesn't stick",
+                vec![],
+                vec![vec![
+                    string_record(&[("host.name", "localhost")]),
+                    string_record(&[("host.name", "second")]),
+                ]],
+                vec![pair("", ""), pair("second", "")],
+            ),
+            (
+                "a serverless record has no host",
+                vec![],
+                vec![vec![string_record(&[
+                    ("cloud.platform", "gcp_cloud_run"),
+                    ("host.name", "name"),
+                ])]],
+                vec![pair("", "")],
+            ),
+            (
+                "an empty resource service falls back to the record",
+                vec![("service.name", "")],
+                vec![vec![string_record(&[("service.name", "rec-service")])]],
+                vec![pair("", "rec-service")],
+            ),
+        ];
+
+        for (name, resource, scopes, expected) in cases {
+            assert_eq!(translate_hosts_and_services(&resource, scopes), expected, "{name}");
+        }
     }
 
     #[test]

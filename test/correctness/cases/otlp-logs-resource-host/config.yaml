@@ -87,12 +87,6 @@ logs:
       when:
         fixture_id: [log-source-record, log-source-resource]
       reason: ADP doesn't use `datadog.log.source` as the source.
-    - gap: gap/host-resolution
-      paths: ["envelope.hostname", "envelope.service", "content.service"]
-      kinds: [missing]
-      when:
-        fixture_id: [carry-over-second, carry-over-next-scope]
-      reason: ADP doesn't carry the record-level host and service fallbacks over to later records of the resource.
     - gap: gap/default-hostname
       paths: ["envelope.hostname"]
       kinds: [missing]
