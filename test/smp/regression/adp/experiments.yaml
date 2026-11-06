@@ -131,6 +131,22 @@ templates:
                   histogram: 1
             maximum_prebuild_cache_size_bytes: "500 Mb"
 
+  # DogStatsD with packet forwarding enabled: every received message is also sent, as a UDP packet,
+  # to a lading UDP blackhole.
+  dsd_forwarding_base:
+    extends: dsd_base
+    target:
+      environment:
+        DD_STATSD_FORWARD_HOST: "127.0.0.1"
+        DD_STATSD_FORWARD_PORT: "9125"
+
+    lading:
+      blackhole:
+        - http:
+            binding_addr: "127.0.0.1:9091"
+        - udp:
+            binding_addr: "127.0.0.1:9125"
+
   # Endpoint routing comparisons use the same named corpus, tags, metric mix, and context count.
   # All-match and all-miss policies contain the same number of entries; only their prefixes differ.
   metric_routing_base:
@@ -522,6 +538,37 @@ experiments:
       generator:
         - unix_datagram:
             bytes_per_second: "500 MiB"
+
+  # ============================================================================
+  # DogStatsD: packet forwarding (throughput)
+  # ============================================================================
+
+  - name: dsd_uds_1mb_3k_contexts_forwarding
+    extends: dsd_forwarding_base
+    optimization_goals:
+      - ingress_throughput
+    lading:
+      generator:
+        - unix_datagram:
+            bytes_per_second: "1 MiB"
+
+  - name: dsd_uds_10mb_3k_contexts_forwarding
+    extends: dsd_forwarding_base
+    optimization_goals:
+      - ingress_throughput
+    lading:
+      generator:
+        - unix_datagram:
+            bytes_per_second: "10 MiB"
+
+  - name: dsd_uds_100mb_3k_contexts_forwarding
+    extends: dsd_forwarding_base
+    optimization_goals:
+      - ingress_throughput
+    lading:
+      generator:
+        - unix_datagram:
+            bytes_per_second: "100 MiB"
 
   # Unfiltered dual-shipping baseline for the all-match case below. Both destinations receive
   # the same traffic without an extra filtering/encoding branch.

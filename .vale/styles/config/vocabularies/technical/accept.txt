@@ -164,6 +164,7 @@ truthy
 formatters
 globals
 implementor(s?)
+jemalloc
 jittered
 losslessly
 lossy
