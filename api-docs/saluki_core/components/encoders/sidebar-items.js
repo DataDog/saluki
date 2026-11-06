@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["ProcessResult"],"struct":["EncoderContext"],"trait":["Encoder","EncoderBuilder","IncrementalEncoder","IncrementalEncoderBuilder"]};
+window.SIDEBAR_ITEMS = {"enum":["ProcessResult"],"struct":["EncoderContext","FlushError"],"trait":["Encoder","EncoderBuilder","IncrementalEncoder","IncrementalEncoderBuilder"]};
