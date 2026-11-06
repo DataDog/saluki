@@ -1,0 +1,4 @@
+---
+enhancements:
+  - |
+    Reduce CPU usage and memory allocations when forwarding DogStatsD packets with ``statsd_forward_host``.
