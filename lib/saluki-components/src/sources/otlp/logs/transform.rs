@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{borrow::Cow, collections::HashMap};
 
 use chrono::DateTime;
 use otlp_common::any_value::Value::StringValue as OtlpStringValue;
@@ -164,6 +164,25 @@ pub fn flatten_attribute(base_key: &str, av: &otlp_common::AnyValue, depth: usiz
     vec![(base_key.to_string(), to_leaf_json(av))]
 }
 
+/// Lowercases an attribute key the way Go's `strings.ToLower` does, for matching against reserved keys.
+///
+/// Go maps each character to its simple lowercase, so unlike `str::to_lowercase`, `İ` (U+0130) becomes a plain `i`
+/// and a final `Σ` becomes `σ`. Returns the key as is when lowercasing doesn't change it.
+fn lowercase_key(key: &str) -> Cow<'_, str> {
+    fn lowercase_char(c: char) -> char {
+        match c {
+            '\u{130}' => 'i',
+            c => c.to_lowercase().next().unwrap_or(c),
+        }
+    }
+
+    if key.chars().all(|c| lowercase_char(c) == c) {
+        Cow::Borrowed(key)
+    } else {
+        Cow::Owned(key.chars().map(lowercase_char).collect())
+    }
+}
+
 // Helper to insert safely avoid overwriting fields that are already set
 fn safe_insert(map: &mut HashMap<MetaString, JsonValue>, key: &str, value: JsonValue) {
     if key == "hostname" || key == "service" {
@@ -174,7 +193,7 @@ fn safe_insert(map: &mut HashMap<MetaString, JsonValue>, key: &str, value: JsonV
 }
 
 pub fn transform_log_record(
-    mut lr: LogRecord, resource: &Resource, scope: Option<&otlp_common::InstrumentationScope>,
+    lr: LogRecord, resource: &Resource, scope: Option<&otlp_common::InstrumentationScope>,
     record_host: Option<MetaString>, record_service: Option<MetaString>, mut tags: TagSet,
 ) -> Log {
     // Build additional properties map with resource, scope and record attributes
@@ -183,9 +202,9 @@ pub fn transform_log_record(
     // Single-pass over record attributes: handle special keys and flatten others
     let mut status_text_from_attrs: Option<String> = None;
     let mut msg_from_attrs: Option<String> = None;
-    for kv in lr.attributes.iter_mut() {
-        kv.key.make_ascii_lowercase();
-        match kv.key.as_str() {
+    for kv in &lr.attributes {
+        // Reserved keys match in any case, but every other key keeps its original spelling.
+        match lowercase_key(&kv.key).as_ref() {
             // Message keys
             k if MESSAGE_KEYS.contains(&k) => {
                 if let Some(av) = kv.value.as_ref() {
@@ -364,7 +383,104 @@ pub fn transform_log_record(
 
 #[cfg(test)]
 mod tests {
-    use super::{derive_status, status_from_severity_number};
+    use otlp_common::{any_value::Value, AnyValue, KeyValue, KeyValueList};
+    use otlp_protos::opentelemetry::proto::logs::v1::LogRecord;
+    use otlp_protos::opentelemetry::proto::resource::v1::Resource;
+    use saluki_core::data_model::tags::TagSet;
+    use serde_json::json;
+
+    use super::*;
+
+    fn string(value: &str) -> AnyValue {
+        AnyValue {
+            value: Some(Value::StringValue(value.to_string())),
+        }
+    }
+
+    fn key_value(key: &str, value: AnyValue) -> KeyValue {
+        KeyValue {
+            key: key.to_string(),
+            value: Some(value),
+        }
+    }
+
+    fn transform_attributes(attributes: Vec<KeyValue>) -> Log {
+        let lr = LogRecord {
+            attributes,
+            ..Default::default()
+        };
+        transform_log_record(lr, &Resource::default(), None, None, None, TagSet::default())
+    }
+
+    #[test]
+    fn lowercase_key_matches_go_strings_to_lower() {
+        let cases = [
+            ("message", "message"),
+            ("Message", "message"),
+            ("SYSLOG.Severity", "syslog.severity"),
+            // Go maps each character on its own: `İ` becomes a plain `i`, and a final `Σ` becomes `σ`.
+            ("TRACE\u{130}D", "traceid"),
+            ("\u{3a3}\u{3a3}", "\u{3c3}\u{3c3}"),
+            // The Kelvin sign lowercases to an ASCII `k`.
+            ("\u{212a}ey", "key"),
+            ("", ""),
+        ];
+
+        for (key, expected) in cases {
+            assert_eq!(lowercase_key(key), expected, "lowercase_key({:?})", key);
+        }
+        assert!(matches!(lowercase_key("already_lower"), Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn ordinary_attribute_keys_keep_their_spelling() {
+        let log = transform_attributes(vec![
+            key_value("RequestID", string("abc")),
+            key_value(
+                "nested_Map",
+                AnyValue {
+                    value: Some(Value::KvlistValue(KeyValueList {
+                        values: vec![key_value("InnerKey", string("inner"))],
+                    })),
+                },
+            ),
+        ]);
+
+        let props = log.additional_properties();
+        assert_eq!(props.get("RequestID"), Some(&json!("abc")));
+        assert_eq!(props.get("nested_Map.InnerKey"), Some(&json!("inner")));
+        assert!(!props.contains_key("requestid"));
+        assert!(!props.contains_key("nested_map.InnerKey"));
+    }
+
+    #[test]
+    fn reserved_attribute_keys_match_in_any_case() {
+        let log = transform_attributes(vec![
+            key_value("MESSAGE", string("from attribute")),
+            key_value("Level", string("warn")),
+            key_value("TRACE\u{130}D", string("0802030405060708000000000a000000")),
+            key_value("Span_ID", string("000000000a000000")),
+            key_value("DDTags", string("team:a,env:prod")),
+        ]);
+
+        assert_eq!(log.message(), "from attribute");
+        assert_eq!(log.status(), "warn");
+        assert!(log.tags().has_tag("team:a"));
+        assert!(log.tags().has_tag("env:prod"));
+
+        let props = log.additional_properties();
+        assert_eq!(props.get("dd.trace_id"), Some(&json!("167772160")));
+        assert_eq!(
+            props.get("otel.trace_id"),
+            Some(&json!("0802030405060708000000000a000000"))
+        );
+        assert_eq!(props.get("dd.span_id"), Some(&json!("167772160")));
+        assert_eq!(props.get("otel.span_id"), Some(&json!("000000000a000000")));
+        // Reserved keys are consumed, so none of them appear as attributes under any spelling.
+        let mut keys = props.keys().map(|key| key.as_ref()).collect::<Vec<_>>();
+        keys.sort_unstable();
+        assert_eq!(keys, ["dd.span_id", "dd.trace_id", "otel.span_id", "otel.trace_id"]);
+    }
 
     #[test]
     fn derive_status_follows_the_reference_precedence() {

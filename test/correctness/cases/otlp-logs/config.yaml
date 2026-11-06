@@ -10,14 +10,6 @@ logs:
       paths: ["envelope.hostname"]
       kinds: [value]
       reason: ADP sends an empty hostname instead of falling back to the Agent's hostname when the log has none.
-    - gap: gap/attribute-key-case
-      paths: ["content.*"]
-      kinds: [missing]
-      reason: ADP lowercases log attribute keys, so a mixed-case key is missing under its original spelling.
-    - gap: gap/attribute-key-case
-      paths: ["content.*"]
-      kinds: [extra]
-      reason: ADP lowercases log attribute keys, so a mixed-case key appears under its lowercased spelling.
     - gap: gap/missing-headers
       paths:
         - headers.dd-protocol
