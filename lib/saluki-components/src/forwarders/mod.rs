@@ -4,6 +4,7 @@ pub use self::cluster_agent::ClusterAgentForwarderConfiguration;
 
 mod datadog;
 pub use self::datadog::DatadogForwarderConfiguration;
+pub use crate::common::datadog::io::API_KEY_VALIDATION_PURPOSE_TAG;
 pub use crate::common::datadog::routing::{
     MetricsRoutingTargets, RoutingTarget, RoutingTargetCatalog, RoutingTargetId, RoutingTargetKind, RoutingTargetSet,
 };
