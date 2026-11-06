@@ -1,7 +1,7 @@
 //! OTLP logs render transform.
 //!
 //! Renders each translated OTLP log into the content of its log message, as the last step of the OTLP logs path. See
-//! [`render_content`] for what the content holds.
+//! [`ContentRenderer`] for what the content holds.
 //!
 //! Enrichment of OTLP logs belongs before this transform, since it changes the properties that go into the content.
 //! Processing rules belong after it, since they apply to the content.
@@ -23,7 +23,7 @@ use saluki_metrics::MetricsBuilder;
 use stringtheory::MetaString;
 use tracing::error;
 
-use crate::common::otlp::logs::render_content;
+use crate::common::otlp::logs::ContentRenderer;
 
 /// The shortest time between two logged render failures.
 const RENDER_FAILURE_LOG_INTERVAL: Duration = Duration::from_secs(10);
@@ -45,6 +45,7 @@ impl SynchronousTransformBuilder for OtlpLogsRenderConfiguration {
             ["intentional:false", "drop_reason:render_failure"],
         );
         Ok(Box::new(OtlpLogsRender {
+            renderer: ContentRenderer::default(),
             events_dropped,
             last_failure_logged: None,
         }))
@@ -60,6 +61,7 @@ impl MemoryBounds for OtlpLogsRenderConfiguration {
 }
 
 struct OtlpLogsRender {
+    renderer: ContentRenderer,
     events_dropped: Counter,
     last_failure_logged: Option<Instant>,
 }
@@ -76,7 +78,7 @@ impl SynchronousTransform for OtlpLogsRender {
                 continue;
             }
 
-            match render_content(log) {
+            match self.renderer.render(log) {
                 Ok(content) => {
                     let unrendered = mem::replace(log, Log::new(MetaString::empty()));
                     *log = unrendered
@@ -119,7 +121,7 @@ mod tests {
     use stringtheory::MetaString;
 
     use super::OtlpLogsRenderConfiguration;
-    use crate::common::otlp::logs::render_content;
+    use crate::common::otlp::logs::ContentRenderer;
 
     async fn run(events: Vec<Event>) -> Vec<Event> {
         let (control, mut output) = TestComponentDriver::synchronous_transform(OtlpLogsRenderConfiguration)
@@ -157,7 +159,7 @@ mod tests {
     #[tokio::test]
     async fn renders_the_content_and_keeps_the_envelope_fields() {
         let original = translated_log("hello");
-        let expected_content = render_content(&original).expect("log should render");
+        let expected_content = ContentRenderer::default().render(&original).expect("log should render");
         assert_eq!(
             expected_content,
             r#"{"app":"test","hostname":"host-a","message":"hello","otel.severity_number":"5","service":"svc","status":"debug"}"#
@@ -168,7 +170,7 @@ mod tests {
         let log = into_log(events.remove(0));
 
         assert!(log.message_is_content());
-        assert_eq!(log.message(), expected_content);
+        assert_eq!(log.message(), &*expected_content);
         assert!(log.additional_properties().is_empty());
         assert_eq!(log.status(), original.status());
         assert_eq!(log.source(), original.source());
@@ -188,7 +190,12 @@ mod tests {
             .collect::<Vec<_>>();
         let expected = originals
             .iter()
-            .map(|log| render_content(log).expect("log should render"))
+            .map(|log| {
+                ContentRenderer::default()
+                    .render(log)
+                    .expect("log should render")
+                    .to_string()
+            })
             .collect::<Vec<_>>();
         assert_eq!(contents, expected);
     }
