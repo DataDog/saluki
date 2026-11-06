@@ -439,15 +439,19 @@ mod tests {
         .collect()
     }
 
+    /// A named carry-over case: resource attributes, scopes of records, and the expected hostname and
+    /// service of each log.
+    type CarryOverCase = (
+        &'static str,
+        Vec<(&'static str, &'static str)>,
+        Vec<Vec<otlp_logs_v1::LogRecord>>,
+        Vec<(String, String)>,
+    );
+
     #[test]
     fn test_host_and_service_carry_over() {
         let pair = |host: &str, service: &str| (host.to_string(), service.to_string());
-        let cases: Vec<(
-            &str,
-            Vec<(&str, &str)>,
-            Vec<Vec<otlp_logs_v1::LogRecord>>,
-            Vec<(String, String)>,
-        )> = vec![
+        let cases: Vec<CarryOverCase> = vec![
             (
                 "resource beats record",
                 vec![("host.name", "res-host"), ("service.name", "res-service")],
