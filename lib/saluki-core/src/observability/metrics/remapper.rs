@@ -1,7 +1,7 @@
 //! Remapper rules for translating source metrics into a different name and tag shape.
 //!
 //! A [`RemapperRule`] declares how to match a source metric (by name, optionally with a required
-//! tag set and required tag keys) and how the matched metric should be rewritten: a new name, a set
+//! tag set, required tag keys, and rejected tags) and how the matched metric should be rewritten: a new name, a set
 //! of tags copied and/or renamed from the source, and an optional set of additional fixed tags.
 //! Rules also carry optional help text that the renderer emits in the Prometheus `# HELP` header.
 
@@ -20,6 +20,7 @@ pub struct RemapperRule {
     existing_name: &'static str,
     existing_tags: &'static [&'static str],
     required_tag_keys: Vec<&'static str>,
+    rejected_tags: Vec<&'static str>,
     new_name: &'static str,
     remapped_tags: Vec<(&'static str, &'static str)>,
     additional_tags: Vec<MetaString>,
@@ -35,6 +36,7 @@ impl RemapperRule {
             existing_name,
             existing_tags: &[],
             required_tag_keys: Vec::new(),
+            rejected_tags: Vec::new(),
             new_name,
             remapped_tags: Vec::new(),
             additional_tags: Vec::new(),
@@ -52,6 +54,7 @@ impl RemapperRule {
             existing_name,
             existing_tags,
             required_tag_keys: Vec::new(),
+            rejected_tags: Vec::new(),
             new_name,
             remapped_tags: Vec::new(),
             additional_tags: Vec::new(),
@@ -72,6 +75,27 @@ impl RemapperRule {
         I: IntoIterator<Item = &'static str>,
     {
         self.required_tag_keys.extend(required_tag_keys);
+        self
+    }
+
+    /// Adds a set of tags that make this rule reject a source metric that carries any of them.
+    ///
+    /// Tags are matched exactly, in the same `key:value` (or bare) form as the tags given to
+    /// [`by_name_and_tags`][Self::by_name_and_tags]. This is useful when a metric is emitted by components for
+    /// different purposes and only some of them should be remapped.
+    ///
+    /// Unlike [`with_all_original_tags_except`][Self::with_all_original_tags_except], which controls which tags are
+    /// copied onto the remapped metric, this decides whether the metric is remapped at all.
+    ///
+    /// A metric this rule rejects is still offered to the rules that follow it, so excluding a metric from a set of
+    /// rules requires rejecting it on every rule that could match it.
+    ///
+    /// This method is additive, so it can be called multiple times to add more rejected tags.
+    pub fn rejecting_tags<I>(mut self, rejected_tags: I) -> Self
+    where
+        I: IntoIterator<Item = &'static str>,
+    {
+        self.rejected_tags.extend(rejected_tags);
         self
     }
 
@@ -186,6 +210,14 @@ impl RemapperRule {
             if !metric_tags.has_tag(existing_tag) {
                 return None;
             }
+        }
+
+        if self
+            .rejected_tags
+            .iter()
+            .any(|rejected_tag| metric_tags.has_tag(rejected_tag))
+        {
+            return None;
         }
 
         if self
@@ -320,6 +352,32 @@ mod tests {
                 description: "with_required_tag_keys rejects when the tag key is absent",
                 rule: RemapperRule::by_name("src.metric", "dst.metric").with_required_tag_keys(["domain"]),
                 context: Context::from_static_parts("src.metric", &["component_id:forwarder"]),
+                expected_name: None,
+            },
+            MatchCase {
+                description: "rejecting_tags rejects a metric that carries a rejected tag",
+                rule: RemapperRule::by_name("src.metric", "dst.metric").rejecting_tags(["purpose:validation"]),
+                context: Context::from_static_parts("src.metric", &["domain:example.com", "purpose:validation"]),
+                expected_name: None,
+            },
+            MatchCase {
+                description: "rejecting_tags matches when the rejected tag is absent",
+                rule: RemapperRule::by_name("src.metric", "dst.metric").rejecting_tags(["purpose:validation"]),
+                context: Context::from_static_parts("src.metric", &["domain:example.com"]),
+                expected_name: Some("dst.metric"),
+            },
+            MatchCase {
+                description: "rejecting_tags only rejects the exact rejected tag value",
+                rule: RemapperRule::by_name("src.metric", "dst.metric").rejecting_tags(["purpose:validation"]),
+                context: Context::from_static_parts("src.metric", &["purpose:other"]),
+                expected_name: Some("dst.metric"),
+            },
+            MatchCase {
+                description: "rejecting_tags rejects when any of several rejected tags is present",
+                rule: RemapperRule::by_name("src.metric", "dst.metric")
+                    .rejecting_tags(["purpose:validation"])
+                    .rejecting_tags(["purpose:probe"]),
+                context: Context::from_static_parts("src.metric", &["purpose:probe"]),
                 expected_name: None,
             },
         ];
