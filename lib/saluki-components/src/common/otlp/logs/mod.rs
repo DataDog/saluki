@@ -1,10 +1,9 @@
 //! OTLP logs helpers shared between the OTLP logs path's components.
 
-use std::collections::BTreeMap;
-
 use saluki_core::data_model::event::log::Log;
 use saluki_error::{generic_error, GenericError};
 use serde_json::Value as JsonValue;
+use stringtheory::MetaString;
 
 /// A field of a log's content.
 enum ContentField<'a> {
@@ -12,7 +11,7 @@ enum ContentField<'a> {
     Value(&'a JsonValue),
 }
 
-/// Renders a translated OTLP log into the content of its log message.
+/// Renders translated OTLP logs into the content of their log messages.
 ///
 /// The content is the log as a `datadogV2.HTTPLogItem` without its `ddtags`, serialized by `HTTPLogItem.MarshalJSON`.
 /// It holds:
@@ -27,43 +26,68 @@ enum ContentField<'a> {
 /// and number formatting differ from Go's `encoding/json` (`gap/json-encoding`): `<`, `>`, `&`, U+2028, and U+2029
 /// aren't escaped, and floats use `serde_json`'s layout, such as `1.0` and `1e21` where Go writes `1` and `1e+21`.
 ///
-/// # Errors
-///
-/// If a property can't be serialized, an error is returned, and the log should be dropped.
-pub fn render_content(log: &Log) -> Result<String, GenericError> {
-    // Go sorts map keys by their bytes, as `BTreeMap` orders `&str` keys. Later inserts overwrite earlier ones, in the
-    // order that `HTTPLogItem.MarshalJSON` assembles them.
-    let mut fields = BTreeMap::new();
-    if !log.hostname().is_empty() {
-        fields.insert("hostname", ContentField::String(log.hostname()));
-    }
-    fields.insert("message", ContentField::String(log.message()));
-    if !log.service().is_empty() {
-        fields.insert("service", ContentField::String(log.service()));
-    }
-    for (key, value) in log.additional_properties() {
-        fields.insert(key.as_ref(), ContentField::Value(value));
-    }
-    fields.insert("status", ContentField::String(log.status()));
+/// A renderer keeps its serialization buffer between logs, so rendering many logs reuses its allocation.
+#[derive(Debug, Default)]
+pub struct ContentRenderer {
+    buffer: Vec<u8>,
+}
 
-    let mut content = Vec::new();
-    content.push(b'{');
-    for (index, (key, field)) in fields.into_iter().enumerate() {
-        if index > 0 {
-            content.push(b',');
+impl ContentRenderer {
+    /// Renders a log's content.
+    ///
+    /// # Errors
+    ///
+    /// If a property can't be serialized, an error is returned, and the log should be dropped.
+    pub fn render(&mut self, log: &Log) -> Result<MetaString, GenericError> {
+        // The fields in the order that `HTTPLogItem.MarshalJSON` assembles them, where a later field overwrites an
+        // earlier one with the same key.
+        let mut fields = Vec::with_capacity(log.additional_properties().len() + 4);
+        if !log.hostname().is_empty() {
+            fields.push(("hostname", ContentField::String(log.hostname())));
         }
-        let written = serde_json::to_writer(&mut content, key).and_then(|()| {
-            content.push(b':');
-            match field {
-                ContentField::String(value) => serde_json::to_writer(&mut content, value),
-                ContentField::Value(value) => serde_json::to_writer(&mut content, value),
-            }
-        });
-        written.map_err(|e| generic_error!("Failed to serialize log property '{}': {}", key, e))?;
-    }
-    content.push(b'}');
+        fields.push(("message", ContentField::String(log.message())));
+        if !log.service().is_empty() {
+            fields.push(("service", ContentField::String(log.service())));
+        }
+        fields.extend(
+            log.additional_properties()
+                .iter()
+                .map(|(key, value)| (key.as_ref(), ContentField::Value(value))),
+        );
+        fields.push(("status", ContentField::String(log.status())));
 
-    String::from_utf8(content).map_err(|e| generic_error!("Rendered log content isn't valid UTF-8: {}", e))
+        // Go sorts map keys by their bytes, as `str` orders them. The sort is stable, so fields with the same key stay
+        // in assembly order, and only the last of them is written.
+        fields.sort_by(|(a, _), (b, _)| a.cmp(b));
+
+        self.buffer.clear();
+        self.buffer.push(b'{');
+        let mut first = true;
+        for (index, (key, field)) in fields.iter().enumerate() {
+            if fields.get(index + 1).is_some_and(|(next, _)| next == key) {
+                continue;
+            }
+            if !first {
+                self.buffer.push(b',');
+            }
+            first = false;
+
+            let buffer = &mut self.buffer;
+            let written = serde_json::to_writer(&mut *buffer, key).and_then(|()| {
+                buffer.push(b':');
+                match field {
+                    ContentField::String(value) => serde_json::to_writer(&mut *buffer, value),
+                    ContentField::Value(value) => serde_json::to_writer(&mut *buffer, value),
+                }
+            });
+            written.map_err(|e| generic_error!("Failed to serialize log property '{}': {}", key, e))?;
+        }
+        self.buffer.push(b'}');
+
+        let content = std::str::from_utf8(&self.buffer)
+            .map_err(|e| generic_error!("Rendered log content isn't valid UTF-8: {}", e))?;
+        Ok(MetaString::from(content))
+    }
 }
 
 #[cfg(test)]
@@ -76,7 +100,7 @@ mod tests {
     use serde_json::{json, Value as JsonValue};
     use stringtheory::MetaString;
 
-    use super::render_content;
+    use super::ContentRenderer;
 
     /// Vectors generated by the Go program in `testdata/generate-render-vectors`, which documents how to regenerate
     /// them. Their content is the target.
@@ -177,6 +201,8 @@ mod tests {
             );
         }
 
+        // One renderer for every vector, as the transform uses one for every log.
+        let mut renderer = ContentRenderer::default();
         let mut failures = Vec::new();
         for vector in vectors {
             let input = vector.input;
@@ -192,7 +218,10 @@ mod tests {
                 .with_status(input.status)
                 .with_additional_properties(properties);
 
-            let content = render_content(&log).unwrap_or_else(|e| panic!("{}: render failed: {}", vector.name, e));
+            let content = renderer
+                .render(&log)
+                .unwrap_or_else(|e| panic!("{}: render failed: {}", vector.name, e));
+            let content = &*content;
             match RENDER_GAPS.iter().find(|gap| gap.vector == vector.name) {
                 None if content != vector.content => failures.push(format!(
                     "{}: content differs from the target with no known gap\n  target:  {}\n  current: {}",
@@ -230,7 +259,8 @@ mod tests {
         .with_status("error");
 
         let content: JsonValue =
-            serde_json::from_str(&render_content(&log).expect("log should render")).expect("content should be JSON");
+            serde_json::from_str(&ContentRenderer::default().render(&log).expect("log should render"))
+                .expect("content should be JSON");
         assert_eq!(
             content,
             json!({
@@ -246,14 +276,26 @@ mod tests {
 
     #[test]
     fn leaves_out_empty_hostname_and_service_but_not_status() {
-        let content = render_content(&Log::new("m")).expect("log should render");
-        assert_eq!(content, r#"{"message":"m","status":""}"#);
+        let content = ContentRenderer::default()
+            .render(&Log::new("m"))
+            .expect("log should render");
+        assert_eq!(&*content, r#"{"message":"m","status":""}"#);
     }
 
     #[test]
     fn leaves_the_tags_out_of_the_content() {
         let log = Log::new("m").with_tags([Tag::from_static("env:prod")].into_iter().collect::<TagSet>());
-        let content = render_content(&log).expect("log should render");
-        assert_eq!(content, r#"{"message":"m","status":""}"#);
+        let content = ContentRenderer::default().render(&log).expect("log should render");
+        assert_eq!(&*content, r#"{"message":"m","status":""}"#);
+    }
+
+    #[test]
+    fn reuses_its_buffer_without_leaking_earlier_content() {
+        let mut renderer = ContentRenderer::default();
+        let long = log_with_properties("first", json!({"padding": "x".repeat(1024)}));
+        renderer.render(&long).expect("log should render");
+
+        let content = renderer.render(&Log::new("second")).expect("log should render");
+        assert_eq!(&*content, r#"{"message":"second","status":""}"#);
     }
 }
