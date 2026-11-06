@@ -44,7 +44,7 @@ logs golden vectors (`lib/saluki-components/src/sources/otlp/logs/golden_vectors
 each vector sends an OTLP request through the OTLP source and the logs encoder, and compares the logs on the wire with
 the Agent's output for the same request.
 
-- ADP's output must match the vector's current fixture exactly, so any change to the output fails the test.
+- ADP's output must match the vector's current fixture, so a change in the logs on the wire fails the test.
 - Every difference from the Agent's output must be covered by an entry in the gap manifest, tagged with its gap ID, in
   the same way as the known differences of a correctness case. An entry that no longer matches fails the test.
 

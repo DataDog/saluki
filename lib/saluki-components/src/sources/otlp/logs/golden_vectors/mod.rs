@@ -7,9 +7,10 @@
 //!
 //! The test checks two things for every vector:
 //!
-//! - **Current output.** The output must match the vector's current fixture exactly. Vectors whose current output
-//!   differs from the target have a fixture in `testdata/golden_vectors_current.json`; for the others, the target is
-//!   the current fixture. Any change to the output, whether a regression or an accidental fix, fails the test.
+//! - **Current output.** The output must match the vector's current fixture, compared as `stele::Log`s. Vectors whose
+//!   current output differs from the target have a fixture in `testdata/golden_vectors_current.json`; for the others,
+//!   the target is the current fixture. A change in the logs on the wire, whether a regression or an accidental fix,
+//!   fails the test.
 //! - **Gap manifest.** Every field difference between the target and the current output must be covered by an entry
 //!   in [`manifest`], which names the gap that explains it. An entry that no longer matches a difference in one of its
 //!   vectors is stale, and fails the test too.
@@ -20,7 +21,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
-use std::num::NonZeroUsize;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -86,7 +86,6 @@ async fn start_source() -> (
     config.receiver.http.endpoint = "127.0.0.1:0".to_string();
 
     let (control, mut outputs) = TestComponentDriver::options()
-        .with_interconnect_capacity(NonZeroUsize::MIN)
         .source(config)
         .await
         .expect("OTLP source should build");
