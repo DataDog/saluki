@@ -284,7 +284,7 @@ fn was_forwarded_by_relay(headers: &HeaderMap) -> bool {
 }
 
 /// Removes hop-by-hop headers, including any the `Connection` header names.
-fn strip_hop_by_hop_headers(headers: &mut HeaderMap) {
+pub(super) fn strip_hop_by_hop_headers(headers: &mut HeaderMap) {
     let named: Vec<HeaderName> = headers
         .get_all(header::CONNECTION)
         .iter()
@@ -303,13 +303,13 @@ fn strip_hop_by_hop_headers(headers: &mut HeaderMap) {
 ///
 /// The body is only ever polled through `&mut self`, so the mutex is never contended: it exists only to make the
 /// wrapper `Sync`.
-struct SyncBody {
+pub(super) struct SyncBody {
     inner: Mutex<Body>,
     size_hint: SizeHint,
 }
 
 impl SyncBody {
-    fn new(body: Body) -> Self {
+    pub(super) fn new(body: Body) -> Self {
         let size_hint = body.size_hint();
         Self {
             inner: Mutex::new(body),

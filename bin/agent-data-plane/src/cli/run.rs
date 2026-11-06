@@ -979,6 +979,7 @@ async fn add_apm_pipeline_to_blueprint(
         &config.shared,
         datadog_agent_config::is_containerized(),
         Some(Arc::new(env_provider.workload().clone())),
+        config_system.live(|config| &config.shared.endpoints.api_key),
     );
     blueprint
         .add_relay("dd_traces_relay", dd_traces_relay)?
