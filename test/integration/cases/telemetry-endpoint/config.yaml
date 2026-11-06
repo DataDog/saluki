@@ -13,7 +13,7 @@ env:
 
 container:
   exposed_ports:
-    - "55100/tcp"
+    - "45100/tcp"
 
 procedure:
   # Make sure the process becomes healthy and serves only the metrics route on the unprivileged API.
@@ -21,16 +21,16 @@ procedure:
       - assertion: process_stable_for
         duration: 10s
       - assertion: port_listening
-        port: 55100
+        port: 45100
         protocol: tcp
         timeout: 60s
       - assertion: http_check
-        endpoint: "http://localhost:55100/metrics"
+        endpoint: "http://localhost:45100/metrics"
         status:
           equal: 200
         timeout: 60s
       - assertion: http_check
-        endpoint: "http://localhost:55100/compat/metrics"
+        endpoint: "http://localhost:45100/compat/metrics"
         status:
           equal: 404
         timeout: 60s

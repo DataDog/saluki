@@ -9,7 +9,7 @@ from pathlib import Path
 
 AGENT = Path("/opt/datadog-agent/bin/agent/agent")
 REMOTE_STATS = [str(AGENT), "remote", "dogstatsd", "stats"]
-DOGSTATSD_ADDRESS = ("127.0.0.1", 58125)
+DOGSTATSD_ADDRESS = ("127.0.0.1", 48125)
 RESULT = Path("/tmp/dogstatsd-remote-commands-integration-result")
 
 # The sum of these budgets must stay below the case's `target_exec` timeout.

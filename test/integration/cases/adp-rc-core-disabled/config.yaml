@@ -12,21 +12,21 @@ env:
   DD_DATA_PLANE_STANDALONE_MODE: "false"
   DD_DATA_PLANE_OTLP_ENABLED: "true"
   DD_DATA_PLANE_OTLP_PROXY_ENABLED: "false"
-  DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY: "0.0.0.0:56317"
-  DD_DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY: "0.0.0.0:56318"
+  DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY: "0.0.0.0:46317"
+  DD_DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY: "0.0.0.0:46318"
   # This site disables Remote Configuration in the Core Agent but not in ADP, which still polls it.
   DD_SITE: "ddog-gov.com"
   DD_LOG_LEVEL: "debug"
 
 container:
   exposed_ports:
-    - "55101/tcp"
-    - "56317/tcp"
-    - "56318/tcp"
+    - "45101/tcp"
+    - "46317/tcp"
+    - "46318/tcp"
 
 procedure:
   - assertion: adp_config_key_equals
-    endpoint: "https://localhost:55101/config/runtime"
+    endpoint: "https://localhost:45101/config/runtime"
     key: domains.remote_configuration.enabled
     value: true
     timeout: 60s

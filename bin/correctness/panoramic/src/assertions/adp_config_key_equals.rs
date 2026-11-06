@@ -11,7 +11,7 @@ use crate::{
     probe::POLL_INTERVAL,
 };
 
-const DEFAULT_ADP_CONFIG_ENDPOINT: &str = "https://localhost:55101/config";
+const DEFAULT_ADP_CONFIG_ENDPOINT: &str = "https://localhost:45101/config";
 const ADP_CONFIG_CLI_DIAGNOSTIC_LABEL: &str = "ADP configuration CLI command";
 
 #[derive(Clone, Copy)]
@@ -23,8 +23,8 @@ enum AdpConfigEndpoint {
 impl AdpConfigEndpoint {
     fn parse(configured_endpoint: &str) -> Result<Self, GenericError> {
         match configured_endpoint {
-            "https://localhost:55101/config" | "https://127.0.0.1:55101/config" => Ok(Self::Source),
-            "https://localhost:55101/config/runtime" | "https://127.0.0.1:55101/config/runtime" => Ok(Self::Runtime),
+            "https://localhost:45101/config" | "https://127.0.0.1:45101/config" => Ok(Self::Source),
+            "https://localhost:45101/config/runtime" | "https://127.0.0.1:45101/config/runtime" => Ok(Self::Runtime),
             _ => Err(unsupported_endpoint_error()),
         }
     }
@@ -39,8 +39,8 @@ impl AdpConfigEndpoint {
 
 fn unsupported_endpoint_error() -> GenericError {
     generic_error!(
-        "Unsupported ADP configuration endpoint. Expected exactly `https://localhost:55101/config`, \
-         `https://127.0.0.1:55101/config`, or the corresponding `/config/runtime` URL."
+        "Unsupported ADP configuration endpoint. Expected exactly `https://localhost:45101/config`, \
+         `https://127.0.0.1:45101/config`, or the corresponding `/config/runtime` URL."
     )
 }
 

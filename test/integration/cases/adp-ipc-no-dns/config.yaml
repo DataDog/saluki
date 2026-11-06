@@ -33,7 +33,7 @@ container:
   files:
     - "empty-resolv-conf.sh:/etc/cont-init.d/01-empty-resolv-conf.sh"
   exposed_ports:
-    - "58125/udp"
+    - "48125/udp"
 
 procedure:
   - parallel:

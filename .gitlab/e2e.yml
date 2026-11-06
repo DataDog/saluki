@@ -161,7 +161,7 @@ test-integration:
     #   - our own Core Agent sandbox under /tmp/saluki-dda (trace-agent / process-agent
     #     children that survived a non-graceful job termination still hold our shifted ports)
     #   - any stranded agent-data-plane process from a prior pipeline (built into
-    #     $CI_PROJECT_DIR/target/<profile>/, holds UDP 58125 / TCP 5100–5102 etc. across runs).
+    #     $CI_PROJECT_DIR/target/<profile>/, holds UDP 48125 / TCP 45100–45102 etc. across runs).
     #     Both profiles are swept because BUILD_PROFILE flows from .gitlab-ci.yml workflow
     #     rules: `release` on dev pipelines, `optimized-release` on tagged release pipelines.
     #   - stale Datadog Agent DMG mounts from interrupted installs; these runners persist across jobs.

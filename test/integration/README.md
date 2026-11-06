@@ -228,14 +228,14 @@ Place a readiness step before this action: steps run in order, so the send canno
 
 ```yaml
 - assertion: log_contains
-  pattern: 'listen_addr:"udp://0.0.0.0:58125" | DogStatsD listener started.'
+  pattern: 'listen_addr:"udp://0.0.0.0:48125" | DogStatsD listener started.'
   timeout: 60s
 ```
 
 ```yaml
 - action: dogstatsd_send
   payload: "example.counter:3|c|#source:integration-test"
-  port: 58125
+  port: 48125
   timeout: 10s
 ```
 
@@ -335,7 +335,7 @@ Probes an HTTP or HTTPS endpoint and asserts on the response status code. HTTPS 
 
 Executes the authenticated `agent-data-plane config --json` command and polls its output until one key equals the expected value. The `endpoint` field selects the configuration view; the CLI still connects to the privileged endpoint in its own configuration. `/config` maps to the source configuration, while `/config/runtime` maps to the translated runtime configuration by adding `--runtime` to the command.
 
-The assertion accepts only `https://localhost:55101` or `https://127.0.0.1:55101` with an exact `/config` or `/config/runtime` path. It rejects credentials, other hosts or ports, trailing path components, queries, and fragments.
+The assertion accepts only `https://localhost:45101` or `https://127.0.0.1:45101` with an exact `/config` or `/config/runtime` path. It rejects credentials, other hosts or ports, trailing path components, queries, and fragments.
 
 ```yaml
 # Check the source configuration through the default /config selector.
@@ -348,7 +348,7 @@ The assertion accepts only `https://localhost:55101` or `https://127.0.0.1:55101
 - assertion: adp_config_key_equals
   key: log_level
   value: debug
-  endpoint: "https://localhost:55101/config/runtime"
+  endpoint: "https://localhost:45101/config/runtime"
   timeout: 30s
 ```
 
