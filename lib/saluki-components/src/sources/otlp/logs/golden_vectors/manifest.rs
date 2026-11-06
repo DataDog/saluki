@@ -3,21 +3,7 @@
 //! Each entry names a gap from the OTLP logs parity plan (DataDog/saluki#2966), the vectors it affects, and the field
 //! paths and kinds of difference it explains. Remove an entry in the change that fixes its gap.
 
-/// The kind of a difference between a target log and a current log.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DiffKind {
-    /// Both sides have the field, with different values.
-    Value,
-
-    /// Only the target has the field.
-    Missing,
-
-    /// Only the current output has the field.
-    Extra,
-
-    /// The field is in a different location on each side.
-    Location,
-}
+pub use stele::DiffKind;
 
 /// A known difference between the target and the current output of some vectors.
 pub struct KnownGap {
@@ -27,7 +13,7 @@ pub struct KnownGap {
     /// The vectors the difference applies to.
     pub vectors: &'static [&'static str],
 
-    /// Location-qualified field paths the difference applies to.
+    /// Location-qualified field paths the difference applies to, in the syntax of `stele::path_matches`.
     pub paths: &'static [&'static str],
 
     /// Kinds of difference the entry applies to. When empty, it applies to every kind.

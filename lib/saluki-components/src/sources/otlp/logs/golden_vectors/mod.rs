@@ -31,14 +31,14 @@ use saluki_core::runtime::state::{DataspaceUpdate, IdentifierFilter};
 use saluki_core::topology::EventsBuffer;
 use saluki_io::net::BoundListenAddress;
 use serde_json::Value;
-use stele::Log;
+use stele::{diff_logs, path_matches, FieldDiff, Log};
 use tonic::transport::Channel;
 
 use crate::encoders::{BufferedIncrementalConfiguration, DatadogLogsConfiguration};
 use crate::sources::otlp::tests::source_configuration;
 
 mod manifest;
-use self::manifest::{DiffKind, KnownGap, KNOWN_GAPS};
+use self::manifest::{KnownGap, KNOWN_GAPS};
 
 mod vectors;
 use self::vectors::{golden_vectors, GoldenVector};
@@ -60,17 +60,6 @@ const CURRENT_FIXTURES_PATH: &str = concat!(
 
 /// Environment variable that makes the test rewrite the current fixtures from the current output.
 const UPDATE_ENV_VAR: &str = "SALUKI_UPDATE_GOLDEN_VECTORS";
-
-/// A difference between a target log and a current log.
-#[derive(Debug)]
-struct FieldDiff {
-    /// Location-qualified path of the field, as in the panoramic logs analyzer: `envelope.status`,
-    /// `envelope.ddtags`, `envelope_properties.<key>`, or `content.<key>`.
-    path: String,
-    kind: DiffKind,
-    target: Option<Value>,
-    current: Option<Value>,
-}
 
 /// Runs the OTLP source, with its gRPC server on an ephemeral port.
 async fn start_source() -> (
@@ -249,156 +238,6 @@ fn parse(items: &[Value]) -> Vec<Log> {
     Log::try_from_payload(wire.to_string().as_bytes()).expect("fixture logs should parse")
 }
 
-/// Diffs a target log with a current log, field by field.
-///
-/// This uses the same paths as the panoramic logs analyzer. When both logs have content, the raw `message` is left
-/// out: the target's serialization only stands in for the reference serialization, so only the content properties are compared.
-fn diff_logs(target: &Log, current: &Log) -> Vec<FieldDiff> {
-    let mut diffs = Vec::new();
-
-    let both_have_content = target.content_properties().is_some() && current.content_properties().is_some();
-    for field in ["message", "status", "hostname", "service", "ddsource", "timestamp"] {
-        if field == "message" && both_have_content {
-            continue;
-        }
-        diff_optional(
-            format!("envelope.{}", field),
-            target.envelope_field(field),
-            current.envelope_field(field),
-            &mut diffs,
-        );
-    }
-
-    let tag_values = |tags: &BTreeSet<String>| (!tags.is_empty()).then(|| tags.iter().cloned().collect::<Value>());
-    if target.ddtags() != current.ddtags() {
-        diff_optional(
-            "envelope.ddtags".to_string(),
-            tag_values(target.ddtags()).as_ref(),
-            tag_values(current.ddtags()).as_ref(),
-            &mut diffs,
-        );
-    }
-
-    let empty = BTreeMap::new();
-    let target_locations = property_locations(target, &empty);
-    let current_locations = property_locations(current, &empty);
-    let keys = target_locations
-        .iter()
-        .chain(&current_locations)
-        .flat_map(|(_, properties)| properties.keys())
-        .collect::<BTreeSet<_>>();
-
-    for key in keys {
-        let found = |locations: &PropertyLocations<'_>| {
-            locations
-                .iter()
-                .filter_map(|(prefix, properties)| properties.get(key).map(|value| (*prefix, value.clone())))
-                .collect::<Vec<_>>()
-        };
-        let in_target = found(&target_locations);
-        let in_current = found(&current_locations);
-
-        // A key found in exactly one location on each side, but a different one, has moved.
-        if let ([(target_prefix, target_value)], [(current_prefix, current_value)]) =
-            (in_target.as_slice(), in_current.as_slice())
-        {
-            if target_prefix != current_prefix {
-                let path = format!("{}.{}", target_prefix, key);
-                diffs.push(FieldDiff {
-                    path: path.clone(),
-                    kind: DiffKind::Location,
-                    target: Some(target_value.clone()),
-                    current: Some(current_value.clone()),
-                });
-                if target_value != current_value {
-                    diffs.push(FieldDiff {
-                        path,
-                        kind: DiffKind::Value,
-                        target: Some(target_value.clone()),
-                        current: Some(current_value.clone()),
-                    });
-                }
-                continue;
-            }
-        }
-
-        for prefix in ["envelope_properties", "content"] {
-            let at = |found: &[(&str, Value)]| {
-                found
-                    .iter()
-                    .find(|(found_prefix, _)| *found_prefix == prefix)
-                    .map(|(_, value)| value.clone())
-            };
-            diff_optional(
-                format!("{}.{}", prefix, key),
-                at(&in_target).as_ref(),
-                at(&in_current).as_ref(),
-                &mut diffs,
-            );
-        }
-    }
-
-    diffs
-}
-
-type PropertyLocations<'a> = [(&'static str, &'a BTreeMap<String, Value>); 2];
-
-/// Returns the properties of a log, by the path prefix of their location.
-fn property_locations<'a>(log: &'a Log, empty: &'a BTreeMap<String, Value>) -> PropertyLocations<'a> {
-    [
-        ("envelope_properties", log.envelope_properties()),
-        ("content", log.content_properties().unwrap_or(empty)),
-    ]
-}
-
-fn diff_optional(path: String, target: Option<&Value>, current: Option<&Value>, diffs: &mut Vec<FieldDiff>) {
-    let kind = match (target, current) {
-        (None, None) => return,
-        (Some(target), Some(current)) if target == current => return,
-        (Some(_), Some(_)) => DiffKind::Value,
-        (Some(_), None) => DiffKind::Missing,
-        (None, Some(_)) => DiffKind::Extra,
-    };
-    diffs.push(FieldDiff {
-        path,
-        kind,
-        target: target.cloned(),
-        current: current.cloned(),
-    });
-}
-
-/// Returns `true` if `path` matches the glob `pattern`.
-///
-/// Paths are matched segment by segment, splitting on `.`. Within a segment, `*` matches any run of characters, and a
-/// segment of `**` matches any number of segments, including none. This is the same syntax as the known differences of
-/// the panoramic logs analyzer.
-fn path_matches(pattern: &str, path: &str) -> bool {
-    fn segments_match(pattern: &[&str], path: &[&str]) -> bool {
-        match pattern.split_first() {
-            None => path.is_empty(),
-            Some((&"**", rest)) => (0..=path.len()).any(|skip| segments_match(rest, &path[skip..])),
-            Some((segment, rest)) => match path.split_first() {
-                Some((path_segment, path_rest)) => {
-                    segment_matches(segment.as_bytes(), path_segment.as_bytes()) && segments_match(rest, path_rest)
-                }
-                None => false,
-            },
-        }
-    }
-
-    fn segment_matches(pattern: &[u8], text: &[u8]) -> bool {
-        match pattern.split_first() {
-            None => text.is_empty(),
-            Some((b'*', rest)) => (0..=text.len()).any(|skip| segment_matches(rest, &text[skip..])),
-            Some((c, rest)) => text.first() == Some(c) && segment_matches(rest, &text[1..]),
-        }
-    }
-
-    let pattern = pattern.split('.').collect::<Vec<_>>();
-    let path = path.split('.').collect::<Vec<_>>();
-    segments_match(&pattern, &path)
-}
-
 impl KnownGap {
     fn covers(&self, vector: &str, diff: &FieldDiff) -> bool {
         self.vectors.contains(&vector)
@@ -487,7 +326,8 @@ async fn otlp_logs_golden_vectors() {
             continue;
         }
         for (index, (target_log, current_log)) in target_logs.iter().zip(&current_logs).enumerate() {
-            for diff in diff_logs(target_log, current_log) {
+            // The target is the baseline. Encode times are placeholders on both sides, so they need no tolerance.
+            for diff in diff_logs(target_log, current_log, 0) {
                 let mut covered = false;
                 for (entry_index, gap) in KNOWN_GAPS.iter().enumerate() {
                     if !gap.covers(vector.name, &diff) {
@@ -508,9 +348,9 @@ async fn otlp_logs_golden_vectors() {
                         index,
                         diff.path,
                         diff.kind,
-                        diff.target
+                        diff.baseline
                             .map_or_else(|| "<absent>".to_string(), |value| value.to_string()),
-                        diff.current
+                        diff.comparison
                             .map_or_else(|| "<absent>".to_string(), |value| value.to_string()),
                     ));
                 }
