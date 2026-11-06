@@ -18,7 +18,7 @@ const MAX_TRACESTATE_LEN: usize = 1024;
 /// Maximum accepted size of the `ot` vendor value, in bytes.
 const MAX_OT_VALUE_LEN: usize = 256;
 
-/// Tracestates with this many list members or more are rejected.
+/// A tracestate with more than this many list members is rejected.
 const MAX_TRACESTATE_MEMBERS: usize = 32;
 
 /// Maximum accepted size of a tracestate key, in bytes.
@@ -52,7 +52,7 @@ pub(super) fn sample_rate_from_tracestate(tracestate: &str) -> Option<f64> {
     let mut rest = tracestate;
     while !rest.is_empty() {
         members += 1;
-        if members >= MAX_TRACESTATE_MEMBERS {
+        if members > MAX_TRACESTATE_MEMBERS {
             return None;
         }
 
@@ -362,8 +362,8 @@ mod tests {
             parts.push("ot=th:8".to_string());
             parts.join(",")
         };
-        assert_rate(&members(31), Some(0.5));
-        assert_rate(&members(32), None);
+        assert_rate(&members(32), Some(0.5));
+        assert_rate(&members(33), None);
 
         assert_rate(&format!("ot=th:8,{}", "a=b,".repeat(300)), None);
     }
