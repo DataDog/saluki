@@ -643,6 +643,18 @@ fn translator_cases() -> Vec<Case> {
                 }),
             ),
         ),
+        case(
+            "EventName is mapped to otel.event_name",
+            record().event_name("app.screen.click").severity_number(5),
+            item(
+                OTEL_SOURCE_TAG,
+                json!({
+                    "status": "debug",
+                    "otel.severity_number": "5",
+                    "otel.event_name": "app.screen.click",
+                }),
+            ),
+        ),
     ]
 }
 
@@ -676,22 +688,6 @@ fn derive_status_cases() -> Vec<Case> {
         )
     })
     .collect()
-}
-
-/// The `TestTranslator` case of a log with an event name.
-fn event_name_cases() -> Vec<Case> {
-    vec![case(
-        "EventName is mapped to otel.event_name",
-        record().event_name("app.screen.click").severity_number(5),
-        item(
-            OTEL_SOURCE_TAG,
-            json!({
-                "status": "debug",
-                "otel.severity_number": "5",
-                "otel.event_name": "app.screen.click",
-            }),
-        ),
-    )]
 }
 
 /// The `TestTranslator` cases of scope names and versions, and of the `otel.library.*` aliases for them.
@@ -923,12 +919,6 @@ fn translator() {
     cases.extend(derive_status_cases());
     cases.extend(status_attribute_override_cases());
     check(cases);
-}
-
-#[test]
-#[ignore = "target for `gap/event-name`"]
-fn target_event_name() {
-    check(event_name_cases());
 }
 
 #[test]

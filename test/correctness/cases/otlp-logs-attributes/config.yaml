@@ -31,10 +31,6 @@ logs:
       when:
         fixture_id: [message-int, message-map]
       reason: ADP only honors string `message`/`log` attributes, and uses the body instead.
-    - gap: gap/event-name
-      paths: ["content.otel.event_name"]
-      kinds: [missing]
-      reason: ADP doesn't set `otel.event_name`.
     - gap: gap/scope-metadata
       paths: ["content.otel.scope.name", "content.otel.scope.version"]
       kinds: [missing]
