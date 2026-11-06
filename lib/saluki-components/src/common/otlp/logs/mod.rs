@@ -58,7 +58,7 @@ impl ContentRenderer {
 
         // Go sorts map keys by their bytes, as `str` orders them. The sort is stable, so fields with the same key stay
         // in assembly order, and only the last of them is written.
-        fields.sort_by(|(a, _), (b, _)| a.cmp(b));
+        fields.sort_by_key(|(key, _)| *key);
 
         self.buffer.clear();
         self.buffer.push(b'{');
@@ -84,7 +84,7 @@ impl ContentRenderer {
         }
         self.buffer.push(b'}');
 
-        let content = std::str::from_utf8(&self.buffer)
+        let content = simdutf8::basic::from_utf8(&self.buffer)
             .map_err(|e| generic_error!("Rendered log content isn't valid UTF-8: {}", e))?;
         Ok(MetaString::from(content))
     }
