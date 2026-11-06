@@ -415,13 +415,27 @@ fn http_client_builder(
     config: &ForwarderConfiguration, min_tls_version: TlsMinimumVersion, metrics_builder: MetricsBuilder,
     endpoint_name: Arc<EndpointNameFn>,
 ) -> Result<HttpClientBuilder, GenericError> {
+    Ok(intake_http_client_builder(config, min_tls_version)?
+        .with_max_idle_conns_per_host(config.endpoint_concurrency_multiplier)
+        .with_endpoint_telemetry(metrics_builder, Some(move |uri: &Uri| endpoint_name(uri))))
+}
+
+/// Returns an HTTP client builder for Datadog intake traffic, applying the forwarder's timeout, TLS, and proxy settings.
+///
+/// Unlike the forwarders' own clients, it emits no endpoint telemetry, so it suits components that send the odd request
+/// to the intake outside of a forwarder.
+///
+/// # Errors
+///
+/// If the proxy settings are invalid, an error is returned.
+pub(crate) fn intake_http_client_builder(
+    config: &ForwarderConfiguration, min_tls_version: TlsMinimumVersion,
+) -> Result<HttpClientBuilder, GenericError> {
     let mut client_builder = HttpClient::builder()
         .with_request_timeout(config.request_timeout())
-        .with_max_idle_conns_per_host(config.endpoint_concurrency_multiplier)
         .with_min_tls_version(min_tls_version)
         .with_tls_handshake_timeout(config.tls_handshake_timeout)
-        .with_http_protocol(config.http_protocol.into())
-        .with_endpoint_telemetry(metrics_builder, Some(move |uri: &Uri| endpoint_name(uri)));
+        .with_http_protocol(config.http_protocol.into());
     if let Some(path) = config.ssl_key_log_file_path() {
         client_builder = client_builder.with_tls_config(|builder| builder.with_key_log_file(path));
     }

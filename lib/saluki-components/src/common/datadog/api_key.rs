@@ -60,6 +60,13 @@ impl ApiKeyCell {
         MetaString::clone(&self.current.load())
     }
 
+    /// Replaces the current API key with `api_key`, unless it is blank or not a valid header value.
+    ///
+    /// `source` names what the key is for in the logs.
+    pub(crate) fn refresh(&self, source: &str, api_key: &str) {
+        let _ = self.store(source, Some(api_key));
+    }
+
     /// Replaces the current API key, and reports whether it changed.
     ///
     /// `api_key` is trimmed here so that a caller cannot install a key that differs from the
