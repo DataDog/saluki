@@ -8,17 +8,34 @@ use crate::data_model::tags::TagSet;
 ///
 /// Contains pre-aggregated trace statistics grouped by client/tracer. The encoder wraps this
 /// in a `StatsPayload` protobuf and adds agent-level metadata (`agentHostname`, `agentEnv`,
-/// `agentVersion`, `clientComputed`, `splitPayload`) from ADP configuration.
+/// `agentVersion`, `clientComputed`) from ADP configuration. `splitPayload` comes from this event, which records
+/// whether it is one of several events produced by splitting a flush.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct TraceStats {
     /// Multiple client payloads, one per PayloadAggregationKey (hostname/env/version/container).
     stats: Vec<ClientStatsPayload>,
+    /// Whether this is one of several events produced by splitting a flush.
+    split_payload: bool,
 }
 
 impl TraceStats {
     /// Creates a new `TraceStats` with the given client stats payloads.
     pub fn new(stats: Vec<ClientStatsPayload>) -> Self {
-        Self { stats }
+        Self {
+            stats,
+            split_payload: false,
+        }
+    }
+
+    /// Sets whether this is one of several events produced by splitting a flush.
+    pub fn with_split_payload(mut self, split_payload: bool) -> Self {
+        self.split_payload = split_payload;
+        self
+    }
+
+    /// Returns `true` if this is one of several events produced by splitting a flush.
+    pub fn is_split_payload(&self) -> bool {
+        self.split_payload
     }
 
     /// Returns a reference to the client stats payloads.

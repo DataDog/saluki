@@ -330,7 +330,7 @@ impl StatsEndpointEncoder {
         payload.set_agentEnv(self.agent_env.to_string());
         payload.set_agentVersion(self.agent_version.to_string());
         payload.set_clientComputed(false);
-        payload.set_splitPayload(false);
+        payload.set_splitPayload(stats.is_split_payload());
         payload.set_stats(stats.stats().iter().map(convert_client_stats_payload).collect());
 
         payload
@@ -468,6 +468,24 @@ mod tests {
 
             let payload: ProtoStatsPayload = rmp_serde::from_slice(&buf).expect("StatsPayload should decode");
             assert_eq!(payload.agentEnv(), expected);
+        }
+    }
+
+    #[test]
+    fn stats_payload_split_flag_follows_trace_stats() {
+        for is_split in [false, true] {
+            let config = DatadogApmStatsEncoderConfiguration::new(
+                Duration::from_secs(2),
+                AgentEnv::resolve(None, Some("prod"), &[], &[]),
+            );
+            let mut buf = Vec::new();
+            config
+                .endpoint_encoder()
+                .encode(&TraceStats::new(Vec::new()).with_split_payload(is_split), &mut buf)
+                .expect("encode should succeed");
+
+            let payload: ProtoStatsPayload = rmp_serde::from_slice(&buf).expect("StatsPayload should decode");
+            assert_eq!(payload.splitPayload(), is_split);
         }
     }
 }
