@@ -278,8 +278,10 @@ mod tests {
         assert_size_budget!(super::metric::context::Context, 8);
         assert_size_budget!(super::metric::MetricValues, 104);
         assert_size_budget!(super::metric::MetricMetadata, 48);
-        assert_size_budget!(EventD, 200);
-        assert_size_budget!(ServiceCheck, 160);
+        // `EventD` and `ServiceCheck` store their hostname as `Option<MetaString>` to tell an unset hostname from an
+        // explicitly empty one. Both stay well below `Event`, which is sized by its largest variant.
+        assert_size_budget!(EventD, 208);
+        assert_size_budget!(ServiceCheck, 168);
         assert_size_budget!(Log, 192);
         assert_size_budget!(Trace, 336);
         assert_size_budget!(TraceStats, 24);
