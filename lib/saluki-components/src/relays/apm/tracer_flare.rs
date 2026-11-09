@@ -150,7 +150,7 @@ impl TracerFlareProxy {
 
         parts.uri = self.endpoint.clone();
         // The relay's server also accepts HTTP/2: the client picks the protocol of its own connection.
-        parts.version = Version::HTTP_11;
+        parts.version = Version::default();
         set_upstream_headers(
             &mut parts.headers,
             peer_ip.as_deref(),
