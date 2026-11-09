@@ -492,8 +492,8 @@ mod tests {
     use super::*;
 
     fn client_stats(hits: u64, errors: u64, duration_ns: u64, top_level_hits: u64) -> ClientStatistics {
-        let mapping = LogarithmicMapping::new(0.01).expect("Relative accuracy should be valid (0 <= 0.01 <= 1)");
-        let empty_sketch: DDSketch = DDSketch::new(mapping, Default::default(), Default::default());
+        let empty_sketch: DDSketch =
+            DDSketch::with_relative_accuracy(0.01).expect("Relative accuracy should be valid (0 <= 0.01 <= 1)");
         let empty_sketch = empty_sketch
             .to_proto()
             .write_to_bytes()
