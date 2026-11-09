@@ -98,7 +98,7 @@ struct Metrics {
     requests_relayed_total: Counter,
     /// Requests forwarded to the trace-agent that it never answered, such as when it was unreachable.
     requests_failed_total: Counter,
-    /// Requests the relay answered itself, without forwarding them to the trace-agent.
+    /// Requests the relay handled itself rather than forwarding to the trace-agent, whatever the outcome.
     requests_served_locally_total: Counter,
 }
 
@@ -369,12 +369,8 @@ impl ApmRelayAPIHandler {
             tracer_flare, metrics, ..
         }): State<RelayState>, request: AxumRequest,
     ) -> impl IntoResponse {
-        let result = tracer_flare.forward(request).await;
-        match &result {
-            Ok(_) => metrics.requests_served_locally_total().increment(1),
-            Err(_) => metrics.requests_failed_total().increment(1),
-        }
-        result
+        metrics.requests_served_locally_total().increment(1);
+        tracer_flare.forward(request).await
     }
 }
 
@@ -669,7 +665,11 @@ mod tests {
                 ],
             )
         };
-        assert_eq!(recorder.counter(metric_key("component_requests_failed_total")), Some(2));
+        assert_eq!(
+            recorder.counter(metric_key("component_requests_served_locally_total")),
+            Some(2)
+        );
+        assert_eq!(recorder.counter(metric_key("component_requests_failed_total")), Some(0));
         assert_eq!(
             recorder.counter(metric_key("component_requests_relayed_total")),
             Some(0)
