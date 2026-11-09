@@ -1,6 +1,7 @@
 //! OTLP domain: the OTLP receiver (gRPC/HTTP transports, logs/metrics activation), the OTLP proxy
 //! gating, and OTLP context sizing. OTLP trace handling lives in the `traces` domain.
 
+use std::collections::HashMap;
 use std::time::Duration;
 use std::{num::NonZeroUsize, str::FromStr};
 
@@ -500,6 +501,16 @@ pub struct Traces {
     /// Defaults to `off`, which leaves custom tags as plain resource attributes. Convention keys and
     /// already-prefixed keys are exempt in every mode.
     pub container_tag_promotion: ContainerTagPromotion,
+
+    /// Whether the span name becomes the Datadog resource name of OTLP spans.
+    ///
+    /// Defaults to `false`, which builds the resource name from the instrumentation library name and span kind.
+    pub span_name_as_resource_name: bool,
+
+    /// Preferred operation names by OTLP span name.
+    ///
+    /// Defaults to empty, which leaves span names unchanged.
+    pub span_name_remappings: HashMap<String, String>,
 }
 
 impl Default for Traces {
@@ -514,6 +525,9 @@ impl Default for Traces {
             ignore_missing_datadog_fields: false,
             infra_attributes_enabled: true,
             container_tag_promotion: ContainerTagPromotion::default(),
+            // Witnessed; overwritten during drive.
+            span_name_as_resource_name: false,
+            span_name_remappings: HashMap::new(),
         }
     }
 }

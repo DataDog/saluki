@@ -185,6 +185,8 @@ mod tests {
             config.domains.remote_configuration.apm_sampling_enabled = case.sampling;
             config.domains.remote_configuration.apm_semantics_enabled = case.semantics;
             config.control.otlp = case.otlp;
+            // OTLP needs at least one signal to run.
+            config.domains.otlp.receiver.metrics_enabled = true;
             config.domains.otlp.proxy.enabled = case.otlp_proxy;
             config.domains.otlp.proxy.traces_enabled = case.otlp_proxy_traces;
 

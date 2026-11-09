@@ -1,0 +1,11 @@
+---
+enhancements:
+  - |
+    Agent Data Plane now reads ``otlp_config.traces.span_name_as_resource_name`` and
+    ``otlp_config.traces.span_name_remappings`` and logs a warning at startup when either is set. It does not
+    apply them yet: OTLP span names and resource names keep their default derivation. Previously Agent Data
+    Plane ignored both settings without any message.
+  - |
+    When OTLP ingest is enabled but OTLP metrics, logs, and traces are all disabled, Agent Data Plane now
+    logs an error and runs without OTLP ingest, as the Datadog Agent does. Previously it exited at startup,
+    which also stopped its other pipelines.

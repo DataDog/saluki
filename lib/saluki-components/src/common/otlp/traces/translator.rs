@@ -1,4 +1,5 @@
 use std::collections::hash_map::IntoIter;
+use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
@@ -204,6 +205,12 @@ pub struct OtlpTracesSettings {
 
     /// How custom infrastructure tags are promoted into container tags.
     pub container_tag_promotion: ContainerTagPromotion,
+
+    /// Whether the span name becomes the Datadog resource name.
+    pub span_name_as_resource_name: bool,
+
+    /// Preferred operation names by span name.
+    pub span_name_remappings: HashMap<String, String>,
 }
 
 /// How custom infrastructure tags are promoted into container tags on OTLP traces.
@@ -230,6 +237,8 @@ pub(crate) fn traces_settings() -> OtlpTracesSettings {
         ignore_missing_datadog_fields: false,
         infra_attributes_enabled: true,
         container_tag_promotion: ContainerTagPromotion::Off,
+        span_name_as_resource_name: false,
+        span_name_remappings: HashMap::new(),
     }
 }
 
