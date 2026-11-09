@@ -94,7 +94,8 @@ pub fn parse_dogstatsd_metric<'a>(
 
         while let Some((chunk, tail)) = split_at_delimiter(remaining, b'|') {
             // An empty field (for example, `metric:1|c||#tags`) is a structural defect. In permissive mode, we skip it
-            // and keep parsing the fields after it, matching the Datadog Agent. Otherwise, we reject the metric.
+            // and keep parsing the fields after it, matching the reference DogStatsD server. Otherwise, we reject the
+            // metric.
             if chunk.is_empty() {
                 if !config.permissive {
                     return Err(nom::Err::Error(Error::new(remaining, ErrorKind::Verify)));
@@ -233,15 +234,6 @@ fn raw_metric_values(input: &[u8]) -> IResult<&[u8], (MetricType, &[u8])> {
     let (remaining, raw_values) = terminated(take_while1(|b| b != b'|'), tag("|")).parse(input)?;
     let (remaining, raw_kind) = alt((tag("g"), tag("c"), tag("ms"), tag("h"), tag("s"), tag("d"))).parse(remaining)?;
 
-    // Make sure there's at least one value, and that the raw value(s) are valid UTF-8 before we use them later on.
-    //
-    // In permissive mode, empty values in a multi-value payload (for example, `1::2`) are skipped when parsing, but a
-    // payload made up of only empty values (for example, `:` or `::`) has no values at all, which the Datadog Agent
-    // rejects.
-    if raw_values.iter().all(|&b| b == b':') || simdutf8::basic::from_utf8(raw_values).is_err() {
-        return Err(nom::Err::Error(Error::new(raw_values, ErrorKind::Verify)));
-    }
-
     let metric_type = match raw_kind {
         b"c" => MetricType::Count,
         b"g" => MetricType::Gauge,
@@ -251,6 +243,20 @@ fn raw_metric_values(input: &[u8]) -> IResult<&[u8], (MetricType, &[u8])> {
         b"d" => MetricType::Distribution,
         _ => unreachable!("should be constrained by alt parser"),
     };
+
+    // Make sure the raw value(s) are valid UTF-8 before we use them later on.
+    if simdutf8::basic::from_utf8(raw_values).is_err() {
+        return Err(nom::Err::Error(Error::new(raw_values, ErrorKind::Verify)));
+    }
+
+    // Make sure a numeric metric has at least one value. In permissive mode, empty values in a multi-value payload (for
+    // example, `1::2`) are skipped when parsing, but a payload made up of only empty values (for example, `:` or `::`)
+    // has no values at all, which the reference DogStatsD server rejects.
+    //
+    // A set's value isn't split on `:`, so `::` is a valid set member.
+    if !matches!(metric_type, MetricType::Set) && raw_values.iter().all(|&b| b == b':') {
+        return Err(nom::Err::Error(Error::new(raw_values, ErrorKind::Verify)));
+    }
 
     Ok((remaining, (metric_type, raw_values)))
 }
@@ -306,8 +312,8 @@ impl<'a> Iterator for FloatIter<'a> {
             self.raw_values = tail;
 
             // An empty value in a multi-value payload (for example, `1::2`) is a structural defect. In permissive mode,
-            // we skip it, matching the Datadog Agent. Otherwise, it fails to parse as a float below, rejecting the
-            // metric.
+            // we skip it, matching the reference DogStatsD server. Otherwise, it fails to parse as a float below,
+            // rejecting the metric.
             if raw_value.is_empty() && self.skip_empty_values {
                 continue;
             }
@@ -519,8 +525,26 @@ mod tests {
     }
 
     #[test]
+    fn set_values_made_of_colons_are_accepted() {
+        // A set's value isn't split on `:`, so a value such as `::` (the IPv6 unspecified address) is a valid set
+        // member in both modes, as in the reference DogStatsD server.
+        for permissive in [true, false] {
+            let config = DogStatsDCodecConfiguration::default().with_permissive_mode(permissive);
+            for (raw, value) in [("my.set:::|s", "::"), ("my.set::::|s", ":::")] {
+                let (_, packet) = parse_dogstatsd_metric(raw.as_bytes(), &config)
+                    .unwrap_or_else(|e| panic!("should parse {raw:?} (permissive: {permissive}): {e:?}"));
+                assert_eq!(
+                    packet.values,
+                    MetricValues::set(value),
+                    "unexpected set value for {raw:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn metrics_with_only_empty_values_are_rejected() {
-        // Like the Datadog Agent, a metric with no values at all is rejected, even in permissive mode.
+        // Like the reference DogStatsD server, a metric with no values at all is rejected, even in permissive mode.
         for permissive in [true, false] {
             let config = DogStatsDCodecConfiguration::default().with_permissive_mode(permissive);
             for raw in ["my.counter::|c", "my.counter::::|c", "my.distribution::|d"] {

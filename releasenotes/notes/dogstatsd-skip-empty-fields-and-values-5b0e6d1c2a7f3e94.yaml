@@ -7,3 +7,7 @@ fixes:
     message. Empty values in a multi-value metric, such as ``metric:1::2|d``, are
     also skipped rather than rejecting the whole line. With permissive decoding
     disabled, these payloads are now rejected and counted as decode errors.
+  - |
+    Because the fields after an empty ``|`` field are now parsed, a malformed field
+    there, such as the sample rate in ``metric:1|c||@notafloat``, now rejects the
+    payload in both modes, as the Datadog Agent does. Previously it was never seen.

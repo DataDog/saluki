@@ -94,9 +94,9 @@ impl DogStatsDCodecConfiguration {
     /// payload. This allows for decoding payloads with invalid contents (for example, characters that are valid UTF-8, but
     /// aren't within ASCII bounds, etc) such that the data plane can attempt to process them further.
     ///
-    /// Permissive mode also tolerates some structural defects that the Datadog Agent tolerates: empty fields (for
-    /// example, `metric:1|c||#tags`) and empty values in a multi-value payload (for example, `metric:1::2|d`) are
-    /// skipped. In strict mode, they cause the payload to be rejected.
+    /// Permissive mode also tolerates some structural defects that the reference DogStatsD server tolerates: empty
+    /// fields (for example, `metric:1|c||#tags`) and empty values in a multi-value payload (for example,
+    /// `metric:1::2|d`) are skipped. In strict mode, they cause the payload to be rejected.
     ///
     /// Permissive mode doesn't allow for decoding payloads with other structural errors (for example, missing
     /// delimiters, etc) or that can't be safely handled internally (for example, invalid UTF-8 characters in a metric

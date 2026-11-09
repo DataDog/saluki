@@ -48,7 +48,8 @@ pub fn parse_dogstatsd_service_check<'a>(
         let (mut remaining, _) = tag("|")(remaining)?;
         while let Some((chunk, tail)) = split_at_delimiter(remaining, b'|') {
             // An empty field (for example, `0||#tags`) is a structural defect. In permissive mode, we skip it and keep
-            // parsing the fields after it, matching the Datadog Agent. Otherwise, we reject the service check.
+            // parsing the fields after it, matching the reference DogStatsD server. Otherwise, we reject the service
+            // check.
             if chunk.is_empty() {
                 if !config.permissive {
                     return Err(nom::Err::Error(Error::new(remaining, ErrorKind::Verify)));
