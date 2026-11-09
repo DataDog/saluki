@@ -2212,10 +2212,11 @@ fn handle_event_packet(
 
     let eventd = EventD::new(packet.title, packet.text)
         .with_timestamp(timestamp)
-        // An `h:` field takes precedence; otherwise, fall back to a `host:` tag, matching the Datadog Agent.
+        // An `h:` field takes precedence; otherwise, fall back to a `host:` tag, matching the reference DogStatsD
+        // server.
         //
-        // TODO: The Datadog Agent sends an empty hostname for an empty `host:` tag, but an empty hostname here is
-        // treated as unset, so host enrichment fills in the default hostname instead.
+        // TODO: The reference DogStatsD server sends an empty hostname for an empty `host:` tag, but an empty hostname
+        // here is treated as unset, so host enrichment fills in the default hostname instead.
         .with_hostname(packet.hostname.or(well_known_tags.hostname).map(|s| s.into()))
         .with_aggregation_key(packet.aggregation_key.map(|s| s.into()))
         .with_alert_type(packet.alert_type)
@@ -2259,10 +2260,11 @@ fn handle_service_check_packet(
 
     let service_check = ServiceCheck::new(packet.name, packet.status)
         .with_timestamp(timestamp)
-        // An `h:` field takes precedence; otherwise, fall back to a `host:` tag, matching the Datadog Agent.
+        // An `h:` field takes precedence; otherwise, fall back to a `host:` tag, matching the reference DogStatsD
+        // server.
         //
-        // TODO: The Datadog Agent sends an empty hostname for an empty `host:` tag, but an empty hostname here is
-        // treated as unset, so host enrichment fills in the default hostname instead.
+        // TODO: The reference DogStatsD server sends an empty hostname for an empty `host:` tag, but an empty hostname
+        // here is treated as unset, so host enrichment fills in the default hostname instead.
         .with_hostname(packet.hostname.or(well_known_tags.hostname).map(|s| s.into()))
         .with_tags(tags)
         .with_origin_tags(origin_tags)
@@ -3138,7 +3140,8 @@ mod tests {
             .expect("frame should produce an event")
         };
 
-        // Like the Datadog Agent, a `host:` tag sets the hostname when there's no `h:` field, and `h:` wins otherwise.
+        // Like the reference DogStatsD server, a `host:` tag sets the hostname when there's no `h:` field, and `h:`
+        // wins otherwise.
         let cases: [(&[u8], &str); 2] = [
             (b"_e{5,4}:title|text|#host:tagged-host,env:prod", "tagged-host"),
             (
