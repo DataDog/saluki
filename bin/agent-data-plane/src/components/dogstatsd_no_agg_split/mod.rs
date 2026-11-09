@@ -29,7 +29,7 @@ use saluki_core::{
 use saluki_error::GenericError;
 use saluki_metrics::MetricsBuilder;
 use tokio::{pin, select, time::interval};
-use tracing::{debug, error, trace};
+use tracing::{debug, error, trace, warn};
 
 mod telemetry;
 use self::telemetry::Telemetry;
@@ -125,6 +125,19 @@ fn try_split_timestamped_values(mut metric: Metric) -> (Option<Metric>, Option<M
     }
 }
 
+/// Returns `true` if the given metric values can be forwarded by the no-aggregation pipeline.
+///
+/// Like the Datadog Agent, only gauges, counters and rates are supported: there's no way to forward a single
+/// timestamped histogram, distribution or set point without aggregating it.
+///
+/// <https://github.com/DataDog/datadog-agent/blob/78c2c984e848055b4aa63c5f6a9e94a534a07a44/pkg/aggregator/no_aggregation_stream_worker.go#L283-L297>
+fn is_supported_passthrough_type(values: &MetricValues) -> bool {
+    matches!(
+        values,
+        MetricValues::Counter(_) | MetricValues::Rate(..) | MetricValues::Gauge(_)
+    )
+}
+
 fn counter_values_to_rate(values: MetricValues) -> MetricValues {
     match values {
         MetricValues::Counter(points) => MetricValues::rate(points, PASSTHROUGH_COUNTER_NORMALIZATION_INTERVAL),
@@ -138,6 +151,39 @@ struct PassthroughBatcher {
     last_processed_at: Instant,
     idle_flush_timeout: Duration,
     telemetry: Telemetry,
+    unsupported_type_warning: UnsupportedTypeWarning,
+}
+
+/// How often to log a warning about timestamped metrics dropped for having an unsupported type.
+const UNSUPPORTED_TYPE_WARNING_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Rate-limits the warning logged when timestamped metrics are dropped for having an unsupported type.
+#[derive(Default)]
+struct UnsupportedTypeWarning {
+    last_logged_at: Option<Instant>,
+    suppressed: u64,
+}
+
+impl UnsupportedTypeWarning {
+    fn record(&mut self, metric: &Metric) {
+        let now = Instant::now();
+        let should_log = self
+            .last_logged_at
+            .is_none_or(|last| now.duration_since(last) >= UNSUPPORTED_TYPE_WARNING_INTERVAL);
+        if !should_log {
+            self.suppressed += 1;
+            return;
+        }
+
+        warn!(
+            metric_name = %metric.context().name(),
+            metric_type = metric.values().as_str(),
+            suppressed_since_last_warning = self.suppressed,
+            "Discarding timestamped metric: only gauges and counts are supported by the no-aggregation pipeline."
+        );
+        self.last_logged_at = Some(now);
+        self.suppressed = 0;
+    }
 }
 
 impl PassthroughBatcher {
@@ -148,10 +194,18 @@ impl PassthroughBatcher {
             last_processed_at: Instant::now(),
             idle_flush_timeout,
             telemetry,
+            unsupported_type_warning: UnsupportedTypeWarning::default(),
         }
     }
 
     async fn push_metric(&mut self, metric: Metric, dispatcher: &EventsDispatcher) {
+        // Drop timestamped metrics whose type can't be forwarded without aggregation, matching the Datadog Agent.
+        if !is_supported_passthrough_type(metric.values()) {
+            self.telemetry.increment_unsupported_type_dropped();
+            self.unsupported_type_warning.record(&metric);
+            return;
+        }
+
         // Convert counters to rates before we batch them up.
         //
         // Pin the compatibility interval on each metric before buffering it. Later configuration or flush timing
@@ -445,6 +499,50 @@ mod tests {
             .collect_events()
             .await
             .is_empty());
+    }
+
+    /// Like the Core Agent's no-aggregation pipeline, timestamped metrics that aren't gauges, counters or rates are
+    /// discarded rather than forwarded:
+    /// https://github.com/DataDog/datadog-agent/blob/78c2c984e848055b4aa63c5f6a9e94a534a07a44/pkg/aggregator/no_aggregation_stream_worker.go#L283-L297
+    #[tokio::test]
+    async fn timestamped_histograms_and_distributions_are_discarded() {
+        let config = DogStatsDNoAggSplitConfiguration::new(Duration::from_secs(60));
+        let (split, mut outputs) = TestComponentDriver::transform(config)
+            .await
+            .expect("split transform should build");
+        split
+            .send_events([
+                Event::Metric(Metric::histogram("app.latency", (1_700_000_000, 1.0))),
+                Event::Metric(Metric::distribution("app.size", (1_700_000_000, 1.0))),
+                Event::Metric(Metric::gauge("app.queue_depth", (1_700_000_000, 5.0))),
+            ])
+            .await;
+        split.shutdown().await.expect("split transform should stop cleanly");
+
+        let passthrough = outputs
+            .named_output(PASSTHROUGH_OUTPUT)
+            .collect_events()
+            .await
+            .into_iter()
+            .filter_map(Event::try_into_metric)
+            .collect::<Vec<_>>();
+        assert_eq!(passthrough, [Metric::gauge("app.queue_depth", (1_700_000_000, 5.0))]);
+
+        // Discarded metrics aren't aggregated either.
+        assert!(outputs.default_output().collect_events().await.is_empty());
+    }
+
+    #[test]
+    fn only_gauges_counters_and_rates_are_supported_passthrough_types() {
+        assert!(is_supported_passthrough_type(&MetricValues::gauge(1.0)));
+        assert!(is_supported_passthrough_type(&MetricValues::counter(1.0)));
+        assert!(is_supported_passthrough_type(&MetricValues::rate(
+            1.0,
+            Duration::from_secs(10)
+        )));
+        assert!(!is_supported_passthrough_type(&MetricValues::histogram(1.0)));
+        assert!(!is_supported_passthrough_type(&MetricValues::distribution(1.0)));
+        assert!(!is_supported_passthrough_type(&MetricValues::set("value")));
     }
 
     /// Regression test: the final flush at shutdown used to dispatch only once the idle flush timeout had elapsed since

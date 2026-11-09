@@ -1,0 +1,15 @@
+seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
+target: "unixgram:///$GROUP-airlock/metrics.sock"
+aggregation_bucket_width_secs: 10
+volume: 1000
+corpus:
+  size: 1
+  payload:
+    # The Core Agent treats a sample rate of 0 as 1 for distributions and histograms, rejects `T0`, and discards
+    # timestamped histograms in its no-aggregation pipeline.
+    static: |
+      rate.control:1|d|#env:prod
+      rate.zero_distribution:1|d|@0|#env:prod
+      rate.zero_histogram:1|h|@0|#env:prod
+      timestamp.zero_count:1|c|@0.5|T0|#env:prod
+      timestamp.histogram:1|h|T1656581400|#env:prod
