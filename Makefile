@@ -88,9 +88,10 @@ export WINDOWS_CROSS_CARGO_ARGS ?= --package agent-data-plane
 
 # Version of source repositories (Git tag, branch, or full commit SHA) for vendored Protocol Buffers definitions.
 #
-# The Datadog Agent is pinned to a commit on `main` until a release branch includes DataDog/datadog-agent#58951 (the
-# optional `process_instance_id` in remote-agent registration). Move this to that release branch when it exists.
-export PROTOBUF_SRC_REPO_DD_AGENT ?= b13554d0c66277f2f30ee190c2540d1d872ce14a
+# The Datadog Agent is pinned to the commit on its `7.85.x` release branch that added the optional `process_instance_id`
+# to remote-agent registration (DataDog/datadog-agent#59686, a backport of #58951). It is a commit rather than the branch
+# name so that checking the vendored protos stays reproducible as `7.85.x` moves.
+export PROTOBUF_SRC_REPO_DD_AGENT ?= c00253cf01524ba49250f4862a66e36dd443c0a6
 export PROTOBUF_SRC_REPO_AGENT_PAYLOAD ?= v5.0.215
 export PROTOBUF_SRC_REPO_CONTAINERD ?= v2.2.0
 export PROTOBUF_SRC_REPO_SKETCHES_GO ?= v1.4.7
