@@ -21,9 +21,9 @@ env:
 
 container:
   exposed_ports:
-    - "58125/udp"
+    - "48125/udp"
     # Serves the privileged configuration API that the runtime configuration assertion reads.
-    - "55101/tcp"
+    - "45101/tcp"
 
 procedure:
   # Make sure we initially see ADP try to reach out to the Core Agent for its configuration.
@@ -49,7 +49,7 @@ procedure:
   # The same site, read back from the translated runtime configuration that components are built
   # from. This separates a translation failure from an endpoint resolution failure.
   - assertion: adp_config_key_equals
-    endpoint: "https://localhost:55101/config/runtime"
+    endpoint: "https://localhost:45101/config/runtime"
     key: shared.endpoints.site
     value: datadoghq.eu
     timeout: 60s

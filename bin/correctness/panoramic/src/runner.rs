@@ -2416,7 +2416,7 @@ while :; do sleep 1; done"#
 
     #[test]
     fn windows_runtime_uses_identity_port_mappings_for_exposed_ports() {
-        let exposed_ports = vec!["55100/tcp".to_string(), "58125/udp".to_string()];
+        let exposed_ports = vec!["45100/tcp".to_string(), "48125/udp".to_string()];
 
         let mappings = build_port_mappings_for_runtime(
             crate::config::WINDOWS_RUNTIME,
@@ -2424,13 +2424,13 @@ while :; do sleep 1; done"#
             &DriverDetails::default(),
         );
 
-        assert_eq!(mappings.get("55100/tcp"), Some(&55100));
-        assert_eq!(mappings.get("58125/udp"), Some(&58125));
+        assert_eq!(mappings.get("45100/tcp"), Some(&45100));
+        assert_eq!(mappings.get("48125/udp"), Some(&48125));
     }
 
     #[test]
     fn linux_runtime_uses_docker_host_port_mappings_for_exposed_ports() {
-        let exposed_ports = vec!["55100/tcp".to_string()];
+        let exposed_ports = vec!["45100/tcp".to_string()];
 
         let mappings =
             build_port_mappings_for_runtime(crate::config::LINUX_RUNTIME, &exposed_ports, &DriverDetails::default());

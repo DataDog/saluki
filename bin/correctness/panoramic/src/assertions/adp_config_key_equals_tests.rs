@@ -41,7 +41,7 @@ fn source_assertion(key: &str, timeout: Duration) -> AdpConfigKeyEqualsAssertion
     AdpConfigKeyEqualsAssertion::new(
         key.into(),
         serde_json::json!(true),
-        "https://localhost:55101/config".into(),
+        "https://localhost:45101/config".into(),
         timeout,
     )
     .expect("source endpoint should be supported")
@@ -50,14 +50,14 @@ fn source_assertion(key: &str, timeout: Duration) -> AdpConfigKeyEqualsAssertion
 #[test]
 fn canonical_endpoints_select_source_or_runtime_arguments() {
     let cases: &[(&str, &[&str])] = &[
-        ("https://localhost:55101/config", &["config", "--json"]),
-        ("https://127.0.0.1:55101/config", &["config", "--json"]),
+        ("https://localhost:45101/config", &["config", "--json"]),
+        ("https://127.0.0.1:45101/config", &["config", "--json"]),
         (
-            "https://localhost:55101/config/runtime",
+            "https://localhost:45101/config/runtime",
             &["config", "--json", "--runtime"],
         ),
         (
-            "https://127.0.0.1:55101/config/runtime",
+            "https://127.0.0.1:45101/config/runtime",
             &["config", "--json", "--runtime"],
         ),
     ];
@@ -76,12 +76,12 @@ fn canonical_endpoints_select_source_or_runtime_arguments() {
 fn unsupported_endpoints_are_rejected_without_exposing_the_configured_value() {
     let secret = "endpoint-secret-that-must-not-appear";
     let endpoints = [
-        "http://localhost:55101/config".to_string(),
-        format!("https://localhost:55101/{}/{}", "config", "internal"),
-        "https://localhost:55101/config/".to_string(),
-        format!("https://localhost:55101/config?token={secret}"),
-        format!("https://user:{secret}@localhost:55101/config"),
-        "https://example.invalid:55101/config".to_string(),
+        "http://localhost:45101/config".to_string(),
+        format!("https://localhost:45101/{}/{}", "config", "internal"),
+        "https://localhost:45101/config/".to_string(),
+        format!("https://localhost:45101/config?token={secret}"),
+        format!("https://user:{secret}@localhost:45101/config"),
+        "https://example.invalid:45101/config".to_string(),
         "not a URL".to_string(),
     ];
 
@@ -114,7 +114,7 @@ printf '%s' '{"feature":{"nested":{"enabled":true}}}'"#
     let assertion = AdpConfigKeyEqualsAssertion::new(
         "feature.nested.enabled".to_string(),
         serde_json::json!(true),
-        "https://127.0.0.1:55101/config/runtime".to_string(),
+        "https://127.0.0.1:45101/config/runtime".to_string(),
         Duration::from_secs(5),
     )
     .expect("runtime endpoint should be supported");

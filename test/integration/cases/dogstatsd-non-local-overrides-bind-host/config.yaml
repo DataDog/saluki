@@ -31,7 +31,7 @@ env:
 
 procedure:
   - assertion: log_contains
-    pattern: 'listen_addr:"udp://0.0.0.0:58125"'
+    pattern: 'listen_addr:"udp://0.0.0.0:48125"'
     timeout: 60s
   - parallel:
       - assertion: process_stable_for

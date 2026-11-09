@@ -14,7 +14,7 @@ ADP = Path("/opt/datadog-agent/embedded/bin/agent-data-plane")
 AGENT = Path("/opt/datadog-agent/bin/agent/agent")
 CONFIG = Path("/etc/datadog-agent/datadog.yaml")
 IPC_CERT = Path("/etc/datadog-agent/ipc_cert.pem")
-API_URL = "https://127.0.0.1:55101/agent/dogstatsd-contexts-dump"
+API_URL = "https://127.0.0.1:45101/agent/dogstatsd-contexts-dump"
 DUMP_FILENAME = "dogstatsd_contexts.json.zstd"
 COPIED_DUMP = Path("/tmp/dogstatsd-top-copied.json.zstd")
 AGENT_FIXTURE_COMPRESSED = Path("/dogstatsd-top/agent-7.80.3-contexts.json.zstd")
@@ -65,7 +65,7 @@ def send_dogstatsd_contexts():
     )
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client:
         for _ in range(3):
-            client.sendto(payload, ("127.0.0.1", 58125))
+            client.sendto(payload, ("127.0.0.1", 48125))
 
 
 def wait_for_online_report():

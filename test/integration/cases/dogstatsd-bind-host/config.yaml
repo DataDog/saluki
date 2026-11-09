@@ -35,7 +35,7 @@ env:
 
 procedure:
   - assertion: log_contains
-    pattern: 'listen_addr:"udp://{{PANORAMIC_DYNAMIC_CONTAINER_IP}}:58125"'
+    pattern: 'listen_addr:"udp://{{PANORAMIC_DYNAMIC_CONTAINER_IP}}:48125"'
     timeout: 60s
   - parallel:
       - assertion: process_stable_for
