@@ -8,8 +8,9 @@ use nom::{
 };
 use saluki_core::data_model::{event::eventd::*, origin::OriginTagCardinality, tags::RawTags};
 use stringtheory::MetaString;
+use tracing::debug;
 
-use super::{helpers::*, DogStatsDCodecConfiguration};
+use super::{helpers::*, DogStatsDCodecConfiguration, NomParserError};
 
 /// A DogStatsD event packet.
 pub struct EventPacket<'a> {
@@ -39,8 +40,9 @@ pub fn parse_dogstatsd_event<'a>(
     )
     .parse(input)?;
 
-    // Title and Text are the required fields of an event.
-    if title_len == 0 || text_len == 0 {
+    // Title and Text are the required fields of an event. In permissive mode, we only require a title, matching the
+    // Datadog Agent.
+    if title_len == 0 || (text_len == 0 && !config.permissive) {
         return Err(nom::Err::Error(Error::new(input, ErrorKind::Verify)));
     }
 
@@ -75,77 +77,105 @@ pub fn parse_dogstatsd_event<'a>(
     let mut maybe_external_data = None;
     let mut maybe_cardinality = None;
 
+    // In permissive mode, string fields (hostname, aggregation key, source type) accept any UTF-8, matching the Datadog
+    // Agent. Otherwise, they're restricted to ASCII alphanumerics and separators.
+    let string_field: StrParser = if config.permissive {
+        non_empty_utf8
+    } else {
+        ascii_alphanum_and_seps
+    };
+
+    let mut parse_field = |chunk: &'a [u8]| -> Result<(), NomParserError<'a>> {
+        match &chunk[..2] {
+            // Timestamp: client-provided timestamp for the event, relative to the Unix epoch, in seconds.
+            TIMESTAMP_PREFIX => {
+                let (_, timestamp) = all_consuming(preceded(tag(TIMESTAMP_PREFIX), unix_timestamp)).parse(chunk)?;
+                maybe_timestamp = Some(timestamp);
+            }
+            // Hostname: client-provided hostname for the host that this event originated from.
+            HOSTNAME_PREFIX if chunk != HOSTNAME_PREFIX => {
+                let (_, hostname) = all_consuming(preceded(tag(HOSTNAME_PREFIX), string_field)).parse(chunk)?;
+                maybe_hostname = Some(hostname);
+            }
+            // Aggregation key: key to be used to group this event with others that have the same key.
+            AGGREGATION_KEY_PREFIX if chunk != AGGREGATION_KEY_PREFIX => {
+                let (_, aggregation_key) =
+                    all_consuming(preceded(tag(AGGREGATION_KEY_PREFIX), string_field)).parse(chunk)?;
+                maybe_aggregation_key = Some(aggregation_key);
+            }
+            // Priority: client-provided priority of the event. An unknown priority keeps the default, matching the
+            // Datadog Agent.
+            PRIORITY_PREFIX => {
+                let (_, priority) =
+                    all_consuming(preceded(tag(PRIORITY_PREFIX), ascii_alphanum_and_seps)).parse(chunk)?;
+                if let Some(priority) = Priority::try_from_string(priority) {
+                    maybe_priority = Some(priority);
+                }
+            }
+            // Source type name: client-provided source type name of the event.
+            SOURCE_TYPE_PREFIX if chunk != SOURCE_TYPE_PREFIX => {
+                let (_, source_type) = all_consuming(preceded(tag(SOURCE_TYPE_PREFIX), string_field)).parse(chunk)?;
+                maybe_source_type = Some(source_type);
+            }
+            // Alert type: client-provided alert type of the event. An unknown alert type keeps the default, matching
+            // the Datadog Agent.
+            ALERT_TYPE_PREFIX => {
+                let (_, alert_type) =
+                    all_consuming(preceded(tag(ALERT_TYPE_PREFIX), ascii_alphanum_and_seps)).parse(chunk)?;
+                if let Some(alert_type) = AlertType::try_from_string(alert_type) {
+                    maybe_alert_type = Some(alert_type);
+                }
+            }
+            // Local Data: client-provided data used for resolving the entity ID that this event originated from.
+            LOCAL_DATA_PREFIX if config.client_origin_detection && chunk != LOCAL_DATA_PREFIX => {
+                let (_, local_data) = all_consuming(preceded(tag(LOCAL_DATA_PREFIX), local_data)).parse(chunk)?;
+                maybe_local_data = Some(local_data);
+            }
+            // External Data: client-provided data used for resolving the entity ID that this event originated from.
+            EXTERNAL_DATA_PREFIX if config.client_origin_detection && chunk != EXTERNAL_DATA_PREFIX => {
+                let (_, external_data) =
+                    all_consuming(preceded(tag(EXTERNAL_DATA_PREFIX), external_data)).parse(chunk)?;
+                maybe_external_data = Some(external_data);
+            }
+            // Cardinality: client-provided cardinality for the event.
+            _ if chunk.starts_with(CARDINALITY_PREFIX)
+                && config.client_origin_detection
+                && chunk != CARDINALITY_PREFIX =>
+            {
+                let (_, cardinality) = cardinality(chunk)?;
+                maybe_cardinality = cardinality;
+            }
+            // Tags: additional tags to be added to the event.
+            _ if chunk.starts_with(TAGS_PREFIX) && chunk != TAGS_PREFIX => {
+                let (_, tags) = all_consuming(preceded(tag("#"), tags(config))).parse(chunk)?;
+                maybe_tags = Some(tags);
+            }
+            _ => {
+                // We don't know what this is, so we just skip it.
+                //
+                // TODO: Should we throw an error, warn, or be silently permissive?
+            }
+        }
+        Ok(())
+    };
+
     let remaining = if !remaining.is_empty() {
         let (mut remaining, _) = tag("|")(remaining)?;
         while let Some((chunk, tail)) = split_at_delimiter(remaining, b'|') {
             if chunk.len() < 2 {
                 break;
             }
-            match &chunk[..2] {
-                // Timestamp: client-provided timestamp for the event, relative to the Unix epoch, in seconds.
-                TIMESTAMP_PREFIX => {
-                    let (_, timestamp) = all_consuming(preceded(tag(TIMESTAMP_PREFIX), unix_timestamp)).parse(chunk)?;
-                    maybe_timestamp = Some(timestamp);
+
+            // In permissive mode, an invalid optional field is ignored rather than rejecting the whole event, matching
+            // the Datadog Agent.
+            if let Err(e) = parse_field(chunk) {
+                if !config.permissive {
+                    return Err(e);
                 }
-                // Hostname: client-provided hostname for the host that this event originated from.
-                HOSTNAME_PREFIX if chunk != HOSTNAME_PREFIX => {
-                    let (_, hostname) =
-                        all_consuming(preceded(tag(HOSTNAME_PREFIX), ascii_alphanum_and_seps)).parse(chunk)?;
-                    maybe_hostname = Some(hostname);
-                }
-                // Aggregation key: key to be used to group this event with others that have the same key.
-                AGGREGATION_KEY_PREFIX if chunk != AGGREGATION_KEY_PREFIX => {
-                    let (_, aggregation_key) =
-                        all_consuming(preceded(tag(AGGREGATION_KEY_PREFIX), ascii_alphanum_and_seps)).parse(chunk)?;
-                    maybe_aggregation_key = Some(aggregation_key);
-                }
-                // Priority: client-provided priority of the event.
-                PRIORITY_PREFIX => {
-                    let (_, priority) =
-                        all_consuming(preceded(tag(PRIORITY_PREFIX), ascii_alphanum_and_seps)).parse(chunk)?;
-                    maybe_priority = Priority::try_from_string(priority);
-                }
-                // Source type name: client-provided source type name of the event.
-                SOURCE_TYPE_PREFIX if chunk != SOURCE_TYPE_PREFIX => {
-                    let (_, source_type) =
-                        all_consuming(preceded(tag(SOURCE_TYPE_PREFIX), ascii_alphanum_and_seps)).parse(chunk)?;
-                    maybe_source_type = Some(source_type);
-                }
-                // Alert type: client-provided alert type of the event.
-                ALERT_TYPE_PREFIX => {
-                    let (_, alert_type) =
-                        all_consuming(preceded(tag(ALERT_TYPE_PREFIX), ascii_alphanum_and_seps)).parse(chunk)?;
-                    maybe_alert_type = AlertType::try_from_string(alert_type);
-                }
-                // Local Data: client-provided data used for resolving the entity ID that this event originated from.
-                LOCAL_DATA_PREFIX if config.client_origin_detection && chunk != LOCAL_DATA_PREFIX => {
-                    let (_, local_data) = all_consuming(preceded(tag(LOCAL_DATA_PREFIX), local_data)).parse(chunk)?;
-                    maybe_local_data = Some(local_data);
-                }
-                // External Data: client-provided data used for resolving the entity ID that this event originated from.
-                EXTERNAL_DATA_PREFIX if config.client_origin_detection && chunk != EXTERNAL_DATA_PREFIX => {
-                    let (_, external_data) =
-                        all_consuming(preceded(tag(EXTERNAL_DATA_PREFIX), external_data)).parse(chunk)?;
-                    maybe_external_data = Some(external_data);
-                }
-                // Cardinality: client-provided cardinality for the event.
-                _ if chunk.starts_with(CARDINALITY_PREFIX)
-                    && config.client_origin_detection
-                    && chunk != CARDINALITY_PREFIX =>
-                {
-                    let (_, cardinality) = cardinality(chunk)?;
-                    maybe_cardinality = cardinality;
-                }
-                // Tags: additional tags to be added to the event.
-                _ if chunk.starts_with(TAGS_PREFIX) && chunk != TAGS_PREFIX => {
-                    let (_, tags) = all_consuming(preceded(tag("#"), tags(config))).parse(chunk)?;
-                    maybe_tags = Some(tags);
-                }
-                _ => {
-                    // We don't know what this is, so we just skip it.
-                    //
-                    // TODO: Should we throw an error, warn, or be silently permissive?
-                }
+                debug!(
+                    field = %String::from_utf8_lossy(chunk),
+                    "Ignoring invalid optional field in DogStatsD event."
+                );
             }
             remaining = tail;
         }
@@ -398,6 +428,70 @@ mod tests {
             Err(other) => panic!("expected Verify error for empty text, got {other:?}"),
             Ok(_) => panic!("empty text must be rejected"),
         }
+    }
+
+    #[test]
+    fn permissive_mode_only_requires_a_title() {
+        let config = DogStatsDCodecConfiguration::default().with_permissive_mode(true);
+
+        // Like the Datadog Agent, permissive mode accepts an event with empty text...
+        let (_, event) = parse_dogstatsd_event(b"_e{5,0}:title|", &config)
+            .expect("empty text should be accepted in permissive mode");
+        assert_eq!(&*event.title, "title");
+        assert_eq!(&*event.text, "");
+
+        // ...but still rejects an event with an empty title.
+        assert!(parse_dogstatsd_event(b"_e{0,4}:|text", &config).is_err());
+    }
+
+    #[test]
+    fn permissive_mode_accepts_utf8_string_fields() {
+        let permissive = DogStatsDCodecConfiguration::default().with_permissive_mode(true);
+        let strict = DogStatsDCodecConfiguration::default().with_permissive_mode(false);
+
+        let raw = "_e{5,4}:title|text|h:host:1|k:key/1|s:my/söurce|#env:prod";
+        let (_, event) = parse_dogstatsd_event(raw.as_bytes(), &permissive)
+            .expect("permissive mode should accept any UTF-8 in string fields");
+        assert_eq!(event.hostname, Some("host:1"));
+        assert_eq!(event.aggregation_key, Some("key/1"));
+        assert_eq!(event.source_type_name, Some("my/söurce"));
+        assert_eq!(event.tags.iter().collect::<Vec<_>>(), ["env:prod"]);
+
+        assert!(parse_dogstatsd_event(raw.as_bytes(), &strict).is_err());
+    }
+
+    #[test]
+    fn permissive_mode_ignores_invalid_optional_fields() {
+        let permissive = DogStatsDCodecConfiguration::default().with_permissive_mode(true);
+        let strict = DogStatsDCodecConfiguration::default().with_permissive_mode(false);
+
+        for raw in [
+            "_e{5,4}:title|text|d:notanumber|#env:prod",
+            "_e{5,4}:title|text|p:not!valid|#env:prod",
+            "_e{5,4}:title|text|t:not!valid|#env:prod",
+        ] {
+            let (_, event) = parse_dogstatsd_event(raw.as_bytes(), &permissive)
+                .unwrap_or_else(|e| panic!("permissive mode should accept {raw:?}: {e:?}"));
+            assert_eq!(event.timestamp, None);
+            assert_eq!(event.priority, Some(Priority::Normal));
+            assert_eq!(event.alert_type, Some(AlertType::Info));
+            assert_eq!(event.tags.iter().collect::<Vec<_>>(), ["env:prod"]);
+
+            assert!(
+                parse_dogstatsd_event(raw.as_bytes(), &strict).is_err(),
+                "strict mode should reject {raw:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_priority_and_alert_type_keep_defaults() {
+        // The Datadog Agent keeps the default priority and alert type when the given value isn't recognized.
+        let config = DogStatsDCodecConfiguration::default();
+        let (_, event) =
+            parse_dogstatsd_event(b"_e{5,4}:title|text|p:urgent|t:fatal", &config).expect("event should parse");
+        assert_eq!(event.priority, Some(Priority::Normal));
+        assert_eq!(event.alert_type, Some(AlertType::Info));
     }
 
     #[test]

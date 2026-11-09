@@ -92,7 +92,14 @@ impl DogStatsDCodecConfiguration {
     /// In permissive mode, the codec will attempt to parse as much of the input as possible, relying solely on
     /// structural markers (specific delimiting characters) to determine the boundaries of different parts of the
     /// payload. This allows for decoding payloads with invalid contents (for example, characters that are valid UTF-8, but
-    /// aren't within ASCII bounds, etc) such that the data plane can attempt to process them further.
+    /// aren't within ASCII bounds, etc) such that the data plane can attempt to process them further. This aims to
+    /// match the leniency of the Datadog Agent:
+    ///
+    /// - metric names, service check names, and event/service check string fields (hostname, aggregation key, source
+    ///   type) accept any UTF-8
+    /// - events only require a title, and may have empty text
+    /// - an invalid optional field on an event or service check, or a malformed Local Data or External Data field on a
+    ///   metric, is ignored rather than rejecting the whole payload
     ///
     /// Permissive mode doesn't allow for decoding payloads with structural errors (for example, missing delimiters, etc) or
     /// that can't be safely handled internally (for example, invalid UTF-8 characters in a metric name). Invalid UTF-8 tag
