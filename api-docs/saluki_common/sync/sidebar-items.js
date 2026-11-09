@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"mod":["live","shutdown"]};
+window.SIDEBAR_ITEMS = {"mod":["live","shutdown","work_queue"]};

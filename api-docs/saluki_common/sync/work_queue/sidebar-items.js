@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["bounded"],"struct":["SendError","WorkQueueReceiver","WorkQueueSender"]};
