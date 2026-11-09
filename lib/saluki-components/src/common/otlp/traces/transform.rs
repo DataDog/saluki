@@ -1357,7 +1357,7 @@ fn otlp_scalar_as_string(value: Option<&OtlpValue>) -> Cow<'_, str> {
     }
 }
 
-/// Renders a double like `pcommon`'s `float64AsString` in pdata v1.70.0, the version the Agent pins: ES6
+/// Renders a double like `pcommon`'s `float64AsString` in `pdata` v1.70.0, the version the Agent pins: ES6
 /// number-to-string, which is decimal from 1e-6 up to 1e21 and exponent form outside that range, with `NaN`,
 /// `Infinity`, and `-Infinity` spelled out.
 fn float64_as_string(value: f64) -> String {
