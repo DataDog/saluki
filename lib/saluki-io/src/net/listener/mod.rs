@@ -187,7 +187,7 @@ impl Listener {
                 })?,
             ListenAddress::Udp(addr) => {
                 // See if we have platform support for SO_REUSEPORT, and if not, fall back to the default behavior.
-                if !socket_reuseport_supported() {
+                if !socket_reuseport_supported() && udp_streams.is_some_and(|n| n.get() > 1) {
                     udp_streams = None;
                     warn!("SO_REUSEPORT not supported on the current platform. Falling back to the default behavior.");
                 }
@@ -605,15 +605,20 @@ async fn bind_udp_sockets(
     let socket_count = maybe_socket_count.map(NonZeroUsize::get).unwrap_or(1);
     let mut sockets = VecDeque::with_capacity(socket_count);
 
+    // Only set SO_REUSEADDR/SO_REUSEPORT when binding multiple sockets. A single socket gets a plain bind, so that
+    // another process can't silently share the port and take some of its traffic: its bind fails with "address
+    // already in use" instead.
+    let allow_multi_bind = socket_count > 1;
+
     // Bind the first socket to learn the effective address. When the caller passed port `0`, the OS assigns an
     // ephemeral port; every remaining socket must bind to that same port for SO_REUSEPORT load balancing to work
     // (otherwise each subsequent socket would receive its own distinct ephemeral port).
-    let first = bind_udp_socket(addr, true)?;
+    let first = bind_udp_socket(addr, allow_multi_bind)?;
     let effective_addr = first.local_addr()?;
     sockets.push_back(first);
 
     for _ in 1..socket_count {
-        sockets.push_back(bind_udp_socket(effective_addr, true)?);
+        sockets.push_back(bind_udp_socket(effective_addr, allow_multi_bind)?);
     }
 
     Ok((sockets, effective_addr))
@@ -992,6 +997,37 @@ mod tests {
 
         let pending_result = timeout(Duration::from_millis(50), listener.accept()).await;
         assert!(pending_result.is_err(), "second accept should be pending forever");
+    }
+
+    /// Binds a UDP socket to `addr` with `SO_REUSEADDR` and `SO_REUSEPORT` set, as many StatsD servers do.
+    #[cfg(unix)]
+    fn bind_reuseport_udp_socket(addr: SocketAddr) -> io::Result<socket2::Socket> {
+        use socket2::{Domain, Protocol, SockAddr, Socket, Type};
+
+        let socket = Socket::new(Domain::for_address(addr), Type::DGRAM, Some(Protocol::UDP))?;
+        socket.set_reuse_address(true)?;
+        socket.set_reuse_port(true)?;
+        socket.bind(&SockAddr::from(addr))?;
+        Ok(socket)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn udp_listener_single_socket_rejects_port_sharing() {
+        for udp_streams in [None, NonZeroUsize::new(1)] {
+            let address = ListenAddress::udp_loopback(0);
+            let listener = Listener::from_listen_address(address, udp_streams)
+                .await
+                .expect("listener should bind");
+            let bound_addr = match &listener.inner {
+                ListenerInner::Udp { bound_addr, .. } => *bound_addr,
+                _ => panic!("expected a UDP listener"),
+            };
+
+            let err = bind_reuseport_udp_socket(bound_addr)
+                .expect_err("another socket should not be able to share a single-socket UDP listener's port");
+            assert_eq!(err.kind(), io::ErrorKind::AddrInUse);
+        }
     }
 
     #[cfg(target_os = "linux")]

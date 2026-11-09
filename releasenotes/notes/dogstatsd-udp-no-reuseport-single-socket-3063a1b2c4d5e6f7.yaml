@@ -1,0 +1,7 @@
+fixes:
+  - |
+    The DogStatsD UDP listener no longer sets ``SO_REUSEADDR`` and ``SO_REUSEPORT``
+    when it binds a single socket, which is the default when
+    ``dogstatsd_autoscale_udp_listeners`` is disabled. Another process can no
+    longer bind the same port and silently take DogStatsD traffic. The bind now
+    fails with "address already in use", as it does in the Core Agent.
