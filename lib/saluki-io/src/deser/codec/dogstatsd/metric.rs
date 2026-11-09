@@ -93,8 +93,11 @@ pub fn parse_dogstatsd_metric<'a>(
         let (mut remaining, _) = tag("|")(remaining)?;
 
         while let Some((chunk, tail)) = split_at_delimiter(remaining, b'|') {
+            // Skip empty fields (for example, `metric:1|c||#tags`) rather than stopping, so that any fields after
+            // them are still parsed. This matches the Datadog Agent.
             if chunk.is_empty() {
-                break;
+                remaining = tail;
+                continue;
             }
 
             match chunk[0] {
@@ -227,8 +230,11 @@ fn raw_metric_values(input: &[u8]) -> IResult<&[u8], (MetricType, &[u8])> {
     let (remaining, raw_values) = terminated(take_while1(|b| b != b'|'), tag("|")).parse(input)?;
     let (remaining, raw_kind) = alt((tag("g"), tag("c"), tag("ms"), tag("h"), tag("s"), tag("d"))).parse(remaining)?;
 
-    // Make sure the raw value(s) are valid UTF-8 before we use them later on.
-    if raw_values.is_empty() || simdutf8::basic::from_utf8(raw_values).is_err() {
+    // Make sure there's at least one value, and that the raw value(s) are valid UTF-8 before we use them later on.
+    //
+    // Empty values in a multi-value payload (for example, `1::2`) are skipped when parsing, but a payload made up of
+    // only empty values (for example, `:` or `::`) has no values at all, which the Datadog Agent rejects.
+    if raw_values.iter().all(|&b| b == b':') || simdutf8::basic::from_utf8(raw_values).is_err() {
         return Err(nom::Err::Error(Error::new(raw_values, ErrorKind::Verify)));
     }
 
@@ -290,6 +296,11 @@ impl<'a> Iterator for FloatIter<'a> {
 
             let (raw_value, tail) = split_at_delimiter(self.raw_values, b':')?;
             self.raw_values = tail;
+
+            // Skip empty values in a multi-value payload (for example, `1::2`), matching the Datadog Agent.
+            if raw_value.is_empty() {
+                continue;
+            }
 
             // SAFETY: The caller that creates `ValueIter` is responsible for ensuring that the entire byte slice is valid
             // UTF-8.
@@ -416,6 +427,63 @@ mod tests {
 
         let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
         check_basic_metric_eq(expected, actual);
+    }
+
+    #[test]
+    fn metric_fields_after_empty_field_are_parsed() {
+        let tags = ["tag1", "tag2"];
+
+        // An empty field before the tags.
+        let raw = format!("my.counter:1|c||#{}", tags.join(","));
+        let expected = Metric::counter(("my.counter", &tags[..]), 1.0);
+        let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
+        check_basic_metric_eq(expected, actual);
+
+        // Several empty fields, with a sample rate and tags after them.
+        let raw = format!("my.counter:1|c|||@0.5||#{}|", tags.join(","));
+        let expected = Metric::counter(("my.counter", &tags[..]), 2.0);
+        let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
+        check_basic_metric_eq(expected, actual);
+    }
+
+    #[test]
+    fn multivalue_metrics_skip_empty_values() {
+        let cases = [
+            (
+                "my.distribution:1::2|d",
+                Metric::distribution("my.distribution", [1.0, 2.0]),
+            ),
+            (
+                "my.distribution::1:2|d",
+                Metric::distribution("my.distribution", [1.0, 2.0]),
+            ),
+            (
+                "my.distribution:1:2:|d",
+                Metric::distribution("my.distribution", [1.0, 2.0]),
+            ),
+            ("my.gauge:3::4|g", Metric::gauge("my.gauge", [3.0, 4.0])),
+            ("my.counter:1:::2|c", Metric::counter("my.counter", [1.0, 2.0])),
+        ];
+
+        for (raw, expected) in cases {
+            let config = DogStatsDCodecConfiguration::default();
+            let (_, packet) = parse_dogstatsd_metric(raw.as_bytes(), &config)
+                .unwrap_or_else(|e| panic!("should not fail to parse {raw:?}: {e:?}"));
+            assert_eq!(packet.num_points, 2, "unexpected point count for {raw:?}");
+
+            let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
+            check_basic_metric_eq(expected, actual);
+        }
+    }
+
+    #[test]
+    fn metrics_with_only_empty_values_are_rejected() {
+        for raw in ["my.counter::|c", "my.counter::::|c", "my.distribution::|d"] {
+            assert!(
+                parse_dsd_metric(raw.as_bytes()).is_err(),
+                "metric with no values should be rejected: {raw:?}"
+            );
+        }
     }
 
     #[test]

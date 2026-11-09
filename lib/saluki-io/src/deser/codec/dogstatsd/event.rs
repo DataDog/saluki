@@ -78,8 +78,11 @@ pub fn parse_dogstatsd_event<'a>(
     let remaining = if !remaining.is_empty() {
         let (mut remaining, _) = tag("|")(remaining)?;
         while let Some((chunk, tail)) = split_at_delimiter(remaining, b'|') {
+            // Skip fields too short to carry a value (for example, the empty field in `text||#tags`) rather than
+            // stopping, so that any fields after them are still parsed. This matches the Datadog Agent.
             if chunk.len() < 2 {
-                break;
+                remaining = tail;
+                continue;
             }
             match &chunk[..2] {
                 // Timestamp: client-provided timestamp for the event, relative to the Unix epoch, in seconds.
@@ -273,6 +276,24 @@ mod tests {
         let expected = EventD::new(event_title, event_text).with_tags(shared_tag_set);
         let actual = parse_dsd_eventd(raw.as_bytes()).unwrap();
         check_basic_eventd_eq(expected, actual);
+    }
+
+    #[test]
+    fn eventd_fields_after_empty_field_are_parsed() {
+        let tags = ["tag1", "tag2"];
+        let shared_tag_set: SharedTagSet = tags.iter().map(|&s| Tag::from(s)).collect::<TagSet>().into_shared();
+
+        for raw in [
+            format!("_e{{5,4}}:title|text||#{}", tags.join(",")),
+            format!("_e{{5,4}}:title|text|#|#{}", tags.join(",")),
+        ] {
+            let expected = EventD::new("title", "text")
+                .with_tags(shared_tag_set.clone())
+                .with_priority(Priority::Normal)
+                .with_alert_type(AlertType::Info);
+            let actual = parse_dsd_eventd(raw.as_bytes()).unwrap();
+            check_basic_eventd_eq(expected, actual);
+        }
     }
 
     #[test]

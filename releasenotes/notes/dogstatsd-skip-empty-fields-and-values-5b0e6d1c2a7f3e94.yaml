@@ -1,0 +1,7 @@
+fixes:
+  - |
+    DogStatsD no longer silently drops the fields after an empty ``|`` field. For
+    example, ``metric:1|c||#env:prod`` now keeps its tags, and events and service
+    checks keep their tags, aggregation key and message. Empty values in a
+    multi-value metric, such as ``metric:1::2|d``, are now skipped rather than
+    rejecting the whole line. Both changes match the Datadog Agent.

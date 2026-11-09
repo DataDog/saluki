@@ -47,8 +47,11 @@ pub fn parse_dogstatsd_service_check<'a>(
     let remaining = if !remaining.is_empty() {
         let (mut remaining, _) = tag("|")(remaining)?;
         while let Some((chunk, tail)) = split_at_delimiter(remaining, b'|') {
+            // Skip fields too short to carry a value (for example, the empty field in `0||#tags`) rather than
+            // stopping, so that any fields after them are still parsed. This matches the Datadog Agent.
             if chunk.len() < 2 {
-                break;
+                remaining = tail;
+                continue;
             }
 
             match &chunk[..2] {
@@ -196,6 +199,23 @@ mod tests {
         let actual = parse_dsd_service_check(raw.as_bytes()).unwrap();
         let expected = ServiceCheck::new(name, sc_status).with_timestamp(sc_timestamp);
         check_basic_service_check_eq(expected, actual);
+    }
+
+    #[test]
+    fn service_check_fields_after_empty_field_are_parsed() {
+        let name = "testsvc";
+        let sc_status = CheckStatus::Warning;
+        let tags = ["tag1", "tag2"];
+        let shared_tag_set = SharedTagSet::from(TagSet::from_iter(tags.iter().map(|&s| s.into())));
+
+        for raw in [
+            format!("_sc|{}|{}||#{}", name, sc_status.as_u8(), tags.join(",")),
+            format!("_sc|{}|{}|#|#{}", name, sc_status.as_u8(), tags.join(",")),
+        ] {
+            let actual = parse_dsd_service_check(raw.as_bytes()).unwrap();
+            let expected = ServiceCheck::new(name, sc_status).with_tags(shared_tag_set.clone());
+            check_basic_service_check_eq(expected, actual);
+        }
     }
 
     #[test]
