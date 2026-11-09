@@ -114,16 +114,12 @@ impl TraceTagReplacer {
 
     fn replace_named(&self, span: &mut Span, key: &str, re: &Regex, repl: &str) {
         if let Some(value) = span.attributes.get_mut(key) {
-            if let Some(replaced) = replace_value(value, re, repl) {
-                *value = replaced;
-            }
+            replace_in_place(value, re, repl);
         }
 
         for event in span.span_events_mut() {
             if let Some(value) = event.attributes_mut().get_mut(key) {
-                if let Some(replaced) = replace_value(value, re, repl) {
-                    *value = replaced;
-                }
+                replace_in_place(value, re, repl);
             }
         }
     }
@@ -153,14 +149,24 @@ where
         if key.as_ref().starts_with('_') {
             continue;
         }
-        if let Some(replaced) = replace_value(value, re, repl) {
-            *value = replaced;
-        }
+        replace_in_place(value, re, repl);
     }
 }
 
-/// Formats a scalar value for regex matching; string values borrow, and composite values have no
-/// single string form and are skipped.
+/// Rewrites `value` in place. An array is rewritten one element at a time, the way the Agent does, so a rule reaches
+/// every string in it.
+fn replace_in_place(value: &mut AttributeValue, re: &Regex, repl: &str) {
+    if let AttributeValue::Array(elements) = value {
+        for element in elements {
+            replace_in_place(element, re, repl);
+        }
+    } else if let Some(replaced) = replace_value(value, re, repl) {
+        *value = replaced;
+    }
+}
+
+/// Formats a scalar value for regex matching; string values borrow, and values with no single string form, such as
+/// key-value lists, are skipped. Arrays are handled element by element by [`replace_in_place`].
 fn value_as_cow(value: &AttributeValue) -> Option<Cow<'_, str>> {
     match value {
         AttributeValue::String(s) => Some(Cow::Borrowed(s.as_ref())),
@@ -411,6 +417,126 @@ mod tests {
             attr(&span, "http.retry").and_then(|v| v.as_int()),
             Some(3),
             "a match whose replacement equals the matched text is left as-is"
+        );
+    }
+
+    fn string_array(values: &[&str]) -> AttributeValue {
+        AttributeValue::Array(
+            values
+                .iter()
+                .map(|value| AttributeValue::String(MetaString::from(*value)))
+                .collect(),
+        )
+    }
+
+    fn event_with(pairs: Vec<(&str, AttributeValue)>) -> SpanEvent {
+        let attributes = pairs
+            .into_iter()
+            .map(|(key, value)| (MetaString::from(key), value))
+            .collect::<FastHashMap<_, _>>();
+        SpanEvent::new(1, "event").with_attributes(attributes)
+    }
+
+    #[test]
+    fn wildcard_rule_rewrites_every_element_of_array_attributes_but_not_hidden_ones() {
+        let mut tags = FastHashMap::default();
+        tags.insert(MetaString::from("list"), string_array(&["token=zzz", "plain"]));
+        tags.insert(MetaString::from("_hidden"), string_array(&["token=zzz"]));
+        let event = event_with(vec![(
+            "tokens",
+            string_array(&["token=abc123", "plain", "token=def456"]),
+        )]);
+        let mut span = span_with("res", tags, vec![event]);
+
+        replacer(&[("*", "token=[A-Za-z0-9]+", "token=?")]).replace_span(&mut span);
+
+        assert_eq!(attr(&span, "list"), Some(&string_array(&["token=?", "plain"])));
+        assert_eq!(attr(&span, "_hidden"), Some(&string_array(&["token=zzz"])));
+        assert_eq!(
+            span.span_events()[0].attributes().get("tokens"),
+            Some(&string_array(&["token=?", "plain", "token=?"]))
+        );
+    }
+
+    #[test]
+    fn named_rule_rewrites_the_array_of_its_target_key_only() {
+        let event = event_with(vec![
+            ("tokens", string_array(&["token=abc123"])),
+            ("other", string_array(&["token=abc123"])),
+        ]);
+        let mut tags = FastHashMap::default();
+        tags.insert(MetaString::from("tokens"), string_array(&["token=zzz"]));
+        tags.insert(MetaString::from("other"), string_array(&["token=zzz"]));
+        let mut span = span_with("res", tags, vec![event]);
+
+        replacer(&[("tokens", "token=[A-Za-z0-9]+", "token=?")]).replace_span(&mut span);
+
+        assert_eq!(attr(&span, "tokens"), Some(&string_array(&["token=?"])));
+        assert_eq!(attr(&span, "other"), Some(&string_array(&["token=zzz"])));
+        let attributes = span.span_events()[0].attributes();
+        assert_eq!(attributes.get("tokens"), Some(&string_array(&["token=?"])));
+        assert_eq!(attributes.get("other"), Some(&string_array(&["token=abc123"])));
+    }
+
+    #[test]
+    fn array_elements_are_matched_by_their_string_form_and_stored_as_strings() {
+        let numbers = AttributeValue::Array(vec![
+            AttributeValue::Int(12345),
+            AttributeValue::Bool(true),
+            AttributeValue::String(MetaString::from("x")),
+        ]);
+        let mut span = span_with(
+            "res",
+            FastHashMap::default(),
+            vec![event_with(vec![("numbers", numbers)])],
+        );
+
+        replacer(&[("*", r"^\d+$", "N")]).replace_span(&mut span);
+
+        // The matched int becomes the replacement text; elements that don't match keep their type.
+        assert_eq!(
+            span.span_events()[0].attributes().get("numbers"),
+            Some(&AttributeValue::Array(vec![
+                AttributeValue::String(MetaString::from("N")),
+                AttributeValue::Bool(true),
+                AttributeValue::String(MetaString::from("x")),
+            ]))
+        );
+    }
+
+    #[test]
+    fn nested_arrays_are_rewritten_recursively() {
+        let nested = AttributeValue::Array(vec![string_array(&["token=abc123"]), string_array(&["plain"])]);
+        let mut span = span_with(
+            "res",
+            FastHashMap::default(),
+            vec![event_with(vec![("nested", nested)])],
+        );
+
+        replacer(&[("*", "token=[A-Za-z0-9]+", "token=?")]).replace_span(&mut span);
+
+        assert_eq!(
+            span.span_events()[0].attributes().get("nested"),
+            Some(&AttributeValue::Array(vec![
+                string_array(&["token=?"]),
+                string_array(&["plain"])
+            ]))
+        );
+    }
+
+    #[test]
+    fn arrays_with_no_match_are_left_untouched() {
+        let mut span = span_with(
+            "res",
+            FastHashMap::default(),
+            vec![event_with(vec![("plain", string_array(&["a", "b"]))])],
+        );
+
+        replacer(&[("*", "token=[A-Za-z0-9]+", "token=?")]).replace_span(&mut span);
+
+        assert_eq!(
+            span.span_events()[0].attributes().get("plain"),
+            Some(&string_array(&["a", "b"]))
         );
     }
 
