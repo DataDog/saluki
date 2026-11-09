@@ -4,9 +4,8 @@
 //! `/tracer_flare/v1`. Like the trace-agent, the relay forwards them as they are to the Datadog serverless flare
 //! endpoint, adding the API key.
 
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::LazyLock;
 
-use axum::body::Body;
 use axum::extract::{ConnectInfo, Request as AxumRequest};
 use axum::response::{IntoResponse, Response};
 use http::header::{self, HeaderMap, HeaderName};
@@ -14,11 +13,11 @@ use http::{HeaderValue, StatusCode, Uri, Version};
 use regex::Regex;
 use saluki_common::sync::live::Live;
 use saluki_error::{generic_error, GenericError};
-use saluki_io::net::client::http::{HttpClient, HttpClientBuilder};
+use saluki_io::net::client::http::HttpClientBuilder;
 use saluki_io::net::ConnectionAddress;
 use tracing::{debug, warn};
 
-use super::proxy::{strip_hop_by_hop_headers, SyncBody};
+use super::forwarding::{strip_hop_by_hop_headers, UpstreamClient};
 use crate::common::datadog::api_key::ApiKeyCell;
 use crate::common::datadog::config::ForwarderConfiguration;
 use crate::common::datadog::io::intake_http_client_builder;
@@ -74,9 +73,7 @@ pub struct TracerFlareConfiguration {
 /// Forwards tracer flares to Datadog.
 #[derive(Clone)]
 pub(super) struct TracerFlareProxy {
-    /// The client is not `Sync`, and the proxy is shared by every request handler, so each request clones a handle
-    /// out from behind the lock. Cloning is cheap, and the lock is held only for the clone.
-    client: Arc<Mutex<HttpClient>>,
+    client: UpstreamClient,
 
     /// Where flares are forwarded to.
     endpoint: Uri,
@@ -119,7 +116,7 @@ impl TracerFlareProxy {
         debug!(%endpoint, "Tracer flares are forwarded to Datadog.");
 
         Ok(Self {
-            client: Arc::new(Mutex::new(client_builder.build()?)),
+            client: UpstreamClient::new(client_builder.build()?),
             endpoint,
             api_key,
         })
@@ -161,24 +158,13 @@ impl TracerFlareProxy {
             &self.api_key.load(),
         );
 
-        let upstream_request = http::Request::from_parts(parts, SyncBody::new(body));
-
-        let mut client = self
-            .client
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone();
-        match client.send(upstream_request).await {
-            Ok(response) => {
-                let (mut parts, body) = response.into_parts();
-                strip_hop_by_hop_headers(&mut parts.headers);
-                Ok(Response::from_parts(parts, Body::new(body)))
-            }
-            Err(e) => {
+        self.client
+            .send(http::Request::from_parts(parts, body))
+            .await
+            .map_err(|e| {
                 warn!(endpoint = %self.endpoint, error = %e, "Failed to forward tracer flare to Datadog.");
-                Err(ForwardError)
-            }
-        }
+                ForwardError
+            })
     }
 }
 
@@ -293,7 +279,7 @@ fn flare_endpoint(site: &str, version_label: &str) -> Result<Uri, GenericError> 
 /// A proxy forwarding to `base` over plain HTTP, standing in for the flare endpoint, as the trace-agent's test does.
 #[cfg(test)]
 pub(super) fn plain_http_proxy(base: &str, api_key: &str) -> TracerFlareProxy {
-    let builder = HttpClient::builder()
+    let builder = saluki_io::net::client::http::HttpClient::builder()
         .with_tls_config(|builder| builder.with_root_cert_store(rustls::RootCertStore::empty()))
         .with_http_protocol(saluki_io::net::client::http::HttpProtocol::Http1);
     let endpoint = format!("{base}{FLARE_ENDPOINT_PATH}")
@@ -305,8 +291,9 @@ pub(super) fn plain_http_proxy(base: &str, api_key: &str) -> TracerFlareProxy {
 #[cfg(test)]
 mod tests {
     use std::net::SocketAddr;
+    use std::sync::Arc;
 
-    use axum::body::to_bytes;
+    use axum::body::{to_bytes, Body};
     use axum::routing::any;
     use axum::Router;
     use tokio::net::TcpListener;

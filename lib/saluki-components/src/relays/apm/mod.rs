@@ -30,6 +30,8 @@ use saluki_metrics::static_metrics;
 use tokio::{pin, select};
 use tracing::debug;
 
+mod forwarding;
+
 mod proxy;
 use self::proxy::{Destination, TraceAgentProxy};
 
