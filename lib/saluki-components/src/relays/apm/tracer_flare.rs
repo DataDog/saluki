@@ -241,36 +241,37 @@ fn flare_version_label(agent_version: Option<&str>) -> String {
 ///
 /// # Errors
 ///
-/// If `site` doesn't contain a valid host, an error is returned.
+/// If `site` isn't a valid URI with a host, an error is returned.
 fn flare_endpoint(site: &str, version_label: &str) -> Result<Uri, GenericError> {
     let site = site.trim();
-    let without_scheme = site.split_once("://").map_or(site, |(_, rest)| rest);
-    let authority = without_scheme
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    if authority.is_empty() {
+    // A bare site such as `datadoghq.com` parses as a URI with only an authority, and a URL as a URI with a scheme.
+    let uri: Uri = site
+        .parse()
+        .map_err(|e| generic_error!("Datadog site `{site}` is not a valid host to send tracer flares to: {e}"))?;
+    let Some(host) = uri.host().filter(|host| !host.is_empty()) else {
         return Err(generic_error!(
             "Datadog site `{site}` has no host to send tracer flares to."
         ));
-    }
-
-    let mut host = if DD_BARE_SITE_REGEX.is_match(&authority) {
-        format!("app.{authority}")
-    } else {
-        authority
     };
+
+    let mut host = host.to_ascii_lowercase();
+    if DD_BARE_SITE_REGEX.is_match(&host) {
+        host = format!("app.{host}");
+    }
     if DD_APP_HOST_REGEX.is_match(&host) {
-        let (_, rest) = host
+        let (_, domain) = host
             .split_once('.')
             .expect("an app host has a domain after its first label");
-        host = format!("{version_label}.{rest}");
+        host = format!("{version_label}.{domain}");
     }
+    let authority = match uri.port_u16() {
+        Some(port) => format!("{host}:{port}"),
+        None => host,
+    };
 
     Uri::builder()
         .scheme("https")
-        .authority(host)
+        .authority(authority)
         .path_and_query(FLARE_ENDPOINT_PATH)
         .build()
         .map_err(|e| generic_error!("Datadog site `{site}` is not a valid host to send tracer flares to: {e}"))
@@ -363,6 +364,22 @@ mod tests {
         assert_eq!(
             endpoint("app.mrf.datadoghq.com"),
             "https://app.mrf.datadoghq.com/api/ui/support/serverless/flare"
+        );
+        assert_eq!(
+            endpoint("http://[::1]:8443/flare"),
+            "https://[::1]:8443/api/ui/support/serverless/flare"
+        );
+    }
+
+    #[test]
+    fn flare_endpoint_drops_credentials_and_keeps_the_port() {
+        assert_eq!(
+            endpoint("https://user:secret@app.datadoghq.com"),
+            "https://7-50-0-flare.datadoghq.com/api/ui/support/serverless/flare"
+        );
+        assert_eq!(
+            endpoint("https://app.datadoghq.com:8443"),
+            "https://7-50-0-flare.datadoghq.com:8443/api/ui/support/serverless/flare"
         );
     }
 
