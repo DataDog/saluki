@@ -502,14 +502,17 @@ pub struct Traces {
     /// already-prefixed keys are exempt in every mode.
     pub container_tag_promotion: ContainerTagPromotion,
 
-    /// Whether the span name becomes the Datadog resource name of OTLP spans.
+    /// Whether the Agent uses the OTLP span name as the Datadog resource name of OTLP spans.
     ///
-    /// Defaults to `false`, which builds the resource name from the instrumentation library name and span kind.
+    /// ADP reads this value but does not apply it yet: translation always derives names with the V2 logic, so
+    /// `true` has no effect on emitted spans (#2332). Defaults to `false`, which is the Agent's default of
+    /// building the resource name from the instrumentation library name and span kind.
     pub span_name_as_resource_name: bool,
 
-    /// Preferred operation names by OTLP span name.
+    /// Preferred operation names by OTLP span name, as the Agent applies them.
     ///
-    /// Defaults to empty, which leaves span names unchanged.
+    /// ADP reads this value but does not apply it yet: translation always derives names with the V2 logic, so a
+    /// non-empty map leaves span names unchanged (#2332). Defaults to empty.
     pub span_name_remappings: HashMap<String, String>,
 }
 

@@ -577,7 +577,8 @@ pub fn otel_to_dd_span_minimal(
 
     if !ignore_missing_fields {
         // the functions below are based off the V2 agent functions as they are used by default
-        // TODO: allow the user to opt out of V2 via config and also implement the V1 versions of the functions
+        // TODO(#2332): allow the user to opt out of V2 via config and also implement the V1 versions of the functions.
+        // `OtlpTracesSettings::span_name_as_resource_name` and `span_name_remappings` select V1 once it exists.
         if service.is_empty() {
             service = get_otel_service(span_attributes, resource_attributes, true, interner, string_builder);
         }

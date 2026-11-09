@@ -1,0 +1,6 @@
+---
+fixes:
+  - |
+    When OTLP ingest is enabled but OTLP metrics, logs, and traces are all disabled, Agent Data Plane now
+    logs an error and runs without OTLP ingest, as the Datadog Agent does. Previously it exited at startup,
+    which also stopped its other pipelines.

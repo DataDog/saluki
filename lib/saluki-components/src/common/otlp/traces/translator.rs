@@ -207,9 +207,13 @@ pub struct OtlpTracesSettings {
     pub container_tag_promotion: ContainerTagPromotion,
 
     /// Whether the span name becomes the Datadog resource name.
+    ///
+    /// Not applied yet: translation always derives names with the V2 logic (see the V1 TODO in `transform.rs`).
     pub span_name_as_resource_name: bool,
 
     /// Preferred operation names by span name.
+    ///
+    /// Not applied yet: translation always derives names with the V2 logic (see the V1 TODO in `transform.rs`).
     pub span_name_remappings: HashMap<String, String>,
 }
 
