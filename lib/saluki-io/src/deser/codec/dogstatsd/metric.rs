@@ -114,8 +114,9 @@ pub fn parse_dogstatsd_metric<'a>(
                 }
                 // Local Data: client-provided data used for resolving the entity ID that this metric originated from.
                 //
-                // In permissive mode, a malformed value is ignored rather than rejecting the whole metric, matching
-                // the Datadog Agent.
+                // In permissive mode, a malformed value is ignored rather than rejecting the whole metric. The
+                // reference DogStatsD server doesn't validate this field and just fails to resolve an origin from it,
+                // so either way, the metric gets no origin tags from it.
                 b'c' if chunk.len() > 1 && chunk[1] == b':' && config.client_origin_detection => {
                     match all_consuming(preceded(tag("c:"), local_data)).parse(chunk) {
                         Ok((_, local_data)) => maybe_local_data = Some(local_data),
@@ -132,8 +133,9 @@ pub fn parse_dogstatsd_metric<'a>(
                 }
                 // External Data: client-provided data used for resolving the entity ID that this metric originated from.
                 //
-                // In permissive mode, a malformed value is ignored rather than rejecting the whole metric, matching
-                // the Datadog Agent.
+                // In permissive mode, a malformed value is ignored rather than rejecting the whole metric. The
+                // reference DogStatsD server doesn't validate this field and just fails to resolve an origin from it,
+                // so either way, the metric gets no origin tags from it.
                 b'e' if chunk.len() > 1 && chunk[1] == b':' && config.client_origin_detection => {
                     match all_consuming(preceded(tag("e:"), external_data)).parse(chunk) {
                         Ok((_, external_data)) => maybe_external_data = Some(external_data),
@@ -213,8 +215,9 @@ pub fn parse_dogstatsd_metric<'a>(
 
 #[inline]
 fn permissive_metric_name(input: &[u8]) -> IResult<&[u8], &str> {
-    // Like the Datadog Agent, we allow any characters in the metric name other than the `:` value delimiter and the
-    // `|` field delimiter. The name must still be valid UTF-8, since we can't safely handle it otherwise.
+    // Like the reference DogStatsD server, we allow any characters in the metric name other than the `:` value
+    // delimiter and the `|` field delimiter. The name must still be valid UTF-8, since we can't safely handle it
+    // otherwise.
     let (remaining, raw_name) = take_while1(|c: u8| c != b':' && c != b'|').parse(input)?;
     match simdutf8::basic::from_utf8(raw_name) {
         Ok(name) => Ok((remaining, name)),
@@ -745,8 +748,8 @@ mod tests {
 
     #[test]
     fn permissive_mode_metric_name_stops_at_field_delimiter() {
-        // A `|` before the first `:` means there's no name/value pair in the first field, which the Datadog Agent
-        // rejects.
+        // A `|` before the first `:` means there's no name/value pair in the first field, which the reference DogStatsD
+        // server rejects.
         let permissive = DogStatsDCodecConfiguration::default().with_permissive_mode(true);
         assert!(parse_dogstatsd_metric(b"metric|name:1|c", &permissive).is_err());
     }

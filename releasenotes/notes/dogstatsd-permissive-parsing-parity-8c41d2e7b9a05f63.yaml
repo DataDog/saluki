@@ -6,5 +6,4 @@ fixes:
     as ``/``, events with empty text, and any UTF-8 in the event and service
     check ``h:``, ``k:`` and ``s:`` fields. An invalid optional field on an event
     or service check, or a malformed ``c:`` or ``e:`` field on a metric, is now
-    ignored instead of rejecting the whole payload. An unknown event priority or
-    alert type now keeps the default (``normal``, ``info``), as in the Datadog Agent.
+    ignored instead of rejecting the whole payload.

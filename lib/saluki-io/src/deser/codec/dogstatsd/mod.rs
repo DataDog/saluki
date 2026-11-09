@@ -93,7 +93,7 @@ impl DogStatsDCodecConfiguration {
     /// structural markers (specific delimiting characters) to determine the boundaries of different parts of the
     /// payload. This allows for decoding payloads with invalid contents (for example, characters that are valid UTF-8, but
     /// aren't within ASCII bounds, etc) such that the data plane can attempt to process them further. This aims to
-    /// match the leniency of the Datadog Agent:
+    /// match the leniency of the reference DogStatsD server:
     ///
     /// - metric names, service check names, and event/service check string fields (hostname, aggregation key, source
     ///   type) accept any UTF-8

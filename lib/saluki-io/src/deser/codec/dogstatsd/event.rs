@@ -41,7 +41,7 @@ pub fn parse_dogstatsd_event<'a>(
     .parse(input)?;
 
     // Title and Text are the required fields of an event. In permissive mode, we only require a title, matching the
-    // Datadog Agent.
+    // reference DogStatsD server.
     if title_len == 0 || (text_len == 0 && !config.permissive) {
         return Err(nom::Err::Error(Error::new(input, ErrorKind::Verify)));
     }
@@ -103,28 +103,22 @@ pub fn parse_dogstatsd_event<'a>(
                     all_consuming(preceded(tag(AGGREGATION_KEY_PREFIX), string_field)).parse(chunk)?;
                 maybe_aggregation_key = Some(aggregation_key);
             }
-            // Priority: client-provided priority of the event. An unknown priority keeps the default, matching the
-            // Datadog Agent.
+            // Priority: client-provided priority of the event.
             PRIORITY_PREFIX => {
                 let (_, priority) =
                     all_consuming(preceded(tag(PRIORITY_PREFIX), ascii_alphanum_and_seps)).parse(chunk)?;
-                if let Some(priority) = Priority::try_from_string(priority) {
-                    maybe_priority = Some(priority);
-                }
+                maybe_priority = Priority::try_from_string(priority);
             }
             // Source type name: client-provided source type name of the event.
             SOURCE_TYPE_PREFIX if chunk != SOURCE_TYPE_PREFIX => {
                 let (_, source_type) = all_consuming(preceded(tag(SOURCE_TYPE_PREFIX), string_field)).parse(chunk)?;
                 maybe_source_type = Some(source_type);
             }
-            // Alert type: client-provided alert type of the event. An unknown alert type keeps the default, matching
-            // the Datadog Agent.
+            // Alert type: client-provided alert type of the event.
             ALERT_TYPE_PREFIX => {
                 let (_, alert_type) =
                     all_consuming(preceded(tag(ALERT_TYPE_PREFIX), ascii_alphanum_and_seps)).parse(chunk)?;
-                if let Some(alert_type) = AlertType::try_from_string(alert_type) {
-                    maybe_alert_type = Some(alert_type);
-                }
+                maybe_alert_type = AlertType::try_from_string(alert_type);
             }
             // Local Data: client-provided data used for resolving the entity ID that this event originated from.
             LOCAL_DATA_PREFIX if config.client_origin_detection && chunk != LOCAL_DATA_PREFIX => {
@@ -167,7 +161,7 @@ pub fn parse_dogstatsd_event<'a>(
             }
 
             // In permissive mode, an invalid optional field is ignored rather than rejecting the whole event, matching
-            // the Datadog Agent.
+            // the reference DogStatsD server.
             if let Err(e) = parse_field(chunk) {
                 if !config.permissive {
                     return Err(e);
@@ -412,9 +406,10 @@ mod tests {
     fn event_rejects_empty_title_or_text() {
         use nom::error::ErrorKind;
 
-        // Title and text are the two required fields of an event: a declared length of zero for either one is a
-        // structural error, so the parser rejects the frame with a `Verify` error rather than emitting an event with
-        // an empty title/text.
+        // In strict mode (the codec default), title and text are both required: a declared length of zero for either
+        // one is a structural error, so the parser rejects the frame with a `Verify` error rather than emitting an
+        // event with an empty title/text. Permissive mode only requires a title; see
+        // `permissive_mode_only_requires_a_title`.
         let config = DogStatsDCodecConfiguration::default();
 
         match parse_dogstatsd_event(b"_e{0,4}:|text", &config) {
@@ -434,7 +429,7 @@ mod tests {
     fn permissive_mode_only_requires_a_title() {
         let config = DogStatsDCodecConfiguration::default().with_permissive_mode(true);
 
-        // Like the Datadog Agent, permissive mode accepts an event with empty text...
+        // Like the reference DogStatsD server, permissive mode accepts an event with empty text...
         let (_, event) = parse_dogstatsd_event(b"_e{5,0}:title|", &config)
             .expect("empty text should be accepted in permissive mode");
         assert_eq!(&*event.title, "title");
@@ -486,7 +481,8 @@ mod tests {
 
     #[test]
     fn unknown_priority_and_alert_type_keep_defaults() {
-        // The Datadog Agent keeps the default priority and alert type when the given value isn't recognized.
+        // Regression test: an unrecognized priority or alert type resolves to the default (normal, info), as in the
+        // reference DogStatsD server.
         let config = DogStatsDCodecConfiguration::default();
         let (_, event) =
             parse_dogstatsd_event(b"_e{5,4}:title|text|p:urgent|t:fatal", &config).expect("event should parse");

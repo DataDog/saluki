@@ -38,7 +38,7 @@ pub fn parse_dogstatsd_service_check<'a>(
     input: &'a [u8], config: &DogStatsDCodecConfiguration,
 ) -> IResult<&'a [u8], ServiceCheckPacket<'a>> {
     // In permissive mode, the name and hostname accept any UTF-8 (other than the `|` field delimiter), matching the
-    // Datadog Agent. Otherwise, they're restricted to ASCII alphanumerics and separators.
+    // reference DogStatsD server. Otherwise, they're restricted to ASCII alphanumerics and separators.
     let (name_field, string_field): (StrParser, StrParser) = if config.permissive {
         (permissive_service_check_name, non_empty_utf8)
     } else {
@@ -117,7 +117,7 @@ pub fn parse_dogstatsd_service_check<'a>(
             }
 
             // In permissive mode, an invalid optional field is ignored rather than rejecting the whole service check,
-            // matching the Datadog Agent.
+            // matching the reference DogStatsD server.
             if let Err(e) = parse_field(chunk) {
                 if !config.permissive {
                     return Err(e);
