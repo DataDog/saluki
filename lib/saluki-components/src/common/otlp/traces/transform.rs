@@ -1,6 +1,8 @@
 #![allow(dead_code)]
 
+use std::borrow::Cow;
 use std::convert::TryFrom;
+use std::fmt::Write as _;
 
 use base64::{engine::general_purpose, Engine as _};
 use datadog_agent_apm::semantics::{lookup_int64, lookup_string, Accessor, Concept, Registry};
@@ -254,7 +256,13 @@ pub fn otel_span_to_dd_span(
         }
     }
 
-    dd_span = set_links_and_events(dd_span, &mut attrs, otel_span, LEGACY_TAG_LINKS_AND_EVENTS, interner);
+    set_links_and_events(
+        &mut dd_span,
+        &mut attrs,
+        otel_span,
+        LEGACY_TAG_LINKS_AND_EVENTS,
+        interner,
+    );
     if span_contains_exception_event(&otel_span.events) {
         attrs.insert(
             MetaString::from_static("_dd.span_events.has_exception"),
@@ -1241,13 +1249,13 @@ fn span_contains_exception_event(events: &[OtlpSpanEvent]) -> bool {
 /// They become the span's links and events, unless `legacy_tags` is set, in which case they go in `attrs` as the
 /// `_dd.span_links` and `events` JSON tags.
 fn set_links_and_events(
-    dd_span: DdSpan, attrs: &mut FastHashMap<MetaString, AttributeValue>, otel_span: &OtlpSpan, legacy_tags: bool,
+    dd_span: &mut DdSpan, attrs: &mut FastHashMap<MetaString, AttributeValue>, otel_span: &OtlpSpan, legacy_tags: bool,
     interner: &GenericMapInterner,
-) -> DdSpan {
+) {
     if !legacy_tags {
-        return dd_span
-            .with_span_links(otlp_links_to_span_links(&otel_span.links, interner))
-            .with_span_events(otlp_events_to_span_events(&otel_span.events, interner));
+        *dd_span.span_links_mut() = otlp_links_to_span_links(&otel_span.links, interner);
+        *dd_span.span_events_mut() = otlp_events_to_span_events(&otel_span.events, interner);
+        return;
     }
 
     if let Some(events_json) = marshal_events(&otel_span.events) {
@@ -1262,7 +1270,6 @@ fn set_links_and_events(
             AttributeValue::String(links_json.into()),
         );
     }
-    dd_span
 }
 
 /// Converts OTLP span links into [`SpanLink`]s.
@@ -1271,6 +1278,8 @@ fn set_links_and_events(
 /// Datadog model, so arrays are flattened into `key.0`, `key.1`, and so on, and maps into `key.subkey`. The `link.name`
 /// attribute is normalized here, since nothing downstream does it for ADP.
 pub(crate) fn otlp_links_to_span_links(links: &[OtlpSpanLink], interner: &GenericMapInterner) -> Vec<SpanLink> {
+    // One buffer builds every flattened key, so flattening allocates only for what the interner keeps.
+    let mut key = String::new();
     links
         .iter()
         .map(|link| {
@@ -1286,7 +1295,9 @@ pub(crate) fn otlp_links_to_span_links(links: &[OtlpSpanLink], interner: &Generi
                 let mut attributes = FastHashMap::default();
                 for attribute in &link.attributes {
                     let value = attribute.value.as_ref().and_then(|wrapper| wrapper.value.as_ref());
-                    flatten_link_attribute(&mut attributes, &attribute.key, value, interner);
+                    key.clear();
+                    key.push_str(&attribute.key);
+                    flatten_link_attribute(&mut attributes, &mut key, value, interner);
                 }
                 if let Some(AttributeValue::String(link_name)) = attributes.get_mut(LINK_NAME_KEY) {
                     if needs_name_normalization(link_name.as_ref()) {
@@ -1302,48 +1313,53 @@ pub(crate) fn otlp_links_to_span_links(links: &[OtlpSpanLink], interner: &Generi
 
 /// Sets `key` in the string-valued attributes of a [`SpanLink`], flattening arrays and maps.
 fn flatten_link_attribute(
-    attributes: &mut FastHashMap<MetaString, AttributeValue>, key: &str, value: Option<&OtlpValue>,
+    attributes: &mut FastHashMap<MetaString, AttributeValue>, key: &mut String, value: Option<&OtlpValue>,
     interner: &GenericMapInterner,
 ) {
     match value {
         Some(OtlpValue::ArrayValue(array)) => {
+            let base = key.len();
             for (index, item) in array.values.iter().enumerate() {
-                flatten_link_attribute(attributes, &format!("{key}.{index}"), item.value.as_ref(), interner);
+                let _ = write!(key, ".{index}");
+                flatten_link_attribute(attributes, key, item.value.as_ref(), interner);
+                key.truncate(base);
             }
         }
         Some(OtlpValue::KvlistValue(list)) => {
+            let base = key.len();
             for entry in &list.values {
+                key.push('.');
+                key.push_str(&entry.key);
                 let value = entry.value.as_ref().and_then(|wrapper| wrapper.value.as_ref());
-                flatten_link_attribute(attributes, &format!("{key}.{}", entry.key), value, interner);
+                flatten_link_attribute(attributes, key, value, interner);
+                key.truncate(base);
             }
         }
         scalar => {
             attributes.insert(
-                MetaString::from_interner(key, interner),
-                AttributeValue::String(MetaString::from_interner(
-                    otlp_scalar_as_string(scalar).as_str(),
-                    interner,
-                )),
+                MetaString::from_interner(key.as_str(), interner),
+                AttributeValue::String(MetaString::from_interner(&otlp_scalar_as_string(scalar), interner)),
             );
         }
     }
 }
 
 /// Renders a scalar OTLP value the way `pcommon.Value.AsString` does. An absent value is the empty string.
-fn otlp_scalar_as_string(value: Option<&OtlpValue>) -> String {
+fn otlp_scalar_as_string(value: Option<&OtlpValue>) -> Cow<'_, str> {
     match value {
-        Some(OtlpValue::StringValue(value)) => value.clone(),
-        Some(OtlpValue::BoolValue(value)) => value.to_string(),
-        Some(OtlpValue::IntValue(value)) => value.to_string(),
-        Some(OtlpValue::DoubleValue(value)) => float64_as_string(*value),
-        Some(OtlpValue::BytesValue(value)) => general_purpose::STANDARD.encode(value),
+        Some(OtlpValue::StringValue(value)) => Cow::Borrowed(value.as_str()),
+        Some(OtlpValue::BoolValue(value)) => Cow::Borrowed(if *value { "true" } else { "false" }),
+        Some(OtlpValue::IntValue(value)) => Cow::Owned(value.to_string()),
+        Some(OtlpValue::DoubleValue(value)) => Cow::Owned(float64_as_string(*value)),
+        Some(OtlpValue::BytesValue(value)) => Cow::Owned(general_purpose::STANDARD.encode(value)),
         // Callers flatten arrays and maps, so they never reach this point.
-        Some(OtlpValue::ArrayValue(_) | OtlpValue::KvlistValue(_)) | None => String::new(),
+        Some(OtlpValue::ArrayValue(_) | OtlpValue::KvlistValue(_)) | None => Cow::Borrowed(""),
     }
 }
 
-/// Renders a double like `pcommon`'s `float64AsString`: ES6 number-to-string, which is decimal from 1e-6 up to 1e21
-/// and exponent form outside that range, with `NaN`, `Infinity`, and `-Infinity` spelled out.
+/// Renders a double like `pcommon`'s `float64AsString` in pdata v1.70.0, the version the Agent pins: ES6
+/// number-to-string, which is decimal from 1e-6 up to 1e21 and exponent form outside that range, with `NaN`,
+/// `Infinity`, and `-Infinity` spelled out.
 fn float64_as_string(value: f64) -> String {
     if value.is_nan() {
         return "NaN".to_string();
@@ -1371,13 +1387,17 @@ fn float64_as_string(value: f64) -> String {
 /// strings, other arrays are flattened into `key.0`, `key.1`, and so on, maps into `key.subkey`, and empty values are
 /// dropped.
 pub(crate) fn otlp_events_to_span_events(events: &[OtlpSpanEvent], interner: &GenericMapInterner) -> Vec<SpanEvent> {
+    // One buffer builds every flattened key, so flattening allocates only for what the interner keeps.
+    let mut key = String::new();
     events
         .iter()
         .map(|event| {
             let mut attributes = FastHashMap::default();
             for attribute in &event.attributes {
                 let value = attribute.value.as_ref().and_then(|wrapper| wrapper.value.as_ref());
-                set_event_attribute(&mut attributes, &attribute.key, value, interner);
+                key.clear();
+                key.push_str(&attribute.key);
+                set_event_attribute(&mut attributes, &mut key, value, interner);
             }
             SpanEvent::new(
                 event.time_unix_nano,
@@ -1390,7 +1410,7 @@ pub(crate) fn otlp_events_to_span_events(events: &[OtlpSpanEvent], interner: &Ge
 
 /// Sets `key` in the attributes of a [`SpanEvent`].
 fn set_event_attribute(
-    attributes: &mut FastHashMap<MetaString, AttributeValue>, key: &str, value: Option<&OtlpValue>,
+    attributes: &mut FastHashMap<MetaString, AttributeValue>, key: &mut String, value: Option<&OtlpValue>,
     interner: &GenericMapInterner,
 ) {
     let typed = match value {
@@ -1409,21 +1429,28 @@ fn set_event_attribute(
             if let Some(values) = event_attribute_array(&array.values, interner) {
                 AttributeValue::Array(values)
             } else {
+                let base = key.len();
                 for (index, item) in array.values.iter().enumerate() {
-                    set_event_attribute(attributes, &format!("{key}.{index}"), item.value.as_ref(), interner);
+                    let _ = write!(key, ".{index}");
+                    set_event_attribute(attributes, key, item.value.as_ref(), interner);
+                    key.truncate(base);
                 }
                 return;
             }
         }
         Some(OtlpValue::KvlistValue(list)) => {
+            let base = key.len();
             for entry in &list.values {
+                key.push('.');
+                key.push_str(&entry.key);
                 let value = entry.value.as_ref().and_then(|wrapper| wrapper.value.as_ref());
-                set_event_attribute(attributes, &format!("{key}.{}", entry.key), value, interner);
+                set_event_attribute(attributes, key, value, interner);
+                key.truncate(base);
             }
             return;
         }
     };
-    attributes.insert(MetaString::from_interner(key, interner), typed);
+    attributes.insert(MetaString::from_interner(key.as_str(), interner), typed);
 }
 
 /// Converts `values` into a typed array attribute, which is empty for an empty slice.
@@ -3849,8 +3876,9 @@ mod tests {
         let (interner, _) = extraction_env();
         let mut attributes = FastHashMap::default();
 
-        let dd_span = set_links_and_events(
-            DdSpan::default(),
+        let mut dd_span = DdSpan::default();
+        set_links_and_events(
+            &mut dd_span,
             &mut attributes,
             &span_with_links_and_events(),
             false,
@@ -3868,8 +3896,9 @@ mod tests {
         let (interner, _) = extraction_env();
         let mut attributes = FastHashMap::default();
 
-        let dd_span = set_links_and_events(
-            DdSpan::default(),
+        let mut dd_span = DdSpan::default();
+        set_links_and_events(
+            &mut dd_span,
             &mut attributes,
             &span_with_links_and_events(),
             true,
@@ -3947,7 +3976,7 @@ mod tests {
         };
         let (interner, _) = extraction_env();
         let mut attributes = FastHashMap::default();
-        set_links_and_events(DdSpan::default(), &mut attributes, &span, true, &interner);
+        set_links_and_events(&mut DdSpan::default(), &mut attributes, &span, true, &interner);
 
         let links_json = attributes
             .get("_dd.span_links")
@@ -3993,7 +4022,7 @@ mod tests {
         };
         let (interner, _) = extraction_env();
         let mut attributes = FastHashMap::default();
-        set_links_and_events(DdSpan::default(), &mut attributes, &span, true, &interner);
+        set_links_and_events(&mut DdSpan::default(), &mut attributes, &span, true, &interner);
 
         let links_json = attributes
             .get("_dd.span_links")
