@@ -326,160 +326,209 @@
 <a href=#326 id=326 data-nosnippet>326</a>        }
 <a href=#327 id=327 data-nosnippet>327</a>
 <a href=#328 id=328 data-nosnippet>328</a>        <span class="comment">// Merge together the things we can actually merge.
-<a href=#329 id=329 data-nosnippet>329</a>        </span><span class="self">self</span>.hits += other.hits;
-<a href=#330 id=330 data-nosnippet>330</a>        <span class="self">self</span>.errors += other.errors;
-<a href=#331 id=331 data-nosnippet>331</a>        <span class="self">self</span>.duration_ns += other.duration_ns;
-<a href=#332 id=332 data-nosnippet>332</a>        <span class="self">self</span>.synthetics |= other.synthetics;
-<a href=#333 id=333 data-nosnippet>333</a>        <span class="self">self</span>.top_level_hits += other.top_level_hits;
-<a href=#334 id=334 data-nosnippet>334</a>
-<a href=#335 id=335 data-nosnippet>335</a>        <span class="self">self</span>.ok_summary.inner_mut().merge(other.ok_summary.inner());
-<a href=#336 id=336 data-nosnippet>336</a>        <span class="self">self</span>.error_summary.inner_mut().merge(other.error_summary.inner());
-<a href=#337 id=337 data-nosnippet>337</a>
-<a href=#338 id=338 data-nosnippet>338</a>        <span class="prelude-val">Ok</span>(())
-<a href=#339 id=339 data-nosnippet>339</a>    }
-<a href=#340 id=340 data-nosnippet>340</a>}
+<a href=#329 id=329 data-nosnippet>329</a>        //
+<a href=#330 id=330 data-nosnippet>330</a>        // The counters wrap on overflow, as the `uint64` fields that the trace-agent sums them into do. Generated spans
+<a href=#331 id=331 data-nosnippet>331</a>        // can have durations close to `i64::MAX`, so summing a few of them overflows `u64`: wrapping keeps both sides
+<a href=#332 id=332 data-nosnippet>332</a>        // of a comparison equal where checked addition would panic.
+<a href=#333 id=333 data-nosnippet>333</a>        </span><span class="self">self</span>.hits = <span class="self">self</span>.hits.wrapping_add(other.hits);
+<a href=#334 id=334 data-nosnippet>334</a>        <span class="self">self</span>.errors = <span class="self">self</span>.errors.wrapping_add(other.errors);
+<a href=#335 id=335 data-nosnippet>335</a>        <span class="self">self</span>.duration_ns = <span class="self">self</span>.duration_ns.wrapping_add(other.duration_ns);
+<a href=#336 id=336 data-nosnippet>336</a>        <span class="self">self</span>.synthetics |= other.synthetics;
+<a href=#337 id=337 data-nosnippet>337</a>        <span class="self">self</span>.top_level_hits = <span class="self">self</span>.top_level_hits.wrapping_add(other.top_level_hits);
+<a href=#338 id=338 data-nosnippet>338</a>
+<a href=#339 id=339 data-nosnippet>339</a>        <span class="self">self</span>.ok_summary.inner_mut().merge(other.ok_summary.inner());
+<a href=#340 id=340 data-nosnippet>340</a>        <span class="self">self</span>.error_summary.inner_mut().merge(other.error_summary.inner());
 <a href=#341 id=341 data-nosnippet>341</a>
-<a href=#342 id=342 data-nosnippet>342</a><span class="kw">impl </span>From&lt;<span class="kw-2">&amp;</span>proto::ClientGroupedStats&gt; <span class="kw">for </span>ClientStatistics {
-<a href=#343 id=343 data-nosnippet>343</a>    <span class="kw">fn </span>from(payload: <span class="kw-2">&amp;</span>proto::ClientGroupedStats) -&gt; <span class="self">Self </span>{
-<a href=#344 id=344 data-nosnippet>344</a>        <span class="kw">let </span>is_trace_root = <span class="kw">match </span>payload.is_trace_root.enum_value() {
-<a href=#345 id=345 data-nosnippet>345</a>            <span class="prelude-val">Ok</span>(Trilean::NOT_SET) =&gt; <span class="prelude-val">None</span>,
-<a href=#346 id=346 data-nosnippet>346</a>            <span class="prelude-val">Ok</span>(Trilean::TRUE) =&gt; <span class="prelude-val">Some</span>(<span class="bool-val">true</span>),
-<a href=#347 id=347 data-nosnippet>347</a>            <span class="prelude-val">Ok</span>(Trilean::FALSE) =&gt; <span class="prelude-val">Some</span>(<span class="bool-val">false</span>),
-<a href=#348 id=348 data-nosnippet>348</a>            <span class="prelude-val">Err</span>(<span class="kw">_</span>) =&gt; <span class="prelude-val">None</span>,
-<a href=#349 id=349 data-nosnippet>349</a>        };
-<a href=#350 id=350 data-nosnippet>350</a>
-<a href=#351 id=351 data-nosnippet>351</a>        <span class="comment">// Decode the DDSketch entries from their canonial Protocol Buffers representation.
-<a href=#352 id=352 data-nosnippet>352</a>        </span><span class="kw">let </span>ok_summary_proto = ProtoDDSketch::parse_from_bytes(payload.okSummary())
-<a href=#353 id=353 data-nosnippet>353</a>            .expect(<span class="string">"Should not fail to decode DDSketch from serialized Protocol Buffers representation."</span>);
-<a href=#354 id=354 data-nosnippet>354</a>        <span class="kw">let </span>ok_summary = EncodedApmStatsDDSketch::try_from(ok_summary_proto)
-<a href=#355 id=355 data-nosnippet>355</a>            .expect(<span class="string">"Should not fail to convert DDSketch from canonical Protocol Buffers representation."</span>);
-<a href=#356 id=356 data-nosnippet>356</a>        <span class="kw">let </span>error_summary_proto = ProtoDDSketch::parse_from_bytes(payload.errorSummary())
+<a href=#342 id=342 data-nosnippet>342</a>        <span class="prelude-val">Ok</span>(())
+<a href=#343 id=343 data-nosnippet>343</a>    }
+<a href=#344 id=344 data-nosnippet>344</a>}
+<a href=#345 id=345 data-nosnippet>345</a>
+<a href=#346 id=346 data-nosnippet>346</a><span class="kw">impl </span>From&lt;<span class="kw-2">&amp;</span>proto::ClientGroupedStats&gt; <span class="kw">for </span>ClientStatistics {
+<a href=#347 id=347 data-nosnippet>347</a>    <span class="kw">fn </span>from(payload: <span class="kw-2">&amp;</span>proto::ClientGroupedStats) -&gt; <span class="self">Self </span>{
+<a href=#348 id=348 data-nosnippet>348</a>        <span class="kw">let </span>is_trace_root = <span class="kw">match </span>payload.is_trace_root.enum_value() {
+<a href=#349 id=349 data-nosnippet>349</a>            <span class="prelude-val">Ok</span>(Trilean::NOT_SET) =&gt; <span class="prelude-val">None</span>,
+<a href=#350 id=350 data-nosnippet>350</a>            <span class="prelude-val">Ok</span>(Trilean::TRUE) =&gt; <span class="prelude-val">Some</span>(<span class="bool-val">true</span>),
+<a href=#351 id=351 data-nosnippet>351</a>            <span class="prelude-val">Ok</span>(Trilean::FALSE) =&gt; <span class="prelude-val">Some</span>(<span class="bool-val">false</span>),
+<a href=#352 id=352 data-nosnippet>352</a>            <span class="prelude-val">Err</span>(<span class="kw">_</span>) =&gt; <span class="prelude-val">None</span>,
+<a href=#353 id=353 data-nosnippet>353</a>        };
+<a href=#354 id=354 data-nosnippet>354</a>
+<a href=#355 id=355 data-nosnippet>355</a>        <span class="comment">// Decode the DDSketch entries from their canonial Protocol Buffers representation.
+<a href=#356 id=356 data-nosnippet>356</a>        </span><span class="kw">let </span>ok_summary_proto = ProtoDDSketch::parse_from_bytes(payload.okSummary())
 <a href=#357 id=357 data-nosnippet>357</a>            .expect(<span class="string">"Should not fail to decode DDSketch from serialized Protocol Buffers representation."</span>);
-<a href=#358 id=358 data-nosnippet>358</a>        <span class="kw">let </span>error_summary = EncodedApmStatsDDSketch::try_from(error_summary_proto)
+<a href=#358 id=358 data-nosnippet>358</a>        <span class="kw">let </span>ok_summary = EncodedApmStatsDDSketch::try_from(ok_summary_proto)
 <a href=#359 id=359 data-nosnippet>359</a>            .expect(<span class="string">"Should not fail to convert DDSketch from canonical Protocol Buffers representation."</span>);
-<a href=#360 id=360 data-nosnippet>360</a>
-<a href=#361 id=361 data-nosnippet>361</a>        <span class="self">Self </span>{
-<a href=#362 id=362 data-nosnippet>362</a>            service: (<span class="kw-2">*</span>payload.service).into(),
-<a href=#363 id=363 data-nosnippet>363</a>            name: (<span class="kw-2">*</span>payload.name).into(),
-<a href=#364 id=364 data-nosnippet>364</a>            resource: (<span class="kw-2">*</span>payload.resource).into(),
-<a href=#365 id=365 data-nosnippet>365</a>            type_: (<span class="kw-2">*</span>payload.type_).into(),
-<a href=#366 id=366 data-nosnippet>366</a>            hits: payload.hits,
-<a href=#367 id=367 data-nosnippet>367</a>            errors: payload.errors,
-<a href=#368 id=368 data-nosnippet>368</a>            duration_ns: payload.duration,
-<a href=#369 id=369 data-nosnippet>369</a>            ok_summary,
-<a href=#370 id=370 data-nosnippet>370</a>            error_summary,
-<a href=#371 id=371 data-nosnippet>371</a>            synthetics: payload.synthetics,
-<a href=#372 id=372 data-nosnippet>372</a>            top_level_hits: payload.topLevelHits,
-<a href=#373 id=373 data-nosnippet>373</a>            span_kind: (<span class="kw-2">*</span>payload.span_kind).into(),
-<a href=#374 id=374 data-nosnippet>374</a>            peer_tags: payload.peer_tags.iter().map(|t| MetaString::from(<span class="kw-2">&amp;**</span>t)).collect(),
-<a href=#375 id=375 data-nosnippet>375</a>            is_trace_root,
-<a href=#376 id=376 data-nosnippet>376</a>            db_type: (<span class="kw-2">*</span>payload.DB_type).into(),
-<a href=#377 id=377 data-nosnippet>377</a>            grpc_status_code: (<span class="kw-2">*</span>payload.GRPC_status_code).into(),
-<a href=#378 id=378 data-nosnippet>378</a>            http_status_code: payload.HTTP_status_code,
-<a href=#379 id=379 data-nosnippet>379</a>            http_method: (<span class="kw-2">*</span>payload.HTTP_method).into(),
-<a href=#380 id=380 data-nosnippet>380</a>            http_endpoint: (<span class="kw-2">*</span>payload.HTTP_endpoint).into(),
-<a href=#381 id=381 data-nosnippet>381</a>        }
-<a href=#382 id=382 data-nosnippet>382</a>    }
-<a href=#383 id=383 data-nosnippet>383</a>}
-<a href=#384 id=384 data-nosnippet>384</a>
-<a href=#385 id=385 data-nosnippet>385</a><span class="doccomment">/// Aggregation key for client statistics.
-<a href=#386 id=386 data-nosnippet>386</a></span><span class="attr">#[derive(Clone, Debug, DeserializeFromStr, Eq, Hash, PartialEq, SerializeDisplay)]
-<a href=#387 id=387 data-nosnippet>387</a></span><span class="kw">pub struct </span>AggregationKey(u64);
+<a href=#360 id=360 data-nosnippet>360</a>        <span class="kw">let </span>error_summary_proto = ProtoDDSketch::parse_from_bytes(payload.errorSummary())
+<a href=#361 id=361 data-nosnippet>361</a>            .expect(<span class="string">"Should not fail to decode DDSketch from serialized Protocol Buffers representation."</span>);
+<a href=#362 id=362 data-nosnippet>362</a>        <span class="kw">let </span>error_summary = EncodedApmStatsDDSketch::try_from(error_summary_proto)
+<a href=#363 id=363 data-nosnippet>363</a>            .expect(<span class="string">"Should not fail to convert DDSketch from canonical Protocol Buffers representation."</span>);
+<a href=#364 id=364 data-nosnippet>364</a>
+<a href=#365 id=365 data-nosnippet>365</a>        <span class="self">Self </span>{
+<a href=#366 id=366 data-nosnippet>366</a>            service: (<span class="kw-2">*</span>payload.service).into(),
+<a href=#367 id=367 data-nosnippet>367</a>            name: (<span class="kw-2">*</span>payload.name).into(),
+<a href=#368 id=368 data-nosnippet>368</a>            resource: (<span class="kw-2">*</span>payload.resource).into(),
+<a href=#369 id=369 data-nosnippet>369</a>            type_: (<span class="kw-2">*</span>payload.type_).into(),
+<a href=#370 id=370 data-nosnippet>370</a>            hits: payload.hits,
+<a href=#371 id=371 data-nosnippet>371</a>            errors: payload.errors,
+<a href=#372 id=372 data-nosnippet>372</a>            duration_ns: payload.duration,
+<a href=#373 id=373 data-nosnippet>373</a>            ok_summary,
+<a href=#374 id=374 data-nosnippet>374</a>            error_summary,
+<a href=#375 id=375 data-nosnippet>375</a>            synthetics: payload.synthetics,
+<a href=#376 id=376 data-nosnippet>376</a>            top_level_hits: payload.topLevelHits,
+<a href=#377 id=377 data-nosnippet>377</a>            span_kind: (<span class="kw-2">*</span>payload.span_kind).into(),
+<a href=#378 id=378 data-nosnippet>378</a>            peer_tags: payload.peer_tags.iter().map(|t| MetaString::from(<span class="kw-2">&amp;**</span>t)).collect(),
+<a href=#379 id=379 data-nosnippet>379</a>            is_trace_root,
+<a href=#380 id=380 data-nosnippet>380</a>            db_type: (<span class="kw-2">*</span>payload.DB_type).into(),
+<a href=#381 id=381 data-nosnippet>381</a>            grpc_status_code: (<span class="kw-2">*</span>payload.GRPC_status_code).into(),
+<a href=#382 id=382 data-nosnippet>382</a>            http_status_code: payload.HTTP_status_code,
+<a href=#383 id=383 data-nosnippet>383</a>            http_method: (<span class="kw-2">*</span>payload.HTTP_method).into(),
+<a href=#384 id=384 data-nosnippet>384</a>            http_endpoint: (<span class="kw-2">*</span>payload.HTTP_endpoint).into(),
+<a href=#385 id=385 data-nosnippet>385</a>        }
+<a href=#386 id=386 data-nosnippet>386</a>    }
+<a href=#387 id=387 data-nosnippet>387</a>}
 <a href=#388 id=388 data-nosnippet>388</a>
-<a href=#389 id=389 data-nosnippet>389</a><span class="kw">impl </span>fmt::Display <span class="kw">for </span>AggregationKey {
-<a href=#390 id=390 data-nosnippet>390</a>    <span class="kw">fn </span>fmt(<span class="kw-2">&amp;</span><span class="self">self</span>, f: <span class="kw-2">&amp;mut </span>fmt::Formatter&lt;<span class="lifetime">'_</span>&gt;) -&gt; fmt::Result {
-<a href=#391 id=391 data-nosnippet>391</a>        <span class="macro">write!</span>(f, <span class="string">"{}"</span>, <span class="self">self</span>.<span class="number">0</span>)
-<a href=#392 id=392 data-nosnippet>392</a>    }
-<a href=#393 id=393 data-nosnippet>393</a>}
-<a href=#394 id=394 data-nosnippet>394</a>
-<a href=#395 id=395 data-nosnippet>395</a><span class="kw">impl </span>FromStr <span class="kw">for </span>AggregationKey {
-<a href=#396 id=396 data-nosnippet>396</a>    <span class="kw">type </span><span class="prelude-val">Err </span>= ParseIntError;
-<a href=#397 id=397 data-nosnippet>397</a>
-<a href=#398 id=398 data-nosnippet>398</a>    <span class="kw">fn </span>from_str(s: <span class="kw-2">&amp;</span>str) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>, <span class="self">Self</span>::Err&gt; {
-<a href=#399 id=399 data-nosnippet>399</a>        <span class="prelude-val">Ok</span>(<span class="self">Self</span>(s.parse()<span class="question-mark">?</span>))
-<a href=#400 id=400 data-nosnippet>400</a>    }
-<a href=#401 id=401 data-nosnippet>401</a>}
-<a href=#402 id=402 data-nosnippet>402</a>
-<a href=#403 id=403 data-nosnippet>403</a><span class="kw">impl </span>From&lt;<span class="kw-2">&amp;</span>proto::ClientGroupedStats&gt; <span class="kw">for </span>AggregationKey {
-<a href=#404 id=404 data-nosnippet>404</a>    <span class="kw">fn </span>from(payload: <span class="kw-2">&amp;</span>proto::ClientGroupedStats) -&gt; <span class="self">Self </span>{
-<a href=#405 id=405 data-nosnippet>405</a>        <span class="comment">// We manually hash the various fields to come up with our aggregation key.
-<a href=#406 id=406 data-nosnippet>406</a>        //
-<a href=#407 id=407 data-nosnippet>407</a>        // TODO: This follows the logic in `libdd-trace-stats` and it would be nice to eventually converge on using
-<a href=#408 id=408 data-nosnippet>408</a>        // that code directly, but there's a number of changes that would need to be made upstream in order to make
-<a href=#409 id=409 data-nosnippet>409</a>        // doing so possible.
-<a href=#410 id=410 data-nosnippet>410</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>hasher = StableHasher::default();
-<a href=#411 id=411 data-nosnippet>411</a>
-<a href=#412 id=412 data-nosnippet>412</a>        payload.resource.hash(<span class="kw-2">&amp;mut </span>hasher);
-<a href=#413 id=413 data-nosnippet>413</a>        payload.service.hash(<span class="kw-2">&amp;mut </span>hasher);
-<a href=#414 id=414 data-nosnippet>414</a>        payload.name.hash(<span class="kw-2">&amp;mut </span>hasher);
-<a href=#415 id=415 data-nosnippet>415</a>        payload.type_.hash(<span class="kw-2">&amp;mut </span>hasher);
-<a href=#416 id=416 data-nosnippet>416</a>        payload.span_kind.hash(<span class="kw-2">&amp;mut </span>hasher);
-<a href=#417 id=417 data-nosnippet>417</a>        payload.HTTP_status_code.hash(<span class="kw-2">&amp;mut </span>hasher);
-<a href=#418 id=418 data-nosnippet>418</a>        payload.synthetics.hash(<span class="kw-2">&amp;mut </span>hasher);
-<a href=#419 id=419 data-nosnippet>419</a>
-<a href=#420 id=420 data-nosnippet>420</a>        <span class="comment">// TODO: technically, peer tags should only be included if they match the _configured_ peer keys to aggregate on
-<a href=#421 id=421 data-nosnippet>421</a>        // so we're doing this wrong but we can iterate on it later
-<a href=#422 id=422 data-nosnippet>422</a>        </span>payload.peer_tags.hash(<span class="kw-2">&amp;mut </span>hasher);
+<a href=#389 id=389 data-nosnippet>389</a><span class="doccomment">/// Aggregation key for client statistics.
+<a href=#390 id=390 data-nosnippet>390</a></span><span class="attr">#[derive(Clone, Debug, DeserializeFromStr, Eq, Hash, PartialEq, SerializeDisplay)]
+<a href=#391 id=391 data-nosnippet>391</a></span><span class="kw">pub struct </span>AggregationKey(u64);
+<a href=#392 id=392 data-nosnippet>392</a>
+<a href=#393 id=393 data-nosnippet>393</a><span class="kw">impl </span>fmt::Display <span class="kw">for </span>AggregationKey {
+<a href=#394 id=394 data-nosnippet>394</a>    <span class="kw">fn </span>fmt(<span class="kw-2">&amp;</span><span class="self">self</span>, f: <span class="kw-2">&amp;mut </span>fmt::Formatter&lt;<span class="lifetime">'_</span>&gt;) -&gt; fmt::Result {
+<a href=#395 id=395 data-nosnippet>395</a>        <span class="macro">write!</span>(f, <span class="string">"{}"</span>, <span class="self">self</span>.<span class="number">0</span>)
+<a href=#396 id=396 data-nosnippet>396</a>    }
+<a href=#397 id=397 data-nosnippet>397</a>}
+<a href=#398 id=398 data-nosnippet>398</a>
+<a href=#399 id=399 data-nosnippet>399</a><span class="kw">impl </span>FromStr <span class="kw">for </span>AggregationKey {
+<a href=#400 id=400 data-nosnippet>400</a>    <span class="kw">type </span><span class="prelude-val">Err </span>= ParseIntError;
+<a href=#401 id=401 data-nosnippet>401</a>
+<a href=#402 id=402 data-nosnippet>402</a>    <span class="kw">fn </span>from_str(s: <span class="kw-2">&amp;</span>str) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>, <span class="self">Self</span>::Err&gt; {
+<a href=#403 id=403 data-nosnippet>403</a>        <span class="prelude-val">Ok</span>(<span class="self">Self</span>(s.parse()<span class="question-mark">?</span>))
+<a href=#404 id=404 data-nosnippet>404</a>    }
+<a href=#405 id=405 data-nosnippet>405</a>}
+<a href=#406 id=406 data-nosnippet>406</a>
+<a href=#407 id=407 data-nosnippet>407</a><span class="kw">impl </span>From&lt;<span class="kw-2">&amp;</span>proto::ClientGroupedStats&gt; <span class="kw">for </span>AggregationKey {
+<a href=#408 id=408 data-nosnippet>408</a>    <span class="kw">fn </span>from(payload: <span class="kw-2">&amp;</span>proto::ClientGroupedStats) -&gt; <span class="self">Self </span>{
+<a href=#409 id=409 data-nosnippet>409</a>        <span class="comment">// We manually hash the various fields to come up with our aggregation key.
+<a href=#410 id=410 data-nosnippet>410</a>        //
+<a href=#411 id=411 data-nosnippet>411</a>        // TODO: This follows the logic in `libdd-trace-stats` and it would be nice to eventually converge on using
+<a href=#412 id=412 data-nosnippet>412</a>        // that code directly, but there's a number of changes that would need to be made upstream in order to make
+<a href=#413 id=413 data-nosnippet>413</a>        // doing so possible.
+<a href=#414 id=414 data-nosnippet>414</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>hasher = StableHasher::default();
+<a href=#415 id=415 data-nosnippet>415</a>
+<a href=#416 id=416 data-nosnippet>416</a>        payload.resource.hash(<span class="kw-2">&amp;mut </span>hasher);
+<a href=#417 id=417 data-nosnippet>417</a>        payload.service.hash(<span class="kw-2">&amp;mut </span>hasher);
+<a href=#418 id=418 data-nosnippet>418</a>        payload.name.hash(<span class="kw-2">&amp;mut </span>hasher);
+<a href=#419 id=419 data-nosnippet>419</a>        payload.type_.hash(<span class="kw-2">&amp;mut </span>hasher);
+<a href=#420 id=420 data-nosnippet>420</a>        payload.span_kind.hash(<span class="kw-2">&amp;mut </span>hasher);
+<a href=#421 id=421 data-nosnippet>421</a>        payload.HTTP_status_code.hash(<span class="kw-2">&amp;mut </span>hasher);
+<a href=#422 id=422 data-nosnippet>422</a>        payload.synthetics.hash(<span class="kw-2">&amp;mut </span>hasher);
 <a href=#423 id=423 data-nosnippet>423</a>
-<a href=#424 id=424 data-nosnippet>424</a>        payload.is_trace_root.value().hash(<span class="kw-2">&amp;mut </span>hasher);
-<a href=#425 id=425 data-nosnippet>425</a>        payload.HTTP_method.hash(<span class="kw-2">&amp;mut </span>hasher);
-<a href=#426 id=426 data-nosnippet>426</a>        payload.HTTP_endpoint.hash(<span class="kw-2">&amp;mut </span>hasher);
-<a href=#427 id=427 data-nosnippet>427</a>        payload.GRPC_status_code.hash(<span class="kw-2">&amp;mut </span>hasher);
-<a href=#428 id=428 data-nosnippet>428</a>        payload.DB_type.hash(<span class="kw-2">&amp;mut </span>hasher);
-<a href=#429 id=429 data-nosnippet>429</a>
-<a href=#430 id=430 data-nosnippet>430</a>        <span class="self">Self</span>(hasher.finish())
-<a href=#431 id=431 data-nosnippet>431</a>    }
-<a href=#432 id=432 data-nosnippet>432</a>}
+<a href=#424 id=424 data-nosnippet>424</a>        <span class="comment">// TODO: technically, peer tags should only be included if they match the _configured_ peer keys to aggregate on
+<a href=#425 id=425 data-nosnippet>425</a>        // so we're doing this wrong but we can iterate on it later
+<a href=#426 id=426 data-nosnippet>426</a>        </span>payload.peer_tags.hash(<span class="kw-2">&amp;mut </span>hasher);
+<a href=#427 id=427 data-nosnippet>427</a>
+<a href=#428 id=428 data-nosnippet>428</a>        payload.is_trace_root.value().hash(<span class="kw-2">&amp;mut </span>hasher);
+<a href=#429 id=429 data-nosnippet>429</a>        payload.HTTP_method.hash(<span class="kw-2">&amp;mut </span>hasher);
+<a href=#430 id=430 data-nosnippet>430</a>        payload.HTTP_endpoint.hash(<span class="kw-2">&amp;mut </span>hasher);
+<a href=#431 id=431 data-nosnippet>431</a>        payload.GRPC_status_code.hash(<span class="kw-2">&amp;mut </span>hasher);
+<a href=#432 id=432 data-nosnippet>432</a>        payload.DB_type.hash(<span class="kw-2">&amp;mut </span>hasher);
 <a href=#433 id=433 data-nosnippet>433</a>
-<a href=#434 id=434 data-nosnippet>434</a><span class="doccomment">/// Aggregator for client statistics.
-<a href=#435 id=435 data-nosnippet>435</a>///
-<a href=#436 id=436 data-nosnippet>436</a>/// Client statistics are represented by generating an "aggregation key" for a given span, and then grouping statistics
-<a href=#437 id=437 data-nosnippet>437</a>/// by that key. The aggregation key includes fields like service, span name, span operation, response code, and more.
-<a href=#438 id=438 data-nosnippet>438</a>/// This is meant to group like spans together,
-<a href=#439 id=439 data-nosnippet>439</a></span><span class="attr">#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-<a href=#440 id=440 data-nosnippet>440</a></span><span class="kw">pub struct </span>ClientStatisticsAggregator {
-<a href=#441 id=441 data-nosnippet>441</a>    groups: FastHashMap&lt;AggregationKey, BucketedClientStatistics&gt;,
-<a href=#442 id=442 data-nosnippet>442</a>}
-<a href=#443 id=443 data-nosnippet>443</a>
-<a href=#444 id=444 data-nosnippet>444</a><span class="kw">impl </span>ClientStatisticsAggregator {
-<a href=#445 id=445 data-nosnippet>445</a>    <span class="doccomment">/// Merges the given payload into the aggregator.
-<a href=#446 id=446 data-nosnippet>446</a>    </span><span class="kw">pub fn </span>merge_payload(<span class="kw-2">&amp;mut </span><span class="self">self</span>, payload: <span class="kw-2">&amp;</span>proto::StatsPayload) -&gt; <span class="prelude-ty">Result</span>&lt;(), GenericError&gt; {
-<a href=#447 id=447 data-nosnippet>447</a>        <span class="kw">let </span>agent_metadata = AgentMetadata::from(payload);
-<a href=#448 id=448 data-nosnippet>448</a>        <span class="kw">for </span>client_stats_payload <span class="kw">in </span>payload.stats() {
-<a href=#449 id=449 data-nosnippet>449</a>            <span class="kw">let </span>tracer_metadata = TracerMetadata::from(client_stats_payload);
-<a href=#450 id=450 data-nosnippet>450</a>
-<a href=#451 id=451 data-nosnippet>451</a>            <span class="kw">for </span>stats_bucket <span class="kw">in </span>client_stats_payload.stats() {
-<a href=#452 id=452 data-nosnippet>452</a>                <span class="kw">let </span>bucket_timeframe = BucketTimeframe::from(stats_bucket);
-<a href=#453 id=453 data-nosnippet>453</a>
-<a href=#454 id=454 data-nosnippet>454</a>                <span class="kw">for </span>grouped_stat <span class="kw">in </span>stats_bucket.stats() {
-<a href=#455 id=455 data-nosnippet>455</a>                    <span class="kw">let </span>aggregation_key = AggregationKey::from(grouped_stat);
-<a href=#456 id=456 data-nosnippet>456</a>                    <span class="kw">let </span>stats_group = <span class="self">self
-<a href=#457 id=457 data-nosnippet>457</a>                        </span>.groups
-<a href=#458 id=458 data-nosnippet>458</a>                        .entry(aggregation_key)
-<a href=#459 id=459 data-nosnippet>459</a>                        .or_insert_with(|| BucketedClientStatistics {
-<a href=#460 id=460 data-nosnippet>460</a>                            agent_metadata: agent_metadata.clone(),
-<a href=#461 id=461 data-nosnippet>461</a>                            tracer_metadata: tracer_metadata.clone(),
-<a href=#462 id=462 data-nosnippet>462</a>                            buckets: FastHashMap::default(),
-<a href=#463 id=463 data-nosnippet>463</a>                        });
-<a href=#464 id=464 data-nosnippet>464</a>
-<a href=#465 id=465 data-nosnippet>465</a>                    <span class="kw">if </span>stats_group.agent_metadata != agent_metadata {
-<a href=#466 id=466 data-nosnippet>466</a>                        <span class="kw">return </span><span class="prelude-val">Err</span>(<span class="macro">generic_error!</span>(<span class="string">"agent metadata mismatch"</span>));
-<a href=#467 id=467 data-nosnippet>467</a>                    }
-<a href=#468 id=468 data-nosnippet>468</a>                    <span class="kw">if </span>stats_group.tracer_metadata != tracer_metadata {
-<a href=#469 id=469 data-nosnippet>469</a>                        <span class="kw">return </span><span class="prelude-val">Err</span>(<span class="macro">generic_error!</span>(<span class="string">"tracer metadata mismatch"</span>));
-<a href=#470 id=470 data-nosnippet>470</a>                    }
-<a href=#471 id=471 data-nosnippet>471</a>
-<a href=#472 id=472 data-nosnippet>472</a>                    stats_group.merge(bucket_timeframe, ClientStatistics::from(grouped_stat))<span class="question-mark">?</span>;
-<a href=#473 id=473 data-nosnippet>473</a>                }
-<a href=#474 id=474 data-nosnippet>474</a>            }
-<a href=#475 id=475 data-nosnippet>475</a>        }
-<a href=#476 id=476 data-nosnippet>476</a>
-<a href=#477 id=477 data-nosnippet>477</a>        <span class="prelude-val">Ok</span>(())
-<a href=#478 id=478 data-nosnippet>478</a>    }
-<a href=#479 id=479 data-nosnippet>479</a>
-<a href=#480 id=480 data-nosnippet>480</a>    <span class="doccomment">/// Returns a reference to the aggregated statistics groups.
-<a href=#481 id=481 data-nosnippet>481</a>    </span><span class="kw">pub fn </span>groups(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>FastHashMap&lt;AggregationKey, BucketedClientStatistics&gt; {
-<a href=#482 id=482 data-nosnippet>482</a>        <span class="kw-2">&amp;</span><span class="self">self</span>.groups
-<a href=#483 id=483 data-nosnippet>483</a>    }
-<a href=#484 id=484 data-nosnippet>484</a>}
+<a href=#434 id=434 data-nosnippet>434</a>        <span class="self">Self</span>(hasher.finish())
+<a href=#435 id=435 data-nosnippet>435</a>    }
+<a href=#436 id=436 data-nosnippet>436</a>}
+<a href=#437 id=437 data-nosnippet>437</a>
+<a href=#438 id=438 data-nosnippet>438</a><span class="doccomment">/// Aggregator for client statistics.
+<a href=#439 id=439 data-nosnippet>439</a>///
+<a href=#440 id=440 data-nosnippet>440</a>/// Client statistics are represented by generating an "aggregation key" for a given span, and then grouping statistics
+<a href=#441 id=441 data-nosnippet>441</a>/// by that key. The aggregation key includes fields like service, span name, span operation, response code, and more.
+<a href=#442 id=442 data-nosnippet>442</a>/// This is meant to group like spans together,
+<a href=#443 id=443 data-nosnippet>443</a></span><span class="attr">#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+<a href=#444 id=444 data-nosnippet>444</a></span><span class="kw">pub struct </span>ClientStatisticsAggregator {
+<a href=#445 id=445 data-nosnippet>445</a>    groups: FastHashMap&lt;AggregationKey, BucketedClientStatistics&gt;,
+<a href=#446 id=446 data-nosnippet>446</a>}
+<a href=#447 id=447 data-nosnippet>447</a>
+<a href=#448 id=448 data-nosnippet>448</a><span class="kw">impl </span>ClientStatisticsAggregator {
+<a href=#449 id=449 data-nosnippet>449</a>    <span class="doccomment">/// Merges the given payload into the aggregator.
+<a href=#450 id=450 data-nosnippet>450</a>    </span><span class="kw">pub fn </span>merge_payload(<span class="kw-2">&amp;mut </span><span class="self">self</span>, payload: <span class="kw-2">&amp;</span>proto::StatsPayload) -&gt; <span class="prelude-ty">Result</span>&lt;(), GenericError&gt; {
+<a href=#451 id=451 data-nosnippet>451</a>        <span class="kw">let </span>agent_metadata = AgentMetadata::from(payload);
+<a href=#452 id=452 data-nosnippet>452</a>        <span class="kw">for </span>client_stats_payload <span class="kw">in </span>payload.stats() {
+<a href=#453 id=453 data-nosnippet>453</a>            <span class="kw">let </span>tracer_metadata = TracerMetadata::from(client_stats_payload);
+<a href=#454 id=454 data-nosnippet>454</a>
+<a href=#455 id=455 data-nosnippet>455</a>            <span class="kw">for </span>stats_bucket <span class="kw">in </span>client_stats_payload.stats() {
+<a href=#456 id=456 data-nosnippet>456</a>                <span class="kw">let </span>bucket_timeframe = BucketTimeframe::from(stats_bucket);
+<a href=#457 id=457 data-nosnippet>457</a>
+<a href=#458 id=458 data-nosnippet>458</a>                <span class="kw">for </span>grouped_stat <span class="kw">in </span>stats_bucket.stats() {
+<a href=#459 id=459 data-nosnippet>459</a>                    <span class="kw">let </span>aggregation_key = AggregationKey::from(grouped_stat);
+<a href=#460 id=460 data-nosnippet>460</a>                    <span class="kw">let </span>stats_group = <span class="self">self
+<a href=#461 id=461 data-nosnippet>461</a>                        </span>.groups
+<a href=#462 id=462 data-nosnippet>462</a>                        .entry(aggregation_key)
+<a href=#463 id=463 data-nosnippet>463</a>                        .or_insert_with(|| BucketedClientStatistics {
+<a href=#464 id=464 data-nosnippet>464</a>                            agent_metadata: agent_metadata.clone(),
+<a href=#465 id=465 data-nosnippet>465</a>                            tracer_metadata: tracer_metadata.clone(),
+<a href=#466 id=466 data-nosnippet>466</a>                            buckets: FastHashMap::default(),
+<a href=#467 id=467 data-nosnippet>467</a>                        });
+<a href=#468 id=468 data-nosnippet>468</a>
+<a href=#469 id=469 data-nosnippet>469</a>                    <span class="kw">if </span>stats_group.agent_metadata != agent_metadata {
+<a href=#470 id=470 data-nosnippet>470</a>                        <span class="kw">return </span><span class="prelude-val">Err</span>(<span class="macro">generic_error!</span>(<span class="string">"agent metadata mismatch"</span>));
+<a href=#471 id=471 data-nosnippet>471</a>                    }
+<a href=#472 id=472 data-nosnippet>472</a>                    <span class="kw">if </span>stats_group.tracer_metadata != tracer_metadata {
+<a href=#473 id=473 data-nosnippet>473</a>                        <span class="kw">return </span><span class="prelude-val">Err</span>(<span class="macro">generic_error!</span>(<span class="string">"tracer metadata mismatch"</span>));
+<a href=#474 id=474 data-nosnippet>474</a>                    }
+<a href=#475 id=475 data-nosnippet>475</a>
+<a href=#476 id=476 data-nosnippet>476</a>                    stats_group.merge(bucket_timeframe, ClientStatistics::from(grouped_stat))<span class="question-mark">?</span>;
+<a href=#477 id=477 data-nosnippet>477</a>                }
+<a href=#478 id=478 data-nosnippet>478</a>            }
+<a href=#479 id=479 data-nosnippet>479</a>        }
+<a href=#480 id=480 data-nosnippet>480</a>
+<a href=#481 id=481 data-nosnippet>481</a>        <span class="prelude-val">Ok</span>(())
+<a href=#482 id=482 data-nosnippet>482</a>    }
+<a href=#483 id=483 data-nosnippet>483</a>
+<a href=#484 id=484 data-nosnippet>484</a>    <span class="doccomment">/// Returns a reference to the aggregated statistics groups.
+<a href=#485 id=485 data-nosnippet>485</a>    </span><span class="kw">pub fn </span>groups(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>FastHashMap&lt;AggregationKey, BucketedClientStatistics&gt; {
+<a href=#486 id=486 data-nosnippet>486</a>        <span class="kw-2">&amp;</span><span class="self">self</span>.groups
+<a href=#487 id=487 data-nosnippet>487</a>    }
+<a href=#488 id=488 data-nosnippet>488</a>}
+<a href=#489 id=489 data-nosnippet>489</a>
+<a href=#490 id=490 data-nosnippet>490</a><span class="attr">#[cfg(test)]
+<a href=#491 id=491 data-nosnippet>491</a></span><span class="kw">mod </span>tests {
+<a href=#492 id=492 data-nosnippet>492</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
+<a href=#493 id=493 data-nosnippet>493</a>
+<a href=#494 id=494 data-nosnippet>494</a>    <span class="kw">fn </span>client_stats(hits: u64, errors: u64, duration_ns: u64, top_level_hits: u64) -&gt; ClientStatistics {
+<a href=#495 id=495 data-nosnippet>495</a>        <span class="kw">let </span>empty_sketch: DDSketch =
+<a href=#496 id=496 data-nosnippet>496</a>            DDSketch::with_relative_accuracy(<span class="number">0.01</span>).expect(<span class="string">"Relative accuracy should be valid (0 &lt;= 0.01 &lt;= 1)"</span>);
+<a href=#497 id=497 data-nosnippet>497</a>        <span class="kw">let </span>empty_sketch = empty_sketch
+<a href=#498 id=498 data-nosnippet>498</a>            .to_proto()
+<a href=#499 id=499 data-nosnippet>499</a>            .write_to_bytes()
+<a href=#500 id=500 data-nosnippet>500</a>            .expect(<span class="string">"Should not fail to encode an empty DDSketch."</span>);
+<a href=#501 id=501 data-nosnippet>501</a>
+<a href=#502 id=502 data-nosnippet>502</a>        <span class="kw">let </span><span class="kw-2">mut </span>payload = proto::ClientGroupedStats::new();
+<a href=#503 id=503 data-nosnippet>503</a>        payload.service = <span class="string">"service"</span>.into();
+<a href=#504 id=504 data-nosnippet>504</a>        payload.name = <span class="string">"name"</span>.into();
+<a href=#505 id=505 data-nosnippet>505</a>        payload.hits = hits;
+<a href=#506 id=506 data-nosnippet>506</a>        payload.errors = errors;
+<a href=#507 id=507 data-nosnippet>507</a>        payload.duration = duration_ns;
+<a href=#508 id=508 data-nosnippet>508</a>        payload.topLevelHits = top_level_hits;
+<a href=#509 id=509 data-nosnippet>509</a>        payload.okSummary = empty_sketch.clone();
+<a href=#510 id=510 data-nosnippet>510</a>        payload.errorSummary = empty_sketch;
+<a href=#511 id=511 data-nosnippet>511</a>
+<a href=#512 id=512 data-nosnippet>512</a>        ClientStatistics::from(<span class="kw-2">&amp;</span>payload)
+<a href=#513 id=513 data-nosnippet>513</a>    }
+<a href=#514 id=514 data-nosnippet>514</a>
+<a href=#515 id=515 data-nosnippet>515</a>    <span class="attr">#[test]
+<a href=#516 id=516 data-nosnippet>516</a>    </span><span class="kw">fn </span>merge_wraps_counters_on_overflow() {
+<a href=#517 id=517 data-nosnippet>517</a>        <span class="comment">// Generated spans can have durations close to `i64::MAX`, and three of them overflow `u64` when summed.
+<a href=#518 id=518 data-nosnippet>518</a>        </span><span class="kw">let </span>large = i64::MAX <span class="kw">as </span>u64;
+<a href=#519 id=519 data-nosnippet>519</a>        <span class="kw">let </span><span class="kw-2">mut </span>merged = client_stats(<span class="number">1</span>, <span class="number">1</span>, large, <span class="number">1</span>);
+<a href=#520 id=520 data-nosnippet>520</a>        merged.merge(client_stats(<span class="number">1</span>, <span class="number">1</span>, large, <span class="number">1</span>)).unwrap();
+<a href=#521 id=521 data-nosnippet>521</a>        merged.merge(client_stats(<span class="number">1</span>, <span class="number">1</span>, large, <span class="number">1</span>)).unwrap();
+<a href=#522 id=522 data-nosnippet>522</a>        <span class="macro">assert_eq!</span>(merged.duration_ns, large.wrapping_mul(<span class="number">3</span>));
+<a href=#523 id=523 data-nosnippet>523</a>        <span class="macro">assert_eq!</span>(merged.hits, <span class="number">3</span>);
+<a href=#524 id=524 data-nosnippet>524</a>        <span class="macro">assert_eq!</span>(merged.errors, <span class="number">3</span>);
+<a href=#525 id=525 data-nosnippet>525</a>        <span class="macro">assert_eq!</span>(merged.top_level_hits, <span class="number">3</span>);
+<a href=#526 id=526 data-nosnippet>526</a>
+<a href=#527 id=527 data-nosnippet>527</a>        <span class="kw">let </span><span class="kw-2">mut </span>merged = client_stats(u64::MAX, u64::MAX, <span class="number">0</span>, u64::MAX);
+<a href=#528 id=528 data-nosnippet>528</a>        merged.merge(client_stats(<span class="number">1</span>, <span class="number">1</span>, <span class="number">0</span>, <span class="number">1</span>)).unwrap();
+<a href=#529 id=529 data-nosnippet>529</a>        <span class="macro">assert_eq!</span>(merged.hits, <span class="number">0</span>);
+<a href=#530 id=530 data-nosnippet>530</a>        <span class="macro">assert_eq!</span>(merged.errors, <span class="number">0</span>);
+<a href=#531 id=531 data-nosnippet>531</a>        <span class="macro">assert_eq!</span>(merged.top_level_hits, <span class="number">0</span>);
+<a href=#532 id=532 data-nosnippet>532</a>    }
+<a href=#533 id=533 data-nosnippet>533</a>}
 </code></pre></div></section></main></body></html>
