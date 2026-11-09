@@ -12,7 +12,7 @@ use saluki_core::{
         transforms::{Transform, TransformBuilder, TransformContext},
         BuildContext,
     },
-    data_model::event::{Event, EventType},
+    data_model::event::{metric::Metric, EventType},
     observability::ComponentMetricsExt as _,
     topology::{EventsBuffer, OutputDefinition},
 };
@@ -143,10 +143,14 @@ impl Filter {
         }
     }
 
-    fn should_forward(&self, event: &Event) -> bool {
-        let Event::Metric(metric) = event else {
-            return false;
-        };
+    #[cfg(test)]
+    fn should_forward(&self, event: &saluki_core::data_model::event::Event) -> bool {
+        event
+            .try_as_metric()
+            .is_some_and(|metric| self.should_forward_metric(metric))
+    }
+
+    fn should_forward_metric(&self, metric: &Metric) -> bool {
         match self {
             Self::DropAll => false,
             Self::All => true,
@@ -177,7 +181,11 @@ impl Filter {
 
     fn filter_events(&self, events: &mut EventsBuffer, telemetry: &Telemetry) -> usize {
         let input_count = events.len();
-        events.remove_if(|event| !self.should_forward(event));
+        events.remove_if(|event| {
+            !event
+                .try_as_metric()
+                .is_some_and(|metric| self.should_forward_metric(metric))
+        });
         let dropped_count = input_count.saturating_sub(events.len());
         telemetry.record_metrics_filtered(dropped_count);
         dropped_count

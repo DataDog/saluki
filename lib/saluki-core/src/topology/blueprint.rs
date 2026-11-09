@@ -28,7 +28,7 @@ use crate::{
         forwarders::ForwarderBuilder, relays::RelayBuilder, sources::SourceBuilder, transforms::TransformBuilder,
         BuildContext, ComponentContext, ComponentType,
     },
-    data_model::event::Event,
+    data_model::event::EventType,
     health::HealthRegistry,
     runtime::{
         halt::HaltWatch,
@@ -530,11 +530,15 @@ impl TopologyBuildState {
             .keys()
             .filter(|id| !self.prunable_components.contains_key(*id))
             .count();
-        let live_decoders = self
-            .decoders
-            .keys()
-            .filter(|id| !self.prunable_components.contains_key(*id))
-            .count();
+
+        // Event buffers store each event type separately, so how large a buffer can get depends on which event types can
+        // actually reach it. Work that out on the graph as it will be once pruned components are removed, so that a
+        // component about to be pruned doesn't widen the event types its downstream components can receive.
+        let event_types = {
+            let mut graph = self.graph.clone();
+            graph.prune_components_without_inputs(self.folded_targets.iter().cloned());
+            graph.effective_event_types()
+        };
 
         let interconnect_capacity = self.interconnect_capacity.get();
 
@@ -559,29 +563,31 @@ impl TopologyBuildState {
         // of non-destination components. This is the effective upper bound because once all component channels are full, sending
         // components can only allocate one more event buffer before being blocked on sending, which is then the effective upper bound.
         //
+        // Buffers in a component's interconnect hold the event types that component can receive, and the extra buffer
+        // held by a sending component holds the event types it can emit.
+        //
         // TODO: Somewhat fragile. Need to revisit this.
         // TODO: Add a firm subitem for payloads when we have payload interconnects.
-        let max_in_flight_event_buffers = ((live_transforms + live_destinations) * interconnect_capacity)
-            + self.sources.len()
-            + live_decoders
-            + live_transforms;
-
-        bounds_builder
-            .firm()
-            // max_in_flight_event_buffers * (size_of<EventsContainer> + (size_of<Event> * default_event_buffer_capacity))
-            .with_expr(UsageExpr::product(
+        let is_live = |id: &&ComponentId| !self.prunable_components.contains_key(*id);
+        let mut firm = bounds_builder.firm();
+        for component_id in self.transforms.keys().chain(self.destinations.keys()).filter(is_live) {
+            let input_types = event_types.input(component_id).unwrap_or_else(EventType::all_bits);
+            firm.with_expr(UsageExpr::product(
                 "events",
-                UsageExpr::constant("max in-flight event buffers", max_in_flight_event_buffers),
-                UsageExpr::sum(
-                    "",
-                    UsageExpr::struct_size::<EventsBuffer>("events buffer"),
-                    UsageExpr::product(
-                        "",
-                        UsageExpr::struct_size::<Event>("event"),
-                        UsageExpr::constant("default event buffer capacity", DEFAULT_EVENTS_BUFFER_CAPACITY),
-                    ),
-                ),
+                UsageExpr::constant("interconnect capacity", interconnect_capacity),
+                event_buffer_usage(input_types),
             ));
+        }
+        for component_id in self
+            .sources
+            .keys()
+            .chain(self.decoders.keys())
+            .chain(self.transforms.keys())
+            .filter(is_live)
+        {
+            let output_types = event_types.output(component_id).unwrap_or_else(EventType::all_bits);
+            firm.with_expr(event_buffer_usage(output_types));
+        }
     }
 
     fn component_identity(&self, component_type: ComponentType, component_id: &ComponentId) -> SubsystemIdentifier {
@@ -1132,6 +1138,19 @@ impl Supervisable for TopologyBlueprint {
     }
 }
 
+/// Returns the memory usage of a full event buffer that can hold the given event types.
+fn event_buffer_usage(event_types: EventType) -> UsageExpr {
+    UsageExpr::sum(
+        "",
+        UsageExpr::struct_size::<EventsBuffer>("events buffer"),
+        UsageExpr::product(
+            "",
+            UsageExpr::constant("event item size", event_types.combined_item_size()),
+            UsageExpr::constant("default event buffer capacity", DEFAULT_EVENTS_BUFFER_CAPACITY),
+        ),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::num::NonZeroUsize;
@@ -1147,7 +1166,7 @@ mod tests {
     use super::{TopologyBlueprint, TopologyReady, WorkerPoolConfiguration};
     use crate::accounting::{ComponentRegistry, MemoryBounds, MemoryBoundsBuilder, MemoryLimiter};
     use crate::components::BuildContext;
-    use crate::data_model::event::Event;
+    use crate::data_model::event::{eventd::EventD, metric::Metric};
     use crate::runtime::{self, state::ResourceRegistry, Name};
     use crate::test_support::wait_until;
     use crate::topology::{ids::get_component_relative_identifier, topology_identifier, ComponentId};
@@ -2203,10 +2222,11 @@ mod tests {
         let expected_min = total_interconnect_capacity * std::mem::size_of::<EventsBuffer>();
 
         // Firm: the maximum number of in-flight event buffers, each sized as one events-buffer container plus the
-        // events it holds at the default per-buffer capacity. The firm total is additive with the minimum.
+        // events it holds at the default per-buffer capacity. Every component only deals in event-D events, so each
+        // buffer is sized for event-D events alone. The firm total is additive with the minimum.
         let max_in_flight = ((transforms + destinations) * interconnect_capacity) + sources + decoders + transforms;
         let per_buffer =
-            std::mem::size_of::<EventsBuffer>() + (std::mem::size_of::<Event>() * DEFAULT_EVENTS_BUFFER_CAPACITY);
+            std::mem::size_of::<EventsBuffer>() + (std::mem::size_of::<EventD>() * DEFAULT_EVENTS_BUFFER_CAPACITY);
         let expected_firm = expected_min + (max_in_flight * per_buffer);
 
         let bounds = {
@@ -2230,6 +2250,48 @@ mod tests {
         );
     }
 
+    #[test]
+    fn recalculate_bounds_sizes_event_buffers_by_connected_event_types() {
+        // A transform that accepts every event type, connected to a source that only emits metrics, only ever receives
+        // metrics, so its interconnect and its outbound event buffer should be sized for metrics alone.
+        let interconnect_capacity = 4usize;
+        let component_registry = ComponentRegistry::default();
+        let mut blueprint = TopologyBlueprint::new("test", &component_registry);
+        blueprint
+            .with_interconnect_capacity(NonZeroUsize::new(interconnect_capacity).unwrap())
+            .add_source("source", TestSourceBuilder::default_output(EventType::Metric))
+            .unwrap()
+            .add_transform(
+                "transform",
+                TestTransformBuilder::default_output(EventType::all_bits(), EventType::all_bits()),
+            )
+            .unwrap()
+            .add_destination(
+                "destination",
+                TestDestinationBuilder::with_input_type(EventType::all_bits()),
+            )
+            .unwrap()
+            .connect_components_in_order(["source", "transform", "destination"])
+            .unwrap();
+
+        let metrics_buffer =
+            std::mem::size_of::<EventsBuffer>() + (std::mem::size_of::<Metric>() * DEFAULT_EVENTS_BUFFER_CAPACITY);
+        let expected_min = interconnect_capacity * 2 * std::mem::size_of::<EventsBuffer>();
+        // Two interconnects (transform and destination), plus one outbound buffer each for the source and transform.
+        let expected_firm = expected_min + ((interconnect_capacity * 2) + 2) * metrics_buffer;
+
+        let bounds = {
+            let guard = blueprint.build_state.lock().expect("topology blueprint mutex poisoned");
+            guard
+                .as_ref()
+                .expect("topology blueprint already initialized")
+                .component_registry
+                .as_bounds()
+        };
+
+        assert_eq!(bounds.total_minimum_required_bytes(), expected_min);
+        assert_eq!(bounds.total_firm_limit_bytes(), expected_firm);
+    }
     #[test]
     fn worker_pool_configuration_defaults_to_dedicated() {
         let blueprint = blueprint_with_components();

@@ -132,7 +132,7 @@ impl OttlFilter {
 
 impl SynchronousTransform for OttlFilter {
     fn transform_buffer(&mut self, event_buffer: &mut EventsBuffer) {
-        for event in event_buffer {
+        for mut event in event_buffer {
             if let Some(trace) = event.try_as_trace_mut() {
                 trace.remove_spans(|trace, span| self.should_drop_span(trace, span));
             }
@@ -146,7 +146,7 @@ mod tests {
 
     use saluki_core::{
         components::{transforms::*, BuildContext},
-        data_model::event::{trace::AttributeValue, Event},
+        data_model::event::{trace::AttributeValue, Event, EventRef},
         topology::EventsBuffer,
     };
 
@@ -157,7 +157,7 @@ mod tests {
         buffer
             .into_iter()
             .filter_map(|e| match e {
-                Event::Trace(t) => Some(t.spans().len()),
+                EventRef::Trace(t) => Some(t.spans().len()),
                 _ => None,
             })
             .sum()

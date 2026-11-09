@@ -131,7 +131,7 @@ impl SynchronousTransform for OttlTransform {
             return;
         }
 
-        for event in event_buffer {
+        for mut event in event_buffer {
             if let Some(trace) = event.try_as_trace_mut() {
                 let resource_attrs = std::sync::Arc::clone(&trace.attributes);
                 for span in trace.spans_mut() {
@@ -151,7 +151,7 @@ mod tests {
         data_model::event::{
             service_check::{CheckStatus, ServiceCheck},
             trace::AttributeValue,
-            Event,
+            Event, EventRef,
         },
         topology::EventsBuffer,
     };
@@ -166,7 +166,7 @@ mod tests {
         buffer
             .into_iter()
             .filter_map(|e| match e {
-                Event::Trace(t) => Some(t.spans()),
+                EventRef::Trace(t) => Some(t.spans()),
                 _ => None,
             })
             .flat_map(|spans| spans.iter())
@@ -780,8 +780,8 @@ mod tests {
         let mut trace_span_x = None;
         for event in &buffer {
             match event {
-                Event::ServiceCheck(_) => saw_service_check = true,
-                Event::Trace(t) => {
+                EventRef::ServiceCheck(_) => saw_service_check = true,
+                EventRef::Trace(t) => {
                     trace_span_x = t.spans().first().and_then(|s| {
                         let k = MetaString::from("x");
                         s.attributes.get(&k).and_then(|v| match v {

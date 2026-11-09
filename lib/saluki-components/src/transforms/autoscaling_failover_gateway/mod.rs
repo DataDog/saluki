@@ -9,7 +9,10 @@ use saluki_core::{
         transforms::{Transform, TransformBuilder, TransformContext},
         BuildContext,
     },
-    data_model::event::{metric::MetricValues, Event, EventType},
+    data_model::event::{
+        metric::{Metric, MetricValues},
+        EventType,
+    },
     topology::{EventsBuffer, OutputDefinition},
 };
 use saluki_error::GenericError;
@@ -64,11 +67,11 @@ impl AutoscalingFailoverGateway {
         }
     }
 
-    fn should_forward(&self, event: &Event) -> bool {
+    fn should_forward(&self, metric: Option<&Metric>) -> bool {
         let GatewayMode::FilteredForward { allowlist } = &self.mode else {
             return false;
         };
-        let Event::Metric(metric) = event else {
+        let Some(metric) = metric else {
             return false;
         };
         if !matches!(
@@ -85,7 +88,7 @@ impl AutoscalingFailoverGateway {
         &self, mut events: EventsBuffer, context: &mut TransformContext,
     ) -> Result<(), GenericError> {
         let input_events = events.len();
-        events.remove_if(|event| !self.should_forward(event));
+        events.remove_if(|event| !self.should_forward(event.try_as_metric()));
 
         let sent_events = context.dispatcher().buffered()?.send_all(events).await?;
         let dropped_events = input_events - sent_events;
@@ -182,14 +185,14 @@ mod tests {
     fn inactive_gateway_drops_everything() {
         let gw = gateway_from_config(false, &["allowed.metric"]);
 
-        assert!(!gw.should_forward(&Event::Metric(Metric::counter("allowed.metric", 1.0))));
+        assert!(!gw.should_forward(Event::Metric(Metric::counter("allowed.metric", 1.0)).try_as_metric()));
     }
 
     #[test]
     fn empty_metric_allowlist_drops_everything() {
         let gw = gateway_from_config(true, &[]);
 
-        assert!(!gw.should_forward(&Event::Metric(Metric::counter("allowed.metric", 1.0))));
+        assert!(!gw.should_forward(Event::Metric(Metric::counter("allowed.metric", 1.0)).try_as_metric()));
     }
 
     #[test]
@@ -199,25 +202,23 @@ mod tests {
             &["allowed.counter", "allowed.gauge", "allowed.rate", "allowed.set"],
         );
 
-        assert!(gw.should_forward(&Event::Metric(Metric::counter("allowed.counter", 1.0))));
-        assert!(gw.should_forward(&Event::Metric(Metric::gauge("allowed.gauge", 1.0))));
-        assert!(gw.should_forward(&Event::Metric(Metric::rate(
-            "allowed.rate",
-            1.0,
-            Duration::from_secs(10)
-        ))));
-        assert!(gw.should_forward(&Event::Metric(Metric::set("allowed.set", "value"))));
-        assert!(!gw.should_forward(&Event::Metric(Metric::counter("blocked.counter", 1.0))));
+        assert!(gw.should_forward(Event::Metric(Metric::counter("allowed.counter", 1.0)).try_as_metric()));
+        assert!(gw.should_forward(Event::Metric(Metric::gauge("allowed.gauge", 1.0)).try_as_metric()));
+        assert!(gw
+            .should_forward(Event::Metric(Metric::rate("allowed.rate", 1.0, Duration::from_secs(10))).try_as_metric()));
+        assert!(gw.should_forward(Event::Metric(Metric::set("allowed.set", "value")).try_as_metric()));
+        assert!(!gw.should_forward(Event::Metric(Metric::counter("blocked.counter", 1.0)).try_as_metric()));
     }
 
     #[test]
     fn active_gateway_drops_sketch_metrics_even_when_allowed() {
         let gw = gateway_from_config(true, &["allowed.histogram", "allowed.distribution"]);
 
-        assert!(!gw.should_forward(&Event::Metric(Metric::histogram("allowed.histogram", [1.0, 2.0, 3.0]))));
-        assert!(!gw.should_forward(&Event::Metric(Metric::distribution(
-            "allowed.distribution",
-            [1.0, 2.0, 3.0]
-        ))));
+        assert!(
+            !gw.should_forward(Event::Metric(Metric::histogram("allowed.histogram", [1.0, 2.0, 3.0])).try_as_metric())
+        );
+        assert!(!gw.should_forward(
+            Event::Metric(Metric::distribution("allowed.distribution", [1.0, 2.0, 3.0])).try_as_metric()
+        ));
     }
 }

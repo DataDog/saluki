@@ -389,7 +389,7 @@ impl Transform for TagFilterlist {
                 _ = health.live() => continue,
                 maybe_events = context.events().next() => match maybe_events {
                     Some(mut events) => {
-                        for event in &mut events {
+                        for mut event in &mut events {
                             if let Some(metric) = event.try_as_metric_mut() {
                                 if metric.values().is_sketch()
                                     || matches!(metric.values(), MetricValues::Counter(_))

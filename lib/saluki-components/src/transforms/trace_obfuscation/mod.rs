@@ -16,7 +16,7 @@ use saluki_core::{
     components::{transforms::*, BuildContext},
     data_model::event::{
         trace::{AttributeValue, Span},
-        Event,
+        EventMut,
     },
     topology::EventsBuffer,
 };
@@ -266,7 +266,7 @@ impl TraceObfuscation {
 impl SynchronousTransform for TraceObfuscation {
     fn transform_buffer(&mut self, buffer: &mut EventsBuffer) {
         for event in buffer {
-            if let Event::Trace(ref mut trace) = event {
+            if let EventMut::Trace(trace) = event {
                 for span in trace.spans_mut() {
                     self.obfuscate_span(span);
                 }

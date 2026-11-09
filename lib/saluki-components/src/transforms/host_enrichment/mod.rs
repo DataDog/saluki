@@ -87,7 +87,7 @@ impl HostEnrichment {
 
 impl SynchronousTransform for HostEnrichment {
     fn transform_buffer(&mut self, event_buffer: &mut EventsBuffer) {
-        for event in event_buffer {
+        for mut event in event_buffer {
             if let Some(eventd) = event.try_as_eventd_mut() {
                 self.enrich_eventd(eventd);
             } else if let Some(service_check) = event.try_as_service_check_mut() {

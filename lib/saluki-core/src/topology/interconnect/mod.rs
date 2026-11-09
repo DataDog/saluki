@@ -1,7 +1,9 @@
 //! Component interconnects.
 
 mod event_buffer;
-pub use self::event_buffer::{EventBufferManager, FixedSizeEventBuffer};
+pub use self::event_buffer::{
+    EventBufferIntoIter, EventBufferIter, EventBufferIterMut, EventBufferManager, FixedSizeEventBuffer,
+};
 
 mod consumer;
 pub use self::consumer::Consumer;

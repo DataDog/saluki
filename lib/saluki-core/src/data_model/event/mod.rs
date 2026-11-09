@@ -86,6 +86,35 @@ impl fmt::Display for EventType {
     }
 }
 
+impl EventType {
+    /// Returns the combined in-memory size, in bytes, of one item of each event type in this set.
+    ///
+    /// Event buffers store each event type in its own collection, so this is the per-item cost of a buffer that may
+    /// hold every event type in this set. For a single event type, this is the size of that event type alone.
+    pub fn combined_item_size(self) -> usize {
+        let mut size = 0;
+        if self.contains(Self::Metric) {
+            size += std::mem::size_of::<Metric>();
+        }
+        if self.contains(Self::EventD) {
+            size += std::mem::size_of::<EventD>();
+        }
+        if self.contains(Self::ServiceCheck) {
+            size += std::mem::size_of::<ServiceCheck>();
+        }
+        if self.contains(Self::Log) {
+            size += std::mem::size_of::<Log>();
+        }
+        if self.contains(Self::Trace) {
+            size += std::mem::size_of::<Trace>();
+        }
+        if self.contains(Self::TraceStats) {
+            size += std::mem::size_of::<TraceStats>();
+        }
+        size
+    }
+}
+
 /// A telemetry event.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
@@ -245,6 +274,216 @@ impl Event {
     /// Returns `true` if the event is a `Trace`.
     pub fn is_trace(&self) -> bool {
         matches!(self, Event::Trace(_))
+    }
+}
+
+macro_rules! impl_event_view {
+    ($name:ident) => {
+        impl $name<'_> {
+            /// Gets the type of this event.
+            pub fn event_type(&self) -> EventType {
+                match self {
+                    Self::Metric(_) => EventType::Metric,
+                    Self::EventD(_) => EventType::EventD,
+                    Self::ServiceCheck(_) => EventType::ServiceCheck,
+                    Self::Log(_) => EventType::Log,
+                    Self::Trace(_) => EventType::Trace,
+                    Self::TraceStats(_) => EventType::TraceStats,
+                }
+            }
+
+            /// Returns `true` if the event is a `Metric`.
+            pub fn is_metric(&self) -> bool {
+                matches!(self, Self::Metric(_))
+            }
+
+            /// Returns `true` if the event is an `EventD`.
+            pub fn is_eventd(&self) -> bool {
+                matches!(self, Self::EventD(_))
+            }
+
+            /// Returns `true` if the event is a `ServiceCheck`.
+            pub fn is_service_check(&self) -> bool {
+                matches!(self, Self::ServiceCheck(_))
+            }
+
+            /// Returns `true` if the event is a `Log`.
+            pub fn is_log(&self) -> bool {
+                matches!(self, Self::Log(_))
+            }
+
+            /// Returns `true` if the event is a `Trace`.
+            pub fn is_trace(&self) -> bool {
+                matches!(self, Self::Trace(_))
+            }
+
+            /// Returns `true` if the event is a `TraceStats`.
+            pub fn is_trace_stats(&self) -> bool {
+                matches!(self, Self::TraceStats(_))
+            }
+        }
+    };
+}
+
+/// A shared reference to an event held in an event buffer.
+///
+/// Event buffers store each event type in its own collection, so they can't hand out `&Event`. `EventRef` is the
+/// equivalent view, borrowing the inner event value directly.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum EventRef<'a> {
+    /// A metric.
+    Metric(&'a Metric),
+
+    /// A Datadog Event.
+    EventD(&'a EventD),
+
+    /// A service check.
+    ServiceCheck(&'a ServiceCheck),
+
+    /// A log.
+    Log(&'a Log),
+
+    /// A trace.
+    Trace(&'a Trace),
+
+    /// Trace stats.
+    TraceStats(&'a TraceStats),
+}
+
+impl_event_view!(EventRef);
+
+impl<'a> EventRef<'a> {
+    /// Returns a reference to the inner event value, if this event is a `Metric`.
+    pub fn try_as_metric(&self) -> Option<&'a Metric> {
+        match *self {
+            Self::Metric(metric) => Some(metric),
+            _ => None,
+        }
+    }
+
+    /// Returns a reference to the inner event value, if this event is an `EventD`.
+    pub fn try_as_eventd(&self) -> Option<&'a EventD> {
+        match *self {
+            Self::EventD(eventd) => Some(eventd),
+            _ => None,
+        }
+    }
+
+    /// Returns a reference to the inner event value, if this event is a `ServiceCheck`.
+    pub fn try_as_service_check(&self) -> Option<&'a ServiceCheck> {
+        match *self {
+            Self::ServiceCheck(service_check) => Some(service_check),
+            _ => None,
+        }
+    }
+
+    /// Returns a reference to the inner event value, if this event is a `Trace`.
+    pub fn try_as_trace(&self) -> Option<&'a Trace> {
+        match *self {
+            Self::Trace(trace) => Some(trace),
+            _ => None,
+        }
+    }
+
+    /// Clones the referenced event into an owned [`Event`].
+    pub fn to_owned_event(&self) -> Event {
+        match *self {
+            Self::Metric(metric) => Event::Metric(metric.clone()),
+            Self::EventD(eventd) => Event::EventD(eventd.clone()),
+            Self::ServiceCheck(service_check) => Event::ServiceCheck(service_check.clone()),
+            Self::Log(log) => Event::Log(log.clone()),
+            Self::Trace(trace) => Event::Trace(trace.clone()),
+            Self::TraceStats(stats) => Event::TraceStats(stats.clone()),
+        }
+    }
+}
+
+/// A mutable reference to an event held in an event buffer.
+///
+/// Event buffers store each event type in its own collection, so they can't hand out `&mut Event`. `EventMut` is the
+/// equivalent view, borrowing the inner event value directly.
+#[derive(Debug, PartialEq)]
+pub enum EventMut<'a> {
+    /// A metric.
+    Metric(&'a mut Metric),
+
+    /// A Datadog Event.
+    EventD(&'a mut EventD),
+
+    /// A service check.
+    ServiceCheck(&'a mut ServiceCheck),
+
+    /// A log.
+    Log(&'a mut Log),
+
+    /// A trace.
+    Trace(&'a mut Trace),
+
+    /// Trace stats.
+    TraceStats(&'a mut TraceStats),
+}
+
+impl_event_view!(EventMut);
+
+impl EventMut<'_> {
+    /// Returns a shared view of this event.
+    pub fn as_event_ref(&self) -> EventRef<'_> {
+        match self {
+            Self::Metric(metric) => EventRef::Metric(metric),
+            Self::EventD(eventd) => EventRef::EventD(eventd),
+            Self::ServiceCheck(service_check) => EventRef::ServiceCheck(service_check),
+            Self::Log(log) => EventRef::Log(log),
+            Self::Trace(trace) => EventRef::Trace(trace),
+            Self::TraceStats(stats) => EventRef::TraceStats(stats),
+        }
+    }
+
+    /// Returns a reference to the inner event value, if this event is a `Metric`.
+    pub fn try_as_metric(&self) -> Option<&Metric> {
+        match self {
+            Self::Metric(metric) => Some(metric),
+            _ => None,
+        }
+    }
+
+    /// Returns a mutable reference to the inner event value, if this event is a `Metric`.
+    pub fn try_as_metric_mut(&mut self) -> Option<&mut Metric> {
+        match self {
+            Self::Metric(metric) => Some(metric),
+            _ => None,
+        }
+    }
+
+    /// Returns a mutable reference to the inner event value, if this event is an `EventD`.
+    pub fn try_as_eventd_mut(&mut self) -> Option<&mut EventD> {
+        match self {
+            Self::EventD(eventd) => Some(eventd),
+            _ => None,
+        }
+    }
+
+    /// Returns a mutable reference to the inner event value, if this event is a `ServiceCheck`.
+    pub fn try_as_service_check_mut(&mut self) -> Option<&mut ServiceCheck> {
+        match self {
+            Self::ServiceCheck(service_check) => Some(service_check),
+            _ => None,
+        }
+    }
+
+    /// Returns a mutable reference to the inner event value, if this event is a `Log`.
+    pub fn try_as_log_mut(&mut self) -> Option<&mut Log> {
+        match self {
+            Self::Log(log) => Some(log),
+            _ => None,
+        }
+    }
+
+    /// Returns a mutable reference to the inner event value, if this event is a `Trace`.
+    pub fn try_as_trace_mut(&mut self) -> Option<&mut Trace> {
+        match self {
+            Self::Trace(trace) => Some(trace),
+            _ => None,
+        }
     }
 }
 

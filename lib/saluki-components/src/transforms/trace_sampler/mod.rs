@@ -17,7 +17,7 @@ use saluki_core::{
     components::{transforms::*, BuildContext},
     data_model::event::{
         trace::{AttributeValue, Span, Trace, TraceIngestInfo},
-        Event, EventType,
+        EventMut, EventType,
     },
     topology::{EventsBuffer, OutputDefinition},
 };
@@ -330,7 +330,7 @@ impl TraceSampler {
     fn process_buffer(&mut self, events: &mut EventsBuffer) {
         self.apply_remote_sampling();
         events.remove_if(|event| match event {
-            Event::Trace(trace) => !self.process_trace(trace),
+            EventMut::Trace(trace) => !self.process_trace(trace),
             _ => false,
         });
     }
@@ -891,7 +891,10 @@ mod tests {
 
     use datadog_agent_apm::sampling::test_util::TestSamplingPublisher;
     use saluki_core::components::test_util::TestComponentDriver;
-    use saluki_core::data_model::event::trace::{AttributeValue, Span as DdSpan, Trace, TraceIngestInfo};
+    use saluki_core::data_model::event::{
+        trace::{AttributeValue, Span as DdSpan, Trace, TraceIngestInfo},
+        Event,
+    };
 
     use super::*;
     use crate::common::datadog::OTEL_TRACE_ID_META_KEY;

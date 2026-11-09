@@ -93,7 +93,7 @@ impl SynchronousTransform for ApmOnboarding {
             return;
         }
 
-        for event in event_buffer {
+        for mut event in event_buffer {
             if let Some(trace) = event.try_as_trace_mut() {
                 self.enrich_trace(trace)
             }
@@ -164,7 +164,7 @@ mod tests {
     use std::collections::HashMap;
 
     use saluki_common::collections::FastHashMap;
-    use saluki_core::data_model::event::{trace::TraceIngestInfo, Event};
+    use saluki_core::data_model::event::{trace::TraceIngestInfo, Event, EventRef};
 
     use super::*;
 
@@ -184,7 +184,7 @@ mod tests {
     fn span_attrs_by_id(buffer: &EventsBuffer, span_id: u64) -> HashMap<String, String> {
         let mut out = HashMap::new();
         for event in buffer {
-            if let Event::Trace(trace) = event {
+            if let EventRef::Trace(trace) = event {
                 for span in trace.spans() {
                     if span.span_id() == span_id {
                         for (k, v) in span.attributes.iter() {

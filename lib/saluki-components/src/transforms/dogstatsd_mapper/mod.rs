@@ -347,7 +347,7 @@ pub struct DogStatsDMapper {
 
 impl SynchronousTransform for DogStatsDMapper {
     fn transform_buffer(&mut self, event_buffer: &mut EventsBuffer) {
-        for event in event_buffer {
+        for mut event in event_buffer {
             if let Some(metric) = event.try_as_metric_mut() {
                 if let Some(new_context) = self.metric_mapper.try_map(metric.context()) {
                     *metric.context_mut() = new_context;
