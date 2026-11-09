@@ -78,8 +78,18 @@ pub fn parse_dogstatsd_event<'a>(
     let remaining = if !remaining.is_empty() {
         let (mut remaining, _) = tag("|")(remaining)?;
         while let Some((chunk, tail)) = split_at_delimiter(remaining, b'|') {
-            // Skip fields too short to carry a value (for example, the empty field in `text||#tags`) rather than
-            // stopping, so that any fields after them are still parsed. This matches the Datadog Agent.
+            // An empty field (for example, `text||#tags`) is a structural defect. In permissive mode, we skip it and
+            // keep parsing the fields after it, matching the Datadog Agent. Otherwise, we reject the event.
+            if chunk.is_empty() {
+                if !config.permissive {
+                    return Err(nom::Err::Error(Error::new(remaining, ErrorKind::Verify)));
+                }
+                remaining = tail;
+                continue;
+            }
+
+            // A one-byte field (for example, a bare `#` with no tags) carries no value, so there's nothing to parse,
+            // but any fields after it still are.
             if chunk.len() < 2 {
                 remaining = tail;
                 continue;
@@ -279,20 +289,29 @@ mod tests {
     }
 
     #[test]
-    fn eventd_fields_after_empty_field_are_parsed() {
+    fn eventd_fields_after_empty_or_one_byte_field_are_parsed() {
+        let permissive = DogStatsDCodecConfiguration::default().with_permissive_mode(true);
+        let strict = DogStatsDCodecConfiguration::default().with_permissive_mode(false);
         let tags = ["tag1", "tag2"];
         let shared_tag_set: SharedTagSet = tags.iter().map(|&s| Tag::from(s)).collect::<TagSet>().into_shared();
-
-        for raw in [
-            format!("_e{{5,4}}:title|text||#{}", tags.join(",")),
-            format!("_e{{5,4}}:title|text|#|#{}", tags.join(",")),
-        ] {
-            let expected = EventD::new("title", "text")
+        let expected = || {
+            EventD::new("title", "text")
                 .with_tags(shared_tag_set.clone())
                 .with_priority(Priority::Normal)
-                .with_alert_type(AlertType::Info);
-            let actual = parse_dsd_eventd(raw.as_bytes()).unwrap();
-            check_basic_eventd_eq(expected, actual);
+                .with_alert_type(AlertType::Info)
+        };
+
+        // An empty field is skipped in permissive mode, but rejects the event in strict mode.
+        let raw = format!("_e{{5,4}}:title|text||#{}", tags.join(","));
+        let actual = parse_dsd_eventd_with_conf(raw.as_bytes(), &permissive).unwrap();
+        check_basic_eventd_eq(expected(), actual);
+        assert!(parse_dogstatsd_event(raw.as_bytes(), &strict).is_err());
+
+        // A one-byte field, such as a bare `#`, carries no value, and the fields after it are parsed in both modes.
+        let raw = format!("_e{{5,4}}:title|text|#|#{}", tags.join(","));
+        for config in [&permissive, &strict] {
+            let actual = parse_dsd_eventd_with_conf(raw.as_bytes(), config).unwrap();
+            check_basic_eventd_eq(expected(), actual);
         }
     }
 

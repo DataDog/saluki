@@ -47,8 +47,18 @@ pub fn parse_dogstatsd_service_check<'a>(
     let remaining = if !remaining.is_empty() {
         let (mut remaining, _) = tag("|")(remaining)?;
         while let Some((chunk, tail)) = split_at_delimiter(remaining, b'|') {
-            // Skip fields too short to carry a value (for example, the empty field in `0||#tags`) rather than
-            // stopping, so that any fields after them are still parsed. This matches the Datadog Agent.
+            // An empty field (for example, `0||#tags`) is a structural defect. In permissive mode, we skip it and keep
+            // parsing the fields after it, matching the Datadog Agent. Otherwise, we reject the service check.
+            if chunk.is_empty() {
+                if !config.permissive {
+                    return Err(nom::Err::Error(Error::new(remaining, ErrorKind::Verify)));
+                }
+                remaining = tail;
+                continue;
+            }
+
+            // A one-byte field (for example, a bare `#` with no tags) carries no value, so there's nothing to parse,
+            // but any fields after it still are.
             if chunk.len() < 2 {
                 remaining = tail;
                 continue;
@@ -202,19 +212,26 @@ mod tests {
     }
 
     #[test]
-    fn service_check_fields_after_empty_field_are_parsed() {
+    fn service_check_fields_after_empty_or_one_byte_field_are_parsed() {
+        let permissive = DogStatsDCodecConfiguration::default().with_permissive_mode(true);
+        let strict = DogStatsDCodecConfiguration::default().with_permissive_mode(false);
         let name = "testsvc";
         let sc_status = CheckStatus::Warning;
         let tags = ["tag1", "tag2"];
         let shared_tag_set = SharedTagSet::from(TagSet::from_iter(tags.iter().map(|&s| s.into())));
+        let expected = || ServiceCheck::new(name, sc_status).with_tags(shared_tag_set.clone());
 
-        for raw in [
-            format!("_sc|{}|{}||#{}", name, sc_status.as_u8(), tags.join(",")),
-            format!("_sc|{}|{}|#|#{}", name, sc_status.as_u8(), tags.join(",")),
-        ] {
-            let actual = parse_dsd_service_check(raw.as_bytes()).unwrap();
-            let expected = ServiceCheck::new(name, sc_status).with_tags(shared_tag_set.clone());
-            check_basic_service_check_eq(expected, actual);
+        // An empty field is skipped in permissive mode, but rejects the service check in strict mode.
+        let raw = format!("_sc|{}|{}||#{}", name, sc_status.as_u8(), tags.join(","));
+        let actual = parse_dsd_service_check_with_conf(raw.as_bytes(), &permissive).unwrap();
+        check_basic_service_check_eq(expected(), actual);
+        assert!(parse_dogstatsd_service_check(raw.as_bytes(), &strict).is_err());
+
+        // A one-byte field, such as a bare `#`, carries no value, and the fields after it are parsed in both modes.
+        let raw = format!("_sc|{}|{}|#|#{}", name, sc_status.as_u8(), tags.join(","));
+        for config in [&permissive, &strict] {
+            let actual = parse_dsd_service_check_with_conf(raw.as_bytes(), config).unwrap();
+            check_basic_service_check_eq(expected(), actual);
         }
     }
 
