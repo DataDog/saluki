@@ -1,6 +1,0 @@
----
-enhancements:
-  - |
-    The experimental APM relay now serves the tracer flare endpoint, ``/tracer_flare/v1``, itself. Tracer flares
-    are sent straight to Datadog, using the configured ``site``, ``api_key``, proxy, and TLS settings, instead of
-    passing through the trace-agent. A rotated ``api_key`` takes effect without a restart.
