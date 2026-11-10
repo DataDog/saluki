@@ -636,7 +636,12 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_cmd_host(&mut self, value: String) {
-        self.config.control.ipc.cmd_host = value;
+        // Like the Datadog Agent, an explicitly set `ipc_address` (the deprecated name for `cmd_host`) takes
+        // precedence; `consume_ipc_address` writes the host in that case. Checking provenance on both sides, rather
+        // than relying on the order the two keys are consumed in, keeps the result the same either way.
+        if self.sources.provenance("ipc_address") != Provenance::Explicit {
+            self.config.control.ipc.cmd_host = value;
+        }
     }
 
     fn consume_cmd_port(&mut self, value: i64) {
@@ -1177,10 +1182,11 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_ipc_address(&mut self, value: String) {
-        // The deprecated `ipc_address` only takes precedence over `cmd_host` when it's explicitly set, so keep its
-        // provenance.
-        let provenance = self.sources.provenance("ipc_address");
-        self.config.control.ipc.ipc_address = ConfigValue::new(value, provenance);
+        // The deprecated `ipc_address` only takes precedence over `cmd_host` when it's explicitly set: the Core Agent
+        // streams it at its default even when only `cmd_host` is configured. See `consume_cmd_host`.
+        if self.sources.provenance("ipc_address") == Provenance::Explicit {
+            self.config.control.ipc.cmd_host = value;
+        }
     }
 
     fn consume_ipc_cert_file_path(&mut self, value: String) {
@@ -3377,21 +3383,27 @@ mod tests {
 
         assert!(errors.is_none());
         assert_eq!(config.control.ipc.cmd_host, "localhost");
-        assert_defaulted(&config.control.ipc.ipc_address, "localhost");
-        assert_eq!(config.control.ipc.ipc_host(), "localhost");
     }
 
     #[test]
     fn ipc_host_uses_cmd_host_unless_ipc_address_is_explicitly_set() {
+        #[track_caller]
+        fn assert_ipc_host(config: &SalukiConfiguration, errors: Option<TranslateErrors>, expected: &str) {
+            assert!(errors.is_none());
+            assert_eq!(config.control.ipc.cmd_host, expected);
+        }
+
         // `cmd_host` alone.
         let (config, errors) = translate_explicit(json!({ "cmd_host": "::1" }));
-        assert!(errors.is_none());
-        assert_eq!(config.control.ipc.ipc_host(), "::1");
+        assert_ipc_host(&config, errors, "::1");
+
+        // `ipc_address` alone.
+        let (config, errors) = translate_explicit(json!({ "ipc_address": "127.0.0.2" }));
+        assert_ipc_host(&config, errors, "127.0.0.2");
 
         // Like the Datadog Agent, an explicitly set `ipc_address` takes precedence over `cmd_host`.
         let (config, errors) = translate_explicit(json!({ "cmd_host": "127.0.0.2", "ipc_address": "::1" }));
-        assert!(errors.is_none());
-        assert_eq!(config.control.ipc.ipc_host(), "::1");
+        assert_ipc_host(&config, errors, "::1");
 
         // The Core Agent streams `ipc_address` at its default even when only `cmd_host` is configured, and that
         // default must not override `cmd_host`.
@@ -3399,8 +3411,7 @@ mod tests {
             ("cmd_host", json!("127.0.0.2"), StreamProvenance::Explicit),
             ("ipc_address", json!("localhost"), StreamProvenance::Default),
         ]);
-        assert!(errors.is_none());
-        assert_eq!(config.control.ipc.ipc_host(), "127.0.0.2");
+        assert_ipc_host(&config, errors, "127.0.0.2");
     }
 
     #[test]

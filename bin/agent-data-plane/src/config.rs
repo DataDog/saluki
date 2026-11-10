@@ -24,7 +24,7 @@ pub(crate) fn remote_agent_client_configuration(
     let ipc = &config.control.ipc;
     let auth = DataPlaneConfiguration::from_configuration(config).ipc_auth_configuration();
     RemoteAgentClientConfiguration::from_parts(
-        ipc.ipc_host(),
+        &ipc.cmd_host,
         ipc.cmd_port,
         auth,
         ipc.grpc_max_message_size,
@@ -243,7 +243,6 @@ impl<'a> DataPlaneConfiguration<'a> {
 
 #[cfg(test)]
 mod tests {
-    use agent_data_plane_config::Provenance;
     use datadog_agent_commons::platform::PlatformSettings;
 
     use super::*;
@@ -252,33 +251,27 @@ mod tests {
     fn ipc_configuration() -> SalukiConfiguration {
         let mut config = SalukiConfiguration::default();
         config.control.ipc.cmd_host = "localhost".to_string();
-        config.control.ipc.ipc_address = ConfigValue::new("localhost".to_string(), Provenance::Default);
         config
     }
 
     #[test]
-    fn remote_agent_client_configuration_resolves_the_ipc_host() {
+    fn remote_agent_client_configuration_uses_the_ipc_host() {
         let cases = [
             // By default, `localhost` connects to IPv4 loopback, as before `cmd_host` was supported.
-            ("localhost", None, "https://127.0.0.1:5001/"),
-            ("::1", None, "https://[::1]:5001/"),
-            ("127.0.0.2", None, "https://127.0.0.2:5001/"),
-            // Like the Datadog Agent, an explicitly set `ipc_address` takes precedence over `cmd_host`.
-            ("127.0.0.2", Some("::1"), "https://[::1]:5001/"),
+            ("localhost", "https://127.0.0.1:5001/"),
+            ("::1", "https://[::1]:5001/"),
+            ("127.0.0.2", "https://127.0.0.2:5001/"),
         ];
-        for (cmd_host, ipc_address, expected) in cases {
+        for (cmd_host, expected) in cases {
             let mut config = ipc_configuration();
             config.control.ipc.cmd_port = 5001;
             config.control.ipc.cmd_host = cmd_host.to_string();
-            if let Some(ipc_address) = ipc_address {
-                config.control.ipc.ipc_address = ConfigValue::new(ipc_address.to_string(), Provenance::Explicit);
-            }
 
             let client_config = remote_agent_client_configuration(&config).expect("valid IPC configuration");
             assert_eq!(
                 client_config.endpoint().to_string(),
                 expected,
-                "for cmd_host {cmd_host:?} and ipc_address {ipc_address:?}"
+                "for cmd_host {cmd_host:?}"
             );
         }
     }
