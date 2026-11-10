@@ -114,7 +114,7 @@
 <a href=#114 id=114 data-nosnippet>114</a>    <span class="kw">use </span>otlp_protos::opentelemetry::proto::common::v1::{<span class="self">self </span><span class="kw">as </span>otlp_common};
 <a href=#115 id=115 data-nosnippet>115</a>    <span class="kw">use </span>otlp_protos::opentelemetry::proto::logs::v1 <span class="kw">as </span>otlp_logs_v1;
 <a href=#116 id=116 data-nosnippet>116</a>    <span class="kw">use </span>otlp_protos::opentelemetry::proto::resource::v1 <span class="kw">as </span>otlp_resource_v1;
-<a href=#117 id=117 data-nosnippet>117</a>    <span class="kw">use </span>saluki_core::data_model::event::log::{Log, LogStatus};
+<a href=#117 id=117 data-nosnippet>117</a>    <span class="kw">use </span>saluki_core::data_model::event::log::Log;
 <a href=#118 id=118 data-nosnippet>118</a>    <span class="kw">use </span>saluki_core::data_model::event::Event;
 <a href=#119 id=119 data-nosnippet>119</a>    <span class="kw">use </span>serde_json::Value <span class="kw">as </span>JsonValue;
 <a href=#120 id=120 data-nosnippet>120</a>
@@ -216,7 +216,7 @@
 <a href=#216 id=216 data-nosnippet>216</a>        <span class="kw">let </span>log = translate_log(lr.clone(), empty_resource(), <span class="prelude-val">None</span>);
 <a href=#217 id=217 data-nosnippet>217</a>
 <a href=#218 id=218 data-nosnippet>218</a>        <span class="macro">assert_eq!</span>(log.message(), <span class="string">"test message"</span>);
-<a href=#219 id=219 data-nosnippet>219</a>        <span class="macro">assert_eq!</span>(log.status(), <span class="prelude-val">Some</span>(LogStatus::Debug));
+<a href=#219 id=219 data-nosnippet>219</a>        <span class="macro">assert_eq!</span>(log.status(), <span class="string">"debug"</span>);
 <a href=#220 id=220 data-nosnippet>220</a>        <span class="kw">let </span>props = log.additional_properties();
 <a href=#221 id=221 data-nosnippet>221</a>        <span class="macro">assert_eq!</span>(props.get(<span class="string">"app"</span>), <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>JsonValue::String(<span class="string">"test"</span>.to_string())));
 <a href=#222 id=222 data-nosnippet>222</a>        <span class="macro">assert_eq!</span>(
@@ -447,7 +447,7 @@
 <a href=#447 id=447 data-nosnippet>447</a>            event_name: String::new(),
 <a href=#448 id=448 data-nosnippet>448</a>        };
 <a href=#449 id=449 data-nosnippet>449</a>        <span class="kw">let </span>log = translate_log(lr, empty_resource(), <span class="prelude-val">None</span>);
-<a href=#450 id=450 data-nosnippet>450</a>        <span class="macro">assert_eq!</span>(log.status(), <span class="prelude-val">Some</span>(LogStatus::Alert));
+<a href=#450 id=450 data-nosnippet>450</a>        <span class="macro">assert_eq!</span>(log.status(), <span class="string">"alert"</span>);
 <a href=#451 id=451 data-nosnippet>451</a>        <span class="kw">let </span>props = log.additional_properties();
 <a href=#452 id=452 data-nosnippet>452</a>        <span class="macro">assert_eq!</span>(
 <a href=#453 id=453 data-nosnippet>453</a>            props.get(<span class="string">"otel.severity_text"</span>),
@@ -477,7 +477,7 @@
 <a href=#477 id=477 data-nosnippet>477</a>        };
 <a href=#478 id=478 data-nosnippet>478</a>        <span class="kw">let </span>log = translate_log(lr, empty_resource(), <span class="prelude-val">None</span>);
 <a href=#479 id=479 data-nosnippet>479</a>        <span class="macro">assert_eq!</span>(log.message(), <span class="string">"This is log"</span>);
-<a href=#480 id=480 data-nosnippet>480</a>        <span class="macro">assert_eq!</span>(log.status(), <span class="prelude-val">Some</span>(LogStatus::Warning));
+<a href=#480 id=480 data-nosnippet>480</a>        <span class="macro">assert_eq!</span>(log.status(), <span class="string">"warn"</span>);
 <a href=#481 id=481 data-nosnippet>481</a>        <span class="kw">let </span>props = log.additional_properties();
 <a href=#482 id=482 data-nosnippet>482</a>        <span class="macro">assert_eq!</span>(
 <a href=#483 id=483 data-nosnippet>483</a>            props.get(<span class="string">"otel.severity_number"</span>),
@@ -506,7 +506,7 @@
 <a href=#506 id=506 data-nosnippet>506</a>        };
 <a href=#507 id=507 data-nosnippet>507</a>        <span class="kw">let </span>log = translate_log(lr, empty_resource(), <span class="prelude-val">None</span>);
 <a href=#508 id=508 data-nosnippet>508</a>        <span class="macro">assert_eq!</span>(log.message(), <span class="string">"This is log"</span>);
-<a href=#509 id=509 data-nosnippet>509</a>        <span class="macro">assert_eq!</span>(log.status(), <span class="prelude-val">Some</span>(LogStatus::Error));
+<a href=#509 id=509 data-nosnippet>509</a>        <span class="macro">assert_eq!</span>(log.status(), <span class="string">"error"</span>);
 <a href=#510 id=510 data-nosnippet>510</a>    }
 <a href=#511 id=511 data-nosnippet>511</a>
 <a href=#512 id=512 data-nosnippet>512</a>    <span class="attr">#[test]
@@ -621,139 +621,140 @@
 <a href=#621 id=621 data-nosnippet>621</a>            <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>JsonValue::String(<span class="string">"val2"</span>.to_string()))
 <a href=#622 id=622 data-nosnippet>622</a>        );
 <a href=#623 id=623 data-nosnippet>623</a>        <span class="macro">assert_eq!</span>(props.get(<span class="string">"root.nest6"</span>), <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>JsonValue::String(<span class="string">"val3"</span>.to_string())));
-<a href=#624 id=624 data-nosnippet>624</a>        <span class="macro">assert_eq!</span>(log.status(), <span class="prelude-val">Some</span>(LogStatus::Trace));
-<a href=#625 id=625 data-nosnippet>625</a>    }
-<a href=#626 id=626 data-nosnippet>626</a>
-<a href=#627 id=627 data-nosnippet>627</a>    <span class="attr">#[test]
-<a href=#628 id=628 data-nosnippet>628</a>    </span><span class="kw">fn </span>test_too_many_nestings() {
-<a href=#629 id=629 data-nosnippet>629</a>        <span class="comment">// Nested map deeper than MAX_DEPTH(10)
-<a href=#630 id=630 data-nosnippet>630</a>        </span><span class="kw">let </span>deep = any_value_vec_to_map(<span class="macro">vec!</span>[(
-<a href=#631 id=631 data-nosnippet>631</a>            <span class="string">"nest2"</span>,
-<a href=#632 id=632 data-nosnippet>632</a>            any_value_vec_to_map(<span class="macro">vec!</span>[(
-<a href=#633 id=633 data-nosnippet>633</a>                <span class="string">"nest3"</span>,
-<a href=#634 id=634 data-nosnippet>634</a>                any_value_vec_to_map(<span class="macro">vec!</span>[(
-<a href=#635 id=635 data-nosnippet>635</a>                    <span class="string">"nest4"</span>,
-<a href=#636 id=636 data-nosnippet>636</a>                    any_value_vec_to_map(<span class="macro">vec!</span>[(
-<a href=#637 id=637 data-nosnippet>637</a>                        <span class="string">"nest5"</span>,
-<a href=#638 id=638 data-nosnippet>638</a>                        any_value_vec_to_map(<span class="macro">vec!</span>[
-<a href=#639 id=639 data-nosnippet>639</a>                            (
-<a href=#640 id=640 data-nosnippet>640</a>                                <span class="string">"nest6"</span>,
-<a href=#641 id=641 data-nosnippet>641</a>                                any_value_vec_to_map(<span class="macro">vec!</span>[(
-<a href=#642 id=642 data-nosnippet>642</a>                                    <span class="string">"nest7"</span>,
-<a href=#643 id=643 data-nosnippet>643</a>                                    any_value_vec_to_map(<span class="macro">vec!</span>[(
-<a href=#644 id=644 data-nosnippet>644</a>                                        <span class="string">"nest8"</span>,
-<a href=#645 id=645 data-nosnippet>645</a>                                        any_value_vec_to_map(<span class="macro">vec!</span>[(
-<a href=#646 id=646 data-nosnippet>646</a>                                            <span class="string">"nest9"</span>,
-<a href=#647 id=647 data-nosnippet>647</a>                                            any_value_vec_to_map(<span class="macro">vec!</span>[(
-<a href=#648 id=648 data-nosnippet>648</a>                                                <span class="string">"nest10"</span>,
-<a href=#649 id=649 data-nosnippet>649</a>                                                any_value_vec_to_map(<span class="macro">vec!</span>[(
-<a href=#650 id=650 data-nosnippet>650</a>                                                    <span class="string">"nest11"</span>,
-<a href=#651 id=651 data-nosnippet>651</a>                                                    any_value_vec_to_map(<span class="macro">vec!</span>[(<span class="string">"nest12"</span>, string_to_any_value(<span class="string">"ok"</span>))]),
-<a href=#652 id=652 data-nosnippet>652</a>                                                )]),
-<a href=#653 id=653 data-nosnippet>653</a>                                            )]),
-<a href=#654 id=654 data-nosnippet>654</a>                                        )]),
-<a href=#655 id=655 data-nosnippet>655</a>                                    )]),
-<a href=#656 id=656 data-nosnippet>656</a>                                )]),
-<a href=#657 id=657 data-nosnippet>657</a>                            ),
-<a href=#658 id=658 data-nosnippet>658</a>                            (
-<a href=#659 id=659 data-nosnippet>659</a>                                <span class="string">"nest14"</span>,
-<a href=#660 id=660 data-nosnippet>660</a>                                any_value_vec_to_map(<span class="macro">vec!</span>[(<span class="string">"nest15"</span>, string_to_any_value(<span class="string">"ok2"</span>))]),
-<a href=#661 id=661 data-nosnippet>661</a>                            ),
-<a href=#662 id=662 data-nosnippet>662</a>                        ]),
-<a href=#663 id=663 data-nosnippet>663</a>                    )]),
-<a href=#664 id=664 data-nosnippet>664</a>                )]),
-<a href=#665 id=665 data-nosnippet>665</a>            )]),
-<a href=#666 id=666 data-nosnippet>666</a>        )]);
-<a href=#667 id=667 data-nosnippet>667</a>        <span class="kw">let </span>lr = otlp_logs_v1::LogRecord {
-<a href=#668 id=668 data-nosnippet>668</a>            time_unix_nano: <span class="number">0</span>,
-<a href=#669 id=669 data-nosnippet>669</a>            observed_time_unix_nano: <span class="number">0</span>,
-<a href=#670 id=670 data-nosnippet>670</a>            severity_number: <span class="number">0</span>,
-<a href=#671 id=671 data-nosnippet>671</a>            severity_text: String::new(),
-<a href=#672 id=672 data-nosnippet>672</a>            body: <span class="prelude-val">None</span>,
-<a href=#673 id=673 data-nosnippet>673</a>            attributes: <span class="macro">vec!</span>[otlp_common::KeyValue {
-<a href=#674 id=674 data-nosnippet>674</a>                key: <span class="string">"nest1"</span>.to_string(),
-<a href=#675 id=675 data-nosnippet>675</a>                value: <span class="prelude-val">Some</span>(deep),
-<a href=#676 id=676 data-nosnippet>676</a>            }],
-<a href=#677 id=677 data-nosnippet>677</a>            dropped_attributes_count: <span class="number">0</span>,
-<a href=#678 id=678 data-nosnippet>678</a>            flags: <span class="number">0</span>,
-<a href=#679 id=679 data-nosnippet>679</a>            trace_id: Vec::new(),
-<a href=#680 id=680 data-nosnippet>680</a>            span_id: Vec::new(),
-<a href=#681 id=681 data-nosnippet>681</a>            event_name: String::new(),
-<a href=#682 id=682 data-nosnippet>682</a>        };
-<a href=#683 id=683 data-nosnippet>683</a>        <span class="kw">let </span>log = translate_log(lr, empty_resource(), <span class="prelude-val">None</span>);
-<a href=#684 id=684 data-nosnippet>684</a>        <span class="kw">let </span>props = log.additional_properties();
-<a href=#685 id=685 data-nosnippet>685</a>        <span class="macro">assert_eq!</span>(
-<a href=#686 id=686 data-nosnippet>686</a>            props.get(<span class="string">"nest1.nest2.nest3.nest4.nest5.nest6.nest7.nest8.nest9.nest10"</span>),
-<a href=#687 id=687 data-nosnippet>687</a>            <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>JsonValue::String(<span class="string">"{\"nest11\":{\"nest12\":\"ok\"}}"</span>.to_string()))
-<a href=#688 id=688 data-nosnippet>688</a>        );
-<a href=#689 id=689 data-nosnippet>689</a>        <span class="macro">assert_eq!</span>(
-<a href=#690 id=690 data-nosnippet>690</a>            props.get(<span class="string">"nest1.nest2.nest3.nest4.nest5.nest14.nest15"</span>),
-<a href=#691 id=691 data-nosnippet>691</a>            <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>JsonValue::String(<span class="string">"ok2"</span>.to_string()))
-<a href=#692 id=692 data-nosnippet>692</a>        );
-<a href=#693 id=693 data-nosnippet>693</a>    }
-<a href=#694 id=694 data-nosnippet>694</a>
-<a href=#695 id=695 data-nosnippet>695</a>    <span class="attr">#[test]
-<a href=#696 id=696 data-nosnippet>696</a>    </span><span class="kw">fn </span>test_timestamps_formatted_properly() {
-<a href=#697 id=697 data-nosnippet>697</a>        <span class="kw">let </span>lr = otlp_logs_v1::LogRecord {
-<a href=#698 id=698 data-nosnippet>698</a>            time_unix_nano: <span class="number">1_700_499_303_397_000_000u64</span>,
-<a href=#699 id=699 data-nosnippet>699</a>            observed_time_unix_nano: <span class="number">0</span>,
-<a href=#700 id=700 data-nosnippet>700</a>            severity_number: <span class="number">5</span>,
-<a href=#701 id=701 data-nosnippet>701</a>            severity_text: String::new(),
-<a href=#702 id=702 data-nosnippet>702</a>            body: <span class="prelude-val">None</span>,
-<a href=#703 id=703 data-nosnippet>703</a>            attributes: Vec::new(),
-<a href=#704 id=704 data-nosnippet>704</a>            dropped_attributes_count: <span class="number">0</span>,
-<a href=#705 id=705 data-nosnippet>705</a>            flags: <span class="number">0</span>,
-<a href=#706 id=706 data-nosnippet>706</a>            trace_id: Vec::new(),
-<a href=#707 id=707 data-nosnippet>707</a>            span_id: Vec::new(),
-<a href=#708 id=708 data-nosnippet>708</a>            event_name: String::new(),
-<a href=#709 id=709 data-nosnippet>709</a>        };
-<a href=#710 id=710 data-nosnippet>710</a>        <span class="kw">let </span>log = translate_log(lr, empty_resource(), <span class="prelude-val">None</span>);
-<a href=#711 id=711 data-nosnippet>711</a>        <span class="kw">let </span>props = log.additional_properties();
-<a href=#712 id=712 data-nosnippet>712</a>        <span class="macro">assert_eq!</span>(
-<a href=#713 id=713 data-nosnippet>713</a>            props.get(<span class="string">"otel.timestamp"</span>),
-<a href=#714 id=714 data-nosnippet>714</a>            <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>JsonValue::String(<span class="string">"1700499303397000000"</span>.to_string()))
-<a href=#715 id=715 data-nosnippet>715</a>        );
-<a href=#716 id=716 data-nosnippet>716</a>        <span class="macro">assert_eq!</span>(
-<a href=#717 id=717 data-nosnippet>717</a>            props.get(<span class="string">"@timestamp"</span>),
-<a href=#718 id=718 data-nosnippet>718</a>            <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>JsonValue::String(<span class="string">"2023-11-20T16:55:03.397Z"</span>.to_string()))
-<a href=#719 id=719 data-nosnippet>719</a>        );
-<a href=#720 id=720 data-nosnippet>720</a>    }
-<a href=#721 id=721 data-nosnippet>721</a>
-<a href=#722 id=722 data-nosnippet>722</a>    <span class="attr">#[test]
-<a href=#723 id=723 data-nosnippet>723</a>    </span><span class="kw">fn </span>test_scope_attributes_included() {
-<a href=#724 id=724 data-nosnippet>724</a>        <span class="kw">let </span>lr = otlp_logs_v1::LogRecord {
-<a href=#725 id=725 data-nosnippet>725</a>            time_unix_nano: <span class="number">0</span>,
-<a href=#726 id=726 data-nosnippet>726</a>            observed_time_unix_nano: <span class="number">0</span>,
-<a href=#727 id=727 data-nosnippet>727</a>            severity_number: <span class="number">5</span>,
-<a href=#728 id=728 data-nosnippet>728</a>            severity_text: String::new(),
-<a href=#729 id=729 data-nosnippet>729</a>            body: <span class="prelude-val">Some</span>(string_to_any_value(<span class="string">"hello world"</span>)),
-<a href=#730 id=730 data-nosnippet>730</a>            attributes: Vec::new(),
-<a href=#731 id=731 data-nosnippet>731</a>            dropped_attributes_count: <span class="number">0</span>,
-<a href=#732 id=732 data-nosnippet>732</a>            flags: <span class="number">0</span>,
-<a href=#733 id=733 data-nosnippet>733</a>            trace_id: Vec::new(),
-<a href=#734 id=734 data-nosnippet>734</a>            span_id: Vec::new(),
-<a href=#735 id=735 data-nosnippet>735</a>            event_name: String::new(),
-<a href=#736 id=736 data-nosnippet>736</a>        };
-<a href=#737 id=737 data-nosnippet>737</a>        <span class="kw">let </span><span class="kw-2">mut </span>scope = otlp_common::InstrumentationScope::default();
-<a href=#738 id=738 data-nosnippet>738</a>        scope.attributes.push(key_value_string_to_otlp_common_key_value(
-<a href=#739 id=739 data-nosnippet>739</a>            <span class="string">"otelcol.component.id"</span>,
-<a href=#740 id=740 data-nosnippet>740</a>            <span class="string">"otlp"</span>,
-<a href=#741 id=741 data-nosnippet>741</a>        ));
-<a href=#742 id=742 data-nosnippet>742</a>        scope.attributes.push(key_value_string_to_otlp_common_key_value(
-<a href=#743 id=743 data-nosnippet>743</a>            <span class="string">"otelcol.component.kind"</span>,
-<a href=#744 id=744 data-nosnippet>744</a>            <span class="string">"Receiver"</span>,
-<a href=#745 id=745 data-nosnippet>745</a>        ));
-<a href=#746 id=746 data-nosnippet>746</a>        <span class="kw">let </span>log = translate_log(lr, empty_resource(), <span class="prelude-val">Some</span>(scope));
-<a href=#747 id=747 data-nosnippet>747</a>        <span class="macro">assert_eq!</span>(log.message(), <span class="string">"hello world"</span>);
-<a href=#748 id=748 data-nosnippet>748</a>        <span class="kw">let </span>props = log.additional_properties();
-<a href=#749 id=749 data-nosnippet>749</a>        <span class="macro">assert_eq!</span>(
-<a href=#750 id=750 data-nosnippet>750</a>            props.get(<span class="string">"otelcol.component.id"</span>),
-<a href=#751 id=751 data-nosnippet>751</a>            <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>JsonValue::String(<span class="string">"otlp"</span>.to_string()))
-<a href=#752 id=752 data-nosnippet>752</a>        );
-<a href=#753 id=753 data-nosnippet>753</a>        <span class="macro">assert_eq!</span>(
-<a href=#754 id=754 data-nosnippet>754</a>            props.get(<span class="string">"otelcol.component.kind"</span>),
-<a href=#755 id=755 data-nosnippet>755</a>            <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>JsonValue::String(<span class="string">"Receiver"</span>.to_string()))
-<a href=#756 id=756 data-nosnippet>756</a>        );
-<a href=#757 id=757 data-nosnippet>757</a>    }
-<a href=#758 id=758 data-nosnippet>758</a>}
+<a href=#624 id=624 data-nosnippet>624</a>        <span class="comment">// Severity number 0 has no name, so a log with no other status has none.
+<a href=#625 id=625 data-nosnippet>625</a>        </span><span class="macro">assert_eq!</span>(log.status(), <span class="string">""</span>);
+<a href=#626 id=626 data-nosnippet>626</a>    }
+<a href=#627 id=627 data-nosnippet>627</a>
+<a href=#628 id=628 data-nosnippet>628</a>    <span class="attr">#[test]
+<a href=#629 id=629 data-nosnippet>629</a>    </span><span class="kw">fn </span>test_too_many_nestings() {
+<a href=#630 id=630 data-nosnippet>630</a>        <span class="comment">// Nested map deeper than MAX_DEPTH(10)
+<a href=#631 id=631 data-nosnippet>631</a>        </span><span class="kw">let </span>deep = any_value_vec_to_map(<span class="macro">vec!</span>[(
+<a href=#632 id=632 data-nosnippet>632</a>            <span class="string">"nest2"</span>,
+<a href=#633 id=633 data-nosnippet>633</a>            any_value_vec_to_map(<span class="macro">vec!</span>[(
+<a href=#634 id=634 data-nosnippet>634</a>                <span class="string">"nest3"</span>,
+<a href=#635 id=635 data-nosnippet>635</a>                any_value_vec_to_map(<span class="macro">vec!</span>[(
+<a href=#636 id=636 data-nosnippet>636</a>                    <span class="string">"nest4"</span>,
+<a href=#637 id=637 data-nosnippet>637</a>                    any_value_vec_to_map(<span class="macro">vec!</span>[(
+<a href=#638 id=638 data-nosnippet>638</a>                        <span class="string">"nest5"</span>,
+<a href=#639 id=639 data-nosnippet>639</a>                        any_value_vec_to_map(<span class="macro">vec!</span>[
+<a href=#640 id=640 data-nosnippet>640</a>                            (
+<a href=#641 id=641 data-nosnippet>641</a>                                <span class="string">"nest6"</span>,
+<a href=#642 id=642 data-nosnippet>642</a>                                any_value_vec_to_map(<span class="macro">vec!</span>[(
+<a href=#643 id=643 data-nosnippet>643</a>                                    <span class="string">"nest7"</span>,
+<a href=#644 id=644 data-nosnippet>644</a>                                    any_value_vec_to_map(<span class="macro">vec!</span>[(
+<a href=#645 id=645 data-nosnippet>645</a>                                        <span class="string">"nest8"</span>,
+<a href=#646 id=646 data-nosnippet>646</a>                                        any_value_vec_to_map(<span class="macro">vec!</span>[(
+<a href=#647 id=647 data-nosnippet>647</a>                                            <span class="string">"nest9"</span>,
+<a href=#648 id=648 data-nosnippet>648</a>                                            any_value_vec_to_map(<span class="macro">vec!</span>[(
+<a href=#649 id=649 data-nosnippet>649</a>                                                <span class="string">"nest10"</span>,
+<a href=#650 id=650 data-nosnippet>650</a>                                                any_value_vec_to_map(<span class="macro">vec!</span>[(
+<a href=#651 id=651 data-nosnippet>651</a>                                                    <span class="string">"nest11"</span>,
+<a href=#652 id=652 data-nosnippet>652</a>                                                    any_value_vec_to_map(<span class="macro">vec!</span>[(<span class="string">"nest12"</span>, string_to_any_value(<span class="string">"ok"</span>))]),
+<a href=#653 id=653 data-nosnippet>653</a>                                                )]),
+<a href=#654 id=654 data-nosnippet>654</a>                                            )]),
+<a href=#655 id=655 data-nosnippet>655</a>                                        )]),
+<a href=#656 id=656 data-nosnippet>656</a>                                    )]),
+<a href=#657 id=657 data-nosnippet>657</a>                                )]),
+<a href=#658 id=658 data-nosnippet>658</a>                            ),
+<a href=#659 id=659 data-nosnippet>659</a>                            (
+<a href=#660 id=660 data-nosnippet>660</a>                                <span class="string">"nest14"</span>,
+<a href=#661 id=661 data-nosnippet>661</a>                                any_value_vec_to_map(<span class="macro">vec!</span>[(<span class="string">"nest15"</span>, string_to_any_value(<span class="string">"ok2"</span>))]),
+<a href=#662 id=662 data-nosnippet>662</a>                            ),
+<a href=#663 id=663 data-nosnippet>663</a>                        ]),
+<a href=#664 id=664 data-nosnippet>664</a>                    )]),
+<a href=#665 id=665 data-nosnippet>665</a>                )]),
+<a href=#666 id=666 data-nosnippet>666</a>            )]),
+<a href=#667 id=667 data-nosnippet>667</a>        )]);
+<a href=#668 id=668 data-nosnippet>668</a>        <span class="kw">let </span>lr = otlp_logs_v1::LogRecord {
+<a href=#669 id=669 data-nosnippet>669</a>            time_unix_nano: <span class="number">0</span>,
+<a href=#670 id=670 data-nosnippet>670</a>            observed_time_unix_nano: <span class="number">0</span>,
+<a href=#671 id=671 data-nosnippet>671</a>            severity_number: <span class="number">0</span>,
+<a href=#672 id=672 data-nosnippet>672</a>            severity_text: String::new(),
+<a href=#673 id=673 data-nosnippet>673</a>            body: <span class="prelude-val">None</span>,
+<a href=#674 id=674 data-nosnippet>674</a>            attributes: <span class="macro">vec!</span>[otlp_common::KeyValue {
+<a href=#675 id=675 data-nosnippet>675</a>                key: <span class="string">"nest1"</span>.to_string(),
+<a href=#676 id=676 data-nosnippet>676</a>                value: <span class="prelude-val">Some</span>(deep),
+<a href=#677 id=677 data-nosnippet>677</a>            }],
+<a href=#678 id=678 data-nosnippet>678</a>            dropped_attributes_count: <span class="number">0</span>,
+<a href=#679 id=679 data-nosnippet>679</a>            flags: <span class="number">0</span>,
+<a href=#680 id=680 data-nosnippet>680</a>            trace_id: Vec::new(),
+<a href=#681 id=681 data-nosnippet>681</a>            span_id: Vec::new(),
+<a href=#682 id=682 data-nosnippet>682</a>            event_name: String::new(),
+<a href=#683 id=683 data-nosnippet>683</a>        };
+<a href=#684 id=684 data-nosnippet>684</a>        <span class="kw">let </span>log = translate_log(lr, empty_resource(), <span class="prelude-val">None</span>);
+<a href=#685 id=685 data-nosnippet>685</a>        <span class="kw">let </span>props = log.additional_properties();
+<a href=#686 id=686 data-nosnippet>686</a>        <span class="macro">assert_eq!</span>(
+<a href=#687 id=687 data-nosnippet>687</a>            props.get(<span class="string">"nest1.nest2.nest3.nest4.nest5.nest6.nest7.nest8.nest9.nest10"</span>),
+<a href=#688 id=688 data-nosnippet>688</a>            <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>JsonValue::String(<span class="string">"{\"nest11\":{\"nest12\":\"ok\"}}"</span>.to_string()))
+<a href=#689 id=689 data-nosnippet>689</a>        );
+<a href=#690 id=690 data-nosnippet>690</a>        <span class="macro">assert_eq!</span>(
+<a href=#691 id=691 data-nosnippet>691</a>            props.get(<span class="string">"nest1.nest2.nest3.nest4.nest5.nest14.nest15"</span>),
+<a href=#692 id=692 data-nosnippet>692</a>            <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>JsonValue::String(<span class="string">"ok2"</span>.to_string()))
+<a href=#693 id=693 data-nosnippet>693</a>        );
+<a href=#694 id=694 data-nosnippet>694</a>    }
+<a href=#695 id=695 data-nosnippet>695</a>
+<a href=#696 id=696 data-nosnippet>696</a>    <span class="attr">#[test]
+<a href=#697 id=697 data-nosnippet>697</a>    </span><span class="kw">fn </span>test_timestamps_formatted_properly() {
+<a href=#698 id=698 data-nosnippet>698</a>        <span class="kw">let </span>lr = otlp_logs_v1::LogRecord {
+<a href=#699 id=699 data-nosnippet>699</a>            time_unix_nano: <span class="number">1_700_499_303_397_000_000u64</span>,
+<a href=#700 id=700 data-nosnippet>700</a>            observed_time_unix_nano: <span class="number">0</span>,
+<a href=#701 id=701 data-nosnippet>701</a>            severity_number: <span class="number">5</span>,
+<a href=#702 id=702 data-nosnippet>702</a>            severity_text: String::new(),
+<a href=#703 id=703 data-nosnippet>703</a>            body: <span class="prelude-val">None</span>,
+<a href=#704 id=704 data-nosnippet>704</a>            attributes: Vec::new(),
+<a href=#705 id=705 data-nosnippet>705</a>            dropped_attributes_count: <span class="number">0</span>,
+<a href=#706 id=706 data-nosnippet>706</a>            flags: <span class="number">0</span>,
+<a href=#707 id=707 data-nosnippet>707</a>            trace_id: Vec::new(),
+<a href=#708 id=708 data-nosnippet>708</a>            span_id: Vec::new(),
+<a href=#709 id=709 data-nosnippet>709</a>            event_name: String::new(),
+<a href=#710 id=710 data-nosnippet>710</a>        };
+<a href=#711 id=711 data-nosnippet>711</a>        <span class="kw">let </span>log = translate_log(lr, empty_resource(), <span class="prelude-val">None</span>);
+<a href=#712 id=712 data-nosnippet>712</a>        <span class="kw">let </span>props = log.additional_properties();
+<a href=#713 id=713 data-nosnippet>713</a>        <span class="macro">assert_eq!</span>(
+<a href=#714 id=714 data-nosnippet>714</a>            props.get(<span class="string">"otel.timestamp"</span>),
+<a href=#715 id=715 data-nosnippet>715</a>            <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>JsonValue::String(<span class="string">"1700499303397000000"</span>.to_string()))
+<a href=#716 id=716 data-nosnippet>716</a>        );
+<a href=#717 id=717 data-nosnippet>717</a>        <span class="macro">assert_eq!</span>(
+<a href=#718 id=718 data-nosnippet>718</a>            props.get(<span class="string">"@timestamp"</span>),
+<a href=#719 id=719 data-nosnippet>719</a>            <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>JsonValue::String(<span class="string">"2023-11-20T16:55:03.397Z"</span>.to_string()))
+<a href=#720 id=720 data-nosnippet>720</a>        );
+<a href=#721 id=721 data-nosnippet>721</a>    }
+<a href=#722 id=722 data-nosnippet>722</a>
+<a href=#723 id=723 data-nosnippet>723</a>    <span class="attr">#[test]
+<a href=#724 id=724 data-nosnippet>724</a>    </span><span class="kw">fn </span>test_scope_attributes_included() {
+<a href=#725 id=725 data-nosnippet>725</a>        <span class="kw">let </span>lr = otlp_logs_v1::LogRecord {
+<a href=#726 id=726 data-nosnippet>726</a>            time_unix_nano: <span class="number">0</span>,
+<a href=#727 id=727 data-nosnippet>727</a>            observed_time_unix_nano: <span class="number">0</span>,
+<a href=#728 id=728 data-nosnippet>728</a>            severity_number: <span class="number">5</span>,
+<a href=#729 id=729 data-nosnippet>729</a>            severity_text: String::new(),
+<a href=#730 id=730 data-nosnippet>730</a>            body: <span class="prelude-val">Some</span>(string_to_any_value(<span class="string">"hello world"</span>)),
+<a href=#731 id=731 data-nosnippet>731</a>            attributes: Vec::new(),
+<a href=#732 id=732 data-nosnippet>732</a>            dropped_attributes_count: <span class="number">0</span>,
+<a href=#733 id=733 data-nosnippet>733</a>            flags: <span class="number">0</span>,
+<a href=#734 id=734 data-nosnippet>734</a>            trace_id: Vec::new(),
+<a href=#735 id=735 data-nosnippet>735</a>            span_id: Vec::new(),
+<a href=#736 id=736 data-nosnippet>736</a>            event_name: String::new(),
+<a href=#737 id=737 data-nosnippet>737</a>        };
+<a href=#738 id=738 data-nosnippet>738</a>        <span class="kw">let </span><span class="kw-2">mut </span>scope = otlp_common::InstrumentationScope::default();
+<a href=#739 id=739 data-nosnippet>739</a>        scope.attributes.push(key_value_string_to_otlp_common_key_value(
+<a href=#740 id=740 data-nosnippet>740</a>            <span class="string">"otelcol.component.id"</span>,
+<a href=#741 id=741 data-nosnippet>741</a>            <span class="string">"otlp"</span>,
+<a href=#742 id=742 data-nosnippet>742</a>        ));
+<a href=#743 id=743 data-nosnippet>743</a>        scope.attributes.push(key_value_string_to_otlp_common_key_value(
+<a href=#744 id=744 data-nosnippet>744</a>            <span class="string">"otelcol.component.kind"</span>,
+<a href=#745 id=745 data-nosnippet>745</a>            <span class="string">"Receiver"</span>,
+<a href=#746 id=746 data-nosnippet>746</a>        ));
+<a href=#747 id=747 data-nosnippet>747</a>        <span class="kw">let </span>log = translate_log(lr, empty_resource(), <span class="prelude-val">Some</span>(scope));
+<a href=#748 id=748 data-nosnippet>748</a>        <span class="macro">assert_eq!</span>(log.message(), <span class="string">"hello world"</span>);
+<a href=#749 id=749 data-nosnippet>749</a>        <span class="kw">let </span>props = log.additional_properties();
+<a href=#750 id=750 data-nosnippet>750</a>        <span class="macro">assert_eq!</span>(
+<a href=#751 id=751 data-nosnippet>751</a>            props.get(<span class="string">"otelcol.component.id"</span>),
+<a href=#752 id=752 data-nosnippet>752</a>            <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>JsonValue::String(<span class="string">"otlp"</span>.to_string()))
+<a href=#753 id=753 data-nosnippet>753</a>        );
+<a href=#754 id=754 data-nosnippet>754</a>        <span class="macro">assert_eq!</span>(
+<a href=#755 id=755 data-nosnippet>755</a>            props.get(<span class="string">"otelcol.component.kind"</span>),
+<a href=#756 id=756 data-nosnippet>756</a>            <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>JsonValue::String(<span class="string">"Receiver"</span>.to_string()))
+<a href=#757 id=757 data-nosnippet>757</a>        );
+<a href=#758 id=758 data-nosnippet>758</a>    }
+<a href=#759 id=759 data-nosnippet>759</a>}
 </code></pre></div></section></main></body></html>

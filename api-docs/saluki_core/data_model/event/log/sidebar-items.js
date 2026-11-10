@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["LogStatus"],"struct":["Log"]};
+window.SIDEBAR_ITEMS = {"struct":["Log"]};
