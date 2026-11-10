@@ -438,6 +438,10 @@ inventory:
     support: full
     pipelines: [cross_cutting]
     description: "Core Agent CMD API host for ADP gRPC IPC"
+    documentation: |-
+      ADP connects `localhost`, the default, to the IPv4 loopback address `127.0.0.1`, rather than
+      resolving the name as the Datadog Agent does. On a host where `localhost` has no IPv4 address,
+      the Datadog Agent listens on `::1`, so set `cmd_host: "::1"` explicitly.
 
   cmd_port:
     support: full
