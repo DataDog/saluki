@@ -75,7 +75,7 @@ type Settled = (ReclaimResult, Option<String>);
 /// How far one resource's removal got during the reclaim walk.
 enum Removal {
     Settled(Settled),
-    Terminating(Terminating),
+    Terminating(Box<Terminating>),
 }
 
 impl Resource {
@@ -269,7 +269,7 @@ impl ResourceLedger {
                     Some(format!("kept because {} was not reclaimed", kept_by)),
                 )),
                 _ => match timeout_at(deadline, resource.remove()).await {
-                    Ok(Ok(Some(terminating))) => Removal::Terminating(terminating),
+                    Ok(Ok(Some(terminating))) => Removal::Terminating(Box::new(terminating)),
                     Ok(Ok(None)) => Removal::Settled(removed(unsettled)),
                     Ok(Err(e)) => Removal::Settled((ReclaimResult::Leaked, Some(format!("{:#}", e)))),
                     Err(_) => Removal::Settled((

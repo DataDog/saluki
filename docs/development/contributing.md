@@ -211,6 +211,11 @@ The workflow cherry-picks the squash commit of the original PR, so it only suppo
 PRs that look rebase-merged, rather than backporting only part of the change. If the original PR includes a release
 note, the note comes along with the cherry-pick.
 
+Stacked PRs work too. The workflow checks that the PR's own commit is on `main`, not which branch the PR targeted, so
+every PR in a stack whose commit lands on `main` can be labeled. If a PR in a stack was merged into its parent's
+branch instead, its change reaches `main` inside the parent's commit. The workflow refuses it and says so, so label the
+PR that was merged to `main`.
+
 The new PR is titled `<original title> (backport X.Y.x)`, and the original PR gets a comment linking to it. Review and
 merge it like any other PR. A clean cherry-pick can still fail to compile on an older branch if the change depends on
 something that only exists on `main`, so wait for CI before you merge.

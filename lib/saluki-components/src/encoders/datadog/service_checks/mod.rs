@@ -164,7 +164,10 @@ impl IncrementalEncoder for DatadogServiceChecks {
         }
     }
 
-    async fn flush(&mut self, dispatcher: &PayloadsDispatcher) -> Result<(), GenericError> {
+    async fn flush(&mut self, dispatcher: &PayloadsDispatcher) -> Result<usize, FlushError> {
+        let mut dispatched_events = 0;
+        let pending_events = self.request_builder.pending_inputs();
+
         let maybe_requests = self.request_builder.flush().await;
         for maybe_request in maybe_requests {
             match maybe_request {
@@ -173,13 +176,24 @@ impl IncrementalEncoder for DatadogServiceChecks {
                     let http_payload = HttpPayload::new(payload_meta, request);
                     let payload = Payload::Http(http_payload);
 
-                    dispatcher.dispatch(payload).await?;
+                    dispatcher
+                        .dispatch(payload)
+                        .await
+                        .map_err(|source| FlushError::new(dispatched_events, source))?;
+                    dispatched_events += events;
                 }
                 Err(e) => error!(error = %e, "Failed to build Datadog service checks payload. Continuing..."),
             }
         }
 
-        Ok(())
+        // Events that were queued but not dispatched were in a payload that couldn't be built, such as one that exceeded
+        // the size limit and couldn't be split. They're gone, so report them as dropped.
+        let dropped_events = pending_events.saturating_sub(dispatched_events);
+        if dropped_events > 0 {
+            self.telemetry.events_dropped_encoder().increment(dropped_events as u64);
+        }
+
+        Ok(dispatched_events)
     }
 }
 
@@ -228,5 +242,116 @@ impl EndpointEncoder for ServiceChecksEndpointEncoder {
 
     fn content_type(&self) -> HeaderValue {
         CONTENT_TYPE_JSON.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use saluki_core::{
+        components::test_util::TestComponentDriver,
+        data_model::event::service_check::{CheckStatus, ServiceCheck},
+    };
+    use serde_json::Value as JsonValue;
+
+    use super::*;
+    use crate::common::datadog::test_util::{decompressed_bodies, incompressible_string};
+    use crate::encoders::BufferedIncrementalConfiguration;
+
+    /// Returns the default service checks encoder settings.
+    fn service_checks_configuration() -> DatadogServiceChecksConfiguration {
+        DatadogServiceChecksConfiguration {
+            max_payload_size: DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT,
+            max_uncompressed_payload_size: DEFAULT_SERIALIZER_UNCOMPRESSED_SIZE_LIMIT,
+            compressor_kind: "zstd".to_string(),
+            zstd_level: 3,
+            log_payloads: false,
+        }
+    }
+
+    /// Encodes `checks` with the encoder set up as the topology sets it up, and returns the decompressed request
+    /// bodies.
+    ///
+    /// `checks` must fit in a single event buffer, so that the requests depend only on the checks and not on timing.
+    async fn encode_service_checks(checks: Vec<ServiceCheck>) -> Vec<(usize, Vec<u8>)> {
+        assert!(checks.len() <= 1024, "service checks must fit in a single event buffer");
+
+        // The default encoder flush timeout.
+        let config = BufferedIncrementalConfiguration::new(service_checks_configuration(), Duration::from_secs(2));
+        let (control, mut payloads) = TestComponentDriver::encoder(config)
+            .await
+            .expect("service checks encoder should build");
+        control.send_events(checks.into_iter().map(Event::ServiceCheck)).await;
+        control
+            .shutdown()
+            .await
+            .expect("service checks encoder should stop cleanly");
+
+        decompressed_bodies(payloads.collect().await).await
+    }
+
+    fn service_check(index: usize, message: String) -> ServiceCheck {
+        ServiceCheck::new(format!("check.{:03}", index), CheckStatus::Ok).with_message(Some(message.into()))
+    }
+
+    /// Asserts that every request body is a JSON array holding as many service checks as its metadata counts, and
+    /// that the requests hold `expected_checks` service checks in total.
+    fn assert_valid_json_requests(requests: &[(usize, Vec<u8>)], expected_checks: usize) {
+        for (index, (event_count, body)) in requests.iter().enumerate() {
+            let tail = String::from_utf8_lossy(&body[body.len().saturating_sub(16)..]);
+            let checks = serde_json::from_slice::<Vec<JsonValue>>(body).unwrap_or_else(|e| {
+                panic!(
+                    "request {} isn't a valid JSON array ({}), it ends with {:?}",
+                    index, e, tail
+                )
+            });
+            assert_eq!(
+                *event_count,
+                checks.len(),
+                "request {} metadata should count its service checks",
+                index
+            );
+        }
+        assert_eq!(requests.iter().map(|(count, _)| count).sum::<usize>(), expected_checks);
+    }
+
+    #[tokio::test]
+    async fn requests_split_at_compressed_size_estimate_are_valid_json() {
+        // About 3.8 MB of content that barely compresses, so the compressed size estimate rejects a service check
+        // before the 100-check cap or the uncompressed limit is reached.
+        let checks = (0..95)
+            .map(|index| service_check(index, incompressible_string(40_000, index as u64)))
+            .collect::<Vec<_>>();
+
+        let requests = encode_service_checks(checks).await;
+        assert!(requests.len() > 1, "the service checks should be split across requests");
+        assert_valid_json_requests(&requests, 95);
+    }
+
+    #[tokio::test]
+    async fn requests_split_at_uncompressed_size_limit_are_valid_json() {
+        // About 4.75 MB of content that compresses to almost nothing, so the 4 MiB uncompressed limit rejects a
+        // service check before the 100-check cap or the compressed size estimate is reached.
+        let checks = (0..95)
+            .map(|index| service_check(index, "a".repeat(50_000)))
+            .collect::<Vec<_>>();
+
+        let requests = encode_service_checks(checks).await;
+        assert!(requests.len() > 1, "the service checks should be split across requests");
+        assert_valid_json_requests(&requests, 95);
+    }
+
+    #[tokio::test]
+    async fn request_after_a_check_that_cannot_fit_with_the_framing_is_valid_json() {
+        // A service check whose encoding fits under the uncompressed limit by itself, but not once the `[` and `]`
+        // around it are added, is rejected even by an empty payload, and dropped after the retry.
+        let limit = service_checks_configuration().max_uncompressed_payload_size;
+        let base_len = serde_json::to_vec(&service_check(0, "a".to_string())).unwrap().len();
+        let oversized = service_check(0, "a".repeat(limit - base_len));
+        assert_eq!(serde_json::to_vec(&oversized).unwrap().len(), limit - 1);
+
+        let requests = encode_service_checks(vec![oversized, service_check(1, "after".to_string())]).await;
+        assert_valid_json_requests(&requests, 1);
     }
 }

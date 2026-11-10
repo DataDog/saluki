@@ -19,7 +19,10 @@ use std::{
 use async_trait::async_trait;
 use bytes::{Buf, BufMut, Bytes};
 use bytesize::ByteSize;
-use saluki_common::sync::shutdown::{ShutdownCoordinator, ShutdownHandle};
+use saluki_common::sync::{
+    shutdown::{ShutdownCoordinator, ShutdownHandle},
+    work_queue::{self, WorkQueueReceiver, WorkQueueSender},
+};
 use saluki_core::{
     accounting::{MemoryBounds, MemoryBoundsBuilder, MemoryLimiter, UsageExpr},
     components::{sources::*, BuildContext},
@@ -55,7 +58,7 @@ use snafu::Snafu;
 use stringtheory::MetaString;
 use tokio::{
     pin, select,
-    sync::{mpsc, oneshot, Mutex},
+    sync::{mpsc, oneshot},
     time::{interval, MissedTickBehavior},
 };
 use tracing::{debug, error, info, trace, warn};
@@ -918,7 +921,7 @@ pub struct DogStatsD {
 
 struct ListenerContext {
     listener: ResourceLease<Listener>,
-    datagram_sender: mpsc::Sender<QueuedDatagram>,
+    datagram_sender: WorkQueueSender<QueuedDatagram>,
     io_buffer_pool: ElasticObjectPool<BytesBuffer>,
     origin_telemetry_enabled: bool,
     eol_required: EolRequired,
@@ -932,7 +935,7 @@ struct HandlerContext {
     listen_addr: ListenAddress,
     eol_required: bool,
     io_buffer_pool: ElasticObjectPool<BytesBuffer>,
-    datagram_sender: mpsc::Sender<QueuedDatagram>,
+    datagram_sender: WorkQueueSender<QueuedDatagram>,
     datagram_context: Option<Arc<DatagramSocketContext>>,
     metrics: Metrics,
     decoder_context: DecoderContext,
@@ -1050,8 +1053,10 @@ impl Source for DogStatsD {
             .with_shutdown_strategy(ShutdownStrategy::Brutal)
             .spawn();
 
-        let (datagram_sender, datagram_receiver) = mpsc::channel(self.io_buffer_queue_capacity);
-        let datagram_receiver = Arc::new(Mutex::new(datagram_receiver));
+        // Each decoder gets its own queue. Sharing one receiver between decoders serializes decoding: handing the
+        // receiver to the next decoder puts it behind the previous decoder's decode work on the same runtime thread.
+        let (datagram_sender, datagram_receivers) =
+            work_queue::bounded(self.decoder_worker_count, self.io_buffer_queue_capacity);
         let decoder_context = DecoderContext {
             codec: self.codec.clone(),
             context_resolvers: self.context_resolvers.clone(),
@@ -1065,7 +1070,7 @@ impl Source for DogStatsD {
         };
 
         // Decoders must drain their queue to completion, so they deliberately ignore the shutdown signal and stop only
-        // once the datagram channel closes -- which happens when every listener and stream handler has dropped its
+        // once their queue closes -- which happens when every listener and stream handler has dropped its datagram
         // sender. This makes shutdown lossless. The listeners stop when the body of this source returns. The decoders
         // can see the close only after the listeners and their stream handlers stop. Then the decoders drain the
         // datagrams that remain.
@@ -1073,8 +1078,7 @@ impl Source for DogStatsD {
         // When dispatch is backpressured, the drain can take longer than five seconds, the default timeout of a
         // closure-based child. Thus, the decoders have no timeout of their own, and are halted with the source if the
         // component's shutdown timeout expires.
-        for worker_id in 0..self.decoder_worker_count.get() {
-            let datagram_receiver = datagram_receiver.clone();
+        for (worker_id, datagram_receiver) in datagram_receivers.into_iter().enumerate() {
             let decoder_source_context = context.clone();
             let decoder_context = decoder_context.clone();
 
@@ -1085,7 +1089,6 @@ impl Source for DogStatsD {
             .with_shutdown_timeout(Duration::MAX)
             .spawn();
         }
-        drop(datagram_receiver);
 
         // For each listener, spawn a dedicated task to run it. There may be none, when no listener could be created and
         // the listener requirement is `Optional`. The source then only waits for shutdown.
@@ -1504,7 +1507,7 @@ async fn receive_connectionless_stream(
     mut stream: Stream, io_buffer_pool: ElasticObjectPool<BytesBuffer>, memory_limiter: MemoryLimiter,
     origin_detection_enabled: bool, traffic_capture: TrafficCapture,
     capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
-    datagram_sender: mpsc::Sender<QueuedDatagram>, socket_context: Arc<DatagramSocketContext>,
+    mut datagram_sender: WorkQueueSender<QueuedDatagram>, socket_context: Arc<DatagramSocketContext>,
 ) {
     debug!(listen_addr = %socket_context.listen_addr, "Datagram reader started.");
 
@@ -1561,7 +1564,7 @@ async fn acquire_io_buffer(io_buffer_pool: &ElasticObjectPool<BytesBuffer>) -> B
 }
 
 async fn process_datagram_decoder(
-    datagram_receiver: Arc<Mutex<mpsc::Receiver<QueuedDatagram>>>, source_context: SourceContext,
+    datagram_receiver: WorkQueueReceiver<QueuedDatagram>, source_context: SourceContext,
     decoder_context: DecoderContext,
 ) {
     drive_datagram_decoder(datagram_receiver, source_context, decoder_context).await;
@@ -1768,7 +1771,7 @@ impl DogStatsDDecoder {
 }
 
 async fn drive_datagram_decoder(
-    datagram_receiver: Arc<Mutex<mpsc::Receiver<QueuedDatagram>>>, source_context: SourceContext,
+    mut datagram_receiver: WorkQueueReceiver<QueuedDatagram>, source_context: SourceContext,
     decoder_context: DecoderContext,
 ) {
     let mut decoder = DogStatsDDecoder::new(source_context, decoder_context);
@@ -1777,9 +1780,7 @@ async fn drive_datagram_decoder(
 
     loop {
         select! {
-            maybe_datagram = async {
-                datagram_receiver.lock().await.recv().await
-            } => {
+            maybe_datagram = datagram_receiver.recv() => {
                 let Some(QueuedDatagram { result, socket_context }) = maybe_datagram else {
                     break;
                 };
@@ -2349,13 +2350,15 @@ const fn get_adjusted_buffer_size(buffer_size: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::sync::Arc;
     use std::{
         collections::HashMap,
         net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
         path::PathBuf,
         sync::{
             atomic::{AtomicUsize, Ordering},
-            Arc, Mutex as StdMutex,
+            Mutex as StdMutex,
         },
         time::{Duration, Instant},
     };
@@ -2391,23 +2394,19 @@ mod tests {
     use tokio::{
         io::AsyncWriteExt as _,
         net::{UnixDatagram, UnixStream},
+        sync::mpsc,
     };
-    use tokio::{
-        sync::{mpsc, Mutex},
-        task::yield_now,
-        time::timeout,
-    };
+    use tokio::{task::yield_now, time::timeout};
 
     use super::{
         build_io_buffer_pool, capture_named_pipe_frame, default_decoder_worker_count, filters::EnablePayloadsFilter,
         handle_frame, handle_metric_packet, metrics::build_metrics, origin_detection_error_for_telemetry,
         resolve_process_origin, resolve_process_origin_if_needed, BufferDecodeContext, BufferDecodeMode,
-        ContextResolvers, DatagramSocketContext, DecodeOutcome, DecoderContext, DogStatsDConfiguration,
-        DogStatsDDecoder, OriginEnrichmentConfiguration, ProcessOrigin, QueuedDatagram, ReceivedBuffer, TrafficCapture,
-        TrafficCaptureReader,
+        ContextResolvers, DecodeOutcome, DecoderContext, DogStatsDConfiguration, DogStatsDDecoder,
+        OriginEnrichmentConfiguration, ProcessOrigin, ReceivedBuffer, TrafficCapture, TrafficCaptureReader,
     };
     #[cfg(unix)]
-    use super::{receive_connected_stream, receive_connectionless_stream, received_payload};
+    use super::{receive_connected_stream, receive_connectionless_stream, received_payload, DatagramSocketContext};
     #[cfg(target_os = "linux")]
     use super::{DogStatsDOriginTagResolver, Listener};
     use crate::sources::dogstatsd::PacketForwarder;
@@ -2419,6 +2418,7 @@ mod tests {
         ComponentContext::test_source("dogstatsd_test")
     }
 
+    #[cfg(target_os = "linux")]
     fn test_datagram_socket_context(listen_addr: ListenAddress) -> Arc<DatagramSocketContext> {
         Arc::new(DatagramSocketContext {
             metrics: build_metrics(&listen_addr, &test_component_context(), false),
@@ -3432,37 +3432,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn global_datagram_receiver_distributes_packets_to_workers() {
-        let (sender, receiver) = mpsc::channel(2);
-        let receiver = Arc::new(Mutex::new(receiver));
-        let first_worker = receiver.clone();
-        let second_worker = receiver;
-        let socket_context = test_datagram_socket_context(udp_listen_address());
-
-        sender
-            .send(QueuedDatagram {
-                result: Err(std::io::Error::other("first")),
-                socket_context: socket_context.clone(),
-            })
-            .await
-            .expect("first packet should be queued");
-        sender
-            .send(QueuedDatagram {
-                result: Err(std::io::Error::other("second")),
-                socket_context,
-            })
-            .await
-            .expect("second packet should be queued");
-
-        let (first, second) = tokio::join!(async { first_worker.lock().await.recv().await }, async {
-            second_worker.lock().await.recv().await
-        },);
-
-        assert!(first.expect("first worker should receive a packet").result.is_err());
-        assert!(second.expect("second worker should receive a packet").result.is_err());
-    }
-
-    #[tokio::test]
     async fn dogstatsd_io_buffer_pool_grows_on_demand_until_limit() {
         let min_buffers = 2;
         let max_buffers = 3;
@@ -3500,7 +3469,8 @@ mod tests {
         let receiver = UnixDatagram::bind(&socket_path).expect("receiver should bind");
         let sender = UnixDatagram::unbound().expect("sender should be created");
         let (pool, shrinker) = build_io_buffer_pool(2, 2, TEST_BUFFER_SIZE);
-        let (packets_tx, mut packets_rx) = mpsc::channel(3);
+        let (packets_tx, mut packets_rx) = saluki_common::sync::work_queue::bounded(std::num::NonZeroUsize::MIN, 3);
+        let mut packets_rx = packets_rx.pop().expect("one decoder queue");
         let listen_addr = ListenAddress::Unixgram(socket_path.clone());
         let socket_context = Arc::new(DatagramSocketContext {
             metrics: build_metrics(&listen_addr, &test_component_context(), false),
@@ -3594,7 +3564,8 @@ mod tests {
             original_entity.clone(),
         ));
         let (pool, shrinker) = build_io_buffer_pool(1, 1, TEST_BUFFER_SIZE);
-        let (packets_tx, mut packets_rx) = mpsc::channel(1);
+        let (packets_tx, mut packets_rx) = saluki_common::sync::work_queue::bounded(std::num::NonZeroUsize::MIN, 1);
+        let mut packets_rx = packets_rx.pop().expect("one decoder queue");
         let reader = tokio::spawn(receive_connectionless_stream(
             stream,
             pool,
@@ -4591,10 +4562,17 @@ mod supervision {
         let buffer = metrics.next().await.expect("the metrics output should stay open");
         assert_eq!(buffer.len(), 1);
 
-        // Now back the output up: the first of these fills the single slot, the second blocks a decoder.
-        for payload in [b"second.metric:1|c".as_slice(), b"third.metric:1|c".as_slice()] {
-            client.send_to(payload, listen_addr).await.expect("client should send");
-        }
+        // Now back the output up with a single datagram holding one more metric than an event buffer can hold. The
+        // decoder that receives it dispatches a full buffer as soon as the buffer fills, which takes the single slot,
+        // and then blocks dispatching the remaining metric, either on its next flush or when it drains at shutdown.
+        // This doesn't depend on which decoder receives the datagram, or on when decoders flush.
+        let backed_up_metrics = EventsBuffer::default().capacity() + 1;
+        // Short metric lines keep the datagram within the source's 8 KiB receive buffer.
+        let payload = vec!["m:1|c"; backed_up_metrics].join("\n");
+        client
+            .send_to(payload.as_bytes(), listen_addr)
+            .await
+            .expect("client should send");
         tokio::time::sleep(BACKPRESSURE_SETTLE).await;
 
         // From here on, the test does not wait on the socket. Thus, it can pause the clock, and the hold below then
@@ -4617,7 +4595,11 @@ mod supervision {
         let drained = 1 + metrics.collect().await.iter().map(EventsBuffer::len).sum::<usize>();
 
         // Nothing accepted before shutdown should have been dropped on the way out.
-        assert_eq!(drained, 3, "every queued datagram should have been dispatched");
+        assert_eq!(
+            drained,
+            1 + backed_up_metrics,
+            "every queued metric should have been dispatched"
+        );
 
         control
             .wait()

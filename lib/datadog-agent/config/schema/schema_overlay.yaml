@@ -1079,7 +1079,7 @@ inventory:
 
       ADP does not mirror the packet-level statistics config path. Instead, ADP provides an on-demand
       metric-level view through a DogStatsD statistics destination that is always wired into the
-      topology, but only collects data during a time-bounded request. To collect statistics, run
+      topology, but only receives metrics during a time-bounded request. To collect statistics, run
       `agent-data-plane dogstatsd stats --duration-secs N` or call the privileged
       `/dogstatsd/stats?collection_duration_secs=N` API. The handler waits for the requested collection
       window, then returns count and last-seen time per metric context inline as JSON. The CLI uses the
@@ -1732,10 +1732,12 @@ inventory:
       `multi_region_failover.failover_metrics` are both `true`, ADP forwards metrics to the
       primary Datadog endpoint and to a second MRF endpoint.
 
-      To enable the MRF metrics branch at startup, configure `multi_region_failover.api_key`
-      and one of `multi_region_failover.site` or `multi_region_failover.dd_url`. If the MRF
-      endpoint configuration is incomplete, ADP skips the MRF branch and continues forwarding
-      to the primary endpoint.
+      To enable the MRF metrics branch at startup, set `multi_region_failover.enabled` to `true`, and
+      configure `multi_region_failover.api_key` and one of `multi_region_failover.site` or
+      `multi_region_failover.dd_url`. If MRF is disabled or the MRF endpoint configuration is
+      incomplete, ADP skips the MRF branch and continues forwarding to the primary endpoint. While
+      the MRF branch is enabled, ADP only sends metrics to it while
+      `multi_region_failover.failover_metrics` is `true`.
 
       ADP does not fall back to the primary `api_key`, `site`, or `dd_url` for MRF traffic.
       `multi_region_failover.enabled` and endpoint selection are resolved at startup.

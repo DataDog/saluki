@@ -25,7 +25,7 @@ container:
   files:
     - "run_forwarding_test.py:/forwarding-test/run_forwarding_test.py"
   exposed_ports:
-    - "58125/udp"
+    - "48125/udp"
     - "9126/tcp"
 
 procedure:
@@ -64,7 +64,7 @@ procedure:
       - assertion: process_stable_for
         duration: 10s
       - assertion: port_listening
-        port: 58125
+        port: 48125
         protocol: udp
         timeout: 10s
       - assertion: port_listening

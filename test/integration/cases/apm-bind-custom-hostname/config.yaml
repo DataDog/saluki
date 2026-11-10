@@ -23,7 +23,7 @@ env:
 
 procedure:
   - assertion: log_contains
-    pattern: 'listen_addr:"tcp://{{PANORAMIC_DYNAMIC_CONTAINER_IP}}:58126"'
+    pattern: 'listen_addr:"tcp://{{PANORAMIC_DYNAMIC_CONTAINER_IP}}:48126"'
     timeout: 60s
   - parallel:
       - assertion: process_stable_for

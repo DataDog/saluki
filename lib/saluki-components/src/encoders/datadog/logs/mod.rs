@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use chrono::{SecondsFormat, Utc};
+use chrono::{DateTime, SecondsFormat, Utc};
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use saluki_common::iter::ReusableDeduplicator;
 use saluki_core::{
@@ -40,6 +40,9 @@ pub struct DatadogLogsConfiguration {
     ///
     /// Ignored for algorithms other than `zstd`.
     zstd_level: i32,
+
+    /// Source of the current time, for the default `@timestamp`.
+    clock: fn() -> DateTime<Utc>,
 }
 
 impl DatadogLogsConfiguration {
@@ -48,7 +51,15 @@ impl DatadogLogsConfiguration {
         Self {
             compressor_kind: compressor_kind.into(),
             zstd_level,
+            clock: Utc::now,
         }
+    }
+
+    /// Sets the source of the current time, so tests can pin the default `@timestamp`.
+    #[cfg(test)]
+    pub(crate) fn with_clock(mut self, clock: fn() -> DateTime<Utc>) -> Self {
+        self.clock = clock;
+        self
     }
 }
 
@@ -69,8 +80,12 @@ impl IncrementalEncoderBuilder for DatadogLogsConfiguration {
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
         let compression_scheme = CompressionScheme::new(&self.compressor_kind, self.zstd_level);
 
-        let mut request_builder =
-            RequestBuilder::new(LogsEndpointEncoder::new(), compression_scheme, RB_BUFFER_CHUNK_SIZE).await?;
+        let mut request_builder = RequestBuilder::new(
+            LogsEndpointEncoder::new(self.clock),
+            compression_scheme,
+            RB_BUFFER_CHUNK_SIZE,
+        )
+        .await?;
         request_builder.with_max_inputs_per_payload(MAX_LOGS_PER_PAYLOAD);
 
         Ok(DatadogLogs {
@@ -118,7 +133,10 @@ impl IncrementalEncoder for DatadogLogs {
         }
     }
 
-    async fn flush(&mut self, dispatcher: &PayloadsDispatcher) -> Result<(), GenericError> {
+    async fn flush(&mut self, dispatcher: &PayloadsDispatcher) -> Result<usize, FlushError> {
+        let mut dispatched_events = 0;
+        let pending_events = self.request_builder.pending_inputs();
+
         let maybe_requests = self.request_builder.flush().await;
         for maybe_request in maybe_requests {
             match maybe_request {
@@ -126,25 +144,38 @@ impl IncrementalEncoder for DatadogLogs {
                     let payload_meta = PayloadMetadata::from_event_count(events);
                     let http_payload = HttpPayload::new(payload_meta, request);
                     let payload = Payload::Http(http_payload);
-                    dispatcher.dispatch(payload).await?;
+                    dispatcher
+                        .dispatch(payload)
+                        .await
+                        .map_err(|source| FlushError::new(dispatched_events, source))?;
+                    dispatched_events += events;
                 }
                 Err(e) => error!(error = %e, "Failed to build Datadog logs payload. Continuing..."),
             }
         }
 
-        Ok(())
+        // Events that were queued but not dispatched were in a payload that couldn't be built, such as one that exceeded
+        // the size limit and couldn't be split. They're gone, so report them as dropped.
+        let dropped_events = pending_events.saturating_sub(dispatched_events);
+        if dropped_events > 0 {
+            self.telemetry.events_dropped_encoder().increment(dropped_events as u64);
+        }
+
+        Ok(dispatched_events)
     }
 }
 
 #[derive(Debug)]
 struct LogsEndpointEncoder {
     tags_deduplicator: ReusableDeduplicator<Tag>,
+    clock: fn() -> DateTime<Utc>,
 }
 
 impl LogsEndpointEncoder {
-    fn new() -> Self {
+    fn new(clock: fn() -> DateTime<Utc>) -> Self {
         Self {
             tags_deduplicator: ReusableDeduplicator::new(),
+            clock,
         }
     }
 
@@ -186,7 +217,7 @@ impl LogsEndpointEncoder {
         let user_provided_timestamp = log.additional_properties().contains_key("timestamp")
             || log.additional_properties().contains_key("@timestamp");
         if !user_provided_timestamp {
-            let now_rfc3339 = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
+            let now_rfc3339 = (self.clock)().to_rfc3339_opts(SecondsFormat::Millis, true);
             obj.insert("@timestamp".to_string(), JsonValue::String(now_rfc3339));
         }
 
@@ -246,6 +277,9 @@ impl EndpointEncoder for LogsEndpointEncoder {
 }
 
 #[cfg(test)]
+mod characterization;
+
+#[cfg(test)]
 mod tests {
     use std::collections::{BTreeSet, HashMap};
 
@@ -256,7 +290,7 @@ mod tests {
     use serde_json::json;
     use stringtheory::MetaString;
 
-    use super::{JsonValue, LogsEndpointEncoder};
+    use super::{JsonValue, LogsEndpointEncoder, Utc};
 
     fn tag_set<const N: usize>(tags: [&'static str; N]) -> TagSet {
         tags.into_iter().map(Tag::from_static).collect()
@@ -264,7 +298,7 @@ mod tests {
 
     #[test]
     fn build_agent_json_enriches_documented_fields() {
-        let mut encoder = LogsEndpointEncoder::new();
+        let mut encoder = LogsEndpointEncoder::new(Utc::now);
         let log = Log::new("hello world")
             .with_status(LogStatus::Error)
             .with_source(MetaString::from_static("nginx"))
@@ -297,7 +331,7 @@ mod tests {
     fn build_agent_json_omits_empty_optional_fields() {
         // A bare log has no status/hostname/service/ddsource/ddtags keys, and its `message` object carries only the
         // message (no `service`).
-        let mut encoder = LogsEndpointEncoder::new();
+        let mut encoder = LogsEndpointEncoder::new(Utc::now);
         let json = encoder.build_agent_json(&Log::new("bare"));
         let obj = json.as_object().expect("agent JSON should be an object");
 
@@ -315,7 +349,7 @@ mod tests {
 
     #[test]
     fn build_agent_json_adds_default_timestamp_unless_user_supplied() {
-        let mut encoder = LogsEndpointEncoder::new();
+        let mut encoder = LogsEndpointEncoder::new(Utc::now);
 
         // With no user timestamp, the encoder injects an RFC3339 `@timestamp` (milliseconds, UTC `Z`).
         let json = encoder.build_agent_json(&Log::new("no ts"));
@@ -348,7 +382,7 @@ mod tests {
     #[test]
     fn build_agent_json_additional_properties_win_over_encoder_fields() {
         // AdditionalProperties are merged last, so they override the encoder-populated fields (last-write-wins).
-        let mut encoder = LogsEndpointEncoder::new();
+        let mut encoder = LogsEndpointEncoder::new(Utc::now);
         let mut props = HashMap::new();
         props.insert(MetaString::from_static("hostname"), json!("override-host"));
         props.insert(MetaString::from_static("custom"), json!(42));

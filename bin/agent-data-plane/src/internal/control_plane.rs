@@ -6,6 +6,7 @@ use datadog_agent_runtime::{
     facade::{Initialized, RemoteAgent},
     remote_agent::StatusSectionProvider,
 };
+use datadog_protos::agent::command::v1::remote_command_provider_server::RemoteCommandProviderServer;
 use saluki_api::EndpointType;
 use saluki_app::{
     accounting::ResourceTelemetryWorker,
@@ -22,8 +23,8 @@ use saluki_error::GenericError;
 use crate::{
     config::DataPlaneConfiguration,
     internal::{
-        logging::get_translated_log_level_stream, AgentDataPlane, DogStatsDStatusSection, ForwarderStatusSection,
-        TopologyControlSurfaces,
+        logging::get_translated_log_level_stream, remote_command::RemoteCommandProviderImpl, AgentDataPlane,
+        DogStatsDAPIWorker, DogStatsDStatusSection, ForwarderStatusSection,
     },
     state::metrics::get_datadog_agent_remappings,
 };
@@ -39,7 +40,7 @@ use crate::{
 ///
 /// If the supervisor can't be created, an error is returned.
 pub async fn create_control_plane_supervisor(
-    agent: &RemoteAgent<AgentDataPlane, Initialized>, control_surfaces: TopologyControlSurfaces,
+    agent: &RemoteAgent<AgentDataPlane, Initialized>, dogstatsd_api: Option<DogStatsDAPIWorker>,
     logging_controller: LoggingOverrideController,
 ) -> Result<Supervisor, GenericError> {
     let config_system = agent.config().system();
@@ -61,6 +62,9 @@ pub async fn create_control_plane_supervisor(
     supervisor.add_worker(ConfigRuntimeWorker::new(RuntimeConfigSnapshot::from_loader(
         move || current.load(),
     )));
+    if let Some(dogstatsd_api) = dogstatsd_api {
+        supervisor.add_worker(dogstatsd_api);
+    }
 
     let api_listen_address = dp.api_listen_address()?;
     let secure_api_listen_address = dp.secure_api_listen_address()?;
@@ -69,16 +73,23 @@ pub async fn create_control_plane_supervisor(
     let ipc_config = dp.ipc_auth_configuration();
     let tls_config = build_ipc_server_tls_config(ipc_config.ipc_cert_file_path()).await?;
 
-    let mut privileged_api =
+    let privileged_api =
         APIBuilder::new(EndpointType::Privileged, secure_api_listen_address).with_tls_config(tls_config);
-
-    privileged_api = control_surfaces.register_control_surfaces(privileged_api);
 
     let status_sections: Vec<Arc<dyn StatusSectionProvider>> = vec![
         Arc::new(DogStatsDStatusSection::new()),
         Arc::new(ForwarderStatusSection::new()),
     ];
-    supervisor.add_worker(agent.create_remote_agent_supervisor(status_sections, get_datadog_agent_remappings())?);
+    supervisor.add_worker(agent.create_remote_agent_supervisor(
+        status_sections,
+        get_datadog_agent_remappings(),
+        |routes, session_id| {
+            routes.add_service(RemoteCommandProviderServer::new(RemoteCommandProviderImpl::new(
+                session_id,
+                config_system.current_handle(),
+            )))
+        },
+    )?);
 
     supervisor.add_worker(privileged_api.into_supervisor());
 

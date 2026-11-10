@@ -1354,7 +1354,7 @@ intake:
 procedure:
   - action: dogstatsd_send
     payload: "example.counter:3|c"
-    port: 58125
+    port: 48125
   - assertion: intake_has_metric
     name: "example.counter"
     metric_type: count
@@ -1370,7 +1370,7 @@ procedure:
             panic!("first step should parse as a dogstatsd_send action");
         };
         assert_eq!(payload, "example.counter:3|c");
-        assert_eq!(*port, 58125);
+        assert_eq!(*port, 48125);
         let AssertionStep::Single(AssertionConfig::IntakeHasMetric {
             name,
             metric_type,

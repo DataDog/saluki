@@ -754,10 +754,10 @@ provision-macos-test-env: ## Installs the pinned Datadog Agent ($(MACOS_TEST_AGE
 			DD_RUN_PATH=$(MACOS_TEST_AGENT_INSTALL_DIR)/run \
 			DD_AUTH_TOKEN_FILE_PATH=$(MACOS_TEST_AGENT_INSTALL_DIR)/etc/auth_token \
 			DD_IPC_CERT_FILE_PATH=$(MACOS_TEST_AGENT_INSTALL_DIR)/etc/ipc_cert.pem \
-			DD_CMD_PORT=55001 DD_GUI_PORT=-1 \
-			DD_EXPVAR_PORT=55000 DD_APM_RECEIVER_PORT=58126 \
-			DD_PROCESS_CONFIG_CMD_PORT=56062 DD_AGENT_IPC_PORT=55004 \
-			DD_DOGSTATSD_PORT=58125 \
+			DD_CMD_PORT=45001 DD_GUI_PORT=-1 \
+			DD_EXPVAR_PORT=45000 DD_APM_RECEIVER_PORT=48126 \
+			DD_PROCESS_CONFIG_CMD_PORT=46062 DD_AGENT_IPC_PORT=45004 \
+			DD_DOGSTATSD_PORT=48125 \
 			$(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent run -c $(MACOS_TEST_AGENT_INSTALL_DIR)/etc >/tmp/saluki-agent-bootstrap.log 2>&1 & \
 		AGENT_PID=$$!; \
 		for i in $$(seq 1 30); do \
@@ -866,6 +866,12 @@ endif
 	--url unix:///var/run/datadog/apm.socket \
 	--inlined-functions true --timeline --upload-period 10 --preset cpu_live_heap \
 	target/release/agent-data-plane run
+
+.PHONY: generate-correctness-fixtures
+generate-correctness-fixtures: check-rust-build-tools
+generate-correctness-fixtures: ## Regenerates the static payloads of the OTLP logs correctness cases
+	@echo "[*] Regenerating correctness case fixtures..."
+	@cargo run --profile devel --package otlp-fixtures
 
 SMP_GENERATOR := test/smp/regression/adp/generate_experiments.py
 

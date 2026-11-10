@@ -32,6 +32,7 @@ use crate::common::otlp::traces::normalize::{
     normalize_tag_value_into_unchecked, truncate_utf8, truncate_with_ellipses, validate_and_fix_duration,
     validate_and_fix_start_time, PeerServiceChange, MAX_META_KEY_LEN, MAX_META_VAL_LEN, MAX_TYPE_LEN,
 };
+use crate::common::otlp::traces::sampling::sample_rate_from_tracestate;
 use crate::common::otlp::traces::translator::convert_span_id;
 use crate::common::otlp::util::get_string_attribute;
 use crate::common::otlp::util::{
@@ -83,6 +84,7 @@ const HTTP_RESPONSE_STATUS_CODE_KEY: &str = "http.response.status_code";
 const SPAN_KIND_META_KEY: &str = "span.kind";
 const GRPC_STATUS_CODE_META_KEY: &str = "rpc.grpc.status_code";
 const W3C_TRACESTATE_META_KEY: &str = "w3c.tracestate";
+const SAMPLE_RATE_KEY: &str = "_sample_rate";
 const OTEL_LIBRARY_NAME_META_KEY: &str = "otel.library.name";
 const OTEL_LIBRARY_VERSION_META_KEY: &str = "otel.library.version";
 const OTEL_SCOPE_NAME_META_KEY: &str = "otel.scope.name";
@@ -646,6 +648,20 @@ pub fn otel_to_dd_span_minimal(
                 AttributeValue::Float(status_code as f64),
             );
         }
+    }
+
+    // An explicit numeric `_sample_rate` span attribute wins over the rate decoded from the tracestate. It is
+    // applied here, ahead of the generic attribute mapping, because that mapping never overwrites an existing key.
+    let explicit_sample_rate = span_attributes
+        .iter()
+        .find(|attribute| attribute.key == SAMPLE_RATE_KEY)
+        .and_then(|attribute| match attribute.value.as_ref()?.value.as_ref()? {
+            OtlpValue::DoubleValue(rate) => Some(*rate),
+            OtlpValue::IntValue(rate) => Some(*rate as f64),
+            _ => None,
+        });
+    if let Some(rate) = explicit_sample_rate.or_else(|| sample_rate_from_tracestate(&otel_span.trace_state)) {
+        attrs.insert(MetaString::from_static(SAMPLE_RATE_KEY), AttributeValue::Float(rate));
     }
 
     // TODO: add peer key tags (unfinished in the agent as well)
@@ -3439,6 +3455,113 @@ mod tests {
         assert!(
             !attrs.contains_key(HTTP_STATUS_CODE_KEY),
             "negative status code must not produce an http.status_code attribute"
+        );
+    }
+
+    fn kv_double(key: &str, value: f64) -> KeyValue {
+        KeyValue {
+            key: key.to_string(),
+            value: Some(AnyValue {
+                value: Some(OtlpValue::DoubleValue(value)),
+            }),
+        }
+    }
+
+    /// Converts a span with the given attributes and tracestate through the full conversion.
+    fn dd_span_with_tracestate(span_attrs: Vec<KeyValue>, trace_state: &str) -> DdSpan {
+        let (interner, mut sb) = extraction_env();
+        let span = OtlpSpan {
+            name: "span-name".to_string(),
+            attributes: span_attrs,
+            trace_state: trace_state.to_string(),
+            ..Default::default()
+        };
+        otel_span_to_dd_span(
+            &span,
+            &Resource::default(),
+            None,
+            false,
+            true,
+            &EMBEDDED_REGISTRY,
+            &interner,
+            &mut sb,
+            None,
+            5000,
+        )
+    }
+
+    #[test]
+    fn sample_rate_is_set_from_tracestate_threshold() {
+        let dd_span = dd_span_with_tracestate(vec![], "ot=th:8");
+        let rate = dd_span
+            .attributes
+            .get(SAMPLE_RATE_KEY)
+            .expect("_sample_rate should be set");
+        assert!(matches!(rate, AttributeValue::Float(_)), "_sample_rate must be a float");
+        assert_eq!(rate.as_num(), Some(0.5));
+        assert_eq!(
+            dd_span
+                .attributes
+                .get(W3C_TRACESTATE_META_KEY)
+                .and_then(AttributeValue::as_string)
+                .map(|s| s.as_ref()),
+            Some("ot=th:8"),
+            "the raw tracestate is still carried on the span"
+        );
+    }
+
+    #[test]
+    fn sample_rate_is_set_from_tracestate_power_of_two() {
+        let dd_span = dd_span_with_tracestate(vec![], "ot=p:4;r:4");
+        assert_eq!(
+            dd_span.attributes.get(SAMPLE_RATE_KEY).and_then(AttributeValue::as_num),
+            Some(0.0625)
+        );
+    }
+
+    #[test]
+    fn sample_rate_is_not_set_without_a_usable_tracestate() {
+        for trace_state in ["", "zz=vendor", "ot=rv:abcdefabcdefab", "ot=th:zz", "ot=p:63"] {
+            let dd_span = dd_span_with_tracestate(vec![], trace_state);
+            assert!(
+                !dd_span.attributes.contains_key(SAMPLE_RATE_KEY),
+                "tracestate {trace_state:?} must not set _sample_rate"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_sample_rate_attribute_wins_over_tracestate() {
+        let dd_span = dd_span_with_tracestate(vec![kv_double(SAMPLE_RATE_KEY, 0.25)], "ot=th:8");
+        assert_eq!(
+            dd_span.attributes.get(SAMPLE_RATE_KEY).and_then(AttributeValue::as_num),
+            Some(0.25)
+        );
+
+        let dd_span = dd_span_with_tracestate(vec![kv_int(SAMPLE_RATE_KEY, 1)], "ot=th:8");
+        let rate = dd_span
+            .attributes
+            .get(SAMPLE_RATE_KEY)
+            .expect("_sample_rate should be set");
+        assert!(matches!(rate, AttributeValue::Float(_)), "_sample_rate must be a float");
+        assert_eq!(rate.as_num(), Some(1.0));
+    }
+
+    #[test]
+    fn explicit_sample_rate_attribute_is_kept_without_tracestate() {
+        let dd_span = dd_span_with_tracestate(vec![kv_double(SAMPLE_RATE_KEY, 0.25)], "");
+        assert_eq!(
+            dd_span.attributes.get(SAMPLE_RATE_KEY).and_then(AttributeValue::as_num),
+            Some(0.25)
+        );
+    }
+
+    #[test]
+    fn non_numeric_sample_rate_attribute_does_not_block_tracestate() {
+        let dd_span = dd_span_with_tracestate(vec![kv_str(SAMPLE_RATE_KEY, "0.25")], "ot=th:8");
+        assert_eq!(
+            dd_span.attributes.get(SAMPLE_RATE_KEY).and_then(AttributeValue::as_num),
+            Some(0.5)
         );
     }
 

@@ -20,13 +20,13 @@ env:
 
 container:
   exposed_ports:
-    - "58125/udp"
+    - "48125/udp"
 
 procedure:
   # Readiness gate: the listener logs this only once it is bound, and steps run in order, so
   # nothing is sent early. A UDP `port_listening` probe would pass before the bind.
   - assertion: log_contains
-    pattern: 'listen_addr:"udp://0.0.0.0:58125" | DogStatsD listener started.'
+    pattern: 'listen_addr:"udp://0.0.0.0:48125" | DogStatsD listener started.'
     timeout: 60s
   # The four lines of the `dsd-host-tag` correctness case, except that line 3 names this case's
   # hostname so it still equals the default. A `host` tag sets the metric's host rather than
@@ -43,7 +43,7 @@ procedure:
       hosttag.metric:2|g|#host:
       hosttag.metric:3|g|#host:integration-host-tag
       hosttag.metric:4|g|#host:custom
-    port: 58125
+    port: 48125
     timeout: 10s
   # Exact tag matching tells these contexts apart: under the subset default, `tags: []` matches
   # every context.

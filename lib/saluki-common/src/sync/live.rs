@@ -187,6 +187,13 @@ impl<T: Clone + PartialEq + 'static> Live<T> {
         }
     }
 
+    /// Returns `true` if this view's value never changes.
+    ///
+    /// A fixed view never yields from [`changed`](Self::changed), so callers can treat its current value as a constant.
+    pub fn is_fixed(&self) -> bool {
+        matches!(self.inner, Inner::Fixed(_))
+    }
+
     /// Waits until the selected value differs from this view's snapshot, then updates the snapshot and returns it.
     ///
     /// Notifications trigger a source read; equal values leave the call pending. The returned value matches the snapshot

@@ -1,0 +1,46 @@
+type: integration
+name: "dogstatsd-remote-commands"
+description: "Verifies DogStatsD stats error and cardinality output through the Core Agent remote command CLI"
+timeout: 300s
+runtimes: [linux]
+
+env:
+  DD_API_KEY: "00000000000000000000000000000000"
+  DD_HOSTNAME: "integration-test-dogstatsd-remote-commands"
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "false"
+  DD_DATA_PLANE_REMOTE_AGENT_ENABLED: "true"
+  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+
+container:
+  files:
+    - "run_dogstatsd_remote_commands_test.py:/dogstatsd-remote-commands/run_dogstatsd_remote_commands_test.py"
+  exposed_ports:
+    - "48125/udp"
+
+procedure:
+  - parallel:
+      - assertion: port_listening
+        port: 48125
+        protocol: udp
+        timeout: 60s
+      - assertion: log_contains
+        pattern: "Agent Data Plane running."
+        timeout: 60s
+  # The driver bounds its own steps below this timeout, so it exits before the exec is abandoned.
+  - action: target_exec
+    command:
+      - "/opt/datadog-agent/embedded/bin/python3"
+      - "/dogstatsd-remote-commands/run_dogstatsd_remote_commands_test.py"
+    timeout: 150s
+  - assertion: file_contains
+    path: "/tmp/dogstatsd-remote-commands-integration-result"
+    pattern: "passed"
+    timeout: 10s
+  - parallel:
+      - assertion: process_stable_for
+        duration: 10s
+      - assertion: log_not_contains
+        pattern: "panic|PANIC"
+        regex: true
+        during: 10s

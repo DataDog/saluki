@@ -1,0 +1,7 @@
+---
+enhancements:
+  - |
+    Reduce DogStatsD CPU usage per metric, and decode in parallel across all DogStatsD decoder workers. Previously,
+    decoding was effectively limited to about one CPU core regardless of the number of decoder workers, which capped
+    ingest throughput on hosts with more cores. Under CPU limits, this lets DogStatsD process more metrics before
+    clients start dropping them.

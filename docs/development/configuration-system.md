@@ -59,9 +59,7 @@ Use `ConfigValue<T>` in `SalukiConfiguration` when a default must be detectable,
 
 ### Dependency boundaries
 
-The intended end state is:
-
-- `agent-data-plane-config` depends on neither the raw map nor the Datadog source model.
+- `agent-data-plane-config` is a pure data model that does not depend on any other workspace crates.
 - `agent-data-plane-config-system` bridges sources to the model and constructs no components.
 - `saluki-components` and `bin/agent-data-plane/src/components/` never depend on `agent-data-plane-config`, not even
   in tests.
