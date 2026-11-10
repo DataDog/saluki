@@ -6,7 +6,8 @@
 //! Those tests compare the JSON of the `datadogV2.HTTPLogItem` that the reference translator returns for one log
 //! record. Each case here compares the same JSON for the translated log, with the log's status as the item's `status`
 //! property. The reference tests build their translator with the OTel source `test`, so their tags end in
-//! `otel_source:test`. The source here runs as an embedded OTLP receiver, whose OTel source is `datadog_agent`.
+//! `otel_source:test`. This translator always tags logs with `otel_source:datadog_agent`, so the expected tags here
+//! use that instead.
 //!
 //! Cases that the translator doesn't match yet are in ignored `target_*` tests, one per gap. A change that closes a
 //! gap moves its cases into `translator_cases`, and removes the target test.
