@@ -142,19 +142,19 @@ pub struct SpanConversion {
 
     /// Whether the `otel.scope.*` tags are emitted next to the deprecated `otel.library.*` tags.
     ///
-    /// Mirrors the Agent's `disable_otel_scope_convention` feature, which turns them off. Only the V2 receive path
-    /// emits them.
+    /// Only the V2 receive path emits them.
     pub emit_otel_scope: bool,
 }
 
 /// How operation and resource names are derived.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub enum SpanNaming {
-    /// The Agent's current logic: `GetOTelOperationNameV2` and `GetOTelResourceV2`.
+    /// Names derived from semantic conventions, such as `http.server.request`.
     #[default]
     V2,
 
-    /// The Agent's older logic: `GetOTelOperationNameV1` and `GetOTelResourceV1`.
+    /// Names derived from the instrumentation library and span kind, such as `io.opentelemetry.tomcat.server`, or
+    /// from the span name.
     V1 {
         /// Whether the span name, rather than the instrumentation library name and span kind, becomes the operation
         /// name of a span without `operation.name`.
@@ -166,8 +166,7 @@ pub enum SpanNaming {
 }
 
 impl SpanNaming {
-    /// Selects V1 naming under the conditions of the Agent's `OperationAndResourceNameV2Enabled`: either span naming
-    /// setting is set, or the `disable_operation_and_resource_name_logic_v2` feature is.
+    /// Selects V1 naming when either span naming setting is set, or V2 naming is disabled.
     pub fn select(
         span_name_as_resource_name: bool, span_name_remappings: &HashMap<String, String>,
         disable_operation_and_resource_name_logic_v2: bool,
@@ -494,291 +493,57 @@ pub fn otel_span_to_dd_span(
     dd_span
 }
 
-/// Converts an OTLP span the way the Agent's V1 receive path does, mirroring `convertSpan` (`pkg/trace/api/otlp.go`).
+/// Converts an OTLP span on the V1 receive path.
 ///
-/// The Agent takes this path when the `disable_receive_resource_spans_v2` feature is set. It differs from
-/// [`otel_span_to_dd_span`] throughout:
+/// The V1 receive path copies attributes more literally than [`otel_span_to_dd_span`]:
 ///
 /// - Resource attributes are copied first, and span attributes override them. Numeric span attributes become
 ///   metrics; everything else becomes a string tag. Only the HTTP method and status code are mapped to Datadog
 ///   conventions, and `datadog.*` attributes stay ordinary tags.
-/// - `operation.name`, `service.name`, `resource.name`, and `span.type` set their fields from either map, and the
-///   fields fall back to their own V1 defaults. V2 naming still overrides the operation name.
+/// - `operation.name`, `service.name`, `resource.name`, and `span.type` set their fields from either map, and missing
+///   fields fall back to V1 defaults. V2 naming still overrides the operation name.
 /// - Only the deprecated `otel.library.*` scope tags are emitted, and instrumentation scope attributes are dropped.
 ///
-/// `ignore_missing_fields` doesn't apply. The normalization the Agent applies to every span afterwards is applied here,
-/// as on the V2 path.
+/// `ignore_missing_fields` doesn't apply. The span is normalized as on the V2 path.
 pub fn otel_span_to_dd_span_v1(
     otel_span: &OtlpSpan, otel_resource: &Resource, instrumentation_scope: Option<&OtlpInstrumentationScope>,
     conversion: &SpanConversion, interner: &GenericMapInterner, string_builder: &mut StringBuilder<GenericMapInterner>,
     trace_id_hex: Option<&MetaString>,
 ) -> DdSpan {
-    let span_attributes = &otel_span.attributes;
-    let resource_attributes = &otel_resource.attributes;
-    let mut fields = SpanFieldsV1::default();
-    let mut attrs: FastHashMap<MetaString, AttributeValue> = FastHashMap::default();
-    attrs.reserve(span_attributes.len() + resource_attributes.len());
-
-    for attribute in resource_attributes {
-        let value = otlp_value_as_string(attribute.value.as_ref().and_then(|wrapper| wrapper.value.as_ref()));
-        set_meta_otlp(&mut fields, &mut attrs, &attribute.key, &value, interner);
-    }
-
-    let span_id = convert_span_id(&otel_span.span_id);
-    let parent_id = convert_span_id(&otel_span.parent_span_id);
-    let kind = SpanKind::try_from(otel_span.kind).unwrap_or(SpanKind::Unspecified);
-    if conversion.compute_top_level_by_span_kind {
-        if parent_id == 0 || matches!(kind, SpanKind::Server | SpanKind::Consumer) {
-            attrs.insert(MetaString::from_static("_top_level"), AttributeValue::Float(1.0));
-        }
-        if matches!(kind, SpanKind::Client | SpanKind::Producer) {
-            attrs.insert(MetaString::from_static("_dd.measured"), AttributeValue::Float(1.0));
-        }
-    }
-
-    let trace_id_hex = match trace_id_hex {
-        Some(trace_id_hex) => trace_id_hex.clone(),
-        None => bytes_to_hex_lowercase(&otel_span.trace_id).into(),
-    };
-    if !trace_id_hex.is_empty() {
-        attrs.insert(
-            MetaString::from_static(OTEL_TRACE_ID_META_KEY),
-            AttributeValue::String(trace_id_hex),
-        );
-    }
-    attrs.insert(
-        MetaString::from_static(SPAN_KIND_META_KEY),
-        AttributeValue::String(MetaString::from_static(span_kind_name(kind))),
-    );
-    if !has_meta(&attrs, "version") {
-        let version = first_present_attribute(resource_attributes, &[SERVICE_VERSION]);
-        if !version.is_empty() {
-            attrs.insert(
-                MetaString::from_static("version"),
-                AttributeValue::String(MetaString::from_interner(&version, interner)),
-            );
-        }
-    }
-
-    let mut dd_span = DdSpan::default();
-    set_links_and_events(
-        &mut dd_span,
-        &mut attrs,
+    let mut span = SpanV1::new(
         otel_span,
-        LEGACY_TAG_LINKS_AND_EVENTS,
+        &otel_resource.attributes,
+        instrumentation_scope,
+        conversion,
         interner,
+        string_builder,
     );
-    if span_contains_exception_event(&otel_span.events) {
-        attrs.insert(
-            MetaString::from_static("_dd.span_events.has_exception"),
-            AttributeValue::String(MetaString::from_static("true")),
-        );
-    }
-
-    let mut method_from_new_convention = false;
-    let mut status_code_from_new_convention = false;
-    for attribute in span_attributes {
-        let key = attribute.key.as_str();
-        let value = attribute.value.as_ref().and_then(|wrapper| wrapper.value.as_ref());
-        let numeric = match value {
-            Some(OtlpValue::DoubleValue(value)) => Some(AttributeValue::Float(*value)),
-            Some(OtlpValue::IntValue(value)) => Some(AttributeValue::Int(*value)),
-            _ => None,
-        };
-        if let Some(numeric) = numeric {
-            // The span value replaces a resource value of the same key, as `dropResourceMetaOverriddenBySpanMetric` does.
-            attrs.remove(key);
-            let metric_key = if key == "sampling.priority" {
-                MetaString::from_static(SAMPLING_PRIORITY_METRIC_KEY)
-            } else {
-                MetaString::from_interner(key, interner)
-            };
-            attrs.insert(metric_key, numeric);
-        } else if key != HTTP_METHOD_KEY && key != HTTP_STATUS_CODE_KEY {
-            set_meta_otlp(&mut fields, &mut attrs, key, &otlp_value_as_string(value), interner);
-        }
-
-        if key == HTTP_REQUEST_METHOD_KEY || (key == HTTP_METHOD_KEY && !method_from_new_convention) {
-            method_from_new_convention |= key == HTTP_REQUEST_METHOD_KEY;
-            set_meta_otlp(
-                &mut fields,
-                &mut attrs,
-                HTTP_METHOD_KEY,
-                &otlp_value_as_string(value),
-                interner,
-            );
-        }
-        if key == HTTP_RESPONSE_STATUS_CODE_KEY || (key == HTTP_STATUS_CODE_KEY && !status_code_from_new_convention) {
-            status_code_from_new_convention |= key == HTTP_RESPONSE_STATUS_CODE_KEY;
-            // The Agent keeps a numeric `http.status_code` as a metric next to this tag. ADP holds one value per key
-            // and keeps the number, as on the V2 path.
-            if attrs
-                .get(HTTP_STATUS_CODE_KEY)
-                .is_none_or(|value| value.as_num().is_none())
-            {
-                set_meta_otlp(
-                    &mut fields,
-                    &mut attrs,
-                    HTTP_STATUS_CODE_KEY,
-                    &otlp_value_as_string(value),
-                    interner,
-                );
-            }
-        }
-    }
-
-    if !has_meta(&attrs, "env") {
-        if let Some(env) = first_meta_value(&attrs, &[DEPLOYMENT_ENVIRONMENT_NAME, DEPLOYMENT_ENVIRONMENT_KEY]) {
-            normalize_tag_into(&env, string_builder);
-            attrs.insert(
-                MetaString::from_static("env"),
-                AttributeValue::String(string_builder.to_meta_string()),
-            );
-        }
-    }
-    if !has_meta(&attrs, "db.name") {
-        let db_namespace = resource_then_span_attribute(resource_attributes, span_attributes, &[DB_NAMESPACE_KEY]);
-        if !db_namespace.is_empty() {
-            attrs.insert(
-                MetaString::from_static("db.name"),
-                AttributeValue::String(MetaString::from_interner(&db_namespace, interner)),
-            );
-        }
-    }
-    if !otel_span.trace_state.is_empty() {
-        attrs.insert(
-            MetaString::from_static(W3C_TRACESTATE_META_KEY),
-            AttributeValue::String(otel_span.trace_state.as_str().into()),
-        );
-    }
-    if let Some(scope) = instrumentation_scope {
-        if !scope.name.is_empty() {
-            attrs.insert(
-                MetaString::from_static(OTEL_LIBRARY_NAME_META_KEY),
-                AttributeValue::String(scope.name.as_str().into()),
-            );
-        }
-        if !scope.version.is_empty() {
-            attrs.insert(
-                MetaString::from_static(OTEL_LIBRARY_VERSION_META_KEY),
-                AttributeValue::String(scope.version.as_str().into()),
-            );
-        }
-    }
-    let status = otel_span.status.as_ref();
-    let status_code = status
-        .and_then(|status| StatusCode::try_from(status.code).ok())
-        .unwrap_or(StatusCode::Unset);
-    attrs.insert(
-        MetaString::from_static(OTEL_STATUS_CODE_META_KEY),
-        AttributeValue::String(MetaString::from_static(status_code_to_string(status_code))),
-    );
-    if let Some(status) = status.filter(|status| !status.message.is_empty()) {
-        attrs.insert(
-            MetaString::from_static(OTEL_STATUS_DESCRIPTION_META_KEY),
-            AttributeValue::String(status.message.as_str().into()),
-        );
-    }
-    // Like the Agent's `Status2Error`, this path takes no error fields from exception events.
-    let error = status_to_error(status, &[], &mut attrs);
-
-    let SpanFieldsV1 {
-        mut service,
-        mut name,
-        mut resource,
-        mut span_type,
-    } = fields;
-    match &conversion.naming {
-        SpanNaming::V2 => {
-            name = get_otel_operation_name_v2(
-                otel_span,
-                span_attributes,
-                resource_attributes,
-                interner,
-                string_builder,
-            );
-        }
-        SpanNaming::V1 {
-            span_name_as_resource_name,
-            span_name_remappings,
-        } => {
-            // Unlike `GetOTelOperationNameV1`, a name set by `operation.name` is never remapped here.
-            if name.is_empty() {
-                string_builder.clear();
-                if *span_name_as_resource_name {
-                    let _ = string_builder.push_str(&otel_span.name);
-                } else {
-                    let library = instrumentation_scope.map_or("", |scope| scope.name.as_str());
-                    let _ = string_builder.push_str(if library.is_empty() { "opentelemetry" } else { library });
-                    let _ = string_builder.push('.');
-                    let _ = string_builder.push_str(span_kind_name(kind));
-                }
-                name = match span_name_remappings.get(string_builder.as_str()) {
-                    Some(remapped) => remapped.clone(),
-                    None => string_builder.to_meta_string(),
-                };
-            }
-        }
-    }
-    if service.is_empty() {
-        service = MetaString::from_static("OTLPResourceNoServiceName");
-    }
-    if resource.is_empty() {
-        resource = match &conversion.naming {
-            SpanNaming::V2 => get_otel_resource_v2(
-                otel_span,
-                span_attributes,
-                resource_attributes,
-                interner,
-                string_builder,
-            ),
-            SpanNaming::V1 { .. } => resource_from_tags(&attrs, interner, string_builder)
-                .unwrap_or_else(|| MetaString::from(otel_span.name.as_str())),
-        };
-    }
-    if span_type.is_empty() {
-        span_type = MetaString::from_static(span_kind_to_type_v1(
-            kind,
-            span_attributes,
-            resource_attributes,
-            string_builder,
-        ));
-    }
-
-    // The Agent's normalizer and truncator, as `otel_to_dd_span_minimal` applies them on the V2 path.
-    normalize_service_into(&service, string_builder);
-    let service = string_builder.to_meta_string();
-    let name = normalize_name(name);
-    if resource.is_empty() {
-        resource = name.clone();
-    }
-    if resource.len() > conversion.max_resource_len {
-        resource = MetaString::from(truncate_utf8(&resource, conversion.max_resource_len));
-    }
-    if span_type.len() > MAX_TYPE_LEN {
-        span_type = MetaString::from(truncate_utf8(&span_type, MAX_TYPE_LEN).to_owned());
-    }
-    let parent_id = if parent_id == span_id { 0 } else { parent_id };
-    let start = otel_span.start_time_unix_nano;
-    let duration = validate_and_fix_duration(start, otel_span.end_time_unix_nano.wrapping_sub(start));
-    let start = validate_and_fix_start_time(start, duration);
-    truncate_attributes(&mut attrs);
-
-    let mut dd_span = dd_span
-        .with_service(service)
-        .with_name(name)
-        .with_resource(resource)
-        .with_span_type(span_type)
-        .with_span_id(span_id)
-        .with_parent_id(parent_id)
-        .with_start(start)
-        .with_duration(duration)
-        .with_error(error);
-    dd_span.attributes = attrs;
-    dd_span
+    span.copy_resource_attributes();
+    span.add_span_tags(trace_id_hex);
+    span.copy_span_attributes();
+    span.add_derived_tags();
+    span.fill_missing_fields();
+    span.finish()
 }
 
-/// The span fields that the Agent's `SetMetaOTLP` sets instead of a tag.
+/// A span being converted on the V1 receive path.
+///
+/// Each step writes over what the steps before it wrote, so their order sets which values take precedence.
+struct SpanV1<'a> {
+    otel_span: &'a OtlpSpan,
+    resource_attributes: &'a [KeyValue],
+    instrumentation_scope: Option<&'a OtlpInstrumentationScope>,
+    conversion: &'a SpanConversion,
+    interner: &'a GenericMapInterner,
+    string_builder: &'a mut StringBuilder<GenericMapInterner>,
+    kind: SpanKind,
+    fields: SpanFieldsV1,
+    attrs: FastHashMap<MetaString, AttributeValue>,
+    dd_span: DdSpan,
+    error: i32,
+}
+
+/// The span fields that `operation.name`, `service.name`, `resource.name`, and `span.type` set instead of a tag.
 #[derive(Default)]
 struct SpanFieldsV1 {
     service: MetaString,
@@ -787,34 +552,312 @@ struct SpanFieldsV1 {
     span_type: MetaString,
 }
 
-/// Sets an OTLP attribute as a string tag, or as the span field it names, mirroring the Agent's `SetMetaOTLP`.
-fn set_meta_otlp(
-    fields: &mut SpanFieldsV1, attrs: &mut FastHashMap<MetaString, AttributeValue>, key: &str, value: &str,
-    interner: &GenericMapInterner,
-) {
-    let field = match key {
-        OPERATION_NAME_KEY => &mut fields.name,
-        SERVICE_NAME => &mut fields.service,
-        RESOURCE_NAME_KEY => &mut fields.resource,
-        SPAN_TYPE_KEY => &mut fields.span_type,
-        ANALYTICS_EVENT_KEY => {
-            if let Some(enabled) = parse_bool(value) {
-                attrs.insert(
-                    MetaString::from_static(EVENT_EXTRACTION_METRIC_KEY),
-                    AttributeValue::Float(if enabled { 1.0 } else { 0.0 }),
+impl<'a> SpanV1<'a> {
+    fn new(
+        otel_span: &'a OtlpSpan, resource_attributes: &'a [KeyValue],
+        instrumentation_scope: Option<&'a OtlpInstrumentationScope>, conversion: &'a SpanConversion,
+        interner: &'a GenericMapInterner, string_builder: &'a mut StringBuilder<GenericMapInterner>,
+    ) -> Self {
+        let mut attrs = FastHashMap::default();
+        attrs.reserve(otel_span.attributes.len() + resource_attributes.len());
+        Self {
+            otel_span,
+            resource_attributes,
+            instrumentation_scope,
+            conversion,
+            interner,
+            string_builder,
+            kind: SpanKind::try_from(otel_span.kind).unwrap_or(SpanKind::Unspecified),
+            fields: SpanFieldsV1::default(),
+            attrs,
+            dd_span: DdSpan::default(),
+            error: 0,
+        }
+    }
+
+    /// Copies every resource attribute as a string tag, or as the field it names.
+    fn copy_resource_attributes(&mut self) {
+        for attribute in self.resource_attributes {
+            let value = otlp_value_as_string(attribute.value.as_ref().and_then(|wrapper| wrapper.value.as_ref()));
+            self.set_tag_or_field(&attribute.key, &value);
+        }
+    }
+
+    /// Adds the tags taken from the span itself: top-level and measured marks, trace ID, span kind, version, links,
+    /// and events.
+    fn add_span_tags(&mut self, trace_id_hex: Option<&MetaString>) {
+        if self.conversion.compute_top_level_by_span_kind {
+            let is_root = convert_span_id(&self.otel_span.parent_span_id) == 0;
+            if is_root || matches!(self.kind, SpanKind::Server | SpanKind::Consumer) {
+                self.attrs
+                    .insert(MetaString::from_static("_top_level"), AttributeValue::Float(1.0));
+            }
+            if matches!(self.kind, SpanKind::Client | SpanKind::Producer) {
+                self.attrs
+                    .insert(MetaString::from_static("_dd.measured"), AttributeValue::Float(1.0));
+            }
+        }
+
+        let trace_id_hex = match trace_id_hex {
+            Some(trace_id_hex) => trace_id_hex.clone(),
+            None => bytes_to_hex_lowercase(&self.otel_span.trace_id).into(),
+        };
+        if !trace_id_hex.is_empty() {
+            self.insert_tag(OTEL_TRACE_ID_META_KEY, trace_id_hex);
+        }
+        self.insert_tag(SPAN_KIND_META_KEY, MetaString::from_static(span_kind_name(self.kind)));
+        if !has_meta(&self.attrs, "version") {
+            let version = first_present_attribute(self.resource_attributes, &[SERVICE_VERSION]);
+            if !version.is_empty() {
+                let version = MetaString::from_interner(&version, self.interner);
+                self.insert_tag("version", version);
+            }
+        }
+
+        set_links_and_events(
+            &mut self.dd_span,
+            &mut self.attrs,
+            self.otel_span,
+            LEGACY_TAG_LINKS_AND_EVENTS,
+            self.interner,
+        );
+        if span_contains_exception_event(&self.otel_span.events) {
+            self.insert_tag("_dd.span_events.has_exception", MetaString::from_static("true"));
+        }
+    }
+
+    /// Copies every span attribute over the resource attributes: numbers as metrics, everything else as string tags,
+    /// with the HTTP method and status code mapped onto their Datadog keys.
+    fn copy_span_attributes(&mut self) {
+        let mut method_from_new_convention = false;
+        let mut status_code_from_new_convention = false;
+        for attribute in &self.otel_span.attributes {
+            let key = attribute.key.as_str();
+            let value = attribute.value.as_ref().and_then(|wrapper| wrapper.value.as_ref());
+            let numeric = match value {
+                Some(OtlpValue::DoubleValue(value)) => Some(AttributeValue::Float(*value)),
+                Some(OtlpValue::IntValue(value)) => Some(AttributeValue::Int(*value)),
+                _ => None,
+            };
+            if let Some(numeric) = numeric {
+                // A number replaces a resource tag of the same key, even when it is stored under another key.
+                self.attrs.remove(key);
+                let metric_key = if key == "sampling.priority" {
+                    MetaString::from_static(SAMPLING_PRIORITY_METRIC_KEY)
+                } else {
+                    MetaString::from_interner(key, self.interner)
+                };
+                self.attrs.insert(metric_key, numeric);
+            } else if key != HTTP_METHOD_KEY && key != HTTP_STATUS_CODE_KEY {
+                self.set_tag_or_field(key, &otlp_value_as_string(value));
+            }
+
+            // The current semantic convention keys take precedence over the older ones.
+            if key == HTTP_REQUEST_METHOD_KEY || (key == HTTP_METHOD_KEY && !method_from_new_convention) {
+                method_from_new_convention |= key == HTTP_REQUEST_METHOD_KEY;
+                self.set_tag_or_field(HTTP_METHOD_KEY, &otlp_value_as_string(value));
+            }
+            if key == HTTP_RESPONSE_STATUS_CODE_KEY || (key == HTTP_STATUS_CODE_KEY && !status_code_from_new_convention)
+            {
+                status_code_from_new_convention |= key == HTTP_RESPONSE_STATUS_CODE_KEY;
+                // A numeric `http.status_code` is kept as a number, as on the V2 path.
+                if self
+                    .attrs
+                    .get(HTTP_STATUS_CODE_KEY)
+                    .is_none_or(|value| value.as_num().is_none())
+                {
+                    self.set_tag_or_field(HTTP_STATUS_CODE_KEY, &otlp_value_as_string(value));
+                }
+            }
+        }
+    }
+
+    /// Adds the tags derived from what was copied, the instrumentation scope, and the status, and sets the error flag.
+    fn add_derived_tags(&mut self) {
+        if !has_meta(&self.attrs, "env") {
+            if let Some(env) = first_meta_value(&self.attrs, &[DEPLOYMENT_ENVIRONMENT_NAME, DEPLOYMENT_ENVIRONMENT_KEY])
+            {
+                normalize_tag_into(&env, self.string_builder);
+                let env = self.string_builder.to_meta_string();
+                self.insert_tag("env", env);
+            }
+        }
+        if !has_meta(&self.attrs, "db.name") {
+            let db_namespace = resource_then_span_attribute(
+                self.resource_attributes,
+                &self.otel_span.attributes,
+                &[DB_NAMESPACE_KEY],
+            );
+            if !db_namespace.is_empty() {
+                let db_namespace = MetaString::from_interner(&db_namespace, self.interner);
+                self.insert_tag("db.name", db_namespace);
+            }
+        }
+        if !self.otel_span.trace_state.is_empty() {
+            self.insert_tag(W3C_TRACESTATE_META_KEY, self.otel_span.trace_state.as_str().into());
+        }
+        if let Some(scope) = self.instrumentation_scope {
+            if !scope.name.is_empty() {
+                self.insert_tag(OTEL_LIBRARY_NAME_META_KEY, scope.name.as_str().into());
+            }
+            if !scope.version.is_empty() {
+                self.insert_tag(OTEL_LIBRARY_VERSION_META_KEY, scope.version.as_str().into());
+            }
+        }
+
+        let status = self.otel_span.status.as_ref();
+        let status_code = status
+            .and_then(|status| StatusCode::try_from(status.code).ok())
+            .unwrap_or(StatusCode::Unset);
+        self.insert_tag(
+            OTEL_STATUS_CODE_META_KEY,
+            MetaString::from_static(status_code_to_string(status_code)),
+        );
+        if let Some(status) = status.filter(|status| !status.message.is_empty()) {
+            self.insert_tag(OTEL_STATUS_DESCRIPTION_META_KEY, status.message.as_str().into());
+        }
+        // This path takes no error fields from exception events.
+        self.error = status_to_error(status, &[], &mut self.attrs);
+    }
+
+    /// Fills the operation name, service, resource, and span type that no attribute set.
+    fn fill_missing_fields(&mut self) {
+        let otel_span = self.otel_span;
+        let fields = &mut self.fields;
+        match &self.conversion.naming {
+            SpanNaming::V2 => {
+                fields.name = get_otel_operation_name_v2(
+                    otel_span,
+                    &otel_span.attributes,
+                    self.resource_attributes,
+                    self.interner,
+                    self.string_builder,
                 );
             }
-            return;
+            SpanNaming::V1 {
+                span_name_as_resource_name,
+                span_name_remappings,
+            } => {
+                // Unlike V1 naming on the V2 receive path, a name set by `operation.name` is never remapped.
+                if fields.name.is_empty() {
+                    let builder = &mut *self.string_builder;
+                    builder.clear();
+                    if *span_name_as_resource_name {
+                        let _ = builder.push_str(&otel_span.name);
+                    } else {
+                        let library = self.instrumentation_scope.map_or("", |scope| scope.name.as_str());
+                        let _ = builder.push_str(if library.is_empty() { "opentelemetry" } else { library });
+                        let _ = builder.push('.');
+                        let _ = builder.push_str(span_kind_name(self.kind));
+                    }
+                    fields.name = match span_name_remappings.get(builder.as_str()) {
+                        Some(remapped) => remapped.clone(),
+                        None => builder.to_meta_string(),
+                    };
+                }
+            }
         }
-        _ => {
-            attrs.insert(
-                MetaString::from_interner(key, interner),
-                AttributeValue::String(MetaString::from_interner(value, interner)),
-            );
-            return;
+        if fields.service.is_empty() {
+            fields.service = MetaString::from_static("OTLPResourceNoServiceName");
         }
-    };
-    *field = MetaString::from_interner(value, interner);
+        if fields.resource.is_empty() {
+            fields.resource = match &self.conversion.naming {
+                SpanNaming::V2 => get_otel_resource_v2(
+                    otel_span,
+                    &otel_span.attributes,
+                    self.resource_attributes,
+                    self.interner,
+                    self.string_builder,
+                ),
+                SpanNaming::V1 { .. } => resource_from_tags(&self.attrs, self.interner, self.string_builder)
+                    .unwrap_or_else(|| MetaString::from(otel_span.name.as_str())),
+            };
+        }
+        if fields.span_type.is_empty() {
+            fields.span_type = MetaString::from_static(span_kind_to_type_v1(
+                self.kind,
+                &otel_span.attributes,
+                self.resource_attributes,
+                self.string_builder,
+            ));
+        }
+    }
+
+    /// Normalizes the fields as the V2 path does, and builds the span.
+    fn finish(self) -> DdSpan {
+        let SpanFieldsV1 {
+            service,
+            name,
+            mut resource,
+            mut span_type,
+        } = self.fields;
+        normalize_service_into(&service, self.string_builder);
+        let service = self.string_builder.to_meta_string();
+        let name = normalize_name(name);
+        if resource.is_empty() {
+            resource = name.clone();
+        }
+        if resource.len() > self.conversion.max_resource_len {
+            resource = MetaString::from(truncate_utf8(&resource, self.conversion.max_resource_len));
+        }
+        if span_type.len() > MAX_TYPE_LEN {
+            span_type = MetaString::from(truncate_utf8(&span_type, MAX_TYPE_LEN).to_owned());
+        }
+        let span_id = convert_span_id(&self.otel_span.span_id);
+        let parent_id = convert_span_id(&self.otel_span.parent_span_id);
+        let parent_id = if parent_id == span_id { 0 } else { parent_id };
+        let start = self.otel_span.start_time_unix_nano;
+        let duration = validate_and_fix_duration(start, self.otel_span.end_time_unix_nano.wrapping_sub(start));
+        let start = validate_and_fix_start_time(start, duration);
+        let mut attrs = self.attrs;
+        truncate_attributes(&mut attrs);
+
+        let mut dd_span = self
+            .dd_span
+            .with_service(service)
+            .with_name(name)
+            .with_resource(resource)
+            .with_span_type(span_type)
+            .with_span_id(span_id)
+            .with_parent_id(parent_id)
+            .with_start(start)
+            .with_duration(duration)
+            .with_error(self.error);
+        dd_span.attributes = attrs;
+        dd_span
+    }
+
+    /// Sets an attribute as a string tag, or as the span field it names.
+    fn set_tag_or_field(&mut self, key: &str, value: &str) {
+        let field = match key {
+            OPERATION_NAME_KEY => &mut self.fields.name,
+            SERVICE_NAME => &mut self.fields.service,
+            RESOURCE_NAME_KEY => &mut self.fields.resource,
+            SPAN_TYPE_KEY => &mut self.fields.span_type,
+            ANALYTICS_EVENT_KEY => {
+                if let Some(enabled) = parse_bool(value) {
+                    self.attrs.insert(
+                        MetaString::from_static(EVENT_EXTRACTION_METRIC_KEY),
+                        AttributeValue::Float(if enabled { 1.0 } else { 0.0 }),
+                    );
+                }
+                return;
+            }
+            _ => {
+                self.attrs.insert(
+                    MetaString::from_interner(key, self.interner),
+                    AttributeValue::String(MetaString::from_interner(value, self.interner)),
+                );
+                return;
+            }
+        };
+        *field = MetaString::from_interner(value, self.interner);
+    }
+
+    fn insert_tag(&mut self, key: &'static str, value: MetaString) {
+        self.attrs
+            .insert(MetaString::from_static(key), AttributeValue::String(value));
+    }
 }
 
 /// Returns whether `key` is set as a string tag, even an empty one.
@@ -830,12 +873,13 @@ fn meta_value<'a>(attrs: &'a FastHashMap<MetaString, AttributeValue>, key: &str)
         .filter(|value| !value.is_empty())
 }
 
-/// Returns the first of `keys` set as a non-empty string tag, mirroring the Agent's `GetFirstFromMap`.
+/// Returns the first of `keys` set as a non-empty string tag.
 fn first_meta_value(attrs: &FastHashMap<MetaString, AttributeValue>, keys: &[&str]) -> Option<MetaString> {
     keys.iter().find_map(|key| meta_value(attrs, key)).cloned()
 }
 
-/// Derives a resource name from the string tags, mirroring the Agent's `resourceFromTags`.
+/// Derives a resource name from the string tags: the HTTP method and route, the messaging operation and destination,
+/// the RPC method and service, or the GraphQL operation type and name, whichever comes first.
 fn resource_from_tags(
     attrs: &FastHashMap<MetaString, AttributeValue>, interner: &GenericMapInterner,
     string_builder: &mut StringBuilder<GenericMapInterner>,
@@ -856,7 +900,8 @@ fn resource_from_tags(
     })
 }
 
-/// Returns the span type of the V1 receive path, mirroring the Agent's `SpanKind2Type`.
+/// Returns the span type of the V1 receive path: `web` for servers, `http`, `cache`, or `db` for clients, and `custom`
+/// otherwise.
 fn span_kind_to_type_v1(
     kind: SpanKind, span_attributes: &[KeyValue], resource_attributes: &[KeyValue],
     string_builder: &mut StringBuilder<GenericMapInterner>,
@@ -864,7 +909,7 @@ fn span_kind_to_type_v1(
     match kind {
         SpanKind::Server => "web",
         SpanKind::Client => {
-            // `GetOTelAttrValInResAndSpanAttrs` normalizes each map's value before falling back to the next.
+            // Each map's value is normalized before falling back to the next map.
             for attributes in [resource_attributes, span_attributes] {
                 normalize_tag_value_into_unchecked(
                     &first_present_attribute(attributes, &[DB_SYSTEM_KEY]),
@@ -1554,10 +1599,10 @@ fn get_otel_resource_v2(
     MetaString::empty()
 }
 
-/// Returns the operation name V1 derives, mirroring the Agent's `GetOTelOperationNameV1`.
+/// Returns the operation name of V1 naming: `operation.name`, or else the span name or `<library>.<kind>`.
 ///
-/// `span_name_remappings` applies to the derived name, including one taken from `operation.name`. The caller
-/// normalizes the result.
+/// `span_name_remappings` applies to the result, including a name taken from `operation.name`. The caller
+/// normalizes it.
 fn get_otel_operation_name_v1(
     otel_span: &OtlpSpan, resource_attributes: &[KeyValue], instrumentation_scope: Option<&OtlpInstrumentationScope>,
     span_name_as_resource_name: bool, span_name_remappings: &FastHashMap<String, MetaString>,
@@ -1571,7 +1616,7 @@ fn get_otel_operation_name_v1(
     } else if span_name_as_resource_name {
         let _ = string_builder.push_str(&otel_span.name);
     } else {
-        // `GetOTelOperationNameV1` lowercases `ptrace.SpanKind.String()`, which is empty for an unknown kind.
+        // An unknown span kind contributes an empty name.
         let kind = SpanKind::try_from(otel_span.kind).map_or("", span_kind_name);
         let library = instrumentation_scope.map_or("", |scope| scope.name.as_str());
         let _ = string_builder.push_str(if library.is_empty() { "opentelemetry" } else { library });
@@ -1585,7 +1630,7 @@ fn get_otel_operation_name_v1(
     MetaString::from_interner(string_builder.as_str(), interner)
 }
 
-/// Returns the resource name V1 derives, mirroring the Agent's `GetOTelResourceV1`.
+/// Returns the resource name of V1 naming.
 ///
 /// Unlike V2, the HTTP route applies to every span kind, and neither database statements nor GraphQL values are used
 /// or normalized. The caller truncates the result.
@@ -1618,8 +1663,8 @@ fn get_otel_resource_v1(
 
 /// Returns the first of `keys` present in the resource attributes, or else in the span attributes, as a string.
 ///
-/// Mirrors the Agent's `GetOTelAttrValInResAndSpanAttrs`, which the V1 logic uses: resource attributes take
-/// precedence, and a key that is present with an empty value hides the later keys of the same map.
+/// V1 naming looks attributes up this way: resource attributes take precedence, and a key that is present with an
+/// empty value hides the later keys of the same map.
 fn resource_then_span_attribute<'a>(
     resource_attributes: &'a [KeyValue], span_attributes: &'a [KeyValue], keys: &[&str],
 ) -> Cow<'a, str> {
@@ -5035,26 +5080,25 @@ mod tests {
     // ===============================================================================================
     // V1 naming and the V1 receive path.
     //
-    // The Agent's fixtures are ported from `testOTelSpanToDDSpan`, `testOTLPConvertSpan`, and
-    // `testOTLPNameRemapping`:
+    // Cases marked as ported come from `testOTelSpanToDDSpan`, `testOTLPConvertSpan`, and `testOTLPNameRemapping` in
     // https://github.com/DataDog/datadog-agent/blob/00b7aa9aa8/pkg/trace/api/otlp_test.go
-    // The Agent's tests check `convertSpan` before its normalizer runs, so expected names here are normalized.
+    // Those tests check spans before normalization, so the expected names here are normalized.
 
-    /// `otlpTestTraceID` and `otlpTestSpanID` from the Agent's tests.
-    const AGENT_TEST_TRACE_ID: [u8; 16] = [
+    /// The trace and span IDs of the ported fixtures.
+    const FIXTURE_TRACE_ID: [u8; 16] = [
         0x72, 0xdf, 0x52, 0x0a, 0xf2, 0xbd, 0xe7, 0xa5, 0x24, 0x00, 0x31, 0xea, 0xd7, 0x50, 0xe5, 0xf3,
     ];
-    const AGENT_TEST_SPAN_ID: [u8; 8] = [0x24, 0x00, 0x31, 0xea, 0xd7, 0x50, 0xe5, 0xf3];
-    const AGENT_TEST_START: u64 = 1_700_000_000_000_000_000;
+    const FIXTURE_SPAN_ID: [u8; 8] = [0x24, 0x00, 0x31, 0xea, 0xd7, 0x50, 0xe5, 0xf3];
+    const FIXTURE_START: u64 = 1_700_000_000_000_000_000;
 
-    fn agent_test_span(name: &str, kind: SpanKind, attributes: Vec<KeyValue>) -> OtlpSpan {
+    fn fixture_span(name: &str, kind: SpanKind, attributes: Vec<KeyValue>) -> OtlpSpan {
         OtlpSpan {
-            trace_id: AGENT_TEST_TRACE_ID.to_vec(),
-            span_id: AGENT_TEST_SPAN_ID.to_vec(),
+            trace_id: FIXTURE_TRACE_ID.to_vec(),
+            span_id: FIXTURE_SPAN_ID.to_vec(),
             name: name.to_string(),
             kind: kind as i32,
-            start_time_unix_nano: AGENT_TEST_START,
-            end_time_unix_nano: AGENT_TEST_START + 200_000_000,
+            start_time_unix_nano: FIXTURE_START,
+            end_time_unix_nano: FIXTURE_START + 200_000_000,
             attributes,
             ..Default::default()
         }
@@ -5124,7 +5168,7 @@ mod tests {
     }
 
     #[test]
-    fn span_naming_selects_v1_under_the_agent_conditions() {
+    fn span_naming_selects_v1_when_any_v1_setting_is_set() {
         let remappings = HashMap::from([("old".to_string(), "new".to_string())]);
         let none = HashMap::new();
 
@@ -5147,7 +5191,7 @@ mod tests {
     }
 
     #[test]
-    fn v1_naming_matches_the_agent_on_the_v2_receive_path() {
+    fn v1_naming_on_the_v2_receive_path_matches_the_fixtures() {
         struct Case {
             name: &'static str,
             library: &'static str,
@@ -5210,7 +5254,7 @@ mod tests {
                 operation_name: "new",
                 resource_name: "asd",
             },
-            // The remaining cases cover branches of `GetOTelOperationNameV1` and `GetOTelResourceV1`.
+            // The remaining cases cover the other branches of V1 naming.
             Case {
                 name: "remapped operation.name",
                 library: "ddtracer",
@@ -5286,7 +5330,7 @@ mod tests {
         ];
 
         for case in cases {
-            let span = agent_test_span(case.span_name, case.kind, case.span_attrs);
+            let span = fixture_span(case.span_name, case.kind, case.span_attrs);
             let library = scope(case.library, "");
             let dd_span = convert_v2(&span, &resource(case.resource_attrs), Some(&library), &case.conversion);
 
@@ -5296,11 +5340,11 @@ mod tests {
     }
 
     #[test]
-    fn v1_receive_path_matches_the_agent_convert_span() {
+    fn v1_receive_path_matches_the_fixtures() {
         let trace_id = string("72df520af2bde7a5240031ead750e5f3");
 
         // Ported from `testOTLPConvertSpan`: Datadog fields set by attributes.
-        let span = agent_test_span(
+        let span = fixture_span(
             "/path",
             SpanKind::Unspecified,
             vec![
@@ -5329,7 +5373,7 @@ mod tests {
             assert_eq!(dd_span.error(), 0);
             assert_eq!(dd_span.span_id(), 2594128270069917171);
             assert_eq!(dd_span.parent_id(), 0);
-            assert_eq!(dd_span.start(), AGENT_TEST_START);
+            assert_eq!(dd_span.start(), FIXTURE_START);
             assert_eq!(dd_span.duration(), 200_000_000);
             assert_attributes(
                 &dd_span,
@@ -5354,7 +5398,7 @@ mod tests {
         }
 
         // Ported from `testOTLPConvertSpan`: an HTTP server error with the current semantic conventions.
-        let mut span = agent_test_span(
+        let mut span = fixture_span(
             "POST /uploads/:document_id",
             SpanKind::Unspecified,
             vec![
@@ -5411,7 +5455,7 @@ mod tests {
 
     #[test]
     fn v1_receive_path_overrides_resource_values_with_span_values() {
-        let span = agent_test_span(
+        let span = fixture_span(
             "span",
             SpanKind::Internal,
             vec![
@@ -5435,7 +5479,7 @@ mod tests {
             dd_span.attributes.get(SAMPLING_PRIORITY_METRIC_KEY),
             Some(&AttributeValue::Int(2))
         );
-        // The resource's `sampling.priority` tag is dropped, as `dropResourceMetaOverriddenBySpanMetric` drops it.
+        // The resource's `sampling.priority` tag is dropped, though the number is stored under another key.
         assert_eq!(dd_span.attributes.get("sampling.priority"), None);
         assert_eq!(dd_span.attributes.get("retries"), Some(&AttributeValue::Int(7)));
         assert_eq!(meta_str(&dd_span, "team"), Some("core"));
@@ -5453,14 +5497,14 @@ mod tests {
         let remapped = v1_naming(false, &[("libname.unspecified", "new"), ("legacy.op", "modern.op")]);
 
         // Ported from `testOTLPNameRemapping`.
-        let span = agent_test_span("asd", SpanKind::Unspecified, vec![]);
+        let span = fixture_span("asd", SpanKind::Unspecified, vec![]);
         assert_eq!(
             convert_v1(&span, &resource(vec![]), Some(&library), &remapped).name(),
             "new"
         );
 
         // Unlike V1 naming on the V2 receive path, an `operation.name` is not remapped.
-        let span = agent_test_span(
+        let span = fixture_span(
             "asd",
             SpanKind::Unspecified,
             vec![kv_str("operation.name", "legacy.op")],
@@ -5470,7 +5514,7 @@ mod tests {
             "legacy.op"
         );
 
-        let span = agent_test_span("checkout", SpanKind::Server, vec![]);
+        let span = fixture_span("checkout", SpanKind::Server, vec![]);
         assert_eq!(
             convert_v1(&span, &resource(vec![]), Some(&library), &v1_naming(true, &[])).name(),
             "checkout"
@@ -5483,7 +5527,7 @@ mod tests {
 
     #[test]
     fn v1_receive_path_falls_back_to_its_own_defaults() {
-        // Mirrors `SpanKind2Type`: the database system is read from the resource first, and normalized.
+        // The database system is read from the resource first, and normalized.
         for (kind, resource_attrs, span_attrs, span_type) in [
             (SpanKind::Server, vec![], vec![], "web"),
             (SpanKind::Client, vec![], vec![], "http"),
@@ -5502,13 +5546,13 @@ mod tests {
             (SpanKind::Client, vec![], vec![kv_str("db.system", "mysql")], "db"),
             (SpanKind::Producer, vec![], vec![kv_str("db.system", "redis")], "custom"),
         ] {
-            let span = agent_test_span("span", kind, span_attrs);
+            let span = fixture_span("span", kind, span_attrs);
             let dd_span = convert_v1(&span, &resource(resource_attrs), None, &v1_naming(false, &[]));
             assert_eq!(dd_span.span_type(), span_type, "{kind:?}");
             assert_eq!(dd_span.service(), "otlpresourcenoservicename");
         }
 
-        // Mirrors `resourceFromTags`, which reads the converted tags, so span attributes take precedence.
+        // The resource is derived from the converted tags, so span attributes take precedence.
         for (resource_attrs, span_attrs, resource_name) in [
             (
                 vec![kv_str("http.method", "PUT")],
@@ -5532,7 +5576,7 @@ mod tests {
             (vec![], vec![kv_str("graphql.operation.type", "query")], "query"),
             (vec![], vec![], "span"),
         ] {
-            let span = agent_test_span("span", SpanKind::Internal, span_attrs);
+            let span = fixture_span("span", SpanKind::Internal, span_attrs);
             let dd_span = convert_v1(&span, &resource(resource_attrs), None, &v1_naming(false, &[]));
             assert_eq!(dd_span.resource(), resource_name);
         }
@@ -5555,7 +5599,7 @@ mod tests {
             ),
             (vec![], None),
         ] {
-            let span = agent_test_span("span", SpanKind::Internal, span_attrs);
+            let span = fixture_span("span", SpanKind::Internal, span_attrs);
             let dd_span = convert_v1(&span, &resource(vec![]), None, &v1_naming(false, &[]));
             assert_eq!(meta_str(&dd_span, "env"), env);
         }
@@ -5565,7 +5609,7 @@ mod tests {
     fn v1_receive_path_emits_only_the_deprecated_scope_tags() {
         let mut library = scope("ddtracer", "v2");
         library.attributes = vec![kv_str("scope.attribute", "dropped")];
-        let span = agent_test_span(
+        let span = fixture_span(
             "span",
             SpanKind::Internal,
             vec![kv_str("datadog.service", "dd-service"), kv_str("db.namespace", "users")],
@@ -5595,7 +5639,7 @@ mod tests {
             (SpanKind::Internal, true, true, false, false),
             (SpanKind::Server, false, false, false, false),
         ] {
-            let mut span = agent_test_span("span", kind, vec![]);
+            let mut span = fixture_span("span", kind, vec![]);
             if has_parent {
                 span.parent_span_id = parent.to_vec();
             }

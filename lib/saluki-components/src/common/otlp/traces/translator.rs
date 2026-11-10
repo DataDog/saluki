@@ -208,23 +208,21 @@ pub struct OtlpTracesSettings {
 
     /// Whether the span name becomes the operation name of a span without `operation.name`.
     ///
-    /// `true` selects the Agent's V1 operation and resource naming.
+    /// `true` selects V1 operation and resource naming.
     pub span_name_as_resource_name: bool,
 
     /// Preferred operation names, keyed by the operation name V1 naming derives.
     ///
-    /// A non-empty map selects the Agent's V1 operation and resource naming.
+    /// A non-empty map selects V1 operation and resource naming.
     pub span_name_remappings: HashMap<String, String>,
 
-    /// Whether operation and resource names are derived with the Agent's V1 logic, as its
-    /// `disable_operation_and_resource_name_logic_v2` feature does.
+    /// Whether operation and resource names are derived with V1 naming.
     pub disable_operation_and_resource_name_logic_v2: bool,
 
-    /// Whether spans are converted the way the Agent's V1 receive path does, as its `disable_receive_resource_spans_v2`
-    /// feature does.
+    /// Whether spans are converted on the V1 receive path.
     pub disable_receive_resource_spans_v2: bool,
 
-    /// Whether the `otel.scope.*` tags are left off spans, as the Agent's `disable_otel_scope_convention` feature does.
+    /// Whether the `otel.scope.*` tags are left off spans.
     pub disable_otel_scope_convention: bool,
 }
 

@@ -504,12 +504,12 @@ pub struct Traces {
 
     /// Whether the OTLP span name becomes the operation name of OTLP spans that have no `operation.name`.
     ///
-    /// `true` selects the Agent's V1 operation and resource naming. Defaults to `false`.
+    /// `true` selects V1 operation and resource naming. Defaults to `false`.
     pub span_name_as_resource_name: bool,
 
     /// Preferred operation names, keyed by the operation name V1 naming derives.
     ///
-    /// A non-empty map selects the Agent's V1 operation and resource naming. Defaults to empty.
+    /// A non-empty map selects V1 operation and resource naming. Defaults to empty.
     pub span_name_remappings: HashMap<String, String>,
 }
 

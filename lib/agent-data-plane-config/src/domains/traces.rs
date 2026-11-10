@@ -20,10 +20,10 @@ pub enum ApmFeature {
     /// the full 128-bit ID.
     ProbabilisticSamplerFullTraceId,
 
-    /// Derives OTLP operation and resource names with the Agent's V1 logic instead of V2.
+    /// Derives OTLP operation and resource names with V1 naming instead of V2.
     DisableOperationAndResourceNameLogicV2,
 
-    /// Converts OTLP spans with the Agent's V1 receive path instead of V2.
+    /// Converts OTLP spans on the V1 receive path instead of V2.
     DisableReceiveResourceSpansV2,
 
     /// Stops emitting the `otel.scope.*` tags on OTLP spans. The deprecated `otel.library.*` tags remain.
@@ -163,7 +163,7 @@ pub struct Domain {
     /// Empty by default. Unrecognized values are carried as `ApmFeature::Other` and ignored
     /// without a warning: the flag inventory is not stable across versions. Enable
     /// `ApmFeature::ProbabilisticSamplerFullTraceId` on every probabilistic sampler in the
-    /// ingestion path so they keep the same traces. The `Disable*` variants select the Agent's
+    /// ingestion path so they keep the same traces. The `Disable*` variants select the
     /// older OTLP trace translation.
     pub features: Vec<ApmFeature>,
 
