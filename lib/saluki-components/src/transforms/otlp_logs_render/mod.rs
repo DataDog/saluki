@@ -33,8 +33,8 @@ const RENDER_FAILURE_LOG_INTERVAL: Duration = Duration::from_secs(10);
 /// OTLP logs render transform.
 ///
 /// Replaces the message of each log with its rendered content, and clears its additional properties, which the
-/// content now holds. The status, hostname, service, source, and tags stay on the log, for the envelope. Logs whose
-/// message is already rendered content, and events other than logs, pass through unchanged.
+/// content now holds. The status, hostname, service, source, and tags stay on the log, for the envelope. Events other
+/// than logs pass through unchanged.
 #[derive(Debug, Default)]
 pub struct OtlpLogsRenderConfiguration;
 
@@ -72,34 +72,30 @@ struct OtlpLogsRender {
 
 impl SynchronousTransform for OtlpLogsRender {
     fn transform_buffer(&mut self, buffer: &mut EventsBuffer) {
+        // Render each log, and drop the logs that can't be rendered. That only happens for a property that can't be
+        // serialized, such as a non-finite float. Removing them can reorder the rest of the buffer.
+        let renderer = &mut self.renderer;
         let mut failures = 0;
         let mut first_failure = None;
-        for event in &mut *buffer {
+        buffer.remove_if(|event| {
             let Event::Log(log) = event else {
-                continue;
+                return false;
             };
-            if log.message_is_content() {
-                continue;
-            }
-
-            match self.renderer.render(log) {
+            match renderer.render(log) {
                 Ok(content) => {
                     let unrendered = mem::replace(log, Log::new(MetaString::empty()));
-                    *log = unrendered
-                        .with_rendered_content(content)
-                        .with_additional_properties(None);
+                    *log = unrendered.with_message(content).with_additional_properties(None);
+                    false
                 }
                 Err(e) => {
                     failures += 1;
                     first_failure.get_or_insert(e);
+                    true
                 }
             }
-        }
+        });
 
-        // Drop the logs that can't be rendered. That only happens for a property that can't be serialized, such as a
-        // non-finite float. Removing them can reorder the rest of the buffer.
         if let Some(error) = first_failure {
-            buffer.remove_if(|event| matches!(event, Event::Log(log) if !log.message_is_content()));
             self.events_dropped.increment(failures);
 
             let now = Instant::now();
@@ -173,7 +169,6 @@ mod tests {
         assert_eq!(events.len(), 1);
         let log = into_log(events.remove(0));
 
-        assert!(log.message_is_content());
         assert_eq!(log.message(), &*expected_content);
         assert!(log.additional_properties().is_empty());
         assert_eq!(log.status(), original.status());
@@ -205,11 +200,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn passes_rendered_logs_and_other_events_through() {
-        let rendered = translated_log("ignored").with_rendered_content(r#"{"message":"already rendered"}"#);
+    async fn passes_other_events_through() {
         let metric = Metric::counter("some.counter", 1.0);
-        let events = run(vec![Event::Log(rendered.clone()), Event::Metric(metric.clone())]).await;
+        let events = run(vec![Event::Metric(metric.clone())]).await;
 
-        assert_eq!(events, vec![Event::Log(rendered), Event::Metric(metric)]);
+        assert_eq!(events, vec![Event::Metric(metric)]);
     }
 }

@@ -389,7 +389,7 @@ mod tests {
         properties.insert(MetaString::from_static("custom"), json!(42));
         let log = Log::new("ignored")
             .with_additional_properties(properties)
-            .with_rendered_content(r#"{"custom":42,"message":"hi"}"#)
+            .with_message(r#"{"custom":42,"message":"hi"}"#)
             .with_status("debug");
 
         assert_eq!(
