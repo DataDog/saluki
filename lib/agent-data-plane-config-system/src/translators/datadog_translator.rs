@@ -1185,6 +1185,8 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         // The deprecated `ipc_address` only takes precedence over `cmd_host` when it's explicitly set: the Core Agent
         // streams it at its default even when only `cmd_host` is configured. See `consume_cmd_host`.
         if self.sources.provenance("ipc_address") == Provenance::Explicit {
+            // Matches the warning the Datadog Agent logs when it uses `ipc_address`.
+            warn!("ipc_address is deprecated, use cmd_host instead");
             self.config.control.ipc.cmd_host = value;
         }
     }

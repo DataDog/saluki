@@ -223,7 +223,7 @@ pub struct ControlIpc {
 
     /// vsock address used for guest/host IPC.
     ///
-    /// Defaults to empty, which reaches the Core Agent over TCP on localhost at `cmd_port`.
+    /// Defaults to empty, which reaches the Core Agent over TCP at `cmd_host` and `cmd_port`.
     pub vsock_addr: String,
 
     /// Maximum gRPC message size, in bytes, accepted over the remote-agent IPC channel.

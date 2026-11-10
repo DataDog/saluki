@@ -93,8 +93,11 @@ impl RemoteAgentClientConfiguration {
     /// named vsock address to a CID.
     ///
     /// `cmd_host` follows the Datadog Agent's `cmd_host` setting. Like the Datadog Agent, the host must be `localhost`
-    /// or a loopback IP address: an IPv4 address in `127.0.0.0/8`, or `::1`. `localhost` connects to `127.0.0.1`,
-    /// which is where the Datadog Agent listens for it.
+    /// or a loopback IP address: an IPv4 address in `127.0.0.0/8`, or `::1`.
+    ///
+    /// `localhost` always connects to `127.0.0.1`, rather than resolving the name as the Datadog Agent does. The Agent
+    /// listens on `127.0.0.1` for `localhost` whenever IPv4 loopback is available, but if it listens on IPv6 loopback,
+    /// `cmd_host` must be set to `::1` explicitly.
     ///
     /// `vsock_addr` follows the Datadog Agent's `vsock_addr` setting: an empty value disables vsock, and `host`,
     /// `hypervisor`, and `local` select the well-known context identifiers 2, 0, and 3. vsock is only supported on
@@ -290,7 +293,7 @@ mod tests {
     #[test]
     fn endpoint_uses_cmd_host() {
         let cases = [
-            // `localhost` connects to IPv4 loopback, where the Datadog Agent listens for it.
+            // `localhost` always connects to IPv4 loopback.
             ("localhost", "https://127.0.0.1:5001/"),
             ("127.0.0.1", "https://127.0.0.1:5001/"),
             ("127.0.0.2", "https://127.0.0.2:5001/"),

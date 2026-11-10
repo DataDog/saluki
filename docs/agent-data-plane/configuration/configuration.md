@@ -1083,7 +1083,7 @@ The following settings work in ADP with the same behavior as the core agent.
 | `histogram_copy_to_distribution_prefix`                                                    | Prefix for hist-to-dist copies                     |
 | `histogram_percentiles`                                                                    | Histogram percentile aggregates                    |
 | `hostname`                                                                                 | Forced hostname for emitted data                   |
-| `ipc_address`                                                                              | Deprecated cmd_host; wins over cmd_host when set   |
+| `ipc_address`                                                                              | Deprecated `cmd_host`; takes precedence when set   |
 | `ipc_cert_file_path`                                                                       | Agent IPC certificate file path                    |
 | `kubernetes_kubelet_nodename`                                                              | Kubernetes node name for EKS Fargate static tags   |
 | `log_file_max_rolls`                                                                       | Max rolled log files to retain                     |

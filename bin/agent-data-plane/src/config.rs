@@ -5,7 +5,7 @@ use agent_data_plane_config::{ConfigValue, SalukiConfiguration};
 use datadog_agent_commons::ipc::config::{IpcAuthConfiguration, RemoteAgentClientConfiguration};
 use datadog_agent_config::classifier::Pipeline;
 use datadog_agent_runtime::env::{HostSettings, WorkloadSettings};
-use saluki_error::{generic_error, GenericError};
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::net::ListenAddress;
 
 /// General data plane configuration.
@@ -29,6 +29,9 @@ pub(crate) fn remote_agent_client_configuration(
         auth,
         ipc.grpc_max_message_size,
         &ipc.vsock_addr,
+    )
+    .error_context(
+        "Invalid Datadog Agent IPC configuration. Check `cmd_host` (or the deprecated `ipc_address`) and `vsock_addr`.",
     )
 }
 

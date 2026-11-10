@@ -1453,7 +1453,7 @@ inventory:
   ipc_address:
     support: full
     pipelines: [cross_cutting]
-    description: "Deprecated cmd_host; wins over cmd_host when set"
+    description: "Deprecated `cmd_host`; takes precedence when set"
 
   ipc_cert_file_path:
     support: full
