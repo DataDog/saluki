@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::vec::IntoIter;
 
 use opentelemetry_semantic_conventions::resource::SERVICE_NAME;
@@ -100,7 +101,10 @@ impl OtlpLogsTranslator {
 fn host_from_attributes(attributes: &[KeyValue]) -> Option<MetaString> {
     hostname_from_source_attributes(attributes)
         .filter(|hostname| !hostname.is_empty())
-        .map(|hostname| MetaString::from(hostname.as_ref()))
+        .map(|hostname| match hostname {
+            Cow::Borrowed(hostname) => MetaString::from(hostname),
+            Cow::Owned(hostname) => MetaString::from(hostname),
+        })
 }
 
 fn non_empty_string_attribute(attributes: &[KeyValue], key: &str) -> Option<MetaString> {
