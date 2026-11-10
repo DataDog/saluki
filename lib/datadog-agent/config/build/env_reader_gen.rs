@@ -8,20 +8,27 @@
 //! Unlike the flat-key overlay table, this emits an entry for every key, including single-segment
 //! keys such as `api_key`, because the reader places values directly at their destination.
 //!
-//! Environment names follow the Agent's `bindEnv`:
+//! Environment names follow the Agent's `bindEnv`, as `schema_gen::env_var_names` derives them:
 //! - [`EnvBinding::Overridden`] declares explicit names, used verbatim in declared (priority) order.
 //! - [`EnvBinding::Standard`] and [`EnvBinding::None`] derive `DD_` + `UPPER(dotted_path)` with `.`
 //!   replaced by `_`. `None` (`no-env`) still derives a name because a `no-env` field can be reached
 //!   through the standard form via the Agent's bespoke handling (for example `proxy.http` through
 //!   `DD_PROXY_HTTP`); a field with genuinely no variable only yields a dead entry that never fires.
+//! - A [`EnvBinding::Standard`] key with former names (`renamed_from`) derives a name from each
+//!   former name too, ahead of its own, as `BindEnvAndSetDefaultWithDeprecation` does. An
+//!   [`EnvBinding::Overridden`] key with former names fails the build.
+//!
+//! The same file holds [`RenamedKey`] entries for every schema setting with former names, modeled
+//! or not, so that a file using a former name reaches the current key.
 //!
 //! The decode strategy comes from the schema's `env_parser` when present, otherwise from the field's
 //! declared type.
 
+use std::collections::HashSet;
 use std::fmt::Write as _;
 use std::path::Path;
 
-use datadog_agent_config_overlay_model::schema_gen::{EnvBinding, EnvParser, FieldInfo, FieldType};
+use datadog_agent_config_overlay_model::schema_gen::{self, EnvParser, FieldInfo, FieldType, FormerName};
 use datadog_agent_config_overlay_model::{KnownEntry, SchemaOverlay};
 use indexmap::IndexMap;
 
@@ -43,7 +50,7 @@ pub fn generate(overlay: &SchemaOverlay, schema_map: &IndexMap<String, FieldInfo
     writeln!(out, "// Regenerate by running `cargo build -p datadog-agent-config`.").unwrap();
     writeln!(out).unwrap();
     writeln!(out, "use crate::env_decode::EnvDecode;").unwrap();
-    writeln!(out, "use crate::env_reader::EnvKey;").unwrap();
+    writeln!(out, "use crate::env_reader::{{EnvKey, RenamedKey}};").unwrap();
     writeln!(out).unwrap();
     writeln!(
         out,
@@ -53,13 +60,11 @@ pub fn generate(overlay: &SchemaOverlay, schema_map: &IndexMap<String, FieldInfo
     writeln!(out, "/// its nested path, and how to decode the raw value.").unwrap();
     writeln!(out, "pub static DATADOG_ENV_KEYS: &[EnvKey] = &[").unwrap();
 
+    let modeled: HashSet<&str> = keys.iter().map(|key| key.as_str()).collect();
     for key in keys {
         let info = schema_map.get(key.as_str());
 
-        let env_vars: Vec<String> = match info.map(|i| &i.env) {
-            Some(EnvBinding::Overridden(env_vars)) => env_vars.clone(),
-            None | Some(EnvBinding::Standard | EnvBinding::None) => vec![standard_env_name(key)],
-        };
+        let env_vars = schema_gen::env_var_names(key, info);
         let decode = decode_token(key, info);
 
         let env_vars_lit = env_vars
@@ -67,11 +72,7 @@ pub fn generate(overlay: &SchemaOverlay, schema_map: &IndexMap<String, FieldInfo
             .map(|name| format!("\"{}\"", name))
             .collect::<Vec<_>>()
             .join(", ");
-        let path_lit = key
-            .split('.')
-            .map(|seg| format!("\"{}\"", seg))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let path_lit = path_literal(key);
 
         writeln!(out, "    EnvKey {{").unwrap();
         writeln!(out, "        env_vars: &[{}],", env_vars_lit).unwrap();
@@ -81,13 +82,40 @@ pub fn generate(overlay: &SchemaOverlay, schema_map: &IndexMap<String, FieldInfo
     }
 
     writeln!(out, "];").unwrap();
+    writeln!(out).unwrap();
+    write_renamed_keys(&mut out, &schema_gen::former_names(schema_map, &modeled));
 
     crate::generated_file::write_formatted(&manifest_dir.join("src/generated/env_keys.rs"), &out);
 }
 
-/// Derives the Agent's standard environment name for a key: `DD_` + `UPPER(dotted_path)`.
-fn standard_env_name(key: &str) -> String {
-    format!("DD_{}", key.replace('.', "_").to_uppercase())
+/// Writes `DATADOG_RENAMED_KEYS` from `former_names`, in their order.
+fn write_renamed_keys(out: &mut String, former_names: &[FormerName<'_>]) {
+    writeln!(
+        out,
+        "/// Every former name of a Datadog schema setting, highest priority first for each setting."
+    )
+    .unwrap();
+    writeln!(out, "pub static DATADOG_RENAMED_KEYS: &[RenamedKey] = &[").unwrap();
+    for name in former_names {
+        writeln!(out, "    RenamedKey {{").unwrap();
+        writeln!(out, "        former: &[{}],", path_literal(name.former)).unwrap();
+        writeln!(out, "        path: &[{}],", path_literal(name.key)).unwrap();
+        let env_var = match &name.env_var {
+            Some(env_var) => format!("Some(\"{env_var}\")"),
+            None => "None".to_string(),
+        };
+        writeln!(out, "        env_var: {env_var},").unwrap();
+        writeln!(out, "    }},").unwrap();
+    }
+    writeln!(out, "];").unwrap();
+}
+
+/// The nested path of a dotted key as a Rust slice literal's contents.
+fn path_literal(key: &str) -> String {
+    key.split('.')
+        .map(|seg| format!("\"{}\"", seg))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// The `EnvDecode` token for a field: its named `env_parser` if declared, else its declared type.

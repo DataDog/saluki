@@ -1,6 +1,6 @@
 //! YAML parsing for configuration files.
 
-use serde::de::DeserializeOwned;
+use serde::de::{DeserializeOwned, DeserializeSeed};
 
 /// Deserializes a YAML document using YAML 1.1 scalar resolution.
 ///
@@ -27,22 +27,41 @@ pub fn from_str<T>(input: &str) -> Result<T, serde_saphyr::Error>
 where
     T: DeserializeOwned,
 {
+    serde_saphyr::from_str_with_options(input, options())
+}
+
+/// Deserializes a YAML document with `seed`, parsing it as [`from_str`] does.
+///
+/// # Errors
+///
+/// If the document isn't valid YAML, or `seed` fails to deserialize it, an error is returned.
+pub fn from_str_seed<'de, S>(input: &'de str, seed: S) -> Result<S::Value, serde_saphyr::Error>
+where
+    S: DeserializeSeed<'de>,
+{
+    serde_saphyr::with_deserializer_from_str_with_options(input, options(), |deserializer| {
+        seed.deserialize(deserializer)
+    })
+}
+
+fn options() -> serde_saphyr::Options {
     let mut budget = serde_saphyr::Budget::default();
     budget.max_nodes = usize::MAX;
     budget.max_events = usize::MAX;
 
-    let options = serde_saphyr::options! {
+    serde_saphyr::options! {
         budget: Some(budget),
         emit_comments: false,
         legacy_octal_numbers: true,
         non_finite_float_policy: serde_saphyr::NonFiniteFloatPolicy::AsString,
         with_snippet: false,
-    };
-    serde_saphyr::from_str_with_options(input, options)
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::marker::PhantomData;
+
     use serde_json::{json, Value};
 
     use super::*;
@@ -108,6 +127,31 @@ mod tests {
 
         assert!(!error.contains("0123456789abcdef"), "error leaks source: {error}");
         assert!(error.contains("line 2"), "error lacks location: {error}");
+    }
+
+    #[test]
+    fn a_seed_parses_documents_as_from_str_does() {
+        let mut large_list = String::from("items:\n");
+        for i in 0..300_000 {
+            large_list.push_str(&format!("  - item_{i}\n"));
+        }
+        let inputs = [
+            "yes: yes\noff: Off\nshort: n\noctal: 012\nhex: 0x1F\nnot_octal: 08\nquoted: '012'\nkeyword: \"on\"\n",
+            "base: &base {a: 1, b: 2}\nderived:\n  <<: *base\n  b: 3\n",
+            "a: .inf\nb: -.inf\nc: .nan\n",
+            &large_list,
+            "proxy: # optional\n# a comment\nlog_level: info\n",
+            "",
+            "a: 1\na: 2\n",
+            "api_key: 0123456789abcdef0123456789abcdef\nlog_level: [unclosed\n",
+            "--- a\n--- b\n",
+        ];
+
+        for input in inputs {
+            let seeded = from_str_seed(input, PhantomData::<Value>).map_err(|e| e.to_string());
+            let plain = from_str::<Value>(input).map_err(|e| e.to_string());
+            assert_eq!(seeded, plain, "{input:?}");
+        }
     }
 
     #[test]

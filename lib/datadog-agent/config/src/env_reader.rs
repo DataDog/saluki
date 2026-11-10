@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use serde_json::{Map, Value};
 
 use crate::env_decode::{decode, EnvDecode};
-use crate::generated::env_keys::DATADOG_ENV_KEYS;
+use crate::generated::env_keys::{DATADOG_ENV_KEYS, DATADOG_RENAMED_KEYS};
 
 /// One modeled configuration key and how to read it from the environment.
 #[derive(Clone, Copy, Debug)]
@@ -22,6 +22,18 @@ pub struct EnvKey {
     pub path: &'static [&'static str],
     /// How to decode the raw string into the schema-declared JSON shape.
     pub decode: EnvDecode,
+}
+
+/// A former name of a Datadog schema setting, from the schema's `renamed_from`.
+#[derive(Clone, Copy, Debug)]
+pub struct RenamedKey {
+    /// The former nested path (for example, `["old_name"]`).
+    pub former: &'static [&'static str],
+    /// The nested path of the setting it was renamed to.
+    pub path: &'static [&'static str],
+    /// The environment variable derived from the former name, if the setting is read from the
+    /// environment. It is also in the setting's [`EnvKey::env_vars`].
+    pub env_var: Option<&'static str>,
 }
 
 /// Decodes process environment variables into modeled Datadog paths in `base`.
@@ -70,6 +82,15 @@ fn apply_env_snapshot(base: &mut Value, env: EnvSnapshot, overwrite: bool) -> Re
 /// map-typed leaf is never key-unioned across sources.
 pub fn datadog_leaf_paths() -> impl Iterator<Item = &'static [&'static str]> {
     DATADOG_ENV_KEYS.iter().map(|key| key.path)
+}
+
+/// Every former name of a Datadog schema setting, modeled or not.
+///
+/// Entries for one setting are adjacent and highest priority first: the name deprecated earliest
+/// comes first, as in the Agent. No former path is a schema path, or contains or is contained by
+/// one.
+pub fn datadog_renamed_keys() -> &'static [RenamedKey] {
+    DATADOG_RENAMED_KEYS
 }
 
 /// Decodes one key from the process environment into `base` at the supplied path.

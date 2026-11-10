@@ -9,10 +9,26 @@
 //!   matched against the schema. `Log_Level` and `data_plane.api_listen_address` therefore address
 //!   the same settings as their canonical spellings. The walk stops at a leaf.
 //!
-//! A Datadog leaf is a path from `datadog_leaf_paths`, and a section is a proper prefix of one. A key
-//! whose path is neither, including every Saluki-only key, keeps its spelling and its place in its
-//! map. When that map is a Datadog section written in another spelling, the key moves with the
-//! section: `DATA_PLANE: {standalone_mode: true}` sets `data_plane.standalone_mode`.
+//! A Datadog leaf is a path from `datadog_leaf_paths` or a former name from `datadog_renamed_keys`,
+//! and a section is a proper prefix of one. A key whose path is neither, including every Saluki-only
+//! key, keeps its spelling and its place in its map. When that map is a Datadog section written in
+//! another spelling, the key moves with the section: `DATA_PLANE: {standalone_mode: true}` sets
+//! `data_plane.standalone_mode`.
+//!
+//! # Former names
+//!
+//! A setting renamed in the schema (`renamed_from`) is still read under its former name, which
+//! resolves like any other leaf. Once the whole document is read, [`move_renamed_keys`] replaces the
+//! current name's value with the former name's and removes the former name, as the Agent's
+//! `processDeprecation` does. So `old_name: [a]` sets `new_name`, and wins over a `new_name`
+//! written in the same file. When several former names of one setting are written, the one
+//! deprecated earliest wins. The value is not converted: the typed model casts it as it casts the
+//! current name. Moving a nested former name leaves its parent map in place, empty if nothing else
+//! is in it, as the Agent keeps an empty section.
+//!
+//! A null former name clears the current name, which then keeps its default once nulls are dropped.
+//! The Agent instead stores a nil that its getters read as the type's zero value; the two agree when
+//! the current name's default is its type's zero value.
 //!
 //! # Collisions
 //!
@@ -25,7 +41,8 @@
 //! - Otherwise the spelling written last wins, as the Agent's parser does for a repeated key.
 //! - A respelled key whose value is not a map stays where it was written instead of replacing a
 //!   Datadog section.
-//! - A null counts as absent.
+//! - A null counts as absent, except that a null former name still clears the current name when no
+//!   other spelling of that former name has a value.
 //!
 //! The other spellings are dropped.
 
@@ -33,7 +50,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::OnceLock;
 
-use datadog_agent_config::datadog_leaf_paths;
+use datadog_agent_config::{datadog_leaf_paths, datadog_renamed_keys, RenamedKey};
 use serde::de::{self, DeserializeSeed, IntoDeserializer as _, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use serde_json::{Map, Value};
@@ -49,10 +66,19 @@ use serde_json::{Map, Value};
 /// Returns the YAML error message if the text is not valid YAML, or if a Datadog leaf's map has a null
 /// key.
 pub(crate) fn from_str(text: &str) -> Result<Value, String> {
-    let Document(node) = saluki_config::yaml::from_str(text).map_err(|e| e.to_string())?;
+    from_str_in(text, DatadogPaths::get())
+}
+
+/// Same as [`from_str`], with `paths` as the Datadog paths.
+fn from_str_in(text: &str, paths: &DatadogPaths) -> Result<Value, String> {
+    let root = SectionVisitor {
+        paths,
+        section: Vec::new(),
+    };
+    let node = saluki_config::yaml::from_str_seed(text, root).map_err(|e| e.to_string())?;
     Ok(match node {
         Node::Section(entries) => {
-            let mut placements = Placements::default();
+            let mut placements = Placements::new(paths);
             placements.collect(entries, &[], &[]);
             Value::Object(placements.resolve())
         }
@@ -67,6 +93,8 @@ struct DatadogPaths(HashMap<Vec<String>, PathKind>);
 enum PathKind {
     /// A modeled setting. The walk stops here.
     Leaf,
+    /// A former name of a setting. Read as a leaf, then moved to the setting.
+    Former,
     /// A proper prefix of a leaf. The walk descends into it.
     Section,
 }
@@ -74,17 +102,22 @@ enum PathKind {
 impl DatadogPaths {
     fn get() -> &'static Self {
         static PATHS: OnceLock<DatadogPaths> = OnceLock::new();
-        PATHS.get_or_init(|| {
-            let mut kinds = HashMap::new();
-            for leaf in datadog_leaf_paths() {
-                let leaf: Vec<String> = leaf.iter().map(|segment| (*segment).to_string()).collect();
-                for end in 1..leaf.len() {
-                    kinds.insert(leaf[..end].to_vec(), PathKind::Section);
-                }
-                kinds.insert(leaf, PathKind::Leaf);
+        PATHS.get_or_init(|| DatadogPaths::new(datadog_leaf_paths(), datadog_renamed_keys()))
+    }
+
+    /// The paths of `leaves` and of the former names in `renamed`, and the sections that hold them.
+    fn new(leaves: impl IntoIterator<Item = &'static [&'static str]>, renamed: &[RenamedKey]) -> Self {
+        let mut kinds = HashMap::new();
+        let leaves = leaves.into_iter().map(|path| (path, PathKind::Leaf));
+        let formers = renamed.iter().map(|renamed| (renamed.former, PathKind::Former));
+        for (path, kind) in leaves.chain(formers) {
+            let path: Vec<String> = path.iter().map(|segment| (*segment).to_string()).collect();
+            for end in 1..path.len() {
+                kinds.insert(path[..end].to_vec(), PathKind::Section);
             }
-            DatadogPaths(kinds)
-        })
+            kinds.insert(path, kind);
+        }
+        DatadogPaths(kinds)
     }
 
     fn kind(&self, path: &[String]) -> Option<PathKind> {
@@ -106,44 +139,23 @@ enum Node {
     Value(Value),
 }
 
-/// The whole document, read as the root section.
-struct Document(Node);
-
-impl<'de> Deserialize<'de> for Document {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        deserializer.deserialize_any(SectionVisitor(Vec::new())).map(Document)
-    }
-}
-
 /// How the value at `key` inside the section at `section` is read.
-#[derive(Clone)]
-enum Shape {
+enum Shape<'p> {
     /// Outside the Datadog schema: built exactly as `serde_json::Value` builds it.
     Plain,
-    /// A Datadog section at the given canonical path.
-    Section(Vec<String>),
+    /// A Datadog section, read by the visitor for its canonical path.
+    Section(SectionVisitor<'p>),
     /// A Datadog leaf's value: every map key, at any depth, is rendered like Go's `%v`.
     Leaf,
 }
 
-impl Shape {
-    fn of_child(section: &[String], key: &str) -> Self {
-        let path = canonical_path(section, key);
-        match DatadogPaths::get().kind(&path) {
-            Some(PathKind::Leaf) => Shape::Leaf,
-            Some(PathKind::Section) => Shape::Section(path),
-            None => Shape::Plain,
-        }
-    }
-}
-
-impl<'de> DeserializeSeed<'de> for Shape {
+impl<'de> DeserializeSeed<'de> for Shape<'_> {
     type Value = Node;
 
     fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Node, D::Error> {
         match self {
             Shape::Plain => Value::deserialize(deserializer).map(Node::Value),
-            Shape::Section(path) => deserializer.deserialize_any(SectionVisitor(path)),
+            Shape::Section(section) => section.deserialize(deserializer),
             Shape::Leaf => LeafValue.deserialize(deserializer).map(Node::Value),
         }
     }
@@ -197,9 +209,36 @@ impl From<Value> for Node {
 }
 
 /// Reads a map at the root or at the Datadog section at its canonical path, keeping keys as written.
-struct SectionVisitor(Vec<String>);
+struct SectionVisitor<'p> {
+    paths: &'p DatadogPaths,
+    // The canonical path of the section; empty at the root.
+    section: Vec<String>,
+}
 
-impl<'de> Visitor<'de> for SectionVisitor {
+impl<'p> SectionVisitor<'p> {
+    /// How the value at `key` in this section is read.
+    fn shape_of(&self, key: &str) -> Shape<'p> {
+        let path = canonical_path(&self.section, key);
+        match self.paths.kind(&path) {
+            Some(PathKind::Leaf | PathKind::Former) => Shape::Leaf,
+            Some(PathKind::Section) => Shape::Section(SectionVisitor {
+                paths: self.paths,
+                section: path,
+            }),
+            None => Shape::Plain,
+        }
+    }
+}
+
+impl<'de> DeserializeSeed<'de> for SectionVisitor<'_> {
+    type Value = Node;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Node, D::Error> {
+        deserializer.deserialize_any(self)
+    }
+}
+
+impl<'de> Visitor<'de> for SectionVisitor<'_> {
     type Value = Node;
 
     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
@@ -216,7 +255,7 @@ impl<'de> Visitor<'de> for SectionVisitor {
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Node, A::Error> {
         let mut entries = Vec::new();
         while let Some(key) = map.next_key_seed(WrittenKey)? {
-            let value = map.next_value_seed(Shape::of_child(&self.0, &key))?;
+            let value = map.next_value_seed(self.shape_of(&key))?;
             entries.push((key, value));
         }
         Ok(Node::Section(entries))
@@ -410,8 +449,8 @@ fn go_float(v: f64) -> String {
 
 /// The values of a document, each at the place it resolves to, gathered before any is written so that
 /// colliding spellings resolve the same way whatever order they were written in.
-#[derive(Default)]
-struct Placements {
+struct Placements<'p> {
+    paths: &'p DatadogPaths,
     // Values whose written path is the path they resolve to, in document order.
     in_place: Vec<(Vec<String>, Value)>,
     // Values a respelling moved, in document order.
@@ -422,7 +461,17 @@ struct Placements {
     sections: Vec<Vec<String>>,
 }
 
-impl Placements {
+impl<'p> Placements<'p> {
+    fn new(paths: &'p DatadogPaths) -> Self {
+        Placements {
+            paths,
+            in_place: Vec::new(),
+            moved: Vec::new(),
+            nulls: Vec::new(),
+            sections: Vec::new(),
+        }
+    }
+
     /// Gathers `entries`, a map written at `written` for the section at `section`.
     fn collect(&mut self, entries: Vec<(String, Node)>, section: &[String], written: &[String]) {
         for (key, node) in entries {
@@ -435,8 +484,9 @@ impl Placements {
                     self.sections.push(canonical);
                 }
                 Node::Value(value) => {
-                    let path = match DatadogPaths::get().kind(&canonical) {
-                        Some(PathKind::Leaf) => canonical,
+                    let kind = self.paths.kind(&canonical);
+                    let path = match kind {
+                        Some(PathKind::Leaf | PathKind::Former) => canonical,
                         // A non-map where a section belongs stays where it was written.
                         Some(PathKind::Section) => written_path.clone(),
                         // An unknown key keeps its spelling inside the section it resolves to.
@@ -444,6 +494,7 @@ impl Placements {
                     };
                     match (path == written_path, value) {
                         (true, Value::Null) => self.nulls.push(path),
+                        (false, Value::Null) if kind == Some(PathKind::Former) => self.nulls.push(path),
                         (false, Value::Null) => {}
                         (true, value) => self.in_place.push((path, value)),
                         (false, value) => self.moved.push((path, value)),
@@ -480,6 +531,42 @@ impl Placements {
     }
 }
 
+/// Moves the value of every former setting name of `renamed` in `root` onto the setting, replacing
+/// its value, and returns the former names found.
+///
+/// See the module docs. Only exact paths are matched: the caller has already resolved spellings.
+pub(crate) fn move_renamed_keys<'a>(root: &mut Value, renamed: &'a [RenamedKey]) -> Vec<&'a RenamedKey> {
+    let Value::Object(root) = root else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    let mut moved: Vec<(&[&str], Value)> = Vec::new();
+    for renamed in renamed {
+        let Some(value) = take(root, renamed.former) else {
+            continue;
+        };
+        found.push(renamed);
+        // Former names are listed highest priority first, so the first one found wins.
+        if !moved.iter().any(|(path, _)| *path == renamed.path) {
+            moved.push((renamed.path, value));
+        }
+    }
+    for (path, value) in moved {
+        write(root, path, value);
+    }
+    found
+}
+
+/// Removes and returns the value at `path`, if every parent is an object and the value is there.
+fn take(root: &mut Map<String, Value>, path: &[&str]) -> Option<Value> {
+    let (last, parents) = path.split_last()?;
+    let mut current = root;
+    for segment in parents {
+        current = current.get_mut(*segment)?.as_object_mut()?;
+    }
+    current.remove(*last)
+}
+
 /// Returns whether `path` can be written without replacing a value: nothing is at it, and nothing on
 /// the way to it is anything but an object.
 fn is_vacant(root: &Map<String, Value>, path: &[String]) -> bool {
@@ -498,21 +585,24 @@ fn is_vacant(root: &Map<String, Value>, path: &[String]) -> bool {
 }
 
 /// Writes `value` at `path`, making an object of every parent.
-fn write(root: &mut Map<String, Value>, path: &[String], value: Value) {
+fn write<S>(root: &mut Map<String, Value>, path: &[S], value: Value)
+where
+    S: AsRef<str>,
+{
     let Some((last, parents)) = path.split_last() else {
         return;
     };
     let mut current = root;
     for segment in parents {
         let parent = current
-            .entry(segment.clone())
+            .entry(segment.as_ref())
             .or_insert_with(|| Value::Object(Map::new()));
         if !parent.is_object() {
             *parent = Value::Object(Map::new());
         }
         current = parent.as_object_mut().expect("the parent was just made an object");
     }
-    current.insert(last.clone(), value);
+    current.insert(last.as_ref().to_owned(), value);
 }
 
 #[cfg(test)]
@@ -528,6 +618,50 @@ mod tests {
         fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
             LeafValue.deserialize(deserializer).map(LeafDocument)
         }
+    }
+
+    /// Datadog leaves for the former-name tests.
+    const LEAVES: &[&[&str]] = &[&["new_list"], &["new_flag"], &["new_map"], &["section", "new_nested"]];
+
+    /// Former names of `LEAVES`, highest priority first for each setting.
+    const RENAMED: &[RenamedKey] = &[
+        RenamedKey {
+            former: &["oldest_list"],
+            path: &["new_list"],
+            env_var: Some("DD_OLDEST_LIST"),
+        },
+        RenamedKey {
+            former: &["old_list"],
+            path: &["new_list"],
+            env_var: Some("DD_OLD_LIST"),
+        },
+        RenamedKey {
+            former: &["old_flag"],
+            path: &["new_flag"],
+            env_var: Some("DD_OLD_FLAG"),
+        },
+        RenamedKey {
+            former: &["old_map"],
+            path: &["new_map"],
+            env_var: None,
+        },
+        RenamedKey {
+            former: &["legacy", "old_nested"],
+            path: &["section", "new_nested"],
+            env_var: Some("DD_LEGACY_OLD_NESTED"),
+        },
+    ];
+
+    fn renamed_paths() -> DatadogPaths {
+        DatadogPaths::new(LEAVES.iter().copied(), RENAMED)
+    }
+
+    /// Reads `yaml` with `LEAVES` and `RENAMED` as the Datadog paths, and moves its former names, as
+    /// the local base does.
+    fn read_renamed(yaml: &str) -> Value {
+        let mut value = from_str_in(yaml, &renamed_paths()).unwrap();
+        move_renamed_keys(&mut value, RENAMED);
+        value
     }
 
     /// The keys of `additional_endpoints`, a Datadog leaf, in `yaml`.
@@ -780,30 +914,141 @@ mod tests {
     }
 
     #[test]
+    fn a_former_name_moves_to_its_setting_and_wins_over_it() {
+        let cases = [
+            ("old_list: [a]\n", json!({"new_list": ["a"]})),
+            ("new_list: [b]\n", json!({"new_list": ["b"]})),
+            ("new_list: [b]\nold_list: [a]\n", json!({"new_list": ["a"]})),
+            ("old_list: [a]\nnew_list: [b]\n", json!({"new_list": ["a"]})),
+            // An empty former list still wins.
+            ("new_list: [b]\nold_list: []\n", json!({"new_list": []})),
+            // Each setting is renamed on its own.
+            (
+                "new_list: [b]\nold_flag: true\n",
+                json!({"new_list": ["b"], "new_flag": true}),
+            ),
+            // The value is moved as written, for the typed model to cast.
+            ("old_list: a b\n", json!({"new_list": "a b"})),
+            ("old_flag: 'true'\n", json!({"new_flag": "true"})),
+        ];
+        for (yaml, expected) in cases {
+            assert_eq!(read_renamed(yaml), expected, "{yaml:?}");
+        }
+    }
+
+    #[test]
+    fn the_earliest_deprecated_former_name_wins() {
+        for yaml in ["old_list: [b]\noldest_list: [a]\n", "oldest_list: [a]\nold_list: [b]\n"] {
+            let mut value = from_str_in(yaml, &renamed_paths()).unwrap();
+
+            let found: Vec<_> = move_renamed_keys(&mut value, RENAMED)
+                .into_iter()
+                .map(|renamed| renamed.former)
+                .collect();
+
+            assert_eq!(value, json!({"new_list": ["a"]}), "{yaml:?}");
+            assert_eq!(found, [["oldest_list"], ["old_list"]], "{yaml:?}");
+        }
+    }
+
+    #[test]
+    fn a_respelled_former_name_resolves_like_any_leaf_before_it_moves() {
+        let cases = [
+            ("OLD_LIST: [a]\nnew_list: [b]\n", json!({"new_list": ["a"]})),
+            ("New_List: [b]\nOld_List: [a]\n", json!({"new_list": ["a"]})),
+            // Spellings of one former name collide as other spellings do: the canonical one wins.
+            ("old_list: [a]\nOLD_LIST: [c]\n", json!({"new_list": ["a"]})),
+            ("OLD_LIST: [c]\nold_list: [a]\n", json!({"new_list": ["a"]})),
+        ];
+        for (yaml, expected) in cases {
+            assert_eq!(read_renamed(yaml), expected, "{yaml:?}");
+        }
+    }
+
+    #[test]
+    fn a_null_former_name_clears_its_setting() {
+        let cases = [
+            ("new_list: [b]\nold_list:\n", json!({"new_list": null})),
+            ("new_list: [b]\nOLD_LIST: ~\n", json!({"new_list": null})),
+            // Another spelling of the former name with a value still wins over its null.
+            ("OLD_LIST: ~\nold_list: [a]\n", json!({"new_list": ["a"]})),
+            ("old_list: ~\nOLD_LIST: [a]\n", json!({"new_list": ["a"]})),
+        ];
+        for (yaml, expected) in cases {
+            assert_eq!(read_renamed(yaml), expected, "{yaml:?}");
+        }
+    }
+
+    #[test]
+    fn a_former_name_is_read_as_a_leaf() {
+        assert_eq!(
+            read_renamed("old_map: {010: a, yes: b, 'c': c}\n"),
+            json!({"new_map": {"8": "a", "true": "b", "c": "c"}})
+        );
+    }
+
+    #[test]
+    fn a_nested_former_name_resolves_through_its_own_sections() {
+        // `legacy` is a section only because a former name is in it. Moving the former name leaves
+        // the map in place, as the Agent keeps an empty section.
+        for yaml in [
+            "legacy: {old_nested: 1}\n",
+            "LEGACY: {Old_Nested: 1}\n",
+            "legacy.old_nested: 1\n",
+            "Legacy.OLD_NESTED: 1\n",
+            "section: {new_nested: 0}\nlegacy: {old_nested: 1}\n",
+        ] {
+            assert_eq!(
+                read_renamed(yaml),
+                json!({"section": {"new_nested": 1}, "legacy": {}}),
+                "{yaml:?}"
+            );
+        }
+        assert_eq!(
+            read_renamed("legacy: {old_nested: 1, other: 2}\n"),
+            json!({"section": {"new_nested": 1}, "legacy": {"other": 2}})
+        );
+    }
+
+    #[test]
+    fn moving_former_names_matches_exact_paths_only() {
+        let mut value = json!({"OLD_LIST": ["respelled"], "old_flag": true, "new_flag": false});
+
+        let found: Vec<_> = move_renamed_keys(&mut value, RENAMED)
+            .into_iter()
+            .map(|renamed| renamed.former)
+            .collect();
+
+        assert_eq!(value, json!({"OLD_LIST": ["respelled"], "new_flag": true}));
+        assert_eq!(found, [["old_flag"]]);
+    }
+
+    #[test]
     fn datadog_paths_can_be_matched_at_the_section_level_without_key_resolution() {
         // Section-level keys are read as written, which is only the Agent's reading if no segment of
         // a Datadog path changes under case folding, splitting, or YAML 1.1 typing.
-        let paths = DatadogPaths::get();
-        assert!(!paths.0.is_empty());
-        for (path, kind) in &paths.0 {
-            for segment in path {
-                assert_eq!(&segment.to_lowercase(), segment, "`{path:?}` has an uppercase segment");
-                assert!(!segment.contains('.'), "`{path:?}` has a segment with a dot");
-                let LeafDocument(parsed) = saluki_config::yaml::from_str(&format!("{segment}: 1\n"))
-                    .unwrap_or_else(|e| panic!("segment `{segment}` of `{path:?}` is not a key: {e}"));
-                assert_eq!(
-                    parsed.as_object().map(|map| map.keys().collect::<Vec<_>>()),
-                    Some(vec![segment]),
-                    "segment `{segment}` of `{path:?}` resolves to a non-string scalar"
-                );
-            }
-            if *kind == PathKind::Leaf {
-                for end in 1..path.len() {
+        for paths in [DatadogPaths::get(), &renamed_paths()] {
+            assert!(!paths.0.is_empty());
+            for (path, kind) in &paths.0 {
+                for segment in path {
+                    assert_eq!(&segment.to_lowercase(), segment, "`{path:?}` has an uppercase segment");
+                    assert!(!segment.contains('.'), "`{path:?}` has a segment with a dot");
+                    let LeafDocument(parsed) = saluki_config::yaml::from_str(&format!("{segment}: 1\n"))
+                        .unwrap_or_else(|e| panic!("segment `{segment}` of `{path:?}` is not a key: {e}"));
                     assert_eq!(
-                        paths.kind(&path[..end]),
-                        Some(PathKind::Section),
-                        "`{path:?}` descends through a leaf"
+                        parsed.as_object().map(|map| map.keys().collect::<Vec<_>>()),
+                        Some(vec![segment]),
+                        "segment `{segment}` of `{path:?}` resolves to a non-string scalar"
                     );
+                }
+                if matches!(kind, PathKind::Leaf | PathKind::Former) {
+                    for end in 1..path.len() {
+                        assert_eq!(
+                            paths.kind(&path[..end]),
+                            Some(PathKind::Section),
+                            "`{path:?}` descends through a leaf"
+                        );
+                    }
                 }
             }
         }
