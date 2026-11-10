@@ -794,6 +794,10 @@ pub struct ApmConfig {
     #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub compute_stats_by_span_kind: bool,
 
+    #[serde(default = "defaults::default_u64::<i64, 2000>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
+    pub connection_limit: i64,
+
     #[serde(default)]
     #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub enable_rare_sampler: bool,
@@ -818,14 +822,36 @@ pub struct ApmConfig {
     pub features: Vec<String>,
 
     #[serde(default)]
+    pub filter_tags: ApmConfigFilterTags,
+
+    #[serde(default)]
+    pub filter_tags_regex: ApmConfigFilterTagsRegex,
+
+    #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
+    pub ignore_resources: Vec<String>,
+
+    #[serde(default)]
     #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub max_catalog_entries: i64,
+
+    #[serde(default = "defaults::datadog_configuration_apm_config_max_cpu_percent")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_f64")]
+    pub max_cpu_percent: f64,
 
     #[serde(
         default = "defaults::datadog_configuration_apm_config_max_events_per_second"
     )]
     #[serde(deserialize_with = "crate::cast_de::deserialize_f64")]
     pub max_events_per_second: f64,
+
+    #[serde(default = "defaults::datadog_configuration_apm_config_max_memory")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_f64")]
+    pub max_memory: f64,
+
+    #[serde(default = "defaults::default_u64::<i64, 26214400>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
+    pub max_payload_size: i64,
 
     #[serde(
         default = "defaults::datadog_configuration_apm_config_max_traces_per_second"
@@ -855,15 +881,26 @@ pub struct ApmConfig {
     #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub receiver_socket: String,
 
+    #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
+    pub receiver_timeout: i64,
+
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
     #[serde(deserialize_with = "crate::list_de::deserialize_json_array_or_string")]
     pub replace_tags: Vec<HashMap<String, String>>,
+
+    #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
+    pub sql_obfuscation_mode: String,
 
     #[serde(
         default = "defaults::datadog_configuration_apm_config_target_traces_per_second"
     )]
     #[serde(deserialize_with = "crate::cast_de::deserialize_f64")]
     pub target_traces_per_second: f64,
+
+    #[serde(default)]
+    pub telemetry: ApmConfigTelemetry,
 }
 
 impl Default for ApmConfig {
@@ -873,14 +910,21 @@ impl Default for ApmConfig {
             analyzed_spans: Default::default(),
             apm_non_local_traffic: Default::default(),
             compute_stats_by_span_kind: defaults::default_bool::<true>(),
+            connection_limit: defaults::default_u64::<i64, 2000>(),
             enable_rare_sampler: Default::default(),
             env: Default::default(),
             error_tracking_standalone: Default::default(),
             errors_per_second: defaults::datadog_configuration_apm_config_errors_per_second(),
             extra_sample_rate: defaults::datadog_configuration_apm_config_extra_sample_rate(),
             features: Default::default(),
+            filter_tags: Default::default(),
+            filter_tags_regex: Default::default(),
+            ignore_resources: Default::default(),
             max_catalog_entries: Default::default(),
+            max_cpu_percent: defaults::datadog_configuration_apm_config_max_cpu_percent(),
             max_events_per_second: defaults::datadog_configuration_apm_config_max_events_per_second(),
+            max_memory: defaults::datadog_configuration_apm_config_max_memory(),
+            max_payload_size: defaults::default_u64::<i64, 26214400>(),
             max_traces_per_second: defaults::datadog_configuration_apm_config_max_traces_per_second(),
             obfuscation: Default::default(),
             peer_tags: Default::default(),
@@ -888,8 +932,11 @@ impl Default for ApmConfig {
             probabilistic_sampler: Default::default(),
             receiver_port: defaults::default_u64::<i64, 8126>(),
             receiver_socket: platform_defaults::apm_config_receiver_socket(),
+            receiver_timeout: Default::default(),
             replace_tags: Default::default(),
+            sql_obfuscation_mode: Default::default(),
             target_traces_per_second: defaults::datadog_configuration_apm_config_target_traces_per_second(),
+            telemetry: Default::default(),
         }
     }
 }
@@ -905,6 +952,46 @@ impl Default for ApmConfigErrorTrackingStandalone {
     fn default() -> Self {
         Self {
             enabled: Default::default(),
+        }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct ApmConfigFilterTags {
+    #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
+    pub reject: Vec<String>,
+
+    #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
+    pub require: Vec<String>,
+}
+
+impl Default for ApmConfigFilterTags {
+    fn default() -> Self {
+        Self {
+            reject: Default::default(),
+            require: Default::default(),
+        }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct ApmConfigFilterTagsRegex {
+    #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
+    pub reject: Vec<String>,
+
+    #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
+    pub require: Vec<String>,
+}
+
+impl Default for ApmConfigFilterTagsRegex {
+    fn default() -> Self {
+        Self {
+            reject: Default::default(),
+            require: Default::default(),
         }
     }
 }
@@ -937,6 +1024,12 @@ pub struct ApmConfigObfuscation {
     pub remove_stack_traces: bool,
 
     #[serde(default)]
+    pub sql_exec_plan: ApmConfigObfuscationSqlExecPlan,
+
+    #[serde(default)]
+    pub sql_exec_plan_normalize: ApmConfigObfuscationSqlExecPlanNormalize,
+
+    #[serde(default)]
     pub valkey: ApmConfigObfuscationValkey,
 }
 
@@ -951,6 +1044,8 @@ impl Default for ApmConfigObfuscation {
             opensearch: Default::default(),
             redis: Default::default(),
             remove_stack_traces: Default::default(),
+            sql_exec_plan: Default::default(),
+            sql_exec_plan_normalize: Default::default(),
             valkey: Default::default(),
         }
     }
@@ -1117,6 +1212,36 @@ impl Default for ApmConfigObfuscationRedis {
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct ApmConfigObfuscationSqlExecPlan {
+    #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
+    pub enabled: bool,
+}
+
+impl Default for ApmConfigObfuscationSqlExecPlan {
+    fn default() -> Self {
+        Self {
+            enabled: Default::default(),
+        }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct ApmConfigObfuscationSqlExecPlanNormalize {
+    #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
+    pub enabled: bool,
+}
+
+impl Default for ApmConfigObfuscationSqlExecPlanNormalize {
+    fn default() -> Self {
+        Self {
+            enabled: Default::default(),
+        }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct ApmConfigObfuscationValkey {
     #[serde(default = "defaults::default_bool::<true>")]
     #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
@@ -1159,6 +1284,21 @@ impl Default for ApmConfigProbabilisticSampler {
             enabled: Default::default(),
             hash_seed: Default::default(),
             sampling_percentage: defaults::datadog_configuration_apm_config_probabilistic_sampler_sampling_percentage(),
+        }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct ApmConfigTelemetry {
+    #[serde(default = "defaults::default_bool::<true>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
+    pub enabled: bool,
+}
+
+impl Default for ApmConfigTelemetry {
+    fn default() -> Self {
+        Self {
+            enabled: defaults::default_bool::<true>(),
         }
     }
 }
@@ -2431,8 +2571,14 @@ pub mod defaults {
     pub(super) fn datadog_configuration_apm_config_extra_sample_rate() -> f64 {
         0_f64
     }
+    pub(super) fn datadog_configuration_apm_config_max_cpu_percent() -> f64 {
+        50_f64
+    }
     pub(super) fn datadog_configuration_apm_config_max_events_per_second() -> f64 {
         200_f64
+    }
+    pub(super) fn datadog_configuration_apm_config_max_memory() -> f64 {
+        500000000.0_f64
     }
     pub(super) fn datadog_configuration_apm_config_max_traces_per_second() -> f64 {
         10_f64

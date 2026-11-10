@@ -54,6 +54,8 @@ mod tests {
             receiver_socket: Some("/tmp/receiver.sock".to_string()),
             proxy_destination: "unix:///tmp/destination.sock".to_string(),
             non_local_traffic: ConfigValue::explicit(true),
+            // The relay doesn't consume the trace-agent's reported settings yet.
+            ..Default::default()
         };
         let mut shared = SharedConfiguration {
             bind_host: ConfigValue::explicit(Some("192.0.2.1".to_string())),

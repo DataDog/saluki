@@ -39,6 +39,8 @@ pub enum EnvDecode {
     CommaAndSpaceSeparated,
     /// `env_parser: comma_then_space_separated`: split on `,` if present else space, trimmed.
     CommaThenSpaceSeparated,
+    /// `env_parser: csv_comma_separated`: the first CSV record, with leading spaces trimmed and lazy quotes.
+    CsvCommaSeparated,
     /// `env_parser: json_list_or_comma_separated`: a `[...]` JSON list, else split on `,`.
     JsonListOrCommaSeparated,
     /// `env_parser: json_list_or_space_separated`: a `[...]` JSON list, else split on space.
@@ -83,6 +85,7 @@ pub fn decode(raw: &str, how: EnvDecode) -> Result<Value, String> {
         EnvDecode::CommaSeparated => Ok(comma_separated(raw)),
         EnvDecode::CommaAndSpaceSeparated => Ok(comma_and_space_separated(raw)),
         EnvDecode::CommaThenSpaceSeparated => Ok(comma_then_space_separated(raw)),
+        EnvDecode::CsvCommaSeparated => Ok(string_array(csv_comma_separated(raw))),
         EnvDecode::JsonListOrCommaSeparated => json_list_or_split(raw, ','),
         EnvDecode::JsonListOrSpaceSeparated => json_list_or_split(raw, ' '),
         EnvDecode::TracesSpan => traces_span(raw),
@@ -132,6 +135,81 @@ fn comma_and_space_separated(raw: &str) -> Value {
 fn comma_then_space_separated(raw: &str) -> Value {
     let sep = if raw.contains(',') { ',' } else { ' ' };
     string_array(raw.split(sep).map(str::trim))
+}
+
+/// `env_parser: csv_comma_separated` (`ParseEnvCSVSplit`, `helper/env.go:69`).
+///
+/// The first record of `encoding/csv` with `TrimLeadingSpace` and `LazyQuotes` set, ported from
+/// `Reader.readRecord`:
+///
+/// - Lines end at `\n`, and `\r\n` reads as `\n`. Empty lines before the record are skipped, and an
+///   input with no record yields an empty list (the Agent logs `EOF` and yields an empty list).
+/// - Leading whitespace is trimmed from every field. An unquoted field runs to the next `,` or the
+///   end of the line, and keeps any `"` it contains.
+/// - A field starting with `"` is quoted: `""` reads as `"`, the field ends at a `"` followed by
+///   `,` or the end of the line, any other `"` is kept, and the field may span lines. A quoted field
+///   that never closes runs to the end of the input.
+///
+/// With lazy quotes, `encoding/csv` has no other error for a first record, so this can't fail.
+fn csv_comma_separated(raw: &str) -> Vec<String> {
+    // `readLine` reads `\r\n` as `\n`, and drops a `\r` that ends the input.
+    let normalized = raw.replace("\r\n", "\n");
+    let mut lines = normalized
+        .strip_suffix('\r')
+        .unwrap_or(&normalized)
+        .split_inclusive('\n');
+
+    // Skip the empty lines before the record.
+    let Some(mut line) = lines.find(|line| *line != "\n") else {
+        return Vec::new();
+    };
+
+    let mut fields = Vec::new();
+    loop {
+        line = line.trim_start();
+        if !line.starts_with('"') {
+            match line.split_once(',') {
+                Some((field, rest)) => {
+                    fields.push(field.to_string());
+                    line = rest;
+                    continue;
+                }
+                None => {
+                    fields.push(line.strip_suffix('\n').unwrap_or(line).to_string());
+                    return fields;
+                }
+            }
+        }
+
+        // A quoted field.
+        line = &line[1..];
+        let mut field = String::new();
+        loop {
+            if let Some((before, after)) = line.split_once('"') {
+                field.push_str(before);
+                line = after;
+                if let Some(rest) = line.strip_prefix('"') {
+                    field.push('"');
+                    line = rest;
+                } else if let Some(rest) = line.strip_prefix(',') {
+                    fields.push(field);
+                    line = rest;
+                    break;
+                } else if line.is_empty() || line == "\n" {
+                    fields.push(field);
+                    return fields;
+                } else {
+                    field.push('"');
+                }
+            } else if !line.is_empty() {
+                field.push_str(line);
+                line = lines.next().unwrap_or("");
+            } else {
+                fields.push(field);
+                return fields;
+            }
+        }
+    }
 }
 
 /// `env_parser: json_list_or_{comma,space}_separated` (`jsonOrSplitBy`, `helper/env.go:120`).
@@ -232,6 +310,43 @@ mod tests {
             decode("a b  c", EnvDecode::CommaThenSpaceSeparated).unwrap(),
             arr(&["a", "b", "", "c"])
         );
+    }
+
+    #[test]
+    fn csv_comma_separated_reads_the_first_record_like_encoding_csv() {
+        // Expected values are the output of Go's `encoding/csv` with the Agent's reader settings.
+        let cases: &[(&str, &[&str])] = &[
+            ("", &[]),
+            ("\n\n", &[]),
+            ("a", &["a"]),
+            ("a, b ,  c", &["a", "b ", "c"]),
+            (
+                "(GET|POST) /healthcheck,GET /ping",
+                &["(GET|POST) /healthcheck", "GET /ping"],
+            ),
+            (r#""a,b",c"#, &["a,b", "c"]),
+            (r#""a""b",c"#, &["a\"b", "c"]),
+            (r#"a"b,c"#, &["a\"b", "c"]),
+            (r#""a"b,c"#, &["a\"b,c"]),
+            (r#""a" ,b"#, &["a\" ,b"]),
+            (r#""unterminated,x"#, &["unterminated,x"]),
+            ("a\nb", &["a"]),
+            ("\n\na,b\nc", &["a", "b"]),
+            ("\"a\nb\",c", &["a\nb", "c"]),
+            ("a,b\r\n", &["a", "b"]),
+            ("a,b\r", &["a", "b"]),
+            ("a,\n", &["a", ""]),
+            (r#""a","#, &["a", ""]),
+            ("  ", &[""]),
+            ("\u{a0}a,\tb", &["a", "b"]),
+        ];
+        for (raw, expected) in cases {
+            assert_eq!(
+                decode(raw, EnvDecode::CsvCommaSeparated).unwrap(),
+                arr(expected),
+                "{raw:?}"
+            );
+        }
     }
 
     #[test]

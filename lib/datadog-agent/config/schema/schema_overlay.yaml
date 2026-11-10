@@ -188,6 +188,16 @@ inventory:
     pipelines: [traces]
     description: "Compute APM stats per span kind"
 
+  apm_config.connection_limit:
+    support: partial
+    pipelines: [traces]
+    description: "APM receiver connection limit"
+    documentation: |-
+      ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
+      `/info` response. ADP doesn't limit the relay's own connections: the trace-agent behind the
+      relay applies the limit to the connections it receives from ADP. As in the trace-agent,
+      `/info` reports `0` unless the key is set.
+
   apm_config.enable_rare_sampler:
     support: full
     pipelines: [traces]
@@ -235,15 +245,87 @@ inventory:
       Every other value is ignored, without a warning: the flag inventory is not stable across agent
       versions, so unrecognized entries are inert rather than errors.
 
+  apm_config.filter_tags.reject:
+    support: partial
+    pipelines: [traces]
+    description: "Tags that drop a trace"
+    documentation: |-
+      ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
+      `/info` response. Traces received through the APM relay are filtered by the trace-agent behind
+      it; ADP doesn't filter the traces it receives over OTLP.
+
+  apm_config.filter_tags.require:
+    support: partial
+    pipelines: [traces]
+    description: "Tags a trace must have to be kept"
+    documentation: |-
+      ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
+      `/info` response. Traces received through the APM relay are filtered by the trace-agent behind
+      it; ADP doesn't filter the traces it receives over OTLP.
+
+  apm_config.filter_tags_regex.reject:
+    support: partial
+    pipelines: [traces]
+    description: "Tag patterns that drop a trace"
+    documentation: |-
+      ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
+      `/info` response. Traces received through the APM relay are filtered by the trace-agent behind
+      it; ADP doesn't filter the traces it receives over OTLP. ADP doesn't validate the patterns.
+
+  apm_config.filter_tags_regex.require:
+    support: partial
+    pipelines: [traces]
+    description: "Tag patterns a trace must match to be kept"
+    documentation: |-
+      ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
+      `/info` response. Traces received through the APM relay are filtered by the trace-agent behind
+      it; ADP doesn't filter the traces it receives over OTLP. ADP doesn't validate the patterns.
+
+  apm_config.ignore_resources:
+    support: partial
+    pipelines: [traces]
+    description: "Resource patterns whose traces are dropped"
+    documentation: |-
+      ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
+      `/info` response. Traces received through the APM relay are filtered by the trace-agent behind
+      it; ADP doesn't filter the traces it receives over OTLP. ADP doesn't validate the patterns.
+
   apm_config.max_catalog_entries:
     support: full
     pipelines: [traces]
     description: "Priority sampler service-signature catalog cap"
 
+  apm_config.max_cpu_percent:
+    support: partial
+    pipelines: [traces]
+    description: "trace-agent CPU target, in percent"
+    documentation: |-
+      ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
+      `/info` response. ADP doesn't rate limit the relay on its own CPU usage. As in the
+      trace-agent, the limit defaults to `0` in a container when the key is unset.
+
   apm_config.max_events_per_second:
     support: full
     pipelines: [traces]
     description: "Upper bound on sampled APM events per second"
+
+  apm_config.max_memory:
+    support: partial
+    pipelines: [traces]
+    description: "trace-agent memory target, in bytes"
+    documentation: |-
+      ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
+      `/info` response. ADP doesn't rate limit the relay on its own memory usage. As in the
+      trace-agent, the limit defaults to `0` in a container when the key is unset.
+
+  apm_config.max_payload_size:
+    support: partial
+    pipelines: [traces]
+    description: "Maximum trace payload size, in bytes"
+    documentation: |-
+      ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
+      `/info` response. The trace-agent behind the relay enforces the limit on the requests ADP
+      forwards to it; ADP doesn't enforce it on the requests it handles itself.
 
   apm_config.max_traces_per_second:
     support: full
@@ -345,6 +427,24 @@ inventory:
     pipelines: [traces]
     description: "Replace stack trace tags with ?"
 
+  apm_config.obfuscation.sql_exec_plan.enabled:
+    support: partial
+    pipelines: [traces]
+    description: "Obfuscate SQL execution plans"
+    documentation: |-
+      ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
+      `/info` response. The trace-agent behind the relay applies it to traces received through the
+      relay; ADP doesn't apply it to the traces it receives over OTLP.
+
+  apm_config.obfuscation.sql_exec_plan_normalize.enabled:
+    support: partial
+    pipelines: [traces]
+    description: "Normalize SQL execution plans"
+    documentation: |-
+      ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
+      `/info` response. The trace-agent behind the relay applies it to traces received through the
+      relay; ADP doesn't apply it to the traces it receives over OTLP.
+
   apm_config.obfuscation.valkey.enabled:
     support: full
     pipelines: [traces]
@@ -395,15 +495,43 @@ inventory:
     pipelines: [traces]
     description: "APM receiver Unix domain socket path"
 
+  apm_config.receiver_timeout:
+    support: partial
+    pipelines: [traces]
+    description: "APM receiver request timeout, in seconds"
+    documentation: |-
+      ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
+      `/info` response. ADP doesn't apply the timeout to the relay's listeners: the trace-agent
+      behind the relay applies it to the requests ADP forwards to it.
+
   apm_config.replace_tags:
     support: full
     pipelines: [traces]
     description: "Regex-based trace tag replacement rules"
 
+  apm_config.sql_obfuscation_mode:
+    support: partial
+    pipelines: [traces]
+    description: "SQL obfuscator mode"
+    documentation: |-
+      ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
+      `/info` response. The trace-agent behind the relay applies it to traces received through the
+      relay; ADP doesn't apply it to the traces it receives over OTLP. As in the trace-agent, an
+      invalid value logs a warning and falls back to the default obfuscator.
+
   apm_config.target_traces_per_second:
     support: full
     pipelines: [traces]
     description: "Target sampled traces per second"
+
+  apm_config.telemetry.enabled:
+    support: partial
+    pipelines: [traces]
+    description: "Enable the tracer telemetry proxy"
+    documentation: |-
+      ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
+      `/info` response. The relay forwards `/telemetry/proxy/` to the trace-agent behind it, which
+      proxies tracer telemetry when this key is enabled.
 
   apm_config.traces_send_to_main_endpoint:
     support: none
@@ -3464,7 +3592,6 @@ excluded:
   apm_config.additional_profile_tags: "ignored in initial audit 2026-04-23"
   apm_config.bucket_size_seconds: "ignored in initial audit 2026-04-23"
   apm_config.client_stats_flush_interval: "ignored in initial audit 2026-04-23"
-  apm_config.connection_limit: "ignored in initial audit 2026-04-23"
   apm_config.connection_reset_interval: "ignored in initial audit 2026-04-23"
   apm_config.dd_agent_bin: "ignored in initial audit 2026-04-23"
   apm_config.debug.port: "ignored in initial audit 2026-04-23"
@@ -3481,11 +3608,6 @@ excluded:
   apm_config.disable_rare_sampler: "ignored in initial audit 2026-04-23"
   apm_config.enable_container_tags_buffer: "ignored in initial audit 2026-04-23"
   apm_config.enabled: "ignored in initial audit 2026-04-23"
-  apm_config.filter_tags.reject: "ignored in initial audit 2026-04-23"
-  apm_config.filter_tags.require: "ignored in initial audit 2026-04-23"
-  apm_config.filter_tags_regex.reject: "ignored in initial audit 2026-04-23"
-  apm_config.filter_tags_regex.require: "ignored in initial audit 2026-04-23"
-  apm_config.ignore_resources: "ignored in initial audit 2026-04-23"
   apm_config.install_id: "ignored in initial audit 2026-04-23"
   apm_config.install_time: "ignored in initial audit 2026-04-23"
   apm_config.install_type: "ignored in initial audit 2026-04-23"
@@ -3504,18 +3626,13 @@ excluded:
   apm_config.log_level: "2026-11-05: ADP does not currently support per-Agent log level overrides; ADP logs at the global `log_level`."
   apm_config.max_catalog_services: "ignored in initial audit 2026-04-23"
   apm_config.max_connections: "ignored in initial audit 2026-04-23"
-  apm_config.max_cpu_percent: "ignored in initial audit 2026-04-23"
-  apm_config.max_memory: "ignored in initial audit 2026-04-23"
-  apm_config.max_payload_size: "ignored in initial audit 2026-04-23"
   apm_config.max_remote_traces_per_second: "ignored in initial audit 2026-04-23"
   apm_config.max_sender_retries: "ignored in initial audit 2026-04-23"
   apm_config.mode: "ignored in initial audit 2026-04-23"
   apm_config.obfuscation.cache.enabled: "ignored in initial audit 2026-04-23"
   apm_config.obfuscation.cache.max_size: "ignored in initial audit 2026-04-23"
-  apm_config.obfuscation.sql_exec_plan.enabled: "ignored in initial audit 2026-04-23"
   apm_config.obfuscation.sql_exec_plan.keep_values: "ignored in initial audit 2026-04-23"
   apm_config.obfuscation.sql_exec_plan.obfuscate_sql_values: "ignored in initial audit 2026-04-23"
-  apm_config.obfuscation.sql_exec_plan_normalize.enabled: "ignored in initial audit 2026-04-23"
   apm_config.obfuscation.sql_exec_plan_normalize.keep_values: "ignored in initial audit 2026-04-23"
   apm_config.obfuscation.sql_exec_plan_normalize.obfuscate_sql_values: "ignored in initial audit 2026-04-23"
   apm_config.peer_service_aggregation: "ignored in initial audit 2026-04-23"
@@ -3525,12 +3642,10 @@ excluded:
   apm_config.profiling_receiver_timeout: "ignored in initial audit 2026-04-23"
   apm_config.profiling_send_to_main_endpoint: "2026-06-10 APM trace/profiling pipeline feature (comp/trace); ADP does not run the trace agent."
   apm_config.receiver_enabled: "ignored in initial audit 2026-04-23"
-  apm_config.receiver_timeout: "ignored in initial audit 2026-04-23"
   apm_config.send_all_internal_stats: "ignored in initial audit 2026-04-23"
   apm_config.socket_activation.enabled: "ignored in initial audit 2026-04-23"
   apm_config.socket_activation.handle_tcp_probe: "ignored in initial audit 2026-04-23"
   apm_config.span_derived_primary_tags: "ignored in initial audit 2026-04-23"
-  apm_config.sql_obfuscation_mode: "ignored in initial audit 2026-04-23"
   apm_config.stats_writer.connection_limit: "ignored in initial audit 2026-04-23"
   apm_config.stats_writer.queue_size: "ignored in initial audit 2026-04-23"
   apm_config.symdb_additional_endpoints: "ignored in initial audit 2026-04-23"
@@ -3539,7 +3654,6 @@ excluded:
   apm_config.sync_flushing: "ignored in initial audit 2026-04-23"
   apm_config.telemetry.additional_endpoints: "ignored in initial audit 2026-04-23"
   apm_config.telemetry.dd_url: "ignored in initial audit 2026-04-23"
-  apm_config.telemetry.enabled: "ignored in initial audit 2026-04-23"
   apm_config.trace_buffer: "ignored in initial audit 2026-04-23"
   apm_config.trace_writer.connection_limit: "ignored in initial audit 2026-04-23"
   apm_config.trace_writer.queue_size: "ignored in initial audit 2026-04-23"
