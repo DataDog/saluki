@@ -148,16 +148,16 @@ impl<const N: usize> FixedSizeEventBuffer<N> {
         T::storage_mut(self).retain_mut(predicate);
     }
 
-    /// Removes all events of type `T` from the event buffer, returning them in order.
+    /// Removes all events of type `T` from the event buffer, returning them.
     ///
-    /// Events of other types are kept, in their relative order.
+    /// Events of other types are kept. Event order isn't preserved.
     pub fn take_events<T: EventKind>(&mut self) -> impl Iterator<Item = T> {
         std::mem::take(T::storage_mut(self)).into_iter()
     }
 
-    /// Removes the events of type `T` for which `predicate` returns `true`, returning them in order.
+    /// Removes the events of type `T` for which `predicate` returns `true`, returning them.
     ///
-    /// All other events are kept, in their relative order.
+    /// All other events are kept. Event order isn't preserved.
     pub fn extract_events<T, F>(&mut self, mut predicate: F) -> impl Iterator<Item = T>
     where
         T: EventKind,
@@ -393,6 +393,11 @@ mod tests {
         metrics.map(|metric| metric.context().name().to_string()).collect()
     }
 
+    fn sorted(mut names: Vec<String>) -> Vec<String> {
+        names.sort();
+        names
+    }
+
     #[test]
     fn typed_views_only_see_events_of_their_type() {
         let mut buffer = mixed_buffer();
@@ -440,16 +445,17 @@ mod tests {
     }
 
     #[test]
-    fn take_events_removes_its_type_in_order() {
+    fn take_events_removes_its_type() {
         let mut buffer = mixed_buffer();
-        let taken: Vec<_> = buffer
+        let mut taken: Vec<_> = buffer
             .take_events::<EventD>()
             .map(|eventd| eventd.title().to_string())
             .collect();
+        taken.sort();
 
         assert_eq!(taken, ["b", "d"]);
         assert_eq!(buffer.len(), 2);
-        assert_eq!(metric_names(buffer.events::<Metric>()), ["a", "c"]);
+        assert_eq!(sorted(metric_names(buffer.events::<Metric>())), ["a", "c"]);
         assert!(!buffer.has_event_type(EventType::EventD));
         assert!(buffer.has_event_type(EventType::Metric));
     }
@@ -546,7 +552,7 @@ mod tests {
     }
 
     #[test]
-    fn extract_events_removes_matching_events_in_order() {
+    fn extract_events_removes_matching_events() {
         let mut buffer = mixed_buffer();
         assert!(buffer.try_push(Event::Metric(Metric::counter("e", 1.0))).is_none());
 
@@ -554,20 +560,14 @@ mod tests {
             .extract_events::<Metric, _>(|metric| metric.context().name() != "c")
             .map(|metric| metric.context().name().to_string())
             .collect();
-        assert_eq!(extracted, ["a", "e"]);
+        assert_eq!(sorted(extracted), ["a", "e"]);
         assert_eq!(buffer.len(), 3);
         assert!(buffer.has_event_type(EventType::Metric));
+        assert_eq!(metric_names(buffer.events::<Metric>()), ["c"]);
 
-        // The remaining events keep their relative order within each type.
-        let remaining: Vec<_> = buffer.into_iter().collect();
-        assert_eq!(
-            remaining,
-            [
-                Event::Metric(Metric::counter("c", 1.0)),
-                Event::EventD(EventD::new("b", "b")),
-                Event::EventD(EventD::new("d", "d")),
-            ]
-        );
+        let mut eventd_titles: Vec<_> = buffer.events::<EventD>().map(|eventd| eventd.title()).collect();
+        eventd_titles.sort();
+        assert_eq!(eventd_titles, ["b", "d"]);
     }
 
     #[test]
