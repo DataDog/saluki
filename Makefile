@@ -175,7 +175,6 @@ build-adp-image-base:
 		--build-arg "BUILD_PROFILE=$(BUILD_PROFILE)" \
 		--build-arg "BUILD_FEATURES=$(BUILD_FEATURES)" \
 		--build-arg "APP_GIT_HASH=$(ADP_APP_GIT_HASH)" \
-		--build-arg "DD_AGENT_VERSION=$(DATADOG_AGENT_VERSION)-full" \
 		--file ./docker/Dockerfile.agent-data-plane \
 		.
 
