@@ -24,7 +24,7 @@ use crate::{
     config::DataPlaneConfiguration,
     internal::{
         logging::get_translated_log_level_stream, remote_command::RemoteCommandProviderImpl, AgentDataPlane,
-        DogStatsDAPIWorker, DogStatsDStatusSection, ForwarderStatusSection,
+        DogStatsDAPIWorker, DogStatsDStatusSection, ForwarderStatusSection, MemoryLimiterStatusSection,
     },
     state::metrics::get_datadog_agent_remappings,
 };
@@ -79,6 +79,7 @@ pub async fn create_control_plane_supervisor(
     let status_sections: Vec<Arc<dyn StatusSectionProvider>> = vec![
         Arc::new(DogStatsDStatusSection::new()),
         Arc::new(ForwarderStatusSection::new()),
+        Arc::new(MemoryLimiterStatusSection::new()),
     ];
     supervisor.add_worker(agent.create_remote_agent_supervisor(
         status_sections,

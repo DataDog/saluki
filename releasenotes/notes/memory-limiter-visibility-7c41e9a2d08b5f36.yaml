@@ -1,0 +1,13 @@
+---
+upgrade:
+  - |
+    The global memory limiter now throttles ingestion only when memory usage is above 85% of ``memory_limit``.
+    Previously, ``memory_slop_factor`` lowered this threshold, so with the default slop factor of 0.25, throttling
+    started at about 71% of ``memory_limit``. The delay now reaches its maximum at 95% of ``memory_limit``. Once
+    started, throttling continues until usage falls to 80%.
+enhancements:
+  - |
+    ADP now logs a warning when the global memory limiter starts throttling ingestion and an info message when it
+    stops. The Agent status page has a new ``Memory Limiter`` section showing the current delay, the number of
+    throttled reads, and the total time reads were throttled. These are also reported as the internal metrics
+    ``adp.memory_limiter.throttled_calls_total`` and ``adp.memory_limiter.throttled_nanoseconds_total``.
