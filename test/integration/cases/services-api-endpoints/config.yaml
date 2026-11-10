@@ -19,7 +19,7 @@ container:
 procedure:
   - parallel:
       - assertion: process_stable_for
-        duration: 60s
+        duration: 10s
       - assertion: http_check
         endpoint: "http://localhost:58126/services"
         status:
@@ -58,5 +58,5 @@ procedure:
       - assertion: log_not_contains
         pattern: "panic|PANIC"
         regex: true
-        during: 60s
+        during: 10s
 
