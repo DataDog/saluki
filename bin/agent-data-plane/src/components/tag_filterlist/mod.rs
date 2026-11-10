@@ -1511,7 +1511,7 @@ mod tests {
                     }],
                     0,
                 );
-                let hist_config = HistogramConfiguration::try_new(
+                let hist_config = HistogramConfiguration::new(
                     &[
                         "max".to_string(),
                         "median".to_string(),
@@ -1521,8 +1521,7 @@ mod tests {
                     &["0.95".to_string()],
                     false,
                     String::new(),
-                )
-                .expect("histogram settings should be valid");
+                );
                 let (snapshot_handle, context_snapshot_receiver) = aggregate_context_snapshot_channel();
                 let aggregate = AggregateConfiguration {
                     window_duration_seconds: NonZeroU64::new(10).expect("not zero"),
@@ -1670,8 +1669,7 @@ mod tests {
                     &[],
                     0,
                 );
-                let hist_config = HistogramConfiguration::try_new(&[], &[], false, String::new())
-                    .expect("histogram settings should be valid");
+                let hist_config = HistogramConfiguration::new(&[], &[], false, String::new());
                 let (snapshot_handle, context_snapshot_receiver) = aggregate_context_snapshot_channel();
                 let aggregate = AggregateConfiguration {
                     window_duration_seconds: NonZeroU64::new(10).expect("not zero"),

@@ -141,17 +141,6 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             tier: Translate,
             at: "snapshot",
             getter: "-",
-            key: "dogstatsd_mapper_profiles",
-            adp: Adp::error(
-                "error translating config key `dogstatsd_mapper_profiles`: invalid type: string \"cr-a\", expected struct RawProfile",
-            ),
-            cause: TRANSLATOR_REJECTS_VALUE,
-        }),
-        intentional(Entry {
-            origin: "breadth-env",
-            tier: Translate,
-            at: "snapshot",
-            getter: "-",
             key: "dogstatsd_tag_cardinality",
             adp: Adp::error(
                 "error translating config key `dogstatsd_tag_cardinality`: unknown tag cardinality `cr-a`; expected low, orch, orchestrator, high, or none",
@@ -252,17 +241,6 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             key: "dogstatsd_log_file_max_size",
             adp: Adp::error(
                 "error translating config key `dogstatsd_log_file_max_size`, couldn't parse \"cr-a\" into a ByteSize, cannot parse float from empty string",
-            ),
-            cause: TRANSLATOR_REJECTS_VALUE,
-        }),
-        intentional(Entry {
-            origin: "breadth-yaml",
-            tier: Translate,
-            at: "snapshot",
-            getter: "-",
-            key: "dogstatsd_mapper_profiles",
-            adp: Adp::error(
-                "error translating config key `dogstatsd_mapper_profiles`: invalid type: string \"cr-a\", expected struct RawProfile",
             ),
             cause: TRANSLATOR_REJECTS_VALUE,
         }),
@@ -373,17 +351,6 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             key: "dogstatsd_log_file_max_size",
             adp: Adp::error(
                 "error translating config key `dogstatsd_log_file_max_size`, couldn't parse \"cr-b\" into a ByteSize, cannot parse float from empty string",
-            ),
-            cause: TRANSLATOR_REJECTS_VALUE,
-        }),
-        intentional(Entry {
-            origin: "breadth-yaml",
-            tier: Translate,
-            at: "update dogstatsd_mapper_profiles #1",
-            getter: "-",
-            key: "dogstatsd_mapper_profiles",
-            adp: Adp::error(
-                "error translating config key `dogstatsd_mapper_profiles`: invalid type: string \"cr-c\", expected struct RawProfile",
             ),
             cause: TRANSLATOR_REJECTS_VALUE,
         }),
@@ -650,17 +617,6 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             key: "metric_tag_filterlist",
             adp: Adp::value("[\"cr-a\",\"cr-b\"]"),
             cause: RAW_JSON_REPRESENTATION,
-        }),
-        intentional(Entry {
-            origin: "depth-env-json-list",
-            tier: Translate,
-            at: "snapshot",
-            getter: "-",
-            key: "dogstatsd_mapper_profiles",
-            adp: Adp::error(
-                "error translating config key `dogstatsd_mapper_profiles`: invalid type: string \"cr-a\", expected struct RawProfile",
-            ),
-            cause: TRANSLATOR_REJECTS_VALUE,
         }),
         intentional(Entry {
             origin: "depth-env-json-list",
@@ -2166,17 +2122,6 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             adp: Adp::value("\"https://app.datadoghq.com\""),
             cause: AGENT_LOAD_WRITE,
         }),
-        known_bug(Entry {
-            origin: "mapper-profiles-wrong-field-type",
-            tier: Translate,
-            at: "snapshot",
-            getter: "-",
-            key: "dogstatsd_mapper_profiles",
-            adp: Adp::error(
-                "error translating config key `dogstatsd_mapper_profiles`: invalid type: integer `123`, expected a string",
-            ),
-            cause: STRUCT_DECODE,
-        }),
         intentional(Entry {
             origin: "proxy-env-bare-lowercase",
             tier: Bootstrap,
@@ -2378,13 +2323,6 @@ const STOP_TIMEOUT_RECOMPUTED: Cause = Cause {
     name: "stop-timeout-recomputed",
     why: "the Agent computes data_plane.stop_timeout once at load; ADP recomputes it from later inputs",
     issue: Some(2757),
-};
-
-const STRUCT_DECODE: Cause = Cause {
-    name: "struct-decode",
-    why:
-        "the translator rejects a number for a string field; the corpus records raw Get, not the Agent's struct decode",
-    issue: Some(2758),
 };
 
 const TRANSLATOR_REJECTS_VALUE: Cause = Cause {

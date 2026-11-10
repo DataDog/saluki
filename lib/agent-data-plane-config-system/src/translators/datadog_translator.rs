@@ -867,7 +867,11 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
             match parse_mapper_profile("dogstatsd_mapper_profiles", raw) {
                 Ok(profile) => profiles.push(profile),
                 Err(error) => {
-                    self.record_error(error);
+                    // Like the Datadog Agent, profiles that can't be parsed disable metric mapping, rather than
+                    // failing the configuration: DogStatsD keeps running, with metrics passing through unmapped.
+                    // https://github.com/DataDog/datadog-agent/blob/e02f16838240688a60db91d6b99cd8fbecbd9750/comp/dogstatsd/server/impl/server.go#L915-L924
+                    warn!("Could not parse dogstatsd_mapper_profiles: {}", error);
+                    self.config.domains.dogstatsd.mapper.profiles = Vec::new();
                     return;
                 }
             }
@@ -2421,8 +2425,11 @@ mod tests {
     }
 
     #[test]
-    fn malformed_dogstatsd_mapper_profiles_record_translation_errors() {
-        for profile in [
+    fn malformed_dogstatsd_mapper_profiles_disable_mapping_without_failing() {
+        // Like the Datadog Agent, profiles that can't be parsed disable metric mapping, rather than failing the
+        // configuration. A valid profile configured alongside a malformed one doesn't apply either.
+        let valid = json!({ "name": "valid", "prefix": "valid.", "mappings": [] });
+        for malformed in [
             json!({ "prefix": "worker.", "mappings": [] }),
             json!({ "name": "workers", "mappings": [] }),
             json!({
@@ -2431,11 +2438,14 @@ mod tests {
                 "mappings": [{ "match": "worker.*" }]
             }),
         ] {
-            let (config, errors) = translate_explicit(json!({ "dogstatsd_mapper_profiles": [profile] }));
+            let (config, errors) =
+                translate_explicit(json!({ "dogstatsd_mapper_profiles": [valid.clone(), malformed.clone()] }));
 
+            assert!(
+                errors.is_none(),
+                "a malformed mapper profile should not fail the configuration: {malformed}"
+            );
             assert!(config.domains.dogstatsd.mapper.profiles.is_empty());
-            let error = errors.expect("a malformed mapper profile should record an error");
-            assert!(error.to_string().contains("dogstatsd_mapper_profiles"));
         }
     }
 

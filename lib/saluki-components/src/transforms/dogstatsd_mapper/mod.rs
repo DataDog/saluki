@@ -20,6 +20,7 @@ use saluki_core::{
 };
 use saluki_error::{generic_error, ErrorContext, GenericError};
 use stringtheory::MetaString;
+use tracing::warn;
 
 const MATCH_TYPE_WILDCARD: &str = "wildcard";
 const MATCH_TYPE_REGEX: &str = "regex";
@@ -80,11 +81,19 @@ impl DogStatsDMapperConfiguration {
         }
     }
 
-    fn build_mapper(&self, context: BuildContext) -> Result<MetricMapper, GenericError> {
+    /// Validates the configured profiles and compiles their match patterns.
+    ///
+    /// This mirrors the Datadog Agent's `NewMetricMapper`, including its error messages:
+    /// <https://github.com/DataDog/datadog-agent/blob/e02f16838240688a60db91d6b99cd8fbecbd9750/comp/dogstatsd/mapper/mapper.go#L77-L118>
+    ///
+    /// # Errors
+    ///
+    /// Returns an error describing the first invalid profile or mapping.
+    fn compile_profiles(&self) -> Result<Vec<MappingProfile>, GenericError> {
         let mut profiles = Vec::with_capacity(self.profiles.len());
-        for config_profile in &self.profiles {
+        for (profile_index, config_profile) in self.profiles.iter().enumerate() {
             if config_profile.name.is_empty() {
-                return Err(generic_error!("missing profile name"));
+                return Err(generic_error!("missing profile name {}", profile_index));
             }
             if config_profile.prefix.is_empty() {
                 return Err(generic_error!("missing prefix for profile: {}", config_profile.name));
@@ -134,6 +143,21 @@ impl DogStatsDMapperConfiguration {
             profiles.push(profile);
         }
 
+        Ok(profiles)
+    }
+
+    fn build_mapper(&self, context: BuildContext) -> Result<MetricMapper, GenericError> {
+        // Like the Datadog Agent, an invalid profile or mapping disables metric mapping entirely, rather than failing
+        // DogStatsD: metrics pass through unmapped, and the error is logged.
+        // https://github.com/DataDog/datadog-agent/blob/e02f16838240688a60db91d6b99cd8fbecbd9750/comp/dogstatsd/server/impl/server.go#L497-L507
+        let profiles = match self.compile_profiles() {
+            Ok(profiles) => profiles,
+            Err(e) => {
+                warn!("Could not create metric mapper: {}", e);
+                Vec::new()
+            }
+        };
+
         let context_resolver =
             ContextResolverBuilder::from_name(format!("{}/dsd_mapper/primary", context.component_id()))
                 .expect("resolver name is not empty")
@@ -158,6 +182,10 @@ impl DogStatsDMapperConfiguration {
     }
 }
 
+/// Builds the regex for a mapping's match pattern.
+///
+/// This mirrors the Datadog Agent's `buildRegex`:
+/// <https://github.com/DataDog/datadog-agent/blob/e02f16838240688a60db91d6b99cd8fbecbd9750/comp/dogstatsd/mapper/mapper.go#L120-L136>
 fn build_regex(match_re: &str, match_type: &str) -> Result<Regex, GenericError> {
     let mut pattern = match_re.to_owned();
     if match_type == MATCH_TYPE_WILDCARD {
@@ -863,7 +891,10 @@ mod tests {
         ];
 
         for (description, config, expected_substring) in cases {
-            let err = mapper(config)
+            let config =
+                DogStatsDMapperConfiguration::new(NonZeroUsize::new(64 * 1024).expect("not zero"), 1000, config);
+            let err = config
+                .compile_profiles()
                 .err()
                 .unwrap_or_else(|| panic!("[{description}] configuration should be rejected"));
             let message = err.to_string();
@@ -872,6 +903,24 @@ mod tests {
                 "[{description}] error {message:?} should contain {expected_substring:?}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn invalid_mapper_configuration_disables_mapping_instead_of_failing() {
+        // Like the Datadog Agent, one invalid mapping disables metric mapping entirely, rather than failing DogStatsD or
+        // applying only the valid mappings: here, the valid first mapping doesn't apply either.
+        let config = mapper_profiles!([{
+            "name": "test",
+            "prefix": "test.",
+            "mappings": [
+                { "match": "test.valid", "name": "mapped" },
+                { "match": "test.invalid.**", "name": "invalid" }
+            ]
+        }]);
+        let mut mapper = mapper(config).expect("an invalid mapping should not fail the mapper build");
+
+        let metric = counter_metric("test.valid", &[]);
+        assert!(mapper.try_map(metric.context()).is_none(), "no mapping should apply");
     }
 
     #[tokio::test]
