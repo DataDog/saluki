@@ -1,6 +1,8 @@
 //! Traces domain: APM trace processing, including environment, sampling, and obfuscation.
 
 use std::collections::HashMap;
+use std::fmt;
+use std::str::FromStr;
 
 use serde::{Deserialize, Serialize, Serializer};
 
@@ -199,6 +201,44 @@ pub struct Domain {
     /// resource; any other name only that tag. Matched values are stored as strings, and a
     /// pattern that fails to compile prevents startup.
     pub replace_tags: Vec<ReplaceRule>,
+
+    /// Tag rules a trace is kept or dropped by (`apm_config.filter_tags`).
+    ///
+    /// Defaults to no rules. Each `key` or `key:value` rule is split at its first `:` and trimmed, and an empty value
+    /// matches the key alone, as the trace-agent reads them.
+    pub filter_tags: TagFilters,
+
+    /// Tag rules whose values are regular expressions (`apm_config.filter_tags_regex`).
+    ///
+    /// Defaults to no rules. Rules are split like [`filter_tags`](Self::filter_tags), but an empty value is kept as
+    /// an empty pattern. As in the trace-agent, a rule is dropped when [`filter_tags`](Self::filter_tags) has a rule
+    /// for the same key in the same list. The patterns are not validated.
+    pub filter_tags_regex: TagFilters,
+
+    /// Regular expressions for the resources whose traces are dropped (`apm_config.ignore_resources`).
+    ///
+    /// Defaults to no patterns. The patterns are not validated.
+    pub ignore_resources: Vec<String>,
+}
+
+/// Tag rules that keep or drop a trace.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct TagFilters {
+    /// Rules a trace must match to be kept.
+    pub require: Vec<TagFilter>,
+
+    /// Rules that drop a trace that matches them.
+    pub reject: Vec<TagFilter>,
+}
+
+/// A tag rule: a tag key, and optionally the value it must have.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct TagFilter {
+    /// Tag key the rule matches.
+    pub key: String,
+
+    /// Value, or value pattern, the tag must have. `None` matches the key with any value.
+    pub value: Option<String>,
 }
 
 impl Default for Domain {
@@ -225,6 +265,9 @@ impl Default for Domain {
             // Saluki-only fields own their absent-key behavior here.
             max_resource_len: DEFAULT_MAX_RESOURCE_LEN,
             replace_tags: Vec::new(),
+            filter_tags: TagFilters::default(),
+            filter_tags_regex: TagFilters::default(),
+            ignore_resources: Vec::new(),
             error_sampling_enabled: DEFAULT_ERROR_SAMPLING_ENABLED,
             rare_sampler: RareSampler::default(),
             ottl_filter: OttlFilter::default(),
@@ -319,6 +362,80 @@ pub struct Obfuscation {
 
     /// SQL query obfuscation. (not in Datadog Agent config schema)
     pub sql: SqlObfuscation,
+
+    /// SQL obfuscator mode (`apm_config.sql_obfuscation_mode`).
+    pub sql_obfuscation_mode: SqlObfuscationMode,
+
+    /// Whether SQL execution plans are obfuscated (`apm_config.obfuscation.sql_exec_plan.enabled`).
+    pub sql_exec_plan_enabled: bool,
+
+    /// Whether SQL execution plans are normalized (`apm_config.obfuscation.sql_exec_plan_normalize.enabled`).
+    pub sql_exec_plan_normalize_enabled: bool,
+}
+
+/// SQL obfuscator mode.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SqlObfuscationMode {
+    /// The default obfuscator, configured with an empty value.
+    #[default]
+    Default,
+
+    /// Obfuscate the query with the `sqllexer` obfuscator (`obfuscate_only`).
+    ObfuscateOnly,
+
+    /// Normalize the query with the `sqllexer` obfuscator (`normalize_only`).
+    NormalizeOnly,
+
+    /// Obfuscate and normalize the query with the `sqllexer` obfuscator (`obfuscate_and_normalize`), for better
+    /// APM and DBM correlation.
+    ObfuscateAndNormalize,
+}
+
+impl SqlObfuscationMode {
+    /// Returns the mode's configuration value: empty for the default obfuscator.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SqlObfuscationMode::Default => "",
+            SqlObfuscationMode::ObfuscateOnly => "obfuscate_only",
+            SqlObfuscationMode::NormalizeOnly => "normalize_only",
+            SqlObfuscationMode::ObfuscateAndNormalize => "obfuscate_and_normalize",
+        }
+    }
+}
+
+/// Error returned when parsing an unknown SQL obfuscator mode.
+#[derive(Debug)]
+pub struct UnknownSqlObfuscationMode(String);
+
+impl fmt::Display for UnknownSqlObfuscationMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "unknown SQL obfuscator mode `{}`", self.0)
+    }
+}
+
+impl std::error::Error for UnknownSqlObfuscationMode {}
+
+impl FromStr for SqlObfuscationMode {
+    type Err = UnknownSqlObfuscationMode;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "" => Ok(SqlObfuscationMode::Default),
+            "obfuscate_only" => Ok(SqlObfuscationMode::ObfuscateOnly),
+            "normalize_only" => Ok(SqlObfuscationMode::NormalizeOnly),
+            "obfuscate_and_normalize" => Ok(SqlObfuscationMode::ObfuscateAndNormalize),
+            other => Err(UnknownSqlObfuscationMode(other.to_owned())),
+        }
+    }
+}
+
+impl Serialize for SqlObfuscationMode {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
 }
 
 /// Credit-card obfuscation.
@@ -459,6 +576,19 @@ mod tests {
             ApmFeature::from("error_rare_sample_tracer_drop"),
             ApmFeature::Other("error_rare_sample_tracer_drop".to_owned())
         );
+    }
+
+    #[test]
+    fn sql_obfuscation_modes_round_trip_through_as_str() {
+        for mode in [
+            SqlObfuscationMode::Default,
+            SqlObfuscationMode::ObfuscateOnly,
+            SqlObfuscationMode::NormalizeOnly,
+            SqlObfuscationMode::ObfuscateAndNormalize,
+        ] {
+            assert_eq!(mode.as_str().parse::<SqlObfuscationMode>().unwrap(), mode);
+        }
+        assert!("obfuscate".parse::<SqlObfuscationMode>().is_err());
     }
 
     #[test]

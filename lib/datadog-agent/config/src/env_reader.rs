@@ -460,6 +460,19 @@ mod tests {
     }
 
     #[test]
+    fn ignore_resources_reads_a_csv_record() {
+        // Both variables reach the key, and a quoted pattern may contain a comma.
+        for name in ["DD_APM_IGNORE_RESOURCES", "DD_IGNORE_RESOURCE"] {
+            let base = apply_vars(&[(name, r#"GET /ping, "(GET|POST) /a,b""#)]).unwrap();
+            assert_eq!(
+                at(&base, &["apm_config", "ignore_resources"]),
+                Some(&json!(["GET /ping", "(GET|POST) /a,b"])),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
     fn canonical_proxy_is_a_fallback_below_dd_form() {
         let canonical = ("HTTP_PROXY", "http://canonical:3128");
         let mut base = json!({});

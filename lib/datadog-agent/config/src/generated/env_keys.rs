@@ -53,6 +53,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Bool,
     },
     EnvKey {
+        env_vars: &["DD_APM_CONNECTION_LIMIT", "DD_CONNECTION_LIMIT"],
+        path: &["apm_config", "connection_limit"],
+        decode: EnvDecode::Integer,
+    },
+    EnvKey {
         env_vars: &["DD_APM_ENABLE_RARE_SAMPLER"],
         path: &["apm_config", "enable_rare_sampler"],
         decode: EnvDecode::Bool,
@@ -83,14 +88,54 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::CommaThenSpaceSeparated,
     },
     EnvKey {
+        env_vars: &["DD_APM_FILTER_TAGS_REJECT"],
+        path: &["apm_config", "filter_tags", "reject"],
+        decode: EnvDecode::JsonListOrSpaceSeparated,
+    },
+    EnvKey {
+        env_vars: &["DD_APM_FILTER_TAGS_REQUIRE"],
+        path: &["apm_config", "filter_tags", "require"],
+        decode: EnvDecode::JsonListOrSpaceSeparated,
+    },
+    EnvKey {
+        env_vars: &["DD_APM_FILTER_TAGS_REGEX_REJECT"],
+        path: &["apm_config", "filter_tags_regex", "reject"],
+        decode: EnvDecode::JsonListOrSpaceSeparated,
+    },
+    EnvKey {
+        env_vars: &["DD_APM_FILTER_TAGS_REGEX_REQUIRE"],
+        path: &["apm_config", "filter_tags_regex", "require"],
+        decode: EnvDecode::JsonListOrSpaceSeparated,
+    },
+    EnvKey {
+        env_vars: &["DD_APM_IGNORE_RESOURCES", "DD_IGNORE_RESOURCE"],
+        path: &["apm_config", "ignore_resources"],
+        decode: EnvDecode::CsvCommaSeparated,
+    },
+    EnvKey {
         env_vars: &["DD_APM_CONFIG_MAX_CATALOG_ENTRIES"],
         path: &["apm_config", "max_catalog_entries"],
         decode: EnvDecode::Integer,
     },
     EnvKey {
+        env_vars: &["DD_APM_MAX_CPU_PERCENT"],
+        path: &["apm_config", "max_cpu_percent"],
+        decode: EnvDecode::Float,
+    },
+    EnvKey {
         env_vars: &["DD_APM_MAX_EPS", "DD_MAX_EPS"],
         path: &["apm_config", "max_events_per_second"],
         decode: EnvDecode::Float,
+    },
+    EnvKey {
+        env_vars: &["DD_APM_MAX_MEMORY"],
+        path: &["apm_config", "max_memory"],
+        decode: EnvDecode::Float,
+    },
+    EnvKey {
+        env_vars: &["DD_APM_MAX_PAYLOAD_SIZE"],
+        path: &["apm_config", "max_payload_size"],
+        decode: EnvDecode::Integer,
     },
     EnvKey {
         env_vars: &["DD_APM_MAX_TPS", "DD_MAX_TPS"],
@@ -193,6 +238,16 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Bool,
     },
     EnvKey {
+        env_vars: &["DD_APM_OBFUSCATION_SQL_EXEC_PLAN_ENABLED"],
+        path: &["apm_config", "obfuscation", "sql_exec_plan", "enabled"],
+        decode: EnvDecode::Bool,
+    },
+    EnvKey {
+        env_vars: &["DD_APM_OBFUSCATION_SQL_EXEC_PLAN_NORMALIZE_ENABLED"],
+        path: &["apm_config", "obfuscation", "sql_exec_plan_normalize", "enabled"],
+        decode: EnvDecode::Bool,
+    },
+    EnvKey {
         env_vars: &["DD_APM_OBFUSCATION_VALKEY_ENABLED"],
         path: &["apm_config", "obfuscation", "valkey", "enabled"],
         decode: EnvDecode::Bool,
@@ -238,14 +293,29 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::RawString,
     },
     EnvKey {
+        env_vars: &["DD_APM_RECEIVER_TIMEOUT"],
+        path: &["apm_config", "receiver_timeout"],
+        decode: EnvDecode::Integer,
+    },
+    EnvKey {
         env_vars: &["DD_APM_REPLACE_TAGS"],
         path: &["apm_config", "replace_tags"],
         decode: EnvDecode::Json,
     },
     EnvKey {
+        env_vars: &["DD_APM_SQL_OBFUSCATION_MODE"],
+        path: &["apm_config", "sql_obfuscation_mode"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
         env_vars: &["DD_APM_TARGET_TPS"],
         path: &["apm_config", "target_traces_per_second"],
         decode: EnvDecode::Float,
+    },
+    EnvKey {
+        env_vars: &["DD_APM_TELEMETRY_ENABLED"],
+        path: &["apm_config", "telemetry", "enabled"],
+        decode: EnvDecode::Bool,
     },
     EnvKey {
         env_vars: &["DD_AUTH_TOKEN_FILE_PATH"],
