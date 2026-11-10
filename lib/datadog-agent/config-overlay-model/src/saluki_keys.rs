@@ -110,7 +110,8 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
              With `data_plane.experimental.apm.enabled` set, ADP takes over the trace-agent's receiver. It \
              listens where the trace-agent normally does (`apm_config.receiver_port`, \
              `apm_config.receiver_socket`, `apm_config.apm_non_local_traffic`, and `bind_host`) and forwards \
-             every request to the trace-agent at `data_plane.experimental.apm.proxy_destination`. The Datadog \
+             requests for endpoints it does not handle itself to the trace-agent at \
+             `data_plane.experimental.apm.proxy_destination`. The Datadog \
              Agent moves the trace-agent's receiver to that address.
 
 \

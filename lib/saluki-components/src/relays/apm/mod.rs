@@ -1,7 +1,7 @@
 //! APM relay.
 //!
-//! Listens on TCP and/or a Unix domain socket where the trace-agent normally listens and forwards every request
-//! to the relocated trace-agent.
+//! Listens on TCP and/or a Unix domain socket where the trace-agent normally listens. Requests for endpoints the relay
+//! does not handle itself are forwarded to the relocated trace-agent.
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, LazyLock};
@@ -382,7 +382,7 @@ impl APIHandler for ApmRelayAPIHandler {
         self.state.clone()
     }
 
-    /// Forwards every request to the trace-agent.
+    /// Forwards requests for endpoints not handled here to the trace-agent.
     fn generate_routes(&self) -> Router<Self::State> {
         Router::new()
             .route("/services", any(Self::handle_services))
