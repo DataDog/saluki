@@ -61,6 +61,8 @@ pub(crate) fn otlp_traces_settings(traces: &otlp::Traces) -> OtlpTracesSettings 
             otlp::ContainerTagPromotion::Duplicate => ContainerTagPromotion::Duplicate,
             otlp::ContainerTagPromotion::Rename => ContainerTagPromotion::Rename,
         },
+        span_name_as_resource_name: traces.span_name_as_resource_name,
+        span_name_remappings: traces.span_name_remappings.clone(),
     }
 }
 
@@ -114,6 +116,7 @@ fn receiver_tls(tls: &otlp::Tls) -> OtlpReceiverTls {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::{num::NonZeroUsize, time::Duration};
 
     use agent_data_plane_config::domains::dogstatsd::OriginTagCardinality as ModelOriginTagCardinality;
@@ -227,6 +230,8 @@ mod tests {
             ignore_missing_datadog_fields: true,
             infra_attributes_enabled: false,
             container_tag_promotion: otlp::ContainerTagPromotion::Duplicate,
+            span_name_as_resource_name: true,
+            span_name_remappings: HashMap::from([("old.name".to_string(), "new.name".to_string())]),
         };
 
         assert_eq!(
@@ -237,6 +242,8 @@ mod tests {
                 ignore_missing_datadog_fields: true,
                 infra_attributes_enabled: false,
                 container_tag_promotion: ContainerTagPromotion::Duplicate,
+                span_name_as_resource_name: true,
+                span_name_remappings: HashMap::from([("old.name".to_string(), "new.name".to_string())]),
             },
             otlp_traces_settings(&traces)
         );

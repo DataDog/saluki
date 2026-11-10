@@ -282,9 +282,9 @@ mod tests {
         // explicitly empty one. Both stay well below `Event`, which is sized by its largest variant.
         assert_size_budget!(EventD, 208);
         assert_size_budget!(ServiceCheck, 168);
-        assert_size_budget!(Log, 192);
+        assert_size_budget!(Log, 208);
         assert_size_budget!(Trace, 336);
-        assert_size_budget!(TraceStats, 24);
+        assert_size_budget!(TraceStats, 32);
     }
 
     #[test]

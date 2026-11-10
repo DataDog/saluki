@@ -6,10 +6,7 @@ use otlp_common::any_value::Value::{ArrayValue, BoolValue, BytesValue, DoubleVal
 use otlp_protos::opentelemetry::proto::common::v1 as otlp_common;
 use otlp_protos::opentelemetry::proto::logs::v1::LogRecord;
 use otlp_protos::opentelemetry::proto::resource::v1::Resource;
-use saluki_core::data_model::{
-    event::log::{Log, LogStatus},
-    tags::TagSet,
-};
+use saluki_core::data_model::{event::log::Log, tags::TagSet};
 use serde_json::Value as JsonValue;
 use stringtheory::MetaString;
 use tracing::error;
@@ -22,54 +19,34 @@ pub const SPAN_ID_ATTR_KEYS: &[&str] = &["spanid", "span_id", "contextmap.spanid
 
 static DEFAULT_SOURCE: MetaString = MetaString::from_static("otlp_log_ingestion");
 
-pub fn derive_status(status: Option<&str>, severity: &str, severity_number: i32) -> Option<LogStatus> {
-    if let Some(text) = status {
-        if let Some(s) = map_status_text(text) {
-            return Some(s);
-        }
-    }
-    if let Some(s) = map_status_text(severity) {
-        return Some(s);
-    }
-    status_from_severity_number(severity_number)
-}
-
-pub fn map_status_text(text: &str) -> Option<LogStatus> {
-    if text.is_empty() {
-        return None;
-    }
-    match text.to_ascii_lowercase().as_str() {
-        "emerg" | "emergency" => Some(LogStatus::Emergency),
-        "alert" => Some(LogStatus::Alert),
-        "crit" | "critical" | "fatal" => Some(LogStatus::Fatal),
-        "err" | "error" => Some(LogStatus::Error),
-        "warn" | "warning" => Some(LogStatus::Warning),
-        "notice" => Some(LogStatus::Notice),
-        "info" | "information" => Some(LogStatus::Info),
-        "debug" => Some(LogStatus::Debug),
-        "trace" => Some(LogStatus::Trace),
-        _ => None,
-    }
-}
-
-/// `status_from_severity_number` converts the severity number to log level
+/// Derives a log's status from its status attributes, severity text, and severity number.
 ///
-/// https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/logs/data-model.md#field-severitynumber
-pub fn status_from_severity_number(severity_number: i32) -> Option<LogStatus> {
-    if severity_number <= 4 {
-        Some(LogStatus::Trace)
-    } else if severity_number <= 8 {
-        Some(LogStatus::Debug)
-    } else if severity_number <= 12 {
-        Some(LogStatus::Info)
-    } else if severity_number <= 16 {
-        Some(LogStatus::Warning)
-    } else if severity_number <= 20 {
-        Some(LogStatus::Error)
-    } else if severity_number <= 24 {
-        Some(LogStatus::Fatal)
-    } else {
-        Some(LogStatus::Error)
+/// The status is the last status attribute (`status`, `severity`, `level`, or `syslog.severity`), then the severity
+/// text, then the name of the severity number's range, taking the first that isn't empty. Attribute and severity
+/// text are used as they are, without normalization. A severity number of 0 has no name, so a log with nothing else
+/// gets an empty status.
+pub fn derive_status(status: Option<String>, severity_text: &str, severity_number: i32) -> MetaString {
+    match status {
+        Some(status) if !status.is_empty() => MetaString::from(status),
+        _ if !severity_text.is_empty() => MetaString::from(severity_text),
+        _ if severity_number != 0 => MetaString::from_static(status_from_severity_number(severity_number)),
+        _ => MetaString::empty(),
+    }
+}
+
+/// Returns the name of the range that a severity number falls in.
+///
+/// The names follow the ranges of the OpenTelemetry log data model, and numbers above the last range are errors:
+/// <https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/logs/data-model.md#field-severitynumber>
+pub fn status_from_severity_number(severity_number: i32) -> &'static str {
+    match severity_number {
+        ..=4 => "trace",
+        5..=8 => "debug",
+        9..=12 => "info",
+        13..=16 => "warn",
+        17..=20 => "error",
+        21..=24 => "fatal",
+        _ => "error",
     }
 }
 
@@ -336,11 +313,7 @@ pub fn transform_log_record(
     }
 
     // Derive status once using attribute-provided status, severity text and number
-    let status = derive_status(
-        status_text_from_attrs.as_deref(),
-        lr.severity_text.as_str(),
-        lr.severity_number,
-    );
+    let status = derive_status(status_text_from_attrs, lr.severity_text.as_str(), lr.severity_number);
 
     if !lr.severity_text.is_empty() {
         additional_properties.insert(
@@ -384,4 +357,76 @@ pub fn transform_log_record(
         .with_service(record_service)
         .with_tags(tags)
         .with_additional_properties(additional_properties)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{derive_status, status_from_severity_number};
+
+    #[test]
+    fn derive_status_follows_the_reference_precedence() {
+        // (status attribute, severity text, severity number, status)
+        let cases = [
+            // The status attribute comes first, then the severity text, then the severity number.
+            (Some("error"), "alert", 5, "error"),
+            (None, "alert", 5, "alert"),
+            (None, "", 5, "debug"),
+            // Attribute and severity text are kept as they are, even when they aren't a known status.
+            (Some("Not A Status"), "", 0, "Not A Status"),
+            (None, "Information", 9, "Information"),
+            (None, "WARN", 0, "WARN"),
+            // An empty attribute or severity text falls through to the next source.
+            (Some(""), "notice", 13, "notice"),
+            (Some(""), "", 13, "warn"),
+            // Severity number 0 has no name, so a log with nothing else has no status.
+            (None, "", 0, ""),
+            (Some(""), "", 0, ""),
+        ];
+
+        for (status, severity_text, severity_number, expected) in cases {
+            assert_eq!(
+                derive_status(status.map(String::from), severity_text, severity_number),
+                expected,
+                "derive_status({:?}, {:?}, {})",
+                status,
+                severity_text,
+                severity_number
+            );
+        }
+    }
+
+    #[test]
+    fn status_from_severity_number_matches_the_reference() {
+        // Ported from `TestDeriveStatus` in the reference implementation:
+        // https://github.com/DataDog/datadog-agent/blob/e0c8d8d93befb6864f13e2d88acbe13fb2d380b7/pkg/opentelemetry-mapping-go/otlp/logs/transform_test.go
+        // with the boundaries of every range, and negative numbers, which the reference implementation treats as trace.
+        let cases = [
+            (-1, "trace"),
+            (1, "trace"),
+            (3, "trace"),
+            (4, "trace"),
+            (5, "debug"),
+            (7, "debug"),
+            (8, "debug"),
+            (9, "info"),
+            (12, "info"),
+            (13, "warn"),
+            (16, "warn"),
+            (17, "error"),
+            (20, "error"),
+            (21, "fatal"),
+            (24, "fatal"),
+            (25, "error"),
+            (50, "error"),
+        ];
+
+        for (severity_number, expected) in cases {
+            assert_eq!(
+                status_from_severity_number(severity_number),
+                expected,
+                "status_from_severity_number({})",
+                severity_number
+            );
+        }
+    }
 }

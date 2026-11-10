@@ -1972,6 +1972,14 @@ pub struct OtlpConfigTraces {
 
     #[serde(default)]
     pub probabilistic_sampler: OtlpConfigTracesProbabilisticSampler,
+
+    #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
+    pub span_name_as_resource_name: bool,
+
+    #[serde(default, skip_serializing_if = ":: std :: collections :: HashMap::is_empty")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string_map")]
+    pub span_name_remappings: HashMap<String, String>,
 }
 
 impl Default for OtlpConfigTraces {
@@ -1981,6 +1989,8 @@ impl Default for OtlpConfigTraces {
             infra_attributes: Default::default(),
             internal_port: defaults::default_u64::<i64, 5003>(),
             probabilistic_sampler: Default::default(),
+            span_name_as_resource_name: Default::default(),
+            span_name_remappings: Default::default(),
         }
     }
 }

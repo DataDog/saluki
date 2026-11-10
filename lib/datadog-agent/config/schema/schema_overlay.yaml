@@ -2484,6 +2484,33 @@ inventory:
     pipelines: [traces]
     description: "OTLP trace sampling percentage"
 
+  otlp_config.traces.span_name_as_resource_name:
+    support: partial
+    warn: true
+    issue: "#2332"
+    pipelines: [traces]
+    description: "Use the OTLP span name as the resource name"
+    documentation: |-
+      The core Agent uses `otlp_config.traces.span_name_as_resource_name` to select its V1 naming for OTLP
+      spans: with the key set, the span name becomes the Datadog resource name, and without it the
+      resource name is built from the instrumentation library name and span kind.
+
+      ADP reads this key but does not act on it yet. It always derives span names and resource names with the
+      V2 logic, so setting the key has no effect on the spans ADP emits.
+
+  otlp_config.traces.span_name_remappings:
+    support: partial
+    warn: true
+    issue: "#2332"
+    pipelines: [traces]
+    description: "Remap OTLP span names to preferred names"
+    documentation: |-
+      The core Agent uses `otlp_config.traces.span_name_remappings`, a map of span names to preferred
+      names, to rename the operation names of OTLP spans. A non-empty map also selects the Agent's V1 naming.
+
+      ADP reads this key but does not act on it yet. It always derives span names and resource names with the
+      V2 logic, so setting the key has no effect on the spans ADP emits.
+
   provider_kind:
     support: full
     pipelines: [dogstatsd, otlp]
@@ -4268,8 +4295,6 @@ excluded:
   otlp_config.logs.batch.min_size: "ignored in initial audit 2026-04-23"
   otlp_config.logs.infra_attributes.tags_as_ddtags: "2026-09-08 ADP does not currently support OTLP logs."
   otlp_config.metrics.histograms.send_count_sum_metrics: "deprecated; ADP supports only send_aggregation_metrics"
-  otlp_config.traces.span_name_as_resource_name: "ignored in initial audit 2026-04-23"
-  otlp_config.traces.span_name_remappings: "ignored in initial audit 2026-04-23"
   patch_prometheus_client: "2026-09-08 ADP does not currently load Agent integrations or patch their Prometheus clients."
   podman_db_path: "ignored in initial audit 2026-04-23"
   prioritize_go_check_loader: "ignored in initial audit 2026-04-23"

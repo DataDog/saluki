@@ -102,7 +102,6 @@ struct AgentMetadata {
     env: MetaString,
     agent_version: MetaString,
     client_computed: bool,
-    split_payload: bool,
 }
 
 impl From<&proto::StatsPayload> for AgentMetadata {
@@ -112,7 +111,6 @@ impl From<&proto::StatsPayload> for AgentMetadata {
             env: (*payload.agentEnv).into(),
             agent_version: (*payload.agentVersion).into(),
             client_computed: payload.clientComputed,
-            split_payload: payload.splitPayload,
         }
     }
 }
@@ -326,11 +324,15 @@ impl ClientStatistics {
         }
 
         // Merge together the things we can actually merge.
-        self.hits += other.hits;
-        self.errors += other.errors;
-        self.duration_ns += other.duration_ns;
+        //
+        // The counters wrap on overflow, as the `uint64` fields that the trace-agent sums them into do. Generated spans
+        // can have durations close to `i64::MAX`, so summing a few of them overflows `u64`: wrapping keeps both sides
+        // of a comparison equal where checked addition would panic.
+        self.hits = self.hits.wrapping_add(other.hits);
+        self.errors = self.errors.wrapping_add(other.errors);
+        self.duration_ns = self.duration_ns.wrapping_add(other.duration_ns);
         self.synthetics |= other.synthetics;
-        self.top_level_hits += other.top_level_hits;
+        self.top_level_hits = self.top_level_hits.wrapping_add(other.top_level_hits);
 
         self.ok_summary.inner_mut().merge(other.ok_summary.inner());
         self.error_summary.inner_mut().merge(other.error_summary.inner());
@@ -480,5 +482,91 @@ impl ClientStatisticsAggregator {
     /// Returns a reference to the aggregated statistics groups.
     pub fn groups(&self) -> &FastHashMap<AggregationKey, BucketedClientStatistics> {
         &self.groups
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use protobuf::Message as _;
+
+    use super::{proto, ClientStatistics, ClientStatisticsAggregator, DDSketch};
+
+    fn sketch_bytes() -> Vec<u8> {
+        let mut sketch = DDSketch::with_relative_accuracy(0.01).expect("relative accuracy should be valid");
+        sketch.add(1.0);
+        sketch.to_proto().write_to_bytes().expect("sketch should serialize")
+    }
+
+    fn stats_payload(split_payload: bool) -> proto::StatsPayload {
+        let mut grouped = proto::ClientGroupedStats::new();
+        grouped.set_service("svc".to_string());
+        grouped.set_name("op".to_string());
+        grouped.set_resource("res".to_string());
+        grouped.set_hits(1);
+        grouped.set_okSummary(sketch_bytes());
+        grouped.set_errorSummary(sketch_bytes());
+
+        let mut bucket = proto::ClientStatsBucket::new();
+        bucket.set_start(0);
+        bucket.set_duration(10);
+        bucket.set_stats(vec![grouped]);
+
+        let mut client = proto::ClientStatsPayload::new();
+        client.set_hostname("host".to_string());
+        client.set_stats(vec![bucket]);
+
+        let mut payload = proto::StatsPayload::new();
+        payload.set_agentHostname("agent".to_string());
+        payload.set_splitPayload(split_payload);
+        payload.set_stats(vec![client]);
+        payload
+    }
+
+    #[test]
+    fn split_payload_flag_does_not_have_to_match_across_payloads() {
+        let mut aggregator = ClientStatisticsAggregator::default();
+
+        aggregator.merge_payload(&stats_payload(false)).unwrap();
+        aggregator.merge_payload(&stats_payload(true)).unwrap();
+    }
+
+    fn client_stats(hits: u64, errors: u64, duration_ns: u64, top_level_hits: u64) -> ClientStatistics {
+        let empty_sketch: DDSketch =
+            DDSketch::with_relative_accuracy(0.01).expect("Relative accuracy should be valid (0 <= 0.01 <= 1)");
+        let empty_sketch = empty_sketch
+            .to_proto()
+            .write_to_bytes()
+            .expect("Should not fail to encode an empty DDSketch.");
+
+        let mut payload = proto::ClientGroupedStats::new();
+        payload.service = "service".into();
+        payload.name = "name".into();
+        payload.hits = hits;
+        payload.errors = errors;
+        payload.duration = duration_ns;
+        payload.topLevelHits = top_level_hits;
+        payload.okSummary = empty_sketch.clone();
+        payload.errorSummary = empty_sketch;
+
+        ClientStatistics::from(&payload)
+    }
+
+    #[test]
+    fn merge_wraps_counters_on_overflow() {
+        // Generated spans can have durations close to `i64::MAX`, and three of them overflow `u64` when summed.
+        let large = i64::MAX as u64;
+        let mut merged = client_stats(1, 1, large, 1);
+        merged.merge(client_stats(1, 1, large, 1)).unwrap();
+        merged.merge(client_stats(1, 1, large, 1)).unwrap();
+        assert_eq!(merged.duration_ns, large.wrapping_mul(3));
+        assert_eq!(merged.hits, 3);
+        assert_eq!(merged.errors, 3);
+        assert_eq!(merged.top_level_hits, 3);
+
+        let mut merged = client_stats(u64::MAX, u64::MAX, 0, u64::MAX);
+        merged.merge(client_stats(1, 1, 0, 1)).unwrap();
+        assert_eq!(merged.hits, 0);
+        assert_eq!(merged.errors, 0);
+        assert_eq!(merged.top_level_hits, 0);
     }
 }
