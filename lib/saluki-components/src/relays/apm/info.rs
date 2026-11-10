@@ -8,8 +8,7 @@
 //! orders `feature_flags` and `span_kinds_stats_computed` by map iteration, which is random. So the relay owns the
 //! header instead, and replaces the trace-agent's on every response it proxies.
 //!
-//! The payload has changed across Agent versions, so the relay renders the shape of the Agent it runs alongside: see
-//! [`PayloadShape`].
+//! The payload follows the trace-agent's latest shape, whatever the version of the Agent ADP runs alongside.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -19,7 +18,6 @@ use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
 use datadog_agent_apm::semantics::Registry;
 use datadog_agent_apm::semantics::SemanticRegistryProvider;
-use datadog_agent_commons::agent_version::{self, AgentVersion};
 use datadog_agent_commons::ipc::client::RunningAgentVersion;
 use http::{header, HeaderMap, HeaderName, HeaderValue};
 use serde::{Serialize, Serializer};
@@ -42,8 +40,6 @@ const OBFUSCATION_VERSION: u32 = 1;
 const DIVERGENT_SQL_OBFUSCATION_VERSION: u32 = 2;
 
 /// Headers the trace-agent's EVP proxy forwards (`EvpProxyAllowedHeaders`).
-///
-/// The last two were added in Agent 7.84.0.
 const EVP_PROXY_ALLOWED_HEADERS: &[&str] = &[
     "Content-Type",
     "Accept-Encoding",
@@ -53,33 +49,6 @@ const EVP_PROXY_ALLOWED_HEADERS: &[&str] = &[
     "DD-EVP-ORIGIN",
     "DD-EVP-ORIGIN-VERSION",
 ];
-
-/// The number of [`EVP_PROXY_ALLOWED_HEADERS`] before Agent 7.84.0.
-const EVP_PROXY_ALLOWED_HEADERS_BEFORE_7_84: usize = 5;
-
-/// The parts of the payload that depend on the version of the Agent.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct PayloadShape {
-    /// Whether the EVP proxy forwards `DD-EVP-ORIGIN` and `DD-EVP-ORIGIN-VERSION` (Agent 7.84.0).
-    evp_origin_headers: bool,
-
-    /// Whether the obfuscation settings include the tag replacement rules, the credit card and SQL settings, and the
-    /// JSON query settings, and whether `obfuscation_version` follows the effective SQL obfuscation (Agent 7.85.0).
-    detailed_obfuscation: bool,
-}
-
-impl PayloadShape {
-    /// Returns the shape for the version of the running Agent, or, while that is unknown, the version ADP was built
-    /// against. With neither, the payload has the most recent shape.
-    fn of(agent: &RunningAgentVersion) -> Self {
-        let version = AgentVersion::parse(&agent.version).or_else(agent_version::version);
-        let meets = |major, minor, patch| version.is_none_or(|version| version.meets(major, minor, patch));
-        Self {
-            evp_origin_headers: meets(7, 84, 0),
-            detailed_obfuscation: meets(7, 85, 0),
-        }
-    }
-}
 
 /// Serializes a float as Go's `encoding/json` does where the two differ: an integral value has no fractional part,
 /// so `10.0` is written `10`.
@@ -346,7 +315,7 @@ pub(super) struct RenderedInfo {
 
 impl RenderedInfo {
     fn render(config: &InfoConfiguration, registry: &Registry, agent: &RunningAgentVersion) -> Self {
-        let payload = InfoPayload::new(config, registry, agent, PayloadShape::of(agent));
+        let payload = InfoPayload::new(config, registry, agent);
 
         // The trace-agent indents with tabs; only the hash, not the layout, matters to tracers.
         let mut body = Vec::new();
@@ -406,7 +375,12 @@ impl Info {
     /// As in the trace-agent, the response doesn't carry `Datadog-Agent-State` itself.
     pub(super) fn response(&self) -> Response {
         let rendered = self.rendered.load();
-        ([(header::CONTENT_TYPE, "application/json")], rendered.body.clone()).into_response()
+        // The trace-agent sets no content type, so Go's sniffing labels the body as plain text.
+        (
+            [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+            rendered.body.clone(),
+        )
+            .into_response()
     }
 
     /// Sets `Datadog-Agent-State` and `Datadog-Agent-Version` on a response the relay served itself.
@@ -455,9 +429,7 @@ struct InfoPayload<'a> {
 }
 
 impl<'a> InfoPayload<'a> {
-    fn new(
-        config: &'a InfoConfiguration, registry: &Registry, agent: &'a RunningAgentVersion, shape: PayloadShape,
-    ) -> Self {
+    fn new(config: &'a InfoConfiguration, registry: &Registry, agent: &'a RunningAgentVersion) -> Self {
         let endpoints: Vec<&'static str> = ENDPOINTS
             .iter()
             .filter(|(_, requires)| match requires {
@@ -477,7 +449,7 @@ impl<'a> InfoPayload<'a> {
         }
 
         let sql = EffectiveSql::new(config);
-        let obfuscation_version = if shape.detailed_obfuscation && sql.diverges_from_tracers() {
+        let obfuscation_version = if sql.diverges_from_tracers() {
             DIVERGENT_SQL_OBFUSCATION_VERSION
         } else {
             OBFUSCATION_VERSION
@@ -504,12 +476,8 @@ impl<'a> InfoPayload<'a> {
             span_meta_structs: true,
             long_running_spans: true,
             span_events: true,
-            evp_proxy_allowed_headers: if shape.evp_origin_headers {
-                EVP_PROXY_ALLOWED_HEADERS
-            } else {
-                &EVP_PROXY_ALLOWED_HEADERS[..EVP_PROXY_ALLOWED_HEADERS_BEFORE_7_84]
-            },
-            config: ReducedConfig::new(config, sql, shape),
+            evp_proxy_allowed_headers: EVP_PROXY_ALLOWED_HEADERS,
+            config: ReducedConfig::new(config, sql),
             // The trace-agent reports no peer tags as `null`, not as an empty list.
             peer_tags: peer_tags.filter(|tags| !tags.is_empty()),
             span_kinds_stats_computed: config.compute_stats_by_span_kind.then_some(SPAN_KINDS_STATS_COMPUTED),
@@ -582,7 +550,7 @@ struct ReducedConfig<'a> {
 }
 
 impl<'a> ReducedConfig<'a> {
-    fn new(config: &'a InfoConfiguration, sql: EffectiveSql, shape: PayloadShape) -> Self {
+    fn new(config: &'a InfoConfiguration, sql: EffectiveSql) -> Self {
         Self {
             default_env: &config.default_env,
             target_tps: config.target_traces_per_second,
@@ -606,14 +574,12 @@ impl<'a> ReducedConfig<'a> {
                     (service.as_str(), rates)
                 })
                 .collect(),
-            obfuscation: ReducedObfuscation::new(config, sql, shape),
+            obfuscation: ReducedObfuscation::new(config, sql),
         }
     }
 }
 
 /// The trace-agent's `reducedObfuscationConfig`.
-///
-/// The fields that are `None` without [`PayloadShape::detailed_obfuscation`] are left out.
 #[derive(Serialize)]
 struct ReducedObfuscation<'a> {
     elastic_search: bool,
@@ -622,29 +588,22 @@ struct ReducedObfuscation<'a> {
     sql_exec_plan_normalize: bool,
     sql_obfuscation_mode: String,
     // No rules are reported as `null`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tag_replace_rules: Option<Option<Vec<ReducedReplaceRule<'a>>>>,
+    tag_replace_rules: Option<Vec<ReducedReplaceRule<'a>>>,
     http: ReducedHttp,
     remove_stack_traces: bool,
     redis: ReducedCache,
     valkey: ReducedCache,
     memcached: ReducedMemcached,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    credit_cards: Option<ReducedCreditCards<'a>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    sql: Option<ReducedSql>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    elasticsearch: Option<ReducedJson<'a>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    opensearch: Option<ReducedJson<'a>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    mongodb: Option<ReducedJson<'a>>,
+    credit_cards: ReducedCreditCards<'a>,
+    sql: ReducedSql,
+    elasticsearch: ReducedJson<'a>,
+    opensearch: ReducedJson<'a>,
+    mongodb: ReducedJson<'a>,
 }
 
 impl<'a> ReducedObfuscation<'a> {
-    fn new(config: &'a InfoConfiguration, sql: EffectiveSql, shape: PayloadShape) -> Self {
+    fn new(config: &'a InfoConfiguration, sql: EffectiveSql) -> Self {
         let obfuscation = &config.obfuscation;
-        let detailed = shape.detailed_obfuscation;
         let tag_replace_rules = (!config.replace_tags.is_empty()).then(|| {
             config
                 .replace_tags
@@ -662,7 +621,7 @@ impl<'a> ReducedObfuscation<'a> {
             sql_exec_plan: obfuscation.sql_exec_plan,
             sql_exec_plan_normalize: obfuscation.sql_exec_plan_normalize,
             sql_obfuscation_mode: sql.obfuscation_mode.clone(),
-            tag_replace_rules: detailed.then_some(tag_replace_rules),
+            tag_replace_rules,
             http: ReducedHttp {
                 remove_query_string: obfuscation.http_remove_query_string,
                 remove_path_digits: obfuscation.http_remove_paths_with_digits,
@@ -674,15 +633,15 @@ impl<'a> ReducedObfuscation<'a> {
                 enabled: obfuscation.memcached_enabled,
                 keep_command: obfuscation.memcached_keep_command,
             },
-            credit_cards: detailed.then(|| ReducedCreditCards {
+            credit_cards: ReducedCreditCards {
                 enabled: obfuscation.credit_cards_enabled,
                 luhn: obfuscation.credit_cards_luhn,
                 keep_values: &obfuscation.credit_cards_keep_values,
-            }),
-            sql: detailed.then(|| ReducedSql::new(sql)),
-            elasticsearch: detailed.then(|| ReducedJson::new(&obfuscation.elasticsearch)),
-            opensearch: detailed.then(|| ReducedJson::new(&obfuscation.opensearch)),
-            mongodb: detailed.then(|| ReducedJson::new(&obfuscation.mongodb)),
+            },
+            sql: ReducedSql::new(sql),
+            elasticsearch: ReducedJson::new(&obfuscation.elasticsearch),
+            opensearch: ReducedJson::new(&obfuscation.opensearch),
+            mongodb: ReducedJson::new(&obfuscation.mongodb),
         }
     }
 }
@@ -883,44 +842,6 @@ mod tests {
     }
 
     #[test]
-    fn the_payload_has_the_shape_of_the_agent_version() {
-        let config = InfoConfiguration {
-            features: vec!["keep_sql_alias".to_string()],
-            ..Default::default()
-        };
-
-        // Agent 7.83: five EVP headers, no detailed obfuscation, and an `obfuscation_version` that never changes.
-        let (payload, _) = render_for(&config, &agent_at("7.83.0"));
-        assert_eq!(payload["evp_proxy_allowed_headers"].as_array().unwrap().len(), 5);
-        let obfuscation = payload["config"]["obfuscation"].as_object().unwrap();
-        for absent in [
-            "tag_replace_rules",
-            "credit_cards",
-            "sql",
-            "elasticsearch",
-            "opensearch",
-            "mongodb",
-        ] {
-            assert!(!obfuscation.contains_key(absent), "{absent}");
-        }
-        assert_eq!(payload["obfuscation_version"], 1);
-
-        // Agent 7.84 adds the EVP origin headers.
-        let (payload, _) = render_for(&config, &agent_at("7.84.1"));
-        assert_eq!(payload["evp_proxy_allowed_headers"].as_array().unwrap().len(), 7);
-        assert!(payload["config"]["obfuscation"].get("sql").is_none());
-
-        // Agent 7.85, and development builds, add the detailed obfuscation.
-        for version in ["7.85.0", "7.83.0-devel+git.1.abc1234"] {
-            let (payload, _) = render_for(&config, &agent_at(version));
-            let obfuscation = payload["config"]["obfuscation"].as_object().unwrap();
-            assert!(obfuscation["tag_replace_rules"].is_null(), "{version}");
-            assert!(obfuscation.contains_key("sql"), "{version}");
-            assert_eq!(payload["obfuscation_version"], 2, "{version}");
-        }
-    }
-
-    #[test]
     fn integral_floats_are_written_as_go_writes_them() {
         let (_, rendered) = render(&InfoConfiguration {
             target_traces_per_second: 10.0,
@@ -929,7 +850,7 @@ mod tests {
             analyzed_spans_by_service: HashMap::from([("web".to_string(), HashMap::from([("op".to_string(), 1.0)]))]),
             ..Default::default()
         });
-        let body = std::str::from_utf8(&rendered.body).unwrap();
+        let body = simdutf8::basic::from_utf8(&rendered.body).unwrap();
 
         assert!(body.contains("\"target_tps\": 10,"), "{body}");
         assert!(body.contains("\"max_memory\": 500000000,"), "{body}");
