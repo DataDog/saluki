@@ -140,7 +140,7 @@ mod tests {
     /// A render case: a translated log, and the content that Go writes for it, which is the target.
     ///
     /// The logs are written for these tests, each to exercise a rule of the content's serialization. Each target is
-    /// what `datadogV2.HTTPLogItem.MarshalJSON` wrote for the log, with datadog-api-client-go v2.66.0 and Go 1.26.9:
+    /// what `datadogV2.HTTPLogItem.MarshalJSON` wrote for the log, with `datadog-api-client-go` v2.66.0 and Go 1.26.9:
     /// the item holds the hostname, service, message, and properties, then `status` is set as the last property, and
     /// the item has no `ddtags`.
     struct RenderCase {
