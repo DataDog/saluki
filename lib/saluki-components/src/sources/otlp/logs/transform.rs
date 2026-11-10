@@ -25,7 +25,7 @@ static DEFAULT_SOURCE: MetaString = MetaString::from_static("otlp_log_ingestion"
 /// text, then the name of the severity number's range, taking the first that isn't empty. Attribute and severity
 /// text are used as they are, without normalization. A severity number of 0 has no name, so a log with nothing else
 /// gets an empty status.
-pub fn derive_status(status: Option<&str>, severity_text: &str, severity_number: i32) -> MetaString {
+pub fn derive_status(status: Option<String>, severity_text: &str, severity_number: i32) -> MetaString {
     match status {
         Some(status) if !status.is_empty() => MetaString::from(status),
         _ if !severity_text.is_empty() => MetaString::from(severity_text),
@@ -313,11 +313,7 @@ pub fn transform_log_record(
     }
 
     // Derive status once using attribute-provided status, severity text and number
-    let status = derive_status(
-        status_text_from_attrs.as_deref(),
-        lr.severity_text.as_str(),
-        lr.severity_number,
-    );
+    let status = derive_status(status_text_from_attrs, lr.severity_text.as_str(), lr.severity_number);
 
     if !lr.severity_text.is_empty() {
         additional_properties.insert(
@@ -389,7 +385,7 @@ mod tests {
 
         for (status, severity_text, severity_number, expected) in cases {
             assert_eq!(
-                derive_status(status, severity_text, severity_number),
+                derive_status(status.map(String::from), severity_text, severity_number),
                 expected,
                 "derive_status({:?}, {:?}, {})",
                 status,
