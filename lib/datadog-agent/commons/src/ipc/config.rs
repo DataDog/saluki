@@ -1,7 +1,7 @@
 //! IPC configuration.
 
 use std::{
-    net::{IpAddr, Ipv4Addr, SocketAddr},
+    net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
 };
 
@@ -71,8 +71,8 @@ impl IpcAuthConfiguration {
 /// Datadog Agent IPC client configuration.
 #[derive(Clone, Debug)]
 pub struct RemoteAgentClientConfiguration {
-    /// Core Agent CMD API host used for remote-agent gRPC IPC. Always a loopback address.
-    pub cmd_host: IpAddr,
+    /// Core Agent CMD API host used for remote-agent gRPC IPC. Always `localhost` or a loopback address.
+    pub cmd_host: IpcHost,
 
     /// Core Agent CMD API port used for remote-agent gRPC IPC.
     pub cmd_port: u16,
@@ -89,15 +89,13 @@ pub struct RemoteAgentClientConfiguration {
 }
 
 impl RemoteAgentClientConfiguration {
-    /// Creates a `RemoteAgentClientConfiguration` from its parts, resolving the CMD API host to an address and the
-    /// named vsock address to a CID.
+    /// Creates a `RemoteAgentClientConfiguration` from its parts, validating the CMD API host and resolving the named
+    /// vsock address to a CID.
     ///
     /// `cmd_host` follows the Datadog Agent's `cmd_host` setting. Like the Datadog Agent, the host must be `localhost`
-    /// or a loopback IP address: an IPv4 address in `127.0.0.0/8`, or `::1`.
-    ///
-    /// `localhost` always connects to `127.0.0.1`, rather than resolving the name as the Datadog Agent does. The Agent
-    /// listens on `127.0.0.1` for `localhost` whenever IPv4 loopback is available, but if it listens on IPv6 loopback,
-    /// `cmd_host` must be set to `::1` explicitly.
+    /// or a loopback IP address: an IPv4 address in `127.0.0.0/8`, or `::1`. Also like the Datadog Agent's own IPC
+    /// clients, `localhost` is resolved when connecting, so ADP reaches the CMD API whether the Agent listens on IPv4
+    /// or IPv6 loopback. See [`IpcHost::Localhost`].
     ///
     /// `vsock_addr` follows the Datadog Agent's `vsock_addr` setting: an empty value disables vsock, and `host`,
     /// `hypervisor`, and `local` select the well-known context identifiers 2, 0, and 3. vsock is only supported on
@@ -143,10 +141,14 @@ impl RemoteAgentClientConfiguration {
 
     /// Returns the Core Agent CMD API gRPC endpoint URI.
     pub fn endpoint(&self) -> Uri {
-        // `SocketAddr` brackets an IPv6 host, as a URI requires.
-        format!("https://{}", SocketAddr::new(self.cmd_host, self.cmd_port))
+        let authority = match self.cmd_host {
+            IpcHost::Localhost => format!("localhost:{}", self.cmd_port),
+            // `SocketAddr` brackets an IPv6 host, as a URI requires.
+            IpcHost::Ip(ip) => SocketAddr::new(ip, self.cmd_port).to_string(),
+        };
+        format!("https://{}", authority)
             .parse()
-            .expect("a URI built from an IP address and a u16 port is valid")
+            .expect("a URI built from `localhost` or an IP address and a u16 port is valid")
     }
 
     /// Returns the vsock address to use for connecting to the IPC endpoint, if configured.
@@ -158,9 +160,9 @@ impl RemoteAgentClientConfiguration {
 }
 
 /// Parses a CMD API host into the loopback address to connect to.
-fn parse_cmd_host(cmd_host: &str) -> Result<IpAddr, GenericError> {
+fn parse_cmd_host(cmd_host: &str) -> Result<IpcHost, GenericError> {
     if cmd_host == "localhost" {
-        return Ok(IpAddr::V4(Ipv4Addr::LOCALHOST));
+        return Ok(IpcHost::Localhost);
     }
 
     let ip = cmd_host
@@ -180,7 +182,21 @@ fn parse_cmd_host(cmd_host: &str) -> Result<IpAddr, GenericError> {
         ));
     }
 
-    Ok(ip)
+    Ok(IpcHost::Ip(ip))
+}
+
+/// The Core Agent CMD API host.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IpcHost {
+    /// `localhost`, which is resolved when connecting, as the Datadog Agent's own IPC clients do.
+    ///
+    /// Each address `localhost` resolves to is tried in turn, so ADP reaches the CMD API whether the Datadog Agent
+    /// listens on IPv4 or IPv6 loopback. The name is resolved through the system resolver, which answers it from the
+    /// hosts file, so this doesn't need a DNS server.
+    Localhost,
+
+    /// A loopback IP address: an IPv4 address in `127.0.0.0/8`, or `::1`.
+    Ip(IpAddr),
 }
 
 #[cfg(test)]
@@ -190,7 +206,7 @@ mod tests {
         path::{Path, PathBuf},
     };
 
-    use super::{IpcAuthConfiguration, RemoteAgentClientConfiguration};
+    use super::{IpcAuthConfiguration, IpcHost, RemoteAgentClientConfiguration};
     use crate::platform::PlatformSettings;
 
     #[test]
@@ -274,7 +290,7 @@ mod tests {
 
     fn remote_agent_config(cmd_port: u16) -> RemoteAgentClientConfiguration {
         RemoteAgentClientConfiguration {
-            cmd_host: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            cmd_host: IpcHost::Ip(IpAddr::V4(Ipv4Addr::LOCALHOST)),
             cmd_port,
             auth: IpcAuthConfiguration::new(PathBuf::new(), PathBuf::new()),
             grpc_max_message_size: 128 * 1024 * 1024,
@@ -293,8 +309,8 @@ mod tests {
     #[test]
     fn endpoint_uses_cmd_host() {
         let cases = [
-            // `localhost` always connects to IPv4 loopback.
-            ("localhost", "https://127.0.0.1:5001/"),
+            // Like the Datadog Agent's IPC clients, `localhost` is kept as a name and resolved when connecting.
+            ("localhost", "https://localhost:5001/"),
             ("127.0.0.1", "https://127.0.0.1:5001/"),
             ("127.0.0.2", "https://127.0.0.2:5001/"),
             // IPv6 hosts are bracketed.
@@ -336,7 +352,7 @@ mod tests {
         let config = RemoteAgentClientConfiguration::from_parts("127.0.0.2", 5001, auth, 4 * 1024 * 1024, "")
             .expect("a loopback host and an empty vsock address are valid");
 
-        assert_eq!(config.cmd_host, IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)));
+        assert_eq!(config.cmd_host, IpcHost::Ip(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2))));
         assert_eq!(config.cmd_port, 5001);
         assert_eq!(config.grpc_max_message_size, 4 * 1024 * 1024);
         assert_eq!(config.auth.auth_token_file_path(), Path::new("/secret/auth_token"));

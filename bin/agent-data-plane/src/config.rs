@@ -260,8 +260,8 @@ mod tests {
     #[test]
     fn remote_agent_client_configuration_uses_the_ipc_host() {
         let cases = [
-            // By default, `localhost` connects to IPv4 loopback, as before `cmd_host` was supported.
-            ("localhost", "https://127.0.0.1:5001/"),
+            // Like the Datadog Agent's IPC clients, `localhost` is kept as a name and resolved when connecting.
+            ("localhost", "https://localhost:5001/"),
             ("::1", "https://[::1]:5001/"),
             ("127.0.0.2", "https://127.0.0.2:5001/"),
         ];

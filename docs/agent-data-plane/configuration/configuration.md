@@ -1190,12 +1190,6 @@ With `data_plane.experimental.apm.enabled` set, ADP binds the trace receiver's T
 `data_plane.experimental.apm.proxy_destination`. `0` disables the TCP listener, as it does for
 the trace-agent.
 
-### `cmd_host`
-
-ADP connects `localhost`, the default, to the IPv4 loopback address `127.0.0.1`, rather than
-resolving the name as the Datadog Agent does. On a host where `localhost` has no IPv4 address,
-the Datadog Agent listens on `::1`, so set `cmd_host: "::1"` explicitly.
-
 ### `container_cgroup_root`
 
 ADP reads the cgroups hierarchy from this root. When the key is not set explicitly, ADP
