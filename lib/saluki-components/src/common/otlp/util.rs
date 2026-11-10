@@ -137,9 +137,9 @@ pub fn get_string_attribute<'a>(attributes: &'a [otlp_common::KeyValue], key: &s
 /// Extracts container tags from OTLP resource attributes and inserts them into the provided TagSet.
 ///
 /// Tags come from semantic-convention mappings and `datadog.container.tag.` prefixed attributes,
-/// ranked by the `TAG_SOURCE_*` precedences; empty values produce no tag. As in the Agent's
-/// `ContainerTagsFromResourceAttributes`, a later semantic-convention attribute replaces an earlier
-/// one that maps to the same tag, while the first custom attribute for a tag wins.
+/// ranked by the `TAG_SOURCE_*` precedences; empty values produce no tag. A later
+/// semantic-convention attribute replaces an earlier one that maps to the same tag, while the first
+/// custom attribute for a tag wins.
 pub fn extract_container_tags_from_resource_attributes(attributes: &[otlp_common::KeyValue], tags: &mut TagSet) {
     let mut resolved: FastHashMap<&str, (u8, &str)> = FastHashMap::default();
 
@@ -173,9 +173,9 @@ pub fn extract_container_tags_from_resource_attributes(attributes: &[otlp_common
 /// Tags come from three sources, ranked by the `TAG_SOURCE_*` precedences; empty values produce no
 /// tag.
 ///
-/// The Agent's `ConsumeContainerTagsFromResource` keeps the first of two semantic-convention
-/// attributes that map to the same tag, but a map has no attribute order, so `container.image.tags`
-/// always wins over the older `container.image.tag` here.
+/// When two semantic-convention attributes map to the same tag, the first one in attribute order
+/// should win, but a map has no attribute order, so `container.image.tags` always wins over the
+/// older `container.image.tag` here.
 pub fn extract_container_tags_from_attributes_map(
     attributes: &FastHashMap<MetaString, AttributeValue>, tags: &mut TagSet,
 ) {
