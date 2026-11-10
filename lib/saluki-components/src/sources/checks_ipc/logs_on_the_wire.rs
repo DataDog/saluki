@@ -74,7 +74,7 @@ async fn encode_check_data(data: impl IntoIterator<Item = Data>) -> Vec<WireRequ
     let encoder = BufferedIncrementalConfiguration::new(
         DatadogLogsConfiguration::new("zstd", 3)
             .with_default_hostname(DEFAULT_HOSTNAME)
-            .with_origin_version("1.2.3")
+            .with_origin("agent-data-plane", "1.2.3")
             .with_clock(fixed_clock),
         Duration::from_secs(60),
     );

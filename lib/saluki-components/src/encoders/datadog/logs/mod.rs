@@ -21,6 +21,7 @@ use tracing::{error, warn};
 
 use crate::common::datadog::{
     io::RB_BUFFER_CHUNK_SIZE,
+    middleware::formatted_app_name,
     request_builder::{EndpointEncoder, RequestBuilder},
     telemetry::ComponentTelemetry,
     DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT,
@@ -47,11 +48,6 @@ static DD_EVP_ORIGIN_VERSION_HEADER: HeaderName = HeaderName::from_static("dd-ev
 /// The `DD-PROTOCOL` value of the JSON envelope, under which the intake reads only the envelope fields.
 static AGENT_JSON_PROTOCOL: HeaderValue = HeaderValue::from_static("agent-json");
 
-/// The `DD-EVP-ORIGIN` value, which names the sender of the logs.
-///
-/// `DD-EVP-ORIGIN-VERSION` carries the version of the same sender.
-static ADP_ORIGIN: HeaderValue = HeaderValue::from_static("agent-data-plane");
-
 /// Datadog Logs incremental encoder.
 #[derive(Debug)]
 pub struct DatadogLogsConfiguration {
@@ -66,6 +62,9 @@ pub struct DatadogLogsConfiguration {
     /// Hostname for the envelope of a log that has none.
     default_hostname: MetaString,
 
+    /// Name of the sender, for the `DD-EVP-ORIGIN` header.
+    origin: String,
+
     /// Version of the sender, for the `DD-EVP-ORIGIN-VERSION` header.
     ///
     /// This is the bare version, such as `1.9.0`: the intake drops a value with characters such as `/` in it.
@@ -77,21 +76,24 @@ pub struct DatadogLogsConfiguration {
 
 impl DatadogLogsConfiguration {
     /// Creates a new `DatadogLogsConfiguration`.
+    ///
+    /// The `DD-EVP-ORIGIN` and `DD-EVP-ORIGIN-VERSION` headers name the application, from its registered details.
     pub fn new(compressor_kind: impl Into<String>, zstd_level: i32) -> Self {
+        let app_details = saluki_metadata::get_app_details();
         Self {
             compressor_kind: compressor_kind.into(),
             zstd_level,
             default_hostname: MetaString::empty(),
-            origin_version: saluki_metadata::get_app_details().version().raw().to_string(),
+            origin: formatted_app_name(app_details),
+            origin_version: app_details.version().raw().to_string(),
             clock: Utc::now,
         }
     }
 
-    /// Sets the version sent in the `DD-EVP-ORIGIN-VERSION` header, so tests can pin it.
-    ///
-    /// Defaults to the version of this application.
+    /// Sets the values of the `DD-EVP-ORIGIN` and `DD-EVP-ORIGIN-VERSION` headers, so tests can pin them.
     #[cfg(test)]
-    pub(crate) fn with_origin_version(mut self, origin_version: impl Into<String>) -> Self {
+    pub(crate) fn with_origin(mut self, origin: impl Into<String>, origin_version: impl Into<String>) -> Self {
+        self.origin = origin.into();
         self.origin_version = origin_version.into();
         self
     }
@@ -129,11 +131,13 @@ impl IncrementalEncoderBuilder for DatadogLogsConfiguration {
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
         let compression_scheme = CompressionScheme::new(&self.compressor_kind, self.zstd_level);
 
+        let origin =
+            HeaderValue::from_str(&self.origin).error_context("Invalid origin for the `DD-EVP-ORIGIN` header.")?;
         let origin_version = HeaderValue::from_str(&self.origin_version)
             .error_context("Invalid origin version for the `DD-EVP-ORIGIN-VERSION` header.")?;
         let headers = vec![
             (DD_PROTOCOL_HEADER.clone(), AGENT_JSON_PROTOCOL.clone()),
-            (DD_EVP_ORIGIN_HEADER.clone(), ADP_ORIGIN.clone()),
+            (DD_EVP_ORIGIN_HEADER.clone(), origin),
             (DD_EVP_ORIGIN_VERSION_HEADER.clone(), origin_version),
         ];
 
