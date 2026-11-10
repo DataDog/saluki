@@ -693,7 +693,8 @@ async fn run_io_loop<B>(
 
     // Listen for transactions to forward, and send a copy of each one to the matching endpoint I/O tasks.
     while let Some(transaction) = transactions_rx.recv().await {
-        let is_metrics_request = is_metrics_request_uri(transaction.request_uri(), METRICS_SERIES_V3_PATH);
+        let is_metrics_request = transaction.metadata().payload_info.is_some()
+            || is_metrics_request_uri(transaction.request_uri(), METRICS_SERIES_V3_PATH);
         for endpoint_sender in &endpoint_txs {
             if !should_route_to_endpoint(is_metrics_request, has_metrics_primary, endpoint_sender.route) {
                 continue;
@@ -775,6 +776,34 @@ fn matches_metrics_routing_targets(target: Option<RoutingTargetId>, metadata: &M
         None => true,
         Some(targets) => target.is_some_and(|target| targets.includes(target)),
     }
+}
+
+// Expand batch metadata before queueing so retries persist the original correlation headers.
+fn prepare_metrics_transaction<B: Buf + Clone>(
+    txn: Transaction<B>, configured_endpoint: &str, settings: &EndpointV3Settings, disables_v3: bool,
+) -> Option<Transaction<B>> {
+    let (mut metadata, mut request) = txn.into_parts();
+    let shadow = metadata.sketch_shadow.take();
+    let is_shadow = shadow.as_ref().is_some_and(|shadow| shadow.is_shadow);
+    if let Some(shadow) = shadow {
+        let batch_id = shadow.batch_id(configured_endpoint);
+        if is_shadow && (batch_id.is_none() || settings.use_v3_sketches || disables_v3) {
+            return None;
+        }
+        if let Some(batch_id) = batch_id {
+            request.headers_mut().insert("X-Metrics-Request-ID", batch_id.clone());
+            request
+                .headers_mut()
+                .insert("X-Metrics-Request-Seq", shadow.request_index.into());
+            request
+                .headers_mut()
+                .insert("X-Metrics-Request-Len", shadow.request_count.into());
+        }
+    }
+    if !is_shadow && !settings.should_receive_payload(metadata.payload_info) {
+        return None;
+    }
+    Some(Transaction::reassemble(metadata, request))
 }
 
 /// Returns the process name for the endpoint I/O loop serving `endpoint`.
@@ -928,15 +957,8 @@ async fn run_endpoint_io_loop<B>(
             maybe_txn = txns_rx.recv(), if !done => match maybe_txn {
                 Some(txn) => {
                     // Endpoint targeting was checked before dispatch to this task. Filter by protocol before queuing.
-                    let payload_info = txn.metadata().payload_info;
-                    if !endpoint_v3_settings.should_receive_payload(payload_info) {
-                        debug!(
-                            endpoint_url,
-                            ?payload_info,
-                            "Filtering out transaction based on endpoint V3 settings."
-                        );
-                        continue;
-                    }
+                    let Some(txn) = prepare_metrics_transaction(txn, &configured_endpoint, &endpoint_v3_settings,
+                        config.compressor_disables_metrics_v3()) else { continue; };
                     let transaction_size = txn.size_bytes();
                     let resolved = endpoint_name(txn.request_uri());
                     let logical = resolved.as_deref().unwrap_or_else(|| txn.request_uri().path());
@@ -3155,5 +3177,69 @@ mod tests {
             API_KEY_VALIDATION_PURPOSE_TAG,
             format!("purpose:{API_KEY_VALIDATION_PURPOSE}")
         );
+    }
+}
+
+#[cfg(test)]
+mod sketch_shadow_tests {
+    use bytes::Bytes;
+    use http::HeaderValue;
+
+    use super::*;
+    use crate::common::datadog::{
+        protocol::MetricsPayloadInfo,
+        sketch_shadow::{SketchShadowDestination, SketchShadowMetadata},
+    };
+
+    #[test]
+    fn sketch_shadow_headers_are_destination_specific_and_persist_on_retry() {
+        const SAMPLED: &str = "https://app.datadoghq.com";
+        const UNSAMPLED: &str = "https://app.us3.datadoghq.com";
+        const BATCH_ID: &str = "019a0000-0000-7000-8000-000000000001";
+        let sampled_destinations = Arc::from([SketchShadowDestination {
+            configured_endpoint: Arc::from(SAMPLED),
+            batch_id: HeaderValue::from_static(BATCH_ID),
+        }]);
+        let make_transaction = |is_shadow| {
+            let mut metadata = Metadata::from_event_and_data_point_count(1, 1);
+            metadata.payload_info = Some(if is_shadow {
+                MetricsPayloadInfo::v3_sketches()
+            } else {
+                MetricsPayloadInfo::v2_sketches()
+            });
+            metadata.sketch_shadow = Some(SketchShadowMetadata {
+                sampled_destinations: Arc::clone(&sampled_destinations),
+                request_index: 1,
+                request_count: 3,
+                is_shadow,
+            });
+            Transaction::from_original(
+                metadata,
+                Request::builder()
+                    .uri("/custom/sketches")
+                    .body(Bytes::from_static(b"payload"))
+                    .unwrap(),
+            )
+        };
+        let settings = EndpointV3Settings::disabled();
+        for is_shadow in [false, true] {
+            let txn = prepare_metrics_transaction(make_transaction(is_shadow), SAMPLED, &settings, false).unwrap();
+            assert!(txn.metadata().sketch_shadow.is_none());
+            let serialized = serde_json::to_vec(&txn).unwrap();
+            let restored: Transaction<Bytes> = serde_json::from_slice(&serialized).unwrap();
+            let (_, request) = restored.into_parts();
+            assert_eq!(request.headers()["X-Metrics-Request-ID"], BATCH_ID);
+            assert_eq!(request.headers()["X-Metrics-Request-Seq"], "1");
+            assert_eq!(request.headers()["X-Metrics-Request-Len"], "3");
+        }
+        assert!(prepare_metrics_transaction(make_transaction(true), UNSAMPLED, &settings, false).is_none());
+        assert!(prepare_metrics_transaction(make_transaction(true), SAMPLED, &settings, true).is_none());
+        let authoritative = EndpointV3Settings {
+            use_v3_sketches: true,
+            ..settings.clone()
+        };
+        assert!(prepare_metrics_transaction(make_transaction(true), SAMPLED, &authoritative, false).is_none());
+        let baseline = prepare_metrics_transaction(make_transaction(false), UNSAMPLED, &settings, false).unwrap();
+        assert!(!baseline.into_parts().1.headers().contains_key("X-Metrics-Request-ID"));
     }
 }

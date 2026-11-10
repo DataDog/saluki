@@ -10,6 +10,7 @@ pub mod request_builder;
 pub(crate) mod retry;
 mod retry_capacity;
 pub mod routing;
+pub(crate) mod sketch_shadow;
 pub mod telemetry;
 #[cfg(test)]
 pub(crate) mod test_util;

@@ -689,24 +689,6 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         default: DefaultValue::Missing,
     },
     ClassifierEntry {
-        yaml_path: "serializer_experimental_use_v3_api.sketches.beta_route",
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-        default: DefaultValue::Json("\"/api/intake/metrics/v3beta/sketches\""),
-    },
-    ClassifierEntry {
-        yaml_path: "serializer_experimental_use_v3_api.sketches.shadow_sample_rate",
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-        default: DefaultValue::Json("0"),
-    },
-    ClassifierEntry {
-        yaml_path: "serializer_experimental_use_v3_api.sketches.shadow_sites",
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-        default: DefaultValue::Json("[\"datadoghq.com\"]"),
-    },
-    ClassifierEntry {
         yaml_path: "telemetry.dogstatsd.aggregator_channel_latency_buckets",
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),

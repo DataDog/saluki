@@ -253,10 +253,13 @@ pub trait DatadogConfigWitness {
     fn consume_secret_refresh_on_api_key_failure_interval(&mut self, value: i64);
     fn consume_serializer_compressor_kind(&mut self, value: String);
     fn consume_serializer_experimental_use_v3_api_compression_level(&mut self, value: i64);
+    fn consume_serializer_experimental_use_v3_api_sketches_beta_route(&mut self, value: String);
     fn consume_serializer_experimental_use_v3_api_sketches_endpoints(&mut self, value: Vec<String>);
     fn consume_serializer_experimental_use_v3_api_sketches_max_compressed_payload_size(&mut self, value: i64);
     fn consume_serializer_experimental_use_v3_api_sketches_max_points_per_payload(&mut self, value: i64);
     fn consume_serializer_experimental_use_v3_api_sketches_max_uncompressed_payload_size(&mut self, value: i64);
+    fn consume_serializer_experimental_use_v3_api_sketches_shadow_sample_rate(&mut self, value: f64);
+    fn consume_serializer_experimental_use_v3_api_sketches_shadow_sites(&mut self, value: Vec<String>);
     fn consume_serializer_max_payload_size(&mut self, value: i64);
     fn consume_serializer_max_series_payload_size(&mut self, value: i64);
     fn consume_serializer_max_series_points_per_payload(&mut self, value: i64);
@@ -703,6 +706,9 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_serializer_experimental_use_v3_api_compression_level(
         config.serializer_experimental_use_v3_api.compression_level.clone(),
     );
+    consumer.consume_serializer_experimental_use_v3_api_sketches_beta_route(
+        config.serializer_experimental_use_v3_api.sketches.beta_route.clone(),
+    );
     consumer.consume_serializer_experimental_use_v3_api_sketches_endpoints(
         config.serializer_experimental_use_v3_api.sketches.endpoints.clone(),
     );
@@ -726,6 +732,16 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
             .sketches
             .max_uncompressed_payload_size
             .clone(),
+    );
+    consumer.consume_serializer_experimental_use_v3_api_sketches_shadow_sample_rate(
+        config
+            .serializer_experimental_use_v3_api
+            .sketches
+            .shadow_sample_rate
+            .clone(),
+    );
+    consumer.consume_serializer_experimental_use_v3_api_sketches_shadow_sites(
+        config.serializer_experimental_use_v3_api.sketches.shadow_sites.clone(),
     );
     consumer.consume_serializer_max_payload_size(config.serializer_max_payload_size.clone());
     consumer.consume_serializer_max_series_payload_size(config.serializer_max_series_payload_size.clone());

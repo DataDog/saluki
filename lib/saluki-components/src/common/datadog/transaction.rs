@@ -11,7 +11,7 @@ use pin_project::pin_project;
 use saluki_io::net::util::retry::{EventContainer, Retryable};
 use serde::{ser::SerializeSeq as _, Deserialize, Serialize, Serializer};
 
-use super::{protocol::MetricsPayloadInfo, routing::MetricsRoutingTargets};
+use super::{protocol::MetricsPayloadInfo, routing::MetricsRoutingTargets, sketch_shadow::SketchShadowMetadata};
 
 /// Data type for the body of `TransactionBody<B>`.
 pub enum TransactionBodyData<B>
@@ -193,6 +193,10 @@ pub struct Metadata {
     /// Not saved to disk: queued retries already belong to a specific endpoint.
     #[serde(skip)]
     pub metrics_routing_targets: Option<Arc<MetricsRoutingTargets>>,
+
+    /// Correlation metadata linking V2 sketch requests to their sampled V3 shadows.
+    #[serde(skip)]
+    pub(crate) sketch_shadow: Option<SketchShadowMetadata>,
 }
 
 impl Metadata {
@@ -203,6 +207,7 @@ impl Metadata {
             data_point_count,
             payload_info: None,
             metrics_routing_targets: None,
+            sketch_shadow: None,
         }
     }
 }
