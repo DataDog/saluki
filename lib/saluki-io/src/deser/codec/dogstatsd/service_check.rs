@@ -63,7 +63,9 @@ pub fn parse_dogstatsd_service_check<'a>(
     let mut maybe_cardinality = None;
 
     let mut parse_field = |chunk: &'a [u8]| -> Result<(), NomParserError<'a>> {
-        match &chunk[..2] {
+        // Match on the two-byte field prefix. A one-byte field (for example, a bare `#`) can't match any of the
+        // two-byte prefixes, so it either matches a single-byte prefix below or is unknown.
+        match chunk.get(..2).unwrap_or(chunk) {
             // Timestamp: client-provided timestamp for the event, relative to the Unix epoch, in seconds.
             TIMESTAMP_PREFIX => {
                 let (_, timestamp) = all_consuming(preceded(tag(TIMESTAMP_PREFIX), unix_timestamp)).parse(chunk)?;
@@ -85,7 +87,7 @@ pub fn parse_dogstatsd_service_check<'a>(
                     all_consuming(preceded(tag(EXTERNAL_DATA_PREFIX), external_data)).parse(chunk)?;
                 maybe_external_data = Some(external_data);
             }
-            // Tags: additional tags to be added to the service check.
+            // Tags: additional tags to be added to the service check. A bare `#` is a valid, empty set of tags.
             _ if chunk.starts_with(TAGS_PREFIX) => {
                 let (_, tags) = all_consuming(preceded(tag(TAGS_PREFIX), tags(config))).parse(chunk)?;
                 maybe_tags = Some(tags);
@@ -100,11 +102,13 @@ pub fn parse_dogstatsd_service_check<'a>(
                 let (_, cardinality) = cardinality(chunk)?;
                 maybe_cardinality = cardinality;
             }
-            _ => {
-                // We don't know what this is, so we just skip it.
-                //
-                // TODO: Should we throw an error, warn, or be silently permissive?
-            }
+            // Origin detection fields are ignored when client origin detection is disabled.
+            LOCAL_DATA_PREFIX | EXTERNAL_DATA_PREFIX => {}
+            _ if chunk.starts_with(CARDINALITY_PREFIX) => {}
+            // An unknown or malformed field (for example, a stray `T`). Like any other invalid field, the caller
+            // skips it in permissive mode, matching the reference DogStatsD server, and rejects the service check
+            // otherwise.
+            _ => return Err(nom::Err::Error(Error::new(chunk, ErrorKind::Verify))),
         }
         Ok(())
     };
@@ -112,8 +116,15 @@ pub fn parse_dogstatsd_service_check<'a>(
     let remaining = if !remaining.is_empty() {
         let (mut remaining, _) = tag("|")(remaining)?;
         while let Some((chunk, tail)) = split_at_delimiter(remaining, b'|') {
-            if chunk.len() < 2 {
-                break;
+            // An empty field (for example, `0||#tags`) is a structural defect. In permissive mode, we skip it and keep
+            // parsing the fields after it, matching the reference DogStatsD server. Otherwise, we reject the service
+            // check.
+            if chunk.is_empty() {
+                if !config.permissive {
+                    return Err(nom::Err::Error(Error::new(remaining, ErrorKind::Verify)));
+                }
+                remaining = tail;
+                continue;
             }
 
             // In permissive mode, an invalid optional field is ignored rather than rejecting the whole service check,
@@ -228,6 +239,51 @@ mod tests {
         let actual = parse_dsd_service_check(raw.as_bytes()).unwrap();
         let expected = ServiceCheck::new(name, sc_status).with_timestamp(sc_timestamp);
         check_basic_service_check_eq(expected, actual);
+    }
+
+    #[test]
+    fn service_check_fields_after_empty_or_one_byte_field_are_parsed() {
+        let permissive = DogStatsDCodecConfiguration::default().with_permissive_mode(true);
+        let strict = DogStatsDCodecConfiguration::default().with_permissive_mode(false);
+        let name = "testsvc";
+        let sc_status = CheckStatus::Warning;
+        let tags = ["tag1", "tag2"];
+        let shared_tag_set = SharedTagSet::from(TagSet::from_iter(tags.iter().map(|&s| s.into())));
+        let expected = || ServiceCheck::new(name, sc_status).with_tags(shared_tag_set.clone());
+
+        // An empty field is skipped in permissive mode, but rejects the service check in strict mode.
+        let raw = format!("_sc|{}|{}||#{}", name, sc_status.as_u8(), tags.join(","));
+        let actual = parse_dsd_service_check_with_conf(raw.as_bytes(), &permissive).unwrap();
+        check_basic_service_check_eq(expected(), actual);
+        assert!(parse_dogstatsd_service_check(raw.as_bytes(), &strict).is_err());
+
+        // A one-byte field, such as a bare `#`, carries no value, and the fields after it are parsed in both modes.
+        let raw = format!("_sc|{}|{}|#|#{}", name, sc_status.as_u8(), tags.join(","));
+        for config in [&permissive, &strict] {
+            let actual = parse_dsd_service_check_with_conf(raw.as_bytes(), config).unwrap();
+            check_basic_service_check_eq(expected(), actual);
+        }
+    }
+
+    #[test]
+    fn unknown_or_malformed_fields_are_rejected_only_in_strict_mode() {
+        let permissive = DogStatsDCodecConfiguration::default().with_permissive_mode(true);
+        let strict = DogStatsDCodecConfiguration::default().with_permissive_mode(false);
+
+        // A stray one-byte field, and an unknown field.
+        for raw in [
+            b"_sc|my.check|0|T|#env:prod".as_slice(),
+            b"_sc|my.check|0|x:unknown|#env:prod",
+        ] {
+            let (_, service_check) = parse_dogstatsd_service_check(raw, &permissive)
+                .unwrap_or_else(|e| panic!("permissive mode should skip the field in {raw:?}: {e:?}"));
+            assert_eq!(service_check.tags.iter().collect::<Vec<_>>(), ["env:prod"]);
+
+            assert!(
+                parse_dogstatsd_service_check(raw, &strict).is_err(),
+                "strict mode should reject {raw:?}"
+            );
+        }
     }
 
     #[test]

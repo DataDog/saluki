@@ -1550,6 +1550,14 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
             .probabilistic_sampler_sampling_percentage = value;
     }
 
+    fn consume_otlp_config_traces_span_name_as_resource_name(&mut self, value: bool) {
+        self.config.domains.otlp.traces.span_name_as_resource_name = value;
+    }
+
+    fn consume_otlp_config_traces_span_name_remappings(&mut self, value: HashMap<String, String>) {
+        self.config.domains.otlp.traces.span_name_remappings = value;
+    }
+
     fn consume_provider_kind(&mut self, value: String) {
         self.config.shared.static_tags.provider_kind = value;
     }
@@ -1764,6 +1772,7 @@ fn parse_seconds(key: &str, value: i64) -> Result<Duration> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::fmt;
     use std::path::PathBuf;
     use std::time::Duration;
@@ -1958,6 +1967,35 @@ mod tests {
         assert!(errors.is_none());
         assert_eq!(config.domains.traces.probabilistic_sampler.hash_seed, 0);
         assert!(config.domains.traces.features.is_empty());
+    }
+
+    #[test]
+    fn otlp_span_name_settings_translate_and_default_to_the_agent_defaults() {
+        let (config, errors) = translate_explicit(json!({
+            "otlp_config": {
+                "traces": {
+                    "span_name_as_resource_name": true,
+                    "span_name_remappings": { "io.opentelemetry.javaagent.spring.client": "spring.client" }
+                }
+            }
+        }));
+        assert!(errors.is_none(), "translation should succeed: {errors:?}");
+
+        let traces = &config.domains.otlp.traces;
+        assert!(traces.span_name_as_resource_name);
+        assert_eq!(
+            traces.span_name_remappings,
+            HashMap::from([(
+                "io.opentelemetry.javaagent.spring.client".to_owned(),
+                "spring.client".to_owned()
+            )])
+        );
+
+        // Unset, both arrive at their schema defaults.
+        let (config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none());
+        assert!(!config.domains.otlp.traces.span_name_as_resource_name);
+        assert!(config.domains.otlp.traces.span_name_remappings.is_empty());
     }
 
     #[test]

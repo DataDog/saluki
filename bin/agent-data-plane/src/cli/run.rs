@@ -59,7 +59,7 @@ use saluki_env::{features, EnvironmentProvider as _, HostProvider as _};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::net::ListenAddress;
 use stringtheory::MetaString;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::{
     component_inputs::{
@@ -156,6 +156,15 @@ async fn create_topology(
         trace_sampling,
         semantic_registry,
     } = rc_subscriptions;
+
+    // Like the Agent, run without OTLP ingest rather than failing startup when no OTLP signal is enabled.
+    if dp.otlp_enabled_without_signals() {
+        error!(
+            "OTLP ingest is enabled, but OTLP metrics, logs, and traces are all disabled. ADP won't start OTLP \
+            ingest. Enable at least one of `otlp_config.metrics.enabled`, `otlp_config.logs.enabled`, or \
+            `otlp_config.traces.enabled`."
+        );
+    }
 
     // If no data pipelines are enabled, then there's nothing for us to do.
     if !dp.data_pipelines_enabled() {

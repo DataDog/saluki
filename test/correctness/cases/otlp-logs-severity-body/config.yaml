@@ -16,55 +16,10 @@ logs:
       paths: ["content.status", "content.hostname"]
       kinds: [missing]
       reason: ADP's content holds only `message` and `service`.
-    - gap: gap/status-strings
-      paths: ["envelope.status"]
-      kinds: [value]
-      when:
-        fixture_id:
-          - severity-number-1
-          - severity-number-4
-          - severity-number-5
-          - severity-number-8
-          - severity-number-9
-          - severity-number-12
-          - severity-number-13
-          - severity-number-16
-          - severity-number-17
-          - severity-number-20
-          - severity-number-21
-          - severity-number-24
-          - severity-number-25
-          - severity-text-over-number
-          - severity-attribute
-          - timestamp-observed-only
-          - timestamp-and-observed
-          - timestamp-neither
-          - body-int
-          - body-double
-          - body-large-double
-          - body-bool
-          - body-bytes
-          - body-map
-          - body-array
-          - body-empty
-          - body-missing
-      reason: ADP capitalizes the envelope status instead of sending the Agent's raw or lowercase status.
     - gap: gap/envelope-timestamp
       paths: ["envelope.timestamp"]
       kinds: [missing]
       reason: ADP has no encode-time envelope `timestamp`.
-    - gap: gap/zero-severity-status
-      paths: ["envelope.status"]
-      kinds: [value]
-      when:
-        fixture_id: [severity-number-0]
-      reason: ADP maps severity number 0 to `Trace`; the Agent gives no status, so the envelope says `info`.
-    - gap: gap/raw-status-strings
-      paths: ["envelope.status"]
-      kinds: [value]
-      when:
-        fixture_id: [severity-text-unknown, status-attribute-unknown]
-      reason: ADP drops unrecognized statuses instead of passing them through raw.
     - gap: gap/observed-timestamp
       paths: ["content.@timestamp"]
       kinds: [value]
@@ -95,6 +50,17 @@ logs:
       when:
         fixture_id: [body-empty]
       reason: ADP renders an empty body as "null" instead of "".
+    - gap: gap/missing-headers
+      paths:
+        - headers.dd-protocol
+        - headers.dd-evp-origin
+        - headers.dd-evp-origin-version
+        - headers.dd-message-timestamp
+        - headers.dd-current-timestamp
+      kinds: [missing]
+      reason: >-
+        ADP sends none of the `DD-PROTOCOL`, `DD-EVP-ORIGIN`, `DD-EVP-ORIGIN-VERSION`, `dd-message-timestamp`, and
+        `dd-current-timestamp` headers on logs requests.
 baseline:
   image: saluki-images/datadog-agent:testing-release
   files:

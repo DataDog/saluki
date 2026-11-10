@@ -1129,6 +1129,16 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Float,
     },
     EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_TRACES_SPAN_NAME_AS_RESOURCE_NAME"],
+        path: &["otlp_config", "traces", "span_name_as_resource_name"],
+        decode: EnvDecode::Bool,
+    },
+    EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_TRACES_SPAN_NAME_REMAPPINGS"],
+        path: &["otlp_config", "traces", "span_name_remappings"],
+        decode: EnvDecode::JsonValue,
+    },
+    EnvKey {
         env_vars: &["DD_PROVIDER_KIND"],
         path: &["provider_kind"],
         decode: EnvDecode::RawString,

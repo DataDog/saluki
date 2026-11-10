@@ -98,12 +98,16 @@ impl DogStatsDCodecConfiguration {
     /// - metric names, service check names, and event/service check string fields (hostname, aggregation key, source
     ///   type) accept any UTF-8
     /// - events only require a title, and may have empty text
-    /// - an invalid optional field on an event or service check, or a malformed Local Data or External Data field on a
-    ///   metric, is ignored rather than rejecting the whole payload
+    /// - an invalid, unknown, or malformed optional field on an event or service check (for example, a stray `T`), or a
+    ///   malformed Local Data or External Data field on a metric, is ignored rather than rejecting the whole payload
     ///
-    /// Permissive mode doesn't allow for decoding payloads with structural errors (for example, missing delimiters, etc) or
-    /// that can't be safely handled internally (for example, invalid UTF-8 characters in a metric name). Invalid UTF-8 tag
-    /// bytes are normalized to U+FFFD before further processing.
+    /// Permissive mode also tolerates some structural defects that the reference DogStatsD server tolerates: empty
+    /// fields (for example, `metric:1|c||#tags`) and empty values in a multi-value payload (for example,
+    /// `metric:1::2|d`) are skipped. In strict mode, all of these cause the payload to be rejected.
+    ///
+    /// Permissive mode doesn't allow for decoding payloads with other structural errors (for example, missing
+    /// delimiters, etc) or that can't be safely handled internally (for example, invalid UTF-8 characters in a metric
+    /// name). Invalid UTF-8 tag bytes are normalized to U+FFFD before further processing.
     ///
     /// Defaults to `false`.
     pub fn with_permissive_mode(mut self, permissive: bool) -> Self {
