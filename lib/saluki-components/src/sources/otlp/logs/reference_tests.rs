@@ -1,18 +1,18 @@
 //! Translator tests ported from the reference implementation.
 //!
-//! Ported from `TestTranslator` and `TestDeriveStatus` in
-//! <https://github.com/DataDog/datadog-agent/blob/e0c8d8d93befb6864f13e2d88acbe13fb2d380b7/pkg/opentelemetry-mapping-go/otlp/logs/transform_test.go>.
-//!
-//! Those tests compare the JSON of the `datadogV2.HTTPLogItem` that the reference translator returns for one log
-//! record. Each case here compares the same JSON for the translated log, with the log's status as the item's `status`
-//! property. The reference tests build their translator with the OTel source `test`, so their tags end in
+//! The reference tests compare the JSON of the `datadogV2.HTTPLogItem` that the reference translator returns for one
+//! log record. Each case here compares the same JSON for the translated log, with the log's status as the item's
+//! `status` property. The reference tests build their translator with the OTel source `test`, so their tags end in
 //! `otel_source:test`. This translator always tags logs with `otel_source:datadog_agent`, so the expected tags here
 //! use that instead.
 //!
 //! Cases that the translator doesn't match yet are in ignored `target_*` tests, one per gap. A change that closes a
 //! gap moves its cases into `translator_cases`, and removes the target test.
-//!
-//! `TestTranslatorWithRUMRouting` isn't ported: the logs exporter doesn't route RUM events.
+
+// Ported from `TestTranslator` and `TestDeriveStatus` in
+// https://github.com/DataDog/datadog-agent/blob/e0c8d8d93befb6864f13e2d88acbe13fb2d380b7/pkg/opentelemetry-mapping-go/otlp/logs/transform_test.go
+//
+// `TestTranslatorWithRUMRouting` isn't ported: the logs exporter doesn't route RUM events.
 
 use std::collections::BTreeSet;
 
