@@ -47,8 +47,11 @@ static DD_EVP_ORIGIN_VERSION_HEADER: HeaderName = HeaderName::from_static("dd-ev
 /// The `DD-PROTOCOL` value of the JSON envelope, under which the intake reads only the envelope fields.
 static AGENT_JSON_PROTOCOL: HeaderValue = HeaderValue::from_static("agent-json");
 
-/// The `DD-EVP-ORIGIN` value of logs that come from an agent.
-static AGENT_ORIGIN: HeaderValue = HeaderValue::from_static("agent");
+/// The `DD-EVP-ORIGIN` value that names ADP as the sender.
+///
+/// The Agent gives each of its logs senders its own origin, such as `agent`, `serverless`, and `ddot`, so ADP names
+/// itself rather than claiming to be the Agent. `DD-EVP-ORIGIN-VERSION` is then ADP's own version.
+static ADP_ORIGIN: HeaderValue = HeaderValue::from_static("agent-data-plane");
 
 /// Datadog Logs incremental encoder.
 #[derive(Debug)]
@@ -64,7 +67,9 @@ pub struct DatadogLogsConfiguration {
     /// Hostname for the envelope of a log that has none.
     default_hostname: MetaString,
 
-    /// Version of the sender, for the `DD-EVP-ORIGIN-VERSION` header.
+    /// Version of ADP, for the `DD-EVP-ORIGIN-VERSION` header.
+    ///
+    /// This is the bare version, such as `1.9.0`: the intake drops a value with characters such as `/` in it.
     origin_version: String,
 
     /// Source of the current time, for the envelope `timestamp`.
@@ -83,10 +88,11 @@ impl DatadogLogsConfiguration {
         }
     }
 
-    /// Sets the version sent in the `DD-EVP-ORIGIN-VERSION` header.
+    /// Sets the version sent in the `DD-EVP-ORIGIN-VERSION` header, so tests can pin it.
     ///
     /// Defaults to the version of this application.
-    pub fn with_origin_version(mut self, origin_version: impl Into<String>) -> Self {
+    #[cfg(test)]
+    pub(crate) fn with_origin_version(mut self, origin_version: impl Into<String>) -> Self {
         self.origin_version = origin_version.into();
         self
     }
@@ -128,7 +134,7 @@ impl IncrementalEncoderBuilder for DatadogLogsConfiguration {
             .error_context("Invalid origin version for the `DD-EVP-ORIGIN-VERSION` header.")?;
         let headers = vec![
             (DD_PROTOCOL_HEADER.clone(), AGENT_JSON_PROTOCOL.clone()),
-            (DD_EVP_ORIGIN_HEADER.clone(), AGENT_ORIGIN.clone()),
+            (DD_EVP_ORIGIN_HEADER.clone(), ADP_ORIGIN.clone()),
             (DD_EVP_ORIGIN_VERSION_HEADER.clone(), origin_version),
         ];
 

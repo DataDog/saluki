@@ -32,39 +32,6 @@ pub fn version_string() -> Option<&'static str> {
     }
 }
 
-/// Suffixes of Agent image tags that name an image flavor rather than part of the Agent's version.
-const IMAGE_FLAVOR_SUFFIXES: &[&str] = &["full", "jmx", "fips", "servercore"];
-
-/// Version of the Agent that ADP was built against, as the Agent itself reports it.
-///
-/// `DD_AGENT_VERSION` is set from the Agent image tag, such as `7.85.0-rc.5-full`. This removes the image flavor
-/// suffixes (`-full`, `-jmx`, `-fips`, and `-servercore`), giving `7.85.0-rc.5`, which is the version the Agent sends in
-/// its `User-Agent` and `DD-EVP-ORIGIN-VERSION` headers.
-///
-/// Returns `None` when `DD_AGENT_VERSION` was not set at build time, or isn't a numbered version, such as `nightly`.
-pub fn reported_version_string() -> Option<&'static str> {
-    version_string().and_then(reported_version)
-}
-
-fn reported_version(raw: &str) -> Option<&str> {
-    let mut version = raw.trim();
-    while let Some((rest, suffix)) = version.rsplit_once('-') {
-        if !IMAGE_FLAVOR_SUFFIXES.contains(&suffix) {
-            break;
-        }
-        version = rest;
-    }
-
-    // The version must start with `MAJOR.MINOR.PATCH`, optionally followed by a pre-release or build suffix.
-    let numeric = version.split(['-', '+']).next().unwrap_or("");
-    let components = numeric.split('.').collect::<Vec<_>>();
-    let is_numbered = components.len() == 3
-        && components
-            .iter()
-            .all(|component| !component.is_empty() && component.bytes().all(|b| b.is_ascii_digit()));
-    is_numbered.then_some(version)
-}
-
 /// Version of the Datadog Agent that ADP is paired with, as detected at build time.
 ///
 /// Returns `None` when `DD_AGENT_VERSION` was not set at build time.
@@ -188,29 +155,6 @@ impl AgentVersion {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn reported_version_removes_image_flavor_suffixes() {
-        let cases = [
-            ("7.85.0", Some("7.85.0")),
-            ("7.85.0-full", Some("7.85.0")),
-            ("7.85.0-rc.5-full", Some("7.85.0-rc.5")),
-            ("7.85.0-jmx", Some("7.85.0")),
-            ("7.85.0-fips-jmx", Some("7.85.0")),
-            ("7.85.0-servercore-jmx", Some("7.85.0")),
-            ("7.86.0-devel", Some("7.86.0-devel")),
-            (" 7.85.0-full ", Some("7.85.0")),
-            ("nightly", None),
-            ("master", None),
-            ("7.85", None),
-            ("7.85.x-full", None),
-            ("", None),
-        ];
-
-        for (raw, expected) in cases {
-            assert_eq!(reported_version(raw), expected, "reported_version({:?})", raw);
-        }
-    }
 
     #[test]
     fn parses_plain_release() {

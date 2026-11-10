@@ -194,7 +194,7 @@ async fn request_line_and_headers() {
                 ("content-type".to_string(), "application/json".to_string()),
                 ("content-encoding".to_string(), content_encoding.to_string()),
                 ("dd-protocol".to_string(), "agent-json".to_string()),
-                ("dd-evp-origin".to_string(), "agent".to_string()),
+                ("dd-evp-origin".to_string(), "agent-data-plane".to_string()),
                 ("dd-evp-origin-version".to_string(), "1.2.3".to_string()),
             ]),
             "{}",
@@ -321,7 +321,7 @@ async fn target_intake_headers() {
         .collect::<BTreeMap<_, _>>();
 
     assert_eq!(headers.get("dd-protocol"), Some(&"agent-json"));
-    assert_eq!(headers.get("dd-evp-origin"), Some(&"agent"));
+    assert_eq!(headers.get("dd-evp-origin"), Some(&"agent-data-plane"));
     assert!(headers.contains_key("dd-evp-origin-version"));
     let message_timestamp = headers
         .get("dd-message-timestamp")
