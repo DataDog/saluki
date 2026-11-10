@@ -17,7 +17,7 @@ use saluki_core::{
     components::{transforms::*, BuildContext},
     data_model::event::{
         trace::{AttributeValue, Span, Trace, TraceIngestInfo},
-        EventMut, EventType,
+        EventType,
     },
     topology::{EventsBuffer, OutputDefinition},
 };
@@ -329,10 +329,7 @@ impl TraceSampler {
     /// Applies pending sampling settings, then samples every trace in the buffer with those settings.
     fn process_buffer(&mut self, events: &mut EventsBuffer) {
         self.apply_remote_sampling();
-        events.remove_if(|event| match event {
-            EventMut::Trace(trace) => !self.process_trace(trace),
-            _ => false,
-        });
+        events.retain_events::<Trace, _>(|trace| self.process_trace(trace));
     }
 
     /// Find the root span index of a trace.

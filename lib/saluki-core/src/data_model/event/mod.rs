@@ -4,6 +4,8 @@ use std::fmt;
 
 use bitmask_enum::bitmask;
 
+use crate::topology::interconnect::EventStorage;
+
 pub mod metric;
 use self::metric::Metric;
 
@@ -114,6 +116,70 @@ impl EventType {
         size
     }
 }
+
+/// A type of telemetry event, such as [`Metric`] or [`Trace`].
+///
+/// This lets code work with one event type generically: for example, event buffers provide typed views over just the
+/// events of a given type. It's implemented for each type an [`Event`] can hold, and can't be implemented elsewhere.
+pub trait EventKind: EventStorage + 'static {
+    /// The event type.
+    const EVENT_TYPE: EventType;
+
+    /// Wraps this value in an [`Event`].
+    fn into_event(self) -> Event;
+
+    /// Unwraps the given event if it's of this type, or returns it unchanged if it isn't.
+    // The error is the event handed back to the caller rather than an error type, so boxing it would only add an
+    // allocation.
+    #[allow(clippy::result_large_err)]
+    fn try_from_event(event: Event) -> Result<Self, Event>;
+
+    /// Returns a reference to the inner value of the given event, if it's of this type.
+    fn try_from_event_ref(event: &Event) -> Option<&Self>;
+
+    /// Returns a mutable reference to the inner value of the given event, if it's of this type.
+    fn try_from_event_mut(event: &mut Event) -> Option<&mut Self>;
+}
+
+macro_rules! impl_event_kind {
+    ($ty:ty, $variant:ident) => {
+        impl EventKind for $ty {
+            const EVENT_TYPE: EventType = EventType::$variant;
+
+            fn into_event(self) -> Event {
+                Event::$variant(self)
+            }
+
+            fn try_from_event(event: Event) -> Result<Self, Event> {
+                match event {
+                    Event::$variant(value) => Ok(value),
+                    other => Err(other),
+                }
+            }
+
+            fn try_from_event_ref(event: &Event) -> Option<&Self> {
+                match event {
+                    Event::$variant(value) => Some(value),
+                    _ => None,
+                }
+            }
+
+            fn try_from_event_mut(event: &mut Event) -> Option<&mut Self> {
+                match event {
+                    Event::$variant(value) => Some(value),
+                    _ => None,
+                }
+            }
+        }
+    };
+}
+
+impl_event_kind!(Metric, Metric);
+impl_event_kind!(EventD, EventD);
+impl_event_kind!(ServiceCheck, ServiceCheck);
+impl_event_kind!(Log, Log);
+impl_event_kind!(Trace, Trace);
+impl_event_kind!(TraceStats, TraceStats);
 
 /// A telemetry event.
 #[derive(Clone, Debug, PartialEq)]

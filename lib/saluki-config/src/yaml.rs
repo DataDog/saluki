@@ -33,6 +33,7 @@ where
 
     let options = serde_saphyr::options! {
         budget: Some(budget),
+        emit_comments: false,
         legacy_octal_numbers: true,
         non_finite_float_policy: serde_saphyr::NonFiniteFloatPolicy::AsString,
         with_snippet: false,

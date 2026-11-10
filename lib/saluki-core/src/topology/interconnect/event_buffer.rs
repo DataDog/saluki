@@ -3,7 +3,7 @@ use std::fmt;
 use crate::{
     data_model::event::{
         eventd::EventD, log::Log, metric::Metric, service_check::ServiceCheck, trace::Trace, trace_stats::TraceStats,
-        Event, EventMut, EventRef, EventType,
+        Event, EventKind, EventMut, EventRef, EventType,
     },
     topology::interconnect::{dispatcher::DispatchBuffer, Dispatchable},
 };
@@ -144,6 +144,41 @@ impl<const N: usize> FixedSizeEventBuffer<N> {
         }
     }
 
+    /// Returns an iterator over the events of type `T` in the event buffer.
+    pub fn events<T: EventKind>(&self) -> impl Iterator<Item = &T> {
+        T::storage(self).iter()
+    }
+
+    /// Returns an iterator over mutable references to the events of type `T` in the event buffer.
+    pub fn events_mut<T: EventKind>(&mut self) -> impl Iterator<Item = &mut T> {
+        T::storage_mut(self).iter_mut()
+    }
+
+    /// Consumes the event buffer, returning an iterator over the events of type `T` it held.
+    ///
+    /// Events of other types are dropped.
+    pub fn into_events<T: EventKind>(mut self) -> impl Iterator<Item = T> {
+        std::mem::take(T::storage_mut(&mut self)).into_iter()
+    }
+
+    /// Retains only the events of type `T` for which `predicate` returns `true`.
+    ///
+    /// Events of other types are kept. The remaining events keep their relative order.
+    pub fn retain_events<T, F>(&mut self, predicate: F)
+    where
+        T: EventKind,
+        F: FnMut(&mut T) -> bool,
+    {
+        T::storage_mut(self).retain_mut(predicate);
+    }
+
+    /// Removes all events of type `T` from the event buffer, returning them in order.
+    ///
+    /// Events of other types are kept, in their relative order.
+    pub fn take_events<T: EventKind>(&mut self) -> impl Iterator<Item = T> {
+        std::mem::take(T::storage_mut(self)).into_iter()
+    }
+
     /// Extracts events from the event buffer given a predicate function.
     ///
     /// Events for which `predicate` returns `true` are removed from the buffer and returned. The remaining events keep
@@ -189,6 +224,39 @@ impl<const N: usize> FixedSizeEventBuffer<N> {
             .retain_mut(|s| !predicate(&mut EventMut::TraceStats(s)));
     }
 }
+
+/// Selects the collection that holds an event type in a [`FixedSizeEventBuffer`].
+///
+/// Every [`EventKind`] implements this trait, which lets the buffer's typed views go straight to the right
+/// collection. As it can't be named outside of this crate, it also keeps `EventKind` from being implemented elsewhere.
+pub trait EventStorage: Sized {
+    /// Returns the collection of this event type in the given event buffer.
+    fn storage<const N: usize>(buffer: &FixedSizeEventBuffer<N>) -> &Vec<Self>;
+
+    /// Returns the collection of this event type in the given event buffer, mutably.
+    fn storage_mut<const N: usize>(buffer: &mut FixedSizeEventBuffer<N>) -> &mut Vec<Self>;
+}
+
+macro_rules! impl_event_storage {
+    ($ty:ty, $field:ident) => {
+        impl EventStorage for $ty {
+            fn storage<const N: usize>(buffer: &FixedSizeEventBuffer<N>) -> &Vec<Self> {
+                &buffer.$field
+            }
+
+            fn storage_mut<const N: usize>(buffer: &mut FixedSizeEventBuffer<N>) -> &mut Vec<Self> {
+                &mut buffer.$field
+            }
+        }
+    };
+}
+
+impl_event_storage!(Metric, metrics);
+impl_event_storage!(EventD, eventds);
+impl_event_storage!(ServiceCheck, service_checks);
+impl_event_storage!(Log, logs);
+impl_event_storage!(Trace, traces);
+impl_event_storage!(TraceStats, trace_stats);
 
 /// Pushes `item` onto `items`, reserving room for `remaining` items if this is the first allocation.
 #[inline]
@@ -426,6 +494,85 @@ mod tests {
         service_check::{CheckStatus, ServiceCheck},
         Event, EventType,
     };
+
+    /// Builds a buffer holding metrics `a` and `c`, and events `b` and `d`, interleaved in that order.
+    fn mixed_buffer() -> FixedSizeEventBuffer<8> {
+        let mut buffer = FixedSizeEventBuffer::<8>::default();
+        for event in [
+            Event::Metric(Metric::counter("a", 1.0)),
+            Event::EventD(EventD::new("b", "b")),
+            Event::Metric(Metric::counter("c", 1.0)),
+            Event::EventD(EventD::new("d", "d")),
+        ] {
+            assert!(buffer.try_push(event).is_none());
+        }
+        buffer
+    }
+
+    fn metric_names<'a>(metrics: impl Iterator<Item = &'a Metric>) -> Vec<String> {
+        metrics.map(|metric| metric.context().name().to_string()).collect()
+    }
+
+    #[test]
+    fn typed_views_only_see_events_of_their_type() {
+        let mut buffer = mixed_buffer();
+        assert_eq!(metric_names(buffer.events::<Metric>()), ["a", "c"]);
+        assert_eq!(
+            buffer
+                .events::<EventD>()
+                .map(|eventd| eventd.title())
+                .collect::<Vec<_>>(),
+            ["b", "d"]
+        );
+        assert_eq!(buffer.events::<ServiceCheck>().count(), 0);
+
+        for metric in buffer.events_mut::<Metric>() {
+            metric.metadata_mut().set_unit("seconds");
+        }
+        assert!(buffer
+            .events::<Metric>()
+            .all(|metric| metric.metadata().unit() == Some("seconds")));
+        assert_eq!(buffer.len(), 4);
+    }
+
+    #[test]
+    fn into_events_drops_other_types() {
+        let names: Vec<_> = mixed_buffer()
+            .into_events::<Metric>()
+            .map(|metric| metric.context().name().to_string())
+            .collect();
+        assert_eq!(names, ["a", "c"]);
+    }
+
+    #[test]
+    fn retain_events_filters_only_its_type() {
+        let mut buffer = mixed_buffer();
+        buffer.retain_events::<Metric, _>(|metric| metric.context().name() == "c");
+
+        assert_eq!(buffer.len(), 3);
+        assert_eq!(metric_names(buffer.events::<Metric>()), ["c"]);
+        assert_eq!(buffer.events::<EventD>().count(), 2);
+        assert!(buffer.has_event_type(EventType::Metric));
+
+        buffer.retain_events::<Metric, _>(|_| false);
+        assert!(!buffer.has_event_type(EventType::Metric));
+        assert!(buffer.has_event_type(EventType::EventD));
+    }
+
+    #[test]
+    fn take_events_removes_its_type_in_order() {
+        let mut buffer = mixed_buffer();
+        let taken: Vec<_> = buffer
+            .take_events::<EventD>()
+            .map(|eventd| eventd.title().to_string())
+            .collect();
+
+        assert_eq!(taken, ["b", "d"]);
+        assert_eq!(buffer.len(), 2);
+        assert_eq!(metric_names(buffer.events::<Metric>()), ["a", "c"]);
+        assert!(!buffer.has_event_type(EventType::EventD));
+        assert!(buffer.has_event_type(EventType::Metric));
+    }
 
     #[test]
     fn capacity() {

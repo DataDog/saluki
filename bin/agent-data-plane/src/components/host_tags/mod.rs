@@ -109,10 +109,8 @@ impl SynchronousTransform for HostTagsEnrichment {
             return;
         }
 
-        for mut event in event_buffer {
-            if let Some(metric) = event.try_as_metric_mut() {
-                self.enrich_metric(metric);
-            }
+        for metric in event_buffer.events_mut::<Metric>() {
+            self.enrich_metric(metric);
         }
     }
 }

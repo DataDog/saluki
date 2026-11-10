@@ -13,7 +13,7 @@ use crate::components::{
     transforms::{SynchronousTransform, SynchronousTransformBuilder, Transform, TransformBuilder, TransformContext},
     BuildContext,
 };
-use crate::data_model::event::{metric::Metric, Event, EventMut, EventType};
+use crate::data_model::event::{metric::Metric, Event, EventType};
 use crate::data_model::payload::PayloadType;
 use crate::runtime::state::IdentifierFilter;
 use crate::runtime::{self, FnWorker, ShutdownStrategy, SupervisorError};
@@ -308,7 +308,7 @@ struct DropNamed;
 
 impl SynchronousTransform for DropNamed {
     fn transform_buffer(&mut self, buffer: &mut EventsBuffer) {
-        buffer.remove_if(|event| matches!(event, EventMut::Metric(metric) if metric.context().name() == "drop"));
+        buffer.retain_events::<Metric, _>(|metric| metric.context().name() != "drop");
     }
 }
 

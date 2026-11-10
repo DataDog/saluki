@@ -143,14 +143,7 @@ impl Filter {
         }
     }
 
-    #[cfg(test)]
-    fn should_forward(&self, event: &saluki_core::data_model::event::Event) -> bool {
-        event
-            .try_as_metric()
-            .is_some_and(|metric| self.should_forward_metric(metric))
-    }
-
-    fn should_forward_metric(&self, metric: &Metric) -> bool {
+    fn should_forward(&self, metric: &Metric) -> bool {
         match self {
             Self::DropAll => false,
             Self::All => true,
@@ -181,11 +174,7 @@ impl Filter {
 
     fn filter_events(&self, events: &mut EventsBuffer, telemetry: &Telemetry) -> usize {
         let input_count = events.len();
-        events.remove_if(|event| {
-            !event
-                .try_as_metric()
-                .is_some_and(|metric| self.should_forward_metric(metric))
-        });
+        events.retain_events::<Metric, _>(|metric| self.should_forward(metric));
         let dropped_count = input_count.saturating_sub(events.len());
         telemetry.record_metrics_filtered(dropped_count);
         dropped_count
@@ -330,9 +319,7 @@ mod tests {
     use metrics::{set_default_local_recorder, Key};
     use saluki_common::sync::live::{self, LivePublisher, LiveSource};
     use saluki_core::{
-        accounting::ComponentRegistry,
-        components::ComponentContext,
-        data_model::event::{metric::Metric, Event},
+        accounting::ComponentRegistry, components::ComponentContext, data_model::event::Event,
         support::SubsystemIdentifier,
     };
     use saluki_metrics::test::TestRecorder;
@@ -378,8 +365,8 @@ mod tests {
             .filter()
     }
 
-    fn counter(name: &'static str) -> Event {
-        Event::Metric(Metric::counter(name, 1.0))
+    fn counter(name: &'static str) -> Metric {
+        Metric::counter(name, 1.0)
     }
 
     #[test]
@@ -400,24 +387,24 @@ mod tests {
         }
     }
 
-    fn gauge(name: &'static str) -> Event {
-        Event::Metric(Metric::gauge(name, 1.0))
+    fn gauge(name: &'static str) -> Metric {
+        Metric::gauge(name, 1.0)
     }
 
-    fn rate(name: &'static str) -> Event {
-        Event::Metric(Metric::rate(name, 1.0, Duration::from_secs(10)))
+    fn rate(name: &'static str) -> Metric {
+        Metric::rate(name, 1.0, Duration::from_secs(10))
     }
 
-    fn set(name: &'static str) -> Event {
-        Event::Metric(Metric::set(name, "value".to_string()))
+    fn set(name: &'static str) -> Metric {
+        Metric::set(name, "value".to_string())
     }
 
-    fn histogram(name: &'static str) -> Event {
-        Event::Metric(Metric::histogram(name, 1.0))
+    fn histogram(name: &'static str) -> Metric {
+        Metric::histogram(name, 1.0)
     }
 
-    fn distribution(name: &'static str) -> Event {
-        Event::Metric(Metric::distribution(name, 1.0))
+    fn distribution(name: &'static str) -> Metric {
+        Metric::distribution(name, 1.0)
     }
 
     #[test]
@@ -455,7 +442,7 @@ mod tests {
                 let mut events = EventsBuffer::default();
                 for make_metric in [counter, distribution] {
                     for name in ["allowed", "blocked"] {
-                        assert!(events.try_push(make_metric(name)).is_none());
+                        assert!(events.try_push(Event::Metric(make_metric(name))).is_none());
                     }
                 }
                 assert_eq!(filter.filter_events(&mut events, &telemetry), expected);
@@ -645,11 +632,8 @@ mod tests {
                 ("redis.checkpointing.count", false),
                 ("literal-name", false),
             ] {
-                let event = make_metric(name);
-                assert_eq!(filter.should_forward(&event), expected, "{name}");
-                let Event::Metric(metric) = event else {
-                    panic!("expected a metric")
-                };
+                let metric = make_metric(name);
+                assert_eq!(filter.should_forward(&metric), expected, "{name}");
                 assert_eq!(metric.context().name().as_ref(), name);
             }
         }

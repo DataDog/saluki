@@ -204,34 +204,32 @@ impl Destination for Prometheus {
                     Some(events) => {
                         // Process each metric event in the batch, either merging it with the existing value or
                         // inserting it for the first time.
-                        for event in events {
-                            if let Some(metric) = event.try_into_metric() {
-                                // Break apart our metric into its constituent parts, and then normalize it for
-                                // Prometheus: adjust the name if necessary, figuring out the equivalent Prometheus
-                                // metric type, and so on.
-                                let prom_context = match into_prometheus_metric(&metric, &mut renderer, &interner) {
-                                    Some(prom_context) => prom_context,
-                                    None => continue,
-                                };
+                        for metric in events.into_events::<Metric>() {
+                            // Break apart our metric into its constituent parts, and then normalize it for
+                            // Prometheus: adjust the name if necessary, figuring out the equivalent Prometheus
+                            // metric type, and so on.
+                            let prom_context = match into_prometheus_metric(&metric, &mut renderer, &interner) {
+                                Some(prom_context) => prom_context,
+                                None => continue,
+                            };
 
-                                let (context, values, _) = metric.into_parts();
+                            let (context, values, _) = metric.into_parts();
 
-                                // Create an entry for the context if we don't already have one, obeying our configured context limit.
-                                let existing_contexts = metrics.entry(prom_context.clone()).or_default();
-                                match existing_contexts.get_mut(&context) {
-                                    Some(existing_prom_value) => merge_metric_values_with_prom_value(values, existing_prom_value),
-                                    None => {
-                                        if contexts >= CONTEXT_LIMIT {
-                                            debug!("Prometheus destination reached context limit. Skipping metric '{}'.", context.name());
-                                            continue
-                                        }
-
-                                        let mut new_prom_value = get_prom_value_for_prom_context(&prom_context);
-                                        merge_metric_values_with_prom_value(values, &mut new_prom_value);
-
-                                        existing_contexts.insert(context, new_prom_value);
-                                        contexts += 1;
+                            // Create an entry for the context if we don't already have one, obeying our configured context limit.
+                            let existing_contexts = metrics.entry(prom_context.clone()).or_default();
+                            match existing_contexts.get_mut(&context) {
+                                Some(existing_prom_value) => merge_metric_values_with_prom_value(values, existing_prom_value),
+                                None => {
+                                    if contexts >= CONTEXT_LIMIT {
+                                        debug!("Prometheus destination reached context limit. Skipping metric '{}'.", context.name());
+                                        continue
                                     }
+
+                                    let mut new_prom_value = get_prom_value_for_prom_context(&prom_context);
+                                    merge_metric_values_with_prom_value(values, &mut new_prom_value);
+
+                                    existing_contexts.insert(context, new_prom_value);
+                                    contexts += 1;
                                 }
                             }
                         }

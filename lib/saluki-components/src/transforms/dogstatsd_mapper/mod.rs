@@ -13,7 +13,10 @@ use saluki_core::{
         BuildContext,
     },
     data_model::{
-        event::metric::context::{Context, ContextResolver, ContextResolverBuilder},
+        event::metric::{
+            context::{Context, ContextResolver, ContextResolverBuilder},
+            Metric,
+        },
         tags::{SharedTagSet, TagSet},
     },
     topology::EventsBuffer,
@@ -347,11 +350,9 @@ pub struct DogStatsDMapper {
 
 impl SynchronousTransform for DogStatsDMapper {
     fn transform_buffer(&mut self, event_buffer: &mut EventsBuffer) {
-        for mut event in event_buffer {
-            if let Some(metric) = event.try_as_metric_mut() {
-                if let Some(new_context) = self.metric_mapper.try_map(metric.context()) {
-                    *metric.context_mut() = new_context;
-                }
+        for metric in event_buffer.events_mut::<Metric>() {
+            if let Some(new_context) = self.metric_mapper.try_map(metric.context()) {
+                *metric.context_mut() = new_context;
             }
         }
     }
