@@ -621,6 +621,16 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::DurationString,
     },
     EnvKey {
+        env_vars: &["DD_EXPERIMENTAL_METRICS_ENDPOINT_ROUTING_METRIC_ALLOWLIST"],
+        path: &["experimental", "metrics_endpoint_routing", "metric_allowlist"],
+        decode: EnvDecode::Json,
+    },
+    EnvKey {
+        env_vars: &["DD_EXPERIMENTAL_METRICS_ENDPOINT_ROUTING_METRIC_PREFIX_ALLOWLIST"],
+        path: &["experimental", "metrics_endpoint_routing", "metric_prefix_allowlist"],
+        decode: EnvDecode::Json,
+    },
+    EnvKey {
         env_vars: &["DD_EXTRA_TAGS"],
         path: &["extra_tags"],
         decode: EnvDecode::StringList,
@@ -811,12 +821,15 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Bool,
     },
     EnvKey {
-        env_vars: &["DD_METRIC_FILTERLIST"],
+        env_vars: &["DD_STATSD_METRIC_BLOCKLIST", "DD_METRIC_FILTERLIST"],
         path: &["metric_filterlist"],
         decode: EnvDecode::StringList,
     },
     EnvKey {
-        env_vars: &["DD_METRIC_FILTERLIST_MATCH_PREFIX"],
+        env_vars: &[
+            "DD_STATSD_METRIC_BLOCKLIST_MATCH_PREFIX",
+            "DD_METRIC_FILTERLIST_MATCH_PREFIX",
+        ],
         path: &["metric_filterlist_match_prefix"],
         decode: EnvDecode::Bool,
     },
@@ -1259,16 +1272,6 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Integer,
     },
     EnvKey {
-        env_vars: &["DD_STATSD_METRIC_BLOCKLIST"],
-        path: &["statsd_metric_blocklist"],
-        decode: EnvDecode::StringList,
-    },
-    EnvKey {
-        env_vars: &["DD_STATSD_METRIC_BLOCKLIST_MATCH_PREFIX"],
-        path: &["statsd_metric_blocklist_match_prefix"],
-        decode: EnvDecode::Bool,
-    },
-    EnvKey {
         env_vars: &["DD_STATSD_METRIC_NAMESPACE"],
         path: &["statsd_metric_namespace"],
         decode: EnvDecode::RawString,
@@ -1346,4 +1349,15 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
 ];
 
 /// Every former name of a Datadog schema setting, highest priority first for each setting.
-pub static DATADOG_RENAMED_KEYS: &[RenamedKey] = &[];
+pub static DATADOG_RENAMED_KEYS: &[RenamedKey] = &[
+    RenamedKey {
+        former: &["statsd_metric_blocklist"],
+        path: &["metric_filterlist"],
+        env_var: Some("DD_STATSD_METRIC_BLOCKLIST"),
+    },
+    RenamedKey {
+        former: &["statsd_metric_blocklist_match_prefix"],
+        path: &["metric_filterlist_match_prefix"],
+        env_var: Some("DD_STATSD_METRIC_BLOCKLIST_MATCH_PREFIX"),
+    },
+];

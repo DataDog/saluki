@@ -223,9 +223,9 @@ When a check fails because the corpus is stale, regenerate it with `make build-a
   `schema_overlay.yaml`.
 - `corpus_env_cases_stream_env_source`: a key in an env-only `breadth` or `unsupported` case did
   not stream the source `environment-variable`, so its env name is not the Agent's.
-- `vendored_schema_has_no_unrecorded_shapes`: the vendored schema grew a shape (a deprecated key
-  name, a duration-tagged integer or number) that no case covers yet; add the case the failure
-  names, in `cases/`, before regenerating.
+- `vendored_schema_has_no_unrecorded_shapes`: the vendored schema grew a shape (a duration-tagged
+  integer or number) that no case covers yet; add the case the failure names, in `cases/`, before
+  regenerating.
 
 ```sh
 cargo nextest run --lib --bins -p datadog-agent-config-corpus

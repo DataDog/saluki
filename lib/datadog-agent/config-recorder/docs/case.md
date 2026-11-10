@@ -206,8 +206,9 @@ spellings, one modeled key per class.
   (`yaml-null-known-key-ignored`, `env-empty-value-treated-as-unset`), so those two variants
   cover only the collection kinds, where an ADP reader could receive a null.
 - **Secondary env names.** Variant `env-secondary-name`: every modeled key whose schema lists
-  more than one env name, set only by its last name, to `v` as env text. (No modeled key has a
-  deprecated name at the pin; §3.3 covers `renamed_from`.)
+  more than one env name, set only by its last name, to `v` as env text. The env names of a
+  deprecated key name (`renamed_from`) are not schema env names, so this variant does not set
+  them; §3.3 and the hand-written `renamed-key-*` cases cover them.
 - A variant that would equal a breadth input for the same key is still written; depth does not
   remove duplicates against breadth.
 
@@ -223,7 +224,7 @@ var, and the byte-first deprecated name (`renamed_from`) of a modeled key, set i
 - Each case must run in its own harness process. Nothing may be shared between cases.
 - Before any case, the driver must run one baseline process: a case with no inputs, whose first
   snapshot is the reference for `side_effects` and the header (record.md §2, §3.2).
-- Regeneration must run in the digest-pinned `golang:1.26.7` Linux container.
+- Regeneration must run in the digest-pinned `golang:1.26.10` Linux container.
 - The harness must build the config through the Agent's production `fx` path:
   `fxutil.OneShot` with `fx.Supply(config.NewAgentParams(path,
   opts...))`, `config.Module()`, `comp/core/secrets/fx-noop`, `comp/core/delegatedauth/fx-noop`,

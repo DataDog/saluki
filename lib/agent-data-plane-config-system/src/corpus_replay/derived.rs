@@ -132,11 +132,6 @@ pub(crate) const NOT_REPLAYED: &[(&str, &str)] = &[
          compares",
     ),
     (
-        "metric-filter-precedence",
-        "a non-empty `metric_filterlist` replaces `statsd_metric_blocklist`; the Agent chooses in \
-         comp/filterlist/impl/filterlist.go, and each getter returns only its own key",
-    ),
-    (
         "metric-filterlist-prefix-decode",
         "`metric_filterlist_prefix` entries decode weakly typed, and a list that does not decode yields no rules; \
          the Agent decodes in comp/filterlist/impl/filterlist.go, so the getter returns the raw list, and the leaf \

@@ -500,27 +500,20 @@ struct UnrecordedShape {
     message: &'static str,
 }
 
-const UNRECORDED_SHAPES: &[UnrecordedShape] = &[
-    UnrecordedShape {
-        matches: |setting| setting.contains_key("renamed_from"),
-        message: "the schema now declares deprecated key names (`renamed_from`); add config recorder cases that set \
-                  one key under both its current and deprecated names, by env and by YAML",
+const UNRECORDED_SHAPES: &[UnrecordedShape] = &[UnrecordedShape {
+    matches: |setting| {
+        let numeric = matches!(setting.get("type").and_then(|t| t.as_str()), Some("integer" | "number"));
+        // Tags are a list in the schema today; accept a lone string too, so a malformed edit cannot hide the tag.
+        let duration_tag = match setting.get("tags") {
+            Some(serde_json::Value::Array(tags)) => tags.iter().any(|t| t.as_str() == Some("golang_type:duration")),
+            Some(serde_json::Value::String(tag)) => tag == "golang_type:duration",
+            _ => false,
+        };
+        numeric && duration_tag
     },
-    UnrecordedShape {
-        matches: |setting| {
-            let numeric = matches!(setting.get("type").and_then(|t| t.as_str()), Some("integer" | "number"));
-            // Tags are a list in the schema today; accept a lone string too, so a malformed edit cannot hide the tag.
-            let duration_tag = match setting.get("tags") {
-                Some(serde_json::Value::Array(tags)) => tags.iter().any(|t| t.as_str() == Some("golang_type:duration")),
-                Some(serde_json::Value::String(tag)) => tag == "golang_type:duration",
-                _ => false,
-            };
-            numeric && duration_tag
-        },
-        message: "the schema now has integer or number settings tagged `golang_type:duration`; add a config recorder \
+    message: "the schema now has integer or number settings tagged `golang_type:duration`; add a config recorder \
                   case that reads such a key with each duration spelling",
-    },
-];
+}];
 
 /// Collect the dotted path of every `node_type: setting` node under `properties` that `matches` accepts.
 fn settings_matching(

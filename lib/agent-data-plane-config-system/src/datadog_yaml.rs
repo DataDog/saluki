@@ -20,7 +20,8 @@
 //! A setting renamed in the schema (`renamed_from`) is still read under its former name, which
 //! resolves like any other leaf. Once the whole document is read, [`move_renamed_keys`] replaces the
 //! current name's value with the former name's and removes the former name, as the Agent's
-//! `processDeprecation` does. So `old_name: [a]` sets `new_name`, and wins over a `new_name`
+//! `processDeprecation` does. So
+//! `statsd_metric_blocklist: [a]` sets `metric_filterlist`, and wins over a `metric_filterlist`
 //! written in the same file. When several former names of one setting are written, the one
 //! deprecated earliest wins. The value is not converted: the typed model casts it as it casts the
 //! current name. Moving a nested former name removes a parent map it leaves empty, as the Agent's
@@ -28,7 +29,8 @@
 //!
 //! A null former name clears the current name, which then keeps its default once nulls are dropped.
 //! The Agent instead stores a nil that its getters read as the type's zero value; the two agree when
-//! the current name's default is its type's zero value.
+//! the current name's default is its type's zero value, as for `metric_filterlist` and
+//! `metric_filterlist_match_prefix`.
 //!
 //! # Collisions
 //!
@@ -669,6 +671,13 @@ mod tests {
         value
     }
 
+    /// Reads `yaml` and moves its former setting names, as the local base does.
+    fn read_moving_former_names(yaml: &str) -> Value {
+        let mut value = from_str(yaml).unwrap();
+        move_renamed_keys(&mut value, datadog_renamed_keys());
+        value
+    }
+
     /// The keys of `additional_endpoints`, a Datadog leaf, in `yaml`.
     fn leaf_keys(yaml: &str) -> Result<Vec<String>, String> {
         let value = from_str(&format!("additional_endpoints:\n{yaml}"))?;
@@ -1022,6 +1031,113 @@ mod tests {
 
         assert_eq!(value, json!({"OLD_LIST": ["respelled"], "new_flag": true}));
         assert_eq!(found, [["old_flag"]]);
+    }
+
+    #[test]
+    fn a_former_name_moves_to_its_setting_and_wins_over_it_in_the_vendored_schema() {
+        let cases = [
+            ("statsd_metric_blocklist: [a]\n", json!({"metric_filterlist": ["a"]})),
+            ("metric_filterlist: [b]\n", json!({"metric_filterlist": ["b"]})),
+            (
+                "metric_filterlist: [b]\nstatsd_metric_blocklist: [a]\n",
+                json!({"metric_filterlist": ["a"]}),
+            ),
+            (
+                "statsd_metric_blocklist: [a]\nmetric_filterlist: [b]\n",
+                json!({"metric_filterlist": ["a"]}),
+            ),
+            // An empty former list still wins.
+            (
+                "metric_filterlist: [b]\nstatsd_metric_blocklist: []\n",
+                json!({"metric_filterlist": []}),
+            ),
+            // Each setting is renamed on its own.
+            (
+                "metric_filterlist: [b]\nstatsd_metric_blocklist_match_prefix: true\n",
+                json!({"metric_filterlist": ["b"], "metric_filterlist_match_prefix": true}),
+            ),
+            // The value is moved as written, for the typed model to cast.
+            ("statsd_metric_blocklist: a b\n", json!({"metric_filterlist": "a b"})),
+            (
+                "statsd_metric_blocklist_match_prefix: 'true'\n",
+                json!({"metric_filterlist_match_prefix": "true"}),
+            ),
+        ];
+        for (yaml, expected) in cases {
+            assert_eq!(read_moving_former_names(yaml), expected, "{yaml:?}");
+        }
+    }
+
+    #[test]
+    fn a_respelled_former_name_resolves_like_any_leaf_before_it_moves_in_the_vendored_schema() {
+        let cases = [
+            (
+                "STATSD_METRIC_BLOCKLIST: [a]\nmetric_filterlist: [b]\n",
+                json!({"metric_filterlist": ["a"]}),
+            ),
+            (
+                "Metric_Filterlist: [b]\nStatsD_Metric_Blocklist: [a]\n",
+                json!({"metric_filterlist": ["a"]}),
+            ),
+            // Spellings of one former name collide as other spellings do: the canonical one wins.
+            (
+                "statsd_metric_blocklist: [a]\nSTATSD_METRIC_BLOCKLIST: [c]\n",
+                json!({"metric_filterlist": ["a"]}),
+            ),
+            (
+                "STATSD_METRIC_BLOCKLIST: [c]\nstatsd_metric_blocklist: [a]\n",
+                json!({"metric_filterlist": ["a"]}),
+            ),
+        ];
+        for (yaml, expected) in cases {
+            assert_eq!(read_moving_former_names(yaml), expected, "{yaml:?}");
+        }
+    }
+
+    #[test]
+    fn a_null_former_name_clears_its_setting_in_the_vendored_schema() {
+        let cases = [
+            (
+                "metric_filterlist: [b]\nstatsd_metric_blocklist:\n",
+                json!({"metric_filterlist": null}),
+            ),
+            (
+                "metric_filterlist: [b]\nSTATSD_METRIC_BLOCKLIST: ~\n",
+                json!({"metric_filterlist": null}),
+            ),
+            // Another spelling of the former name with a value still wins over its null.
+            (
+                "STATSD_METRIC_BLOCKLIST: ~\nstatsd_metric_blocklist: [a]\n",
+                json!({"metric_filterlist": ["a"]}),
+            ),
+            (
+                "statsd_metric_blocklist: ~\nSTATSD_METRIC_BLOCKLIST: [a]\n",
+                json!({"metric_filterlist": ["a"]}),
+            ),
+        ];
+        for (yaml, expected) in cases {
+            assert_eq!(read_moving_former_names(yaml), expected, "{yaml:?}");
+        }
+    }
+
+    #[test]
+    fn moving_former_names_matches_exact_paths_only_in_the_vendored_schema() {
+        let mut value = json!({
+            "STATSD_METRIC_BLOCKLIST": ["respelled"],
+            "statsd_metric_blocklist_match_prefix": true,
+            "metric_filterlist_match_prefix": false,
+        });
+
+        let found: Vec<_> = move_renamed_keys(&mut value, datadog_renamed_keys())
+            .into_iter()
+            .map(|renamed| renamed.former)
+            .collect();
+
+        assert_eq!(
+            value,
+            json!({"STATSD_METRIC_BLOCKLIST": ["respelled"], "metric_filterlist_match_prefix": true})
+        );
+        assert_eq!(found, [["statsd_metric_blocklist_match_prefix"]]);
     }
 
     #[test]

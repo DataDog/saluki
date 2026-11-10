@@ -15,7 +15,7 @@ import (
 )
 
 // goldenLines are the record format's example lines, one line each.
-const goldenLines = `{"agent_commit":"281d921619d52ce7b99aef40607285992c9c2e89","container_image":"golang@sha256:e30143be198ab04cf7ba25fba83ab3a692ca584c994aad0bf131fa0eb32dd8c1","containerized":false,"features":[],"format":1,"go_version":"go1.26.7","goarch":"arm64","goos":"linux","inputs_digest":"sha256:0000000000000000000000000000000000000000000000000000000000000000","type":"header"}
+const goldenLines = `{"agent_commit":"281d921619d52ce7b99aef40607285992c9c2e89","container_image":"golang@sha256:c1bc3620b0460d97001977fadbe8d0e94d7be5cbb064f4f6b268d95375c3ac71","containerized":false,"features":[],"format":1,"go_version":"go1.26.10","goarch":"arm64","goos":"linux","inputs_digest":"sha256:0000000000000000000000000000000000000000000000000000000000000000","type":"header"}
 {"case":"additional-endpoints-env","group":"behavior","inputs":{"env":{"DD_ADDITIONAL_ENDPOINTS":"{\"https://x.test\": [\"k\"]}"}},"origin":"datadog.yaml","type":"case","why":["env-map-raw-string"]}
 {"case":"additional-endpoints-env","key":"additional_endpoints","reads":{"snapshot":{"getters":[{"getter":"GetStringMapStringSlice","result":{"https://x.test":["k"]}}],"go_type":"string"}},"snapshot":{"source":"environment-variable","value":"{\"https://x.test\": [\"k\"]}"},"type":"key"}
 {"case":"logs-enabled-yes-yaml","group":"behavior","inputs":{"yaml":"logs_enabled: \"yes\"\n"},"origin":"datadog.yaml","type":"case","why":["getter-bool-string-strict-parsebool","yaml-type-mismatch-scalar-leaf-keeps-raw"]}
@@ -41,8 +41,8 @@ func TestGoldenLines(t *testing.T) {
 			AgentCommit:    "281d921619d52ce7b99aef40607285992c9c2e89",
 			GOOS:           "linux",
 			GOARCH:         "arm64",
-			GoVersion:      "go1.26.7",
-			ContainerImage: "golang@sha256:e30143be198ab04cf7ba25fba83ab3a692ca584c994aad0bf131fa0eb32dd8c1",
+			GoVersion:      "go1.26.10",
+			ContainerImage: "golang@sha256:c1bc3620b0460d97001977fadbe8d0e94d7be5cbb064f4f6b268d95375c3ac71",
 			InputsDigest:   "sha256:0000000000000000000000000000000000000000000000000000000000000000",
 		},
 		&CaseLine{Inputs: envCase, Origin: strp("datadog.yaml")},

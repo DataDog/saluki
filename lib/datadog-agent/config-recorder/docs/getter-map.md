@@ -20,7 +20,9 @@ Agent citations are at `281d921619d`. `getter.go` is `pkg/config/nodetreemodel/g
   or holds `nil`, the key has no default and §1.1 applies. The harness must not re-derive
   codegen's type inference from the schema.
 - The primary getter comes from the table below. A Go type not in it is a harness failure naming
-  `%T`; adding a type bumps the record format.
+  `%T`. Adding a type whose getters need a result encoding §3 does not define bumps the record
+  format; adding one that maps to existing getters does not, since readers do not check `go_type`
+  against the getters.
 - Schema tags may only add secondary getters, appended after the primary one:
   - `format: duration` on a key whose default is a `string` adds `GetDuration`;
   - `golang_type: duration` on a key whose default is an `int` or `float64` adds `GetDuration`.
@@ -50,6 +52,7 @@ Agent citations are at `281d921619d`. `getter.go` is `pkg/config/nodetreemodel/g
 | `map[string][]string`                             | `GetStringMapStringSlice` |
 | `map[string]float64`                              | `GetStringMap`            |
 | `map[string]int`                                  | `GetStringMap`            |
+| `map[string]map[string]interface {}`              | `Get`                     |
 | `<nil>` (nil default)                             | see §1.1                  |
 
 - The schema file (the Agent's `merge_schema.py` output at the pin, by `--schema`) must describe
@@ -199,9 +202,10 @@ given the Go default `codegen` emits for it. Keys at pin counts the vendored sch
 | 18 | `object`, `additionalProperties: array of string`     | `map[string][]string` (209)                   | `GetStringMapStringSlice`       | object of array of string         | 18 |
 | 19 | `object`, `additionalProperties: number` (incl. `golang_type:map[string]float64`) | `map[string]float64` (209) | `GetStringMap`           | object, generic values or `null`  | 1 |
 | 20 | `object`, `additionalProperties: integer`             | `map[string]int` (209)                        | `GetStringMap`                  | object, generic values or `null`  | 0 |
-| 21 | `object` or `array` with `boolean` element type       | none: `dict_to_gotype` has no `boolean` case (196-209) | whatever `%T` the Agent holds; a type outside §1 fails | — | 0 |
-| 22 | not in schema                                         | none                                          | `Get`, unless overridden        | generic                           | — |
-| 23 | section (inner node) named in `keys`                  | none                                          | `Get`                           | generic (`getter.go:81-96` builds a map) | — |
+| 21 | `object`, `additionalProperties: object`              | `map[string]map[string]interface{}` (209)     | `Get`                           | generic                           | 0 (1 at `a682da124ff`) |
+| 22 | `object` or `array` with `boolean` element type       | none: `dict_to_gotype` has no `boolean` case (196-209) | whatever `%T` the Agent holds; a type outside §1 fails | — | 0 |
+| 23 | not in schema                                         | none                                          | `Get`, unless overridden        | generic                           | — |
+| 24 | section (inner node) named in `keys`                  | none                                          | `Get`                           | generic (`getter.go:81-96` builds a map) | — |
 
 "Generic" means §3 applied to the dynamic value. For rows 4, 6, 9 and 12 the schema implies one
 consumer reading and the default type implies another; both are recorded

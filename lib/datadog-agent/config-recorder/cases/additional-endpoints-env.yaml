@@ -1,5 +1,6 @@
 # Sets additional_endpoints from JSON in an environment variable.
-# Checks that a map from the environment streams as a raw string rather than a map.
+# Shows that the Agent decodes the JSON at load, so the value is stored, streamed and read as a map
+# rather than as the raw string.
 name: additional-endpoints-env
 group: behavior
 why: [env-map-raw-string]

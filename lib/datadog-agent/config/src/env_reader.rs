@@ -27,7 +27,7 @@ pub struct EnvKey {
 /// A former name of a Datadog schema setting, from the schema's `renamed_from`.
 #[derive(Clone, Copy, Debug)]
 pub struct RenamedKey {
-    /// The former nested path (for example, `["old_name"]`).
+    /// The former nested path (for example, `["statsd_metric_blocklist"]`).
     pub former: &'static [&'static str],
     /// The nested path of the setting it was renamed to.
     pub path: &'static [&'static str],
@@ -401,6 +401,38 @@ mod tests {
             read(&[("DD_APM_MAX_EPS", ""), ("DD_UNBOUND", "1")]),
             Vec::<String>::new()
         );
+    }
+
+    #[test]
+    fn a_former_name_is_read_before_the_current_one() {
+        let filterlist = &["metric_filterlist"];
+        let match_prefix = &["metric_filterlist_match_prefix"];
+        for pairs in [
+            [("DD_STATSD_METRIC_BLOCKLIST", "old"), ("DD_METRIC_FILTERLIST", "new")],
+            [("DD_METRIC_FILTERLIST", "new"), ("DD_STATSD_METRIC_BLOCKLIST", "old")],
+        ] {
+            assert_eq!(at(&apply_vars(&pairs).unwrap(), filterlist), Some(&json!(["old"])));
+        }
+        let base = apply_vars(&[
+            ("DD_STATSD_METRIC_BLOCKLIST_MATCH_PREFIX", "true"),
+            ("DD_METRIC_FILTERLIST_MATCH_PREFIX", "false"),
+        ])
+        .unwrap();
+        assert_eq!(at(&base, match_prefix), Some(&json!(true)));
+
+        // The former name is decoded as the current key: a space-separated list.
+        let base = apply_vars(&[("DD_STATSD_METRIC_BLOCKLIST", "a b")]).unwrap();
+        assert_eq!(at(&base, filterlist), Some(&json!(["a", "b"])));
+        assert_eq!(at(&base, &["statsd_metric_blocklist"]), None);
+
+        let base = apply_vars(&[("DD_METRIC_FILTERLIST", "new")]).unwrap();
+        assert_eq!(at(&base, filterlist), Some(&json!(["new"])));
+    }
+
+    #[test]
+    fn an_empty_former_name_falls_through_to_the_current_one() {
+        let base = apply_vars(&[("DD_STATSD_METRIC_BLOCKLIST", ""), ("DD_METRIC_FILTERLIST", "new")]).unwrap();
+        assert_eq!(at(&base, &["metric_filterlist"]), Some(&json!(["new"])));
     }
 
     #[test]

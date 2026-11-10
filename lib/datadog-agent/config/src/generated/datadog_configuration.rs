@@ -272,6 +272,9 @@ pub struct DatadogConfiguration {
     )]
     pub expected_tags_duration: std::time::Duration,
 
+    #[serde(default)]
+    pub experimental: Experimental,
+
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
     #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub extra_tags: Vec<String>,
@@ -538,14 +541,6 @@ pub struct DatadogConfiguration {
     #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub statsd_forward_port: i64,
 
-    #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
-    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
-    pub statsd_metric_blocklist: Vec<String>,
-
-    #[serde(default)]
-    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
-    pub statsd_metric_blocklist_match_prefix: bool,
-
     #[serde(default)]
     #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub statsd_metric_namespace: String,
@@ -657,6 +652,7 @@ impl Default for DatadogConfiguration {
             enable_payloads: Default::default(),
             env: Default::default(),
             expected_tags_duration: duration_defaults::expected_tags_duration(),
+            experimental: Default::default(),
             extra_tags: Default::default(),
             forwarder_apikey_validation_interval: defaults::default_u64::<i64, 60>(),
             forwarder_backoff_base: defaults::datadog_configuration_forwarder_backoff_base(),
@@ -739,8 +735,6 @@ impl Default for DatadogConfiguration {
             sslkeylogfile: Default::default(),
             statsd_forward_host: Default::default(),
             statsd_forward_port: Default::default(),
-            statsd_metric_blocklist: Default::default(),
-            statsd_metric_blocklist_match_prefix: Default::default(),
             statsd_metric_namespace: Default::default(),
             statsd_metric_namespace_blacklist: defaults::datadog_configuration_statsd_metric_namespace_blacklist(),
             syslog_rfc: Default::default(),
@@ -1464,6 +1458,40 @@ impl Default for EnablePayloads {
             series: defaults::default_bool::<true>(),
             service_checks: defaults::default_bool::<true>(),
             sketches: defaults::default_bool::<true>(),
+        }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct Experimental {
+    #[serde(default)]
+    pub metrics_endpoint_routing: ExperimentalMetricsEndpointRouting,
+}
+
+impl Default for Experimental {
+    fn default() -> Self {
+        Self {
+            metrics_endpoint_routing: Default::default(),
+        }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct ExperimentalMetricsEndpointRouting {
+    #[serde(default, skip_serializing_if = ":: std :: collections :: HashMap::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_string_map_scalar_or_seq")]
+    pub metric_allowlist: HashMap<String, Vec<String>>,
+
+    #[serde(default, skip_serializing_if = ":: std :: collections :: HashMap::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_string_map_scalar_or_seq")]
+    pub metric_prefix_allowlist: HashMap<String, Vec<String>>,
+}
+
+impl Default for ExperimentalMetricsEndpointRouting {
+    fn default() -> Self {
+        Self {
+            metric_allowlist: Default::default(),
+            metric_prefix_allowlist: Default::default(),
         }
     }
 }

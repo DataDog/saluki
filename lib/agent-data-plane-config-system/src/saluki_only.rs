@@ -59,7 +59,6 @@
 // TODO: consider not loading these into the same map as Datadog schema configuration
 
 use std::{
-    collections::HashMap,
     fmt,
     marker::PhantomData,
     num::{NonZeroU64, NonZeroUsize},
@@ -218,8 +217,6 @@ pub struct SalukiOnly {
     // ── nested sections ───────────────────────────────────────────────────────
     /// Cross-cutting data-plane knobs (`data_plane.*`).
     pub data_plane: DataPlane,
-    /// Unstable settings (`experimental.*`) that may change, move, or be removed without backward compatibility.
-    pub experimental: Experimental,
     /// APM trace knobs (`apm_config.*`).
     pub apm_config: ApmConfig,
     /// OTLP receiver and trace knobs (`otlp_config.*`).
@@ -228,36 +225,6 @@ pub struct SalukiOnly {
     pub ottl_filter_config: Option<OttlFilterConfig>,
     /// OTTL span-transform processor (`ottl_transform_config`).
     pub ottl_transform_config: Option<OttlTransformConfig>,
-}
-
-/// Shared namespace for experimental settings (`experimental.*`).
-///
-/// Keys in this section may change, move, or be removed. Do not rely on backward compatibility.
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(default)]
-pub struct Experimental {
-    /// Startup-only per-endpoint metric filtering (`experimental.metrics_endpoint_routing.*`).
-    pub metrics_endpoint_routing: MetricsEndpointRouting,
-}
-
-/// Experimental metrics endpoint-routing settings (`experimental.metrics_endpoint_routing.*`).
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(default)]
-pub struct MetricsEndpointRouting {
-    /// Exact metric names permitted per configured primary or additional endpoint
-    /// (`experimental.metrics_endpoint_routing.metric_allowlist`).
-    ///
-    /// Defaults to absent, leaving routing unchanged unless a prefix policy selects the endpoint. If neither list
-    /// allows a name, the metric is dropped for that endpoint,
-    /// including sketches. Operators can use this to reduce metric volume at selected destinations.
-    pub metric_allowlist: Option<HashMap<String, Vec<String>>>,
-    /// Literal metric-name prefixes permitted per configured endpoint
-    /// (`experimental.metrics_endpoint_routing.metric_prefix_allowlist`).
-    ///
-    /// Defaults to absent. Names matching either the exact list or a case-sensitive prefix are forwarded,
-    /// An empty allowlist allows nothing,
-    /// An empty string prefix allows everything.  
-    pub metric_prefix_allowlist: Option<HashMap<String, Vec<String>>>,
 }
 
 /// `data_plane.*` Saluki-only knobs.
@@ -276,9 +243,8 @@ pub struct DataPlane {
 
 /// `data_plane.experimental.*`: unstable ADP features.
 ///
-/// New unstable ADP-only features go here, rather than under the older top-level `experimental.*` namespace, which
-/// keeps them next to the other `data_plane.*` settings. Settings here may change, move, or be removed without backward
-/// compatibility.
+/// New unstable ADP-only features go here. Settings here may change, move, or be removed without
+/// backward compatibility.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct DataPlaneExperimental {
@@ -598,16 +564,6 @@ impl SalukiOnly {
             config.shared.metrics_encoding.max_metrics_per_payload = v;
         }
 
-        // domains.metrics_endpoint_routing
-        let routing = &self.experimental.metrics_endpoint_routing;
-        let destination = &mut config.domains.metrics_endpoint_routing;
-        if let Some(v) = &routing.metric_allowlist {
-            destination.metric_allowlists.clone_from(v);
-        }
-        if let Some(v) = &routing.metric_prefix_allowlist {
-            destination.metric_prefix_allowlists.clone_from(v);
-        }
-
         // domains.dogstatsd
         let dsd = &mut config.domains.dogstatsd;
         if let Some(v) = self.dogstatsd_tcp_port {
@@ -831,14 +787,6 @@ mod tests {
                     }
                 }
             },
-            // nested: experimental.metrics_endpoint_routing
-            "experimental": {
-                "metrics_endpoint_routing": {
-                    "metric_allowlist": {
-                        "https://app.us5.datadoghq.com": ["allowed.metric", "also.allowed"]
-                    }
-                }
-            },
             // nested: apm_config
             "apm_config": {
                 "max_resource_len": 1234,
@@ -886,13 +834,6 @@ mod tests {
         assert_eq!(config.shared.metrics_level, "debug");
         assert_eq!(config.shared.metrics_encoding.flush_timeout, Duration::from_secs(7));
         assert_eq!(config.shared.metrics_encoding.max_metrics_per_payload, 999);
-
-        // domains.metrics_endpoint_routing
-        let routing = &config.domains.metrics_endpoint_routing;
-        assert_eq!(
-            routing.metric_allowlists["https://app.us5.datadoghq.com"],
-            ["allowed.metric", "also.allowed"]
-        );
 
         // domains.dogstatsd
         let dsd = &config.domains.dogstatsd;

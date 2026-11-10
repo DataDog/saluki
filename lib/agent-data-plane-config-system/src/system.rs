@@ -1,6 +1,7 @@
 //! [`ConfigurationSystem`]: the runtime configuration, translated from the raw sources and kept
 //! current as the Datadog Agent streams updates.
 
+use std::borrow::Cow;
 use std::future::Future;
 use std::sync::{Arc, PoisonError, RwLock};
 use std::time::Duration;
@@ -279,7 +280,8 @@ pub(crate) struct Evaluation {
     /// it accepts the update, so a rejected value never lingers to affect a later merge.
     pub(crate) tentative: SourceTree,
 
-    /// The local base overlaid with `tentative`: the sources every later stage reads.
+    /// The local base overlaid with `tentative`, with former names resolved (see
+    /// [`resolve_streamed_former_names`]): the sources every later stage reads.
     pub(crate) merged: SourceTree,
 
     /// How far `merged` got through deserialization, translation, and validation.
@@ -325,14 +327,14 @@ impl Stages {
     }
 }
 
-/// Folds `update` onto a tentative copy of the Agent layer `agent`, overlays the result on `base`,
-/// and runs each stage on the merged sources.
+/// Folds `update` onto a tentative copy of the Agent layer `agent`, resolves its former names,
+/// overlays the result on `base`, and runs each stage on the merged sources.
 ///
 /// Leaves `agent` untouched: committing the tentative layer is the caller's decision.
 pub(crate) fn evaluate(base: &SourceTree, agent: &SourceTree, update: &ConfigUpdate) -> Evaluation {
     let mut tentative = agent.clone();
     fold(&mut tentative, update);
-    let merged = base.overlay(&tentative);
+    let merged = base.overlay(&resolve_streamed_former_names(&tentative));
     let stages = run_stages(&merged);
     Evaluation {
         tentative,
@@ -369,6 +371,51 @@ pub(crate) fn fold(agent: &mut SourceTree, update: &ConfigUpdate) {
         ConfigUpdate::Snapshot(settings) => *agent = SourceTree::from_settings(settings),
         ConfigUpdate::Partial(setting) => agent.set(setting),
     }
+}
+
+/// Settings that an Agent before 7.86 streams under a former name too, as a key of its own: each
+/// current name and its former name.
+const STREAMED_FORMER_NAMES: [(&str, &str); 2] = [
+    ("metric_filterlist", "statsd_metric_blocklist"),
+    ("metric_filterlist_match_prefix", "statsd_metric_blocklist_match_prefix"),
+];
+
+/// Resolves the former names in the Agent layer `agent` as that Agent's filter list does, and
+/// removes them.
+///
+/// If `metric_filterlist` is empty, the former pair replaces the current pair, each with its value
+/// and provenance; a former name the layer lacks removes its current name. Otherwise the current
+/// pair stands. Resolving the accumulated layer on each update keeps partial updates to any of the
+/// four names correct. A layer without former names is returned as is.
+fn resolve_streamed_former_names(agent: &SourceTree) -> Cow<'_, SourceTree> {
+    if STREAMED_FORMER_NAMES
+        .iter()
+        .all(|(_, former)| agent.value(former).is_none())
+    {
+        return Cow::Borrowed(agent);
+    }
+
+    let mut resolved = agent.clone();
+    let formers = STREAMED_FORMER_NAMES.map(|(current, former)| (current, resolved.remove(former)));
+    let [(filterlist, _), _] = STREAMED_FORMER_NAMES;
+    let filterlist_is_empty = match resolved.value(filterlist) {
+        None | Some(Value::Null) => true,
+        Some(Value::Array(names)) => names.is_empty(),
+        Some(Value::String(names)) => names.split_whitespace().next().is_none(),
+        Some(_) => false,
+    };
+    if filterlist_is_empty {
+        for (current, former) in formers {
+            match former {
+                Some((value, provenance)) => resolved.insert(current, value, provenance),
+                None => {
+                    resolved.remove(current);
+                }
+            }
+        }
+    }
+
+    Cow::Owned(resolved)
 }
 
 /// Deserializes and translates merged source values, rejecting partially translated configuration.
@@ -472,11 +519,12 @@ fn translate(
 
 #[cfg(test)]
 mod tests {
+    use std::borrow::Cow;
     use std::collections::HashSet;
     use std::sync::Arc;
     use std::time::Duration;
 
-    use agent_data_plane_config::domains::dogstatsd::{MetricPrefixRule, OriginTagCardinality};
+    use agent_data_plane_config::domains::dogstatsd::{MetricFilter, MetricPrefixRule, OriginTagCardinality};
     use agent_data_plane_config::shared::V3SeriesMode;
     use agent_data_plane_config::Provenance;
     use agent_data_plane_config::SalukiConfiguration;
@@ -487,7 +535,8 @@ mod tests {
     use tokio::sync::mpsc;
 
     use super::{
-        translate, translate_authoritative, translate_strict, ConfigurationSystem, Error, SalukiOnly, SourceTree,
+        evaluate, resolve_streamed_former_names, translate, translate_authoritative, translate_strict,
+        ConfigurationSystem, Error, SalukiOnly, SourceTree, STREAMED_FORMER_NAMES,
     };
 
     /// API key the connected-system fixture puts in the local base.
@@ -898,36 +947,55 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn experimental_metric_allowlists_seed_the_model() {
+    async fn experimental_metric_allowlists_reach_the_model_from_file_and_environment() {
         let policies = json!({
             "https://primary.example.com": ["allowed.metric"],
             "https://secondary.example.com": []
         });
-        let system = standalone_system(json!({
-            "experimental": {
-                "metrics_endpoint_routing": {
-                    "metric_allowlist": policies.clone(),
-                    "metric_prefix_allowlist": { "https://primary.example.com": ["billing."] }
-                }
-            }
-        }))
-        .expect("system builds");
-
-        assert_eq!(
-            serde_json::to_value(&system.config().domains.metrics_endpoint_routing.metric_allowlists).unwrap(),
-            policies
-        );
-        assert_eq!(
-            system
-                .config()
-                .domains
-                .metrics_endpoint_routing
-                .metric_prefix_allowlists,
-            std::collections::HashMap::from([(
-                "https://primary.example.com".to_string(),
-                vec!["billing.".to_string()]
-            )])
-        );
+        let prefixes = json!({ "https://primary.example.com": ["billing."] });
+        let cases = [
+            (
+                "file",
+                standalone_system(json!({
+                    "experimental": {
+                        "metrics_endpoint_routing": {
+                            "metric_allowlist": policies.clone(),
+                            "metric_prefix_allowlist": prefixes.clone()
+                        }
+                    }
+                })),
+            ),
+            (
+                "environment",
+                standalone_system_with_env(
+                    json!({}),
+                    &[
+                        (
+                            "DD_EXPERIMENTAL_METRICS_ENDPOINT_ROUTING_METRIC_ALLOWLIST",
+                            &policies.to_string(),
+                        ),
+                        (
+                            "DD_EXPERIMENTAL_METRICS_ENDPOINT_ROUTING_METRIC_PREFIX_ALLOWLIST",
+                            &prefixes.to_string(),
+                        ),
+                    ],
+                ),
+            ),
+        ];
+        for (source, system) in cases {
+            let system = system.unwrap_or_else(|error| panic!("{source} boots: {error}"));
+            let routing = &system.config().domains.metrics_endpoint_routing;
+            assert_eq!(
+                serde_json::to_value(&routing.metric_allowlists).unwrap(),
+                policies,
+                "{source}"
+            );
+            assert_eq!(
+                serde_json::to_value(&routing.metric_prefix_allowlists).unwrap(),
+                prefixes,
+                "{source}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1539,28 +1607,41 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn live_metric_filter_follows_current_and_legacy_precedence() {
-        // Regression: clearing `metric_filterlist` must restore the legacy list and match mode.
+    async fn live_metric_filter_tracks_filterlist_and_match_prefix_independently() {
         let (system, agent_tx) = connected_system(json!({})).await;
         let mut metric_filter = system.live(|c| &c.domains.dogstatsd.metric_filter);
         assert!(metric_filter.values.is_empty());
+        assert!(!metric_filter.match_prefix);
 
         agent_tx
-            .send(ConfigUpdate::snapshot([
-                ConfigSetting::explicit("metric_filterlist", json!(["current.duration.max"])),
-                ConfigSetting::explicit("metric_filterlist_match_prefix", json!(false)),
-                ConfigSetting::explicit("statsd_metric_blocklist", json!(["legacy.duration"])),
-                ConfigSetting::explicit("statsd_metric_blocklist_match_prefix", json!(true)),
-            ]))
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "metric_filterlist",
+                json!(["current.duration.max"]),
+            )))
             .await
             .unwrap();
 
-        let current = tokio::time::timeout(Duration::from_secs(2), metric_filter.changed())
+        let listed = tokio::time::timeout(Duration::from_secs(2), metric_filter.changed())
             .await
-            .expect("view observes the current filterlist taking precedence");
-        assert_eq!(current.values, vec!["current.duration.max".to_string()]);
-        assert!(!current.match_prefix);
+            .expect("view observes metric_filterlist updates");
+        assert_eq!(listed.values, vec!["current.duration.max".to_string()]);
+        assert!(!listed.match_prefix);
 
+        agent_tx
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "metric_filterlist_match_prefix",
+                json!(true),
+            )))
+            .await
+            .unwrap();
+
+        let prefixed = tokio::time::timeout(Duration::from_secs(2), metric_filter.changed())
+            .await
+            .expect("view observes metric_filterlist_match_prefix updates");
+        assert_eq!(prefixed.values, vec!["current.duration.max".to_string()]);
+        assert!(prefixed.match_prefix);
+
+        // Clearing the list leaves the match mode as configured.
         agent_tx
             .send(ConfigUpdate::Partial(ConfigSetting::explicit(
                 "metric_filterlist",
@@ -1569,25 +1650,176 @@ mod tests {
             .await
             .unwrap();
 
-        let legacy = tokio::time::timeout(Duration::from_secs(2), metric_filter.changed())
+        let cleared = tokio::time::timeout(Duration::from_secs(2), metric_filter.changed())
             .await
-            .expect("view observes the fallback to the legacy blocklist");
-        assert_eq!(legacy.values, vec!["legacy.duration".to_string()]);
-        assert!(legacy.match_prefix);
+            .expect("view observes metric_filterlist being cleared");
+        assert!(cleared.values.is_empty());
+        assert!(cleared.match_prefix);
+    }
 
-        agent_tx
-            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
-                "metric_filterlist",
-                json!(["current.duration.avg"]),
-            )))
-            .await
-            .unwrap();
+    /// Applies `updates` in order as the update loop does, over a local base with `local` and an API
+    /// key. Returns the merged sources and the metric filter of the last update.
+    fn streamed_metric_filter(local: Value, updates: &[ConfigUpdate]) -> (SourceTree, MetricFilter) {
+        let mut local = local;
+        local["api_key"] = json!(TEST_API_KEY);
+        let base = SourceTree::all_explicit(local);
+        let mut agent = SourceTree::empty();
+        let mut last = None;
+        for update in updates {
+            let evaluation = evaluate(&base, &agent, update);
+            let config = evaluation.stages.into_authoritative().expect("the update is accepted");
+            agent = evaluation.tentative;
+            last = Some((evaluation.merged, config.domains.dogstatsd.metric_filter.clone()));
+        }
+        last.expect("at least one update")
+    }
 
-        let restored = tokio::time::timeout(Duration::from_secs(2), metric_filter.changed())
-            .await
-            .expect("view observes the current filterlist shadowing the legacy blocklist again");
-        assert_eq!(restored.values, vec!["current.duration.avg".to_string()]);
-        assert!(!restored.match_prefix);
+    fn metric_filter(values: &[&str], match_prefix: bool) -> MetricFilter {
+        MetricFilter {
+            values: values.iter().map(|value| value.to_string()).collect(),
+            match_prefix,
+            prefix_rules: Vec::new(),
+        }
+    }
+
+    /// The four filter-list settings as an Agent before 7.86 streams them in a snapshot.
+    fn filterlist_snapshot(current: (Value, bool), former: (Value, bool)) -> ConfigUpdate {
+        let setting = |key: &str, value: Value| {
+            // The Agent marks a value nobody configured as a default.
+            let provenance = match &value {
+                Value::Array(names) if names.is_empty() => StreamProvenance::Default,
+                Value::Bool(false) => StreamProvenance::Default,
+                _ => StreamProvenance::Explicit,
+            };
+            ConfigSetting::new(key, value, provenance)
+        };
+        ConfigUpdate::snapshot([
+            setting("metric_filterlist", current.0),
+            setting("metric_filterlist_match_prefix", json!(current.1)),
+            setting("statsd_metric_blocklist", former.0),
+            setting("statsd_metric_blocklist_match_prefix", json!(former.1)),
+        ])
+    }
+
+    #[test]
+    fn a_streamed_former_filterlist_applies_when_the_current_one_is_empty() {
+        let (merged, filter) = streamed_metric_filter(
+            json!({}),
+            &[filterlist_snapshot((json!([]), false), (json!(["former"]), true))],
+        );
+
+        assert_eq!(filter, metric_filter(&["former"], true));
+        assert_eq!(merged.provenance("metric_filterlist"), Provenance::Explicit);
+        assert_eq!(
+            merged.provenance("metric_filterlist_match_prefix"),
+            Provenance::Explicit
+        );
+        // The merged sources, which compatibility checks and the raw view read, hold current names only.
+        let keys: Vec<String> = merged.flattened_keys().into_iter().map(|(key, ..)| key).collect();
+        assert!(
+            !keys.iter().any(|key| key.starts_with("statsd_metric_blocklist")),
+            "{keys:?}"
+        );
+    }
+
+    #[test]
+    fn a_streamed_non_empty_filterlist_wins_with_its_own_match_prefix() {
+        let (_, filter) = streamed_metric_filter(
+            json!({}),
+            &[filterlist_snapshot(
+                (json!(["current"]), false),
+                (json!(["former"]), true),
+            )],
+        );
+        assert_eq!(filter, metric_filter(&["current"], false));
+
+        // The match prefix pairs with the list in use, even when only the other one is set.
+        let (_, filter) = streamed_metric_filter(
+            json!({}),
+            &[filterlist_snapshot((json!(["current"]), false), (json!([]), true))],
+        );
+        assert_eq!(filter, metric_filter(&["current"], false));
+        let (_, filter) = streamed_metric_filter(
+            json!({}),
+            &[filterlist_snapshot((json!([]), true), (json!(["former"]), false))],
+        );
+        assert_eq!(filter, metric_filter(&["former"], false));
+    }
+
+    #[test]
+    fn an_update_to_the_streamed_former_filterlist_applies() {
+        let (_, filter) = streamed_metric_filter(
+            json!({}),
+            &[
+                filterlist_snapshot((json!([]), false), (json!(["former"]), false)),
+                ConfigUpdate::Partial(ConfigSetting::explicit("statsd_metric_blocklist", json!(["updated"]))),
+            ],
+        );
+        assert_eq!(filter, metric_filter(&["updated"], false));
+
+        // An update to a former name alone, with no current names streamed, applies too.
+        let (_, filter) = streamed_metric_filter(
+            json!({}),
+            &[
+                ConfigUpdate::snapshot([]),
+                ConfigUpdate::Partial(ConfigSetting::explicit(
+                    "statsd_metric_blocklist_match_prefix",
+                    json!(true),
+                )),
+                ConfigUpdate::Partial(ConfigSetting::explicit("statsd_metric_blocklist", json!(["updated"]))),
+            ],
+        );
+        assert_eq!(filter, metric_filter(&["updated"], true));
+    }
+
+    #[test]
+    fn clearing_the_streamed_filterlist_applies_the_former_pair() {
+        let snapshot = filterlist_snapshot((json!(["current"]), false), (json!(["former"]), true));
+        let clear = ConfigUpdate::Partial(ConfigSetting::explicit("metric_filterlist", json!([])));
+        let (_, filter) = streamed_metric_filter(json!({}), &[snapshot.clone(), clear.clone()]);
+        assert_eq!(filter, metric_filter(&["former"], true));
+
+        // Setting the current list again restores the current pair.
+        let restore = ConfigUpdate::Partial(ConfigSetting::explicit("metric_filterlist", json!(["again"])));
+        let (_, filter) = streamed_metric_filter(json!({}), &[snapshot, clear, restore]);
+        assert_eq!(filter, metric_filter(&["again"], false));
+    }
+
+    #[test]
+    fn a_defaulted_streamed_former_filterlist_does_not_shadow_the_local_one() {
+        let (merged, filter) = streamed_metric_filter(
+            json!({ "metric_filterlist": ["local"], "metric_filterlist_match_prefix": true }),
+            &[filterlist_snapshot((json!([]), false), (json!([]), false))],
+        );
+
+        assert_eq!(filter, metric_filter(&["local"], true));
+        assert_eq!(merged.provenance("metric_filterlist"), Provenance::Explicit);
+    }
+
+    #[test]
+    fn an_agent_layer_without_former_names_is_unchanged() {
+        let agent = SourceTree::from_settings(&[
+            ConfigSetting::explicit("metric_filterlist", json!([])),
+            ConfigSetting::explicit("metric_filterlist_match_prefix", json!(true)),
+        ]);
+
+        assert!(matches!(resolve_streamed_former_names(&agent), Cow::Borrowed(_)));
+    }
+
+    /// A new `renamed_from` in the schema needs a decision on how an Agent that predates the rename
+    /// streams it.
+    #[test]
+    fn every_renamed_setting_has_a_streamed_former_name_rule() {
+        let renamed: Vec<(String, String)> = datadog_agent_config::datadog_renamed_keys()
+            .iter()
+            .map(|renamed| (renamed.path.join("."), renamed.former.join(".")))
+            .collect();
+        let handled: Vec<(String, String)> = STREAMED_FORMER_NAMES
+            .iter()
+            .map(|(current, former)| (current.to_string(), former.to_string()))
+            .collect();
+
+        assert_eq!(renamed, handled);
     }
 
     #[tokio::test]

@@ -1,5 +1,6 @@
-# Supplies a list-of-maps setting as a JSON-looking environment string.
-# Shows that a type without environment conversion streams that value as a raw string.
+# Supplies a list-of-maps setting, which has no env parser, as a JSON environment string.
+# Shows that the Agent decodes the JSON at load, so the value is stored, streamed and read as a
+# list of maps rather than as the raw string.
 name: env-list-of-maps-raw-string
 group: behavior
 why: [env-unhandled-default-type-raw-string]

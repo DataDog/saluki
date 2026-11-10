@@ -1060,12 +1060,22 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.shared.static_tags.eks_fargate = value;
     }
 
-    fn consume_extra_tags(&mut self, value: Vec<String>) {
-        self.config.shared.tags.extra_tags = value;
-    }
-
     fn consume_expected_tags_duration(&mut self, value: Duration) {
         self.config.shared.tags.expected_tags_duration = value;
+    }
+
+    fn consume_experimental_metrics_endpoint_routing_metric_allowlist(&mut self, value: HashMap<String, Vec<String>>) {
+        self.config.domains.metrics_endpoint_routing.metric_allowlists = value;
+    }
+
+    fn consume_experimental_metrics_endpoint_routing_metric_prefix_allowlist(
+        &mut self, value: HashMap<String, Vec<String>>,
+    ) {
+        self.config.domains.metrics_endpoint_routing.metric_prefix_allowlists = value;
+    }
+
+    fn consume_extra_tags(&mut self, value: Vec<String>) {
+        self.config.shared.tags.extra_tags = value;
     }
 
     fn consume_forwarder_apikey_validation_interval(&mut self, value: i64) {
@@ -1291,16 +1301,11 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_metric_filterlist(&mut self, value: Vec<String>) {
-        // A non-empty current filterlist takes precedence over the legacy blocklist.
-        if !self.datadog.metric_filterlist.is_empty() {
-            self.config.domains.dogstatsd.metric_filter.values = value;
-        }
+        self.config.domains.dogstatsd.metric_filter.values = value;
     }
 
     fn consume_metric_filterlist_match_prefix(&mut self, value: bool) {
-        if !self.datadog.metric_filterlist.is_empty() {
-            self.config.domains.dogstatsd.metric_filter.match_prefix = value;
-        }
+        self.config.domains.dogstatsd.metric_filter.match_prefix = value;
     }
 
     fn consume_metric_filterlist_prefix(&mut self, value: Vec<serde_json::Map<String, serde_json::Value>>) {
@@ -1747,19 +1752,6 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     fn consume_statsd_forward_port(&mut self, value: i64) {
         if let Some(port) = self.parse_port("statsd_forward_port", value) {
             self.config.domains.dogstatsd.listeners.forward_port = port;
-        }
-    }
-
-    fn consume_statsd_metric_blocklist(&mut self, value: Vec<String>) {
-        // The legacy blocklist is effective only when the current filterlist is empty.
-        if self.datadog.metric_filterlist.is_empty() {
-            self.config.domains.dogstatsd.metric_filter.values = value;
-        }
-    }
-
-    fn consume_statsd_metric_blocklist_match_prefix(&mut self, value: bool) {
-        if self.datadog.metric_filterlist.is_empty() {
-            self.config.domains.dogstatsd.metric_filter.match_prefix = value;
         }
     }
 
@@ -3176,15 +3168,10 @@ mod tests {
     }
 
     #[test]
-    fn metric_filter_resolves_current_and_legacy_precedence() {
+    fn metric_filterlist_and_match_prefix_translate_independently() {
         let cases = [
             (
-                json!({
-                    "metric_filterlist": ["current"],
-                    "metric_filterlist_match_prefix": true,
-                    "statsd_metric_blocklist": ["legacy"],
-                    "statsd_metric_blocklist_match_prefix": false,
-                }),
+                json!({ "metric_filterlist": ["current"], "metric_filterlist_match_prefix": true }),
                 MetricFilter {
                     values: vec!["current".to_string()],
                     match_prefix: true,
@@ -3192,15 +3179,10 @@ mod tests {
                 },
             ),
             (
-                json!({
-                    "metric_filterlist": [],
-                    "metric_filterlist_match_prefix": true,
-                    "statsd_metric_blocklist": ["legacy"],
-                    "statsd_metric_blocklist_match_prefix": false,
-                }),
+                json!({ "metric_filterlist": [], "metric_filterlist_match_prefix": true }),
                 MetricFilter {
-                    values: vec!["legacy".to_string()],
-                    match_prefix: false,
+                    values: Vec::new(),
+                    match_prefix: true,
                     prefix_rules: Vec::new(),
                 },
             ),
@@ -3208,9 +3190,9 @@ mod tests {
         ];
 
         for (source, expected) in cases {
-            let (config, errors) = translate_explicit(source);
-            assert!(errors.is_none());
-            assert_eq!(config.domains.dogstatsd.metric_filter, expected);
+            let (config, errors) = translate_explicit(source.clone());
+            assert!(errors.is_none(), "{source}");
+            assert_eq!(config.domains.dogstatsd.metric_filter, expected, "{source}");
         }
     }
 

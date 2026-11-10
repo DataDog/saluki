@@ -12,7 +12,7 @@
 use std::fmt;
 
 /// The Agent commit these lists were last checked against.
-pub const REVIEWED_AT_AGENT_COMMIT: &str = "281d921619d52ce7b99aef40607285992c9c2e89";
+pub const REVIEWED_AT_AGENT_COMMIT: &str = "a682da124ffbc9ec820c118e3b2daaadff97623c";
 
 /// Declares a string enum with its full list and its string forms.
 macro_rules! string_enum {
@@ -52,7 +52,7 @@ macro_rules! string_enum {
 }
 
 string_enum! {
-    /// A `model.Source` string (`pkg/config/model/types.go:29-59` at the pin).
+    /// A `model.Source` string (`pkg/config/model/types.go:41-71` at the pin).
     Source, ALL {
         /// `schema`.
         Schema => "schema",
@@ -89,7 +89,7 @@ string_enum! {
 }
 
 impl Source {
-    /// The sources a case update may write or clear (case.md §5; `pkg/config/model/types.go:37-57`).
+    /// The sources a case update may write or clear (case.md §5; `pkg/config/model/types.go:49-69`).
     pub const UPDATE: &'static [Source] = &[
         Source::InfraMode,
         Source::File,
@@ -139,7 +139,7 @@ string_enum! {
         /// `map[string]interface{}` (getter-map.md §2.1). It keeps only the section's configured leaves, plus
         /// sections declared with a nil value, so schema defaults are absent. It is never a default getter.
         ReadConfigSection => "ReadConfigSection",
-        /// `cfg.IsConfigured(key)` (`nodetreemodel/config.go:878`), returning `bool` (getter-map.md §2.1). It
+        /// `cfg.IsConfigured(key)` (`nodetreemodel/config.go:930`), returning `bool` (getter-map.md §2.1). It
         /// reports whether the user set the key, not the key's value. It is never a default getter.
         IsConfigured => "IsConfigured",
     }
