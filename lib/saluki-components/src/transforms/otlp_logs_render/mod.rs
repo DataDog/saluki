@@ -23,7 +23,7 @@ use saluki_metrics::MetricsBuilder;
 use stringtheory::MetaString;
 use tracing::error;
 
-use crate::common::otlp::logs::ContentRenderer;
+use crate::common::otlp::logs::{ContentRenderer, CONTENT_BUFFER_RETENTION_LIMIT_BYTES};
 
 /// The shortest time between two logged render failures.
 const RENDER_FAILURE_LOG_INTERVAL: Duration = Duration::from_secs(10);
@@ -56,7 +56,8 @@ impl MemoryBounds for OtlpLogsRenderConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         builder
             .minimum()
-            .with_single_value::<OtlpLogsRender>("component struct");
+            .with_single_value::<OtlpLogsRender>("component struct")
+            .with_fixed_amount("render buffer", CONTENT_BUFFER_RETENTION_LIMIT_BYTES);
     }
 }
 

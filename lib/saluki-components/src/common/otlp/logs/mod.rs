@@ -5,6 +5,13 @@ use saluki_error::{generic_error, GenericError};
 use serde_json::Value as JsonValue;
 use stringtheory::MetaString;
 
+/// The most serialization buffer capacity that a [`ContentRenderer`] keeps between logs.
+///
+/// A renderer keeps the capacity of the largest content it has written, so one enormous log would otherwise stay held
+/// for the renderer's lifetime. The limit sits well above the content of an ordinary log: such a log keeps its reuse,
+/// and a log past it has the excess released before the renderer is used again.
+pub const CONTENT_BUFFER_RETENTION_LIMIT_BYTES: usize = 64 * 1024;
+
 /// A field of a log's content.
 enum ContentField<'a> {
     String(&'a str),
@@ -26,7 +33,8 @@ enum ContentField<'a> {
 /// and number formatting differ from Go's `encoding/json` (`gap/json-encoding`): `<`, `>`, `&`, U+2028, and U+2029
 /// aren't escaped, and floats use `serde_json`'s layout, such as `1.0` and `1e21` where Go writes `1` and `1e+21`.
 ///
-/// A renderer keeps its serialization buffer between logs, so rendering many logs reuses its allocation.
+/// A renderer keeps its serialization buffer between logs, up to [`CONTENT_BUFFER_RETENTION_LIMIT_BYTES`], so
+/// rendering many logs reuses its allocation.
 #[derive(Debug, Default)]
 pub struct ContentRenderer {
     buffer: Vec<u8>,
@@ -39,6 +47,22 @@ impl ContentRenderer {
     ///
     /// If a property can't be serialized, an error is returned, and the log should be dropped.
     pub fn render(&mut self, log: &Log) -> Result<MetaString, GenericError> {
+        let content = self.write_content(log).and_then(|()| {
+            simdutf8::basic::from_utf8(&self.buffer)
+                .map(MetaString::from)
+                .map_err(|e| generic_error!("Rendered log content isn't valid UTF-8: {}", e))
+        });
+
+        if self.buffer.capacity() > CONTENT_BUFFER_RETENTION_LIMIT_BYTES {
+            self.buffer.clear();
+            self.buffer.shrink_to(CONTENT_BUFFER_RETENTION_LIMIT_BYTES);
+        }
+
+        content
+    }
+
+    /// Writes a log's content into the buffer.
+    fn write_content(&mut self, log: &Log) -> Result<(), GenericError> {
         // The fields in the order that `HTTPLogItem.MarshalJSON` assembles them, where a later field overwrites an
         // earlier one with the same key.
         let mut fields = Vec::with_capacity(log.additional_properties().len() + 4);
@@ -83,10 +107,7 @@ impl ContentRenderer {
             written.map_err(|e| generic_error!("Failed to serialize log property '{}': {}", key, e))?;
         }
         self.buffer.push(b'}');
-
-        let content = simdutf8::basic::from_utf8(&self.buffer)
-            .map_err(|e| generic_error!("Rendered log content isn't valid UTF-8: {}", e))?;
-        Ok(MetaString::from(content))
+        Ok(())
     }
 }
 
@@ -99,7 +120,7 @@ mod tests {
     use serde_json::{json, Value as JsonValue};
     use stringtheory::MetaString;
 
-    use super::ContentRenderer;
+    use super::{ContentRenderer, CONTENT_BUFFER_RETENTION_LIMIT_BYTES};
 
     /// A render case: a translated log, and the content that Go writes for it, which is the target.
     ///
@@ -411,5 +432,26 @@ mod tests {
 
         let content = renderer.render(&Log::new("second")).expect("log should render");
         assert_eq!(&*content, r#"{"message":"second","status":""}"#);
+    }
+
+    #[test]
+    fn releases_the_excess_of_an_oversized_buffer() {
+        let mut renderer = ContentRenderer::default();
+        let ordinary = log_with_properties("m", json!({"padding": "x".repeat(1024)}));
+        renderer.render(&ordinary).expect("log should render");
+        let ordinary_capacity = renderer.buffer.capacity();
+        assert!(ordinary_capacity <= CONTENT_BUFFER_RETENTION_LIMIT_BYTES);
+
+        // An ordinary log keeps the buffer it grew.
+        renderer.render(&Log::new("m")).expect("log should render");
+        assert_eq!(renderer.buffer.capacity(), ordinary_capacity);
+
+        // An oversized log renders in full, then has the excess released.
+        let oversized = "x".repeat(2 * CONTENT_BUFFER_RETENTION_LIMIT_BYTES);
+        let content = renderer
+            .render(&Log::new(oversized.as_str()))
+            .expect("log should render");
+        assert!(content.contains(&oversized));
+        assert!(renderer.buffer.capacity() <= CONTENT_BUFFER_RETENTION_LIMIT_BYTES);
     }
 }

@@ -27,6 +27,13 @@ use crate::common::datadog::{
 
 const MAX_LOGS_PER_PAYLOAD: usize = 1000;
 
+/// The most tags buffer capacity that the encoder keeps between logs.
+///
+/// The encoder keeps the capacity of the longest tags it has written, so one log with enormous tags would otherwise
+/// stay held for the encoder's lifetime. The limit sits well above the tags of an ordinary log: such a log keeps its
+/// reuse, and a log past it has the excess released before the next log is encoded.
+const TAGS_BUFFER_RETENTION_LIMIT_BYTES: usize = 64 * 1024;
+
 /// The envelope status of a log that has none.
 const DEFAULT_STATUS: &str = "info";
 
@@ -101,7 +108,10 @@ impl MemoryBounds for DatadogLogsConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         // TODO: How do we properly represent the requests we can generate that may be sitting around in-flight?
 
-        builder.minimum().with_single_value::<DatadogLogs>("component struct");
+        builder
+            .minimum()
+            .with_single_value::<DatadogLogs>("component struct")
+            .with_fixed_amount("tags buffer", TAGS_BUFFER_RETENTION_LIMIT_BYTES);
         builder.firm().with_array::<Log>("logs buffer", MAX_LOGS_PER_PAYLOAD);
     }
 }
@@ -221,7 +231,12 @@ impl LogsEndpointEncoder {
             }
             self.tags_buffer.push_str(tag.as_str());
         }
-        serde_json::to_writer(&mut *buffer, &self.tags_buffer)?;
+        let written = serde_json::to_writer(&mut *buffer, &self.tags_buffer);
+        if self.tags_buffer.capacity() > TAGS_BUFFER_RETENTION_LIMIT_BYTES {
+            self.tags_buffer.clear();
+            self.tags_buffer.shrink_to(TAGS_BUFFER_RETENTION_LIMIT_BYTES);
+        }
+        written?;
         buffer.push(b'}');
         Ok(())
     }
@@ -287,7 +302,7 @@ mod tests {
     use serde_json::json;
     use stringtheory::MetaString;
 
-    use super::LogsEndpointEncoder;
+    use super::{LogsEndpointEncoder, TAGS_BUFFER_RETENTION_LIMIT_BYTES};
 
     /// The encoder's clock in these tests, and the envelope `timestamp` it gives.
     const NOW: &str = "2026-01-02T03:04:05.678Z";
@@ -310,6 +325,31 @@ mod tests {
 
     fn tag_set<const N: usize>(tags: [&'static str; N]) -> TagSet {
         tags.into_iter().map(Tag::from_static).collect()
+    }
+
+    #[test]
+    fn releases_the_excess_of_an_oversized_tags_buffer() {
+        let mut encoder = LogsEndpointEncoder::new(fixed_clock);
+        let mut buffer = Vec::new();
+
+        let tag = format!("big:{}", "x".repeat(2 * TAGS_BUFFER_RETENTION_LIMIT_BYTES));
+        let oversized = Log::new("m").with_tags([Tag::from(tag.clone())].into_iter().collect::<TagSet>());
+        encoder
+            .write_envelope(&oversized, &mut buffer)
+            .expect("envelope should serialize");
+        assert!(String::from_utf8_lossy(&buffer).contains(&tag));
+        assert!(encoder.tags_buffer.capacity() <= TAGS_BUFFER_RETENTION_LIMIT_BYTES);
+
+        // An ordinary log keeps the buffer it grew.
+        let ordinary = Log::new("m").with_tags(tag_set(["env:prod"]));
+        encoder
+            .write_envelope(&ordinary, &mut buffer)
+            .expect("envelope should serialize");
+        let ordinary_capacity = encoder.tags_buffer.capacity();
+        encoder
+            .write_envelope(&ordinary, &mut buffer)
+            .expect("envelope should serialize");
+        assert_eq!(encoder.tags_buffer.capacity(), ordinary_capacity);
     }
 
     #[test]
