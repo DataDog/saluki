@@ -3,6 +3,7 @@
 use saluki_core::data_model::event::log::Log;
 use saluki_error::{generic_error, GenericError};
 use serde_json::Value as JsonValue;
+use smallvec::SmallVec;
 use stringtheory::MetaString;
 
 /// The most serialization buffer capacity that a [`ContentRenderer`] keeps between logs.
@@ -11,6 +12,11 @@ use stringtheory::MetaString;
 /// for the renderer's lifetime. The limit sits well above the content of an ordinary log: such a log keeps its reuse,
 /// and a log past it has the excess released before the renderer is used again.
 pub const CONTENT_BUFFER_RETENTION_LIMIT_BYTES: usize = 64 * 1024;
+
+/// How many fields a log's content can hold before its field list needs a heap allocation.
+///
+/// That's the four top-level fields and the properties of an ordinary translated log, with room to spare.
+const INLINE_CONTENT_FIELDS: usize = 32;
 
 /// A field of a log's content.
 enum ContentField<'a> {
@@ -63,34 +69,43 @@ impl ContentRenderer {
 
     /// Writes a log's content into the buffer.
     fn write_content(&mut self, log: &Log) -> Result<(), GenericError> {
-        // The fields in the order that `HTTPLogItem.MarshalJSON` assembles them, where a later field overwrites an
-        // earlier one with the same key.
-        let mut fields = Vec::with_capacity(log.additional_properties().len() + 4);
-        if !log.hostname().is_empty() {
+        // The fields with each key once. `HTTPLogItem.MarshalJSON` writes the top-level fields, then every property,
+        // overwriting a top-level field of the same name, and the status is set after every property. So a property
+        // wins over `hostname`, `message`, and `service`, and `status` wins over a property. Properties already have
+        // unique keys.
+        let properties = log.additional_properties();
+        let mut fields =
+            SmallVec::<[(&str, ContentField<'_>); INLINE_CONTENT_FIELDS]>::with_capacity(properties.len() + 4);
+        let (mut hostname_overwritten, mut message_overwritten, mut service_overwritten) = (false, false, false);
+        for (key, value) in properties {
+            match key.as_ref() {
+                "status" => continue,
+                "hostname" => hostname_overwritten = true,
+                "message" => message_overwritten = true,
+                "service" => service_overwritten = true,
+                _ => {}
+            }
+            fields.push((key.as_ref(), ContentField::Value(value)));
+        }
+        if !hostname_overwritten && !log.hostname().is_empty() {
             fields.push(("hostname", ContentField::String(log.hostname())));
         }
-        fields.push(("message", ContentField::String(log.message())));
-        if !log.service().is_empty() {
+        if !message_overwritten {
+            fields.push(("message", ContentField::String(log.message())));
+        }
+        if !service_overwritten && !log.service().is_empty() {
             fields.push(("service", ContentField::String(log.service())));
         }
-        fields.extend(
-            log.additional_properties()
-                .iter()
-                .map(|(key, value)| (key.as_ref(), ContentField::Value(value))),
-        );
         fields.push(("status", ContentField::String(log.status())));
 
-        // Go sorts map keys by their bytes, as `str` orders them. The sort is stable, so fields with the same key stay
-        // in assembly order, and only the last of them is written.
-        fields.sort_by_key(|(key, _)| *key);
+        // Go sorts map keys by their bytes, as `str` orders them. Every key is unique, so an unstable sort, which
+        // doesn't allocate, gives the same order as a stable one.
+        fields.sort_unstable_by_key(|(key, _)| *key);
 
         self.buffer.clear();
         self.buffer.push(b'{');
         let mut first = true;
-        for (index, (key, field)) in fields.iter().enumerate() {
-            if fields.get(index + 1).is_some_and(|(next, _)| next == key) {
-                continue;
-            }
+        for (key, field) in &fields {
             if !first {
                 self.buffer.push(b',');
             }
