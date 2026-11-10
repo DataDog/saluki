@@ -184,7 +184,6 @@ can't show this difference, so these rules can't catch it.
 | 11 | Map key order             | significant; ignored                                     | ignored                         | Go maps are unordered; the corpus sorts keys. |
 | 12 | List order                | significant; ignored                                     | significant                     | Slices are ordered in Go and in Rust. |
 | 13 | Explicit-only reads       | compare against a leaf; `NotCompared`                    | `NotCompared`                   | Their results describe sources, not a leaf's value (§6). |
-
 | 14 | Byte sizes                | compare the string leaf only; also compare the parsed size | both: the leaf here, the size in the derived tier | ADP parses the string itself, so equal strings can give different byte counts. |
 | 15 | Lists of objects (`JsonMapList`) | compare the raw lists by the generic rule; compare what each side's consumer decodes | what each consumer decodes | No Agent consumer uses the raw `Get` value. `metric_filterlist_prefix`, the only key of this kind, is read by `loadMetricFilterListConfig` (comp/filterlist/impl/filterlist.go) through `structure.UnmarshalKey`, which decodes weakly into prefix entries and runs with no rules when that fails. Raw values that this decode treats alike, such as a `null` entry and `{}`, or a comma-separated `except_prefix` string and a list, run the same rules. The rule is therefore specific to that key: a unit test fails when another supported key has this Rust type, which then needs its own rule. |
 

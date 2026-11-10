@@ -320,11 +320,11 @@ fn parse_metric_prefix_rules(entries: &[serde_json::Map<String, serde_json::Valu
             // Go's `FormatFloat(f, 'f', -1, 64)`, like Rust's `Display`, never uses an exponent.
             Value::Number(value) if value.is_f64() => Ok(value.as_f64().unwrap_or_default().to_string()),
             Value::Number(value) => Ok(value.to_string()),
-            Value::Array(_) => Err(TranslateError::new(
+            Value::Array(_) => Err(TranslateError::new_with_message(
                 "metric_filterlist_prefix",
                 format!("`{path}` expected a string, got a list"),
             )),
-            Value::Object(_) => Err(TranslateError::new(
+            Value::Object(_) => Err(TranslateError::new_with_message(
                 "metric_filterlist_prefix",
                 format!("`{path}` expected a string, got a map"),
             )),
@@ -364,7 +364,10 @@ fn parse_metric_prefix_rules(entries: &[serde_json::Map<String, serde_json::Valu
 /// The prefix rules ADP runs with for a `metric_filterlist_prefix` value.
 ///
 /// Like the Agent, a field value that does not convert drops every rule instead of failing the
-/// configuration. A value that is not a list of objects never reaches this: it fails to deserialize.
+/// configuration: on a decode error the Agent logs it and discards the entries `mapstructure` did
+/// decode. A value that is not a list of objects never reaches this: it fails to deserialize.
+///
+/// https://github.com/DataDog/datadog-agent/blob/a682da124ffbc9ec820c118e3b2daaadff97623c/comp/filterlist/impl/filterlist.go#L103-L108
 pub(crate) fn metric_prefix_rules(entries: &[serde_json::Map<String, serde_json::Value>]) -> Vec<MetricPrefixRule> {
     parse_metric_prefix_rules(entries).unwrap_or_else(|error| {
         warn!(%error, "Failed to load `metric_filterlist_prefix`; using no prefix rules.");
