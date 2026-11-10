@@ -140,10 +140,10 @@ fields, fixed by `docs/case.md` and enforced by `go/record/case.go:192-255,310-3
 minimal example:
 
 ```yaml
-# Shows: an env var whose value is a raw JSON-encoded map, read as a typed getter.
+# Shows: the Agent decodes a JSON map in an env var at load, so the value is read as a map.
 name: additional-endpoints-env
 group: behavior
-why: [env-map-raw-string]
+why: [env-map-json-decoded]
 env:
   DD_ADDITIONAL_ENDPOINTS: '{"https://x.test": ["k"]}'
 keys: [additional_endpoints]

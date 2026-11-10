@@ -354,7 +354,7 @@ The `additional_endpoints` env case from S1, as a hand-written case:
 ```yaml
 name: additional-endpoints-env
 group: behavior
-why: [env-map-raw-string]
+why: [env-map-json-decoded]
 env:
   DD_ADDITIONAL_ENDPOINTS: '{"https://x.test": ["k"]}'
 keys: [additional_endpoints]
