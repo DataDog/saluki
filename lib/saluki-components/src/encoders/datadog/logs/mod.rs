@@ -47,10 +47,9 @@ static DD_EVP_ORIGIN_VERSION_HEADER: HeaderName = HeaderName::from_static("dd-ev
 /// The `DD-PROTOCOL` value of the JSON envelope, under which the intake reads only the envelope fields.
 static AGENT_JSON_PROTOCOL: HeaderValue = HeaderValue::from_static("agent-json");
 
-/// The `DD-EVP-ORIGIN` value that names ADP as the sender.
+/// The `DD-EVP-ORIGIN` value, which names the sender of the logs.
 ///
-/// The Agent gives each of its logs senders its own origin, such as `agent`, `serverless`, and `ddot`, so ADP names
-/// itself rather than claiming to be the Agent. `DD-EVP-ORIGIN-VERSION` is then ADP's own version.
+/// `DD-EVP-ORIGIN-VERSION` carries the version of the same sender.
 static ADP_ORIGIN: HeaderValue = HeaderValue::from_static("agent-data-plane");
 
 /// Datadog Logs incremental encoder.
@@ -67,7 +66,7 @@ pub struct DatadogLogsConfiguration {
     /// Hostname for the envelope of a log that has none.
     default_hostname: MetaString,
 
-    /// Version of ADP, for the `DD-EVP-ORIGIN-VERSION` header.
+    /// Version of the sender, for the `DD-EVP-ORIGIN-VERSION` header.
     ///
     /// This is the bare version, such as `1.9.0`: the intake drops a value with characters such as `/` in it.
     origin_version: String,
