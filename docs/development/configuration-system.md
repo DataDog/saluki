@@ -148,6 +148,9 @@ Code generation emits the derived variables into `DATADOG_ENV_KEYS` and the form
 modeled setting has both explicit `env_vars` and former names. `env_var_names` and `former_names` in the overlay model's
 `schema_gen` hold these rules.
 
+A new rename needs config recorder cases: `renamed_settings_have_recorder_cases` in `datadog-agent-config-corpus`
+fails until `renamed-key-*` cases record the setting and its former names, by env and by YAML.
+
 ## Scalar leaf coercion
 
 `DatadogConfiguration` scalar leaves accept what the Agent's permissive casting accepts. Code generation attaches a

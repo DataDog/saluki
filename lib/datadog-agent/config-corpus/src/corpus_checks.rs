@@ -492,10 +492,13 @@ fn check_origins_uniquely_identify_reads() {
     );
 }
 
+/// A schema node: a setting or a section.
+type SchemaNode = serde_json::Map<String, serde_json::Value>;
+
 /// A schema shape that no config recorder case covers because the schema at the pin has no setting of that shape.
 struct UnrecordedShape {
     /// Whether a setting node has the shape.
-    matches: fn(&serde_json::Map<String, serde_json::Value>) -> bool,
+    matches: fn(&SchemaNode) -> bool,
     /// What the schema update that adds the shape must also do.
     message: &'static str,
 }
@@ -515,11 +518,16 @@ const UNRECORDED_SHAPES: &[UnrecordedShape] = &[UnrecordedShape {
                   case that reads such a key with each duration spelling",
 }];
 
-/// Collect the dotted path of every `node_type: setting` node under `properties` that `matches` accepts.
-fn settings_matching(
-    properties: &serde_json::Map<String, serde_json::Value>, prefix: &str,
-    matches: fn(&serde_json::Map<String, serde_json::Value>) -> bool, out: &mut Vec<String>,
-) {
+/// The resolved vendored schema as JSON.
+fn vendored_schema_json() -> serde_json::Value {
+    let files = Files::default();
+    let schema = load_resolved_schema(&files.datadog_schema).unwrap_or_else(|e| panic!("schema: {e}"));
+    // The schema's mapping keys are all strings, so it converts to JSON losslessly for traversal.
+    serde_json::to_value(&schema).unwrap_or_else(|e| panic!("schema as JSON: {e}"))
+}
+
+/// Collect every `node_type: setting` node under `properties`, with its dotted path.
+fn collect_settings<'a>(properties: &'a SchemaNode, prefix: &str, out: &mut Vec<(String, &'a SchemaNode)>) {
     for (name, node) in properties {
         let Some(node) = node.as_object() else {
             continue;
@@ -530,36 +538,159 @@ fn settings_matching(
             format!("{prefix}.{name}")
         };
         if node.get("node_type").and_then(|t| t.as_str()) == Some("setting") {
-            if matches(node) {
-                out.push(path);
-            }
+            out.push((path, node));
         } else if let Some(children) = node.get("properties").and_then(|p| p.as_object()) {
-            settings_matching(children, &path, matches, out);
+            collect_settings(children, &path, out);
         }
     }
 }
 
-#[test]
-fn vendored_schema_has_no_unrecorded_shapes() {
-    let files = Files::default();
-    let schema = load_resolved_schema(&files.datadog_schema).unwrap_or_else(|e| panic!("schema: {e}"));
-    // The schema's mapping keys are all strings, so it converts to JSON losslessly for traversal.
-    let schema = serde_json::to_value(&schema).unwrap_or_else(|e| panic!("schema as JSON: {e}"));
+/// Every setting of the vendored schema, with its dotted path.
+fn vendored_settings(schema: &serde_json::Value) -> Vec<(String, &SchemaNode)> {
     let properties = schema
         .get("properties")
         .and_then(|p| p.as_object())
         .expect("the vendored schema has a root `properties` mapping");
+    let mut settings = Vec::new();
+    collect_settings(properties, "", &mut settings);
+    settings
+}
+
+#[test]
+fn vendored_schema_has_no_unrecorded_shapes() {
+    let schema = vendored_schema_json();
+    let settings = vendored_settings(&schema);
     let mut problems = Vec::new();
     for shape in UNRECORDED_SHAPES {
-        let mut found = Vec::new();
-        settings_matching(properties, "", shape.matches, &mut found);
+        let found: Vec<&str> = settings
+            .iter()
+            .filter(|(_, setting)| (shape.matches)(setting))
+            .map(|(path, _)| path.as_str())
+            .collect();
         if !found.is_empty() {
             problems.push(format!("{}: {}", shape.message, found.join(", ")));
         }
     }
     assert!(
         problems.is_empty(),
-        "{}\nwrite the cases in lib/datadog-agent/config-recorder/cases/, then run `make build-agent-config-corpus`",
+        "{}\nwrite the cases in lib/datadog-agent/config-recorder/cases/, then run `{REGENERATE}`",
         problems.join("\n")
     );
+}
+
+/// A recorded `renamed-key-*` case, reduced to what rename coverage needs.
+struct RenameCase<'a> {
+    /// Whether the case sets environment variables.
+    by_env: bool,
+    /// Whether the case supplies a `datadog.yaml`.
+    by_yaml: bool,
+    /// The keys the case recorded.
+    keys: BTreeSet<&'a str>,
+}
+
+/// One problem per renamed setting that lacks an env or a YAML `renamed-key-*` case recording it and all its
+/// former names.
+fn rename_coverage_problems(renamed: &BTreeMap<String, Vec<String>>, cases: &[RenameCase<'_>]) -> Vec<String> {
+    let mut problems = Vec::new();
+    for (key, formers) in renamed {
+        let covering: Vec<&RenameCase<'_>> = cases
+            .iter()
+            .filter(|case| {
+                std::iter::once(key)
+                    .chain(formers)
+                    .all(|k| case.keys.contains(k.as_str()))
+            })
+            .collect();
+        let missing: Vec<&str> = [
+            ("env", covering.iter().any(|c| c.by_env)),
+            ("YAML", covering.iter().any(|c| c.by_yaml)),
+        ]
+        .into_iter()
+        .filter(|(_, covered)| !covered)
+        .map(|(input, _)| input)
+        .collect();
+        if !missing.is_empty() {
+            problems.push(format!(
+                "  {key} (renamed from {}): no {} case",
+                formers.join(", "),
+                missing.join(" or ")
+            ));
+        }
+    }
+    problems
+}
+
+/// Every setting the vendored schema renames (`renamed_from`) has `renamed-key-*` cases, one by env and one by
+/// YAML, that record it and all its former names. A schema update that renames another setting must add them.
+#[test]
+fn renamed_settings_have_recorder_cases() {
+    let Some(corpus) = corpus() else { return };
+    let schema = vendored_schema_json();
+    let renamed: BTreeMap<String, Vec<String>> = vendored_settings(&schema)
+        .into_iter()
+        .filter_map(|(path, setting)| {
+            let formers = setting.get("renamed_from")?.as_object()?;
+            Some((path, formers.keys().cloned().collect()))
+        })
+        .collect();
+    let cases: Vec<RenameCase<'_>> = corpus
+        .cases
+        .iter()
+        .filter(|case| case.name.starts_with("renamed-key-"))
+        .map(|case| RenameCase {
+            by_env: case.inputs.env.is_some(),
+            by_yaml: case.inputs.yaml.is_some(),
+            keys: key_lines(case).map(|line| line.key.as_str()).collect(),
+        })
+        .collect();
+    let problems = rename_coverage_problems(&renamed, &cases);
+    assert!(
+        problems.is_empty(),
+        "renamed settings without config recorder cases:\n{}\nadd `renamed-key-*` cases in \
+         lib/datadog-agent/config-recorder/cases/ that set each one under its current and former names, by env and \
+         by YAML, and record all of those names, then run `{REGENERATE}`",
+        problems.join("\n")
+    );
+}
+
+#[cfg(test)]
+mod rename_coverage_problems_tests {
+    use std::collections::BTreeMap;
+
+    use super::{rename_coverage_problems, RenameCase};
+
+    fn renamed() -> BTreeMap<String, Vec<String>> {
+        BTreeMap::from([("new_key".to_string(), vec!["old_key".to_string()])])
+    }
+
+    fn case(by_env: bool, by_yaml: bool, keys: &[&'static str]) -> RenameCase<'static> {
+        RenameCase {
+            by_env,
+            by_yaml,
+            keys: keys.iter().copied().collect(),
+        }
+    }
+
+    #[test]
+    fn env_and_yaml_cases_cover_a_rename() {
+        let cases = [
+            case(true, false, &["new_key", "old_key"]),
+            case(false, true, &["new_key", "old_key"]),
+        ];
+        assert!(rename_coverage_problems(&renamed(), &cases).is_empty());
+    }
+
+    #[test]
+    fn a_missing_input_is_named() {
+        let cases = [case(false, true, &["new_key", "old_key"])];
+        let problems = rename_coverage_problems(&renamed(), &cases);
+        assert_eq!(problems, ["  new_key (renamed from old_key): no env case"]);
+    }
+
+    #[test]
+    fn a_case_must_record_the_former_name() {
+        let cases = [case(true, true, &["new_key"])];
+        let problems = rename_coverage_problems(&renamed(), &cases);
+        assert_eq!(problems, ["  new_key (renamed from old_key): no env or YAML case"]);
+    }
 }

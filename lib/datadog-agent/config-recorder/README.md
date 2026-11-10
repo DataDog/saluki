@@ -226,6 +226,8 @@ When a check fails because the corpus is stale, regenerate it with `make build-a
 - `vendored_schema_has_no_unrecorded_shapes`: the vendored schema grew a shape (a duration-tagged
   integer or number) that no case covers yet; add the case the failure names, in `cases/`, before
   regenerating.
+- `renamed_settings_have_recorder_cases`: a setting with `renamed_from` in the vendored schema has
+  no `renamed-key-*` case by env, or none by YAML, that records it and all its former names.
 
 ```sh
 cargo nextest run --lib --bins -p datadog-agent-config-corpus

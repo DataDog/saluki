@@ -178,31 +178,31 @@ recursively. It must not pass results through `float64` or `encoding/json`'s gen
 
 This table is orientation only; §1 is the rule. It shows what §1 yields for each schema shape,
 given the Go default `codegen` emits for it. Keys at pin counts the vendored schema at
-`lib/datadog-agent/config/schema/core/` (commit `281d921619d`).
+`lib/datadog-agent/config/schema/core/` (commit `a682da124ff`).
 
 | # | Schema type and tags                                   | Go default (`codegen` line)                   | Getters                         | Result JSON (§3)                  | Keys at pin |
 |---|--------------------------------------------------------|-----------------------------------------------|---------------------------------|-----------------------------------|-------------|
-| 1 | `boolean`                                              | `bool` (165-166)                              | `GetBool`                       | boolean                           | 869 |
-| 2 | `integer`                                              | `int` (168-171)                               | `GetInt`                        | integer                           | 694 |
+| 1 | `boolean`                                              | `bool` (165-166)                              | `GetBool`                       | boolean                           | 910 |
+| 2 | `integer`                                              | `int` (168-171)                               | `GetInt`                        | integer                           | 725 |
 | 3 | `integer`, `golang_type:int64`                         | `int64` (169-170)                             | `GetInt64`                      | integer, exact beyond 2^53        | 22 |
 | 4 | `integer`, `golang_type:duration`                      | `int` (tag ignored, 168-171)                  | `GetInt`, `GetDuration`         | integer; integer ns               | 0 |
-| 5 | `number` (with or without `golang_type:float64`)       | `float64` (173-180)                           | `GetFloat64`                    | float                             | 163 |
+| 5 | `number` (with or without `golang_type:float64`)       | `float64` (173-180)                           | `GetFloat64`                    | float                             | 170 |
 | 6 | `number`, `golang_type:duration`                       | `float64` (tag ignored)                       | `GetFloat64`, `GetDuration`     | float; integer ns                 | 0 |
-| 7 | `string`                                               | `string` (188-189)                            | `GetString`                     | string                            | 504 |
-| 8 | `string`, `format: duration`, default matches the duration regex (73-104) | `time.Duration` (183-187) | `GetDuration`         | integer ns                        | 83 (80 also tagged `golang_type:duration`) |
+| 7 | `string`                                               | `string` (188-189)                            | `GetString`                     | string                            | 537 |
+| 8 | `string`, `format: duration`, default matches the duration regex (73-104) | `time.Duration` (183-187) | `GetDuration`         | integer ns                        | 95 (85 also tagged `golang_type:duration`) |
 | 9 | `string`, `format: duration`, default not a duration (for example `""`, `"10"`) | `string` (188-189) | `GetString`, `GetDuration`          | string; integer ns                | 0 |
-| 10 | any, with `platform_default`                          | the value `getPlatformDefault` picks (158-160; `pkg/config/setup/config.go:1057-1069`) | by §1 from that value's type | as that row | 18 |
-| 11 | `array`, `items: string`                              | `[]string` (206-207)                          | `GetStringSlice`                | array of string                   | 165 |
-| 12 | `array`, `items: integer`, or tag `golang_type:[]int` | `[]int` (206-207, 216-217)                    | `Get`, `GetStringSlice`         | generic; array of string          | 1 |
+| 10 | any, with `platform_default`                          | the value `getPlatformDefault` picks (158-160; `pkg/config/setup/config.go:1057-1069`) | by §1 from that value's type | as that row | 20 |
+| 11 | `array`, `items: string`                              | `[]string` (206-207)                          | `GetStringSlice`                | array of string                   | 167 |
+| 12 | `array`, `items: integer`, or tag `golang_type:[]int` | `[]int` (206-207, 216-217)                    | `Get`, `GetStringSlice`         | generic; array of string          | 2 |
 | 13 | `array`, `items: number`                              | `[]float64` (206-207)                         | `GetFloat64Slice`               | array of float, or `null`         | 0 |
 | 14 | `array`, no `items`                                   | `[]interface{}` (198-199, 207)                | `Get`                           | generic                           | 6 |
-| 15 | `array`, `items: object` (any `additionalProperties`) | `[]map[string]<V>` (207, 209)                 | `Get`                           | generic                           | 44 |
-| 16 | `object`, no `additionalProperties` (incl. `golang_type:map[string]interface{}`) | `map[string]interface{}` (209, 198-199) | `GetStringMap` | object, generic values or `null` | 3 |
-| 17 | `object`, `additionalProperties: string`              | `map[string]string` (209)                     | `GetStringMapString`            | object of string, or `null`       | 23 |
-| 18 | `object`, `additionalProperties: array of string`     | `map[string][]string` (209)                   | `GetStringMapStringSlice`       | object of array of string         | 18 |
+| 15 | `array`, `items: object` (any `additionalProperties`) | `[]map[string]<V>` (207, 209)                 | `Get`                           | generic                           | 49 |
+| 16 | `object`, no `additionalProperties` (incl. `golang_type:map[string]interface{}`) | `map[string]interface{}` (209, 198-199) | `GetStringMap` | object, generic values or `null` | 5 |
+| 17 | `object`, `additionalProperties: string`              | `map[string]string` (209)                     | `GetStringMapString`            | object of string, or `null`       | 27 |
+| 18 | `object`, `additionalProperties: array of string`     | `map[string][]string` (209)                   | `GetStringMapStringSlice`       | object of array of string         | 20 |
 | 19 | `object`, `additionalProperties: number` (incl. `golang_type:map[string]float64`) | `map[string]float64` (209) | `GetStringMap`           | object, generic values or `null`  | 1 |
 | 20 | `object`, `additionalProperties: integer`             | `map[string]int` (209)                        | `GetStringMap`                  | object, generic values or `null`  | 0 |
-| 21 | `object`, `additionalProperties: object`              | `map[string]map[string]interface{}` (209)     | `Get`                           | generic                           | 0 (1 at `a682da124ff`) |
+| 21 | `object`, `additionalProperties: object`              | `map[string]map[string]interface{}` (209)     | `Get`                           | generic                           | 1 |
 | 22 | `object` or `array` with `boolean` element type       | none: `dict_to_gotype` has no `boolean` case (196-209) | whatever `%T` the Agent holds; a type outside §1 fails | — | 0 |
 | 23 | not in schema                                         | none                                          | `Get`, unless overridden        | generic                           | — |
 | 24 | section (inner node) named in `keys`                  | none                                          | `Get`                           | generic (`getter.go:81-96` builds a map) | — |
