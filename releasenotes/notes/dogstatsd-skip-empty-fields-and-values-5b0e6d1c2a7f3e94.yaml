@@ -6,7 +6,8 @@ fixes:
     tags, and events and service checks keep their tags, aggregation key and
     message. Empty values in a multi-value metric, such as ``metric:1::2|d``, are
     also skipped rather than rejecting the whole line. With permissive decoding
-    disabled, these payloads are now rejected and counted as decode errors.
+    disabled, these payloads are now rejected and counted as decode errors, as are
+    events and service checks with an unknown or malformed optional field.
   - |
     Because the fields after an empty ``|`` field are now parsed, a malformed field
     there, such as the sample rate in ``metric:1|c||@notafloat``, now rejects the

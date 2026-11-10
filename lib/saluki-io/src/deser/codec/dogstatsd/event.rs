@@ -89,13 +89,9 @@ pub fn parse_dogstatsd_event<'a>(
                 continue;
             }
 
-            // A one-byte field (for example, a bare `#` with no tags) carries no value, so there's nothing to parse,
-            // but any fields after it still are.
-            if chunk.len() < 2 {
-                remaining = tail;
-                continue;
-            }
-            match &chunk[..2] {
+            // Match on the two-byte field prefix. A one-byte field (for example, a bare `#`) can't match any of the
+            // two-byte prefixes, so it either matches a single-byte prefix below or is unknown.
+            match chunk.get(..2).unwrap_or(chunk) {
                 // Timestamp: client-provided timestamp for the event, relative to the Unix epoch, in seconds.
                 TIMESTAMP_PREFIX => {
                     let (_, timestamp) = all_consuming(preceded(tag(TIMESTAMP_PREFIX), unix_timestamp)).parse(chunk)?;
@@ -150,15 +146,28 @@ pub fn parse_dogstatsd_event<'a>(
                     let (_, cardinality) = cardinality(chunk)?;
                     maybe_cardinality = cardinality;
                 }
-                // Tags: additional tags to be added to the event.
-                _ if chunk.starts_with(TAGS_PREFIX) && chunk != TAGS_PREFIX => {
+                // Tags: additional tags to be added to the event. A bare `#` is a valid, empty set of tags.
+                _ if chunk.starts_with(TAGS_PREFIX) => {
                     let (_, tags) = all_consuming(preceded(tag("#"), tags(config))).parse(chunk)?;
                     maybe_tags = Some(tags);
                 }
+                // A known field with an empty value (for example, `h:`) is treated as missing.
+                HOSTNAME_PREFIX
+                | AGGREGATION_KEY_PREFIX
+                | SOURCE_TYPE_PREFIX
+                | LOCAL_DATA_PREFIX
+                | EXTERNAL_DATA_PREFIX
+                    if chunk.len() == 2 => {}
+                _ if chunk == CARDINALITY_PREFIX => {}
+                // Origin detection fields are ignored when client origin detection is disabled.
+                LOCAL_DATA_PREFIX | EXTERNAL_DATA_PREFIX if !config.client_origin_detection => {}
+                _ if chunk.starts_with(CARDINALITY_PREFIX) && !config.client_origin_detection => {}
+                // An unknown or malformed field (for example, a stray `T`). In permissive mode, we skip it, matching
+                // the reference DogStatsD server. Otherwise, we reject the event.
                 _ => {
-                    // We don't know what this is, so we just skip it.
-                    //
-                    // TODO: Should we throw an error, warn, or be silently permissive?
+                    if !config.permissive {
+                        return Err(nom::Err::Error(Error::new(chunk, ErrorKind::Verify)));
+                    }
                 }
             }
             remaining = tail;
@@ -313,6 +322,27 @@ mod tests {
         for config in [&permissive, &strict] {
             let actual = parse_dsd_eventd_with_conf(raw.as_bytes(), config).unwrap();
             check_basic_eventd_eq(expected(), actual);
+        }
+    }
+
+    #[test]
+    fn unknown_or_malformed_fields_are_rejected_only_in_strict_mode() {
+        let permissive = DogStatsDCodecConfiguration::default().with_permissive_mode(true);
+        let strict = DogStatsDCodecConfiguration::default().with_permissive_mode(false);
+
+        // A stray one-byte field, and an unknown field.
+        for raw in [
+            b"_e{5,4}:title|text|T|#env:prod".as_slice(),
+            b"_e{5,4}:title|text|x:unknown|#env:prod",
+        ] {
+            let (_, event) = parse_dogstatsd_event(raw, &permissive)
+                .unwrap_or_else(|e| panic!("permissive mode should skip the field in {raw:?}: {e:?}"));
+            assert_eq!(event.tags.iter().collect::<Vec<_>>(), ["env:prod"]);
+
+            assert!(
+                parse_dogstatsd_event(raw, &strict).is_err(),
+                "strict mode should reject {raw:?}"
+            );
         }
     }
 
