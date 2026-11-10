@@ -105,8 +105,7 @@ impl MemoryBounds for DogStatsDNoAggSplitConfiguration {
 
 fn has_timestamped_metrics(events: &EventsBuffer) -> bool {
     events
-        .into_iter()
-        .filter_map(|event| event.try_as_metric())
+        .events::<Metric>()
         .any(|metric| metric.values().any_timestamped())
 }
 
@@ -261,23 +260,21 @@ impl Transform for DogStatsDNoAggSplit {
                             .buffered()
                             .expect("default output should always exist");
 
-                        for event in events {
-                            if let Some(metric) = event.try_into_metric() {
-                                let (maybe_timestamped, maybe_remainder) = try_split_timestamped_values(metric);
+                        for metric in events.into_events::<Metric>() {
+                            let (maybe_timestamped, maybe_remainder) = try_split_timestamped_values(metric);
 
-                                if let Some(timestamped_metric) = maybe_timestamped {
-                                    self.passthrough_batcher
-                                        .push_metric(timestamped_metric, context.dispatcher())
-                                        .await;
-                                }
+                            if let Some(timestamped_metric) = maybe_timestamped {
+                                self.passthrough_batcher
+                                    .push_metric(timestamped_metric, context.dispatcher())
+                                    .await;
+                            }
 
-                                if let Some(remainder) = maybe_remainder {
-                                    // A push only fails when the downstream output can no longer be sent to, which
-                                    // means the buffered events it was flushing are gone along with this one. There's
-                                    // nowhere left to put them, so log and keep draining our input.
-                                    if let Err(e) = default_dispatcher.push(Event::Metric(remainder)).await {
-                                        error!(error = %e, "Failed to dispatch non-timestamped events.");
-                                    }
+                            if let Some(remainder) = maybe_remainder {
+                                // A push only fails when the downstream output can no longer be sent to, which
+                                // means the buffered events it was flushing are gone along with this one. There's
+                                // nowhere left to put them, so log and keep draining our input.
+                                if let Err(e) = default_dispatcher.push(Event::Metric(remainder)).await {
+                                    error!(error = %e, "Failed to dispatch non-timestamped events.");
                                 }
                             }
                         }

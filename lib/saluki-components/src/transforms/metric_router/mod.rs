@@ -7,7 +7,7 @@ use saluki_core::{
         transforms::{Transform, TransformBuilder, TransformContext},
         BuildContext,
     },
-    data_model::event::{Event, EventType},
+    data_model::event::{metric::Metric, EventType},
     topology::{EventsBuffer, OutputDefinition},
 };
 use saluki_error::{generic_error, GenericError};
@@ -44,30 +44,23 @@ impl MetricRouter {
         })
     }
 
-    /// Evaluates whether the event should be routed to the matched output.
+    /// Evaluates whether the metric should be routed to the matched output.
     ///
-    /// Returns true if the event is a metric with a name that exactly matches
-    /// one of the configured metric names, false otherwise.
-    fn should_route_to_matched(&self, event: &Event) -> bool {
-        match event {
-            Event::Metric(metric) => {
-                // Check if the metric name exactly matches any of our configured names
-                let metric_name = metric.context().name();
-                self.metric_names.contains(metric_name.as_ref())
-            }
-            _ => {
-                // Non-metric events are always routed to unmatched
-                false
-            }
-        }
+    /// Returns true if the metric name exactly matches one of the configured metric names, false otherwise.
+    fn should_route_to_matched(&self, metric: &Metric) -> bool {
+        self.metric_names.contains(metric.context().name().as_ref())
     }
 
     /// Processes a batch of events by routing them to matched or unmatched outputs.
     async fn process_event_batch(
         &self, mut events: EventsBuffer, context: &mut TransformContext,
     ) -> Result<(), GenericError> {
-        // Extract matched events from the buffer, leaving unmatched ones behind
-        let matched_events = events.extract(|event| self.should_route_to_matched(event));
+        // Extract matched metrics from the buffer, leaving unmatched metrics and all non-metric events behind
+        let matched_events = events.extract(|event| {
+            event
+                .try_as_metric()
+                .is_some_and(|metric| self.should_route_to_matched(metric))
+        });
 
         let matched_count = context
             .dispatcher()
@@ -179,8 +172,6 @@ impl Transform for MetricRouter {
 
 #[cfg(test)]
 mod tests {
-    use saluki_core::data_model::event::{metric::Metric, Event};
-
     use super::*;
 
     #[test]
@@ -191,19 +182,19 @@ mod tests {
         .expect("Should create router successfully");
 
         // Test metric event with matching name
-        let matching_metric = Event::Metric(Metric::counter("test.counter", 1.0));
+        let matching_metric = Metric::counter("test.counter", 1.0);
         assert!(router.should_route_to_matched(&matching_metric));
 
         // Test metric event with another matching name
-        let another_matching_metric = Event::Metric(Metric::counter("another.metric", 5.0));
+        let another_matching_metric = Metric::counter("another.metric", 5.0);
         assert!(router.should_route_to_matched(&another_matching_metric));
 
         // Test metric event with non-matching name
-        let non_matching_metric = Event::Metric(Metric::counter("different.metric", 1.0));
+        let non_matching_metric = Metric::counter("different.metric", 1.0);
         assert!(!router.should_route_to_matched(&non_matching_metric));
 
         // Test partial match (should fail - we want exact matching)
-        let partial_match_metric = Event::Metric(Metric::counter("test.counter.extra", 1.0));
+        let partial_match_metric = Metric::counter("test.counter.extra", 1.0);
         assert!(!router.should_route_to_matched(&partial_match_metric));
     }
 
@@ -213,7 +204,7 @@ mod tests {
             .expect("Should create router successfully");
 
         // No metrics should be routed to matched when the list is empty
-        let metric_event = Event::Metric(Metric::counter("any.metric", 1.0));
+        let metric_event = Metric::counter("any.metric", 1.0);
         assert!(!router.should_route_to_matched(&metric_event));
     }
 

@@ -1,7 +1,7 @@
 use std::{collections::VecDeque, fmt};
 
 use crate::{
-    data_model::event::{Event, EventType},
+    data_model::event::{Event, EventKind, EventType},
     topology::interconnect::{dispatcher::DispatchBuffer, Dispatchable},
 };
 
@@ -55,6 +55,65 @@ impl<const N: usize> FixedSizeEventBuffer<N> {
         self.seen_event_types |= event.event_type();
         self.events.push_back(event);
         None
+    }
+
+    /// Returns an iterator over the events of type `T` in the event buffer.
+    pub fn events<T: EventKind>(&self) -> impl Iterator<Item = &T> {
+        self.events.iter().filter_map(T::try_from_event_ref)
+    }
+
+    /// Returns an iterator over mutable references to the events of type `T` in the event buffer.
+    pub fn events_mut<T: EventKind>(&mut self) -> impl Iterator<Item = &mut T> {
+        self.events.iter_mut().filter_map(T::try_from_event_mut)
+    }
+
+    /// Consumes the event buffer, returning an iterator over the events of type `T` it held.
+    ///
+    /// Events of other types are dropped.
+    pub fn into_events<T: EventKind>(self) -> impl Iterator<Item = T> {
+        self.events
+            .into_iter()
+            .filter_map(|event| T::try_from_event(event).ok())
+    }
+
+    /// Retains only the events of type `T` for which `predicate` returns `true`.
+    ///
+    /// Events of other types are kept. The remaining events keep their relative order.
+    pub fn retain_events<T, F>(&mut self, mut predicate: F)
+    where
+        T: EventKind,
+        F: FnMut(&mut T) -> bool,
+    {
+        let mut seen_event_types = EventType::none();
+        self.events.retain_mut(|event| {
+            let keep = match T::try_from_event_mut(event) {
+                Some(value) => predicate(value),
+                None => true,
+            };
+            if keep {
+                seen_event_types |= event.event_type();
+            }
+            keep
+        });
+        self.seen_event_types = seen_event_types;
+    }
+
+    /// Removes all events of type `T` from the event buffer, returning them in order.
+    ///
+    /// Events of other types are kept, in their relative order.
+    pub fn take_events<T: EventKind>(&mut self) -> impl Iterator<Item = T> {
+        let mut taken = Vec::new();
+        // Rotate through the buffer once, popping every event from the front and pushing the ones we keep back on, so
+        // the buffer's storage is reused.
+        for _ in 0..self.events.len() {
+            let event = self.events.pop_front().expect("buffer holds at least this many events");
+            match T::try_from_event(event) {
+                Ok(value) => taken.push(value),
+                Err(event) => self.events.push_back(event),
+            }
+        }
+        self.seen_event_types &= !T::EVENT_TYPE;
+        taken.into_iter()
     }
 
     /// Extract events from the event buffer given a predicate function.
@@ -235,6 +294,85 @@ mod tests {
         service_check::{CheckStatus, ServiceCheck},
         Event, EventType,
     };
+
+    /// Builds a buffer holding metrics `a` and `c`, and events `b` and `d`, interleaved in that order.
+    fn mixed_buffer() -> FixedSizeEventBuffer<8> {
+        let mut buffer = FixedSizeEventBuffer::<8>::default();
+        for event in [
+            Event::Metric(Metric::counter("a", 1.0)),
+            Event::EventD(EventD::new("b", "b")),
+            Event::Metric(Metric::counter("c", 1.0)),
+            Event::EventD(EventD::new("d", "d")),
+        ] {
+            assert!(buffer.try_push(event).is_none());
+        }
+        buffer
+    }
+
+    fn metric_names<'a>(metrics: impl Iterator<Item = &'a Metric>) -> Vec<String> {
+        metrics.map(|metric| metric.context().name().to_string()).collect()
+    }
+
+    #[test]
+    fn typed_views_only_see_events_of_their_type() {
+        let mut buffer = mixed_buffer();
+        assert_eq!(metric_names(buffer.events::<Metric>()), ["a", "c"]);
+        assert_eq!(
+            buffer
+                .events::<EventD>()
+                .map(|eventd| eventd.title())
+                .collect::<Vec<_>>(),
+            ["b", "d"]
+        );
+        assert_eq!(buffer.events::<ServiceCheck>().count(), 0);
+
+        for metric in buffer.events_mut::<Metric>() {
+            metric.metadata_mut().set_unit("seconds");
+        }
+        assert!(buffer
+            .events::<Metric>()
+            .all(|metric| metric.metadata().unit() == Some("seconds")));
+        assert_eq!(buffer.len(), 4);
+    }
+
+    #[test]
+    fn into_events_drops_other_types() {
+        let names: Vec<_> = mixed_buffer()
+            .into_events::<Metric>()
+            .map(|metric| metric.context().name().to_string())
+            .collect();
+        assert_eq!(names, ["a", "c"]);
+    }
+
+    #[test]
+    fn retain_events_filters_only_its_type() {
+        let mut buffer = mixed_buffer();
+        buffer.retain_events::<Metric, _>(|metric| metric.context().name() == "c");
+
+        assert_eq!(buffer.len(), 3);
+        assert_eq!(metric_names(buffer.events::<Metric>()), ["c"]);
+        assert_eq!(buffer.events::<EventD>().count(), 2);
+        assert!(buffer.has_event_type(EventType::Metric));
+
+        buffer.retain_events::<Metric, _>(|_| false);
+        assert!(!buffer.has_event_type(EventType::Metric));
+        assert!(buffer.has_event_type(EventType::EventD));
+    }
+
+    #[test]
+    fn take_events_removes_its_type_in_order() {
+        let mut buffer = mixed_buffer();
+        let taken: Vec<_> = buffer
+            .take_events::<EventD>()
+            .map(|eventd| eventd.title().to_string())
+            .collect();
+
+        assert_eq!(taken, ["b", "d"]);
+        assert_eq!(buffer.len(), 2);
+        assert_eq!(metric_names(buffer.events::<Metric>()), ["a", "c"]);
+        assert!(!buffer.has_event_type(EventType::EventD));
+        assert!(buffer.has_event_type(EventType::Metric));
+    }
 
     #[test]
     fn capacity() {

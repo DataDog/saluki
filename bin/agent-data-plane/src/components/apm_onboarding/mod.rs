@@ -93,10 +93,8 @@ impl SynchronousTransform for ApmOnboarding {
             return;
         }
 
-        for event in event_buffer {
-            if let Some(trace) = event.try_as_trace_mut() {
-                self.enrich_trace(trace)
-            }
+        for trace in event_buffer.events_mut::<Trace>() {
+            self.enrich_trace(trace)
         }
     }
 }

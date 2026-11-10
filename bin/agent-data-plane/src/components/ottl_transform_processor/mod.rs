@@ -13,7 +13,7 @@ use saluki_common::collections::FastHashMap;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     components::{transforms::*, BuildContext},
-    data_model::event::trace::{AttributeValue, Span},
+    data_model::event::trace::{AttributeValue, Span, Trace},
     topology::EventsBuffer,
 };
 use saluki_error::{generic_error, GenericError};
@@ -131,12 +131,10 @@ impl SynchronousTransform for OttlTransform {
             return;
         }
 
-        for event in event_buffer {
-            if let Some(trace) = event.try_as_trace_mut() {
-                let resource_attrs = std::sync::Arc::clone(&trace.attributes);
-                for span in trace.spans_mut() {
-                    self.transform_span(span, &resource_attrs);
-                }
+        for trace in event_buffer.events_mut::<Trace>() {
+            let resource_attrs = std::sync::Arc::clone(&trace.attributes);
+            for span in trace.spans_mut() {
+                self.transform_span(span, &resource_attrs);
             }
         }
     }

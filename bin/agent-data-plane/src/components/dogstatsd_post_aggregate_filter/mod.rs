@@ -156,17 +156,13 @@ impl DogStatsDPostAggregateFilter {
     }
 
     fn transform_buffer(&self, buffer: &mut EventsBuffer) {
-        buffer.remove_if(|event| {
-            let should_filter = event
-                .try_as_metric()
-                .map(|metric| self.should_filter_metric(metric))
-                .unwrap_or(false);
-
+        buffer.retain_events::<Metric, _>(|metric| {
+            let should_filter = self.should_filter_metric(metric);
             if should_filter {
                 self.telemetry.increment_filtered_metrics();
             }
 
-            should_filter
+            !should_filter
         });
     }
 }
