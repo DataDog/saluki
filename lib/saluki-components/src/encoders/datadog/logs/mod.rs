@@ -388,7 +388,7 @@ mod tests {
 
     #[test]
     fn releases_the_excess_of_an_oversized_tags_buffer() {
-        let mut encoder = LogsEndpointEncoder::new(MetaString::empty(), fixed_clock);
+        let mut encoder = LogsEndpointEncoder::new(MetaString::empty(), Vec::new(), fixed_clock);
         let mut buffer = Vec::new();
 
         let ordinary = Log::new("m").with_tags(tag_set(["env:prod"]));
