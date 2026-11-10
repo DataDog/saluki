@@ -1,12 +1,11 @@
 //! [`ConfigurationSystem`]: the runtime configuration, translated from the raw sources and kept
 //! current as the Datadog Agent streams updates.
 
-use std::borrow::Cow;
 use std::future::Future;
 use std::sync::{Arc, PoisonError, RwLock};
 use std::time::Duration;
 
-use agent_data_plane_config::SalukiConfiguration;
+use agent_data_plane_config::{Provenance, SalukiConfiguration};
 use datadog_agent_config::{DatadogConfiguration, TranslateErrors};
 use saluki_common::sync::live::{self, Live, LivePublisher, LiveSource};
 use saluki_config::dynamic::ConfigUpdate;
@@ -281,7 +280,7 @@ pub(crate) struct Evaluation {
     pub(crate) tentative: SourceTree,
 
     /// The local base overlaid with `tentative`, with former names resolved (see
-    /// [`resolve_streamed_former_names`]): the sources every later stage reads.
+    /// [`overlay_agent_layer`]): the sources every later stage reads.
     pub(crate) merged: SourceTree,
 
     /// How far `merged` got through deserialization, translation, and validation.
@@ -334,7 +333,7 @@ impl Stages {
 pub(crate) fn evaluate(base: &SourceTree, agent: &SourceTree, update: &ConfigUpdate) -> Evaluation {
     let mut tentative = agent.clone();
     fold(&mut tentative, update);
-    let merged = base.overlay(&resolve_streamed_former_names(&tentative));
+    let merged = overlay_agent_layer(base, &tentative);
     let stages = run_stages(&merged);
     Evaluation {
         tentative,
@@ -380,19 +379,45 @@ const STREAMED_FORMER_NAMES: [(&str, &str); 2] = [
     ("metric_filterlist_match_prefix", "statsd_metric_blocklist_match_prefix"),
 ];
 
+/// Overlays the Agent layer `agent` on `base`, resolving the former names an Agent before 7.86
+/// streams.
+///
+/// That Agent picks `metric_filterlist` or its former name, and uses the match prefix of the one it
+/// picked. So when it supplies a list explicitly, its match prefix replaces the local one even if
+/// the Agent merely defaulted it. The local one may belong to the other list: the local loader moves
+/// a former name onto the current one, which the Agent does not.
+fn overlay_agent_layer(base: &SourceTree, agent: &SourceTree) -> SourceTree {
+    let Some(resolved) = resolve_streamed_former_names(agent) else {
+        return base.overlay(agent);
+    };
+
+    let mut merged = base.overlay(&resolved);
+    let [(filterlist, _), (match_prefix, _)] = STREAMED_FORMER_NAMES;
+    if resolved.provenance(filterlist) == Provenance::Explicit {
+        match resolved.value(match_prefix) {
+            Some(value) => merged.insert(match_prefix, value.clone(), resolved.provenance(match_prefix)),
+            None => {
+                merged.remove(match_prefix);
+            }
+        }
+    }
+
+    merged
+}
+
 /// Resolves the former names in the Agent layer `agent` as that Agent's filter list does, and
 /// removes them.
 ///
 /// If `metric_filterlist` is empty, the former pair replaces the current pair, each with its value
 /// and provenance; a former name the layer lacks removes its current name. Otherwise the current
 /// pair stands. Resolving the accumulated layer on each update keeps partial updates to any of the
-/// four names correct. A layer without former names is returned as is.
-fn resolve_streamed_former_names(agent: &SourceTree) -> Cow<'_, SourceTree> {
+/// four names correct. Returns `None` for a layer without former names.
+fn resolve_streamed_former_names(agent: &SourceTree) -> Option<SourceTree> {
     if STREAMED_FORMER_NAMES
         .iter()
         .all(|(_, former)| agent.value(former).is_none())
     {
-        return Cow::Borrowed(agent);
+        return None;
     }
 
     let mut resolved = agent.clone();
@@ -415,7 +440,7 @@ fn resolve_streamed_former_names(agent: &SourceTree) -> Cow<'_, SourceTree> {
         }
     }
 
-    Cow::Owned(resolved)
+    Some(resolved)
 }
 
 /// Deserializes and translates merged source values, rejecting partially translated configuration.
@@ -519,7 +544,6 @@ fn translate(
 
 #[cfg(test)]
 mod tests {
-    use std::borrow::Cow;
     use std::collections::HashSet;
     use std::sync::Arc;
     use std::time::Duration;
@@ -538,6 +562,7 @@ mod tests {
         evaluate, resolve_streamed_former_names, translate, translate_authoritative, translate_strict,
         ConfigurationSystem, Error, SalukiOnly, SourceTree, STREAMED_FORMER_NAMES,
     };
+    use crate::datadog_yaml;
 
     /// API key the connected-system fixture puts in the local base.
     ///
@@ -1796,6 +1821,58 @@ mod tests {
         assert_eq!(merged.provenance("metric_filterlist"), Provenance::Explicit);
     }
 
+    /// Reads `yaml` as the local loader does, moving former names onto the current ones.
+    fn local_file(yaml: &str) -> Value {
+        let mut local = datadog_yaml::from_str(yaml).expect("YAML parses");
+        datadog_yaml::move_renamed_keys(&mut local, datadog_agent_config::datadog_renamed_keys());
+        local
+    }
+
+    #[test]
+    fn a_local_match_prefix_does_not_join_the_list_an_older_agent_picked() {
+        // The Agent reads the same file, picks `metric_filterlist` with its default exact match, and
+        // streams the former match prefix as explicit.
+        let (merged, filter) = streamed_metric_filter(
+            local_file("metric_filterlist: [request]\nstatsd_metric_blocklist_match_prefix: true\n"),
+            &[filterlist_snapshot((json!(["request"]), false), (json!([]), true))],
+        );
+        assert_eq!(filter, metric_filter(&["request"], false));
+        assert_eq!(merged.provenance("metric_filterlist_match_prefix"), Provenance::Default);
+
+        // The Agent picks the former list with its default exact match.
+        let (_, filter) = streamed_metric_filter(
+            local_file("statsd_metric_blocklist: [request]\nmetric_filterlist_match_prefix: true\n"),
+            &[filterlist_snapshot((json!([]), true), (json!(["request"]), false))],
+        );
+        assert_eq!(filter, metric_filter(&["request"], false));
+
+        // When the Agent layer has no match prefix for the list it picked, the local one is removed and
+        // the default exact match applies.
+        let (merged, filter) = streamed_metric_filter(
+            json!({ "metric_filterlist_match_prefix": true }),
+            &[
+                ConfigUpdate::snapshot([]),
+                ConfigUpdate::Partial(ConfigSetting::explicit("statsd_metric_blocklist", json!(["request"]))),
+            ],
+        );
+        assert_eq!(filter, metric_filter(&["request"], false));
+        assert_eq!(merged.value("metric_filterlist_match_prefix"), None);
+    }
+
+    #[test]
+    fn a_local_filterlist_pair_applies_when_an_older_agent_picks_no_list() {
+        let (merged, filter) = streamed_metric_filter(
+            local_file("statsd_metric_blocklist: [local]\nstatsd_metric_blocklist_match_prefix: true\n"),
+            &[filterlist_snapshot((json!([]), false), (json!([]), false))],
+        );
+
+        assert_eq!(filter, metric_filter(&["local"], true));
+        assert_eq!(
+            merged.provenance("metric_filterlist_match_prefix"),
+            Provenance::Explicit
+        );
+    }
+
     #[test]
     fn an_agent_layer_without_former_names_is_unchanged() {
         let agent = SourceTree::from_settings(&[
@@ -1803,7 +1880,7 @@ mod tests {
             ConfigSetting::explicit("metric_filterlist_match_prefix", json!(true)),
         ]);
 
-        assert!(matches!(resolve_streamed_former_names(&agent), Cow::Borrowed(_)));
+        assert_eq!(resolve_streamed_former_names(&agent), None);
     }
 
     /// A new `renamed_from` in the schema needs a decision on how an Agent that predates the rename

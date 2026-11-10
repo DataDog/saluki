@@ -7,5 +7,6 @@ upgrade:
     ``metric_filterlist`` won. Each setting is resolved on its own, so ``metric_filterlist_match_prefix`` applies to
     whichever list is set, and ADP logs a warning for each deprecated name it reads. A Datadog Agent older than 7.86
     streams the deprecated names separately; ADP then resolves them as that Agent does, using the deprecated pair only
-    when ``metric_filterlist`` is empty. To keep the previous behavior, remove the deprecated names and set their values
-    on ``metric_filterlist`` and ``metric_filterlist_match_prefix``.
+    when ``metric_filterlist`` is empty, and the match prefix of the list that Agent uses. To keep the previous
+    behavior, remove the deprecated names and set their values on ``metric_filterlist`` and
+    ``metric_filterlist_match_prefix``.

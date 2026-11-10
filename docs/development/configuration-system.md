@@ -135,7 +135,7 @@ reads former names as the Agent does:
   file is read, its value replaces the current name's and the former name is dropped, so the former name wins when
   both are written. A null former name clears the current one. `datadog_yaml.rs` documents the details.
 - **Configuration stream**: an Agent older than the rename streams the former name as a separate setting.
-  `resolve_streamed_former_names` in `system.rs` resolves it as that Agent does. A test fails if a renamed setting
+  `overlay_agent_layer` in `system.rs` resolves it as that Agent does. A test fails if a renamed setting
   has no rule there.
 
 Precedence between sources applies across names: a current name in the environment beats a former name in the file.
