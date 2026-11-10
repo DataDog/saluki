@@ -24,7 +24,7 @@ pub const KEY_DATADOG_CONTAINER_TAGS: &str = "datadog.container_tags";
 pub const DEPLOYMENT_ENVIRONMENT_KEY: &str = "deployment.environment";
 
 /// The kind of source that produced telemetry data.
-// The variant names follow the Agent's `source.Kind` constants.
+// Every variant ends in `Kind` to keep the existing naming.
 #[allow(clippy::enum_variant_names)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum SourceKind {
@@ -390,8 +390,8 @@ fn get_attribute<'a>(attributes: &'a [otlp_common::KeyValue], key: &str) -> Opti
 
 /// Returns the first attribute named `key` as `Map.Get` followed by `Value.Str` in `pdata` would.
 ///
-/// Unlike [`get_string_attribute`], a present attribute that isn't a string yields `Some("")`, so
-/// presence checks match the Agent's.
+/// Unlike [`get_string_attribute`], a present attribute that isn't a string yields `Some("")`, so a
+/// presence check succeeds for it.
 fn get_attribute_str<'a>(attributes: &'a [otlp_common::KeyValue], key: &str) -> Option<&'a str> {
     get_attribute(attributes, key).map(|value| match value {
         Some(Value::StringValue(s_val)) => s_val.as_str(),
@@ -430,7 +430,7 @@ fn aks_cluster_name(resource_group_name: &str) -> Option<&str> {
 
 /// Resolves an EKS cluster name from an EC2 Kubernetes cluster tag key.
 ///
-/// The Agent scans every attribute without stopping, so the last matching key wins.
+/// The last matching key wins.
 fn ec2_cluster_name(attributes: &[otlp_common::KeyValue]) -> Option<&str> {
     attributes
         .iter()
@@ -486,8 +486,10 @@ fn kubernetes_hostname(attributes: &[otlp_common::KeyValue]) -> Option<String> {
     })
 }
 
-/// Resolves an unfiltered hostname from resource attributes, like the Agent's
-/// `unsanitizedHostnameFromAttributes`.
+/// Resolves an unfiltered hostname from resource attributes.
+///
+/// Checks, in order: the literal `host` attribute, `datadog.host.name`, ECS Fargate (which has no
+/// hostname), the cloud provider's hostname, the Kubernetes node name, `host.id`, and `host.name`.
 fn unsanitized_hostname_from_attributes(attributes: &[otlp_common::KeyValue]) -> Option<String> {
     if let Some(hostname) = get_attribute(attributes, ATTRIBUTE_HOST).and_then(literal_host_as_string) {
         return Some(hostname);
@@ -568,8 +570,8 @@ fn azure_resource_id_name(resource_id: &str) -> Option<&str> {
 
 /// Resolves the identifier of an Azure Container Apps resource: its replica, or else its app name.
 ///
-/// As in Agent 7.85, any resource on the Container Apps platform is a Container Apps source, even
-/// when the identifier resolves to an empty string.
+/// Any resource on the Container Apps platform is a Container Apps source, even when the identifier
+/// resolves to an empty string.
 fn azure_container_apps_identifier(attributes: &[otlp_common::KeyValue]) -> Option<String> {
     let platform = get_attribute_str(attributes, CLOUD_PLATFORM)?;
     if !AZURE_CONTAINER_APPS_PLATFORMS.contains(&platform) {
@@ -589,7 +591,7 @@ fn azure_container_apps_identifier(attributes: &[otlp_common::KeyValue]) -> Opti
     Some(replica.or_else(name).unwrap_or_default().to_string())
 }
 
-/// A Cloud Run or Cloud Functions identity, with the dimensions the Agent also emits as tags.
+/// A Cloud Run or Cloud Functions identity, with the dimensions that are also emitted as tags.
 struct GcpServerlessIdentity<'a> {
     kind: SourceKind,
     instance: &'a str,
@@ -630,7 +632,7 @@ fn gcp_serverless_identity(attributes: &[otlp_common::KeyValue]) -> Option<GcpSe
         return None;
     }
 
-    // Unlike elsewhere, the Agent requires these to be strings, not just present.
+    // Unlike the other lookups here, these must be strings, not just present.
     let required = |key| match get_attribute(attributes, key) {
         Some(Some(Value::StringValue(s_val))) if !s_val.is_empty() => Some(s_val.as_str()),
         _ => None,
@@ -651,8 +653,8 @@ fn gcp_serverless_identity(attributes: &[otlp_common::KeyValue]) -> Option<GcpSe
     })
 }
 
-/// Adds the serverless identity tags that the Agent's `TagsFromAttributes` derives from resource
-/// attributes: Azure App Service app identities and Cloud Run or Cloud Functions dimensions.
+/// Adds the serverless identity tags derived from resource attributes: Azure App Service app
+/// identities and Cloud Run or Cloud Functions dimensions.
 pub fn extract_serverless_tags_from_resource_attributes(attributes: &[otlp_common::KeyValue], tags: &mut TagSet) {
     if let Some(app) = azure_app_identity(attributes, &AZURE_APP_SERVICE_PLATFORMS) {
         tags.insert_tag(format!("name:{}", app.name));
@@ -677,10 +679,11 @@ pub fn resource_to_metric_source(
     aws_ecs_fargate_source(attributes).or_else(|| hostname_source(attributes))
 }
 
-/// Resolves the source of telemetry from attributes, like the Agent's `SourceFromAttrs`.
+/// Resolves the source of telemetry from attributes.
 ///
-/// Serverless platforms are checked first, in the Agent's order. A resource on a Cloud Run or
-/// Cloud Functions platform never falls back to a host, even when its identity is incomplete.
+/// Checks, in order: Azure Functions, Cloud Run and Cloud Functions, Azure App Service, Azure
+/// Container Apps, ECS Fargate, and the hostname. A resource on a Cloud Run or Cloud Functions
+/// platform never falls back to a host, even when its identity is incomplete.
 pub fn source_from_attributes(attributes: &[otlp_common::KeyValue]) -> Option<Source> {
     if let Some(app) = azure_app_identity(attributes, &AZURE_FUNCTIONS_PLATFORMS) {
         return Some(Source {

@@ -33,7 +33,7 @@ impl OtlpLogsTranslator {
     pub fn from_resource_logs(resource_logs: OtlpResourceLogs, origin_tag_resolver: &OtlpOriginTagResolver) -> Self {
         let resource = resource_logs.resource.unwrap_or_default();
         let source = resource_to_source(&resource);
-        // An empty host counts as missing, so the record fallback still applies, as in the Agent.
+        // An empty host counts as missing, so the record fallback still applies.
         let host = match &source {
             Some(src) if matches!(src.kind, SourceKind::HostnameKind) && !src.identifier.is_empty() => {
                 Some(MetaString::from(src.identifier.as_str()))
