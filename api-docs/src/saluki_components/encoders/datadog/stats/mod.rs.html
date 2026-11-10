@@ -330,7 +330,7 @@
 <a href=#330 id=330 data-nosnippet>330</a>        payload.set_agentEnv(<span class="self">self</span>.agent_env.to_string());
 <a href=#331 id=331 data-nosnippet>331</a>        payload.set_agentVersion(<span class="self">self</span>.agent_version.to_string());
 <a href=#332 id=332 data-nosnippet>332</a>        payload.set_clientComputed(<span class="bool-val">false</span>);
-<a href=#333 id=333 data-nosnippet>333</a>        payload.set_splitPayload(<span class="bool-val">false</span>);
+<a href=#333 id=333 data-nosnippet>333</a>        payload.set_splitPayload(stats.is_split_payload());
 <a href=#334 id=334 data-nosnippet>334</a>        payload.set_stats(stats.stats().iter().map(convert_client_stats_payload).collect());
 <a href=#335 id=335 data-nosnippet>335</a>
 <a href=#336 id=336 data-nosnippet>336</a>        payload
@@ -470,5 +470,23 @@
 <a href=#470 id=470 data-nosnippet>470</a>            <span class="macro">assert_eq!</span>(payload.agentEnv(), expected);
 <a href=#471 id=471 data-nosnippet>471</a>        }
 <a href=#472 id=472 data-nosnippet>472</a>    }
-<a href=#473 id=473 data-nosnippet>473</a>}
+<a href=#473 id=473 data-nosnippet>473</a>
+<a href=#474 id=474 data-nosnippet>474</a>    <span class="attr">#[test]
+<a href=#475 id=475 data-nosnippet>475</a>    </span><span class="kw">fn </span>stats_payload_split_flag_follows_trace_stats() {
+<a href=#476 id=476 data-nosnippet>476</a>        <span class="kw">for </span>is_split <span class="kw">in </span>[<span class="bool-val">false</span>, <span class="bool-val">true</span>] {
+<a href=#477 id=477 data-nosnippet>477</a>            <span class="kw">let </span>config = DatadogApmStatsEncoderConfiguration::new(
+<a href=#478 id=478 data-nosnippet>478</a>                Duration::from_secs(<span class="number">2</span>),
+<a href=#479 id=479 data-nosnippet>479</a>                AgentEnv::resolve(<span class="prelude-val">None</span>, <span class="prelude-val">Some</span>(<span class="string">"prod"</span>), <span class="kw-2">&amp;</span>[], <span class="kw-2">&amp;</span>[]),
+<a href=#480 id=480 data-nosnippet>480</a>            );
+<a href=#481 id=481 data-nosnippet>481</a>            <span class="kw">let </span><span class="kw-2">mut </span>buf = Vec::new();
+<a href=#482 id=482 data-nosnippet>482</a>            config
+<a href=#483 id=483 data-nosnippet>483</a>                .endpoint_encoder()
+<a href=#484 id=484 data-nosnippet>484</a>                .encode(<span class="kw-2">&amp;</span>TraceStats::new(Vec::new()).with_split_payload(is_split), <span class="kw-2">&amp;mut </span>buf)
+<a href=#485 id=485 data-nosnippet>485</a>                .expect(<span class="string">"encode should succeed"</span>);
+<a href=#486 id=486 data-nosnippet>486</a>
+<a href=#487 id=487 data-nosnippet>487</a>            <span class="kw">let </span>payload: ProtoStatsPayload = rmp_serde::from_slice(<span class="kw-2">&amp;</span>buf).expect(<span class="string">"StatsPayload should decode"</span>);
+<a href=#488 id=488 data-nosnippet>488</a>            <span class="macro">assert_eq!</span>(payload.splitPayload(), is_split);
+<a href=#489 id=489 data-nosnippet>489</a>        }
+<a href=#490 id=490 data-nosnippet>490</a>    }
+<a href=#491 id=491 data-nosnippet>491</a>}
 </code></pre></div></section></main></body></html>
