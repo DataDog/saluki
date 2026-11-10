@@ -6,9 +6,9 @@
 //! the encoder should do. Where the target behavior differs, an ignored test states it, named after the step of the
 //! OTLP logs wire format work (DataDog/saluki#2970) that adopts it:
 //!
-//! - `intake-headers`: the target logs sender sets `DD-PROTOCOL: agent-json`, `DD-EVP-ORIGIN: agent`,
-//!   `DD-EVP-ORIGIN-VERSION`, and `dd-message-timestamp`. It also sets `dd-current-timestamp` on each send attempt,
-//!   which belongs to the forwarder rather than the encoder.
+//! - `intake-headers`: the target logs sender also sets `dd-message-timestamp`, after the static `DD-PROTOCOL`,
+//!   `DD-EVP-ORIGIN`, and `DD-EVP-ORIGIN-VERSION` headers that the encoder already sets. It also sets
+//!   `dd-current-timestamp` on each send attempt, which belongs to the forwarder rather than the encoder.
 //! - `logs-sender-batching`: the target logs sender batches up to 1000 logs or 5 MB of content before compression,
 //!   and drops a single log whose content is over that limit.
 //!
@@ -68,8 +68,10 @@ impl EncodedRequest {
 async fn encode(compressor_kind: &str, logs: Vec<Log>) -> Vec<EncodedRequest> {
     assert!(logs.len() <= 1024, "logs must fit in a single event buffer");
 
-    let config =
-        BufferedIncrementalConfiguration::new(DatadogLogsConfiguration::new(compressor_kind, 3), FLUSH_TIMEOUT);
+    let config = BufferedIncrementalConfiguration::new(
+        DatadogLogsConfiguration::new(compressor_kind, 3).with_origin_version("1.2.3"),
+        FLUSH_TIMEOUT,
+    );
     let (control, mut payloads) = TestComponentDriver::encoder(config)
         .await
         .expect("logs encoder should build");
@@ -185,12 +187,15 @@ async fn request_line_and_headers() {
 
         assert_eq!(request.method, http::Method::POST);
         assert_eq!(request.path, "/api/v2/logs");
-        // Only the content headers: none of the target `DD-*` headers yet (`intake-headers`).
+        // The content headers and the static `DD-*` headers, but no `dd-message-timestamp` yet (`intake-headers`).
         assert_eq!(
             sorted(request.headers.clone()),
             sorted(vec![
                 ("content-type".to_string(), "application/json".to_string()),
                 ("content-encoding".to_string(), content_encoding.to_string()),
+                ("dd-protocol".to_string(), "agent-json".to_string()),
+                ("dd-evp-origin".to_string(), "agent".to_string()),
+                ("dd-evp-origin-version".to_string(), "1.2.3".to_string()),
             ]),
             "{}",
             compressor_kind
@@ -198,6 +203,15 @@ async fn request_line_and_headers() {
         assert_eq!(request.event_count, 1);
         assert_eq!(request.messages(), vec!["hello".to_string()]);
     }
+}
+
+#[tokio::test]
+async fn rejects_an_invalid_origin_version() {
+    let config = BufferedIncrementalConfiguration::new(
+        DatadogLogsConfiguration::new("zstd", 3).with_origin_version("1.2.3\n"),
+        FLUSH_TIMEOUT,
+    );
+    assert!(TestComponentDriver::encoder(config).await.is_err());
 }
 
 #[tokio::test]

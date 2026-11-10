@@ -484,6 +484,16 @@ fn add_autoscaling_failover_metrics_pipeline_to_blueprint(
     Ok(())
 }
 
+/// Returns the version to send in the `DD-EVP-ORIGIN-VERSION` header of logs requests.
+///
+/// The Agent sends its own version there. ADP sends the version of the Agent it was built against, as the Agent reports
+/// it, and falls back to its own version when that version isn't known, such as in a development or nightly build.
+fn logs_origin_version() -> String {
+    datadog_agent_commons::agent_version::reported_version_string()
+        .map(str::to_string)
+        .unwrap_or_else(|| saluki_metadata::get_app_details().version().raw().to_string())
+}
+
 async fn add_baseline_logs_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, shared: &SharedConfiguration, env_provider: &RemoteAgentEnvironmentProvider,
 ) -> Result<(), GenericError> {
@@ -499,7 +509,8 @@ async fn add_baseline_logs_pipeline_to_blueprint(
     // TODO(#3001): pass `shared.metrics_encoding.flush_timeout`; the default preserves existing behavior.
     let dd_logs_config = BufferedIncrementalConfiguration::new(
         DatadogLogsConfiguration::new(&compression.compressor_kind, compression.effective_zstd_level())
-            .with_default_hostname(default_hostname),
+            .with_default_hostname(default_hostname)
+            .with_origin_version(logs_origin_version()),
         DEFAULT_ENCODER_FLUSH_TIMEOUT,
     );
 
