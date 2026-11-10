@@ -195,126 +195,96 @@ impl Event {
     ///
     /// Otherwise, `None` is returned and the original event is consumed.
     pub fn try_into_metric(self) -> Option<Metric> {
-        match self {
-            Event::Metric(metric) => Some(metric),
-            _ => None,
-        }
+        Metric::try_from_event(self).ok()
     }
 
     /// Returns a reference inner event value, if this event is a `Metric`.
     ///
     /// Otherwise, `None` is returned.
     pub fn try_as_metric(&self) -> Option<&Metric> {
-        match self {
-            Event::Metric(metric) => Some(metric),
-            _ => None,
-        }
+        Metric::try_from_event_ref(self)
     }
 
     /// Returns a mutable reference inner event value, if this event is a `Metric`.
     ///
     /// Otherwise, `None` is returned.
     pub fn try_as_metric_mut(&mut self) -> Option<&mut Metric> {
-        match self {
-            Event::Metric(metric) => Some(metric),
-            _ => None,
-        }
+        Metric::try_from_event_mut(self)
     }
 
     /// Returns a mutable reference to the inner event value, if this event is an `EventD`.
     ///
     /// Otherwise, `None` is returned.
     pub fn try_as_eventd_mut(&mut self) -> Option<&mut EventD> {
-        match self {
-            Event::EventD(eventd) => Some(eventd),
-            _ => None,
-        }
+        EventD::try_from_event_mut(self)
     }
 
     /// Returns the inner event value, if this event is an `EventD`.
     ///
     /// Otherwise, `None` is returned and the original event is consumed.
     pub fn try_into_eventd(self) -> Option<EventD> {
-        match self {
-            Event::EventD(eventd) => Some(eventd),
-            _ => None,
-        }
+        EventD::try_from_event(self).ok()
     }
 
     /// Returns the inner event value, if this event is a `ServiceCheck`.
     ///
     /// Otherwise, `None` is returned and the original event is consumed.
     pub fn try_into_service_check(self) -> Option<ServiceCheck> {
-        match self {
-            Event::ServiceCheck(service_check) => Some(service_check),
-            _ => None,
-        }
+        ServiceCheck::try_from_event(self).ok()
     }
 
     /// Returns a mutable reference to the inner event value, if this event is a `ServiceCheck`.
     ///
     /// Otherwise, `None` is returned.
     pub fn try_as_service_check_mut(&mut self) -> Option<&mut ServiceCheck> {
-        match self {
-            Event::ServiceCheck(service_check) => Some(service_check),
-            _ => None,
-        }
+        ServiceCheck::try_from_event_mut(self)
     }
 
     /// Returns a reference inner event value, if this event is a `Trace`.
     ///
     /// Otherwise, `None` is returned.
     pub fn try_into_trace(self) -> Option<Trace> {
-        match self {
-            Event::Trace(trace) => Some(trace),
-            _ => None,
-        }
+        Trace::try_from_event(self).ok()
     }
 
     /// Returns a mutable reference inner event value, if this event is a `Trace`.
     ///
     /// Otherwise, `None` is returned.
     pub fn try_as_trace_mut(&mut self) -> Option<&mut Trace> {
-        match self {
-            Event::Trace(trace) => Some(trace),
-            _ => None,
-        }
+        Trace::try_from_event_mut(self)
     }
 
     /// Returns the inner event value, if this event is a `TraceStats`.
     ///
     /// Otherwise, `None` is returned and the original event is consumed.
     pub fn try_into_trace_stats(self) -> Option<TraceStats> {
-        match self {
-            Event::TraceStats(stats) => Some(stats),
-            _ => None,
-        }
+        TraceStats::try_from_event(self).ok()
     }
 
     #[allow(unused)]
     /// Returns `true` if the event is a `Metric`.
     pub fn is_metric(&self) -> bool {
-        matches!(self, Event::Metric(_))
+        Metric::try_from_event_ref(self).is_some()
     }
 
     /// Returns `true` if the event is an `EventD`.
     pub fn is_eventd(&self) -> bool {
-        matches!(self, Event::EventD(_))
+        EventD::try_from_event_ref(self).is_some()
     }
 
     /// Returns `true` if the event is a `ServiceCheck`.
     pub fn is_service_check(&self) -> bool {
-        matches!(self, Event::ServiceCheck(_))
+        ServiceCheck::try_from_event_ref(self).is_some()
     }
 
     /// Returns `true` if the event is a `Log`.
     pub fn is_log(&self) -> bool {
-        matches!(self, Event::Log(_))
+        Log::try_from_event_ref(self).is_some()
     }
 
     /// Returns `true` if the event is a `Trace`.
     pub fn is_trace(&self) -> bool {
-        matches!(self, Event::Trace(_))
+        Trace::try_from_event_ref(self).is_some()
     }
 }
 
