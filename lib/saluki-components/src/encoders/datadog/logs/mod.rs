@@ -277,6 +277,9 @@ impl EndpointEncoder for LogsEndpointEncoder {
 }
 
 #[cfg(test)]
+mod characterization;
+
+#[cfg(test)]
 mod tests {
     use std::collections::{BTreeSet, HashMap};
 
