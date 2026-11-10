@@ -139,7 +139,7 @@ async fn request() {
             ("content-type".to_string(), "application/json".to_string()),
             ("content-encoding".to_string(), "zstd".to_string()),
             ("dd-protocol".to_string(), "agent-json".to_string()),
-            ("dd-evp-origin".to_string(), "agent".to_string()),
+            ("dd-evp-origin".to_string(), "agent-data-plane".to_string()),
             ("dd-evp-origin-version".to_string(), "1.2.3".to_string()),
         ],
         body: [

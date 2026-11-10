@@ -69,11 +69,12 @@ impl HeaderRule {
 
 /// Returns the headers compared by default: those the logs intake reads, apart from transport headers.
 ///
-/// `User-Agent` and `DD-Agent-Version` are left out, since they name the sending product, which differs by design.
+/// `User-Agent` and `DD-Agent-Version` are left out, and `DD-EVP-ORIGIN` is compared by presence, since they name the
+/// sending product, which differs by design: the Agent sends `agent` as its origin and ADP sends `agent-data-plane`.
 pub fn default_header_rules() -> Vec<HeaderRule> {
     vec![
         HeaderRule::new("dd-protocol", HeaderCheck::Exact),
-        HeaderRule::new("dd-evp-origin", HeaderCheck::Exact),
+        HeaderRule::new("dd-evp-origin", HeaderCheck::Presence),
         HeaderRule::new("dd-evp-origin-version", HeaderCheck::Presence),
         HeaderRule::new("dd-message-timestamp", HeaderCheck::Timestamp),
         HeaderRule::new("dd-current-timestamp", HeaderCheck::Timestamp),
@@ -197,8 +198,8 @@ mod tests {
 
     #[test]
     fn identical_headers_match_across_different_batching() {
-        // The baseline sent three requests and the comparison one, with different timestamps, versions, and transport
-        // headers.
+        // The baseline sent three requests and the comparison one, with different timestamps, origins, versions, and
+        // transport headers.
         let baseline = [
             agent_request(NOW - 2_000, NOW - 1_000),
             agent_request(NOW - 1_000, NOW),
@@ -206,7 +207,7 @@ mod tests {
         ];
         let comparison = [request(&[
             ("dd-protocol", "agent-json"),
-            ("dd-evp-origin", "agent"),
+            ("dd-evp-origin", "agent-data-plane"),
             ("dd-evp-origin-version", "0.1.0"),
             ("dd-message-timestamp", &(NOW - 30_000).to_string()),
             ("dd-current-timestamp", &(NOW + 1).to_string()),
@@ -264,7 +265,7 @@ mod tests {
     fn differing_values_and_partial_presence_are_value_diffs() {
         let cases = [
             ("exact value", "Content-Encoding", "zstd", "gzip"),
-            ("exact value case", "DD-EVP-ORIGIN", "agent", "Agent"),
+            ("exact value case", "DD-PROTOCOL", "agent-json", "Agent-JSON"),
         ];
         for (name, header, baseline_value, comparison_value) in cases {
             let diffs = compare(
