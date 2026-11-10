@@ -420,7 +420,10 @@ fn http_client_builder(
         .with_endpoint_telemetry(metrics_builder, Some(move |uri: &Uri| endpoint_name(uri))))
 }
 
-/// Returns an HTTP client builder for Datadog intake traffic, applying the forwarder's timeout, TLS, and proxy settings.
+/// Returns an HTTP client builder for Datadog intake traffic, applying the forwarder's HTTP client settings.
+///
+/// These are the request timeout, the TLS settings (handshake timeout, key log file, and certificate validation), the
+/// proxy, the HTTP protocol, and the connection reset interval.
 ///
 /// Unlike the forwarders' own clients, it emits no endpoint telemetry, so it suits components that send the odd request
 /// to the intake outside of a forwarder.

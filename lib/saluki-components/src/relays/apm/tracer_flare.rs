@@ -65,8 +65,9 @@ pub struct TracerFlareConfiguration {
 
     /// Settings of the Datadog intake forwarder.
     ///
-    /// Only its request timeout, TLS, and proxy settings are used: the destination comes from `site`, and the API key
-    /// from `api_key`.
+    /// Only the settings of its HTTP client are used: the request timeout, the TLS settings (handshake timeout, key log
+    /// file, and certificate validation, including `skip_ssl_validation`), the proxy, the HTTP protocol, and the
+    /// connection reset interval. The destination comes from `site`, and the API key from `api_key`.
     pub forwarder: ForwarderConfiguration,
 }
 
