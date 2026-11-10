@@ -152,10 +152,7 @@ async fn levels() {
         (LogLevel::Trace as i32, entry(r#""{\"message\":\"hello\"}""#, "trace")),
         (LogLevel::Debug as i32, entry(r#""{\"message\":\"hello\"}""#, "debug")),
         (LogLevel::Info as i32, entry(r#""{\"message\":\"hello\"}""#, "info")),
-        (
-            LogLevel::Warning as i32,
-            entry(r#""{\"message\":\"hello\"}""#, "warn"),
-        ),
+        (LogLevel::Warning as i32, entry(r#""{\"message\":\"hello\"}""#, "warn")),
         (LogLevel::Error as i32, entry(r#""{\"message\":\"hello\"}""#, "error")),
         (
             LogLevel::Critical as i32,
