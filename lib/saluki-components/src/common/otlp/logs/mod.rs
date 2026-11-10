@@ -1,9 +1,10 @@
 //! OTLP logs helpers shared between the OTLP logs path's components.
 
+use std::mem;
+
 use saluki_core::data_model::event::log::Log;
 use saluki_error::{generic_error, GenericError};
 use serde_json::Value as JsonValue;
-use smallvec::SmallVec;
 use stringtheory::MetaString;
 
 /// The most serialization buffer capacity that a [`ContentRenderer`] keeps between logs.
@@ -13,10 +14,15 @@ use stringtheory::MetaString;
 /// and a log past it has the excess released before the renderer is used again.
 pub const CONTENT_BUFFER_RETENTION_LIMIT_BYTES: usize = 64 * 1024;
 
-/// How many fields a log's content can hold before its field list needs a heap allocation.
+/// The most field list capacity, in fields, that a [`ContentRenderer`] keeps between logs.
 ///
-/// That's the four top-level fields and the properties of an ordinary translated log, with room to spare.
-const INLINE_CONTENT_FIELDS: usize = 32;
+/// Like the serialization buffer, the field list keeps the capacity of the log with the most fields, so it's bounded
+/// too. The limit sits well above the fields of an ordinary log.
+pub const CONTENT_FIELDS_RETENTION_LIMIT: usize = 1024;
+
+/// The memory that the most field list capacity a [`ContentRenderer`] keeps between logs takes.
+pub const CONTENT_FIELDS_RETENTION_LIMIT_BYTES: usize =
+    CONTENT_FIELDS_RETENTION_LIMIT * mem::size_of::<(&str, ContentField<'_>)>();
 
 /// A field of a log's content.
 enum ContentField<'a> {
@@ -39,11 +45,22 @@ enum ContentField<'a> {
 /// and number formatting differ from Go's `encoding/json` (`gap/json-encoding`): `<`, `>`, `&`, U+2028, and U+2029
 /// aren't escaped, and floats use `serde_json`'s layout, such as `1.0` and `1e21` where Go writes `1` and `1e+21`.
 ///
-/// A renderer keeps its serialization buffer between logs, up to [`CONTENT_BUFFER_RETENTION_LIMIT_BYTES`], so
-/// rendering many logs reuses its allocation.
-#[derive(Debug, Default)]
+/// A renderer keeps its serialization buffer between logs, up to [`CONTENT_BUFFER_RETENTION_LIMIT_BYTES`], and its
+/// field list, up to [`CONTENT_FIELDS_RETENTION_LIMIT`], so rendering many logs reuses their allocations.
+#[derive(Default)]
 pub struct ContentRenderer {
     buffer: Vec<u8>,
+    // Always empty between logs. It borrows nothing, and only holds the allocation of the field list.
+    fields: Vec<(&'static str, ContentField<'static>)>,
+}
+
+impl std::fmt::Debug for ContentRenderer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ContentRenderer")
+            .field("buffer_capacity", &self.buffer.capacity())
+            .field("fields_capacity", &self.fields.capacity())
+            .finish()
+    }
 }
 
 impl ContentRenderer {
@@ -74,8 +91,8 @@ impl ContentRenderer {
         // wins over `hostname`, `message`, and `service`, and `status` wins over a property. Properties already have
         // unique keys.
         let properties = log.additional_properties();
-        let mut fields =
-            SmallVec::<[(&str, ContentField<'_>); INLINE_CONTENT_FIELDS]>::with_capacity(properties.len() + 4);
+        let mut fields = reuse_empty(mem::take(&mut self.fields));
+        fields.reserve(properties.len() + 4);
         let (mut hostname_overwritten, mut message_overwritten, mut service_overwritten) = (false, false, false);
         for (key, value) in properties {
             match key.as_ref() {
@@ -102,10 +119,20 @@ impl ContentRenderer {
         // doesn't allocate, gives the same order as a stable one.
         fields.sort_unstable_by_key(|(key, _)| *key);
 
+        let written = self.write_fields(&fields);
+
+        fields.clear();
+        fields.shrink_to(CONTENT_FIELDS_RETENTION_LIMIT);
+        self.fields = reuse_empty(fields);
+        written
+    }
+
+    /// Writes a log's fields into the buffer, as a JSON object.
+    fn write_fields(&mut self, fields: &[(&str, ContentField<'_>)]) -> Result<(), GenericError> {
         self.buffer.clear();
         self.buffer.push(b'{');
         let mut first = true;
-        for (key, field) in &fields {
+        for (key, field) in fields {
             if !first {
                 self.buffer.push(b',');
             }
@@ -126,6 +153,18 @@ impl ContentRenderer {
     }
 }
 
+/// Returns an empty vector with the allocation of `fields`, for fields that borrow for a different lifetime.
+///
+/// The element types differ only in their lifetimes, so collecting the empty vector's iterator reuses its allocation in
+/// place.
+fn reuse_empty<'a, 'b>(mut fields: Vec<(&'a str, ContentField<'a>)>) -> Vec<(&'b str, ContentField<'b>)> {
+    fields.clear();
+    fields
+        .into_iter()
+        .map(|_| unreachable!("the fields are empty"))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -135,7 +174,7 @@ mod tests {
     use serde_json::{json, Value as JsonValue};
     use stringtheory::MetaString;
 
-    use super::{ContentRenderer, CONTENT_BUFFER_RETENTION_LIMIT_BYTES};
+    use super::{ContentRenderer, CONTENT_BUFFER_RETENTION_LIMIT_BYTES, CONTENT_FIELDS_RETENTION_LIMIT};
 
     /// A render case: a translated log, and the content that Go writes for it, which is the target.
     ///
@@ -468,5 +507,33 @@ mod tests {
             .expect("log should render");
         assert!(content.contains(&oversized));
         assert!(renderer.buffer.capacity() <= CONTENT_BUFFER_RETENTION_LIMIT_BYTES);
+    }
+
+    #[test]
+    fn reuses_and_bounds_the_field_list() {
+        let properties =
+            |count: usize| JsonValue::Object((0..count).map(|i| (format!("key{:05}", i), json!(i))).collect());
+        let mut renderer = ContentRenderer::default();
+        renderer
+            .render(&log_with_properties("m", properties(100)))
+            .expect("log should render");
+        let ordinary_capacity = renderer.fields.capacity();
+        assert!(ordinary_capacity >= 104);
+
+        // A log with as many fields reuses the field list.
+        renderer
+            .render(&log_with_properties("m", properties(100)))
+            .expect("log should render");
+        assert_eq!(renderer.fields.capacity(), ordinary_capacity);
+
+        // A log with more fields than the limit renders in full, then has the excess released.
+        let content = renderer
+            .render(&log_with_properties(
+                "m",
+                properties(2 * CONTENT_FIELDS_RETENTION_LIMIT),
+            ))
+            .expect("log should render");
+        assert!(content.contains(&format!(r#""key{:05}":"#, 2 * CONTENT_FIELDS_RETENTION_LIMIT - 1)));
+        assert!(renderer.fields.capacity() <= CONTENT_FIELDS_RETENTION_LIMIT);
     }
 }
