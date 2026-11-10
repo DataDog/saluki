@@ -74,7 +74,7 @@ pub fn with_allow_arbitrary_tags<B>(enabled: bool) -> impl Fn(Request<B>) -> Req
     }
 }
 
-/// Returns the full name of the application, formatted for a request header, such as `agent-data-plane`.
+/// Returns the full name of the application, formatted for a request header: `Example App` gives `example-app`.
 pub(crate) fn formatted_app_name(app_details: &saluki_metadata::AppDetails) -> String {
     app_details.full_name().replace([' ', '_'], "-").to_lowercase()
 }
