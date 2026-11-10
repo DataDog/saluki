@@ -152,13 +152,7 @@ mod tests {
     use crate::components::test_support::{make_span, make_trace};
 
     fn span_count_in_buffer(buffer: &EventsBuffer) -> usize {
-        buffer
-            .into_iter()
-            .filter_map(|e| match e {
-                Event::Trace(t) => Some(t.spans().len()),
-                _ => None,
-            })
-            .sum()
+        buffer.events::<Trace>().map(|trace| trace.spans().len()).sum()
     }
 
     fn test_component_context() -> BuildContext {

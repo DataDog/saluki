@@ -162,12 +162,8 @@ mod tests {
 
     fn get_span_attr(buffer: &EventsBuffer, span_index: usize, key: &str) -> Option<String> {
         buffer
-            .into_iter()
-            .filter_map(|e| match e {
-                Event::Trace(t) => Some(t.spans()),
-                _ => None,
-            })
-            .flat_map(|spans| spans.iter())
+            .events::<Trace>()
+            .flat_map(|trace| trace.spans())
             .nth(span_index)
             .and_then(|span| {
                 let k = MetaString::from(key);
@@ -774,23 +770,18 @@ mod tests {
         assert!(buffer.try_push(Event::Trace(trace)).is_none());
         transform.transform_buffer(&mut buffer);
 
-        let mut saw_service_check = false;
-        let mut trace_span_x = None;
-        for event in &buffer {
-            match event {
-                Event::ServiceCheck(_) => saw_service_check = true,
-                Event::Trace(t) => {
-                    trace_span_x = t.spans().first().and_then(|s| {
-                        let k = MetaString::from("x");
-                        s.attributes.get(&k).and_then(|v| match v {
-                            AttributeValue::String(sv) => Some(sv.as_ref().to_string()),
-                            _ => None,
-                        })
-                    });
-                }
-                _ => {}
-            }
-        }
+        let saw_service_check = buffer.events::<ServiceCheck>().next().is_some();
+        let trace_span_x = buffer
+            .events::<Trace>()
+            .next()
+            .and_then(|t| t.spans().first())
+            .and_then(|s| {
+                let k = MetaString::from("x");
+                s.attributes.get(&k).and_then(|v| match v {
+                    AttributeValue::String(sv) => Some(sv.as_ref().to_string()),
+                    _ => None,
+                })
+            });
         assert!(saw_service_check, "non-trace events should pass through untouched");
         assert_eq!(
             trace_span_x.as_deref(),

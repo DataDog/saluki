@@ -181,14 +181,12 @@ mod tests {
     /// Collects the string-valued attributes of the span with `span_id` from every trace in `buffer`.
     fn span_attrs_by_id(buffer: &EventsBuffer, span_id: u64) -> HashMap<String, String> {
         let mut out = HashMap::new();
-        for event in buffer {
-            if let Event::Trace(trace) = event {
-                for span in trace.spans() {
-                    if span.span_id() == span_id {
-                        for (k, v) in span.attributes.iter() {
-                            if let AttributeValue::String(s) = v {
-                                out.insert(k.as_ref().to_string(), s.as_ref().to_string());
-                            }
+        for trace in buffer.events::<Trace>() {
+            for span in trace.spans() {
+                if span.span_id() == span_id {
+                    for (k, v) in span.attributes.iter() {
+                        if let AttributeValue::String(s) = v {
+                            out.insert(k.as_ref().to_string(), s.as_ref().to_string());
                         }
                     }
                 }
