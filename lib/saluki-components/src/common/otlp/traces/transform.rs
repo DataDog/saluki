@@ -660,14 +660,7 @@ impl<'a> SpanV1<'a> {
             if key == HTTP_RESPONSE_STATUS_CODE_KEY || (key == HTTP_STATUS_CODE_KEY && !status_code_from_new_convention)
             {
                 status_code_from_new_convention |= key == HTTP_RESPONSE_STATUS_CODE_KEY;
-                // A numeric `http.status_code` is kept as a number, as on the V2 path.
-                if self
-                    .attrs
-                    .get(HTTP_STATUS_CODE_KEY)
-                    .is_none_or(|value| value.as_num().is_none())
-                {
-                    self.set_tag_or_field(HTTP_STATUS_CODE_KEY, &otlp_value_as_string(value));
-                }
+                self.set_tag_or_field(HTTP_STATUS_CODE_KEY, &otlp_value_as_string(value));
             }
         }
     }
@@ -828,6 +821,9 @@ impl<'a> SpanV1<'a> {
     }
 
     /// Sets an attribute as a string tag, or as the span field it names.
+    ///
+    /// A string tag never replaces a number stored under the same key, such as a computed `_top_level` or a numeric
+    /// `http.status_code`: a Datadog span keeps string tags and numbers in separate maps, so the number would survive.
     fn set_tag_or_field(&mut self, key: &str, value: &str) {
         let field = match key {
             OPERATION_NAME_KEY => &mut self.fields.name,
@@ -844,10 +840,12 @@ impl<'a> SpanV1<'a> {
                 return;
             }
             _ => {
-                self.attrs.insert(
-                    MetaString::from_interner(key, self.interner),
-                    AttributeValue::String(MetaString::from_interner(value, self.interner)),
-                );
+                if self.attrs.get(key).is_none_or(|existing| existing.as_num().is_none()) {
+                    self.attrs.insert(
+                        MetaString::from_interner(key, self.interner),
+                        AttributeValue::String(MetaString::from_interner(value, self.interner)),
+                    );
+                }
                 return;
             }
         };
@@ -5232,6 +5230,17 @@ mod tests {
                 resource_name: "res-res",
             },
             Case {
+                name: "operation.name keeps its case",
+                library: "ddtracer",
+                kind: SpanKind::Unspecified,
+                span_name: "/path",
+                resource_attrs: vec![],
+                span_attrs: vec![kv_str("operation.name", "READ"), kv_str("resource.name", "/path")],
+                conversion: v1_naming(false, &[]),
+                operation_name: "READ",
+                resource_name: "/path",
+            },
+            Case {
                 name: "HTTP method and route",
                 library: "ddtracer",
                 kind: SpanKind::Server,
@@ -5652,6 +5661,34 @@ mod tests {
             assert_eq!(dd_span.attributes.contains_key("_top_level"), top_level, "{case}");
             assert_eq!(dd_span.attributes.contains_key("_dd.measured"), measured, "{case}");
         }
+    }
+
+    #[test]
+    fn v1_receive_path_keeps_numbers_over_string_tags_of_the_same_key() {
+        for kind in [SpanKind::Server, SpanKind::Client] {
+            let span = fixture_span(
+                "span",
+                kind,
+                vec![kv_str("_top_level", "0"), kv_str("_dd.measured", "0")],
+            );
+            let dd_span = convert_v1(&span, &resource(vec![]), None, &conversion());
+
+            let marker = if kind == SpanKind::Server {
+                "_top_level"
+            } else {
+                "_dd.measured"
+            };
+            assert_eq!(
+                dd_span.attributes.get(marker),
+                Some(&AttributeValue::Float(1.0)),
+                "{kind:?}"
+            );
+        }
+
+        // Without a computed marker, the attribute is an ordinary string tag.
+        let span = fixture_span("span", SpanKind::Internal, vec![kv_str("_dd.measured", "0")]);
+        let dd_span = convert_v1(&span, &resource(vec![]), None, &conversion());
+        assert_eq!(meta_str(&dd_span, "_dd.measured"), Some("0"));
     }
 
     #[test]
