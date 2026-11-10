@@ -31,7 +31,7 @@ mod trace_sampler;
 pub(crate) use self::trace_sampler::sampler_configuration;
 pub use self::trace_sampler::TraceSamplerConfiguration;
 
-mod apm_stats;
+pub(crate) mod apm_stats;
 pub use self::apm_stats::ApmStatsTransformConfiguration;
 
 mod trace_obfuscation;

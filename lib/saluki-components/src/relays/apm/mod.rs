@@ -2,15 +2,22 @@
 //!
 //! Listens on TCP and/or a Unix domain socket where the trace-agent normally listens. Requests for endpoints the relay
 //! does not handle itself are forwarded to the relocated trace-agent.
+//!
+//! The relay serves `/info` itself, and so owns `Datadog-Agent-State`, the hash of the `/info` body that every
+//! response carries: it replaces the trace-agent's on the responses it forwards.
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, LazyLock};
 
 use async_trait::async_trait;
 use axum::extract::{ConnectInfo, Request as AxumRequest, State};
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use axum::routing::any;
 use axum::Router;
+use backon::{ExponentialBuilder, Retryable as _};
+use datadog_agent_apm::semantics::SemanticRegistryProvider;
+use datadog_agent_commons::ipc::client::fetch_agent_version;
+use datadog_agent_commons::ipc::config::RemoteAgentClientConfiguration;
 use http::{HeaderName, HeaderValue};
 use metrics::Counter;
 use saluki_api::APIHandler;
@@ -28,9 +35,16 @@ use saluki_io::net::server::http::HttpServer;
 use saluki_io::net::{ConnectionAddress, ListenAddress};
 use saluki_metrics::static_metrics;
 use tokio::{pin, select};
-use tracing::debug;
+use tracing::{debug, warn};
 
 mod forwarding;
+
+mod info;
+use self::info::Info;
+pub use self::info::{
+    InfoCacheObfuscation, InfoConfiguration, InfoJsonObfuscation, InfoObfuscation, InfoReplaceRule, InfoTagFilter,
+    InfoTagFilters,
+};
 
 mod proxy;
 use self::proxy::{Destination, TraceAgentProxy};
@@ -89,6 +103,17 @@ pub struct ApmRelayConfiguration {
 
     /// Settings for forwarding tracer flares to Datadog.
     pub tracer_flare: TracerFlareConfiguration,
+
+    /// The trace-agent settings the relay reports on `/info`.
+    pub info: InfoConfiguration,
+
+    /// Client configuration for the core Agent's IPC API, which reports the Agent version on `/info`.
+    ///
+    /// `None` when ADP runs without the core Agent: `/info` then reports an empty version.
+    pub agent_client: Option<RemoteAgentClientConfiguration>,
+
+    /// Semantic registry the base peer tags on `/info` come from.
+    pub semantic_registry: SemanticRegistryProvider,
 }
 
 #[static_metrics(prefix = component, labels(component_id, component_type))]
@@ -231,6 +256,8 @@ impl RelayBuilder for ApmRelayConfiguration {
             proxy,
             tracer_flare,
             tracer_flare_api_key: self.tracer_flare.api_key.clone(),
+            info: Info::new(self.info.clone(), self.semantic_registry.clone()),
+            agent_client: self.agent_client.clone(),
             capture_entity_resolver: self.capture_entity_resolver.clone(),
             metrics: Metrics::new(context.component_id(), context.component_type().as_category_str()),
         }))
@@ -246,6 +273,8 @@ pub struct ApmRelay {
     proxy: TraceAgentProxy,
     tracer_flare: TracerFlareProxy,
     tracer_flare_api_key: Live<String>,
+    info: Info,
+    agent_client: Option<RemoteAgentClientConfiguration>,
     capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
     metrics: Metrics,
 }
@@ -259,6 +288,8 @@ impl Relay for ApmRelay {
             proxy,
             tracer_flare,
             mut tracer_flare_api_key,
+            info,
+            agent_client,
             capture_entity_resolver,
             metrics,
         } = *self;
@@ -272,6 +303,7 @@ impl Relay for ApmRelay {
             metrics,
             proxy,
             tracer_flare: tracer_flare.clone(),
+            info: info.clone(),
             capture_entity_resolver,
         });
         let router = api_handler
@@ -304,6 +336,11 @@ impl Relay for ApmRelay {
         health.mark_ready();
         debug!("APM relay started.");
 
+        // `/info` reports an empty version until the core Agent reports its own.
+        let agent_version = fetch_agent_version_with_retry(agent_client);
+        pin!(agent_version);
+        let mut agent_version_pending = true;
+
         loop {
             select! {
                 _ = &mut global_shutdown => {
@@ -312,6 +349,13 @@ impl Relay for ApmRelay {
                 },
                 _ = health.live() => continue,
                 api_key = tracer_flare_api_key.changed() => tracer_flare.refresh_api_key(&api_key),
+                version = &mut agent_version, if agent_version_pending => {
+                    agent_version_pending = false;
+                    if let Some(version) = version {
+                        debug!(version = %version.version, "Fetched the Agent version.");
+                        info.set_agent_version(version);
+                    }
+                },
             }
         }
 
@@ -321,11 +365,34 @@ impl Relay for ApmRelay {
     }
 }
 
+/// Fetches the version of the core Agent, retrying until the Agent answers.
+///
+/// Returns `None` without a client configuration, when ADP runs without the core Agent.
+async fn fetch_agent_version_with_retry(
+    agent_client: Option<RemoteAgentClientConfiguration>,
+) -> Option<datadog_agent_commons::ipc::client::RunningAgentVersion> {
+    let agent_client = agent_client?;
+    let fetch = || fetch_agent_version(&agent_client);
+    let version = fetch
+        .retry(
+            ExponentialBuilder::default()
+                .with_min_delay(std::time::Duration::from_secs(1))
+                .with_max_delay(std::time::Duration::from_secs(60))
+                .without_max_times(),
+        )
+        .notify(|error, delay| {
+            warn!(%error, "Failed to fetch the Agent version for `/info`. Retrying in {delay:?}...");
+        })
+        .await;
+    version.ok()
+}
+
 /// Shared HTTP handler state.
 #[derive(Clone)]
 struct RelayState {
     proxy: TraceAgentProxy,
     tracer_flare: TracerFlareProxy,
+    info: Info,
     capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
     metrics: Metrics,
 }
@@ -342,35 +409,54 @@ impl ApmRelayAPIHandler {
     async fn proxy_request(
         State(RelayState {
             proxy,
+            info,
             capture_entity_resolver,
             metrics,
             ..
         }): State<RelayState>,
         mut request: AxumRequest,
-    ) -> impl IntoResponse {
+    ) -> Response {
         if let Some(resolver) = capture_entity_resolver.as_deref() {
             add_peer_container_id(&mut request, resolver);
         }
-        let result = proxy.forward(request).await;
-        match &result {
-            Ok(_) => metrics.requests_relayed_total().increment(1),
-            Err(_) => metrics.requests_failed_total().increment(1),
+        match proxy.forward(request).await {
+            Ok(mut response) => {
+                metrics.requests_relayed_total().increment(1);
+                info.replace_headers(response.headers_mut());
+                response
+            }
+            Err(error) => {
+                metrics.requests_failed_total().increment(1);
+                error.into_response()
+            }
         }
-        result
     }
 
-    async fn handle_services(State(RelayState { metrics, .. }): State<RelayState>) -> impl IntoResponse {
+    async fn handle_info(State(RelayState { info, metrics, .. }): State<RelayState>) -> Response {
         metrics.requests_served_locally_total().increment(1);
-        "OK\n"
+        info.response()
+    }
+
+    async fn handle_services(State(RelayState { info, metrics, .. }): State<RelayState>) -> Response {
+        metrics.requests_served_locally_total().increment(1);
+        let mut response = "OK\n".into_response();
+        info.set_headers(response.headers_mut());
+        response
     }
 
     async fn handle_tracer_flare(
         State(RelayState {
-            tracer_flare, metrics, ..
-        }): State<RelayState>, request: AxumRequest,
-    ) -> impl IntoResponse {
+            tracer_flare,
+            info,
+            metrics,
+            ..
+        }): State<RelayState>,
+        request: AxumRequest,
+    ) -> Response {
         metrics.requests_served_locally_total().increment(1);
-        tracer_flare.forward(request).await
+        let mut response = tracer_flare.forward(request).await.into_response();
+        info.set_headers(response.headers_mut());
+        response
     }
 }
 
@@ -416,6 +502,7 @@ impl APIHandler for ApmRelayAPIHandler {
     /// Forwards requests for endpoints not handled here to the trace-agent.
     fn generate_routes(&self) -> Router<Self::State> {
         Router::new()
+            .route("/info", any(Self::handle_info))
             .route("/services", any(Self::handle_services))
             .route("/v0.1/services", any(Self::handle_services))
             .route("/v0.2/services", any(Self::handle_services))
@@ -431,6 +518,7 @@ mod tests {
     use std::net::SocketAddr;
     use std::time::Duration;
 
+    use bytes::Bytes;
     use http::{Request, StatusCode};
     use saluki_core::components::test_util::TestComponentDriver;
     use saluki_core::runtime::state::{DataspaceUpdate, IdentifierFilter};
@@ -460,6 +548,10 @@ mod tests {
             .with_state(api_handler.generate_initial_state())
     }
 
+    fn test_info() -> Info {
+        Info::new(InfoConfiguration::default(), SemanticRegistryProvider::default())
+    }
+
     /// A flare proxy whose intake is not listening, so a forwarded flare is answered `502 Bad Gateway`.
     fn unreachable_tracer_flare() -> TracerFlareProxy {
         tracer_flare::plain_http_proxy("http://127.0.0.1:1", "test-api-key")
@@ -469,6 +561,7 @@ mod tests {
         build_router(RelayState {
             proxy: unreachable_proxy(),
             tracer_flare: unreachable_tracer_flare(),
+            info: test_info(),
             capture_entity_resolver: None,
             metrics: Metrics::new("dd_traces_relay", "relays"),
         })
@@ -636,6 +729,115 @@ mod tests {
         assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
     }
 
+    /// Starts a trace-agent that answers `/v0.4/traces` with its own `Datadog-Agent-State` and
+    /// `Datadog-Agent-Version`, and any other path with a bare `404 Not Found`.
+    async fn spawn_trace_agent_with_state() -> TraceAgentProxy {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("should bind an ephemeral port");
+        let addr = listener.local_addr().expect("listener should have a local address");
+        let router = Router::new().route(
+            "/v0.4/traces",
+            any(|| async {
+                (
+                    [
+                        (info::AGENT_STATE_HEADER, "trace-agent-hash"),
+                        (info::AGENT_VERSION_HEADER, "7.0.0"),
+                    ],
+                    "OK",
+                )
+            }),
+        );
+        tokio::spawn(async move { axum::serve(listener, router).await });
+        TraceAgentProxy::from_destination(&format!("http://{addr}")).expect("destination should parse")
+    }
+
+    async fn send(router: &Router, method: &str, path: &str) -> axum::response::Response {
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn serves_info_itself_and_owns_the_agent_state_of_every_response() {
+        let recorder = saluki_metrics::test::TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let info = test_info();
+        let router = build_router(RelayState {
+            proxy: spawn_trace_agent_with_state().await,
+            tracer_flare: unreachable_tracer_flare(),
+            info: info.clone(),
+            capture_entity_resolver: None,
+            metrics: Metrics::new("dd_traces_relay", "relays"),
+        });
+
+        // `/info` answers any method, without the state header, as in the trace-agent.
+        let mut body = Bytes::new();
+        for method in ["GET", "POST"] {
+            let response = send(&router, method, "/info").await;
+            assert_eq!(response.status(), StatusCode::OK, "{method}");
+            assert_eq!(response.headers()[http::header::CONTENT_TYPE], "application/json");
+            assert!(!response.headers().contains_key(info::AGENT_STATE_HEADER));
+            body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        }
+        let state = faster_hex::hex_string(&<sha2::Sha256 as sha2::Digest>::digest(&body));
+
+        // A proxied response carries the hash of the relay's `/info` body rather than the trace-agent's.
+        let response = send(&router, "POST", "/v0.4/traces").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[info::AGENT_STATE_HEADER], state.as_str());
+        assert_eq!(response.headers()[info::AGENT_VERSION_HEADER], "");
+
+        // A response the trace-agent sent without them stays without them.
+        let response = send(&router, "GET", "/not-a-real-path").await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert!(!response.headers().contains_key(info::AGENT_STATE_HEADER));
+
+        // An endpoint the relay serves itself carries them too.
+        let response = send(&router, "PUT", "/v0.4/services").await;
+        assert_eq!(response.headers()[info::AGENT_STATE_HEADER], state.as_str());
+
+        // Once the Agent version is known, the payload and the headers follow it.
+        info.set_agent_version(datadog_agent_commons::ipc::client::RunningAgentVersion {
+            version: "7.81.0".to_string(),
+            commit: "abc1234".to_string(),
+        });
+        let response = send(&router, "POST", "/v0.4/traces").await;
+        assert_eq!(response.headers()[info::AGENT_VERSION_HEADER], "7.81.0");
+        assert_ne!(response.headers()[info::AGENT_STATE_HEADER], state.as_str());
+        let body = axum::body::to_bytes(send(&router, "GET", "/info").await.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["version"], "7.81.0");
+
+        let metric_key = |name| {
+            metrics::Key::from_parts(
+                name,
+                vec![
+                    metrics::Label::new("component_id", "dd_traces_relay"),
+                    metrics::Label::new("component_type", "relays"),
+                ],
+            )
+        };
+        assert_eq!(
+            recorder.counter(metric_key("component_requests_served_locally_total")),
+            Some(4)
+        );
+        assert_eq!(
+            recorder.counter(metric_key("component_requests_relayed_total")),
+            Some(3)
+        );
+    }
+
     #[tokio::test]
     async fn forwards_tracer_flares_to_datadog_rather_than_the_trace_agent() {
         let recorder = saluki_metrics::test::TestRecorder::default();
@@ -714,7 +916,7 @@ mod tests {
 
         let body = b"proxied request over tcp";
         let request = format!(
-            "POST /info HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            "POST /v0.4/traces HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             body.len()
         );
         stream
@@ -754,6 +956,7 @@ mod tests {
             proxy: TraceAgentProxy::from_destination(&format!("http://127.0.0.1:{port}"))
                 .expect("destination should parse"),
             tracer_flare: unreachable_tracer_flare(),
+            info: test_info(),
             capture_entity_resolver: None,
             metrics: Metrics::new("dd_traces_relay", "relays"),
         });
@@ -781,7 +984,7 @@ mod tests {
             .await
             .expect("should connect to TCP listener");
         stream
-            .write_all(b"GET /info HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .write_all(b"GET /v0.4/traces HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
             .await
             .expect("should write request");
 
@@ -839,7 +1042,7 @@ mod tests {
 
         let body = b"proxied request over uds";
         let request = format!(
-            "POST /info HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            "POST /v0.4/traces HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             body.len()
         );
         stream
@@ -875,6 +1078,9 @@ mod tests {
                 api_key: Live::new_fixed("test-api-key".to_string()),
                 forwarder: crate::common::datadog::test_util::forwarder_configuration(),
             },
+            info: InfoConfiguration::default(),
+            agent_client: None,
+            semantic_registry: SemanticRegistryProvider::default(),
         }
     }
 

@@ -266,11 +266,18 @@ async fn create_topology(
     };
 
     if dp.otlp_enabled() {
-        add_otlp_pipeline_to_blueprint(&mut blueprint, config_system, env_provider, semantic_registry).await?;
+        add_otlp_pipeline_to_blueprint(&mut blueprint, config_system, env_provider, semantic_registry.clone()).await?;
     }
 
     if dp.apm_enabled() {
-        add_apm_pipeline_to_blueprint(&mut blueprint, config_system, env_provider).await?;
+        add_apm_pipeline_to_blueprint(
+            &mut blueprint,
+            config_system,
+            env_provider,
+            remote_agent_client_config,
+            semantic_registry,
+        )
+        .await?;
     }
 
     Ok((blueprint, dogstatsd_api))
@@ -994,17 +1001,19 @@ async fn add_dsd_pipeline_to_blueprint(
 
 async fn add_apm_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem,
-    env_provider: &RemoteAgentEnvironmentProvider,
+    env_provider: &RemoteAgentEnvironmentProvider, agent_client: Option<&RemoteAgentClientConfiguration>,
+    semantic_registry: SemanticRegistryProvider,
 ) -> Result<(), GenericError> {
     let config = config_system.config();
     // In standalone mode there is no workload provider, so the resolver finds nothing and the relay forwards requests
     // without a container ID
     let dd_traces_relay = apm_relay_configuration(
-        &config.domains.apm,
-        &config.shared,
+        &config,
         datadog_agent_config::is_containerized(),
         Some(Arc::new(env_provider.workload().clone())),
         config_system.live(|config| &config.shared.endpoints.api_key),
+        agent_client.cloned(),
+        semantic_registry,
     );
     blueprint
         .add_relay("dd_traces_relay", dd_traces_relay)?

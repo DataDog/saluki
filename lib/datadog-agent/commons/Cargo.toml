@@ -7,8 +7,11 @@ repository = { workspace = true }
 
 [dependencies]
 backon = { workspace = true, features = ["tokio-sleep"] }
+bytes = { workspace = true }
 datadog-protos = { workspace = true }
 futures = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
 pin-project-lite = { workspace = true }
 rustls = { workspace = true }
 rustls-pki-types = { workspace = true }
@@ -16,7 +19,9 @@ saluki-error = { workspace = true }
 saluki-io = { workspace = true }
 saluki-metadata = { workspace = true }
 saluki-tls = { workspace = true }
-tokio = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["fs"] }
 tonic = { workspace = true, features = ["transport"] }
 tracing = { workspace = true }
 

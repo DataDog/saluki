@@ -39,7 +39,7 @@ pub(crate) use self::aggregation::{process_tags_hash, PayloadAggregationKey};
 
 mod peer_ip_quantize;
 
-mod peer_tags;
+pub(crate) mod peer_tags;
 
 mod span_concentrator;
 pub(crate) use self::span_concentrator::{InfraTags, SpanConcentrator};
