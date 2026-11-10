@@ -29,6 +29,7 @@ use saluki_core::data_model::payload::PayloadType;
 use saluki_core::runtime;
 use saluki_core::topology::OutputDefinition;
 use saluki_env::workload::{CaptureEntityResolver, EntityId};
+use saluki_env::WorkloadProvider;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::net::dns::resolve_host;
 use saluki_io::net::server::http::HttpServer;
@@ -36,6 +37,9 @@ use saluki_io::net::{ConnectionAddress, ListenAddress};
 use saluki_metrics::static_metrics;
 use tokio::{pin, select};
 use tracing::{debug, warn};
+
+mod container_tags;
+use self::container_tags::{ContainerTagsHasher, CONTAINER_TAGS_HASH_HEADER};
 
 mod forwarding;
 
@@ -109,6 +113,11 @@ pub struct ApmRelayConfiguration {
 
     /// The trace-agent settings the relay reports on `/info`.
     pub info: InfoConfiguration,
+
+    /// Workload provider the tags of a tracer's container come from, for the `Datadog-Container-Tags-Hash` of `/info`.
+    ///
+    /// `None` when ADP runs without the core Agent: every tracer then gets the hash of no tags.
+    pub workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
 
     /// Client configuration for the core Agent's IPC API, which reports the Agent version on `/info`.
     ///
@@ -273,6 +282,10 @@ impl RelayBuilder for ApmRelayConfiguration {
             info: Info::new(self.info.clone(), self.semantic_registry.clone()),
             agent_client: self.agent_client.clone(),
             org_prop_marker,
+            container_tags: ContainerTagsHasher::new(
+                self.capture_entity_resolver.clone(),
+                self.workload_provider.clone(),
+            ),
             capture_entity_resolver: self.capture_entity_resolver.clone(),
             metrics: Metrics::new(context.component_id(), context.component_type().as_category_str()),
         }))
@@ -291,6 +304,7 @@ pub struct ApmRelay {
     info: Info,
     agent_client: Option<RemoteAgentClientConfiguration>,
     org_prop_marker: OrgPropagationMarkerFetcher,
+    container_tags: ContainerTagsHasher,
     capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
     metrics: Metrics,
 }
@@ -307,6 +321,7 @@ impl Relay for ApmRelay {
             info,
             agent_client,
             org_prop_marker,
+            container_tags,
             capture_entity_resolver,
             metrics,
         } = *self;
@@ -321,6 +336,7 @@ impl Relay for ApmRelay {
             proxy,
             tracer_flare: tracer_flare.clone(),
             info: info.clone(),
+            container_tags,
             capture_entity_resolver,
         });
         let router = api_handler
@@ -421,6 +437,7 @@ struct RelayState {
     proxy: TraceAgentProxy,
     tracer_flare: TracerFlareProxy,
     info: Info,
+    container_tags: ContainerTagsHasher,
     capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
     metrics: Metrics,
 }
@@ -460,9 +477,23 @@ impl ApmRelayAPIHandler {
         }
     }
 
-    async fn handle_info(State(RelayState { info, metrics, .. }): State<RelayState>) -> Response {
+    async fn handle_info(
+        State(RelayState {
+            info,
+            container_tags,
+            metrics,
+            ..
+        }): State<RelayState>,
+        request: AxumRequest,
+    ) -> Response {
         metrics.requests_served_locally_total().increment(1);
-        info.response()
+        let hash = container_tags.header_value(
+            request.headers(),
+            request.extensions().get::<ConnectInfo<ConnectionAddress>>(),
+        );
+        let mut response = info.response();
+        response.headers_mut().insert(CONTAINER_TAGS_HASH_HEADER, hash);
+        response
     }
 
     async fn handle_services(State(RelayState { info, metrics, .. }): State<RelayState>) -> Response {
@@ -590,6 +621,7 @@ mod tests {
             proxy: unreachable_proxy(),
             tracer_flare: unreachable_tracer_flare(),
             info: test_info(),
+            container_tags: ContainerTagsHasher::default(),
             capture_entity_resolver: None,
             metrics: Metrics::new("dd_traces_relay", "relays"),
         })
@@ -803,6 +835,7 @@ mod tests {
             proxy: spawn_trace_agent_with_state().await,
             tracer_flare: unreachable_tracer_flare(),
             info: info.clone(),
+            container_tags: ContainerTagsHasher::default(),
             capture_entity_resolver: None,
             metrics: Metrics::new("dd_traces_relay", "relays"),
         });
@@ -817,6 +850,11 @@ mod tests {
                 "text/plain; charset=utf-8"
             );
             assert!(!response.headers().contains_key(info::AGENT_STATE_HEADER));
+            // Without a workload provider, the tracer's container has no tags.
+            assert_eq!(
+                response.headers()[CONTAINER_TAGS_HASH_HEADER],
+                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            );
             body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
         }
         let state = faster_hex::hex_string(&<sha2::Sha256 as sha2::Digest>::digest(&body));
@@ -988,6 +1026,7 @@ mod tests {
                 .expect("destination should parse"),
             tracer_flare: unreachable_tracer_flare(),
             info: test_info(),
+            container_tags: ContainerTagsHasher::default(),
             capture_entity_resolver: None,
             metrics: Metrics::new("dd_traces_relay", "relays"),
         });
@@ -1110,6 +1149,7 @@ mod tests {
                 forwarder: crate::common::datadog::test_util::forwarder_configuration(),
             },
             info: InfoConfiguration::default(),
+            workload_provider: None,
             agent_client: None,
             semantic_registry: SemanticRegistryProvider::default(),
             validate_endpoint: "http://127.0.0.1:1/api/v2/validate".to_string(),

@@ -1007,10 +1007,12 @@ async fn add_apm_pipeline_to_blueprint(
     let config = config_system.config();
     // In standalone mode there is no workload provider, so the resolver finds nothing and the relay forwards requests
     // without a container ID
+    let workload = Arc::new(env_provider.workload().clone());
     let dd_traces_relay = apm_relay_configuration(
         &config,
         datadog_agent_config::is_containerized(),
-        Some(Arc::new(env_provider.workload().clone())),
+        Some(workload.clone()),
+        Some(workload),
         config_system.live(|config| &config.shared.endpoints.api_key),
         agent_client.cloned(),
         semantic_registry,

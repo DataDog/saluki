@@ -14,6 +14,7 @@ use saluki_components::relays::apm::{
     InfoReplaceRule, InfoTagFilter, InfoTagFilters, TracerFlareConfiguration,
 };
 use saluki_env::workload::CaptureEntityResolver;
+use saluki_env::WorkloadProvider;
 
 use super::forwarder_configuration;
 
@@ -24,7 +25,8 @@ const DEFAULT_SITE: &str = "datadoghq.com";
 /// are sent with, and what `/info` reports.
 pub(crate) fn apm_relay_configuration(
     config: &SalukiConfiguration, containerized: bool,
-    capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>, api_key: Live<String>,
+    capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
+    workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>, api_key: Live<String>,
     agent_client: Option<RemoteAgentClientConfiguration>, semantic_registry: SemanticRegistryProvider,
 ) -> ApmRelayConfiguration {
     let apm = &config.domains.apm;
@@ -35,6 +37,7 @@ pub(crate) fn apm_relay_configuration(
         receiver_socket: apm.receiver_socket.clone().unwrap_or_default(),
         proxy_destination: apm.proxy_destination.clone(),
         capture_entity_resolver,
+        workload_provider,
         bind_host,
         non_local_traffic,
         receiver_port: apm.receiver_port,
@@ -190,6 +193,7 @@ mod tests {
             config,
             containerized,
             None,
+            None,
             Live::new_fixed(String::new()),
             None,
             SemanticRegistryProvider::default(),
@@ -210,6 +214,7 @@ mod tests {
             &config,
             false,
             Some(resolver.clone()),
+            None,
             Live::new_fixed("api-key".to_string()),
             None,
             SemanticRegistryProvider::default(),
