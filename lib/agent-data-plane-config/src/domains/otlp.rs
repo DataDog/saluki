@@ -1,6 +1,7 @@
 //! OTLP domain: the OTLP receiver (gRPC/HTTP transports, logs/metrics activation), the OTLP proxy
 //! gating, and OTLP context sizing. OTLP trace handling lives in the `traces` domain.
 
+use std::collections::HashMap;
 use std::time::Duration;
 use std::{num::NonZeroUsize, str::FromStr};
 
@@ -500,6 +501,19 @@ pub struct Traces {
     /// Defaults to `off`, which leaves custom tags as plain resource attributes. Convention keys and
     /// already-prefixed keys are exempt in every mode.
     pub container_tag_promotion: ContainerTagPromotion,
+
+    /// Whether the Agent uses the OTLP span name as the Datadog resource name of OTLP spans.
+    ///
+    /// ADP reads this value but does not apply it yet: translation always derives names with the V2 logic, so
+    /// `true` has no effect on emitted spans (#2332). Defaults to `false`, which is the Agent's default of
+    /// building the resource name from the instrumentation library name and span kind.
+    pub span_name_as_resource_name: bool,
+
+    /// Preferred operation names by OTLP span name, as the Agent applies them.
+    ///
+    /// ADP reads this value but does not apply it yet: translation always derives names with the V2 logic, so a
+    /// non-empty map leaves span names unchanged (#2332). Defaults to empty.
+    pub span_name_remappings: HashMap<String, String>,
 }
 
 impl Default for Traces {
@@ -514,6 +528,9 @@ impl Default for Traces {
             ignore_missing_datadog_fields: false,
             infra_attributes_enabled: true,
             container_tag_promotion: ContainerTagPromotion::default(),
+            // Witnessed; overwritten during drive.
+            span_name_as_resource_name: false,
+            span_name_remappings: HashMap::new(),
         }
     }
 }

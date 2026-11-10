@@ -233,6 +233,8 @@ pub trait DatadogConfigWitness {
     fn consume_otlp_config_traces_infra_attributes_enabled(&mut self, value: bool);
     fn consume_otlp_config_traces_internal_port(&mut self, value: i64);
     fn consume_otlp_config_traces_probabilistic_sampler_sampling_percentage(&mut self, value: f64);
+    fn consume_otlp_config_traces_span_name_as_resource_name(&mut self, value: bool);
+    fn consume_otlp_config_traces_span_name_remappings(&mut self, value: HashMap<String, String>);
     fn consume_provider_kind(&mut self, value: String);
     fn consume_proxy_http(&mut self, value: String);
     fn consume_proxy_https(&mut self, value: String);
@@ -661,6 +663,10 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
             .sampling_percentage
             .clone(),
     );
+    consumer.consume_otlp_config_traces_span_name_as_resource_name(
+        config.otlp_config.traces.span_name_as_resource_name.clone(),
+    );
+    consumer.consume_otlp_config_traces_span_name_remappings(config.otlp_config.traces.span_name_remappings.clone());
     consumer.consume_provider_kind(config.provider_kind.clone());
     consumer.consume_proxy_http(config.proxy.http.clone());
     consumer.consume_proxy_https(config.proxy.https.clone());

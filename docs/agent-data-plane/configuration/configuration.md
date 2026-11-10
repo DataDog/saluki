@@ -415,28 +415,30 @@ setting has no effect in ADP.
 The following settings are recognized by both ADP and the core agent, but with different behavior or
 default values.
 
-| Config Key                                   | Description                                     |
-| -------------------------------------------- | ----------------------------------------------- |
-| `aggregator_stop_timeout`                    | Timeout (s) for aggregator flush on stop        |
-| `apm_config.features`                        | Beta APM feature flags                          |
-| `cri_socket_path`                            | containerd/CRI socket path                      |
-| `dogstatsd_mapper_cache_size`                | Mapper result LRU cache size                    |
-| `dogstatsd_metrics_stats_enable`             | Enable per-metric debug stats                   |
-| `dogstatsd_workers_count`                    | Number of DSD processing workers                |
-| `env`                                        | Agent environment name                          |
-| `forwarder_apikey_validation_interval`       | API key check interval (minutes)                |
-| `forwarder_high_prio_buffer_size`            | High-priority request queue size                |
-| `forwarder_num_workers`                      | Concurrent forwarder workers                    |
-| `forwarder_stop_timeout`                     | Timeout (s) for forwarder graceful stop         |
-| `log_level`                                  | Log verbosity directives                        |
-| `min_tls_version`                            | Minimum TLS version for HTTPS connections       |
-| `multi_region_failover.enabled`              | Enable multi-region failover mode               |
-| `secret_backend_command`                     | Path to the Agent secret-fetch executable       |
-| `secret_refresh_on_api_key_failure_interval` | Minutes between secret refreshes after a 403    |
-| `serializer_zstd_compressor_level`           | Zstd compression level (Agent)                  |
-| `skip_ssl_validation`                        | Skip TLS cert validation                        |
-| `statsd_forward_host`                        | UDP packet forwarding destination host          |
-| `telemetry.dogstatsd_origin`                 | Per-origin processed metrics and context counts |
+| Config Key                                      | Description                                     |
+| ----------------------------------------------- | ----------------------------------------------- |
+| `aggregator_stop_timeout`                       | Timeout (s) for aggregator flush on stop        |
+| `apm_config.features`                           | Beta APM feature flags                          |
+| `cri_socket_path`                               | containerd/CRI socket path                      |
+| `dogstatsd_mapper_cache_size`                   | Mapper result LRU cache size                    |
+| `dogstatsd_metrics_stats_enable`                | Enable per-metric debug stats                   |
+| `dogstatsd_workers_count`                       | Number of DSD processing workers                |
+| `env`                                           | Agent environment name                          |
+| `forwarder_apikey_validation_interval`          | API key check interval (minutes)                |
+| `forwarder_high_prio_buffer_size`               | High-priority request queue size                |
+| `forwarder_num_workers`                         | Concurrent forwarder workers                    |
+| `forwarder_stop_timeout`                        | Timeout (s) for forwarder graceful stop         |
+| `log_level`                                     | Log verbosity directives                        |
+| `min_tls_version`                               | Minimum TLS version for HTTPS connections       |
+| `multi_region_failover.enabled`                 | Enable multi-region failover mode               |
+| `otlp_config.traces.span_name_as_resource_name` | Use the OTLP span name as the resource name     |
+| `otlp_config.traces.span_name_remappings`       | Remap OTLP span names to preferred names        |
+| `secret_backend_command`                        | Path to the Agent secret-fetch executable       |
+| `secret_refresh_on_api_key_failure_interval`    | Minutes between secret refreshes after a 403    |
+| `serializer_zstd_compressor_level`              | Zstd compression level (Agent)                  |
+| `skip_ssl_validation`                           | Skip TLS cert validation                        |
+| `statsd_forward_host`                           | UDP packet forwarding destination host          |
+| `telemetry.dogstatsd_origin`                    | Per-origin processed metrics and context counts |
 
 ### `aggregator_stop_timeout`
 
@@ -623,6 +625,23 @@ is enabled.
 | `multi_region_failover.api_key`          | API key for the failover-region endpoint.                                  | unset   |
 | `multi_region_failover.site`             | Datadog site for the failover region, used as `https://app.mrf.<site>`.    | unset   |
 | `multi_region_failover.dd_url`           | Explicit failover intake URL. Takes precedence over `site` when set.       | unset   |
+
+### `otlp_config.traces.span_name_as_resource_name`
+
+The core Agent uses `otlp_config.traces.span_name_as_resource_name` to select its V1 naming for OTLP
+spans: with the key set, the span name becomes the Datadog resource name, and without it the
+resource name is built from the instrumentation library name and span kind.
+
+ADP reads this key but does not act on it yet. It always derives span names and resource names with the
+V2 logic, so setting the key has no effect on the spans ADP emits.
+
+### `otlp_config.traces.span_name_remappings`
+
+The core Agent uses `otlp_config.traces.span_name_remappings`, a map of span names to preferred
+names, to rename the operation names of OTLP spans. A non-empty map also selects the Agent's V1 naming.
+
+ADP reads this key but does not act on it yet. It always derives span names and resource names with the
+V2 logic, so setting the key has no effect on the spans ADP emits.
 
 ### `secret_backend_command`
 
@@ -1489,6 +1508,7 @@ Both commands scrub recognized secret values before writing JSON to standard out
 [#1754]: https://github.com/DataDog/saluki/issues/1754
 [#1755]: https://github.com/DataDog/saluki/issues/1755
 [#2079]: https://github.com/DataDog/saluki/issues/2079
+[#2332]: https://github.com/DataDog/saluki/issues/2332
 [#2555]: https://github.com/DataDog/saluki/issues/2555
 [#2557]: https://github.com/DataDog/saluki/issues/2557
 [#2558]: https://github.com/DataDog/saluki/issues/2558

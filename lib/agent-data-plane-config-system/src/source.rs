@@ -142,9 +142,11 @@ impl SourceTree {
     /// deserializing a model: they need every key present, including the ones no model describes.
     ///
     /// An object-valued leaf is descended into, so a key nested inside a value the models do not
-    /// describe is still reported under its full path. Every key that comes out of one leaf carries
-    /// that leaf's provenance, because one input supplied the whole value. A leaf holding an array or
-    /// a scalar is reported as it stands.
+    /// describe is still reported under its full path. A leaf that a model does describe, such as the
+    /// map `otlp_config.traces.span_name_remappings`, is also reported under its own key, so it can
+    /// still be looked up as the setting it is. Every key that comes out of one leaf carries that
+    /// leaf's provenance, because one input supplied the whole value. A leaf holding an array or a
+    /// scalar is reported as it stands.
     pub(crate) fn flattened_keys(&self) -> Vec<(String, &Value, Provenance)> {
         let mut keys = Vec::new();
         self.root.flatten(&mut String::new(), &mut keys);
@@ -255,7 +257,12 @@ impl Node {
                     prefix.truncate(prefix_len);
                 }
             }
-            Node::Leaf { value, provenance } => flatten_value(value, *provenance, prefix, keys),
+            Node::Leaf { value, provenance } => {
+                if value.as_object().is_some_and(|entries| !entries.is_empty()) && is_modeled_leaf(prefix) {
+                    keys.push((prefix.clone(), value, *provenance));
+                }
+                flatten_value(value, *provenance, prefix, keys);
+            }
         }
     }
 
@@ -293,6 +300,20 @@ fn flatten_value<'a>(
         flatten_value(entry, provenance, prefix, keys);
         prefix.truncate(prefix_len);
     }
+}
+
+/// Returns whether the dotted `key` is a leaf path of either source model: a setting a model describes,
+/// as opposed to a section or a key no model knows.
+fn is_modeled_leaf(key: &str) -> bool {
+    static LEAVES: OnceLock<HashSet<Vec<String>>> = OnceLock::new();
+    let leaves = LEAVES.get_or_init(|| {
+        let datadog = datadog_agent_config::datadog_leaf_paths()
+            .map(|path| path.iter().map(|segment| (*segment).to_string()).collect::<Vec<_>>());
+        let saluki = saluki_env_overlay::leaf_paths().map(|path| path.to_vec());
+        datadog.chain(saluki).collect()
+    });
+    let segments: Vec<String> = key.split('.').map(str::to_string).collect();
+    leaves.contains(&segments)
 }
 
 /// Every proper prefix of a modeled leaf path, across both source models.
@@ -558,6 +579,32 @@ mod tests {
             vec![
                 ("not_a_datadog_key.a".to_string(), &json!(1), Provenance::Explicit),
                 ("not_a_datadog_key.b.c".to_string(), &json!(2), Provenance::Explicit),
+            ]
+        );
+    }
+
+    #[test]
+    fn flattened_keys_report_a_modeled_map_setting_under_its_own_key() {
+        // A setting a model describes can hold a map. It stays reachable as the setting it is, and its
+        // entries are still reported, so a by-key consumer finds it whichever way it looks.
+        let remappings = json!({ "io.opentelemetry.javaagent.spring.client": "spring.client" });
+        let tree = SourceTree::all_explicit(json!({
+            "otlp_config": { "traces": { "span_name_remappings": remappings } }
+        }));
+
+        assert_eq!(
+            tree.flattened_keys(),
+            vec![
+                (
+                    "otlp_config.traces.span_name_remappings".to_string(),
+                    &remappings,
+                    Provenance::Explicit
+                ),
+                (
+                    "otlp_config.traces.span_name_remappings.io.opentelemetry.javaagent.spring.client".to_string(),
+                    &json!("spring.client"),
+                    Provenance::Explicit
+                ),
             ]
         );
     }
