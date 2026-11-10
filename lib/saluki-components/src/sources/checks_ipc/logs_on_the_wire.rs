@@ -7,7 +7,7 @@
 //! The tests stop at the request the encoder builds. Headers that the forwarder adds when it sends a request, and the
 //! transport itself, aren't covered here.
 //!
-//! Today, each entry wraps the check's message in a JSON-encoded `{"message": ...}` object, carries the capitalized
+//! Today, each entry wraps the check's message in a JSON-encoded `{"message": ...}` object, carries a lowercase
 //! status, and gets an `@timestamp` from the encoder's clock. Check logs have no hostname, service, or source, so
 //! those keys are absent.
 
@@ -132,9 +132,9 @@ async fn request() {
         ],
         body: [
             "[",
-            &entry(r#""{\"message\":\"first\"}""#, "Info"),
+            &entry(r#""{\"message\":\"first\"}""#, "info"),
             ",",
-            &entry(r#""{\"message\":\"second\"}""#, "Error"),
+            &entry(r#""{\"message\":\"second\"}""#, "error"),
             "]",
         ]
         .concat(),
@@ -147,19 +147,16 @@ async fn levels() {
     let cases = [
         (
             LogLevel::Unspecified as i32,
-            entry(r#""{\"message\":\"hello\"}""#, "Info"),
+            entry(r#""{\"message\":\"hello\"}""#, "info"),
         ),
-        (LogLevel::Trace as i32, entry(r#""{\"message\":\"hello\"}""#, "Trace")),
-        (LogLevel::Debug as i32, entry(r#""{\"message\":\"hello\"}""#, "Debug")),
-        (LogLevel::Info as i32, entry(r#""{\"message\":\"hello\"}""#, "Info")),
-        (
-            LogLevel::Warning as i32,
-            entry(r#""{\"message\":\"hello\"}""#, "Warning"),
-        ),
-        (LogLevel::Error as i32, entry(r#""{\"message\":\"hello\"}""#, "Error")),
+        (LogLevel::Trace as i32, entry(r#""{\"message\":\"hello\"}""#, "trace")),
+        (LogLevel::Debug as i32, entry(r#""{\"message\":\"hello\"}""#, "debug")),
+        (LogLevel::Info as i32, entry(r#""{\"message\":\"hello\"}""#, "info")),
+        (LogLevel::Warning as i32, entry(r#""{\"message\":\"hello\"}""#, "warn")),
+        (LogLevel::Error as i32, entry(r#""{\"message\":\"hello\"}""#, "error")),
         (
             LogLevel::Critical as i32,
-            entry(r#""{\"message\":\"hello\"}""#, "Emergency"),
+            entry(r#""{\"message\":\"hello\"}""#, "emergency"),
         ),
     ];
 
@@ -171,26 +168,26 @@ async fn levels() {
 #[tokio::test]
 async fn messages() {
     let cases = [
-        ("", entry(r#""{\"message\":\"\"}""#, "Info")),
+        ("", entry(r#""{\"message\":\"\"}""#, "info")),
         (
             r#"{"key":"value","n":1}"#,
-            entry(r#""{\"message\":\"{\\\"key\\\":\\\"value\\\",\\\"n\\\":1}\"}""#, "Info"),
+            entry(r#""{\"message\":\"{\\\"key\\\":\\\"value\\\",\\\"n\\\":1}\"}""#, "info"),
         ),
         (
             r#"say "hi" \ bye"#,
-            entry(r#""{\"message\":\"say \\\"hi\\\" \\\\ bye\"}""#, "Info"),
+            entry(r#""{\"message\":\"say \\\"hi\\\" \\\\ bye\"}""#, "info"),
         ),
         (
             "line one\nline two\ttabbed",
-            entry(r#""{\"message\":\"line one\\nline two\\ttabbed\"}""#, "Info"),
+            entry(r#""{\"message\":\"line one\\nline two\\ttabbed\"}""#, "info"),
         ),
         (
             "<a href=\"x\">&amp;</a>",
-            entry(r#""{\"message\":\"<a href=\\\"x\\\">&amp;</a>\"}""#, "Info"),
+            entry(r#""{\"message\":\"<a href=\\\"x\\\">&amp;</a>\"}""#, "info"),
         ),
         (
             "café ☕ 日本語 \u{2028}",
-            entry("\"{\\\"message\\\":\\\"café ☕ 日本語 \u{2028}\\\"}\"", "Info"),
+            entry("\"{\\\"message\\\":\\\"café ☕ 日本語 \u{2028}\\\"}\"", "info"),
         ),
     ];
 

@@ -16,10 +16,6 @@ logs:
       paths: ["content.status", "content.hostname"]
       kinds: [missing]
       reason: ADP's content holds only `message` and `service`.
-    - gap: gap/status-strings
-      paths: ["envelope.status"]
-      kinds: [value]
-      reason: ADP capitalizes the envelope status instead of sending the Agent's raw status.
     - gap: gap/envelope-timestamp
       paths: ["envelope.timestamp"]
       kinds: [missing]

@@ -280,7 +280,7 @@ mod tests {
         assert_size_budget!(super::metric::MetricMetadata, 48);
         assert_size_budget!(EventD, 200);
         assert_size_budget!(ServiceCheck, 160);
-        assert_size_budget!(Log, 192);
+        assert_size_budget!(Log, 208);
         assert_size_budget!(Trace, 336);
         assert_size_budget!(TraceStats, 32);
     }

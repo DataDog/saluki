@@ -17,7 +17,7 @@ use saluki_core::{
     data_model::{
         event::{
             eventd::{AlertType, EventD, Priority},
-            log::{Log, LogStatus},
+            log::Log,
             metric::{context::Context, Metric},
             service_check::{CheckStatus, ServiceCheck},
             Event, EventType,
@@ -305,15 +305,16 @@ fn check_data_to_event(check_data: Data, default_hostname: &MetaString) -> Optio
     }
 }
 
-fn log_level_to_log_status(log_level: LogLevel) -> LogStatus {
+/// Returns the status of a check log, as one of the lowercase log statuses of the intake protocol.
+fn log_level_to_log_status(log_level: LogLevel) -> &'static str {
     match log_level {
-        LogLevel::Trace => LogStatus::Trace,
-        LogLevel::Debug => LogStatus::Debug,
-        LogLevel::Info => LogStatus::Info,
-        LogLevel::Warning => LogStatus::Warning,
-        LogLevel::Error => LogStatus::Error,
-        LogLevel::Critical => LogStatus::Emergency,
-        _ => LogStatus::Info,
+        LogLevel::Trace => "trace",
+        LogLevel::Debug => "debug",
+        LogLevel::Info => "info",
+        LogLevel::Warning => "warn",
+        LogLevel::Error => "error",
+        LogLevel::Critical => "emergency",
+        _ => "info",
     }
 }
 
