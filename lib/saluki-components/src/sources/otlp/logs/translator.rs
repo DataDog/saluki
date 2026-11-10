@@ -324,7 +324,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resource_host_uses_the_full_source_resolution() {
+    fn resource_host_uses_the_full_source_resolution() {
         let resource = |attributes: Vec<(&str, &str)>| otlp_resource_v1::Resource {
             attributes: attributes
                 .into_iter()
@@ -355,7 +355,7 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_resource_host_falls_back_to_the_record() {
+    fn empty_resource_host_falls_back_to_the_record() {
         let lr = otlp_logs_v1::LogRecord {
             attributes: vec![key_value_string_to_otlp_common_key_value("host.name", "record-host")],
             ..Default::default()
