@@ -84,9 +84,12 @@ pub struct ApmRelayConfiguration {
 #[static_metrics(prefix = component, labels(component_id, component_type))]
 #[derive(Clone)]
 struct Metrics {
+    /// Requests forwarded to the trace-agent that it answered, whatever the status of its answer.
     requests_relayed_total: Counter,
+    /// Requests forwarded to the trace-agent that it never answered, such as when it was unreachable.
     requests_failed_total: Counter,
-    requests_handled_total: Counter,
+    /// Requests the relay answered itself, without forwarding them to the trace-agent.
+    requests_served_locally_total: Counter,
 }
 
 impl ApmRelayConfiguration {
@@ -335,7 +338,7 @@ impl ApmRelayAPIHandler {
     }
 
     async fn handle_services(State(RelayState { metrics, .. }): State<RelayState>) -> impl IntoResponse {
-        metrics.requests_handled_total().increment(1);
+        metrics.requests_served_locally_total().increment(1);
         "OK\n"
     }
 }
