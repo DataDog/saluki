@@ -85,6 +85,10 @@ pub struct DatadogConfiguration {
     #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub cluster_name: String,
 
+    #[serde(default = "defaults::datadog_configuration_cmd_host")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
+    pub cmd_host: String,
+
     #[serde(default = "defaults::default_u64::<i64, 5001>")]
     #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub cmd_port: i64,
@@ -388,6 +392,10 @@ pub struct DatadogConfiguration {
     #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub hostname: String,
 
+    #[serde(default = "defaults::datadog_configuration_ipc_address")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
+    pub ipc_address: String,
+
     #[serde(default)]
     #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub ipc_cert_file_path: String,
@@ -611,6 +619,7 @@ impl Default for DatadogConfiguration {
             bind_host: Default::default(),
             cluster_agent: Default::default(),
             cluster_name: Default::default(),
+            cmd_host: defaults::datadog_configuration_cmd_host(),
             cmd_port: defaults::default_u64::<i64, 5001>(),
             container_cgroup_root: defaults::datadog_configuration_container_cgroup_root(),
             container_proc_root: defaults::datadog_configuration_container_proc_root(),
@@ -691,6 +700,7 @@ impl Default for DatadogConfiguration {
             histogram_copy_to_distribution_prefix: Default::default(),
             histogram_percentiles: defaults::datadog_configuration_histogram_percentiles(),
             hostname: Default::default(),
+            ipc_address: defaults::datadog_configuration_ipc_address(),
             ipc_cert_file_path: Default::default(),
             kubernetes_kubelet_nodename: Default::default(),
             log_file_max_rolls: defaults::default_u64::<i64, 1>(),
@@ -2278,6 +2288,9 @@ pub mod defaults {
     {
         T::try_from(V).unwrap()
     }
+    pub(super) fn datadog_configuration_cmd_host() -> String {
+        "localhost".to_string()
+    }
     pub(super) fn datadog_configuration_container_cgroup_root() -> String {
         "/host/sys/fs/cgroup/".to_string()
     }
@@ -2330,6 +2343,9 @@ pub mod defaults {
     }
     pub(super) fn datadog_configuration_histogram_percentiles() -> Vec<String> {
         vec!["0.95".to_string()]
+    }
+    pub(super) fn datadog_configuration_ipc_address() -> String {
+        "localhost".to_string()
     }
     pub(super) fn datadog_configuration_log_file_max_size() -> String {
         "10Mb".to_string()

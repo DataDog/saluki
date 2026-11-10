@@ -1,10 +1,11 @@
 //! IPC configuration.
 
-use std::path::{Path, PathBuf};
+use std::{
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    path::{Path, PathBuf},
+};
 
-#[cfg(target_os = "linux")]
-use saluki_error::generic_error;
-use saluki_error::GenericError;
+use saluki_error::{generic_error, GenericError};
 use tonic::transport::Uri;
 #[cfg(not(target_os = "linux"))]
 use tracing::warn;
@@ -70,7 +71,12 @@ impl IpcAuthConfiguration {
 /// Datadog Agent IPC client configuration.
 #[derive(Clone, Debug)]
 pub struct RemoteAgentClientConfiguration {
-    /// Core Agent CMD API port used for remote-agent gRPC IPC on localhost.
+    /// Core Agent CMD API host used for remote-agent gRPC IPC. Always a loopback address.
+    ///
+    /// Defaults to `127.0.0.1`. See [`with_cmd_host`](Self::with_cmd_host).
+    pub cmd_host: IpAddr,
+
+    /// Core Agent CMD API port used for remote-agent gRPC IPC.
     pub cmd_port: u16,
 
     /// Authentication configuration for the IPC endpoint.
@@ -117,6 +123,7 @@ impl RemoteAgentClientConfiguration {
         }
 
         Ok(Self {
+            cmd_host: IpAddr::V4(Ipv4Addr::LOCALHOST),
             cmd_port,
             auth,
             grpc_max_message_size,
@@ -125,11 +132,25 @@ impl RemoteAgentClientConfiguration {
         })
     }
 
+    /// Sets the Core Agent CMD API host, following the Datadog Agent's `cmd_host` setting.
+    ///
+    /// Like the Datadog Agent, the host must be `localhost` or a loopback IP address: an IPv4 address in
+    /// `127.0.0.0/8`, or `::1`. `localhost` connects to `127.0.0.1`, which is where the Datadog Agent listens for it.
+    ///
+    /// # Errors
+    ///
+    /// If `cmd_host` isn't `localhost` or a loopback IP address, an error is returned.
+    pub fn with_cmd_host(mut self, cmd_host: &str) -> Result<Self, GenericError> {
+        self.cmd_host = parse_cmd_host(cmd_host)?;
+        Ok(self)
+    }
+
     /// Returns the Core Agent CMD API gRPC endpoint URI.
     pub fn endpoint(&self) -> Uri {
-        format!("https://127.0.0.1:{}", self.cmd_port)
+        // `SocketAddr` brackets an IPv6 host, as a URI requires.
+        format!("https://{}", SocketAddr::new(self.cmd_host, self.cmd_port))
             .parse()
-            .expect("a URI built from a u16 port is valid")
+            .expect("a URI built from an IP address and a u16 port is valid")
     }
 
     /// Returns the vsock address to use for connecting to the IPC endpoint, if configured.
@@ -140,9 +161,38 @@ impl RemoteAgentClientConfiguration {
     }
 }
 
+/// Parses a CMD API host into the loopback address to connect to.
+fn parse_cmd_host(cmd_host: &str) -> Result<IpAddr, GenericError> {
+    if cmd_host == "localhost" {
+        return Ok(IpAddr::V4(Ipv4Addr::LOCALHOST));
+    }
+
+    let ip = cmd_host
+        .parse::<IpAddr>()
+        .map_err(|_| {
+            generic_error!(
+                "invalid IPC host '{}'; expected `localhost` or a loopback IP address",
+                cmd_host
+            )
+        })?
+        // Treat an IPv4-mapped IPv6 address (for example, `::ffff:127.0.0.1`) as the IPv4 address it maps to.
+        .to_canonical();
+    if !ip.is_loopback() {
+        return Err(generic_error!(
+            "IPC host '{}' isn't a loopback address; expected `localhost`, an IPv4 address in 127.0.0.0/8, or ::1",
+            cmd_host
+        ));
+    }
+
+    Ok(ip)
+}
+
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
+    use std::{
+        net::{IpAddr, Ipv4Addr},
+        path::{Path, PathBuf},
+    };
 
     use super::{IpcAuthConfiguration, RemoteAgentClientConfiguration};
     use crate::platform::PlatformSettings;
@@ -228,6 +278,7 @@ mod tests {
 
     fn remote_agent_config(cmd_port: u16) -> RemoteAgentClientConfiguration {
         RemoteAgentClientConfiguration {
+            cmd_host: IpAddr::V4(Ipv4Addr::LOCALHOST),
             cmd_port,
             auth: IpcAuthConfiguration::new(PathBuf::new(), PathBuf::new()),
             grpc_max_message_size: 128 * 1024 * 1024,
@@ -240,6 +291,45 @@ mod tests {
     fn endpoint_uses_cmd_port() {
         for (cmd_port, expected) in [(5001, "https://127.0.0.1:5001/"), (7777, "https://127.0.0.1:7777/")] {
             assert_eq!(remote_agent_config(cmd_port).endpoint().to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn endpoint_uses_cmd_host() {
+        let cases = [
+            // `localhost` connects to IPv4 loopback, where the Datadog Agent listens for it.
+            ("localhost", "https://127.0.0.1:5001/"),
+            ("127.0.0.1", "https://127.0.0.1:5001/"),
+            ("127.0.0.2", "https://127.0.0.2:5001/"),
+            // IPv6 hosts are bracketed.
+            ("::1", "https://[::1]:5001/"),
+            // An IPv4-mapped IPv6 address is treated as the IPv4 address it maps to.
+            ("::ffff:127.0.0.1", "https://127.0.0.1:5001/"),
+        ];
+        for (cmd_host, expected) in cases {
+            let config = remote_agent_config(5001)
+                .with_cmd_host(cmd_host)
+                .unwrap_or_else(|e| panic!("{cmd_host:?} should be a valid IPC host: {e}"));
+            assert_eq!(config.endpoint().to_string(), expected, "for {cmd_host:?}");
+        }
+    }
+
+    #[test]
+    fn with_cmd_host_rejects_non_loopback_hosts() {
+        // Like the Datadog Agent, only `localhost` and loopback IP addresses are accepted.
+        for cmd_host in [
+            "",
+            "0.0.0.0",
+            "10.0.0.1",
+            "::",
+            "fe80::1",
+            "example.com",
+            "127.0.0.1:5001",
+        ] {
+            assert!(
+                remote_agent_config(5001).with_cmd_host(cmd_host).is_err(),
+                "{cmd_host:?} should be rejected"
+            );
         }
     }
 

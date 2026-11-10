@@ -208,6 +208,17 @@ pub struct ControlIpc {
     /// Defaults to an empty path, which selects `ipc_cert.pem` beside the resolved authentication token path.
     pub ipc_cert_file_path: PathBuf,
 
+    /// Host the command API listens on (`cmd_host`).
+    ///
+    /// Defaults to `localhost`. Use [`ipc_host`](Self::ipc_host) for the host to connect to, which accounts for the
+    /// deprecated `ipc_address`.
+    pub cmd_host: String,
+
+    /// Deprecated host the command API listens on (`ipc_address`), superseded by `cmd_host`.
+    ///
+    /// Defaults to `localhost`. Like the Datadog Agent, an explicitly set value takes precedence over `cmd_host`.
+    pub ipc_address: ConfigValue<String>,
+
     /// TCP port the command API listens on.
     ///
     /// Defaults to `5001`.
@@ -241,10 +252,26 @@ impl Default for ControlIpc {
             // Written by the Datadog witness driver.
             auth_token_file_path: PathBuf::new(),
             ipc_cert_file_path: PathBuf::new(),
+            cmd_host: String::new(),
+            ipc_address: ConfigValue::default(),
             cmd_port: 0,
             vsock_addr: String::new(),
             grpc_max_message_size: 0,
             remote_agent_string_interner_size_bytes: DEFAULT_REMOTE_AGENT_STRING_INTERNER_SIZE_BYTES,
+        }
+    }
+}
+
+impl ControlIpc {
+    /// Returns the host the command API listens on.
+    ///
+    /// Like the Datadog Agent, the deprecated `ipc_address` takes precedence when it's explicitly set, and `cmd_host`
+    /// is used otherwise.
+    pub fn ipc_host(&self) -> &str {
+        if self.ipc_address.is_explicit() {
+            &self.ipc_address.value
+        } else {
+            &self.cmd_host
         }
     }
 }

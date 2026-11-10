@@ -23,7 +23,8 @@ pub(crate) fn remote_agent_client_configuration(
 ) -> Result<RemoteAgentClientConfiguration, GenericError> {
     let ipc = &config.control.ipc;
     let auth = DataPlaneConfiguration::from_configuration(config).ipc_auth_configuration();
-    RemoteAgentClientConfiguration::from_parts(ipc.cmd_port, auth, ipc.grpc_max_message_size, &ipc.vsock_addr)
+    RemoteAgentClientConfiguration::from_parts(ipc.cmd_port, auth, ipc.grpc_max_message_size, &ipc.vsock_addr)?
+        .with_cmd_host(ipc.ipc_host())
 }
 
 /// Translates the typed workload settings into the workload provider's settings.
@@ -237,14 +238,56 @@ impl<'a> DataPlaneConfiguration<'a> {
 
 #[cfg(test)]
 mod tests {
+    use agent_data_plane_config::Provenance;
     use datadog_agent_commons::platform::PlatformSettings;
 
     use super::*;
 
+    /// Returns a default configuration with the IPC host the Datadog witness writes by default.
+    fn ipc_configuration() -> SalukiConfiguration {
+        let mut config = SalukiConfiguration::default();
+        config.control.ipc.cmd_host = "localhost".to_string();
+        config.control.ipc.ipc_address = ConfigValue::new("localhost".to_string(), Provenance::Default);
+        config
+    }
+
+    #[test]
+    fn remote_agent_client_configuration_resolves_the_ipc_host() {
+        let cases = [
+            // By default, `localhost` connects to IPv4 loopback, as before `cmd_host` was supported.
+            ("localhost", None, "https://127.0.0.1:5001/"),
+            ("::1", None, "https://[::1]:5001/"),
+            ("127.0.0.2", None, "https://127.0.0.2:5001/"),
+            // Like the Datadog Agent, an explicitly set `ipc_address` takes precedence over `cmd_host`.
+            ("127.0.0.2", Some("::1"), "https://[::1]:5001/"),
+        ];
+        for (cmd_host, ipc_address, expected) in cases {
+            let mut config = ipc_configuration();
+            config.control.ipc.cmd_port = 5001;
+            config.control.ipc.cmd_host = cmd_host.to_string();
+            if let Some(ipc_address) = ipc_address {
+                config.control.ipc.ipc_address = ConfigValue::new(ipc_address.to_string(), Provenance::Explicit);
+            }
+
+            let client_config = remote_agent_client_configuration(&config).expect("valid IPC configuration");
+            assert_eq!(
+                client_config.endpoint().to_string(),
+                expected,
+                "for cmd_host {cmd_host:?} and ipc_address {ipc_address:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn remote_agent_client_configuration_rejects_non_loopback_hosts() {
+        let mut config = ipc_configuration();
+        config.control.ipc.cmd_host = "10.0.0.1".to_string();
+        assert!(remote_agent_client_configuration(&config).is_err());
+    }
+
     #[test]
     fn remote_agent_client_configuration_resolves_default_auth_paths() {
-        let client_config =
-            remote_agent_client_configuration(&SalukiConfiguration::default()).expect("valid IPC configuration");
+        let client_config = remote_agent_client_configuration(&ipc_configuration()).expect("valid IPC configuration");
 
         assert_eq!(
             client_config.auth.auth_token_file_path(),
@@ -289,7 +332,7 @@ mod tests {
 
     #[test]
     fn remote_agent_client_configuration_uses_typed_auth_paths() {
-        let mut config = SalukiConfiguration::default();
+        let mut config = ipc_configuration();
         config.control.ipc.auth_token_file_path = "/secret/auth_token".into();
         config.control.ipc.ipc_cert_file_path = "/secret/ipc_cert.pem".into();
 
@@ -313,7 +356,7 @@ mod tests {
             ("hypervisor", Some(0)),
             ("local", Some(3)),
         ] {
-            let mut config = SalukiConfiguration::default();
+            let mut config = ipc_configuration();
             config.control.ipc.cmd_port = 5001;
             config.control.ipc.grpc_max_message_size = 4 * 1024 * 1024;
             config.control.ipc.vsock_addr = value.to_string();
@@ -328,7 +371,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn remote_agent_client_configuration_rejects_invalid_vsock_addresses() {
-        let mut config = SalukiConfiguration::default();
+        let mut config = ipc_configuration();
         config.control.ipc.vsock_addr = "invalid".to_string();
 
         assert!(remote_agent_client_configuration(&config).is_err());

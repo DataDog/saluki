@@ -434,6 +434,11 @@ inventory:
     pipelines: [dogstatsd, otlp]
     description: "EKS Fargate cluster name static tag"
 
+  cmd_host:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Core Agent CMD API host for ADP gRPC IPC"
+
   cmd_port:
     support: full
     pipelines: [cross_cutting]
@@ -1444,6 +1449,11 @@ inventory:
     documentation: |-
       ADP uses this only in standalone mode, where the fixed host provider requires a configured
       hostname. In connected mode the hostname comes from the Datadog Agent.
+
+  ipc_address:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Deprecated cmd_host; wins over cmd_host when set"
 
   ipc_cert_file_path:
     support: full
@@ -3312,7 +3322,6 @@ excluded:
   cluster_trust_chain.ca_key_file_path: "ignored in initial audit 2026-04-23"
   cluster_trust_chain.enable_tls_verification: "ignored in initial audit 2026-04-23"
   cmd.check.fullsketches: "ignored in initial audit 2026-04-23"
-  cmd_host: "ignored in initial audit 2026-04-23"
   collect_ccrid: "ignored in initial audit 2026-04-23"
   collect_ec2_instance_info: "ignored in initial audit 2026-04-23"
   collect_ec2_tags: "ignored in initial audit 2026-04-23"
@@ -3805,7 +3814,6 @@ excluded:
   inventories_max_interval: "ignored in initial audit 2026-04-23"
   inventories_min_interval: "ignored in initial audit 2026-04-23"
   iot_host: "ignored in initial audit 2026-04-23"
-  ipc_address: "ignored in initial audit 2026-04-23"
   jmx_check_period: "ignored in initial audit 2026-04-23"
   jmx_collection_timeout: "ignored in initial audit 2026-04-23"
   jmx_custom_jars: "ignored in initial audit 2026-04-23"
