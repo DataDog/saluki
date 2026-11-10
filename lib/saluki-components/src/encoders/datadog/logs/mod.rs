@@ -213,9 +213,8 @@ impl LogsEndpointEncoder {
     /// The envelope has the same fields, in the same order, as the logs intake's JSON envelope: the message, the
     /// status, the time the log was encoded in milliseconds, the hostname, the service, the source, and the tags. Every
     /// field is present, empty when the log has no value for it, except that a log without a hostname gets the
-    /// default hostname. The message is written as it is: a log's producer
-    /// renders whatever content the message should carry, such as a JSON object holding the log's properties, so the
-    /// log's additional properties aren't written.
+    /// default hostname. The message is written as it is: a log's producer renders whatever content the message should
+    /// carry, such as a JSON object holding the log's properties, so the log's additional properties aren't written.
     fn write_envelope(&mut self, log: &Log, buffer: &mut Vec<u8>) -> Result<(), serde_json::Error> {
         // A log without a status is sent as `info`.
         let status = if log.status().is_empty() {
@@ -421,7 +420,7 @@ mod tests {
         };
 
         // The default hostname goes only into the envelope: the rendered content is sent as it is.
-        let without_host = write(&Log::new("ignored").with_rendered_content(content));
+        let without_host = write(&Log::new(content));
         assert_eq!(without_host["hostname"], json!("default-host"));
         assert_eq!(without_host["message"], json!(content));
 
