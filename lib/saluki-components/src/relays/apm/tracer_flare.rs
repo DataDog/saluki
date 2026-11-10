@@ -20,6 +20,7 @@ use tracing::{debug, warn};
 use super::forwarding::{strip_hop_by_hop_headers, UpstreamClient};
 use crate::common::datadog::api_key::ApiKeyCell;
 use crate::common::datadog::config::ForwarderConfiguration;
+use crate::common::datadog::endpoints::is_datadog_host;
 use crate::common::datadog::io::intake_http_client_builder;
 
 /// Path of the Datadog endpoint flares are forwarded to.
@@ -36,12 +37,6 @@ const FORWARDED_HEADER: HeaderName = HeaderName::from_static("forwarded");
 const X_FORWARDED_FOR_HEADER: HeaderName = HeaderName::from_static("x-forwarded-for");
 const X_FORWARDED_HOST_HEADER: HeaderName = HeaderName::from_static("x-forwarded-host");
 const X_FORWARDED_PROTO_HEADER: HeaderName = HeaderName::from_static("x-forwarded-proto");
-
-/// An official Datadog application host, whose leftmost label the version prefix replaces.
-static DD_APP_HOST_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^app(\.[a-z]{2,}\d{1,2})?\.(datad(oghq|0g)\.(com|eu)|ddog-gov\.com)$")
-        .expect("app host regex should compile")
-});
 
 /// An official Datadog site with no subdomain, such as `datadoghq.com`.
 static DD_BARE_SITE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
@@ -237,8 +232,12 @@ fn flare_version_label(agent_version: Option<&str>) -> String {
 /// label replaced with `version_label` (a bare official site is treated as its `app.` host), and any other host is
 /// kept. The scheme is always `https`, and the path is always that of the flare endpoint.
 ///
-/// Unlike the trace-agent, which leaves the host empty for a site with a subdomain but no scheme, such as
-/// `us3.datadoghq.com`, the site is taken as the host.
+/// It differs from the trace-agent in two ways:
+///
+/// - A site with a subdomain but no scheme, such as `us3.datadoghq.com`, is taken as the host, where the trace-agent
+///   leaves the host empty.
+/// - Official hosts are recognized as the forwarder recognizes them, so a Multi-Region Failover host such as
+///   `app.mrf.datadoghq.com` is versioned too, where the trace-agent keeps it.
 ///
 /// # Errors
 ///
@@ -259,7 +258,7 @@ fn flare_endpoint(site: &str, version_label: &str) -> Result<Uri, GenericError> 
     if DD_BARE_SITE_REGEX.is_match(&host) {
         host = format!("app.{host}");
     }
-    if DD_APP_HOST_REGEX.is_match(&host) {
+    if is_datadog_host(&host) {
         let (_, domain) = host
             .split_once('.')
             .expect("an app host has a domain after its first label");
@@ -340,6 +339,8 @@ mod tests {
             ("ddog-gov.com", "7-50-0-flare.ddog-gov.com"),
             ("app.datadoghq.com", "7-50-0-flare.datadoghq.com"),
             ("app.us5.datadoghq.com", "7-50-0-flare.us5.datadoghq.com"),
+            // The trace-agent keeps a Multi-Region Failover host; ADP versions it as the forwarder does.
+            ("app.mrf.datadoghq.com", "7-50-0-flare.mrf.datadoghq.com"),
             ("http://app.datadoghq.eu", "7-50-0-flare.datadoghq.eu"),
             (" DATADOGHQ.COM ", "7-50-0-flare.datadoghq.com"),
         ] {
@@ -361,10 +362,6 @@ mod tests {
         assert_eq!(
             endpoint("localhost:8080"),
             "https://localhost:8080/api/ui/support/serverless/flare"
-        );
-        assert_eq!(
-            endpoint("app.mrf.datadoghq.com"),
-            "https://app.mrf.datadoghq.com/api/ui/support/serverless/flare"
         );
         assert_eq!(
             endpoint("http://[::1]:8443/flare"),

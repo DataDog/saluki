@@ -151,7 +151,11 @@ pub(crate) fn series_v3_config_can_enable_v3(series_config: &UseV3ApiSeriesConfi
     }
 }
 
-fn is_datadog_host(host: &str) -> bool {
+/// Returns `true` if `host` is an official Datadog application host, such as `app.datadoghq.com`,
+/// `app.us5.datadoghq.com`, or the Multi-Region Failover host `app.mrf.datadoghq.com`.
+///
+/// The match ignores case and a trailing dot.
+pub(crate) fn is_datadog_host(host: &str) -> bool {
     let host = host.trim_end_matches('.');
     if host.bytes().any(|byte| byte.is_ascii_uppercase()) {
         DD_URL_REGEX.is_match(&host.to_ascii_lowercase())
