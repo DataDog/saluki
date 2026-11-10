@@ -7,7 +7,7 @@ use saluki_core::{
         transforms::{Transform, TransformBuilder, TransformContext},
         BuildContext,
     },
-    data_model::event::{metric::Metric, EventType},
+    data_model::event::{metric::Metric, Event, EventType},
     topology::{EventsBuffer, OutputDefinition},
 };
 use saluki_error::{generic_error, GenericError};
@@ -56,11 +56,9 @@ impl MetricRouter {
         &self, mut events: EventsBuffer, context: &mut TransformContext,
     ) -> Result<(), GenericError> {
         // Extract matched metrics from the buffer, leaving unmatched metrics and all non-metric events behind
-        let matched_events = events.extract(|event| {
-            event
-                .try_as_metric()
-                .is_some_and(|metric| self.should_route_to_matched(metric))
-        });
+        let matched_events = events
+            .extract_events::<Metric, _>(|metric| self.should_route_to_matched(metric))
+            .map(Event::Metric);
 
         let matched_count = context
             .dispatcher()

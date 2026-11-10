@@ -2,9 +2,7 @@
 
 mod event_buffer;
 pub(crate) use self::event_buffer::EventStorage;
-pub use self::event_buffer::{
-    EventBufferIntoIter, EventBufferIter, EventBufferIterMut, EventBufferManager, FixedSizeEventBuffer,
-};
+pub use self::event_buffer::{EventBufferIntoIter, EventBufferManager, FixedSizeEventBuffer};
 
 mod consumer;
 pub use self::consumer::Consumer;

@@ -3,7 +3,7 @@ use std::fmt;
 use crate::{
     data_model::event::{
         eventd::EventD, log::Log, metric::Metric, service_check::ServiceCheck, trace::Trace, trace_stats::TraceStats,
-        Event, EventKind, EventMut, EventRef, EventType,
+        Event, EventKind, EventType,
     },
     topology::interconnect::{dispatcher::DispatchBuffer, Dispatchable},
 };
@@ -120,30 +120,6 @@ impl<const N: usize> FixedSizeEventBuffer<N> {
         None
     }
 
-    /// Returns an iterator over shared references to the events in the event buffer.
-    pub fn iter(&self) -> EventBufferIter<'_> {
-        EventBufferIter {
-            metrics: self.metrics.iter(),
-            eventds: self.eventds.iter(),
-            service_checks: self.service_checks.iter(),
-            logs: self.logs.iter(),
-            traces: self.traces.iter(),
-            trace_stats: self.trace_stats.iter(),
-        }
-    }
-
-    /// Returns an iterator over mutable references to the events in the event buffer.
-    pub fn iter_mut(&mut self) -> EventBufferIterMut<'_> {
-        EventBufferIterMut {
-            metrics: self.metrics.iter_mut(),
-            eventds: self.eventds.iter_mut(),
-            service_checks: self.service_checks.iter_mut(),
-            logs: self.logs.iter_mut(),
-            traces: self.traces.iter_mut(),
-            trace_stats: self.trace_stats.iter_mut(),
-        }
-    }
-
     /// Returns an iterator over the events of type `T` in the event buffer.
     pub fn events<T: EventKind>(&self) -> impl Iterator<Item = &T> {
         T::storage(self).iter()
@@ -179,49 +155,16 @@ impl<const N: usize> FixedSizeEventBuffer<N> {
         std::mem::take(T::storage_mut(self)).into_iter()
     }
 
-    /// Extracts events from the event buffer given a predicate function.
+    /// Removes the events of type `T` for which `predicate` returns `true`, returning them in order.
     ///
-    /// Events for which `predicate` returns `true` are removed from the buffer and returned. The remaining events keep
-    /// their relative order.
-    pub fn extract<F>(&mut self, mut predicate: F) -> impl Iterator<Item = Event>
+    /// All other events are kept, in their relative order.
+    pub fn extract_events<T, F>(&mut self, mut predicate: F) -> impl Iterator<Item = T>
     where
-        F: FnMut(&EventRef<'_>) -> bool,
+        T: EventKind,
+        F: FnMut(&T) -> bool,
     {
-        let mut removed = Self::default();
-        extract_into(&mut self.metrics, &mut removed.metrics, |m| {
-            predicate(&EventRef::Metric(m))
-        });
-        extract_into(&mut self.eventds, &mut removed.eventds, |e| {
-            predicate(&EventRef::EventD(e))
-        });
-        extract_into(&mut self.service_checks, &mut removed.service_checks, |s| {
-            predicate(&EventRef::ServiceCheck(s))
-        });
-        extract_into(&mut self.logs, &mut removed.logs, |l| predicate(&EventRef::Log(l)));
-        extract_into(&mut self.traces, &mut removed.traces, |t| {
-            predicate(&EventRef::Trace(t))
-        });
-        extract_into(&mut self.trace_stats, &mut removed.trace_stats, |s| {
-            predicate(&EventRef::TraceStats(s))
-        });
-        removed.into_iter()
-    }
-
-    /// Removes events from the event buffer if they match the given predicate.
-    ///
-    /// The remaining events keep their relative order.
-    pub fn remove_if<F>(&mut self, mut predicate: F)
-    where
-        F: FnMut(&mut EventMut<'_>) -> bool,
-    {
-        self.metrics.retain_mut(|m| !predicate(&mut EventMut::Metric(m)));
-        self.eventds.retain_mut(|e| !predicate(&mut EventMut::EventD(e)));
-        self.service_checks
-            .retain_mut(|s| !predicate(&mut EventMut::ServiceCheck(s)));
-        self.logs.retain_mut(|l| !predicate(&mut EventMut::Log(l)));
-        self.traces.retain_mut(|t| !predicate(&mut EventMut::Trace(t)));
-        self.trace_stats
-            .retain_mut(|s| !predicate(&mut EventMut::TraceStats(s)));
+        let extracted: Vec<T> = T::storage_mut(self).extract_if(.., |value| predicate(value)).collect();
+        extracted.into_iter()
     }
 }
 
@@ -265,26 +208,6 @@ fn push_reserving<T>(items: &mut Vec<T>, remaining: usize, item: T) {
         items.reserve_exact(remaining);
     }
     items.push(item);
-}
-
-/// Moves items matching `predicate` from `items` into `removed`, preserving the order of both.
-fn extract_into<T, F>(items: &mut Vec<T>, removed: &mut Vec<T>, mut predicate: F)
-where
-    F: FnMut(&T) -> bool,
-{
-    if items.is_empty() {
-        return;
-    }
-
-    let mut kept = Vec::with_capacity(items.capacity());
-    for item in items.drain(..) {
-        if predicate(&item) {
-            removed.push(item);
-        } else {
-            kept.push(item);
-        }
-    }
-    *items = kept;
 }
 
 impl<const N: usize> Default for FixedSizeEventBuffer<N> {
@@ -332,76 +255,53 @@ impl<const N: usize> fmt::Debug for FixedSizeEventBuffer<N> {
     }
 }
 
-macro_rules! event_buffer_iter {
-    ($(#[$doc:meta])* $name:ident<$($lt:lifetime)?>, $item:ty, $iter:ident, $wrap:ident) => {
-        $(#[$doc])*
-        pub struct $name<$($lt)?> {
-            metrics: $iter<$($lt,)? Metric>,
-            eventds: $iter<$($lt,)? EventD>,
-            service_checks: $iter<$($lt,)? ServiceCheck>,
-            logs: $iter<$($lt,)? Log>,
-            traces: $iter<$($lt,)? Trace>,
-            trace_stats: $iter<$($lt,)? TraceStats>,
-        }
-
-        impl<$($lt)?> Iterator for $name<$($lt)?> {
-            type Item = $item;
-
-            #[inline]
-            fn next(&mut self) -> Option<Self::Item> {
-                // Events are yielded type by type, so build each event directly from the first non-empty collection
-                // rather than chaining iterators, which would move each event through every level of the chain.
-                if let Some(metric) = self.metrics.next() {
-                    return Some($wrap::Metric(metric));
-                }
-                if let Some(eventd) = self.eventds.next() {
-                    return Some($wrap::EventD(eventd));
-                }
-                if let Some(service_check) = self.service_checks.next() {
-                    return Some($wrap::ServiceCheck(service_check));
-                }
-                if let Some(log) = self.logs.next() {
-                    return Some($wrap::Log(log));
-                }
-                if let Some(trace) = self.traces.next() {
-                    return Some($wrap::Trace(trace));
-                }
-                self.trace_stats.next().map($wrap::TraceStats)
-            }
-
-            fn size_hint(&self) -> (usize, Option<usize>) {
-                let len = self.metrics.len()
-                    + self.eventds.len()
-                    + self.service_checks.len()
-                    + self.logs.len()
-                    + self.traces.len()
-                    + self.trace_stats.len();
-                (len, Some(len))
-            }
-        }
-
-        impl<$($lt)?> ExactSizeIterator for $name<$($lt)?> {}
-    };
+/// An owning iterator over the events in a [`FixedSizeEventBuffer`].
+pub struct EventBufferIntoIter {
+    metrics: std::vec::IntoIter<Metric>,
+    eventds: std::vec::IntoIter<EventD>,
+    service_checks: std::vec::IntoIter<ServiceCheck>,
+    logs: std::vec::IntoIter<Log>,
+    traces: std::vec::IntoIter<Trace>,
+    trace_stats: std::vec::IntoIter<TraceStats>,
 }
 
-type VecIntoIter<T> = std::vec::IntoIter<T>;
-type SliceIter<'a, T> = std::slice::Iter<'a, T>;
-type SliceIterMut<'a, T> = std::slice::IterMut<'a, T>;
+impl Iterator for EventBufferIntoIter {
+    type Item = Event;
 
-event_buffer_iter!(
-    /// An owning iterator over the events in a [`FixedSizeEventBuffer`].
-    EventBufferIntoIter<>, Event, VecIntoIter, Event
-);
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        // Events are yielded type by type, so build each event directly from the first non-empty collection rather
+        // than chaining iterators, which would move each event through every level of the chain.
+        if let Some(metric) = self.metrics.next() {
+            return Some(Event::Metric(metric));
+        }
+        if let Some(eventd) = self.eventds.next() {
+            return Some(Event::EventD(eventd));
+        }
+        if let Some(service_check) = self.service_checks.next() {
+            return Some(Event::ServiceCheck(service_check));
+        }
+        if let Some(log) = self.logs.next() {
+            return Some(Event::Log(log));
+        }
+        if let Some(trace) = self.traces.next() {
+            return Some(Event::Trace(trace));
+        }
+        self.trace_stats.next().map(Event::TraceStats)
+    }
 
-event_buffer_iter!(
-    /// An iterator over shared references to the events in a [`FixedSizeEventBuffer`].
-    EventBufferIter<'a>, EventRef<'a>, SliceIter, EventRef
-);
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = self.metrics.len()
+            + self.eventds.len()
+            + self.service_checks.len()
+            + self.logs.len()
+            + self.traces.len()
+            + self.trace_stats.len();
+        (len, Some(len))
+    }
+}
 
-event_buffer_iter!(
-    /// An iterator over mutable references to the events in a [`FixedSizeEventBuffer`].
-    EventBufferIterMut<'a>, EventMut<'a>, SliceIterMut, EventMut
-);
+impl ExactSizeIterator for EventBufferIntoIter {}
 
 impl<const N: usize> IntoIterator for FixedSizeEventBuffer<N> {
     type Item = Event;
@@ -416,24 +316,6 @@ impl<const N: usize> IntoIterator for FixedSizeEventBuffer<N> {
             traces: self.traces.into_iter(),
             trace_stats: self.trace_stats.into_iter(),
         }
-    }
-}
-
-impl<'a, const N: usize> IntoIterator for &'a FixedSizeEventBuffer<N> {
-    type Item = EventRef<'a>;
-    type IntoIter = EventBufferIter<'a>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.iter()
-    }
-}
-
-impl<'a, const N: usize> IntoIterator for &'a mut FixedSizeEventBuffer<N> {
-    type Item = EventMut<'a>;
-    type IntoIter = EventBufferIterMut<'a>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.iter_mut()
     }
 }
 
@@ -485,8 +367,6 @@ impl<const N: usize> EventBufferManager<N> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::VecDeque;
-
     use super::*;
     use crate::data_model::event::{
         eventd::EventD,
@@ -627,7 +507,7 @@ mod tests {
     }
 
     #[test]
-    fn extract() {
+    fn take_events_tracks_event_types() {
         let mut buffer = FixedSizeEventBuffer::<10>::default();
         assert!(buffer.try_push(Event::Metric(Metric::counter("foo", 42.0))).is_none());
         assert!(buffer.try_push(Event::Metric(Metric::counter("foo", 43.0))).is_none());
@@ -646,62 +526,82 @@ mod tests {
         assert!(buffer.has_event_type(EventType::EventD));
         assert!(buffer.has_event_type(EventType::ServiceCheck));
 
-        let eventd_event_buffer: VecDeque<Event> = buffer.extract(|e| e.is_eventd()).collect();
+        assert_eq!(buffer.take_events::<EventD>().count(), 3);
         assert_eq!(buffer.len(), 4);
-        assert_eq!(eventd_event_buffer.len(), 3);
         assert!(buffer.has_event_type(EventType::Metric));
         assert!(!buffer.has_event_type(EventType::EventD));
         assert!(buffer.has_event_type(EventType::ServiceCheck));
 
-        let service_checks_event_buffer: VecDeque<Event> = buffer.extract(|e| e.is_service_check()).collect();
+        assert_eq!(buffer.take_events::<ServiceCheck>().count(), 2);
         assert_eq!(buffer.len(), 2);
-        assert_eq!(service_checks_event_buffer.len(), 2);
         assert!(buffer.has_event_type(EventType::Metric));
         assert!(!buffer.has_event_type(EventType::EventD));
         assert!(!buffer.has_event_type(EventType::ServiceCheck));
 
-        let new_buffer: VecDeque<Event> = buffer.extract(|e| e.is_metric()).collect();
+        assert_eq!(buffer.take_events::<Metric>().count(), 2);
         assert_eq!(buffer.len(), 0);
-        assert_eq!(new_buffer.len(), 2);
         assert!(!buffer.has_event_type(EventType::Metric));
         assert!(!buffer.has_event_type(EventType::EventD));
         assert!(!buffer.has_event_type(EventType::ServiceCheck));
     }
 
     #[test]
-    fn remove_if() {
+    fn extract_events_removes_matching_events_in_order() {
+        let mut buffer = mixed_buffer();
+        assert!(buffer.try_push(Event::Metric(Metric::counter("e", 1.0))).is_none());
+
+        let extracted: Vec<_> = buffer
+            .extract_events::<Metric, _>(|metric| metric.context().name() != "c")
+            .map(|metric| metric.context().name().to_string())
+            .collect();
+        assert_eq!(extracted, ["a", "e"]);
+        assert_eq!(buffer.len(), 3);
+        assert!(buffer.has_event_type(EventType::Metric));
+
+        // The remaining events keep their relative order within each type.
+        let remaining: Vec<_> = buffer.into_iter().collect();
+        assert_eq!(
+            remaining,
+            [
+                Event::Metric(Metric::counter("c", 1.0)),
+                Event::EventD(EventD::new("b", "b")),
+                Event::EventD(EventD::new("d", "d")),
+            ]
+        );
+    }
+
+    #[test]
+    fn extract_events_tracks_event_types() {
+        let mut buffer = mixed_buffer();
+        assert_eq!(buffer.extract_events::<Metric, _>(|_| true).count(), 2);
+        assert!(!buffer.has_event_type(EventType::Metric));
+        assert!(buffer.has_event_type(EventType::EventD));
+
+        assert_eq!(buffer.extract_events::<EventD, _>(|_| false).count(), 0);
+        assert!(buffer.has_event_type(EventType::EventD));
+    }
+
+    #[test]
+    fn retain_events_keeps_other_types_in_order() {
         let event1 = Event::Metric(Metric::counter("foo", 42.0));
         let event2 = Event::EventD(EventD::new("foo1", "bar1"));
         let event3 = Event::EventD(EventD::new("foo2", "bar2"));
         let event4 = Event::ServiceCheck(ServiceCheck::new("foo5", CheckStatus::Ok));
 
         let mut buffer = FixedSizeEventBuffer::<10>::default();
-
-        // Add the four events.
-        assert!(buffer.try_push(event1.clone()).is_none());
-        assert!(buffer.try_push(event2.clone()).is_none());
-        assert!(buffer.try_push(event3.clone()).is_none());
-        assert!(buffer.try_push(event4.clone()).is_none());
+        for event in [&event1, &event2, &event3, &event4] {
+            assert!(buffer.try_push(event.clone()).is_none());
+        }
         assert_eq!(buffer.len(), 4);
-        assert!(buffer.has_event_type(EventType::Metric));
-        assert!(buffer.has_event_type(EventType::EventD));
-        assert!(buffer.has_event_type(EventType::ServiceCheck));
 
-        // Remove events that are EventD.
-        buffer.remove_if(|event| event.is_eventd());
+        buffer.retain_events::<EventD, _>(|_| false);
         assert_eq!(buffer.len(), 2);
         assert!(buffer.has_event_type(EventType::Metric));
         assert!(!buffer.has_event_type(EventType::EventD));
         assert!(buffer.has_event_type(EventType::ServiceCheck));
 
-        // Make sure we have the expected events left.
-        let mut remaining_events = buffer.into_iter().collect::<Vec<_>>();
-
-        let remaining_event1 = remaining_events.remove(0);
-        assert_eq!(remaining_event1, event1);
-
-        let remaining_event2 = remaining_events.remove(0);
-        assert_eq!(remaining_event2, event4);
+        let remaining: Vec<_> = buffer.into_iter().collect();
+        assert_eq!(remaining, [event1, event4]);
     }
 
     #[test]
@@ -752,12 +652,6 @@ mod tests {
             events[4].clone(),
             events[2].clone(),
         ];
-        let by_ref: Vec<Event> = buffer.iter().map(|event| event.to_owned_event()).collect();
-        assert_eq!(by_ref, expected);
-
-        let by_mut: Vec<EventType> = buffer.iter_mut().map(|event| event.event_type()).collect();
-        assert_eq!(by_mut, expected.iter().map(Event::event_type).collect::<Vec<_>>());
-
         let owned: Vec<Event> = buffer.into_iter().collect();
         assert_eq!(owned, expected);
     }
