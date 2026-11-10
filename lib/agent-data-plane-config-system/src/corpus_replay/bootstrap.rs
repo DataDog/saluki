@@ -15,6 +15,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
+use datadog_agent_config::datadog_renamed_keys;
 use datadog_agent_config_corpus::{Corpus, Inputs, Outcome};
 
 use super::guard;
@@ -56,7 +57,13 @@ fn case_base(inputs: &Inputs) -> Result<serde_json::Value, Fault> {
         .map(|(name, value)| (name.clone(), value.clone()))
         .collect();
     match guard("build bootstrap base", || {
-        read_local(yaml, Path::new(YAML_ORIGIN), &vars, EnvPrecedence::AfterFile)
+        read_local(
+            yaml,
+            Path::new(YAML_ORIGIN),
+            &vars,
+            EnvPrecedence::AfterFile,
+            datadog_renamed_keys(),
+        )
     }) {
         Ok(result) => result
             .map(|reading| reading.base.to_value())

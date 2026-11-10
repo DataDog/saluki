@@ -91,7 +91,7 @@ impl LoadedConfiguration {
         let text = std::fs::read_to_string(path).map_err(|e| Error::Base {
             message: format!("read `{}`: {e}", path.display()),
         })?;
-        let reading = read_local(&text, path, &env_vars(env), env)?;
+        let reading = read_local(&text, path, &env_vars(env), env, datadog_renamed_keys())?;
         Ok(Self {
             local: reading.local?,
             base: reading.base,
@@ -167,6 +167,8 @@ pub(crate) struct LocalReading {
 /// Reads the file's text and explicit environment variables, selecting the key reading
 /// [`LoadedConfiguration::load`] uses.
 ///
+/// `renamed` lists the former setting names to move and report (see [`build_base_from`]).
+///
 /// The Agent-style reading is used unless only the keys-as-written reading translates. When neither
 /// translates, the Agent-style base is kept with its translation error, so a caller that only needs
 /// the base can still use it.
@@ -176,12 +178,13 @@ pub(crate) struct LocalReading {
 /// Returns the Agent-style reading's error when its base cannot be built and the keys-as-written
 /// reading does not translate.
 pub(crate) fn read_local(
-    text: &str, origin: &Path, vars: &[(String, String)], env: EnvPrecedence,
+    text: &str, origin: &Path, vars: &[(String, String)], env: EnvPrecedence, renamed: &[RenamedKey],
 ) -> Result<LocalReading, Error> {
     // Every value the local sources supply was set explicitly: the file set it or an environment
     // variable supplied it.
     let build = |reading| {
-        build_base_from(text, origin, vars, env, reading).map(|(base, names)| (SourceTree::all_explicit(base), names))
+        build_base_from(text, origin, vars, env, reading, renamed)
+            .map(|(base, names)| (SourceTree::all_explicit(base), names))
     };
     let (error, base) = match build(KeyReading::Datadog) {
         Ok((base, deprecated_names)) => match translate_strict(&base) {
@@ -245,9 +248,9 @@ fn env_vars(env: EnvPrecedence) -> Vec<(String, String)> {
 /// `text` is the file's content, `origin` is the path named in a parse error, and `vars` are the
 /// environment variable name/value pairs. `vars` is ignored when `env` is `Disabled`.
 ///
-/// `reading` sets how the file's keys are read. A former setting name then moves to its setting (see
-/// [`datadog_yaml`]). A null-valued key is dropped and an empty file is an empty object. The
-/// environment is then overlaid via the generated Datadog reader, the Saluki-only reader, and the
+/// `reading` sets how the file's keys are read. A former setting name in `renamed` then moves to its
+/// setting (see [`datadog_yaml`]). A null-valued key is dropped and an empty file is an empty object.
+/// The environment is then overlaid via the generated Datadog reader, the Saluki-only reader, and the
 /// canonical proxy variables. `env` sets whether the environment overwrites the file
 /// (`AfterFile`) or only fills absent keys (`BeforeFile`); `Disabled` skips the environment entirely.
 ///
@@ -257,6 +260,7 @@ fn env_vars(env: EnvPrecedence) -> Vec<(String, String)> {
 /// its key's shape.
 fn build_base_from(
     text: &str, origin: &Path, vars: &[(String, String)], env: EnvPrecedence, reading: KeyReading,
+    renamed: &[RenamedKey],
 ) -> Result<(Value, Vec<DeprecatedName>), Error> {
     let parsed = match reading {
         KeyReading::Datadog => datadog_yaml::from_str(text),
@@ -265,7 +269,7 @@ fn build_base_from(
     let mut base = parsed.map_err(|e| Error::Base {
         message: format!("parse `{}`: {e}", origin.display()),
     })?;
-    let mut deprecated_names: Vec<DeprecatedName> = datadog_yaml::move_renamed_keys(&mut base, datadog_renamed_keys())
+    let mut deprecated_names: Vec<DeprecatedName> = datadog_yaml::move_renamed_keys(&mut base, renamed)
         .into_iter()
         .map(DeprecatedName::from)
         .collect();
@@ -279,22 +283,24 @@ fn build_base_from(
         EnvPrecedence::AfterFile => true,
         EnvPrecedence::BeforeFile => false,
     };
-    apply_datadog_env_vars(&mut base, vars.iter().cloned(), overwrite).map_err(|message| Error::Base { message })?;
+    let read = apply_datadog_env_vars(&mut base, vars.iter().cloned(), overwrite)
+        .map_err(|message| Error::Base { message })?;
     saluki_env_overlay::apply_env_vars(&mut base, vars, overwrite).map_err(|message| Error::Base { message })?;
-    deprecated_names.extend(env_deprecated_names(datadog_renamed_keys(), vars));
+    deprecated_names.extend(env_deprecated_names(renamed, &read));
     Ok((base, deprecated_names))
 }
 
-/// The former setting names in `renamed` whose environment variable `vars` sets, in `renamed` order.
+/// The former setting names in `renamed` whose environment variable is in `read`, the variables the
+/// environment reader read, in `renamed` order. Each is reported under the name it was set with.
 fn env_deprecated_names<'a>(
-    renamed: &'a [RenamedKey], vars: &'a [(String, String)],
+    renamed: &'a [RenamedKey], read: &'a [String],
 ) -> impl Iterator<Item = DeprecatedName> + 'a {
     renamed.iter().filter_map(|renamed| {
-        let env_var = renamed.env_var?;
-        // The environment reader skips an empty variable.
-        let read = vars.iter().any(|(name, value)| name == env_var && !value.is_empty());
-        read.then(|| DeprecatedName {
-            former: env_var.to_string(),
+        let env_var = renamed.env_var?.to_lowercase();
+        // The reader may have read a case variant of the bound name.
+        let name = read.iter().find(|name| name.to_lowercase() == env_var)?;
+        Some(DeprecatedName {
+            former: name.clone(),
             current: renamed.path.join("."),
         })
     })
@@ -324,7 +330,7 @@ mod tests {
 
     /// Builds the typed base from `text` and the process environment.
     fn build_base(path: &Path, text: &str, env: EnvPrecedence, reading: KeyReading) -> Result<Value, Error> {
-        build_base_from(text, path, &env_vars(env), env, reading).map(|(base, _)| base)
+        build_base_from(text, path, &env_vars(env), env, reading, datadog_renamed_keys()).map(|(base, _)| base)
     }
 
     #[test]
@@ -1014,6 +1020,7 @@ mod tests {
             &[],
             EnvPrecedence::AfterFile,
             KeyReading::Datadog,
+            datadog_renamed_keys(),
         )
         .expect("base builds");
         assert_eq!(base.get("dogstatsd_port"), Some(&json!(8125)));
@@ -1026,6 +1033,7 @@ mod tests {
             &vars,
             EnvPrecedence::Disabled,
             KeyReading::Datadog,
+            datadog_renamed_keys(),
         )
         .expect("base builds");
         assert_eq!(base.get("dogstatsd_port"), Some(&json!(8125)));
@@ -1037,6 +1045,7 @@ mod tests {
             &[],
             EnvPrecedence::AfterFile,
             KeyReading::Datadog,
+            datadog_renamed_keys(),
         )
         .expect("base builds");
         assert_eq!(base, json!({}));
@@ -1057,6 +1066,7 @@ mod tests {
             &vars,
             EnvPrecedence::AfterFile,
             KeyReading::Datadog,
+            datadog_renamed_keys(),
         )
         .expect("base builds");
         assert_eq!(base.get("dogstatsd_port"), Some(&json!(9125)));
@@ -1070,6 +1080,7 @@ mod tests {
             &vars,
             EnvPrecedence::BeforeFile,
             KeyReading::Datadog,
+            datadog_renamed_keys(),
         )
         .expect("base builds");
         assert_eq!(base.get("dogstatsd_port"), Some(&json!(8125)));
@@ -1093,6 +1104,7 @@ mod tests {
             &vars,
             EnvPrecedence::AfterFile,
             KeyReading::Datadog,
+            datadog_renamed_keys(),
         );
 
         let (Err(Error::Base { message: expected }), Err(Error::Base { message: actual })) = (from_process, from_vars)
@@ -1638,26 +1650,16 @@ mod tests {
     }
 
     #[test]
-    fn only_former_variables_the_environment_reader_reads_are_reported() {
-        let vars: Vec<_> = [
-            ("DD_OLD_LIST", "a"),
-            // The environment reader skips an empty variable.
-            ("DD_OLDEST_LIST", ""),
-            ("DD_NEW_LIST", "b"),
-            // A setting the environment reader does not read has no former variable.
-            ("DD_OLD_FLAG", "true"),
-            ("DD_LEGACY_OLD_NESTED", "1"),
-        ]
-        .into_iter()
-        .map(|(name, value)| (name.to_string(), value.to_string()))
-        .collect();
+    fn only_former_variables_the_environment_reader_read_are_reported() {
+        let read = ["dd_old_list", "DD_NEW_LIST", "DD_OLD_FLAG", "DD_LEGACY_OLD_NESTED"].map(String::from);
 
-        let names: Vec<_> = env_deprecated_names(RENAMED, &vars).collect();
+        let names: Vec<_> = env_deprecated_names(RENAMED, &read).collect();
 
+        // `DD_OLD_FLAG` is not a former variable: the reader does not read `new_flag`.
         assert_eq!(
             names,
             [
-                deprecated("DD_OLD_LIST", "new_list"),
+                deprecated("dd_old_list", "new_list"),
                 deprecated("DD_LEGACY_OLD_NESTED", "section.new_nested"),
             ]
         );
@@ -1675,6 +1677,96 @@ mod tests {
 
         assert_eq!(base, json!({"OLD_LIST": ["c"], "new_list": ["a"]}));
         assert_eq!(names, [deprecated("old_list", "new_list")]);
+    }
+
+    /// Former names of modeled settings, for tests that build and translate a base.
+    ///
+    /// The Agent-style reading resolves spellings against the generated paths, so these are read in
+    /// their exact spelling, or inside a respelled section of the schema.
+    const RENAMED_SETTINGS: &[RenamedKey] = &[
+        RenamedKey {
+            former: &["old_port"],
+            path: &["dogstatsd_port"],
+            env_var: None,
+        },
+        RenamedKey {
+            former: &["data_plane", "old_standalone_mode"],
+            path: &["data_plane", "standalone_mode"],
+            env_var: None,
+        },
+    ];
+
+    fn build_renamed(
+        yaml: &str, vars: &[(String, String)], env: EnvPrecedence, reading: KeyReading,
+    ) -> (Value, Vec<DeprecatedName>) {
+        build_base_from(yaml, Path::new("datadog.yaml"), vars, env, reading, RENAMED_SETTINGS).expect("base builds")
+    }
+
+    #[test]
+    fn a_null_former_name_clears_the_current_name_before_nulls_are_dropped() {
+        for reading in [KeyReading::Datadog, KeyReading::AsWritten] {
+            let (base, names) = build_renamed(
+                "dogstatsd_port: 9000\nold_port: null\n",
+                &[],
+                EnvPrecedence::Disabled,
+                reading,
+            );
+
+            assert_eq!(base, json!({}), "{reading:?}");
+            assert_eq!(names, [deprecated("old_port", "dogstatsd_port")], "{reading:?}");
+        }
+    }
+
+    #[test]
+    fn a_current_name_in_the_environment_beats_a_former_name_in_the_file() {
+        let vars = [("DD_DOGSTATSD_PORT".to_string(), "9125".to_string())];
+        let yaml = "old_port: 9000\n";
+
+        let (after, names) = build_renamed(yaml, &vars, EnvPrecedence::AfterFile, KeyReading::Datadog);
+        assert_eq!(after, json!({"dogstatsd_port": 9125}));
+        assert_eq!(names, [deprecated("old_port", "dogstatsd_port")]);
+
+        let (before, _) = build_renamed(yaml, &vars, EnvPrecedence::BeforeFile, KeyReading::Datadog);
+        assert_eq!(before, json!({"dogstatsd_port": 9000}));
+    }
+
+    #[test]
+    fn the_selected_key_reading_supplies_the_former_names() {
+        let read = |yaml: &str| {
+            read_local(
+                yaml,
+                Path::new("datadog.yaml"),
+                &[],
+                EnvPrecedence::Disabled,
+                RENAMED_SETTINGS,
+            )
+            .expect("local sources read")
+        };
+        // Only the Agent-style reading finds the former name inside the respelled section.
+        let respelled = "DATA_PLANE: {old_standalone_mode: true}\nold_port: 9000\n";
+        let both = [
+            deprecated("old_port", "dogstatsd_port"),
+            deprecated("data_plane.old_standalone_mode", "data_plane.standalone_mode"),
+        ];
+
+        let reading = read(respelled);
+        assert!(reading.yaml_fallback_error.is_none());
+        assert!(reading.local.expect("translates").control.standalone_mode);
+        assert_eq!(reading.deprecated_names, both);
+
+        // Only the keys-as-written reading translates.
+        let reading = read(&format!("{respelled}Log_Level: [a]\n"));
+        assert!(reading.yaml_fallback_error.is_some());
+        assert_eq!(
+            reading.local.expect("translates").domains.dogstatsd.listeners.port,
+            9000
+        );
+        assert_eq!(reading.deprecated_names, [deprecated("old_port", "dogstatsd_port")]);
+
+        // Neither reading translates.
+        let reading = read(&format!("{respelled}dogstatsd_tag_cardinality: bogus\n"));
+        assert!(reading.local.is_err());
+        assert_eq!(reading.deprecated_names, both);
     }
 
     #[test]

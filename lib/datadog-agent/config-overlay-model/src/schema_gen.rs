@@ -280,9 +280,9 @@ pub fn env_var_names(key: &str, info: Option<&FieldInfo>) -> Vec<String> {
 /// Panics when a former name is a schema path, or a setting or another former name contains or holds
 /// it, since the file reader could not tell which one a key addresses.
 pub fn former_names<'a>(schema: &'a IndexMap<String, FieldInfo>, modeled: &HashSet<&str>) -> Vec<FormerName<'a>> {
-    let mut leaves: HashSet<&str> = schema.keys().map(String::as_str).collect();
-    let mut sections: HashSet<&str> = leaves.iter().flat_map(|key| proper_prefixes(key)).collect();
-    let mut names = Vec::new();
+    let leaves: HashSet<&str> = schema.keys().map(String::as_str).collect();
+    let sections: HashSet<&str> = leaves.iter().flat_map(|key| proper_prefixes(key)).collect();
+    let mut names: Vec<FormerName<'a>> = Vec::new();
     for (key, info) in schema {
         for former in &info.renamed_from {
             let clash = std::iter::once(former.as_str())
@@ -292,8 +292,17 @@ pub fn former_names<'a>(schema: &'a IndexMap<String, FieldInfo>, modeled: &HashS
             if let Some(clash) = clash {
                 panic!("former name `{former}` of `{key}` overlaps the schema path `{clash}`");
             }
-            leaves.insert(former);
-            sections.extend(proper_prefixes(former));
+            let other = names.iter().find(|other| {
+                other.former == former
+                    || proper_prefixes(former).any(|prefix| prefix == other.former)
+                    || proper_prefixes(other.former).any(|prefix| prefix == former)
+            });
+            if let Some(other) = other {
+                panic!(
+                    "former name `{former}` of `{key}` overlaps the former name `{}` of `{}`",
+                    other.former, other.key
+                );
+            }
 
             let env_var = match info.env {
                 EnvBinding::Standard if modeled.contains(key.as_str()) => Some(standard_env_name(former)),
@@ -529,12 +538,36 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "former name `old.inner` of `second` overlaps the schema path `old`")]
+    #[should_panic(expected = "former name `old.inner` of `second` overlaps the former name `old` of `first`")]
     fn former_names_that_hold_each_other_are_rejected() {
         former_names(
             &schema(json!({
                 "first": setting(json!({"old": "7.1.0"})),
                 "second": setting(json!({"old.inner": "7.1.0"})),
+            })),
+            &HashSet::new(),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "former name `old` of `second` overlaps the former name `old.inner` of `first`")]
+    fn a_former_name_that_holds_an_earlier_former_name_is_rejected() {
+        former_names(
+            &schema(json!({
+                "first": setting(json!({"old.inner": "7.1.0"})),
+                "second": setting(json!({"old": "7.1.0"})),
+            })),
+            &HashSet::new(),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "former name `old` of `second` overlaps the former name `old` of `first`")]
+    fn a_former_name_of_two_settings_is_rejected() {
+        former_names(
+            &schema(json!({
+                "first": setting(json!({"old": "7.1.0"})),
+                "second": setting(json!({"old": "7.1.0"})),
             })),
             &HashSet::new(),
         );
