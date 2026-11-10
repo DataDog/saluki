@@ -7,28 +7,35 @@ use tracing::trace;
 
 use crate::actions::docker_exec;
 use crate::assertions::{Assertion, AssertionContext, AssertionResult, AssertionStatus, Attempts};
-use crate::config::HttpStatusMatcher;
+use crate::config::{HttpBodyMatcher, HttpStatusMatcher};
 use crate::probe::{probe, AttemptLimits, ProbeError, POLL_INTERVAL};
 
-/// Assertion that probes an HTTP/HTTPS endpoint and checks the response status code.
+/// Assertion that probes an HTTP/HTTPS endpoint and checks the response status code, and optionally its body.
 ///
 /// - Supports both `http://` and `https://` schemes. For HTTPS, callers may opt into skipping
 ///   certificate verification via `insecure_skip_verify` to allow self-signed certs.
 /// - The status code matcher supports either "must equal" or "must not equal" semantics, so tests
 ///   can assert that a route is registered (for example, status code is anything other than 404)
 ///   without having to know the exact status the endpoint would return.
+/// - The optional body matcher requires the response body to equal an exact value. When it is set,
+///   a response passes only if both the status and the body match.
 pub struct HttpCheckAssertion {
     endpoint: String,
     status: HttpStatusMatcher,
+    body: Option<HttpBodyMatcher>,
     insecure_skip_verify: bool,
     timeout: Duration,
 }
 
 impl HttpCheckAssertion {
-    pub fn new(endpoint: String, status: HttpStatusMatcher, insecure_skip_verify: bool, timeout: Duration) -> Self {
+    pub fn new(
+        endpoint: String, status: HttpStatusMatcher, body: Option<HttpBodyMatcher>, insecure_skip_verify: bool,
+        timeout: Duration,
+    ) -> Self {
         Self {
             endpoint,
             status,
+            body,
             insecure_skip_verify,
             timeout,
         }
@@ -66,6 +73,13 @@ impl HttpCheckAssertion {
             HttpStatusMatcher::NotEqual(forbidden) => actual != forbidden,
         }
     }
+
+    fn body_matches(&self, actual: &str) -> bool {
+        match &self.body {
+            None => true,
+            Some(HttpBodyMatcher::Equal(expected)) => actual == expected,
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -75,14 +89,16 @@ impl Assertion for HttpCheckAssertion {
     }
 
     fn description(&self) -> String {
-        match &self.status {
-            HttpStatusMatcher::Equal(code) => {
-                format!("HTTP endpoint '{}' returns status {}.", self.endpoint, code)
-            }
-            HttpStatusMatcher::NotEqual(code) => {
+        let status = match &self.status {
+            HttpStatusMatcher::Equal(code) => format!("status {code}"),
+            HttpStatusMatcher::NotEqual(code) => format!("any status other than {code}"),
+        };
+        match &self.body {
+            None => format!("HTTP endpoint '{}' returns {}.", self.endpoint, status),
+            Some(HttpBodyMatcher::Equal(body)) => {
                 format!(
-                    "HTTP endpoint '{}' returns any status other than {}.",
-                    self.endpoint, code
+                    "HTTP endpoint '{}' returns {} with body {:?}.",
+                    self.endpoint, status, body
                 )
             }
         }
@@ -151,17 +167,21 @@ impl Assertion for HttpCheckAssertion {
                 &what,
                 limits.attempt,
                 &ctx.cancel_token,
-                http_probe.get_status(&endpoint, &limits),
+                http_probe.get(&endpoint, self.body.is_some(), &limits),
             )
             .await
             {
-                Ok(Answer::Status(actual)) if self.status_matches(actual) => {
-                    let message = format!("HTTP endpoint '{}' returned status {}.", endpoint, actual);
+                Ok(Answer::Response { status, body }) if self.status_matches(status) && self.body_matches(&body) => {
+                    let message = format!("HTTP endpoint '{}' returned status {}.", endpoint, status);
                     return AssertionResult::new(self.name(), started, AssertionStatus::Passed, message);
                 }
-                Ok(Answer::Status(actual)) => {
-                    trace!(endpoint = %endpoint, actual, "HTTP check returned non-matching status, retrying...");
-                    attempts.observed(format_args!("status {actual}"));
+                Ok(Answer::Response { status, body }) if self.status_matches(status) => {
+                    trace!(endpoint = %endpoint, status, body, "HTTP check returned non-matching body, retrying...");
+                    attempts.observed(format_args!("status {status} with body {body:?}"));
+                }
+                Ok(Answer::Response { status, .. }) => {
+                    trace!(endpoint = %endpoint, status, "HTTP check returned non-matching status, retrying...");
+                    attempts.observed(format_args!("status {status}"));
                 }
                 Ok(Answer::TargetError(error)) => {
                     trace!(endpoint = %endpoint, error = %error, "HTTP check request failed, retrying...");
@@ -213,8 +233,10 @@ enum HttpProbe {
 
 /// The outcome of one HTTP request.
 enum Answer {
-    /// The endpoint answered with this status.
-    Status(u16),
+    /// The endpoint answered with this status and body.
+    ///
+    /// `body` is empty unless the caller asked for it.
+    Response { status: u16, body: String },
     /// The request failed, for example through a refused connection or `curl.exe` error.
     TargetError(String),
     /// The harness couldn't send the request.
@@ -232,46 +254,57 @@ impl HttpProbe {
         }
     }
 
-    /// Sends one request to `endpoint`.
-    async fn get_status(&self, endpoint: &str, limits: &AttemptLimits) -> Answer {
+    /// Sends one GET request to `endpoint`, reading the response body when `read_body` is set.
+    async fn get(&self, endpoint: &str, read_body: bool, limits: &AttemptLimits) -> Answer {
         match self {
-            Self::HostClient { client } => match client.get(endpoint).send().await {
-                Ok(resp) => Answer::Status(resp.status().as_u16()),
-                Err(e) if e.is_builder() => Answer::HarnessError(format!("{:#}", GenericError::from(e))),
-                Err(e) => Answer::TargetError(format!("{:#}", GenericError::from(e))),
-            },
+            Self::HostClient { client } => {
+                let resp = match client.get(endpoint).send().await {
+                    Ok(resp) => resp,
+                    Err(e) if e.is_builder() => return Answer::HarnessError(format!("{:#}", GenericError::from(e))),
+                    Err(e) => return Answer::TargetError(format!("{:#}", GenericError::from(e))),
+                };
+                let status = resp.status().as_u16();
+                if !read_body {
+                    return Answer::Response {
+                        status,
+                        body: String::new(),
+                    };
+                }
+                match resp.text().await {
+                    Ok(body) => Answer::Response { status, body },
+                    Err(e) => Answer::TargetError(format!("{:#}", GenericError::from(e))),
+                }
+            }
             Self::InContainerCurl {
                 container_name,
                 insecure_skip_verify,
             } => {
-                let cmd = curl_status_command(endpoint, *insecure_skip_verify, limits);
-                get_status_in_container(container_name, cmd).await
+                let cmd = curl_command(endpoint, *insecure_skip_verify, read_body, limits);
+                get_in_container(container_name, cmd).await
             }
         }
     }
 }
 
-/// Returns a `curl.exe` command that prints the status of a GET to `endpoint`.
-fn curl_status_command(endpoint: &str, insecure_skip_verify: bool, limits: &AttemptLimits) -> Vec<String> {
+/// Returns a `curl.exe` command that sends a GET request to `endpoint` and prints the status on the last line of its output.
+///
+/// With `read_body`, the response body precedes the status; otherwise it is discarded.
+fn curl_command(endpoint: &str, insecure_skip_verify: bool, read_body: bool, limits: &AttemptLimits) -> Vec<String> {
     let endpoint = endpoint.replace("localhost", "127.0.0.1");
     let mut cmd = vec!["curl.exe".to_string()];
     if insecure_skip_verify {
         cmd.push("-k".to_string());
     }
-    cmd.extend([
-        "--max-time".to_string(),
-        limits.curl_max_time(),
-        "-s".to_string(),
-        "-o".to_string(),
-        "NUL".to_string(),
-        "-w".to_string(),
-        "%{http_code}".to_string(),
-        endpoint,
-    ]);
+    cmd.extend(["--max-time".to_string(), limits.curl_max_time(), "-s".to_string()]);
+    if !read_body {
+        cmd.extend(["-o".to_string(), "NUL".to_string()]);
+    }
+    // curl expands `\n` in the write-out format, which keeps the status on its own line after the body.
+    cmd.extend(["-w".to_string(), "\\n%{http_code}".to_string(), endpoint]);
     cmd
 }
 
-async fn get_status_in_container(container_name: &str, cmd: Vec<String>) -> Answer {
+async fn get_in_container(container_name: &str, cmd: Vec<String>) -> Answer {
     let output = match docker_exec(container_name, cmd).await {
         Ok(output) => output,
         Err(e) => return Answer::HarnessError(format!("{e:#}")),
@@ -279,9 +312,18 @@ async fn get_status_in_container(container_name: &str, cmd: Vec<String>) -> Answ
     if !output.succeeded() {
         return Answer::TargetError(format!("curl.exe exited {:?}.", output.exit_code));
     }
-    match output.stdout.trim().parse::<u16>() {
-        Ok(status) if status != 0 => Answer::Status(status),
-        _ => Answer::TargetError(format!("curl.exe reported no status: '{}'.", output.stdout.trim())),
+    parse_curl_output(&output.stdout)
+}
+
+/// Splits the output of a [`curl_command`] into the response body and the status on its last line.
+fn parse_curl_output(stdout: &str) -> Answer {
+    let (body, status) = stdout.rsplit_once('\n').unwrap_or(("", stdout));
+    match status.trim().parse::<u16>() {
+        Ok(status) if status != 0 => Answer::Response {
+            status,
+            body: body.to_string(),
+        },
+        _ => Answer::TargetError(format!("curl.exe reported no status: '{}'.", stdout.trim())),
     }
 }
 
@@ -290,13 +332,16 @@ mod tests {
     use std::time::Duration;
 
     use airlock::driver::ContainerOs;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    use tokio::net::TcpListener;
     use tokio_util::sync::CancellationToken;
 
-    use super::{curl_status_command, HttpCheckAssertion};
+    use super::{curl_command, parse_curl_output, Answer, HttpCheckAssertion};
     use crate::actions::test_docker::{curl_max_time, Exec, FakeDocker};
     use crate::assertions::test_support::host_context;
     use crate::assertions::{Assertion as _, AssertionResult, AssertionStatus};
-    use crate::config::HttpStatusMatcher;
+    use crate::config::{HttpBodyMatcher, HttpStatusMatcher};
+    use crate::intake::test_server::install_crypto_provider;
     use crate::probe::AttemptLimits;
 
     /// Checks a Windows target for `timeout`, with its execs served by `docker`.
@@ -308,6 +353,7 @@ mod tests {
         let assertion = HttpCheckAssertion::new(
             "https://localhost:5001/health".to_string(),
             HttpStatusMatcher::Equal(200),
+            None,
             true,
             timeout,
         );
@@ -320,7 +366,7 @@ mod tests {
         for remaining in [Duration::from_secs(60), Duration::from_secs(3)] {
             let limits = AttemptLimits::new(remaining);
 
-            let cmd = curl_status_command("https://localhost:5001/health", true, &limits);
+            let cmd = curl_command("https://localhost:5001/health", true, false, &limits);
 
             let max_time = cmd
                 .iter()
@@ -329,6 +375,93 @@ mod tests {
                 .unwrap_or_else(|| panic!("curl should bound itself: {cmd:?}"));
             assert_eq!(*max_time, limits.curl_max_time(), "{remaining:?}");
             assert_eq!(cmd.last().map(String::as_str), Some("https://127.0.0.1:5001/health"));
+        }
+    }
+
+    /// Serves `body` with status 200 to every connection, and returns the URL of the server.
+    async fn serve_body(body: &'static str) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("should bind a listener");
+        let addr = listener.local_addr().expect("listener should have an address");
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let mut request = [0; 1024];
+                let _ = stream.read(&mut request).await;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+        });
+        format!("http://{addr}/")
+    }
+
+    /// Checks `endpoint` from the host for a status of 200 and `body`.
+    async fn check_host_body(endpoint: String, body: Option<&str>) -> AssertionResult {
+        let assertion = HttpCheckAssertion::new(
+            endpoint,
+            HttpStatusMatcher::Equal(200),
+            body.map(|body| HttpBodyMatcher::Equal(body.to_string())),
+            false,
+            Duration::from_secs(1),
+        );
+        install_crypto_provider();
+        assertion.check(&host_context(CancellationToken::new())).await
+    }
+
+    #[tokio::test]
+    async fn a_matching_body_passes_the_check() {
+        let endpoint = serve_body("OK\n").await;
+
+        let result = check_host_body(endpoint, Some("OK\n")).await;
+
+        assert_eq!(result.status, AssertionStatus::Passed, "{}", result.message);
+    }
+
+    #[tokio::test]
+    async fn a_different_body_fails_the_check() {
+        let endpoint = serve_body("not OK").await;
+
+        let unchecked = check_host_body(endpoint.clone(), None).await;
+        let checked = check_host_body(endpoint, Some("OK\n")).await;
+
+        assert_eq!(unchecked.status, AssertionStatus::Passed, "{}", unchecked.message);
+        assert_eq!(checked.status, AssertionStatus::Failed, "{}", checked.message);
+        assert!(checked.message.contains(r#"body "not OK""#), "{}", checked.message);
+    }
+
+    #[test]
+    fn curl_keeps_the_body_only_when_asked() {
+        let limits = AttemptLimits::new(Duration::from_secs(10));
+
+        let discarding = curl_command("http://localhost:8126/services", false, false, &limits);
+        let reading = curl_command("http://localhost:8126/services", false, true, &limits);
+
+        assert!(discarding.iter().any(|arg| arg == "NUL"), "{discarding:?}");
+        assert!(!reading.iter().any(|arg| arg == "NUL"), "{reading:?}");
+    }
+
+    #[test]
+    fn curl_output_splits_into_body_and_status() {
+        let cases = [
+            ("\n200", 200, ""),
+            ("OK\n\n200", 200, "OK\n"),
+            ("line one\nline two\n404", 404, "line one\nline two"),
+        ];
+        for (stdout, expected_status, expected_body) in cases {
+            match parse_curl_output(stdout) {
+                Answer::Response { status, body } => {
+                    assert_eq!((status, body.as_str()), (expected_status, expected_body), "{stdout:?}");
+                }
+                _ => panic!("{stdout:?} should parse as a response"),
+            }
+        }
+        for stdout in ["000", "\n000", ""] {
+            assert!(
+                matches!(parse_curl_output(stdout), Answer::TargetError(_)),
+                "{stdout:?} should report no status"
+            );
         }
     }
 
