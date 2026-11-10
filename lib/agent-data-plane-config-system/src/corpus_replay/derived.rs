@@ -137,6 +137,12 @@ pub(crate) const NOT_REPLAYED: &[(&str, &str)] = &[
          comp/filterlist/impl/filterlist.go, and each getter returns only its own key",
     ),
     (
+        "metric-filterlist-prefix-decode",
+        "`metric_filterlist_prefix` entries decode weakly typed, and a list that does not decode yields no rules; \
+         the Agent decodes in comp/filterlist/impl/filterlist.go, so the getter returns the raw list, and the leaf \
+         tier compares the decoded rules (comparison.md decision 15)",
+    ),
+    (
         "forwarder-backoff-fallback",
         "a non-positive backoff base or max, or a factor below 2, falls back to the default; the Agent does the \
          same after the getters, in comp/forwarder/defaultforwarder/impl/blocked_endpoints.go",

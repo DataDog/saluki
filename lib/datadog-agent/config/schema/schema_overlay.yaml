@@ -1581,9 +1581,14 @@ inventory:
       ### DogStatsD metric prefix blocklist rules
 
       `metric_filterlist_prefix` adds per-entry prefixes to the blocklist. Each entry has a
-      required `prefix` and optional `except_exact` and `except_prefix` lists. Prefixes and
-      prefix exceptions are normalized as prefixes, preserving trailing boundaries such as
-      `service_` so they do not widen to `service`.
+      `prefix` and optional `except_exact` and `except_prefix` lists. Prefixes and prefix
+      exceptions are normalized as prefixes, preserving trailing boundaries such as `service_` so
+      they do not widen to `service`.
+
+      Each entry is an object, decoded as the Agent decodes it: a missing `prefix` is the empty
+      prefix, and unknown fields are ignored. When a field holds a value that cannot be converted,
+      such as a list where a string is expected, ADP logs a warning and applies no prefix rules.
+      ADP rejects a value that is not a list of objects.
 
       Exceptions apply across this whole key: a metric excepted by one rule is kept even when it
       matches another prefix rule. Exact or prefix matches from `metric_filterlist` still drop the

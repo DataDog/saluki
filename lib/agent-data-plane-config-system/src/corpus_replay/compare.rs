@@ -13,6 +13,8 @@ use datadog_agent_config::LeafValue;
 use datadog_agent_config_corpus::{Getter, GetterRead, GetterResult, GoFloat, GoValue};
 use serde_json::Value;
 
+use crate::translators::metric_prefix_rules;
+
 /// The outcome of comparing one leaf against one recorded getter result (comparison.md §5).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Verdict {
@@ -65,6 +67,7 @@ pub(crate) enum LeafKind {
     I64,
     JsonList,
     JsonMap,
+    JsonMapList,
     OptionI64,
     OptionStr,
     Str,
@@ -85,6 +88,7 @@ impl LeafKind {
         LeafKind::I64,
         LeafKind::JsonList,
         LeafKind::JsonMap,
+        LeafKind::JsonMapList,
         LeafKind::OptionI64,
         LeafKind::OptionStr,
         LeafKind::Str,
@@ -104,6 +108,7 @@ impl LeafKind {
             LeafValue::I64(_) => LeafKind::I64,
             LeafValue::JsonList(_) => LeafKind::JsonList,
             LeafValue::JsonMap(_) => LeafKind::JsonMap,
+            LeafValue::JsonMapList(_) => LeafKind::JsonMapList,
             LeafValue::OptionI64(_) => LeafKind::OptionI64,
             LeafValue::OptionStr(_) => LeafKind::OptionStr,
             LeafValue::Str(_) => LeafKind::Str,
@@ -124,7 +129,7 @@ impl LeafKind {
             LeafKind::F64 => &[Getter::GetFloat64],
             LeafKind::F64Map | LeafKind::JsonMap => &[Getter::GetStringMap],
             LeafKind::I64 => &[Getter::GetInt, Getter::GetInt64],
-            LeafKind::JsonList => &[Getter::Get],
+            LeafKind::JsonList | LeafKind::JsonMapList => &[Getter::Get],
             LeafKind::OptionI64 => &[Getter::GetInt],
             LeafKind::OptionStr => &[Getter::GetString],
             LeafKind::Str => &[Getter::GetString],
@@ -172,6 +177,7 @@ fn rule(leaf: LeafValue<'_>, result: &GetterResult) -> Option<Verdict> {
         (LeafValue::I64(a), GetterResult::Int(b)) => i64_get_int(a, b.value),
         (LeafValue::JsonList(a), GetterResult::Get(b)) => json_list_get(a, b),
         (LeafValue::JsonMap(a), GetterResult::StringMap(b)) => json_map_get_string_map(a, b.as_ref()),
+        (LeafValue::JsonMapList(a), GetterResult::Get(b)) => json_map_list_get(a, b),
         (LeafValue::OptionI64(a), GetterResult::Int(b)) => option_i64_get_int(a, b.value),
         (LeafValue::OptionStr(a), GetterResult::String(b)) => option_str_get_string(a, b),
         (LeafValue::Str(a), GetterResult::String(b)) => str_get_string(a, b),
@@ -382,6 +388,147 @@ fn string_map_list_get(adp: &[HashMap<String, String>], agent: &GoValue) -> Verd
     )
 }
 
+/// A list of objects against `Get`'s dynamic value, compared as the prefix rules each side runs with
+/// (comparison.md decision 15).
+///
+/// `metric_filterlist_prefix` is the only key of this kind. ADP's side is the rule list its translator
+/// stores in `domains.dogstatsd.metric_filter.prefix_rules`. The Agent's side is the recorded value
+/// decoded as its consumer decodes it ([`agent_prefix_entries`]); a value the consumer cannot decode
+/// leaves it with no rules, so it is compared as an empty list.
+fn json_map_list_get(adp: &[serde_json::Map<String, Value>], agent: &GoValue) -> Verdict {
+    let adp = metric_prefix_rules(adp);
+    let decoded = agent_prefix_entries(agent);
+    let agent_rules = decoded.as_deref().unwrap_or(&[]);
+    let equal = adp.len() == agent_rules.len()
+        && adp.iter().zip(agent_rules).all(|(a, b)| {
+            a.prefix == b.prefix && a.except_prefix == b.except_prefix && a.except_exact == b.except_exact
+        });
+    verdict(
+        equal,
+        || render_prefix_rules(adp.iter().map(|r| (&r.prefix, &r.except_prefix, &r.except_exact))),
+        || {
+            let rules = render_prefix_rules(
+                agent_rules
+                    .iter()
+                    .map(|r| (&r.prefix, &r.except_prefix, &r.except_exact)),
+            );
+            match &decoded {
+                Ok(_) => rules,
+                Err(error) => format!("{rules} (the consumer's decode fails: {error})"),
+            }
+        },
+    )
+}
+
+fn render_prefix_rules<'a>(rules: impl Iterator<Item = (&'a String, &'a Vec<String>, &'a Vec<String>)>) -> String {
+    let rules: Vec<String> = rules
+        .map(|(prefix, except_prefix, except_exact)| {
+            format!("{{prefix: {prefix:?}, except_prefix: {except_prefix:?}, except_exact: {except_exact:?}}}")
+        })
+        .collect();
+    format!("[{}]", rules.join(", "))
+}
+
+/// One `metric_filterlist_prefix` entry as the Agent decodes it: `MetricPrefixListEntry`
+/// (comp/filterlist/impl/prefixlist.go). A nil slice is an empty list (decision 6).
+#[derive(Debug, Default, PartialEq)]
+struct AgentPrefixEntry {
+    prefix: String,
+    except_prefix: Vec<String>,
+    except_exact: Vec<String>,
+}
+
+/// Decodes a recorded `Get` value as the Agent's consumer does.
+///
+/// `loadMetricFilterListConfig` (comp/filterlist/impl/filterlist.go) calls `structure.UnmarshalKey`
+/// (pkg/config/structure/unmarshal.go) into `[]MetricPrefixListEntry` and, on an error, runs with no
+/// rules. `UnmarshalKey` is `mapstructure` v2.5.0 with `WeaklyTypedInput` and the string-to-slice hook
+/// splitting on `,`; this follows that library's `decode`, `decodeSlice`, `decodeStructFromMap` and
+/// `decodeString`:
+///
+/// - a nil value sets nothing, so a nil list, entry or field keeps its zero value;
+/// - a list target takes an empty map as an empty list and lifts any other non-list into a one-element
+///   list; the hook splits a string first, but only for a `[]string` target, so a string entry fails;
+/// - an entry must be a map; a field matches its exact name, else any key equal to it ignoring case,
+///   and unknown keys are ignored;
+/// - a string target takes a string, a boolean as `1` or `0`, and a number in decimal; a list or a map
+///   fails.
+///
+/// Written from the Agent's code, not from ADP's decoder, so the two can disagree.
+fn agent_prefix_entries(value: &GoValue) -> Result<Vec<AgentPrefixEntry>, String> {
+    fn field<'a>(entry: &'a BTreeMap<String, GoValue>, name: &str) -> &'a GoValue {
+        // Go's `strings.EqualFold` equals ASCII case folding for these field names: no letter in them
+        // folds to or from a non-ASCII letter.
+        entry
+            .get(name)
+            .or_else(|| {
+                entry
+                    .iter()
+                    .find(|(key, _)| key.eq_ignore_ascii_case(name))
+                    .map(|(_, v)| v)
+            })
+            .unwrap_or(&GoValue::Null)
+    }
+
+    fn string(path: &str, value: &GoValue) -> Result<String, String> {
+        Ok(match value {
+            GoValue::Null => String::new(),
+            GoValue::String(s) => s.clone(),
+            GoValue::Bool(b) => if *b { "1" } else { "0" }.to_string(),
+            GoValue::Int(n) => n.value.to_string(),
+            // `strconv.FormatFloat(f, 'f', -1, 64)`: the shortest exact digits, never an exponent.
+            GoValue::Float(GoFloat::Finite(n)) => format!("{}", n.value),
+            GoValue::Float(GoFloat::NaN) => "NaN".to_string(),
+            GoValue::Float(GoFloat::PosInf) => "+Inf".to_string(),
+            GoValue::Float(GoFloat::NegInf) => "-Inf".to_string(),
+            GoValue::List(_) | GoValue::Map(_) => return Err(format!("'{path}' expected type 'string'")),
+        })
+    }
+
+    fn strings(path: &str, value: &GoValue) -> Result<Vec<String>, String> {
+        match value {
+            GoValue::Null => Ok(Vec::new()),
+            GoValue::String(s) if s.is_empty() => Ok(Vec::new()),
+            GoValue::String(s) => Ok(s.split(',').map(str::to_string).collect()),
+            GoValue::List(items) => items
+                .iter()
+                .enumerate()
+                .map(|(i, item)| string(&format!("{path}[{i}]"), item))
+                .collect(),
+            GoValue::Map(m) if m.is_empty() => Ok(Vec::new()),
+            other => Ok(vec![string(&format!("{path}[0]"), other)?]),
+        }
+    }
+
+    fn entry(path: &str, value: &GoValue) -> Result<AgentPrefixEntry, String> {
+        match value {
+            GoValue::Null => Ok(AgentPrefixEntry::default()),
+            GoValue::Map(m) => Ok(AgentPrefixEntry {
+                prefix: string(&format!("{path}.prefix"), field(m, "prefix"))?,
+                except_prefix: strings(&format!("{path}.except_prefix"), field(m, "except_prefix"))?,
+                except_exact: strings(&format!("{path}.except_exact"), field(m, "except_exact"))?,
+            }),
+            _ => Err(format!("'{path}' expected a map or struct")),
+        }
+    }
+
+    let lifted;
+    let items: &[GoValue] = match value {
+        GoValue::Null => return Ok(Vec::new()),
+        GoValue::List(items) => items,
+        GoValue::Map(m) if m.is_empty() => return Ok(Vec::new()),
+        other => {
+            lifted = [other.clone()];
+            &lifted
+        }
+    };
+    items
+        .iter()
+        .enumerate()
+        .map(|(i, item)| entry(&format!("[{i}]"), item))
+        .collect()
+}
+
 /// Exact equality of a JSON value and a Go value: an integer never equals a float, even when the
 /// two have the same numeric value, and floats are equal only bit for bit.
 fn json_eq(adp: &Value, agent: &GoValue) -> bool {
@@ -492,6 +639,7 @@ mod tests {
             LeafKind::I64 => LeafValue::I64(0),
             LeafKind::JsonList => LeafValue::JsonList(&[]),
             LeafKind::JsonMap => LeafValue::JsonMap(EMPTY_JSON_MAP.get_or_init(serde_json::Map::new)),
+            LeafKind::JsonMapList => LeafValue::JsonMapList(&[]),
             LeafKind::OptionI64 => LeafValue::OptionI64(None),
             LeafKind::OptionStr => LeafValue::OptionStr(None),
             LeafKind::Str => LeafValue::Str(""),
@@ -897,6 +1045,142 @@ mod tests {
                 agent: "[{}]".into()
             }
         );
+    }
+
+    fn go_map(entries: &[(&str, GoValue)]) -> GoValue {
+        GoValue::Map(entries.iter().map(|(k, v)| (k.to_string(), v.clone())).collect())
+    }
+
+    fn go_strings(v: &[&str]) -> GoValue {
+        GoValue::List(v.iter().map(|s| GoValue::String(s.to_string())).collect())
+    }
+
+    fn objects(json: Value) -> Vec<serde_json::Map<String, Value>> {
+        serde_json::from_value(json).expect("a list of objects")
+    }
+
+    /// The rule compares the rules each side runs with, so representations the Agent's consumer
+    /// decodes alike match: nil and empty lists, an empty map, nil entries and fields, weakly typed
+    /// scalars, comma-separated lists and field names in another case.
+    #[test]
+    fn json_map_list_rule_compares_the_decoded_prefix_rules() {
+        let none = objects(serde_json::json!([]));
+        for agent in [GoValue::Null, GoValue::List(vec![]), go_map(&[])] {
+            assert_eq!(json_map_list_get(&none, &agent), Verdict::Match, "{agent:?}");
+        }
+        let empty_rule = objects(serde_json::json!([{}]));
+        assert_eq!(
+            json_map_list_get(&empty_rule, &GoValue::List(vec![GoValue::Null])),
+            Verdict::Match
+        );
+        assert_eq!(
+            json_map_list_get(&empty_rule, &GoValue::List(vec![go_map(&[("unknown", go_int(1))])])),
+            Verdict::Match
+        );
+
+        let adp = objects(serde_json::json!([
+            {"prefix": "a.", "except_prefix": ["a.keep", "a.also"], "except_exact": ["a.x"]},
+            {"prefix": "1", "except_prefix": [], "except_exact": ["2.5", "0"]},
+        ]));
+        let agent = GoValue::List(vec![
+            go_map(&[
+                ("Prefix", GoValue::String("a.".into())),
+                ("except_prefix", GoValue::String("a.keep,a.also".into())),
+                ("EXCEPT_EXACT", GoValue::String("a.x".into())),
+            ]),
+            go_map(&[
+                ("prefix", GoValue::Bool(true)),
+                ("except_prefix", GoValue::String(String::new())),
+                (
+                    "except_exact",
+                    GoValue::List(vec![GoValue::Float(finite(2.5, "2.5")), GoValue::Bool(false)]),
+                ),
+            ]),
+        ]);
+        assert_eq!(json_map_list_get(&adp, &agent), Verdict::Match);
+
+        // A non-empty map is lifted into a one-entry list, as is a scalar list field.
+        let one = objects(serde_json::json!([{"prefix": "p", "except_exact": ["7"]}]));
+        let lifted = go_map(&[("prefix", GoValue::String("p".into())), ("except_exact", go_int(7))]);
+        assert_eq!(json_map_list_get(&one, &lifted), Verdict::Match);
+
+        let non_finite = objects(serde_json::json!([{"prefix": "+Inf"}]));
+        let agent = GoValue::List(vec![go_map(&[("prefix", GoValue::Float(GoFloat::PosInf))])]);
+        assert_eq!(json_map_list_get(&non_finite, &agent), Verdict::Match);
+    }
+
+    /// A value the Agent's consumer cannot decode leaves it with no rules: a string, a list holding a
+    /// non-object, or a field of the wrong shape. ADP must then run with no rules either.
+    #[test]
+    fn json_map_list_rule_reads_an_undecodable_agent_value_as_no_rules() {
+        let none = objects(serde_json::json!([]));
+        let one = objects(serde_json::json!([{"prefix": "a"}]));
+        for agent in [
+            GoValue::String("cr-a cr-b,cr-c".into()),
+            go_strings(&["cr-a", "cr-b"]),
+            GoValue::List(vec![go_map(&[("prefix", go_strings(&["a"]))])]),
+            GoValue::List(vec![
+                go_map(&[("prefix", GoValue::String("a".into()))]),
+                go_map(&[("except_exact", go_map(&[("k", go_int(1))]))]),
+            ]),
+        ] {
+            assert!(agent_prefix_entries(&agent).is_err(), "{agent:?}");
+            assert_eq!(json_map_list_get(&none, &agent), Verdict::Match, "{agent:?}");
+            let Verdict::Differs { adp, agent: shown } = json_map_list_get(&one, &agent) else {
+                panic!("{agent:?}: ADP's rule differs from no rules");
+            };
+            assert_eq!(adp, r#"[{prefix: "a", except_prefix: [], except_exact: []}]"#);
+            assert!(shown.starts_with("[] (the consumer's decode fails: "), "{shown}");
+        }
+    }
+
+    #[test]
+    fn json_map_list_rule_differs_on_the_rules_and_on_a_value_adp_cannot_decode() {
+        let adp = objects(serde_json::json!([{"prefix": "a", "except_prefix": ["x"]}]));
+        let agent = |prefix: &str, except: &[&str]| {
+            GoValue::List(vec![go_map(&[
+                ("prefix", GoValue::String(prefix.into())),
+                ("except_prefix", go_strings(except)),
+            ])])
+        };
+        assert_eq!(json_map_list_get(&adp, &agent("a", &["x"])), Verdict::Match);
+        assert_eq!(
+            json_map_list_get(&adp, &agent("b", &["x"])),
+            Verdict::Differs {
+                adp: r#"[{prefix: "a", except_prefix: ["x"], except_exact: []}]"#.into(),
+                agent: r#"[{prefix: "b", except_prefix: ["x"], except_exact: []}]"#.into(),
+            }
+        );
+        assert!(differs(&json_map_list_get(&adp, &agent("a", &["x", "y"]))));
+        assert!(differs(&json_map_list_get(&adp, &GoValue::Null)));
+        // ADP's translator drops every rule of a list it cannot decode.
+        let undecodable = objects(serde_json::json!([{"prefix": ["a"]}]));
+        assert_eq!(
+            json_map_list_get(&undecodable, &agent("a", &[])),
+            Verdict::Differs {
+                adp: "[]".into(),
+                agent: r#"[{prefix: "a", except_prefix: [], except_exact: []}]"#.into(),
+            }
+        );
+        assert_eq!(
+            compare_result(LeafValue::JsonMapList(&adp), Getter::Get, &GetterResult::Bool(false)),
+            Verdict::NotCompared {
+                reason: Reason::ResultShape
+            }
+        );
+    }
+
+    /// The `JsonMapList` rule decodes as `metric_filterlist_prefix`'s Agent consumer does, so it is
+    /// right only for that key. Another supported key of this type needs its own rule first.
+    #[test]
+    fn only_metric_filterlist_prefix_is_a_json_map_list() {
+        let config = DatadogConfiguration::default();
+        let keys: Vec<&str> = LEAVES
+            .iter()
+            .filter(|leaf| LeafKind::of(&(leaf.get)(&config)) == Some(LeafKind::JsonMapList))
+            .map(|leaf| leaf.key)
+            .collect();
+        assert_eq!(keys, ["metric_filterlist_prefix"]);
     }
 
     #[test]
