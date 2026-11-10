@@ -445,6 +445,7 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
+    use crate::common::datadog::test_util::init_tls;
 
     /// A proxy whose trace-agent is not listening, so a proxied request is answered `502 Bad Gateway`. That makes
     /// "was this request proxied?" observable without running a trace-agent.
@@ -858,15 +859,6 @@ mod tests {
             "expected a 502 Bad Gateway response, got: {}",
             String::from_utf8_lossy(&response)
         );
-    }
-
-    /// Loads the TLS settings the relay's HTTPS client for tracer flares is built with.
-    fn init_tls() {
-        static INIT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-        INIT.get_or_init(|| {
-            let _ = saluki_tls::initialize_default_crypto_provider();
-            saluki_tls::load_platform_root_certificates().expect("failed to load platform root certificates");
-        });
     }
 
     fn test_config(bind_host: Option<&str>, non_local_traffic: bool, receiver_port: u16) -> ApmRelayConfiguration {
