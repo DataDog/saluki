@@ -74,17 +74,18 @@ pub fn with_allow_arbitrary_tags<B>(enabled: bool) -> impl Fn(Request<B>) -> Req
     }
 }
 
+/// Returns the full name of the application, formatted for a request header, such as `agent-data-plane`.
+pub(crate) fn formatted_app_name(app_details: &saluki_metadata::AppDetails) -> String {
+    app_details.full_name().replace([' ', '_'], "-").to_lowercase()
+}
+
 /// Builds a middleware function that adds request headers indicating the version of the data plane making the request.
 ///
 /// Adds the `dd-agent-version` header with the version of the data plane (`x.y.z`), and the `User-Agent` header with
 /// the name of data plane and the version, such as `agent-data-plane/x.y.z`.`
 pub fn with_version_info<B>() -> impl Fn(Request<B>) -> Request<B> + Clone {
     let app_details = saluki_metadata::get_app_details();
-    let formatted_full_name = app_details
-        .full_name()
-        .replace(" ", "-")
-        .replace("_", "-")
-        .to_lowercase();
+    let formatted_full_name = formatted_app_name(app_details);
 
     let agent_version_header_value = HeaderValue::from_static(app_details.version().raw());
     let raw_user_agent_header_value = format!("{}/{}", formatted_full_name, app_details.version().raw());

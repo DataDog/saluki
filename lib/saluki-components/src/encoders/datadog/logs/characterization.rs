@@ -69,7 +69,7 @@ async fn encode(compressor_kind: &str, logs: Vec<Log>) -> Vec<EncodedRequest> {
     assert!(logs.len() <= 1024, "logs must fit in a single event buffer");
 
     let config = BufferedIncrementalConfiguration::new(
-        DatadogLogsConfiguration::new(compressor_kind, 3).with_origin_version("1.2.3"),
+        DatadogLogsConfiguration::new(compressor_kind, 3).with_origin("agent-data-plane", "1.2.3"),
         FLUSH_TIMEOUT,
     );
     let (control, mut payloads) = TestComponentDriver::encoder(config)
@@ -208,7 +208,7 @@ async fn request_line_and_headers() {
 #[tokio::test]
 async fn rejects_an_invalid_origin_version() {
     let config = BufferedIncrementalConfiguration::new(
-        DatadogLogsConfiguration::new("zstd", 3).with_origin_version("1.2.3\n"),
+        DatadogLogsConfiguration::new("zstd", 3).with_origin("agent-data-plane", "1.2.3\n"),
         FLUSH_TIMEOUT,
     );
     assert!(TestComponentDriver::encoder(config).await.is_err());
