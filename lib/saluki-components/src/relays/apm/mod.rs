@@ -41,10 +41,13 @@ mod forwarding;
 
 mod info;
 use self::info::Info;
+
+mod opm;
 pub use self::info::{
     InfoCacheObfuscation, InfoConfiguration, InfoJsonObfuscation, InfoObfuscation, InfoReplaceRule, InfoTagFilter,
     InfoTagFilters,
 };
+use self::opm::OrgPropagationMarkerFetcher;
 
 mod proxy;
 use self::proxy::{Destination, TraceAgentProxy};
@@ -114,6 +117,12 @@ pub struct ApmRelayConfiguration {
 
     /// Semantic registry the base peer tags on `/info` come from.
     pub semantic_registry: SemanticRegistryProvider,
+
+    /// URL of Datadog's `/api/v2/validate`, which identifies the organization of the API key for the org propagation
+    /// marker on `/info`.
+    ///
+    /// The request uses the HTTP client settings and the API key of [`tracer_flare`](Self::tracer_flare).
+    pub validate_endpoint: String,
 }
 
 #[static_metrics(prefix = component, labels(component_id, component_type))]
@@ -249,6 +258,11 @@ impl RelayBuilder for ApmRelayConfiguration {
         }
 
         let tracer_flare = TracerFlareProxy::from_config(&self.tracer_flare)?;
+        let org_prop_marker = OrgPropagationMarkerFetcher::new(
+            &self.tracer_flare.forwarder,
+            self.validate_endpoint.clone(),
+            tracer_flare.api_key(),
+        )?;
 
         Ok(Box::new(ApmRelay {
             tcp_endpoint,
@@ -258,6 +272,7 @@ impl RelayBuilder for ApmRelayConfiguration {
             tracer_flare_api_key: self.tracer_flare.api_key.clone(),
             info: Info::new(self.info.clone(), self.semantic_registry.clone()),
             agent_client: self.agent_client.clone(),
+            org_prop_marker,
             capture_entity_resolver: self.capture_entity_resolver.clone(),
             metrics: Metrics::new(context.component_id(), context.component_type().as_category_str()),
         }))
@@ -275,6 +290,7 @@ pub struct ApmRelay {
     tracer_flare_api_key: Live<String>,
     info: Info,
     agent_client: Option<RemoteAgentClientConfiguration>,
+    org_prop_marker: OrgPropagationMarkerFetcher,
     capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
     metrics: Metrics,
 }
@@ -290,6 +306,7 @@ impl Relay for ApmRelay {
             mut tracer_flare_api_key,
             info,
             agent_client,
+            org_prop_marker,
             capture_entity_resolver,
             metrics,
         } = *self;
@@ -341,6 +358,11 @@ impl Relay for ApmRelay {
         pin!(agent_version);
         let mut agent_version_pending = true;
 
+        // As in the trace-agent, the marker is fetched once, with the API key current at each attempt.
+        let org_prop_marker = org_prop_marker.fetch_with_retries(std::time::Duration::from_secs(1));
+        pin!(org_prop_marker);
+        let mut org_prop_marker_pending = true;
+
         loop {
             select! {
                 _ = &mut global_shutdown => {
@@ -354,6 +376,12 @@ impl Relay for ApmRelay {
                     if let Some(version) = version {
                         debug!(version = %version.version, "Fetched the Agent version.");
                         info.set_agent_version(version);
+                    }
+                },
+                marker = &mut org_prop_marker, if org_prop_marker_pending => {
+                    org_prop_marker_pending = false;
+                    if let Some(marker) = marker {
+                        info.set_org_prop_marker(marker);
                     }
                 },
             }
@@ -1084,6 +1112,7 @@ mod tests {
             info: InfoConfiguration::default(),
             agent_client: None,
             semantic_registry: SemanticRegistryProvider::default(),
+            validate_endpoint: "http://127.0.0.1:1/api/v2/validate".to_string(),
         }
     }
 

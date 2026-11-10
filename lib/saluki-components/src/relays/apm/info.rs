@@ -314,8 +314,10 @@ pub(super) struct RenderedInfo {
 }
 
 impl RenderedInfo {
-    fn render(config: &InfoConfiguration, registry: &Registry, agent: &RunningAgentVersion) -> Self {
-        let payload = InfoPayload::new(config, registry, agent);
+    fn render(
+        config: &InfoConfiguration, registry: &Registry, agent: &RunningAgentVersion, org_prop_marker: &str,
+    ) -> Self {
+        let payload = InfoPayload::new(config, registry, agent, org_prop_marker);
 
         // The trace-agent indents with tabs; only the hash, not the layout, matters to tracers.
         let mut body = Vec::new();
@@ -336,26 +338,36 @@ impl RenderedInfo {
 
 /// The `/info` endpoint: its payload, and the headers every other response carries.
 ///
-/// Clones share the payload.
+/// Clones share the payload. The setters re-render it from every input, so they must be called from a single task,
+/// as the relay does, for the last render to see every update.
 #[derive(Clone)]
 pub(super) struct Info {
     config: Arc<InfoConfiguration>,
     semantic_registry: SemanticRegistryProvider,
     agent: Arc<ArcSwap<RunningAgentVersion>>,
+    org_prop_marker: Arc<ArcSwap<String>>,
     rendered: Arc<ArcSwap<RenderedInfo>>,
 }
 
 impl Info {
-    /// Renders the payload of `config` with the current semantic registry, before the Agent version is known.
+    /// Renders the payload of `config` with the current semantic registry, before the Agent version and the org
+    /// propagation marker are known.
     pub(super) fn new(config: InfoConfiguration, semantic_registry: SemanticRegistryProvider) -> Self {
         let agent = RunningAgentVersion::default();
-        let rendered = RenderedInfo::render(&config, &semantic_registry.snapshot(), &agent);
+        let rendered = RenderedInfo::render(&config, &semantic_registry.snapshot(), &agent, "");
         Self {
             config: Arc::new(config),
             semantic_registry,
             agent: Arc::new(ArcSwap::from_pointee(agent)),
+            org_prop_marker: Arc::new(ArcSwap::from_pointee(String::new())),
             rendered: Arc::new(ArcSwap::from_pointee(rendered)),
         }
+    }
+
+    /// Re-renders the payload with the org propagation marker of the API key.
+    pub(super) fn set_org_prop_marker(&self, marker: String) {
+        self.org_prop_marker.store(Arc::new(marker));
+        self.rerender();
     }
 
     /// Re-renders the payload with the version of the Agent.
@@ -366,7 +378,8 @@ impl Info {
 
     fn rerender(&self) {
         let agent = self.agent.load();
-        let rendered = RenderedInfo::render(&self.config, &self.semantic_registry.snapshot(), &agent);
+        let marker = self.org_prop_marker.load();
+        let rendered = RenderedInfo::render(&self.config, &self.semantic_registry.snapshot(), &agent, &marker);
         self.rendered.store(Arc::new(rendered));
     }
 
@@ -426,10 +439,14 @@ struct InfoPayload<'a> {
     filter_tags_regex: RenderedTagFilters,
     #[serde(skip_serializing_if = "<[String]>::is_empty")]
     ignore_resources: &'a [String],
+    #[serde(skip_serializing_if = "str::is_empty")]
+    org_prop_marker: &'a str,
 }
 
 impl<'a> InfoPayload<'a> {
-    fn new(config: &'a InfoConfiguration, registry: &Registry, agent: &'a RunningAgentVersion) -> Self {
+    fn new(
+        config: &'a InfoConfiguration, registry: &Registry, agent: &'a RunningAgentVersion, org_prop_marker: &'a str,
+    ) -> Self {
         let endpoints: Vec<&'static str> = ENDPOINTS
             .iter()
             .filter(|(_, requires)| match requires {
@@ -485,6 +502,7 @@ impl<'a> InfoPayload<'a> {
             filter_tags: RenderedTagFilters::new(&config.filter_tags),
             filter_tags_regex: RenderedTagFilters::new(&config.filter_tags_regex),
             ignore_resources: &config.ignore_resources,
+            org_prop_marker,
         }
     }
 }
@@ -775,7 +793,7 @@ mod tests {
     }
 
     fn render_for(config: &InfoConfiguration, agent: &RunningAgentVersion) -> (Value, RenderedInfo) {
-        let rendered = RenderedInfo::render(config, &EMBEDDED_REGISTRY, agent);
+        let rendered = RenderedInfo::render(config, &EMBEDDED_REGISTRY, agent, "");
         let payload = serde_json::from_slice(&rendered.body).expect("the body should be JSON");
         (payload, rendered)
     }
@@ -1065,6 +1083,21 @@ mod tests {
         info.set_headers(&mut after);
         assert_eq!(after[AGENT_VERSION_HEADER], "7.85.0");
         assert_ne!(after[AGENT_STATE_HEADER], before[AGENT_STATE_HEADER]);
+    }
+
+    #[test]
+    fn the_org_propagation_marker_is_reported_once_known() {
+        let info = Info::new(InfoConfiguration::default(), SemanticRegistryProvider::default());
+        let payload = |info: &Info| -> Value { serde_json::from_slice(&info.rendered.load().body).unwrap() };
+        assert!(payload(&info).get("org_prop_marker").is_none());
+
+        info.set_agent_version(agent());
+        info.set_org_prop_marker("6Hy0XAWtOJA".to_string());
+
+        let payload = payload(&info);
+        assert_eq!(payload["org_prop_marker"], "6Hy0XAWtOJA");
+        // Neither update loses the other.
+        assert_eq!(payload["version"], "7.85.0");
     }
 
     #[test]

@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use agent_data_plane_config::domains::traces;
+use agent_data_plane_config::shared::Endpoints;
 use agent_data_plane_config::SalukiConfiguration;
 use datadog_agent_apm::semantics::SemanticRegistryProvider;
 use datadog_agent_commons::ipc::config::RemoteAgentClientConfiguration;
@@ -15,6 +16,9 @@ use saluki_components::relays::apm::{
 use saluki_env::workload::CaptureEntityResolver;
 
 use super::forwarder_configuration;
+
+/// The Datadog site when none is configured.
+const DEFAULT_SITE: &str = "datadoghq.com";
 
 /// Builds the relay inputs with the effective listen host, the tracer container resolver, the API key tracer flares
 /// are sent with, and what `/info` reports.
@@ -42,7 +46,25 @@ pub(crate) fn apm_relay_configuration(
         info: info_configuration(config, containerized),
         agent_client,
         semantic_registry,
+        validate_endpoint: validate_endpoint(&shared.endpoints),
     }
+}
+
+/// Returns the URL of `/api/v2/validate`, as the trace-agent resolves it: under an explicit `dd_url`, or under the
+/// `api.` host of the site.
+///
+/// As in the trace-agent, the path is appended to `dd_url` as is, and `convert_dd_site_fqdn` doesn't apply.
+fn validate_endpoint(endpoints: &Endpoints) -> String {
+    let base = if endpoints.dd_url.is_explicit() && !endpoints.dd_url.value.is_empty() {
+        endpoints.dd_url.value.clone()
+    } else {
+        let site = match endpoints.site.value.trim() {
+            "" => DEFAULT_SITE,
+            site => site,
+        };
+        format!("https://api.{site}")
+    };
+    format!("{base}/api/v2/validate")
 }
 
 /// Builds the trace-agent settings `/info` reports, as the trace-agent resolves them.
@@ -339,6 +361,37 @@ mod tests {
         assert_eq!((info.max_memory, info.max_cpu), (5e8, 0.5));
         let info = relay_configuration(&config, true).info;
         assert_eq!((info.max_memory, info.max_cpu), (0.0, 0.0));
+    }
+
+    #[test]
+    fn the_validate_endpoint_follows_dd_url_then_the_site() {
+        let mut endpoints = Endpoints {
+            site: ConfigValue::defaulted("datadoghq.com".to_string()),
+            dd_url: ConfigValue::defaulted("https://app.datadoghq.com".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            validate_endpoint(&endpoints),
+            "https://api.datadoghq.com/api/v2/validate"
+        );
+
+        endpoints.site = ConfigValue::explicit(" datadoghq.eu ".to_string());
+        assert_eq!(
+            validate_endpoint(&endpoints),
+            "https://api.datadoghq.eu/api/v2/validate"
+        );
+
+        endpoints.site = ConfigValue::explicit(String::new());
+        assert_eq!(
+            validate_endpoint(&endpoints),
+            "https://api.datadoghq.com/api/v2/validate"
+        );
+
+        endpoints.dd_url = ConfigValue::explicit("https://proxy.example.com/".to_string());
+        assert_eq!(
+            validate_endpoint(&endpoints),
+            "https://proxy.example.com//api/v2/validate"
+        );
     }
 
     #[test]
