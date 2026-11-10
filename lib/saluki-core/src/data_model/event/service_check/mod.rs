@@ -158,7 +158,7 @@ impl Serialize for ServiceCheck {
     {
         let mut map = serializer.serialize_map(None)?;
         map.serialize_entry("check", &self.name)?;
-        // An explicitly empty hostname is still written, as the Datadog Agent does.
+        // An explicitly empty hostname is still written; only an unset hostname is omitted.
         if let Some(hostname) = &self.hostname {
             map.serialize_entry("host_name", hostname)?;
         }
