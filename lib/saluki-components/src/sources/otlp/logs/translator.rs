@@ -67,8 +67,8 @@ impl OtlpLogsTranslator {
 
             match current_log_records.next() {
                 Some(log_record) => {
-                    // As in the Agent, a host or service found on a record sticks for the rest of the
-                    // resource's records, across scopes.
+                    // A host or service found on a record sticks for the rest of the resource's
+                    // records, across scopes.
                     if self.host.is_none() {
                         self.host = host_from_attributes(&log_record.attributes);
                     }
