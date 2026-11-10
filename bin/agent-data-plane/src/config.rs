@@ -23,8 +23,13 @@ pub(crate) fn remote_agent_client_configuration(
 ) -> Result<RemoteAgentClientConfiguration, GenericError> {
     let ipc = &config.control.ipc;
     let auth = DataPlaneConfiguration::from_configuration(config).ipc_auth_configuration();
-    RemoteAgentClientConfiguration::from_parts(ipc.cmd_port, auth, ipc.grpc_max_message_size, &ipc.vsock_addr)?
-        .with_cmd_host(ipc.ipc_host())
+    RemoteAgentClientConfiguration::from_parts(
+        ipc.ipc_host(),
+        ipc.cmd_port,
+        auth,
+        ipc.grpc_max_message_size,
+        &ipc.vsock_addr,
+    )
 }
 
 /// Translates the typed workload settings into the workload provider's settings.

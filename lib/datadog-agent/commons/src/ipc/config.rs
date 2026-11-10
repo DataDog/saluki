@@ -72,8 +72,6 @@ impl IpcAuthConfiguration {
 #[derive(Clone, Debug)]
 pub struct RemoteAgentClientConfiguration {
     /// Core Agent CMD API host used for remote-agent gRPC IPC. Always a loopback address.
-    ///
-    /// Defaults to `127.0.0.1`. See [`with_cmd_host`](Self::with_cmd_host).
     pub cmd_host: IpAddr,
 
     /// Core Agent CMD API port used for remote-agent gRPC IPC.
@@ -91,7 +89,12 @@ pub struct RemoteAgentClientConfiguration {
 }
 
 impl RemoteAgentClientConfiguration {
-    /// Creates a `RemoteAgentClientConfiguration` from its parts, resolving the named vsock address to a CID.
+    /// Creates a `RemoteAgentClientConfiguration` from its parts, resolving the CMD API host to an address and the
+    /// named vsock address to a CID.
+    ///
+    /// `cmd_host` follows the Datadog Agent's `cmd_host` setting. Like the Datadog Agent, the host must be `localhost`
+    /// or a loopback IP address: an IPv4 address in `127.0.0.0/8`, or `::1`. `localhost` connects to `127.0.0.1`,
+    /// which is where the Datadog Agent listens for it.
     ///
     /// `vsock_addr` follows the Datadog Agent's `vsock_addr` setting: an empty value disables vsock, and `host`,
     /// `hypervisor`, and `local` select the well-known context identifiers 2, 0, and 3. vsock is only supported on
@@ -99,10 +102,13 @@ impl RemoteAgentClientConfiguration {
     ///
     /// # Errors
     ///
-    /// On Linux, returns an error if `vsock_addr` is not empty and is not one of the supported names.
+    /// Returns an error if `cmd_host` isn't `localhost` or a loopback IP address. On Linux, also returns an error if
+    /// `vsock_addr` is not empty and is not one of the supported names.
     pub fn from_parts(
-        cmd_port: u16, auth: IpcAuthConfiguration, grpc_max_message_size: usize, vsock_addr: &str,
+        cmd_host: &str, cmd_port: u16, auth: IpcAuthConfiguration, grpc_max_message_size: usize, vsock_addr: &str,
     ) -> Result<Self, GenericError> {
+        let cmd_host = parse_cmd_host(cmd_host)?;
+
         #[cfg(target_os = "linux")]
         let vsock_cid = match vsock_addr {
             "" => None,
@@ -123,26 +129,13 @@ impl RemoteAgentClientConfiguration {
         }
 
         Ok(Self {
-            cmd_host: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            cmd_host,
             cmd_port,
             auth,
             grpc_max_message_size,
             #[cfg(target_os = "linux")]
             vsock_cid,
         })
-    }
-
-    /// Sets the Core Agent CMD API host, following the Datadog Agent's `cmd_host` setting.
-    ///
-    /// Like the Datadog Agent, the host must be `localhost` or a loopback IP address: an IPv4 address in
-    /// `127.0.0.0/8`, or `::1`. `localhost` connects to `127.0.0.1`, which is where the Datadog Agent listens for it.
-    ///
-    /// # Errors
-    ///
-    /// If `cmd_host` isn't `localhost` or a loopback IP address, an error is returned.
-    pub fn with_cmd_host(mut self, cmd_host: &str) -> Result<Self, GenericError> {
-        self.cmd_host = parse_cmd_host(cmd_host)?;
-        Ok(self)
     }
 
     /// Returns the Core Agent CMD API gRPC endpoint URI.
@@ -307,15 +300,15 @@ mod tests {
             ("::ffff:127.0.0.1", "https://127.0.0.1:5001/"),
         ];
         for (cmd_host, expected) in cases {
-            let config = remote_agent_config(5001)
-                .with_cmd_host(cmd_host)
+            let auth = IpcAuthConfiguration::new(PathBuf::new(), PathBuf::new());
+            let config = RemoteAgentClientConfiguration::from_parts(cmd_host, 5001, auth, 4 * 1024 * 1024, "")
                 .unwrap_or_else(|e| panic!("{cmd_host:?} should be a valid IPC host: {e}"));
             assert_eq!(config.endpoint().to_string(), expected, "for {cmd_host:?}");
         }
     }
 
     #[test]
-    fn with_cmd_host_rejects_non_loopback_hosts() {
+    fn from_parts_rejects_non_loopback_hosts() {
         // Like the Datadog Agent, only `localhost` and loopback IP addresses are accepted.
         for cmd_host in [
             "",
@@ -326,8 +319,9 @@ mod tests {
             "example.com",
             "127.0.0.1:5001",
         ] {
+            let auth = IpcAuthConfiguration::new(PathBuf::new(), PathBuf::new());
             assert!(
-                remote_agent_config(5001).with_cmd_host(cmd_host).is_err(),
+                RemoteAgentClientConfiguration::from_parts(cmd_host, 5001, auth, 4 * 1024 * 1024, "").is_err(),
                 "{cmd_host:?} should be rejected"
             );
         }
@@ -336,9 +330,10 @@ mod tests {
     #[test]
     fn from_parts_keeps_the_given_parts() {
         let auth = IpcAuthConfiguration::new("/secret/auth_token".into(), "/secret/ipc_cert.pem".into());
-        let config = RemoteAgentClientConfiguration::from_parts(5001, auth, 4 * 1024 * 1024, "")
-            .expect("an empty vsock address is valid");
+        let config = RemoteAgentClientConfiguration::from_parts("127.0.0.2", 5001, auth, 4 * 1024 * 1024, "")
+            .expect("a loopback host and an empty vsock address are valid");
 
+        assert_eq!(config.cmd_host, IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)));
         assert_eq!(config.cmd_port, 5001);
         assert_eq!(config.grpc_max_message_size, 4 * 1024 * 1024);
         assert_eq!(config.auth.auth_token_file_path(), Path::new("/secret/auth_token"));
@@ -355,7 +350,7 @@ mod tests {
             ("local", Some(3)),
         ] {
             let auth = IpcAuthConfiguration::new(PathBuf::new(), PathBuf::new());
-            let config = RemoteAgentClientConfiguration::from_parts(5001, auth, 4 * 1024 * 1024, value)
+            let config = RemoteAgentClientConfiguration::from_parts("localhost", 5001, auth, 4 * 1024 * 1024, value)
                 .expect("valid vsock address");
             assert_eq!(config.vsock_cid, expected_cid, "input: {value:?}");
         }
@@ -367,7 +362,7 @@ mod tests {
         for value in ["invalid", "2", "HOST", "host ", "vm0"] {
             let auth = IpcAuthConfiguration::new(PathBuf::new(), PathBuf::new());
             assert!(
-                RemoteAgentClientConfiguration::from_parts(5001, auth, 4 * 1024 * 1024, value).is_err(),
+                RemoteAgentClientConfiguration::from_parts("localhost", 5001, auth, 4 * 1024 * 1024, value).is_err(),
                 "expected error for input: {value:?}",
             );
         }
@@ -377,7 +372,7 @@ mod tests {
     #[test]
     fn from_parts_ignores_vsock_addresses_off_linux() {
         let auth = IpcAuthConfiguration::new(PathBuf::new(), PathBuf::new());
-        assert!(RemoteAgentClientConfiguration::from_parts(5001, auth, 4 * 1024 * 1024, "host").is_ok());
+        assert!(RemoteAgentClientConfiguration::from_parts("localhost", 5001, auth, 4 * 1024 * 1024, "host").is_ok());
     }
 
     #[cfg(target_os = "linux")]
