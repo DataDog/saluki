@@ -103,8 +103,8 @@ pub fn parse_dogstatsd_metric<'a>(
                 b'@' => {
                     let (_, raw_sample_rate) = all_consuming(preceded(tag("@"), double)).parse(chunk)?;
 
-                    // The Datadog Agent treats a sample rate of zero on a distribution, histogram or timer as
-                    // unsampled. Clamping it to the minimum sample rate instead would count each point hundreds of
+                    // The reference DogStatsD server treats a sample rate of zero on a distribution, histogram or timer
+                    // as unsampled. Clamping it to the minimum sample rate instead would count each point hundreds of
                     // millions of times.
                     maybe_sample_rate = if raw_sample_rate == 0.0
                         && matches!(
@@ -130,8 +130,9 @@ pub fn parse_dogstatsd_metric<'a>(
                 }
                 // Timestamp: client-provided timestamp for the metric, relative to the Unix epoch, in seconds.
                 //
-                // Like the Datadog Agent, a timestamp of zero is rejected: it isn't a usable point in time, and
-                // treating it as "timestamped" would drop the sample rate without actually setting a timestamp.
+                // Like the reference DogStatsD server, a timestamp of zero is rejected: it isn't a usable point in
+                // time, and treating it as "timestamped" would drop the sample rate without actually setting a
+                // timestamp.
                 b'T' if config.timestamps => {
                     let (_, timestamp) = all_consuming(preceded(tag("T"), unix_timestamp)).parse(chunk)?;
                     if timestamp == 0 {
@@ -753,8 +754,9 @@ mod tests {
 
     #[test]
     fn zero_sample_rate_on_distributions_and_histograms_is_unsampled() {
-        // The Datadog Agent treats a sample rate of zero on sketches and histograms as unsampled (a rate of 1),
-        // rather than clamping it to the minimum sample rate and counting each point hundreds of millions of times.
+        // The reference DogStatsD server treats a sample rate of zero on sketches and histograms as unsampled (a rate
+        // of 1), rather than clamping it to the minimum sample rate and counting each point hundreds of millions of
+        // times.
         let config = DogStatsDCodecConfiguration::default();
 
         let (_, packet) = parse_dogstatsd_metric(b"my.distribution:1|d|@0", &config).expect("should parse");
@@ -781,11 +783,11 @@ mod tests {
 
     #[test]
     fn zero_timestamp_is_rejected() {
-        // The Datadog Agent rejects a metric with a timestamp of zero.
+        // The reference DogStatsD server rejects a metric with a timestamp of zero.
         let config = DogStatsDCodecConfiguration::default();
         assert!(parse_dogstatsd_metric(b"my.counter:1|c|@0.5|T0", &config).is_err());
 
-        // When timestamps aren't read, the field is ignored entirely, as in the Datadog Agent.
+        // When timestamps aren't read, the field is ignored entirely, as in the reference DogStatsD server.
         let config = DogStatsDCodecConfiguration::default().with_timestamps(false);
         let (_, packet) = parse_dogstatsd_metric(b"my.counter:1|c|@0.5|T0", &config).expect("should parse");
         assert_eq!(packet.timestamp, None);

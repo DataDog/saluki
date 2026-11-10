@@ -198,12 +198,15 @@ impl PassthroughBatcher {
         }
     }
 
-    async fn push_metric(&mut self, metric: Metric, dispatcher: &EventsDispatcher) {
+    /// Pushes a timestamped metric into the active buffer.
+    ///
+    /// Returns `true` if the metric was buffered, or `false` if it was dropped.
+    async fn push_metric(&mut self, metric: Metric, dispatcher: &EventsDispatcher) -> bool {
         // Drop timestamped metrics whose type can't be forwarded without aggregation, matching the Datadog Agent.
         if !is_supported_passthrough_type(metric.values()) {
             self.telemetry.increment_unsupported_type_dropped();
             self.unsupported_type_warning.record(&metric);
-            return;
+            return false;
         }
 
         // Convert counters to rates before we batch them up.
@@ -227,7 +230,7 @@ impl PassthroughBatcher {
             if self.active_buffer.try_push(event).is_some() {
                 error!("Event buffer is full even after dispatching events. Dropping event.");
                 self.telemetry.increment_events_dropped();
-                return;
+                return false;
             }
         }
 
@@ -237,6 +240,7 @@ impl PassthroughBatcher {
         }
 
         self.telemetry.increment_passthrough_metrics();
+        true
     }
 
     fn update_last_processed_at(&mut self) {
@@ -315,12 +319,14 @@ impl Transform for DogStatsDNoAggSplit {
                             .buffered()
                             .expect("default output should always exist");
 
+                        let mut buffered_any = false;
                         for event in events {
                             if let Some(metric) = event.try_into_metric() {
                                 let (maybe_timestamped, maybe_remainder) = try_split_timestamped_values(metric);
 
                                 if let Some(timestamped_metric) = maybe_timestamped {
-                                    self.passthrough_batcher
+                                    buffered_any |= self
+                                        .passthrough_batcher
                                         .push_metric(timestamped_metric, context.dispatcher())
                                         .await;
                                 }
@@ -336,9 +342,12 @@ impl Transform for DogStatsDNoAggSplit {
                             }
                         }
 
-                        // We only get here when the buffer held at least one timestamped value, so the batcher has
-                        // taken at least one metric and its idle timer needs to be pushed forward.
-                        self.passthrough_batcher.update_last_processed_at();
+                        // Only push the batcher's idle timer forward if it actually buffered something. Timestamped
+                        // metrics it dropped (for an unsupported type) don't count as activity: otherwise, a steady
+                        // stream of them would keep already-buffered metrics from ever hitting the idle flush.
+                        if buffered_any {
+                            self.passthrough_batcher.update_last_processed_at();
+                        }
 
                         if let Err(e) = default_dispatcher.flush().await {
                             error!(error = %e, "Failed to dispatch events.");
@@ -530,6 +539,58 @@ mod tests {
 
         // Discarded metrics aren't aggregated either.
         assert!(outputs.default_output().collect_events().await.is_empty());
+    }
+
+    /// Regression test: discarded timestamped metrics used to push the idle flush timer forward like accepted ones, so
+    /// a steady stream of timestamped histograms could keep an already-buffered gauge from ever being flushed.
+    ///
+    /// This uses real time: the batcher tracks idleness with `std::time::Instant`, which paused Tokio time doesn't
+    /// affect. With the fix, the gauge is flushed by the first idle check (every two seconds) after it was buffered.
+    #[tokio::test]
+    async fn discarded_metrics_do_not_delay_the_idle_flush() {
+        let idle_flush_timeout = Duration::from_millis(200);
+        let (split, mut outputs) =
+            TestComponentDriver::transform(DogStatsDNoAggSplitConfiguration::new(idle_flush_timeout))
+                .await
+                .expect("split transform should build");
+
+        let gauge = Metric::gauge("app.queue_depth", (1_700_000_000, 5.0));
+        split.send_event(Event::Metric(gauge.clone())).await;
+
+        // Keep sending timestamped histograms, which are discarded, more often than the idle flush timeout, for well
+        // over the time it should take the gauge to be flushed. This stays under the five seconds that the test
+        // output waits for an item.
+        let stream_duration = Duration::from_millis(4500);
+        let started = tokio::time::Instant::now();
+        let send_discarded = async {
+            while started.elapsed() < stream_duration {
+                tokio::time::sleep(idle_flush_timeout / 4).await;
+                split
+                    .send_event(Event::Metric(Metric::histogram("app.latency", (1_700_000_000, 1.0))))
+                    .await;
+            }
+        };
+        let receive_gauge = async {
+            let flushed = outputs
+                .named_output(PASSTHROUGH_OUTPUT)
+                .next()
+                .await
+                .expect("the gauge should be flushed");
+            (flushed, started.elapsed())
+        };
+        let ((), (flushed, flushed_after)) = tokio::join!(send_discarded, receive_gauge);
+
+        let flushed = flushed
+            .into_iter()
+            .filter_map(Event::try_into_metric)
+            .collect::<Vec<_>>();
+        assert_eq!(flushed, [gauge]);
+        assert!(
+            flushed_after < stream_duration,
+            "the gauge should be flushed while discarded metrics are still arriving, but took {flushed_after:?}"
+        );
+
+        split.shutdown().await.expect("split transform should stop cleanly");
     }
 
     #[test]
