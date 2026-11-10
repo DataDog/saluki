@@ -440,7 +440,7 @@ mod tests {
     );
 
     #[test]
-    fn test_host_and_service_carry_over() {
+    fn host_and_service_carry_over() {
         let pair = |host: &str, service: &str| (host.to_string(), service.to_string());
         let cases: Vec<CarryOverCase> = vec![
             (
