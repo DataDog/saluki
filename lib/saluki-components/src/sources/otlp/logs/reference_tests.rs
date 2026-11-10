@@ -2,7 +2,7 @@
 //!
 //! The reference tests compare the JSON of the `datadogV2.HTTPLogItem` that the reference translator returns for one
 //! log record. Each case here compares the same JSON for the translated log, with the log's status as the item's
-//! `status` property. The reference tests build their translator with the OTel source `test`, so their tags end in
+//! `status` property, merged with the log's other fields as the logs encoder merges them. The reference tests build their translator with the OTel source `test`, so their tags end in
 //! `otel_source:test`. This translator always tags logs with `otel_source:datadog_agent`, so the expected tags here
 //! use that instead.
 //!
@@ -30,9 +30,9 @@ use crate::common::otlp::origin::OtlpOriginTagResolver;
 
 /// A translated log, as the reference tests compare it: the JSON of the `datadogV2.HTTPLogItem`.
 ///
-/// The JSON has the item's `message`, `hostname`, and `service`, overwritten by its additional properties, as
-/// `HTTPLogItem.MarshalJSON` writes them. The tags are a set: the reference tests compare them as a string, but their
-/// order doesn't matter to the intake.
+/// The JSON has the item's `message`, `status`, `hostname`, and `service`, overwritten by its additional properties,
+/// as the logs encoder writes them. The tags are a set: the reference tests compare them as a string, but the logs
+/// encoder removes duplicate tags, and their order doesn't matter to the intake.
 #[derive(Debug, PartialEq)]
 struct Item {
     ddtags: BTreeSet<String>,
@@ -105,8 +105,12 @@ fn translate(case: &Case) -> Item {
         panic!("{}: expected a log event", case.name);
     };
 
+    // The fields are merged in the logs encoder's order: the additional properties come last, and overwrite the
+    // fields before them, including the status.
     let mut json = Map::new();
     json.insert("message".to_string(), json!(log.message()));
+    // The reference translator always sets the `status` property, empty when it derives no status.
+    json.insert("status".to_string(), json!(log.status()));
     if !log.hostname().is_empty() {
         json.insert("hostname".to_string(), json!(log.hostname()));
     }
@@ -118,8 +122,6 @@ fn translate(case: &Case) -> Item {
             .iter()
             .map(|(key, value)| (key.to_string(), value.clone())),
     );
-    // The reference translator always sets the `status` property, empty when it derives no status.
-    json.insert("status".to_string(), json!(log.status()));
     Item {
         ddtags: log.tags().into_iter().map(|tag| tag.as_str().to_string()).collect(),
         json,
@@ -276,7 +278,7 @@ fn translator_cases() -> Vec<Case> {
         )
         .resource([("service.name", string("otlp_col"))]),
         case(
-            "append-tags",
+            "append tags",
             record()
                 .attr("app", string("test"))
                 .attr("ddtags", string("foo:bar"))
@@ -329,7 +331,7 @@ fn translator_cases() -> Vec<Case> {
             ),
         ),
         case(
-            "trace-from-attributes",
+            "trace from attributes",
             record()
                 .attr("app", string("test"))
                 .attr("spanid", string("2e26da881214cd7c"))
@@ -352,7 +354,7 @@ fn translator_cases() -> Vec<Case> {
             ),
         ),
         case(
-            "trace-from-attributes-underscore",
+            "trace from attributes (underscore)",
             record()
                 .attr("app", string("test"))
                 .attr("span_id", string("2e26da881214cd7c"))
@@ -375,7 +377,7 @@ fn translator_cases() -> Vec<Case> {
             ),
         ),
         case(
-            "trace-from-attributes-decode-error",
+            "trace from attributes decode error",
             record()
                 .attr("app", string("test"))
                 .attr("spanid", string("2e26da881214cd7c"))
@@ -396,7 +398,7 @@ fn translator_cases() -> Vec<Case> {
             ),
         ),
         case(
-            "trace-from-attributes-size-error",
+            "trace from attributes size error",
             record()
                 .attr("app", string("test"))
                 .attr("spanid", string("2023675201651514964"))
@@ -418,7 +420,7 @@ fn translator_cases() -> Vec<Case> {
             ),
         ),
         case(
-            "severity-text",
+            "SeverityText",
             traced().severity_text("alert").severity_number(5),
             item(
                 OTEL_SOURCE_TAG,
@@ -474,7 +476,7 @@ fn translator_cases() -> Vec<Case> {
             ),
         ),
         case(
-            "resource-attributes",
+            "resource attributes in additional properties",
             record().attr("app", string("test")).severity_number(5),
             item(
                 "service:otlp_col,otel_source:datadog_agent",
@@ -490,7 +492,7 @@ fn translator_cases() -> Vec<Case> {
         )
         .resource([("service.name", string("otlp_col")), ("key", string("val"))]),
         case(
-            "reserved-resource-attributes",
+            "DD hostname and service are not overridden by resource attributes",
             record().attr("app", string("test")).severity_number(5),
             item(
                 "service:otlp_col,otel_source:datadog_agent",
@@ -505,7 +507,7 @@ fn translator_cases() -> Vec<Case> {
         )
         .resource([("hostname", string("example_host")), ("service", string("otlp_col"))]),
         case(
-            "nestings",
+            "Nestings",
             record().attr(
                 "root",
                 map([
@@ -524,9 +526,9 @@ fn translator_cases() -> Vec<Case> {
                 }),
             ),
         ),
-        case("nil-map", record(), item(OTEL_SOURCE_TAG, json!({"status": ""}))),
+        case("Nil Map", record(), item(OTEL_SOURCE_TAG, json!({"status": ""}))),
         case(
-            "too-many-nestings",
+            "Too many nestings",
             record().attr(
                 "nest1",
                 map([(
@@ -571,7 +573,7 @@ fn translator_cases() -> Vec<Case> {
             ),
         ),
         case(
-            "timestamp",
+            "Timestamps are formatted properly",
             record().timestamp(1_700_499_303_397_000_000).severity_number(5),
             item(
                 OTEL_SOURCE_TAG,
@@ -584,7 +586,7 @@ fn translator_cases() -> Vec<Case> {
             ),
         ),
         case(
-            "scope-attributes",
+            "scope attributes",
             record().body("hello world").severity_number(5),
             item(
                 OTEL_SOURCE_TAG,
@@ -644,7 +646,7 @@ fn derive_status_cases() -> Vec<Case> {
 /// the log's timestamp.
 fn observed_timestamp_cases() -> Vec<Case> {
     vec![case(
-        "observed-timestamp",
+        "ObservedTimestamp used as fallback when Timestamp is zero",
         record()
             .observed_timestamp(1_700_499_303_397_000_000)
             .severity_number(5),
@@ -663,7 +665,7 @@ fn observed_timestamp_cases() -> Vec<Case> {
 /// The `TestTranslator` case of a log with an event name.
 fn event_name_cases() -> Vec<Case> {
     vec![case(
-        "event-name",
+        "EventName is mapped to otel.event_name",
         record().event_name("app.screen.click").severity_number(5),
         item(
             OTEL_SOURCE_TAG,
@@ -680,7 +682,7 @@ fn event_name_cases() -> Vec<Case> {
 fn scope_metadata_cases() -> Vec<Case> {
     vec![
         case(
-            "scope-name",
+            "scope name",
             record().body("hello world").severity_number(5),
             item(
                 OTEL_SOURCE_TAG,
@@ -694,7 +696,7 @@ fn scope_metadata_cases() -> Vec<Case> {
         )
         .scope("go.opentelemetry.io/contrib/bridges/otelslog", "", []),
         case(
-            "scope-version",
+            "scope version",
             record().body("hello world").severity_number(5),
             item(
                 OTEL_SOURCE_TAG,
@@ -709,7 +711,7 @@ fn scope_metadata_cases() -> Vec<Case> {
         )
         .scope("go.opentelemetry.io/contrib/bridges/otelslog", "v1.2.3", []),
         case(
-            "library-aliases",
+            "library name/version aliases remapped to scope",
             record()
                 .body("hello world")
                 .severity_number(5)
@@ -727,7 +729,7 @@ fn scope_metadata_cases() -> Vec<Case> {
             ),
         ),
         case(
-            "explicit-scope-name",
+            "explicit otel.scope.name attribute takes precedence over library alias and scope metadata",
             record()
                 .body("hello world")
                 .severity_number(5)
@@ -751,7 +753,7 @@ fn scope_metadata_cases() -> Vec<Case> {
 fn array_attributes_cases() -> Vec<Case> {
     vec![
         case(
-            "array-of-strings",
+            "array attribute with strings",
             record()
                 .body("test array attribute")
                 .severity_number(5)
@@ -767,7 +769,7 @@ fn array_attributes_cases() -> Vec<Case> {
             ),
         ),
         case(
-            "array-of-maps",
+            "array attribute with name-value maps",
             record().body("test array with maps").severity_number(5).attr(
                 "array_with_maps",
                 array([
@@ -789,7 +791,7 @@ fn array_attributes_cases() -> Vec<Case> {
             ),
         ),
         case(
-            "multiple-nesting",
+            "multiple nesting",
             record().body("test multiple nesting").severity_number(5).attr(
                 "multiple_nesting",
                 array([
@@ -847,7 +849,7 @@ fn array_attributes_cases() -> Vec<Case> {
             ),
         ),
         case(
-            "slice-of-slices-of-maps",
+            "slice of slices of maps",
             record().body("test slice of slices of maps").severity_number(5).attr(
                 "matrix",
                 array([0, 1, 2].map(|row| {
@@ -871,6 +873,25 @@ fn array_attributes_cases() -> Vec<Case> {
                 }),
             ),
         ),
+    ]
+}
+
+/// Cases of resource and scope attributes named `status`, which the reference translator replaces with the derived
+/// status. These aren't ported: `TestTranslator` has no such case.
+fn status_attribute_override_cases() -> Vec<Case> {
+    vec![
+        case(
+            "resource status attribute is replaced by the derived status",
+            record().severity_number(5),
+            item(OTEL_SOURCE_TAG, json!({"status": "debug", "otel.severity_number": "5"})),
+        )
+        .resource([("status", string("resource-status"))]),
+        case(
+            "scope status attribute is replaced by the derived status",
+            record().severity_number(5),
+            item(OTEL_SOURCE_TAG, json!({"status": "debug", "otel.severity_number": "5"})),
+        )
+        .scope("", "", [("status", string("scope-status"))]),
     ]
 }
 
@@ -903,4 +924,10 @@ fn target_scope_metadata() {
 #[ignore = "target for `gap/array-attributes`"]
 fn target_array_attributes() {
     check(array_attributes_cases());
+}
+
+#[test]
+#[ignore = "target for `gap/status-attribute-override`"]
+fn target_status_attribute_override() {
+    check(status_attribute_override_cases());
 }
