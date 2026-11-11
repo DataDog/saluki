@@ -1,30 +1,13 @@
 //! Sample sketch batches without changing authoritative delivery.
 
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 
 use rand::RngExt as _;
-use regex::Regex;
 use tokio::sync::mpsc::Sender;
 use uuid::Uuid;
 
 use super::*;
 use crate::common::datadog::sketch_shadow::{SketchShadowDestination, SketchShadowMetadata};
-
-static SITE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?:^|\.)([a-z]{2,}\d{1,2}\.)?(datad(?:oghq|0g)\.(?:com|eu)|ddog-gov\.com)$").unwrap()
-});
-
-pub(super) fn site_allowed(endpoint: &Url, sites: &[String]) -> bool {
-    let Some(host) = endpoint.host_str() else {
-        return false;
-    };
-    let host = host.trim_end_matches('.').to_ascii_lowercase();
-    let Some(captures) = SITE.captures(&host) else {
-        return false;
-    };
-    let start = captures.get(1).or_else(|| captures.get(2)).unwrap().start();
-    sites.iter().any(|site| site == &host[start..])
-}
 
 #[derive(Default)]
 pub(super) struct SketchShadowConfig {
@@ -227,7 +210,9 @@ mod tests {
     };
 
     use super::*;
-    use crate::common::datadog::{test_util::datadog_metrics_configuration, METRICS_SKETCHES_PATH};
+    use crate::common::datadog::{
+        sketch_shadow::site_allowed, test_util::datadog_metrics_configuration, METRICS_SKETCHES_PATH,
+    };
 
     fn configuration() -> DatadogMetricsConfiguration {
         let mut config = datadog_metrics_configuration();

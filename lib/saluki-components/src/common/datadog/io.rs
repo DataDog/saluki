@@ -650,17 +650,10 @@ async fn run_io_loop<B>(
         .iter()
         .any(|endpoint| endpoint.route() == EndpointRoute::MetricsPrimary);
     let shared_txnq_telemetry = SharedTransactionQueueTelemetry::from_builder(&metrics_builder);
-    let shadow_setup = config.sketch_shadowing_enabled().then(|| {
-        let mut shadow_config = config.clone();
-        // Validation must not consume authoritative disk capacity or delay shutdown for in-flight shadows.
-        shadow_config.retry.storage_max_size_bytes = 0;
-        shadow_config.stop_wait_for_inflight = false;
-        let shadow_metrics = metrics_builder.clone().add_default_tag("traffic:sketch_shadow");
-        let shadow_queue_telemetry = SharedTransactionQueueTelemetry::from_builder(&shadow_metrics);
-        (shadow_config, shadow_metrics, shadow_queue_telemetry)
-    });
+    let mut shadow_setup = None;
 
     for routable_endpoint in resolved_endpoints {
+        let shadow_enabled = config.endpoint_supports_sketch_shadow(&routable_endpoint, has_metrics_primary);
         let (route, resolved_endpoint, target) = routable_endpoint.into_parts();
         let endpoint_url = resolved_endpoint.endpoint().to_string();
         let endpoint_domain = resolved_endpoint.endpoint().origin().ascii_serialization();
@@ -703,7 +696,16 @@ async fn run_io_loop<B>(
         };
 
         let tx = spawn_endpoint_worker(&config, &metrics_builder, &shared_txnq_telemetry, task_name.clone());
-        let shadow_tx = if let Some((shadow_config, shadow_metrics, shadow_queue_telemetry)) = &shadow_setup {
+        let shadow_tx = if shadow_enabled {
+            let (shadow_config, shadow_metrics, shadow_queue_telemetry) = shadow_setup.get_or_insert_with(|| {
+                let mut shadow_config = config.clone();
+                // Validation must not consume authoritative disk capacity or delay shutdown for in-flight shadows.
+                shadow_config.retry.storage_max_size_bytes = 0;
+                shadow_config.stop_wait_for_inflight = false;
+                let shadow_metrics = metrics_builder.clone().add_default_tag("traffic:sketch_shadow");
+                let shadow_queue_telemetry = SharedTransactionQueueTelemetry::from_builder(&shadow_metrics);
+                (shadow_config, shadow_metrics, shadow_queue_telemetry)
+            });
             Some(spawn_endpoint_worker(
                 shadow_config,
                 shadow_metrics,
@@ -3171,12 +3173,14 @@ mod tests {
 
     #[tokio::test]
     async fn sketch_shadow_backoff_does_not_delay_authoritative_requests() {
+        const ENDPOINT: &str = "http://app.datadoghq.com";
         for status in [StatusCode::SERVICE_UNAVAILABLE, StatusCode::TOO_MANY_REQUESTS] {
             let recorder = TestRecorder::default();
             let _guard = metrics::set_default_local_recorder(&recorder);
             let (server_url, _, mut requests) =
                 start_recording_http_server_with_requests(vec![status, StatusCode::OK]).await;
-            let (_, forwarder) = build_test_forwarder_configured(&server_url, Default::default(), |config| {
+            let (_, forwarder) = build_test_forwarder_configured(ENDPOINT, Default::default(), |config| {
+                config.proxy.http = server_url;
                 config.v3_api.sketches.shadow_sample_rate = 1.0;
                 config.retry.backoff_base = 60.0;
                 config.retry.backoff_max = 60.0;
@@ -3185,14 +3189,18 @@ mod tests {
             let supervisor = TestSupervisor::start("test_forwarder").await;
             let handle = spawn_test_forwarder(&supervisor, forwarder).await;
             handle
-                .send_transaction(build_test_shadow_transaction(&server_url))
+                .send_transaction(build_test_shadow_transaction(ENDPOINT))
                 .await
                 .unwrap();
 
             // Wait until the failed shadow is queued for retry, so its circuit breaker is already open.
             timeout(Duration::from_secs(3), async {
                 let shadow = requests.recv().await.unwrap();
-                assert!(shadow.starts_with("POST /api/intake/metrics/v3beta/sketches "));
+                assert!(shadow
+                    .lines()
+                    .next()
+                    .unwrap()
+                    .contains("/api/intake/metrics/v3beta/sketches "));
                 while recorder.gauge((
                     "network_http_retry_queue_size",
                     &[
@@ -3219,7 +3227,7 @@ mod tests {
                 .await
                 .expect("authoritative delivery must not wait for shadow backoff")
                 .unwrap();
-            assert!(baseline.starts_with("POST /api/beta/sketches "));
+            assert!(baseline.lines().next().unwrap().contains("/api/beta/sketches "));
             drain_test_forwarder(supervisor, handle).await;
         }
     }

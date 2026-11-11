@@ -51,7 +51,7 @@ use crate::{
         protocol::{MetricsPayloadInfo, UseV3ApiConfig, UseV3ApiSeriesConfig, V3ApiConfig, V3SeriesMode},
         request_builder::{RequestBuilder, RequestBuilderError},
         routing::{MetricsRoutingTargets, RoutingTargetCatalog, RoutingTargetKind, RoutingTargetSet},
-        sketch_shadow::{SketchShadowDestination, SketchShadowMetadata},
+        sketch_shadow::{sketch_shadow_eligible, SketchShadowDestination, SketchShadowMetadata},
         telemetry::ComponentTelemetry,
         DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT, DEFAULT_SERIALIZER_UNCOMPRESSED_SIZE_LIMIT, METRICS_SERIES_V3_PATH,
         METRICS_SKETCHES_V3_PATH,
@@ -392,10 +392,7 @@ impl DatadogMetricsConfiguration {
             .routing
             .as_ref()
             .is_none_or(|routing| routing.targets.targets().contains(routing.catalog.primary()));
-        if include_primary
-            && !self.primary_stream_v3_settings()?.use_v3_sketches
-            && shadow::site_allowed(primary.endpoint(), &settings.shadow_sites)
-        {
+        if include_primary && sketch_shadow_eligible(&primary, settings) {
             eligible_destinations.push(Arc::<str>::from(primary.configured_endpoint()));
         }
         for endpoint in resolve_additional_endpoints(&self.additional_endpoints)? {
@@ -408,8 +405,7 @@ impl DatadogMetricsConfiguration {
                 })
             });
             if included
-                && !self.endpoint_v3_settings(configured, None).use_v3_sketches
-                && shadow::site_allowed(endpoint.endpoint(), &settings.shadow_sites)
+                && sketch_shadow_eligible(&endpoint, settings)
                 && !eligible_destinations
                     .iter()
                     .any(|destination| destination.as_ref() == configured)

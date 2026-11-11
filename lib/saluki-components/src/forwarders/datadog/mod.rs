@@ -19,7 +19,7 @@ use tracing::debug;
 use crate::common::datadog::{
     api_key::{ApiKeyView, LiveApiKeys},
     config::ForwarderConfiguration,
-    endpoints::SingleDestination,
+    endpoints::{EndpointRoute, SingleDestination},
     io::{LiveForwarderConfiguration, TransactionForwarder, ENDPOINT_CHANNEL_CAPACITY},
     protocol::MetricsPayloadInfo,
     routing::{MetricsRoutingTargets, RoutingTargetCatalog},
@@ -164,12 +164,21 @@ impl MemoryBounds for DatadogForwarderConfiguration {
                 ),
             ));
 
-        if self.forwarder_config.sketch_shadowing_enabled() {
-            // Use the worker's resolved endpoint set, including additional API keys and alternate metrics intakes.
-            // Invalid endpoints prevent the forwarder from building, so they allocate no shadow buffers.
-            let Ok(endpoints) = self.forwarder_config.build_routable_endpoints() else {
-                return;
-            };
+        // Count the same eligible workers used for dispatch, including separate additional API keys.
+        let Ok(endpoints) = self.forwarder_config.build_routable_endpoints() else {
+            return;
+        };
+        let has_metrics_primary = endpoints
+            .iter()
+            .any(|endpoint| endpoint.route() == EndpointRoute::MetricsPrimary);
+        let shadow_endpoint_count = endpoints
+            .iter()
+            .filter(|endpoint| {
+                self.forwarder_config
+                    .endpoint_supports_sketch_shadow(endpoint, has_metrics_primary)
+            })
+            .count();
+        if shadow_endpoint_count != 0 {
             let request_slots = self
                 .forwarder_config
                 .endpoint_buffer_size
@@ -179,7 +188,7 @@ impl MemoryBounds for DatadogForwarderConfiguration {
                 .saturating_add(request_slots.saturating_mul(DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT));
             builder.firm().with_fixed_amount(
                 "sketch shadow queues and in-flight payloads",
-                endpoints.len().saturating_mul(per_endpoint_bytes),
+                shadow_endpoint_count.saturating_mul(per_endpoint_bytes),
             );
         }
     }
