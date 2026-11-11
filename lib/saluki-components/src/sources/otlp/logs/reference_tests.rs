@@ -33,8 +33,8 @@ use saluki_core::data_model::event::log::Log;
 use saluki_env::workload::providers::NoopWorkloadProvider;
 use serde_json::{json, Map, Value};
 
+use super::render::ContentRenderer;
 use super::translator::ResourceLogsIter;
-use crate::common::otlp::logs::ContentRenderer;
 use crate::common::otlp::origin::OtlpOriginTagResolver;
 
 /// A translated log, as the reference tests compare it: the JSON of the `datadogV2.HTTPLogItem`.
