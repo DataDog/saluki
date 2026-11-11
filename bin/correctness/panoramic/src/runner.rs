@@ -21,7 +21,7 @@ use tokio::sync::{mpsc, Semaphore};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
-use crate::deadline::{Budget, Deadline};
+use crate::core::deadline::{Budget, Deadline};
 use crate::ledger::RECLAIM_TIME;
 use crate::probe::probe;
 use crate::record::{ActiveStep, CaseRecord, StepStatus, Verdict};
