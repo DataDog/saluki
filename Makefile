@@ -642,6 +642,18 @@ build-panoramic: ## Builds the panoramic binary (ADP integration test runner)
 	@echo "[*] Building panoramic..."
 	@cargo build --profile release --package panoramic
 
+# The courier runs inside images panoramic does not control, so it links statically against musl. rust-lld ships with
+# the toolchain and needs no musl C toolchain on the host.
+COURIER_TARGET ?= $(shell uname -m | sed s/arm64/aarch64/)-unknown-linux-musl
+
+.PHONY: build-courier
+build-courier: check-rust-build-tools
+build-courier: ## Builds the static courier binary that panoramic runs inside containers
+	@echo "[*] Building courier for $(COURIER_TARGET)..."
+	@rustup target add $(COURIER_TARGET)
+	@cargo build --profile release --package panoramic-courier --bin courier --target $(COURIER_TARGET) \
+		--config 'target.$(COURIER_TARGET).linker="rust-lld"' --config 'profile.release.strip="symbols"'
+
 .PHONY: test-integration
 test-integration: build-panoramic build-datadog-agent-image build-correctness-tools-image
 test-integration: ## Runs all ADP integration tests
