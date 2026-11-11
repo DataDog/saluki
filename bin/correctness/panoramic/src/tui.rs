@@ -16,10 +16,11 @@ use crossterm::{
     terminal, ExecutableCommand as _, QueueableCommand as _,
 };
 
+use crate::core::result::TestResult;
 use crate::events::TestEvent;
 use crate::machine_output::RunReport;
 use crate::record::StepStatus;
-use crate::reporter::{run_counts, run_status_label, run_unfinished_lines, TestResult, RUN_PASSED_LABEL};
+use crate::reporter::{run_counts, run_status_label, run_unfinished_lines, RUN_PASSED_LABEL};
 
 /// Terminal UI state and rendering.
 pub struct Tui {

@@ -13,8 +13,8 @@ use crate::{
         target_image_for_runtime, AssertionStep, IntegrationConfig, DEFAULT_INTAKE_IMAGE, INTAKE_IMAGE_NAME,
         MAC_RUNTIME, TARGET_IMAGE_NAME,
     },
+    core::result::TestResult,
     image_override::ImageOverrides,
-    reporter::TestResult,
     test::{Test, TestContext, TestSuite},
 };
 

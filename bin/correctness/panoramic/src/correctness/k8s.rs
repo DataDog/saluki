@@ -22,6 +22,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::{
+    core::result::{TestResult, UNKNOWN_PHASE},
     core::tasks::CaseTasks,
     correctness::{
         analysis::{AnalysisMode, AnalysisRunner, TracesAnalysisOptions},
@@ -31,7 +32,6 @@ use crate::{
     },
     intake::{CollectedData, IntakeClient},
     ledger::{random_id, ResourceLedger},
-    reporter::{TestResult, UNKNOWN_PHASE},
     test::TestContext,
     traffic::{self, Side},
 };

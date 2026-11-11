@@ -2,4 +2,5 @@
 
 pub(crate) mod deadline;
 pub(crate) mod probe;
+pub(crate) mod result;
 pub(crate) mod tasks;

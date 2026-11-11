@@ -20,10 +20,10 @@ use crate::correctness::{
 };
 use crate::{
     assertions::{AssertionResult, AssertionStatus},
+    core::result::{ErrorKind, PhaseTiming, TestResult},
     core::tasks::CaseTasks,
     intake::{CollectedData, IntakeClient},
     ledger::ResourceLedger,
-    reporter::{ErrorKind, PhaseTiming, TestResult},
     test::TestContext,
     traffic::{self, Side},
 };

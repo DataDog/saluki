@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use tokio::sync::mpsc;
 
-use crate::reporter::TestResult;
+use crate::core::result::TestResult;
 
 /// Events emitted during test execution.
 #[derive(Clone, Debug)]
