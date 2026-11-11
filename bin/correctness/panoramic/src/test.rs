@@ -10,10 +10,10 @@ use tokio_util::sync::CancellationToken;
 
 use crate::assertions::LogBuffer;
 use crate::core::deadline::Deadline;
+use crate::core::tasks::CaseTasks;
 use crate::ledger::ResourceLedger;
 use crate::record::CaseRecord;
 use crate::reporter::{PhaseTracker, TestResult};
-use crate::tasks::CaseTasks;
 
 /// Signal used to notify kind-runtime tests when the cluster is ready.
 ///

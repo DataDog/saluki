@@ -23,9 +23,9 @@ use tracing::{debug, error, info, warn};
 
 use crate::core::deadline::{Budget, Deadline};
 use crate::core::probe::probe;
+use crate::core::tasks::TASK_STOP_TIME;
 use crate::ledger::RECLAIM_TIME;
 use crate::record::{ActiveStep, CaseRecord, StepStatus, Verdict};
-use crate::tasks::TASK_STOP_TIME;
 use crate::test::{RunnerSettings, Test, TestContext};
 use crate::{
     assertions::{AssertionContext, LogBuffer, TargetCommand},

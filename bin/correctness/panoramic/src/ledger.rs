@@ -340,8 +340,8 @@ mod tests {
     use tokio::task::JoinHandle;
 
     use super::*;
+    use crate::core::tasks::{CaseTasks, TASK_STOP_TIME};
     use crate::intake::test_server::install_crypto_provider;
-    use crate::tasks::{CaseTasks, TASK_STOP_TIME};
 
     /// Bounds every reclaim in these tests.
     const BOUND: Duration = Duration::from_secs(10);
