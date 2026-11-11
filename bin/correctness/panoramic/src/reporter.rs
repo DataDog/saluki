@@ -4,9 +4,9 @@ use std::time::Duration;
 use colored::Colorize as _;
 
 use crate::assertions::AssertionResult;
+use crate::core::record::{StepResult, StepStatus};
 use crate::core::result::{PhaseTiming, TestResult};
 use crate::machine_output::{InterruptReason, RunReport, RunState, RUN_REPORT_FILE_NAME};
-use crate::record::{StepResult, StepStatus};
 
 impl TestResult {
     /// Creates a result from sequential assertions, assigning step indices in order.
@@ -304,9 +304,9 @@ mod tests {
     use super::*;
     use crate::assertions::AssertionStatus;
     use crate::collector::RunCollector;
+    use crate::core::record::ActiveStep;
     use crate::core::result::{ErrorKind, Issue, IssueKind, StopCause, StoppedBy, TimeoutAttribution};
     use crate::events::TestEvent;
-    use crate::record::ActiveStep;
 
     const LABELS: [&str; 5] = ["PASS", "FAIL", "ERROR", "TIMEOUT", "INTERRUPTED"];
 

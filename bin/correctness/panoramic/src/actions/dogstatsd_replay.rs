@@ -261,7 +261,7 @@ mod tests {
         use crate::assertions::test_support::{host_context, procedure};
         use crate::assertions::{run_assertion_steps, TargetCommand};
         use crate::core::deadline::{Budget, Deadline};
-        use crate::record::{CaseRecord, StepStatus};
+        use crate::core::record::{CaseRecord, StepStatus};
 
         let marker_dir = tempfile::tempdir().expect("temp dir should be creatable");
         let marker = marker_dir.path().join("sender-ran");

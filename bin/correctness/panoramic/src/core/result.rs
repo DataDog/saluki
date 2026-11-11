@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
-use crate::record::{step_label, ActiveStep, StepResult, StepStatus};
+use crate::core::record::{step_label, ActiveStep, StepResult, StepStatus};
 
 /// Phase name reported when the harness cannot tell which phase a test was in.
 pub const UNKNOWN_PHASE: &str = "unknown";

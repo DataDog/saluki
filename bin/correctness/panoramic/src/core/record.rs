@@ -4,9 +4,10 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use serde::Serialize;
+use tokio::time::Instant;
 
-use crate::assertions::RunningStep;
-use crate::core::result::{PhaseTiming, TestResult};
+use crate::core::deadline::{Budget, Deadline};
+use crate::core::result::{DurationMs, PhaseTiming, TestResult};
 
 /// Shared step states and verdict, retained by the runner when it drops the test future.
 ///
@@ -168,5 +169,77 @@ pub(crate) fn step_label(step: usize, member: Option<usize>) -> String {
     match member {
         Some(member) => format!("{}.{}", step + 1, member + 1),
         None => (step + 1).to_string(),
+    }
+}
+
+/// Identity and timing of a running step, retained in the case record until it finishes.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RunningStep {
+    pub(crate) step: usize,
+    pub(crate) member: Option<usize>,
+    pub(crate) name: &'static str,
+    pub(crate) started: Instant,
+    /// The step's own budget.
+    pub(crate) budget: Duration,
+    /// The case deadline narrowed to `budget`.
+    pub(crate) deadline: Deadline,
+}
+
+impl RunningStep {
+    /// Captures the step's identity and timing for interruption reports.
+    pub(crate) fn active(&self) -> ActiveStep {
+        ActiveStep {
+            step: self.step,
+            member: self.member,
+            kind: self.name.to_string(),
+            elapsed_ms: DurationMs(self.started.elapsed()).as_millis(),
+            budget_ms: DurationMs(self.budget).as_millis(),
+        }
+    }
+
+    /// Returns an `interrupted` result, appending the step's own message if available.
+    ///
+    /// Reports elapsed time and any budget reduction imposed by the case deadline. The test result carries the
+    /// interruption cause.
+    pub(crate) fn interrupted(&self, step_message: Option<String>) -> StepResult {
+        let elapsed = self.started.elapsed();
+        let mut message = format!("Interrupted after {elapsed:.1?}.");
+        if self.deadline.budget == Budget::Case {
+            let left = self.deadline.at.saturating_duration_since(self.started);
+            message.push_str(&format!(
+                " The case left this step {left:.1?} of its {:?} step budget.",
+                self.budget
+            ));
+        }
+        if let Some(step_message) = step_message {
+            message.push('\n');
+            message.push_str(&step_message);
+        }
+        self.result(StepStatus::Interrupted, message, elapsed)
+    }
+
+    /// Returns an `errored` result for a step that exceeded its budget and the slack the step driver allows.
+    pub(crate) fn overran(&self) -> StepResult {
+        let elapsed = self.started.elapsed();
+        self.result(
+            StepStatus::Errored,
+            format!(
+                "Did not finish within its {:?} step budget; stopped after {elapsed:.1?}.",
+                self.budget
+            ),
+            elapsed,
+        )
+    }
+
+    /// Returns a result for this step with the given status, message and duration.
+    pub(crate) fn result(&self, status: StepStatus, message: String, duration: Duration) -> StepResult {
+        StepResult {
+            step: self.step,
+            member: self.member,
+            name: self.name.to_string(),
+            status,
+            message,
+            duration,
+        }
     }
 }

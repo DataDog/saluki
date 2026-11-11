@@ -8,10 +8,10 @@ use chrono::Local;
 use serde::Serialize;
 use tracing::warn;
 
+use crate::core::record::StepStatus;
 use crate::core::result::{
     DurationMs, Issue, PhaseTiming, ReclaimEntry, StopCause, TestError, TestOutcome, TestResult, TimeoutAttribution,
 };
-use crate::record::StepStatus;
 
 /// Reported when the build could not read a repository to get a revision from.
 const UNKNOWN_REVISION: &str = "unknown";
