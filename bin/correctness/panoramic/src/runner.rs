@@ -23,9 +23,9 @@ use tracing::{debug, error, info, warn};
 
 use crate::core::deadline::{Budget, Deadline};
 use crate::core::probe::probe;
+use crate::core::record::{ActiveStep, CaseRecord, StepStatus, Verdict};
 use crate::core::tasks::TASK_STOP_TIME;
 use crate::ledger::RECLAIM_TIME;
-use crate::record::{ActiveStep, CaseRecord, StepStatus, Verdict};
 use crate::test::{RunnerSettings, Test, TestContext};
 use crate::{
     assertions::{AssertionContext, LogBuffer, TargetCommand},
@@ -1445,8 +1445,8 @@ pub(crate) mod test_support {
 mod tests {
     use super::test_support::{test_runner_settings, Behavior, ScriptedTest, TaskProbe};
     use super::*;
+    use crate::core::record::StepStatus;
     use crate::core::result::{ReclaimResult, TestOutcome, TimeoutDeadline};
-    use crate::record::StepStatus;
     use crate::reporter::test_support::{each_outcome, NOT_RUN_KIND};
 
     /// A bound for real-time tests.

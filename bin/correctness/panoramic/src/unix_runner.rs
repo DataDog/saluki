@@ -46,10 +46,10 @@ use crate::{
     assertions::{AssertionContext, LogBuffer, TargetCommand},
     config::parse_port_spec,
     core::probe::{probe, ProbeError},
+    core::record::Verdict,
     core::result::{ErrorKind, PhaseTiming, TestResult},
     integration::IntegrationTestCase,
     ledger::random_id,
-    record::Verdict,
     test::{Test, TestContext},
 };
 

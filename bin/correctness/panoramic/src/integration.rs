@@ -212,7 +212,7 @@ procedure:
         use crate::assertions::test_support::{host_context, procedure};
         use crate::assertions::{run_assertion_steps, LogBuffer};
         use crate::core::deadline::{Budget, Deadline};
-        use crate::record::{CaseRecord, StepStatus};
+        use crate::core::record::{CaseRecord, StepStatus};
 
         let mut case = procedure(
             r#"
