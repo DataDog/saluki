@@ -1,0 +1,14 @@
+timeout: 1m
+subject_os: [linux]
+participants:
+  server:
+    subject: true
+    image: alpine:3.20
+    command: [nc, -lkU, "{{ self.endpoints.sock.path }}"]
+    endpoints:
+      sock: {unix_stream: "{{ self.dir }}/a-socket-name-that-goes-on-and-on-and-on-well-past-what-a-unix-socket-address-holds.sock"}
+  client:
+    image: alpine:3.20
+    command: [nc, -U, "{{ self.connections.server.path }}"]
+    connect: {server: server.sock}
+procedure: []
