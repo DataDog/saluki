@@ -1096,7 +1096,6 @@ async fn add_otlp_pipeline_to_blueprint(
             // We send OTLP metrics directly to the enrichment stage of the metrics pipeline, skipping aggregation,
             // to avoid transforming counters into rates.
             .connect_components("otlp_in.metrics", "metrics_enrich")?
-            // The source renders OTLP logs into their content, since the logs encoder only writes the envelope.
             .connect_components("otlp_in.logs", "dd_logs_encode")?
             .connect_components("otlp_in.traces", "traces_enrich")?;
     }
