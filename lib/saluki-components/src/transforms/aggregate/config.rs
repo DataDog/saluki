@@ -73,6 +73,29 @@ impl HistogramStatistic {
     }
 }
 
+/// Why a configured histogram percentile was skipped.
+enum InvalidPercentile {
+    /// The entry isn't a number.
+    Unparseable(std::num::ParseFloatError),
+
+    /// The entry is a number, but not between `0.0` and `1.0`.
+    OutOfRange,
+}
+
+/// Parses a configured percentile in quantile form, such as `0.95`, into a whole percentile, such as `95`.
+fn parse_percentile(faux_percentile: &str) -> Result<u32, InvalidPercentile> {
+    let quantile = faux_percentile.parse::<f64>().map_err(InvalidPercentile::Unparseable)?;
+    if !(0.0..=1.0).contains(&quantile) {
+        return Err(InvalidPercentile::OutOfRange);
+    }
+    Ok((quantile * 100.0 + 0.5) as u32)
+}
+
+/// Returns the metric name suffix for a whole percentile, such as `95percentile`.
+fn percentile_suffix(percentile: u32) -> MetaString {
+    format!("{}percentile", percentile).into()
+}
+
 /// Statistics to calculate over histograms, and how to copy them to distributions.
 #[derive(Clone)]
 #[cfg_attr(test, derive(Debug, PartialEq))]
@@ -120,28 +143,20 @@ impl HistogramConfiguration {
         }
 
         for faux_percentile in percentiles {
-            let quantile = match faux_percentile.parse::<f64>() {
-                Ok(quantile) => quantile,
-                Err(e) => {
-                    error!(
-                        "Could not parse '{}' from 'histogram_percentiles' (skipping): {}",
-                        faux_percentile, e
-                    );
-                    continue;
-                }
-            };
-            if !(0.0..=1.0).contains(&quantile) {
-                error!(
+            match parse_percentile(faux_percentile) {
+                Ok(percentile) => statistics.push(HistogramStatistic::Percentile {
+                    q: f64::from(percentile) / 100.0,
+                    suffix: percentile_suffix(percentile),
+                }),
+                Err(InvalidPercentile::Unparseable(e)) => error!(
+                    "Could not parse '{}' from 'histogram_percentiles' (skipping): {}",
+                    faux_percentile, e
+                ),
+                Err(InvalidPercentile::OutOfRange) => error!(
                     "'histogram_percentiles' must be between 0 and 1: skipping '{}'.",
                     faux_percentile
-                );
-                continue;
+                ),
             }
-
-            let percentile = (quantile * 100.0 + 0.5) as u32;
-            let quantile = f64::from(percentile) / 100.0;
-            let suffix = format!("{}percentile", percentile).into();
-            statistics.push(HistogramStatistic::Percentile { q: quantile, suffix });
         }
 
         Self {
@@ -149,6 +164,18 @@ impl HistogramConfiguration {
             copy_to_distribution,
             copy_to_distribution_prefix,
         }
+    }
+
+    /// Returns the metric name suffixes, such as `95percentile`, that the valid entries in `percentiles` produce.
+    ///
+    /// Entries are parsed exactly as [`HistogramConfiguration::new`] parses them, so the suffixes always match the
+    /// percentile series it emits. Invalid entries are skipped without logging: `new` already logs each one.
+    pub fn percentile_suffixes(percentiles: &[String]) -> Vec<MetaString> {
+        percentiles
+            .iter()
+            .filter_map(|faux_percentile| parse_percentile(faux_percentile).ok())
+            .map(percentile_suffix)
+            .collect()
     }
 
     /// Creates a configuration from already-parsed statistics, for tests that exercise histogram aggregation rather
@@ -253,5 +280,29 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn percentile_suffixes_match_the_emitted_percentile_statistics() {
+        // The post-aggregate filter relies on these suffixes matching the percentile series the aggregate transform
+        // emits, including for skipped and rounded entries.
+        let percentiles = ["0.5", "0.299", "abc", "1.5", "-0.1", "0.0", "1.0"].map(String::from);
+        let config = HistogramConfiguration::new(&[], &percentiles, false, String::new());
+
+        let emitted = config
+            .statistics()
+            .iter()
+            .map(|statistic| statistic.suffix().to_string())
+            .collect::<Vec<_>>();
+        let suffixes = HistogramConfiguration::percentile_suffixes(&percentiles)
+            .iter()
+            .map(|suffix| suffix.to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            suffixes,
+            ["50percentile", "30percentile", "0percentile", "100percentile"]
+        );
+        assert_eq!(suffixes, emitted);
     }
 }

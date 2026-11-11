@@ -3,6 +3,7 @@
 //! Drops post-aggregation scalar metrics whose generated histogram aggregate names match the metric filterlist.
 use async_trait::async_trait;
 use saluki_common::sync::live::Live;
+use saluki_components::transforms::HistogramConfiguration;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     components::{
@@ -97,24 +98,14 @@ impl HistogramSuffixes {
     /// skipped rather than failing the configuration:
     /// <https://github.com/DataDog/datadog-agent/blob/e02f16838240688a60db91d6b99cd8fbecbd9750/pkg/metrics/histogram.go#L60-L78>
     ///
-    /// Skipped percentiles aren't logged here: the aggregate transform's histogram configuration logs each one.
+    /// Percentiles are parsed by the aggregate transform's histogram configuration, so these suffixes always match the
+    /// percentile series it emits. Skipped percentiles aren't logged here: that configuration logs each one.
     fn new(aggregates: &[String], percentiles: &[String]) -> Self {
         let mut values = aggregates
             .iter()
             .map(|aggregate| MetaString::from(aggregate.as_str()))
             .collect::<Vec<_>>();
-
-        for percentile in percentiles {
-            let Ok(quantile) = percentile.parse::<f64>() else {
-                continue;
-            };
-            if !(0.0..=1.0).contains(&quantile) {
-                continue;
-            }
-
-            let suffix = format!("{}percentile", (quantile * 100.0 + 0.5) as u32);
-            values.push(suffix.into());
-        }
+        values.extend(HistogramConfiguration::percentile_suffixes(percentiles));
 
         Self { values }
     }

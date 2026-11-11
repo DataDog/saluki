@@ -242,6 +242,13 @@ struct MetricMapper {
 
 impl MetricMapper {
     fn try_map(&mut self, context: &Context) -> Option<Context> {
+        // With no profiles, nothing can match. Skip the cache lookup, and the negative cache entry a miss would add, for
+        // every metric. This covers both the common case of no configured profiles and a mapper disabled by an invalid
+        // profile.
+        if self.profiles.is_empty() {
+            return None;
+        }
+
         // TODO: We should really be able to immutably borrow both the incoming tag set and the cached extra tags and
         // chain them together for our call into `resolve_with_origin_tags`, avoiding any allocations... but we need
         // some supporting work on the `TagSet` side to make it possible.
