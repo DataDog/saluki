@@ -65,7 +65,7 @@ fn statsd_forward_invalid_target_still_builds_forwarder_handle() {
         statsd_forward_port: 9125,
         ..DogStatsDConfiguration::for_test()
     };
-    assert!(config.packet_forwarder_target().is_some());
+    assert!(config.statsd_forward_target().is_some());
 }
 
 #[test]
