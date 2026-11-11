@@ -45,9 +45,9 @@ use tracing::{debug, error, info};
 use crate::{
     assertions::{AssertionContext, LogBuffer, TargetCommand},
     config::parse_port_spec,
+    core::probe::{probe, ProbeError},
     integration::IntegrationTestCase,
     ledger::random_id,
-    probe::{probe, ProbeError},
     record::Verdict,
     reporter::{ErrorKind, PhaseTiming, TestResult},
     test::{Test, TestContext},
