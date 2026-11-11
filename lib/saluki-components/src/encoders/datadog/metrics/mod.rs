@@ -718,11 +718,7 @@ async fn run_request_builder(
     loop {
         select! {
             Some(event_buffer) = events_rx.recv() => {
-                for event in event_buffer {
-                    let metric = match event.try_into_metric() {
-                        Some(metric) => metric,
-                        None => continue,
-                    };
+                for metric in event_buffer.into_events::<Metric>() {
 
                     if log_payloads {
                         log_metric_payload(&metric);

@@ -2282,7 +2282,7 @@ async fn dispatch_events(mut event_buffer: EventsBuffer, source_context: &Source
 
     // Dispatch any eventd events, if present.
     if event_buffer.has_event_type(EventType::EventD) {
-        let eventd_events = event_buffer.extract(Event::is_eventd);
+        let eventd_events = event_buffer.take_events::<EventD>().map(Event::EventD);
         let events_output = source_context.dispatcher().buffered_named("events");
 
         // The `events` output is always wired in the DSD topology, so a missing output is an invariant violation that
@@ -2304,7 +2304,7 @@ async fn dispatch_events(mut event_buffer: EventsBuffer, source_context: &Source
 
     // Dispatch any service check events, if present.
     if event_buffer.has_event_type(EventType::ServiceCheck) {
-        let service_check_events = event_buffer.extract(Event::is_service_check);
+        let service_check_events = event_buffer.take_events::<ServiceCheck>().map(Event::ServiceCheck);
         let service_checks_output = source_context.dispatcher().buffered_named("service_checks");
 
         if service_checks_output.is_err() {
