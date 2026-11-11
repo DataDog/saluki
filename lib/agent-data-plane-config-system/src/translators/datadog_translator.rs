@@ -287,23 +287,91 @@ fn parse_tag_filter_entry(key: &str, raw: serde_json::Value) -> Result<MetricTag
     })
 }
 
-/// Parses one `metric_filterlist_prefix` object into a [`MetricPrefixRule`].
-fn parse_metric_prefix_rule(key: &str, raw: serde_json::Map<String, serde_json::Value>) -> Result<MetricPrefixRule> {
-    #[derive(serde::Deserialize)]
-    struct RawEntry {
-        prefix: String,
-        #[serde(default)]
-        except_prefix: Option<Vec<String>>,
-        #[serde(default)]
-        except_exact: Option<Vec<String>>,
+/// Decodes `metric_filterlist_prefix` as the Agent's `structure.UnmarshalKey` does: `mapstructure` with
+/// weakly typed input.
+///
+/// Unknown fields are ignored, and a field name matches case-insensitively when no exact key exists. An
+/// absent or null field keeps its zero value, so an entry without `prefix` matches every name. A scalar
+/// becomes a string (`true` is `"1"`), and a list field also accepts a comma-separated string or a
+/// single scalar.
+///
+/// # Errors
+///
+/// Returns an error for the first field holding a value `mapstructure` cannot convert: a list or a map
+/// where a string is expected, or a non-empty map where a list is expected.
+fn parse_metric_prefix_rules(entries: &[serde_json::Map<String, serde_json::Value>]) -> Result<Vec<MetricPrefixRule>> {
+    fn field<'a>(entry: &'a serde_json::Map<String, serde_json::Value>, name: &str) -> &'a serde_json::Value {
+        entry
+            .get(name)
+            .or_else(|| {
+                entry
+                    .iter()
+                    .find_map(|(key, value)| key.eq_ignore_ascii_case(name).then_some(value))
+            })
+            .unwrap_or(&serde_json::Value::Null)
     }
 
-    let parsed: RawEntry =
-        serde_json::from_value(serde_json::Value::Object(raw)).map_err(|error| TranslateError::new(key, error))?;
-    Ok(MetricPrefixRule {
-        prefix: parsed.prefix,
-        except_prefix: parsed.except_prefix.unwrap_or_default(),
-        except_exact: parsed.except_exact.unwrap_or_default(),
+    fn string(path: &str, value: &serde_json::Value) -> Result<String> {
+        use serde_json::Value;
+        match value {
+            Value::Null => Ok(String::new()),
+            Value::String(value) => Ok(value.clone()),
+            Value::Bool(value) => Ok(if *value { "1" } else { "0" }.to_string()),
+            // Go's `FormatFloat(f, 'f', -1, 64)`, like Rust's `Display`, never uses an exponent.
+            Value::Number(value) if value.is_f64() => Ok(value.as_f64().unwrap_or_default().to_string()),
+            Value::Number(value) => Ok(value.to_string()),
+            Value::Array(_) => Err(TranslateError::new_with_message(
+                "metric_filterlist_prefix",
+                format!("`{path}` expected a string, got a list"),
+            )),
+            Value::Object(_) => Err(TranslateError::new_with_message(
+                "metric_filterlist_prefix",
+                format!("`{path}` expected a string, got a map"),
+            )),
+        }
+    }
+
+    fn string_list(path: &str, value: &serde_json::Value) -> Result<Vec<String>> {
+        use serde_json::Value;
+        match value {
+            Value::Null => Ok(Vec::new()),
+            Value::String(value) if value.is_empty() => Ok(Vec::new()),
+            Value::String(value) => Ok(value.split(',').map(str::to_string).collect()),
+            Value::Array(items) => items
+                .iter()
+                .enumerate()
+                .map(|(index, item)| string(&format!("{path}[{index}]"), item))
+                .collect(),
+            Value::Object(map) if map.is_empty() => Ok(Vec::new()),
+            other => Ok(vec![string(&format!("{path}[0]"), other)?]),
+        }
+    }
+
+    entries
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            let path = format!("metric_filterlist_prefix[{index}]");
+            Ok(MetricPrefixRule {
+                prefix: string(&format!("{path}.prefix"), field(entry, "prefix"))?,
+                except_prefix: string_list(&format!("{path}.except_prefix"), field(entry, "except_prefix"))?,
+                except_exact: string_list(&format!("{path}.except_exact"), field(entry, "except_exact"))?,
+            })
+        })
+        .collect()
+}
+
+/// The prefix rules ADP runs with for a `metric_filterlist_prefix` value.
+///
+/// Like the Agent, a field value that does not convert drops every rule instead of failing the
+/// configuration: on a decode error the Agent logs it and discards the entries `mapstructure` did
+/// decode. A value that is not a list of objects never reaches this: it fails to deserialize.
+///
+/// https://github.com/DataDog/datadog-agent/blob/a682da124ffbc9ec820c118e3b2daaadff97623c/comp/filterlist/impl/filterlist.go#L103-L108
+pub(crate) fn metric_prefix_rules(entries: &[serde_json::Map<String, serde_json::Value>]) -> Vec<MetricPrefixRule> {
+    parse_metric_prefix_rules(entries).unwrap_or_else(|error| {
+        warn!(%error, "Failed to load `metric_filterlist_prefix`; using no prefix rules.");
+        Vec::new()
     })
 }
 
@@ -1236,14 +1304,7 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_metric_filterlist_prefix(&mut self, value: Vec<serde_json::Map<String, serde_json::Value>>) {
-        let mut rules = Vec::with_capacity(value.len());
-        for raw in value {
-            match parse_metric_prefix_rule("metric_filterlist_prefix", raw) {
-                Ok(rule) => rules.push(rule),
-                Err(error) => self.record_error(error),
-            }
-        }
-        self.config.domains.dogstatsd.metric_filter.prefix_rules = rules;
+        self.config.domains.dogstatsd.metric_filter.prefix_rules = metric_prefix_rules(&value);
     }
 
     fn consume_metric_tag_filterlist(&mut self, value: Vec<serde_json::Value>) {
@@ -3227,6 +3288,70 @@ mod tests {
                 except_exact: Vec::new(),
             }]
         );
+    }
+
+    #[test]
+    fn metric_filter_prefix_rules_decode_like_mapstructure() {
+        // `structure.UnmarshalKey` decodes with weakly typed input: a missing `prefix` is the empty
+        // prefix, scalars become strings, and list fields take a comma-separated string or one scalar.
+        let (config, errors) = translate_explicit(json!({
+            "metric_filterlist_prefix": [
+                { "except_exact": ["keep.exact"], "unknown": {"nested": true} },
+                { "Prefix": "cased.", "EXCEPT_PREFIX": "cased.a,cased.b", "prefix_typo": "ignored" },
+                { "prefix": 1.5, "except_prefix": true, "except_exact": [7, false, null] },
+                { "prefix": "empty.", "except_prefix": "", "except_exact": {} },
+            ],
+        }));
+
+        assert!(errors.is_none());
+        assert_eq!(
+            config.domains.dogstatsd.metric_filter.prefix_rules,
+            vec![
+                MetricPrefixRule {
+                    prefix: String::new(),
+                    except_prefix: Vec::new(),
+                    except_exact: vec!["keep.exact".to_string()],
+                },
+                MetricPrefixRule {
+                    prefix: "cased.".to_string(),
+                    except_prefix: vec!["cased.a".to_string(), "cased.b".to_string()],
+                    except_exact: Vec::new(),
+                },
+                MetricPrefixRule {
+                    prefix: "1.5".to_string(),
+                    except_prefix: vec!["1".to_string()],
+                    except_exact: vec!["7".to_string(), "0".to_string(), String::new()],
+                },
+                MetricPrefixRule {
+                    prefix: "empty.".to_string(),
+                    except_prefix: Vec::new(),
+                    except_exact: Vec::new(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn an_undecodable_metric_filter_prefix_list_yields_no_rules() {
+        // The Agent logs the decoding error and runs with no prefix rules at all, so one bad entry
+        // also drops the valid ones, and the configuration is not rejected.
+        let malformed = [
+            json!({ "prefix": ["not", "a", "string"] }),
+            json!({ "prefix": { "not": "a string" } }),
+            json!({ "prefix": "x.", "except_prefix": { "not": "a list" } }),
+            json!({ "prefix": "x.", "except_exact": [["nested"]] }),
+        ];
+        for entry in malformed {
+            let (config, errors) = translate_explicit(json!({
+                "metric_filterlist_prefix": [{ "prefix": "valid." }, entry.clone()],
+            }));
+
+            assert!(errors.is_none(), "{entry}");
+            assert!(
+                config.domains.dogstatsd.metric_filter.prefix_rules.is_empty(),
+                "{entry}"
+            );
+        }
     }
 
     #[test]
