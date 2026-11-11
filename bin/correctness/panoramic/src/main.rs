@@ -48,7 +48,6 @@ mod machine_output;
 use self::machine_output::RunReport;
 
 mod ledger;
-mod probe;
 mod record;
 mod reporter;
 use self::reporter::{OutputFormat, Reporter};

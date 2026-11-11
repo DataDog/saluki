@@ -21,8 +21,8 @@ use tracing::{debug, error};
 use crate::actions::Action;
 use crate::config::{AssertionConfig, AssertionStep, LogStream};
 use crate::core::deadline::{Budget, Deadline};
+use crate::core::probe::PROBE_TIMEOUT;
 use crate::integration::IntegrationTestCase;
-use crate::probe::PROBE_TIMEOUT;
 use crate::record::{step_label, ActiveStep, CaseRecord, StepResult, StepStatus, Verdict};
 use crate::reporter::{DurationMs, ErrorKind, TestResult};
 

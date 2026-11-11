@@ -8,7 +8,7 @@ use tracing::trace;
 use crate::actions::docker_exec;
 use crate::assertions::{Assertion, AssertionContext, AssertionResult, AssertionStatus, Attempts};
 use crate::config::{HttpBodyMatcher, HttpStatusMatcher};
-use crate::probe::{probe, AttemptLimits, ProbeError, POLL_INTERVAL};
+use crate::core::probe::{probe, AttemptLimits, ProbeError, POLL_INTERVAL};
 
 /// Assertion that probes an HTTP/HTTPS endpoint and checks the response status code, and optionally its body.
 ///
@@ -341,8 +341,8 @@ mod tests {
     use crate::assertions::test_support::host_context;
     use crate::assertions::{Assertion as _, AssertionResult, AssertionStatus};
     use crate::config::{HttpBodyMatcher, HttpStatusMatcher};
+    use crate::core::probe::AttemptLimits;
     use crate::intake::test_server::install_crypto_provider;
-    use crate::probe::AttemptLimits;
 
     /// Checks a Windows target for `timeout`, with its execs served by `docker`.
     async fn check_windows_target(docker: &FakeDocker, timeout: Duration) -> AssertionResult {
