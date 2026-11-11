@@ -249,7 +249,10 @@ fn env_vars(env: EnvPrecedence) -> Vec<(String, String)> {
 /// environment variable name/value pairs. `vars` is ignored when `env` is `Disabled`.
 ///
 /// `reading` sets how the file's keys are read. A former setting name in `renamed` then moves to its
-/// setting (see [`datadog_yaml`]). A null-valued key is dropped and an empty file is an empty object.
+/// setting (see [`datadog_yaml`]). `renamed` drives only that move: `KeyReading::Datadog` resolves
+/// spellings against the generated table, so a former name that is not in it is matched only as
+/// written. The `datadog_yaml` tests cover how former names are resolved. A null-valued key is
+/// dropped and an empty file is an empty object.
 /// The environment is then overlaid via the generated Datadog reader, the Saluki-only reader, and the
 /// canonical proxy variables. `env` sets whether the environment overwrites the file
 /// (`AfterFile`) or only fills absent keys (`BeforeFile`); `Disabled` skips the environment entirely.

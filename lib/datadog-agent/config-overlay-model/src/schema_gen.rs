@@ -248,11 +248,12 @@ pub fn standard_env_name(key: &str) -> String {
 /// name ahead of the key's own, as `BindEnvAndSetDefaultWithDeprecation` binds them. A `no-env`
 /// setting, or a key without schema metadata, derives only its own name.
 ///
-/// Panics when a setting has both `env_vars` and `renamed_from`.
+/// Panics when a setting has both `env_vars` and `renamed_from`. The environment reader calls this
+/// only for modeled settings, so only those fail the build.
 pub fn env_var_names(key: &str, info: Option<&FieldInfo>) -> Vec<String> {
-    match info.map(|i| &i.env) {
-        Some(EnvBinding::Overridden(env_vars)) => {
-            if info.is_some_and(|info| !info.renamed_from.is_empty()) {
+    match info.map(|i| (i, &i.env)) {
+        Some((info, EnvBinding::Overridden(env_vars))) => {
+            if !info.renamed_from.is_empty() {
                 panic!(
                     "`{key}` has both `env_vars` and `renamed_from`: confirm which environment variables the \
                      Agent reads for its former names, and generate them here"
@@ -260,14 +261,14 @@ pub fn env_var_names(key: &str, info: Option<&FieldInfo>) -> Vec<String> {
             }
             env_vars.clone()
         }
-        Some(EnvBinding::Standard) => info
-            .into_iter()
-            .flat_map(|i| &i.renamed_from)
+        Some((info, EnvBinding::Standard)) => info
+            .renamed_from
+            .iter()
             .map(String::as_str)
             .chain(std::iter::once(key))
             .map(standard_env_name)
             .collect(),
-        None | Some(EnvBinding::None) => vec![standard_env_name(key)],
+        None | Some((_, EnvBinding::None)) => vec![standard_env_name(key)],
     }
 }
 

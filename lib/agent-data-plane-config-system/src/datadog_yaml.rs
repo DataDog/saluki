@@ -23,8 +23,8 @@
 //! `processDeprecation` does. So `old_name: [a]` sets `new_name`, and wins over a `new_name`
 //! written in the same file. When several former names of one setting are written, the one
 //! deprecated earliest wins. The value is not converted: the typed model casts it as it casts the
-//! current name. Moving a nested former name leaves its parent map in place, empty if nothing else
-//! is in it, as the Agent keeps an empty section.
+//! current name. Moving a nested former name removes a parent map it leaves empty, as the Agent's
+//! `AllSettings` does not show an empty section left by a former name.
 //!
 //! A null former name clears the current name, which then keeps its default once nulls are dropped.
 //! The Agent instead stores a nil that its getters read as the type's zero value; the two agree when
@@ -557,14 +557,19 @@ pub(crate) fn move_renamed_keys<'a>(root: &mut Value, renamed: &'a [RenamedKey])
     found
 }
 
-/// Removes and returns the value at `path`, if every parent is an object and the value is there.
+/// Removes and returns the value at `path`, if every parent is an object and the value is there. A
+/// parent left empty is removed too.
 fn take(root: &mut Map<String, Value>, path: &[&str]) -> Option<Value> {
-    let (last, parents) = path.split_last()?;
-    let mut current = root;
-    for segment in parents {
-        current = current.get_mut(*segment)?.as_object_mut()?;
+    let (first, rest) = path.split_first()?;
+    if rest.is_empty() {
+        return root.remove(*first);
     }
-    current.remove(*last)
+    let parent = root.get_mut(*first)?.as_object_mut()?;
+    let value = take(parent, rest)?;
+    if parent.is_empty() {
+        root.remove(*first);
+    }
+    Some(value)
 }
 
 /// Returns whether `path` can be written without replacing a value: nothing is at it, and nothing on
@@ -989,8 +994,8 @@ mod tests {
 
     #[test]
     fn a_nested_former_name_resolves_through_its_own_sections() {
-        // `legacy` is a section only because a former name is in it. Moving the former name leaves
-        // the map in place, as the Agent keeps an empty section.
+        // `legacy` is a section only because a former name is in it. Moving the former name removes
+        // the map once it is empty, and keeps it while it holds other keys.
         for yaml in [
             "legacy: {old_nested: 1}\n",
             "LEGACY: {Old_Nested: 1}\n",
@@ -998,11 +1003,7 @@ mod tests {
             "Legacy.OLD_NESTED: 1\n",
             "section: {new_nested: 0}\nlegacy: {old_nested: 1}\n",
         ] {
-            assert_eq!(
-                read_renamed(yaml),
-                json!({"section": {"new_nested": 1}, "legacy": {}}),
-                "{yaml:?}"
-            );
+            assert_eq!(read_renamed(yaml), json!({"section": {"new_nested": 1}}), "{yaml:?}");
         }
         assert_eq!(
             read_renamed("legacy: {old_nested: 1, other: 2}\n"),

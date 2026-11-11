@@ -141,7 +141,7 @@ the Agent's codegen declares it with `SetDefault`.
 
 Code generation emits the derived variables into `DATADOG_ENV_KEYS` and the former paths into
 `datadog_renamed_keys`. It fails the build if a former name overlaps a schema path or another former name, or if a
-setting has both explicit `env_vars` and former names. `env_var_names` and `former_names` in the overlay model's
+modeled setting has both explicit `env_vars` and former names. `env_var_names` and `former_names` in the overlay model's
 `schema_gen` hold these rules.
 
 ## Scalar leaf coercion

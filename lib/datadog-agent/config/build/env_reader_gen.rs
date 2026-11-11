@@ -15,7 +15,7 @@
 //!   through the standard form via the Agent's bespoke handling (for example `proxy.http` through
 //!   `DD_PROXY_HTTP`); a field with genuinely no variable only yields a dead entry that never fires.
 //! - A [`EnvBinding::Standard`] key with former names (`renamed_from`) derives a name from each
-//!   former name too, ahead of its own, as `BindEnvAndSetDefaultWithDeprecation` does. An
+//!   former name too, ahead of its own, as `BindEnvAndSetDefaultWithDeprecation` does. A modeled
 //!   [`EnvBinding::Overridden`] key with former names fails the build.
 //!
 //! The same file holds [`RenamedKey`] entries for every schema setting with former names, modeled
