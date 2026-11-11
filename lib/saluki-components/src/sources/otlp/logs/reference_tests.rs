@@ -892,6 +892,12 @@ fn status_attribute_override_cases() -> Vec<Case> {
             item(OTEL_SOURCE_TAG, json!({"status": "debug", "otel.severity_number": "5"})),
         )
         .scope("", "", [("status", string("scope-status"))]),
+        case(
+            "resource status attribute is dropped when no status is derived",
+            record(),
+            item(OTEL_SOURCE_TAG, json!({"status": ""})),
+        )
+        .resource([("status", string("resource-status"))]),
     ]
 }
 
