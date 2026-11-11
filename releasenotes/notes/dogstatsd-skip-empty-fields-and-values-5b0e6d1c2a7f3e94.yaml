@@ -1,0 +1,14 @@
+fixes:
+  - |
+    DogStatsD no longer silently drops the fields after an empty ``|`` field. With
+    ``dogstatsd_permissive_decoding`` enabled (the default), empty fields are skipped
+    as in the Datadog Agent: for example, ``metric:1|c||#env:prod`` now keeps its
+    tags, and events and service checks keep their tags, aggregation key and
+    message. Empty values in a multi-value metric, such as ``metric:1::2|d``, are
+    also skipped rather than rejecting the whole line. With permissive decoding
+    disabled, these payloads are now rejected and counted as decode errors, as are
+    events and service checks with an unknown or malformed optional field.
+  - |
+    Because the fields after an empty ``|`` field are now parsed, a malformed field
+    there, such as the sample rate in ``metric:1|c||@notafloat``, now rejects the
+    payload in both modes, as the Datadog Agent does. Previously it was never seen.

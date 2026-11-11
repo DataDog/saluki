@@ -123,6 +123,34 @@ is read by `apply_datadog_env_vars` and by the Saluki-only reader.
 **A modeled key arrives in the Agent's canonical shape.** A source model **MUST** read that shape: don't add a
 `#[serde(rename)]` or `#[serde(alias)]`. Unmodeled environment variables aren't read.
 
+## Deprecated key names
+
+A schema setting can list former names under `renamed_from`, each with the Agent version that deprecated it. ADP
+reads former names as the Agent does:
+
+- **Environment**: for a setting without explicit `env_vars`, each former name's derived variable is read before the
+  current one, oldest deprecation first. `DD_STATSD_METRIC_BLOCKLIST` therefore beats `DD_METRIC_FILTERLIST`, and is
+  decoded as `metric_filterlist`.
+- **`datadog.yaml`**: a former name resolves like any other leaf, including its case and dotted spellings. Once the
+  file is read, its value replaces the current name's and the former name is dropped, so the former name wins when
+  both are written. A null former name clears the current one. `datadog_yaml.rs` documents the details.
+- **Configuration stream**: an Agent older than the rename streams the former name as a separate setting.
+  `overlay_agent_layer` in `system.rs` resolves it as that Agent does. A test fails if a renamed setting
+  has no rule there.
+
+Precedence between sources applies across names: a current name in the environment beats a former name in the file.
+Former names never reach the sources that the compatibility check, `/config`, and the flare read. Once logging starts,
+ADP logs a warning for each former name the file or environment used. A `no-env` setting has no former names, because
+the Agent's codegen declares it with `SetDefault`.
+
+Code generation emits the derived variables into `DATADOG_ENV_KEYS` and the former paths into
+`datadog_renamed_keys`. It fails the build if a former name overlaps a schema path or another former name, or if a
+modeled setting has both explicit `env_vars` and former names. `env_var_names` and `former_names` in the overlay model's
+`schema_gen` hold these rules.
+
+A new rename needs config recorder cases: `renamed_settings_have_recorder_cases` in `datadog-agent-config-corpus`
+fails until `renamed-key-*` cases record the setting and its former names, by env and by YAML.
+
 ## Scalar leaf coercion
 
 `DatadogConfiguration` scalar leaves accept what the Agent's permissive casting accepts. Code generation attaches a

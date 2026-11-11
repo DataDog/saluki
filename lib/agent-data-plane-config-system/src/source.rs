@@ -82,9 +82,13 @@ impl SourceTree {
             StreamProvenance::Explicit => Provenance::Explicit,
             StreamProvenance::Default => Provenance::Default,
         };
+        self.insert(&setting.key, setting.value.clone(), provenance);
+    }
 
+    /// Sets the dotted `key` to `value` with `provenance`, replacing whatever this layer held for it.
+    pub(crate) fn insert(&mut self, key: &str, value: Value, provenance: Provenance) {
         let mut node = &mut self.root;
-        let mut segments = setting.key.split('.').peekable();
+        let mut segments = key.split('.').peekable();
         while let Some(segment) = segments.next() {
             // A leaf standing where a section is needed is replaced, so a later, more specific key
             // wins over an earlier, shallower one.
@@ -96,19 +100,47 @@ impl SourceTree {
             };
 
             if segments.peek().is_none() {
-                children.insert(
-                    segment.to_string(),
-                    Node::Leaf {
-                        value: setting.value.clone(),
-                        provenance,
-                    },
-                );
+                children.insert(segment.to_string(), Node::Leaf { value, provenance });
                 return;
             }
 
             node = children
                 .entry(segment.to_string())
                 .or_insert_with(|| Node::Section(BTreeMap::new()));
+        }
+    }
+
+    /// Removes the leaf at the dotted `key`, returning its value and provenance.
+    ///
+    /// Returns `None`, and changes nothing, when `key` is absent or names a section.
+    pub(crate) fn remove(&mut self, key: &str) -> Option<(Value, Provenance)> {
+        let (parents, last) = key
+            .rsplit_once('.')
+            .map_or((None, key), |(parents, last)| (Some(parents), last));
+        let mut node = &mut self.root;
+        for segment in parents.into_iter().flat_map(|parents| parents.split('.')) {
+            node = match node {
+                Node::Section(children) => children.get_mut(segment)?,
+                Node::Leaf { .. } => return None,
+            };
+        }
+        let Node::Section(children) = node else {
+            return None;
+        };
+        match children.remove(last)? {
+            Node::Leaf { value, provenance } => Some((value, provenance)),
+            section => {
+                children.insert(last.to_string(), section);
+                None
+            }
+        }
+    }
+
+    /// Returns the value of the leaf at the dotted `key`, if this layer has one.
+    pub(crate) fn value(&self, key: &str) -> Option<&Value> {
+        match self.root.get(key.split('.')) {
+            Some(Node::Leaf { value, .. }) => Some(value),
+            Some(Node::Section(_)) | None => None,
         }
     }
 
@@ -425,6 +457,24 @@ mod tests {
 
         assert_eq!(tree.to_value(), json!({ "dd_url": "https://app.datadoghq.eu" }));
         assert_eq!(tree.provenance("dd_url"), Provenance::Explicit);
+    }
+
+    #[test]
+    fn remove_takes_a_leaf_but_not_a_section() {
+        let mut tree = agent_layer(&[
+            ("otlp_config.traces.enabled", json!(true), StreamProvenance::Explicit),
+            ("site", json!("datadoghq.eu"), StreamProvenance::Default),
+        ]);
+
+        assert_eq!(tree.remove("otlp_config.traces"), None);
+        assert_eq!(tree.value("otlp_config.traces.enabled"), Some(&json!(true)));
+        assert_eq!(
+            tree.remove("otlp_config.traces.enabled"),
+            Some((json!(true), Provenance::Explicit))
+        );
+        assert_eq!(tree.remove("site"), Some((json!("datadoghq.eu"), Provenance::Default)));
+        assert_eq!(tree.remove("site"), None);
+        assert_eq!(tree.value("site"), None);
     }
 
     // This is issue #1965: the Core Agent streams `dd_url` at its schema default even when the

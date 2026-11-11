@@ -169,6 +169,15 @@ inventory:
     pipelines: [traces]
     description: "Per service|operation APM event extraction rates"
 
+  apm_config.apm_dd_url:
+    support: none
+    severity: low
+    planned: true
+    issue: "#2419"
+    pipelines: [traces]
+    description: "APM intake URL override"
+    documentation: "ADP sends trace and stats payloads to the endpoints derived from `dd_url` or `site` and ignores this override."
+
   apm_config.apm_non_local_traffic:
     support: full
     pipelines: [traces]
@@ -383,6 +392,19 @@ inventory:
     support: full
     pipelines: [traces]
     description: "Target sampled traces per second"
+
+  apm_config.traces_send_to_main_endpoint:
+    support: none
+    severity: low
+    planned: true
+    issue: "#2419"
+    pipelines: [traces]
+    description: "Send traces and stats to the main endpoint"
+    documentation: |-
+      When `false`, the trace-agent sends traces and APM stats only to `apm_config.additional_endpoints`. ADP
+      sends the trace and stats payloads from its OTLP traces pipeline to the endpoints derived from `dd_url`
+      or `site` and `additional_endpoints`, whatever this key's value. Traces that ADP relays to the
+      trace-agent follow this key.
 
   auth_token_file_path:
     support: full
@@ -673,6 +695,47 @@ inventory:
     pipelines: [dogstatsd]
     description: "Traffic capture file location"
     issue: "#1381"
+
+  dogstatsd_client_drop_detection.dropped_ratio_threshold:
+    support: none
+    severity: low
+    planned: true
+    issue: "#3088"
+    pipelines: [dogstatsd]
+    description: "Client drop ratio that marks a client unhealthy"
+    documentation: "ADP does not support DogStatsD client drop detection. See `dogstatsd_client_drop_detection.enabled`."
+
+  dogstatsd_client_drop_detection.enabled:
+    support: none
+    severity: low
+    planned: true
+    issue: "#3088"
+    pipelines: [dogstatsd]
+    description: "DogStatsD client drop detection"
+    documentation: |-
+      The core Agent's aggregator reads the DogStatsD client telemetry series it flushes and raises an Agent
+      Health issue when a client's dropped ratio stays above
+      `dogstatsd_client_drop_detection.dropped_ratio_threshold`. When ADP handles DogStatsD, those series
+      never reach the core Agent's aggregator, and ADP has no Health Platform, so no drop-detection issue is
+      raised. ADP still forwards the client telemetry metrics.
+
+  dogstatsd_client_drop_detection.recovery_confirmation_window:
+    support: none
+    severity: low
+    planned: true
+    issue: "#3088"
+    pipelines: [dogstatsd]
+    description: "Time below threshold before a client recovers"
+    documentation: "ADP does not support DogStatsD client drop detection. See `dogstatsd_client_drop_detection.enabled`."
+
+  dogstatsd_client_drop_detection.unhealthy_confirmation_window:
+    support: none
+    severity: low
+    planned: true
+    issue: "#3088"
+    pipelines: [dogstatsd]
+    description: "Time above threshold before a client is unhealthy"
+    documentation: "ADP does not support DogStatsD client drop detection. See `dogstatsd_client_drop_detection.enabled`."
 
   dogstatsd_context_expiry_seconds:
     support: full
@@ -1219,6 +1282,124 @@ inventory:
     pipelines: [cross_cutting]
     description: "How long startup host tags are attached"
 
+  experimental.metrics_endpoint_routing.metric_allowlist:
+    support: partial
+    issue: "#3092"
+    pipelines: [checks, dogstatsd, otlp]
+    description: "Per-endpoint metric allow lists"
+    documentation: |-
+      ### `experimental.metrics_endpoint_routing.metric_allowlist`
+
+      ADP can route a selected subset of metrics to the primary intake or to specific additional endpoints.
+      This experimental routing is independent of Multi-Region Failover.
+
+      > [!WARNING]
+      > Settings under `experimental` are unstable and may change, move, or be removed. Do not rely on
+      > backward compatibility.
+
+      Key `experimental.metrics_endpoint_routing.metric_allowlist` by the exact configured endpoint string.
+      For the primary, use the effective endpoint configured through `dd_url` or derived from `site`.
+      Configure additional destinations and their API keys through `additional_endpoints`, and use those exact
+      map keys. The allowlist filters both series and sketches by metric name. A metric is forwarded if its
+      name matches this exact list or the endpoint's `metric_prefix_allowlist`. If both lists are empty, no
+      metrics are sent to that endpoint. Endpoints absent from both policy maps retain their ordinary
+      behavior.
+
+      ADP rejects a policy whose endpoint matches neither the primary endpoint nor a key in
+      `additional_endpoints`, preventing a typo from silently sending an unfiltered stream. Endpoint policies
+      are read when the topology is built, so changing the map requires an ADP restart. An absent or empty
+      pair of policy maps leaves ordinary endpoint routing unchanged.
+
+      To filter the primary while leaving an additional endpoint on its ordinary full stream:
+
+      ```yaml
+      api_key: <primary-api-key>
+      dd_url: https://app.us5.datadoghq.com
+      additional_endpoints:
+        https://app.datadoghq.com:
+          - <secondary-api-key>
+      # Experimental keys may change, move, or be removed without backward compatibility.
+      experimental:
+        metrics_endpoint_routing:
+          metric_allowlist:
+            https://app.us5.datadoghq.com:
+              - allowed.metric
+      ```
+
+      To leave the primary on its ordinary full stream while filtering only additional endpoints, omit the
+      primary URL from the policy map:
+
+      ```yaml
+      api_key: <primary-api-key>
+      dd_url: https://app.us5.datadoghq.com
+      additional_endpoints:
+        https://app.datadoghq.com:
+          - <us1-api-key>
+        https://app.datadoghq.eu:
+          - <eu1-api-key>
+      experimental:
+        metrics_endpoint_routing:
+          metric_allowlist:
+            https://app.datadoghq.com:
+              - critical.slo
+            https://app.datadoghq.eu:
+              - billing.latency
+      ```
+
+      #### Differences from the core Agent
+
+      The core Agent also implements these settings, and fails to start when a policy names an unknown
+      endpoint. ADP differs in these cases:
+
+      - When the primary endpoint is derived from `site`, the core Agent keys it with a trailing dot, such as
+        `https://app.datadoghq.com.`, while `convert_dd_site_fqdn.enabled` is `true`, its default. ADP keys it
+        without the dot. Only one spelling passes each process's check, so set `dd_url` explicitly when a
+        policy filters the primary endpoint.
+      - The core Agent rejects a policy while `use_v2_api.series` is `false`. ADP accepts it and also filters
+        V1 series.
+      - The core Agent rejects a policy value that isn't a list of strings. ADP reads a scalar as a
+        one-element list and accepts a map written as a JSON string.
+
+  experimental.metrics_endpoint_routing.metric_prefix_allowlist:
+    support: partial
+    issue: "#3092"
+    pipelines: [checks, dogstatsd, otlp]
+    description: "Per-endpoint metric-prefix allow lists"
+    documentation: |-
+      ### `experimental.metrics_endpoint_routing.metric_prefix_allowlist`
+
+      Allows metric-name families at selected primary or additional endpoints. Defaults to `{}`. Endpoint keys
+      follow the same rules as `metric_allowlist`; an unknown endpoint is rejected. These experimental
+      settings may change, move, or be removed without backward compatibility.
+
+      Prefixes are case-sensitive literal strings, using the same starts-with semantics as the DogStatsD
+      filterlist's prefix mode. There are no wildcards or regular expressions: `billing.` matches
+      `billing.latency` but not `billing_other`. A prefix without the dot, `billing`, matches both. An empty
+      string prefix matches every metric name; an empty list allows no names.
+
+      A metric matching either an exact name in `metric_allowlist` or a prefix in this map is forwarded. This
+      applies to both series and sketches. Endpoints present in either map are filtered; endpoints absent from
+      both keep ordinary delivery. If both lists for a selected endpoint are empty, all its metrics are
+      dropped. Prefixes also allow future names in the family, so choose them carefully to avoid forwarding
+      more traffic than intended.
+
+      To combine exact names and prefixes for one endpoint:
+
+      ```yaml
+      experimental:
+        metrics_endpoint_routing:
+          metric_allowlist:
+            https://primary.example.com:
+              - critical.slo
+          metric_prefix_allowlist:
+            https://primary.example.com:
+              - billing.
+      ```
+
+      The example endpoint must also be configured as the primary or an additional endpoint.
+
+      See `experimental.metrics_endpoint_routing.metric_allowlist` for the differences from the core Agent.
+
   extra_tags:
     support: full
     pipelines: [otlp, traces]
@@ -1226,6 +1407,87 @@ inventory:
     documentation: |-
       When neither `apm_config.env` nor `env` is set, the first `env:` entry in `tags`, then in
       `extra_tags`, supplies the trace environment.
+
+  forwarder.dynamic_concurrency.decrease_threshold:
+    support: none
+    severity: low
+    planned: true
+    issue: "#3089"
+    pipelines: [cross_cutting]
+    description: "Dynamic concurrency decrease threshold"
+    documentation: "ADP does not support the `dynamic` forwarder concurrency policy. See `forwarder_concurrency_policy`."
+
+  forwarder.dynamic_concurrency.eval_interval:
+    support: none
+    severity: low
+    planned: true
+    issue: "#3089"
+    pipelines: [cross_cutting]
+    description: "Dynamic concurrency evaluation interval"
+    documentation: "ADP does not support the `dynamic` forwarder concurrency policy. See `forwarder_concurrency_policy`."
+
+  forwarder.dynamic_concurrency.increase_cooldown:
+    support: none
+    severity: low
+    planned: true
+    issue: "#3089"
+    pipelines: [cross_cutting]
+    description: "Dynamic concurrency increase cooldown"
+    documentation: "ADP does not support the `dynamic` forwarder concurrency policy. See `forwarder_concurrency_policy`."
+
+  forwarder.dynamic_concurrency.increase_step:
+    support: none
+    severity: low
+    planned: true
+    issue: "#3089"
+    pipelines: [cross_cutting]
+    description: "Dynamic concurrency increase step"
+    documentation: "ADP does not support the `dynamic` forwarder concurrency policy. See `forwarder_concurrency_policy`."
+
+  forwarder.dynamic_concurrency.increase_threshold:
+    support: none
+    severity: low
+    planned: true
+    issue: "#3089"
+    pipelines: [cross_cutting]
+    description: "Dynamic concurrency increase threshold"
+    documentation: "ADP does not support the `dynamic` forwarder concurrency policy. See `forwarder_concurrency_policy`."
+
+  forwarder.dynamic_concurrency.initial_limit:
+    support: none
+    severity: low
+    planned: true
+    issue: "#3089"
+    pipelines: [cross_cutting]
+    description: "Dynamic concurrency initial limit"
+    documentation: "ADP does not support the `dynamic` forwarder concurrency policy. See `forwarder_concurrency_policy`."
+
+  forwarder.dynamic_concurrency.max_concurrent_requests:
+    support: none
+    severity: low
+    planned: true
+    issue: "#3089"
+    pipelines: [cross_cutting]
+    description: "Dynamic concurrency request ceiling"
+    documentation: "ADP does not support the `dynamic` forwarder concurrency policy. See `forwarder_concurrency_policy`."
+
+  forwarder.dynamic_concurrency.min_decrease_interval:
+    support: none
+    severity: low
+    planned: true
+    issue: "#3089"
+    pipelines: [cross_cutting]
+    description: "Dynamic concurrency minimum decrease interval"
+    documentation: "ADP does not support the `dynamic` forwarder concurrency policy. See `forwarder_concurrency_policy`."
+
+  forwarder.dynamic_concurrency.num_workers:
+    support: none
+    severity: low
+    planned: true
+    issue: "#3089"
+    pipelines: [cross_cutting]
+    description: "Dynamic concurrency worker count"
+    documentation: "ADP does not support the `dynamic` forwarder concurrency policy. See `forwarder_concurrency_policy`."
 
   forwarder_apikey_validation_interval:
     support: partial
@@ -1259,6 +1521,19 @@ inventory:
     support: full
     pipelines: [cross_cutting]
     description: "Retry backoff ceiling (secs)"
+
+  forwarder_concurrency_policy:
+    support: none
+    severity: low
+    planned: true
+    issue: "#3089"
+    pipelines: [cross_cutting]
+    description: "Forwarder concurrency policy"
+    documentation: |-
+      ADP always uses static forwarder concurrency: each endpoint sends at most
+      `forwarder_max_concurrent_requests` requests per worker. This matches the Agent's default `static`
+      policy. ADP does not support the experimental `dynamic` policy or its `forwarder.dynamic_concurrency.*`
+      settings.
 
   forwarder_connection_reset_interval:
     support: full
@@ -1445,6 +1720,36 @@ inventory:
       ADP uses this only in standalone mode, where the fixed host provider requires a configured
       hostname. In connected mode the hostname comes from the Datadog Agent.
 
+  intake_routing.enabled:
+    support: none
+    severity: low
+    planned: true
+    issue: "#3090"
+    pipelines: [otlp]
+    description: "Pre-intake endpoint routing"
+    documentation: |-
+      The Agent can ask the Datadog platform whether to send data to a different variant of an endpoint. Only
+      the core logs agent uses it. ADP does not query intake routing: its OTLP logs, and all its other
+      payloads, use the configured endpoints.
+
+  intake_routing.refresh_interval:
+    support: none
+    severity: low
+    planned: true
+    issue: "#3090"
+    pipelines: [otlp]
+    description: "Intake routing refresh interval"
+    documentation: "ADP does not query intake routing. See `intake_routing.enabled`."
+
+  intake_routing.startup_grace_period:
+    support: none
+    severity: low
+    planned: true
+    issue: "#3090"
+    pipelines: [otlp]
+    description: "Intake routing startup grace period"
+    documentation: "ADP does not query intake routing. See `intake_routing.enabled`."
+
   ipc_cert_file_path:
     support: full
     pipelines: [cross_cutting]
@@ -1553,13 +1858,9 @@ inventory:
     documentation: |-
       ### DogStatsD metric blocklists
 
-      A non-empty `metric_filterlist` takes precedence over the legacy `statsd_metric_blocklist`:
-      ADP uses `metric_filterlist_match_prefix` as the active match mode. Clearing
-      `metric_filterlist` restores `statsd_metric_blocklist` and
-      `statsd_metric_blocklist_match_prefix`.
-
-      Both lists default to empty, and both match-prefix settings default to `false`. Accepted
-      runtime changes to any of these settings update filtering.
+      The list defaults to empty, and the match-prefix setting defaults to `false`. Accepted runtime
+      changes to either setting update filtering. An entry ending in `*` is matched literally; use
+      `metric_filterlist_prefix` for per-entry prefixes.
 
       Entries are matched against the *normalized* metric name. The Datadog metrics intake rewrites
       metric names on ingest, so a metric submitted as `my metric-name` is stored and displayed as
@@ -1567,6 +1868,13 @@ inventory:
       matched as written, so an entry that is not itself a normalized name matches nothing. Metric
       names the intake rejects outright, meaning empty names, names longer than 350 bytes, and names
       containing no ASCII letter, never match.
+
+      `statsd_metric_blocklist` and `statsd_metric_blocklist_match_prefix` are deprecated names of
+      `metric_filterlist` and `metric_filterlist_match_prefix`, and ADP still reads them. Within one
+      file, a deprecated name wins over the current name, even when its list is empty. In the
+      environment, `DD_STATSD_METRIC_BLOCKLIST` and `DD_STATSD_METRIC_BLOCKLIST_MATCH_PREFIX` win over
+      the current variables, but an empty variable counts as unset. Across the file and the
+      environment, the usual precedence applies, whichever name each one uses.
 
   metric_filterlist_match_prefix:
     support: full
@@ -1581,9 +1889,15 @@ inventory:
       ### DogStatsD metric prefix blocklist rules
 
       `metric_filterlist_prefix` adds per-entry prefixes to the blocklist. Each entry has a
-      required `prefix` and optional `except_exact` and `except_prefix` lists. Prefixes and
-      prefix exceptions are normalized as prefixes, preserving trailing boundaries such as
-      `service_` so they do not widen to `service`.
+      `prefix` and optional `except_exact` and `except_prefix` lists. Prefixes and prefix
+      exceptions are normalized as prefixes, preserving trailing boundaries such as `service_` so
+      they do not widen to `service`.
+
+      Each entry is an object, decoded as the Agent decodes it: a missing `prefix` is the empty
+      prefix, and unknown fields are ignored. When a field holds a value that cannot be converted,
+      such as a list where a string is expected, ADP logs a warning and applies no prefix rules.
+      ADP rejects a value that is not a list of objects; a null entry is an empty entry and matches
+      every metric, as in the Agent.
 
       Exceptions apply across this whole key: a metric excepted by one rule is kept even when it
       matches another prefix rule. Exact or prefix matches from `metric_filterlist` still drop the
@@ -2610,6 +2924,48 @@ inventory:
     pipelines: [dogstatsd]
     description: "Endpoints enabling v3 sketches API"
 
+  serializer_experimental_use_v3_api.sketches.max_compressed_payload_size:
+    support: none
+    severity: low
+    planned: true
+    issue: "#3091"
+    pipelines: [dogstatsd]
+    description: "V3 sketches max compressed payload size"
+    documentation: |-
+      The Agent limits V3 sketches payloads with the `serializer_experimental_use_v3_api.sketches.max_*`
+      settings, falling back to `serializer_max_payload_size` and `serializer_max_uncompressed_payload_size`,
+      with no point limit by default. ADP limits V3 sketches payloads with the series limits:
+      `serializer_max_series_payload_size`, `serializer_max_series_uncompressed_payload_size` and
+      `serializer_max_series_points_per_payload`.
+
+  serializer_experimental_use_v3_api.sketches.max_points_per_payload:
+    support: none
+    severity: low
+    planned: true
+    issue: "#3091"
+    pipelines: [dogstatsd]
+    description: "V3 sketches max points per payload"
+    documentation: |-
+      The Agent limits V3 sketches payloads with the `serializer_experimental_use_v3_api.sketches.max_*`
+      settings, falling back to `serializer_max_payload_size` and `serializer_max_uncompressed_payload_size`,
+      with no point limit by default. ADP limits V3 sketches payloads with the series limits:
+      `serializer_max_series_payload_size`, `serializer_max_series_uncompressed_payload_size` and
+      `serializer_max_series_points_per_payload`.
+
+  serializer_experimental_use_v3_api.sketches.max_uncompressed_payload_size:
+    support: none
+    severity: low
+    planned: true
+    issue: "#3091"
+    pipelines: [dogstatsd]
+    description: "V3 sketches max uncompressed payload size"
+    documentation: |-
+      The Agent limits V3 sketches payloads with the `serializer_experimental_use_v3_api.sketches.max_*`
+      settings, falling back to `serializer_max_payload_size` and `serializer_max_uncompressed_payload_size`,
+      with no point limit by default. ADP limits V3 sketches payloads with the series limits:
+      `serializer_max_series_payload_size`, `serializer_max_series_uncompressed_payload_size` and
+      `serializer_max_series_points_per_payload`.
+
   serializer_experimental_use_v3_api.sketches.shadow_sample_rate:
     support: none
     severity: low
@@ -2706,16 +3062,6 @@ inventory:
     support: full
     pipelines: [dogstatsd]
     description: "UDP packet forwarding destination port"
-
-  statsd_metric_blocklist:
-    support: full
-    pipelines: [dogstatsd]
-    description: "List of metric names to block/drop"
-
-  statsd_metric_blocklist_match_prefix:
-    support: full
-    pipelines: [dogstatsd]
-    description: "Treat blocklist entries as prefixes"
 
   statsd_metric_namespace:
     support: full
@@ -2822,6 +3168,29 @@ inventory:
     support: full
     pipelines: [checks, dogstatsd]
     description: "Send series via V2 protobuf endpoint"
+
+  use_v3_api.distributions.enabled:
+    support: none
+    severity: medium
+    planned: true
+    issue: "#3091"
+    pipelines: [dogstatsd]
+    description: "Send sketches using the V3 API"
+    documentation: |-
+      The Agent sends sketches to the V3 intake by default when the destination is a Datadog site
+      (`datadog_only`). ADP sends V3 sketches only to endpoints listed in
+      `serializer_experimental_use_v3_api.sketches.endpoints`, and V2 sketches everywhere else, whatever this
+      key's value.
+
+  use_v3_api.distributions.endpoints:
+    support: none
+    severity: medium
+    planned: true
+    issue: "#3091"
+    pipelines: [dogstatsd]
+    description: "Per-endpoint V3 sketches mode"
+    documentation: |-
+      ADP ignores the per-endpoint V3 sketches modes. See `use_v3_api.distributions.enabled`.
 
   use_v3_api.series.enabled:
     support: full
@@ -2961,6 +3330,7 @@ excluded:
   admission_controller.timeout_seconds: "ignored in initial audit 2026-04-23"
   admission_controller.validation.enabled: "ignored in initial audit 2026-04-23"
   admission_controller.webhook_name: "ignored in initial audit 2026-04-23"
+  agent_checks_metadata_message_truncation_enabled: "2026-11-05: ADP does not currently send inventory metadata payloads."
   agent_ipc.config_refresh_interval: "ignored in initial audit 2026-04-23"
   agent_ipc.grpc_warning_message_size: "2026-06-10 Server-side gRPC interceptor only; ADP is a gRPC client, not a server."
   agent_ipc.host: "ignored in initial audit 2026-04-23"
@@ -3028,7 +3398,7 @@ excluded:
   anomaly_detection.detectors.holt_residual.warmup_points: "2026-09-08 ADP does not currently have an anomaly-detection component; anomaly detection currently runs in the Core Agent."
   anomaly_detection.detectors.log_metrics_extractor.enabled: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
   anomaly_detection.detectors.log_pattern_extractor.enabled: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
-  anomaly_detection.detectors.rrcf.enabled: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
+  anomaly_detection.detectors.log_pattern_extractor.max_patterns: "2026-11-05: ADP does not currently have an anomaly-detection component; anomaly detection currently runs in the Core Agent."
   anomaly_detection.detectors.scanmw.enabled: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
   anomaly_detection.detectors.scanmw.max_points: "2026-09-08 ADP does not currently have an anomaly-detection component; anomaly detection currently runs in the Core Agent."
   anomaly_detection.detectors.scanmw.min_points: "2026-09-08 ADP does not currently have an anomaly-detection component; anomaly detection currently runs in the Core Agent."
@@ -3061,10 +3431,12 @@ excluded:
   anomaly_detection.logs.time_buckets.enabled: "2026-09-08 ADP does not currently have an anomaly-detection component; anomaly detection currently runs in the Core Agent."
   anomaly_detection.logs.time_buckets.idle_ttl: "2026-09-08 ADP does not currently have an anomaly-detection component; anomaly detection currently runs in the Core Agent."
   anomaly_detection.logs.time_buckets.retention: "2026-09-08 ADP does not currently have an anomaly-detection component; anomaly detection currently runs in the Core Agent."
+  anomaly_detection.metrics.allowed_types: "2026-11-05: ADP does not currently have an anomaly-detection component; anomaly detection currently runs in the Core Agent."
   anomaly_detection.metrics.enabled: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
   anomaly_detection.metrics.processing_rules: "2026-09-08 ADP does not currently have an anomaly-detection component; anomaly detection currently runs in the Core Agent."
   anomaly_detection.recording.enabled: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
   anomaly_detection.recording.flush_interval: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
+  anomaly_detection.recording.only: "2026-11-05: ADP does not currently have an anomaly-detection component; anomaly detection currently runs in the Core Agent."
   anomaly_detection.recording.output_dir: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
   anomaly_detection.recording.retention: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
   anomaly_detection.reporting.events.enabled: "2026-09-08 ADP does not currently have an anomaly-detection component; anomaly detection currently runs in the Core Agent."
@@ -3077,7 +3449,6 @@ excluded:
   anomaly_detection.storage.point_retention: "2026-09-08 ADP does not currently have an anomaly-detection component; anomaly detection currently runs in the Core Agent."
   apm_config.additional_endpoints: "ignored in initial audit 2026-04-23"
   apm_config.additional_profile_tags: "ignored in initial audit 2026-04-23"
-  apm_config.apm_dd_url: "ignored in initial audit 2026-04-23"
   apm_config.bucket_size_seconds: "ignored in initial audit 2026-04-23"
   apm_config.client_stats_flush_interval: "ignored in initial audit 2026-04-23"
   apm_config.connection_limit: "ignored in initial audit 2026-04-23"
@@ -3105,7 +3476,8 @@ excluded:
   apm_config.install_id: "ignored in initial audit 2026-04-23"
   apm_config.install_time: "ignored in initial audit 2026-04-23"
   apm_config.install_type: "ignored in initial audit 2026-04-23"
-  apm_config.instrumentation.csi_driver_detection_enabled: "2026-06-10 APM trace/profiling pipeline feature (comp/trace); ADP does not run the trace agent."
+  apm_config.instrumentation.apm_basic.enabled: "2026-11-05: ADP is not currently responsible for running the Kubernetes admission controller."
+  apm_config.instrumentation.apm_basic.tracer_versions: "2026-11-05: ADP is not currently responsible for running the Kubernetes admission controller."
   apm_config.instrumentation.disabled_namespaces: "ignored in initial audit 2026-04-23"
   apm_config.instrumentation.enabled: "ignored in initial audit 2026-04-23"
   apm_config.instrumentation.enabled_namespaces: "ignored in initial audit 2026-04-23"
@@ -3116,6 +3488,7 @@ excluded:
   apm_config.instrumentation.targets: "ignored in initial audit 2026-04-23"
   apm_config.internal_profiling.enabled: "ignored in initial audit 2026-04-23"
   apm_config.log_file: "ignored in initial audit 2026-04-23"
+  apm_config.log_level: "2026-11-05: ADP does not currently support per-Agent log level overrides; ADP logs at the global `log_level`."
   apm_config.max_catalog_services: "ignored in initial audit 2026-04-23"
   apm_config.max_connections: "ignored in initial audit 2026-04-23"
   apm_config.max_cpu_percent: "ignored in initial audit 2026-04-23"
@@ -3175,6 +3548,7 @@ excluded:
   auto_exit.noprocess.excluded_processes: "ignored in initial audit 2026-04-23"
   auto_exit.validation_period: "ignored in initial audit 2026-04-23"
   auto_team_tag_collection: "ignored in initial audit 2026-04-23"
+  autoconf_config_files_num_workers: "2026-11-05: ADP does not currently support checks."
   autoconf_config_files_poll: "ignored in initial audit 2026-04-23"
   autoconf_config_files_poll_interval: "ignored in initial audit 2026-04-23"
   autoconf_template_dir: "ignored in initial audit 2026-04-23"
@@ -3188,6 +3562,12 @@ excluded:
   autoscaling.cluster.spot.fallback_duration: "2026-06-10 Cluster Agent spot-scheduling feature (clusteragent/autoscaling); ADP has no pod-scheduling role."
   autoscaling.cluster.spot.rebalance_stabilization_period: "2026-06-10 Cluster Agent spot-scheduling feature (clusteragent/autoscaling); ADP has no pod-scheduling role."
   autoscaling.cluster.spot.schedule_timeout: "2026-06-10 Cluster Agent spot-scheduling feature (clusteragent/autoscaling); ADP has no pod-scheduling role."
+  autoscaling.endpoint.api_key: "2026-11-05: ADP is not currently responsible for Kubernetes workload autoscaling."
+  autoscaling.endpoint.config_root: "2026-11-05: ADP is not currently responsible for Kubernetes workload autoscaling."
+  autoscaling.endpoint.director_root: "2026-11-05: ADP is not currently responsible for Kubernetes workload autoscaling."
+  autoscaling.endpoint.key: "2026-11-05: ADP is not currently responsible for Kubernetes workload autoscaling."
+  autoscaling.endpoint.site: "2026-11-05: ADP is not currently responsible for Kubernetes workload autoscaling."
+  autoscaling.endpoint.url: "2026-11-05: ADP is not currently responsible for Kubernetes workload autoscaling."
   autoscaling.workload.enabled: "ignored in initial audit 2026-04-23"
   autoscaling.workload.external_recommender.enabled: "2026-09-08 ADP is not currently responsible for Kubernetes workload autoscaling."
   autoscaling.workload.external_recommender.tls.ca_file: "ignored in initial audit 2026-04-23"
@@ -3200,6 +3580,7 @@ excluded:
   azure_hostname_style: "ignored in initial audit 2026-04-23"
   azure_metadata_api_version: "ignored in initial audit 2026-04-23"
   azure_metadata_timeout: "ignored in initial audit 2026-04-23"
+  azure_use_dmi: "2026-11-05: ADP does not currently detect the hostname itself."
   bosh_id: "ignored in initial audit 2026-04-23"
   c_core_dump: "ignored in initial audit 2026-04-23"
   c_stacktrace_collection: "ignored in initial audit 2026-04-23"
@@ -3220,6 +3601,7 @@ excluded:
   check_watchdog_warning_timeout: "ignored in initial audit 2026-04-23"
   checks_tag_cardinality: "ignored in initial audit 2026-04-23"
   clc_runner_enabled: "ignored in initial audit 2026-04-23"
+  clc_runner_group: "2026-11-05: ADP does not currently support checks."
   clc_runner_host: "ignored in initial audit 2026-04-23"
   clc_runner_id: "ignored in initial audit 2026-04-23"
   clc_runner_port: "ignored in initial audit 2026-04-23"
@@ -3259,17 +3641,20 @@ excluded:
   cluster_agent.appsec.injector.mode: "ignored in initial audit 2026-04-23"
   cluster_agent.appsec.injector.processor.service.name: "ignored in initial audit 2026-04-23"
   cluster_agent.appsec.injector.processor.service.namespace: "ignored in initial audit 2026-04-23"
+  cluster_agent.autoscaler_tags.enabled: "2026-11-05: ADP is not currently responsible for collecting Kubernetes autoscaler metadata."
   cluster_agent.client_reconnect_period_seconds: "ignored in initial audit 2026-04-23"
   cluster_agent.cluster_tagger.grpc_max_message_size: "ignored in initial audit 2026-04-23"
   cluster_agent.cmd_port: "ignored in initial audit 2026-04-23"
   cluster_agent.collect_kubernetes_tags: "ignored in initial audit 2026-04-23"
   cluster_agent.isolation_segments_tags: "ignored in initial audit 2026-04-23"
+  cluster_agent.kai_scheduler.enabled: "2026-11-05: ADP is not currently responsible for collecting KAI Scheduler metadata."
   cluster_agent.kube_metadata_collection.enabled: "ignored in initial audit 2026-04-23"
   cluster_agent.kube_metadata_collection.resource_annotations_exclude: "ignored in initial audit 2026-04-23"
   cluster_agent.kube_metadata_collection.resources: "ignored in initial audit 2026-04-23"
   cluster_agent.kubernetes_resources_collection.deployment_annotations_exclude: "ignored in initial audit 2026-04-23"
   cluster_agent.kubernetes_resources_collection.pod_annotations_exclude: "ignored in initial audit 2026-04-23"
   cluster_agent.kueue.enabled: "2026-09-08 ADP is not currently responsible for collecting Kubernetes Kueue metadata."
+  cluster_agent.kueue.pod_template_tags: "2026-11-05: ADP is not currently responsible for collecting Kubernetes Kueue metadata."
   cluster_agent.language_detection.cleanup.language_ttl: "ignored in initial audit 2026-04-23"
   cluster_agent.language_detection.cleanup.period: "ignored in initial audit 2026-04-23"
   cluster_agent.language_detection.patcher.base_backoff: "ignored in initial audit 2026-04-23"
@@ -3296,11 +3681,13 @@ excluded:
   cluster_checks.exclude_checks: "ignored in initial audit 2026-04-23"
   cluster_checks.exclude_checks_from_dispatching: "ignored in initial audit 2026-04-23"
   cluster_checks.extra_tags: "ignored in initial audit 2026-04-23"
+  cluster_checks.instance_sharding_enabled: "2026-11-05: ADP is not currently responsible for scheduling cluster checks."
+  cluster_checks.instance_sharding_exclude_checks: "2026-11-05: ADP is not currently responsible for scheduling cluster checks."
   cluster_checks.ksm_sharding_enabled: "ignored in initial audit 2026-04-23"
   cluster_checks.node_expiration_timeout: "ignored in initial audit 2026-04-23"
   cluster_checks.rebalance_min_percentage_improvement: "ignored in initial audit 2026-04-23"
   cluster_checks.rebalance_period: "ignored in initial audit 2026-04-23"
-  cluster_checks.rebalance_with_utilization: "ignored in initial audit 2026-04-23"
+  cluster_checks.runner_groups: "2026-11-05: ADP is not currently responsible for scheduling cluster checks."
   cluster_checks.stickiness_enabled: "2026-09-08 ADP is not currently responsible for scheduling cluster checks."
   cluster_checks.stickiness_factor: "2026-09-08 ADP is not currently responsible for scheduling cluster checks."
   cluster_checks.stickiness_lower_limit: "2026-09-08 ADP is not currently responsible for scheduling cluster checks."
@@ -3410,6 +3797,7 @@ excluded:
   container_image.use_compression: "ignored in initial audit 2026-04-23"
   container_image.use_v2_api: "ignored in initial audit 2026-04-23"
   container_image.zstd_compression_level: "ignored in initial audit 2026-04-23"
+  container_image_annotations_as_tags: "2026-11-05: ADP does not currently extract tags from container metadata."
   container_include: "ignored in initial audit 2026-04-23"
   container_include_logs: "ignored in initial audit 2026-04-23"
   container_include_metrics: "ignored in initial audit 2026-04-23"
@@ -3469,6 +3857,7 @@ excluded:
   data_plane.preflight_mode: "2026-09-08 The Core Agent controls whether it launches an isolated ADP preflight process."
   data_plane.preflight_mode_duration: "2026-09-08 The Core Agent controls how long the isolated ADP preflight process runs."
   data_security.enabled: "2026-09-08 ADP does not currently run Data Security scans or forward Sensitive Data Scanner results."
+  data_security.enforce_ssl: "2026-11-05: ADP does not currently run Data Security scans or forward Sensitive Data Scanner results."
   data_streams.forwarder.additional_endpoints: "ignored in initial audit 2026-04-23"
   data_streams.forwarder.batch_max_concurrent_send: "ignored in initial audit 2026-04-23"
   data_streams.forwarder.batch_max_content_size: "ignored in initial audit 2026-04-23"
@@ -3572,6 +3961,7 @@ excluded:
   delegated_auth.org_uuid: "ignored in initial audit 2026-04-23"
   delegated_auth.provider: "ignored in initial audit 2026-04-23"
   delegated_auth.refresh_interval_mins: "ignored in initial audit 2026-04-23"
+  delegated_auth.startup_timeout_secs: "2026-11-05: ADP does not currently support delegated authentication."
   disable_cluster_name_tag_key: "ignored in initial audit 2026-04-23"
   disable_py3_validation: "ignored in initial audit 2026-04-23"
   disable_unsafe_yaml: "ignored in initial audit 2026-04-23"
@@ -3689,6 +4079,7 @@ excluded:
   fleet_policies_dir: "ignored in initial audit 2026-04-23"
   gce_metadata_timeout: "ignored in initial audit 2026-04-23"
   gce_send_project_id_tag: "ignored in initial audit 2026-04-23"
+  gce_use_dmi: "2026-11-05: ADP does not currently detect the hostname itself."
   genresources.additional_endpoints: "2026-06-10 Generic Resources event-platform forwarder pipeline; Go Agent only, no ADP involvement."
   genresources.batch_max_concurrent_send: "2026-06-10 Generic Resources event-platform forwarder pipeline; Go Agent only, no ADP involvement."
   genresources.batch_max_content_size: "2026-06-10 Generic Resources event-platform forwarder pipeline; Go Agent only, no ADP involvement."
@@ -3711,11 +4102,17 @@ excluded:
   genresources.use_v2_api: "2026-06-10 Generic Resources event-platform forwarder pipeline; Go Agent only, no ADP involvement."
   genresources.zstd_compression_level: "2026-06-10 Generic Resources event-platform forwarder pipeline; Go Agent only, no ADP involvement."
   go_core_dump: "ignored in initial audit 2026-04-23"
+  gpu.amd.enabled: "2026-11-05: ADP does not currently collect GPU telemetry."
   gpu.collection_interval_override: "2026-09-08 ADP does not currently collect GPU telemetry."
   gpu.disabled_collectors: "ignored in initial audit 2026-04-23"
   gpu.enabled: "ignored in initial audit 2026-04-23"
   gpu.excluded_devices: "2026-09-08 ADP does not currently collect GPU telemetry."
   gpu.integrate_with_workloadmeta_processes: "ignored in initial audit 2026-04-23"
+  gpu.jobs.group.key: "2026-11-05: ADP does not currently collect GPU telemetry."
+  gpu.jobs.group.type: "2026-11-05: ADP does not currently collect GPU telemetry."
+  gpu.jobs.run.key: "2026-11-05: ADP does not currently collect GPU telemetry."
+  gpu.jobs.run.type: "2026-11-05: ADP does not currently collect GPU telemetry."
+  gpu.kai_scheduler.enabled: "2026-11-05: ADP does not currently collect GPU telemetry."
   gpu.legacy_sm_active: "2026-09-08 ADP does not currently collect GPU telemetry."
   gpu.nccl.enabled: "2026-06-10 NCCL GPU core check; runs in Go Agent collector, ADP has no core checks."
   gpu.nccl.host_socket_path: "2026-06-10 NCCL GPU core check; runs in Go Agent collector, ADP has no core checks."
@@ -3723,7 +4120,16 @@ excluded:
   gpu.nvlink.fec_light_error_threshold: "2026-09-08 ADP does not currently collect GPU telemetry."
   gpu.nvml_lib_path: "ignored in initial audit 2026-04-23"
   gpu.parallel_collectors: "2026-09-08 ADP does not currently collect GPU telemetry."
+  gpu.prefer_gr_engine_sm_active: "2026-11-05: ADP does not currently collect GPU telemetry."
+  gpu.readiness_timeout: "2026-11-05: ADP does not currently collect GPU telemetry."
   gpu.sp_process_metrics_request_timeout: "ignored in initial audit 2026-04-23"
+  gpu.static_metrics_reporting_interval: "2026-11-05: ADP does not currently collect GPU telemetry."
+  gpu.tracing.enabled: "2026-11-05: ADP is not currently responsible for running the Kubernetes admission controller."
+  gpu.tracing.tracer_versions: "2026-11-05: ADP is not currently responsible for running the Kubernetes admission controller."
+  gpu.unschedulable_nodes.conditions: "2026-11-05: ADP does not currently collect GPU telemetry."
+  gpu.unschedulable_nodes.enabled: "2026-11-05: ADP does not currently collect GPU telemetry."
+  gpu.unschedulable_nodes.labels: "2026-11-05: ADP does not currently collect GPU telemetry."
+  gpu.unschedulable_nodes.refresh_interval: "2026-11-05: ADP does not currently collect GPU telemetry."
   gpu.use_sp_process_metrics: "ignored in initial audit 2026-04-23"
   gpu.workload_tag_cache_size: "ignored in initial audit 2026-04-23"
   ha_agent.enabled: "ignored in initial audit 2026-04-23"
@@ -3733,6 +4139,7 @@ excluded:
   health_platform.invalidconfig_check.enabled: "2026-06-10 Health platform subsystem; sibling keys excluded in Apr 2026 audit."
   health_platform.invalidsysprobeconfig_check.enabled: "2026-09-08 ADP does not currently run the Health Platform invalid system-probe configuration check."
   health_platform.persist_on_kubernetes: "ignored in initial audit 2026-04-23"
+  health_platform.persist_remotely_on_kubernetes: "2026-11-05: ADP does not currently support the Health Platform."
   health_port: "ignored in initial audit 2026-04-23"
   host_aliases: "ignored in initial audit 2026-04-23"
   hostname_drift_initial_delay: "ignored in initial audit 2026-04-23"
@@ -3741,15 +4148,25 @@ excluded:
   hostname_force_config_as_canonical: "ignored in initial audit 2026-04-23"
   hostname_fqdn: "ignored in initial audit 2026-04-23"
   hostname_trust_uts_namespace: "ignored in initial audit 2026-04-23"
+  hostname_use_serial: "2026-11-05: ADP does not currently detect the hostname itself."
   hostprofiler.additional_http_headers: "ignored in initial audit 2026-04-23"
   hostprofiler.ddprofiling.enabled: "ignored in initial audit 2026-04-23"
   hostprofiler.ddprofiling.period: "ignored in initial audit 2026-04-23"
   hostprofiler.ddprofiling.port: "2026-09-08 ADP does not currently run or configure the Host Profiler."
-  hostprofiler.debug.verbosity: "ignored in initial audit 2026-04-23"
+  hostprofiler.debug.ebpf_logs: "2026-11-05: ADP does not currently run or configure the Host Profiler."
+  hostprofiler.debug.exporter.verbosity: "2026-11-05: ADP does not currently run or configure the Host Profiler."
+  hostprofiler.filter_min_process_age: "2026-11-05: ADP does not currently run or configure the Host Profiler."
   hostprofiler.health_metrics.enabled: "2026-06-10 Host profiler subsystem; sibling keys excluded in Apr 2026 audit."
   hostprofiler.health_metrics.target: "2026-06-10 Host profiler health metrics scrape target; same excluded subsystem."
   hostprofiler.hpflare.port: "2026-06-10 Host profiler hpflare listener port; same excluded subsystem."
+  hostprofiler.include_env_vars: "2026-11-05: ADP does not currently run or configure the Host Profiler."
   hostprofiler.log_file: "2026-09-08 ADP does not currently run or configure the Host Profiler."
+  hostprofiler.reporter_interval: "2026-11-05: ADP does not currently run or configure the Host Profiler."
+  hostprofiler.send_error_frames: "2026-11-05: ADP does not currently run or configure the Host Profiler."
+  hostprofiler.symbol_uploader.enabled: "2026-11-05: ADP does not currently run or configure the Host Profiler."
+  hostprofiler.symbol_uploader.options: "2026-11-05: ADP does not currently run or configure the Host Profiler."
+  hostprofiler.symbol_uploader.report.interval: "2026-11-05: ADP does not currently run or configure the Host Profiler."
+  hostprofiler.symbol_uploader.report.max_paths_per_report: "2026-11-05: ADP does not currently run or configure the Host Profiler."
   hpa_configmap_name: "ignored in initial audit 2026-04-23"
   hpa_watcher_gc_period: "ignored in initial audit 2026-04-23"
   hpa_watcher_polling_freq: "ignored in initial audit 2026-04-23"
@@ -3769,7 +4186,6 @@ excluded:
   instrumentation_crd_controller.enabled: "2026-06-10 K8s CRD controller for APM auto-instrumentation; Cluster Agent concern."
   integration.additional: "ignored in initial audit 2026-04-23"
   integration.basic.allowed: "ignored in initial audit 2026-04-23"
-  integration.cloud_cost_only.tagged: "2026-09-08 ADP does not currently load Agent integrations or apply cloud-cost-only check filtering."
   integration.enabled: "ignored in initial audit 2026-04-23"
   integration.end_user_device.allowed: "ignored in initial audit 2026-04-23"
   integration.excluded: "ignored in initial audit 2026-04-23"
@@ -3849,6 +4265,8 @@ excluded:
   kubeactions.forwarder.use_compression: "2026-06-10 Cluster Agent kubeactions event-platform forwarder; Cluster Agent only, no ADP involvement."
   kubeactions.forwarder.use_v2_api: "2026-06-10 Cluster Agent kubeactions event-platform forwarder; Cluster Agent only, no ADP involvement."
   kubeactions.forwarder.zstd_compression_level: "2026-06-10 Cluster Agent kubeactions event-platform forwarder; Cluster Agent only, no ADP involvement."
+  kubeactions.private_action_runner.enabled: "2026-11-05: ADP does not currently run Kubernetes Actions."
+  kubeactions.remote_config.enabled: "2026-11-05: ADP does not currently run Kubernetes Actions."
   kubelet_auth_token_path: "ignored in initial audit 2026-04-23"
   kubelet_cache_pods_duration: "ignored in initial audit 2026-04-23"
   kubelet_client_ca: "ignored in initial audit 2026-04-23"
@@ -3928,7 +4346,6 @@ excluded:
   logs_config.auto_multi_line_default_sample_size: "ignored in initial audit 2026-04-23"
   logs_config.auto_multi_line_detection: "ignored in initial audit 2026-04-23"
   logs_config.auto_multi_line_detection_custom_samples: "ignored in initial audit 2026-04-23"
-  logs_config.auto_multi_line_detection_tagging: "ignored in initial audit 2026-04-23"
   logs_config.auto_multi_line_extra_patterns: "ignored in initial audit 2026-04-23"
   logs_config.batch_max_concurrent_send: "ignored in initial audit 2026-04-23"
   logs_config.batch_max_content_size: "ignored in initial audit 2026-04-23"
@@ -4017,9 +4434,12 @@ excluded:
   logs_config.socks5_proxy_address: "ignored in initial audit 2026-04-23"
   logs_config.stop_grace_period: "ignored in initial audit 2026-04-23"
   logs_config.streaming.streamlogs_log_file: "ignored in initial audit 2026-04-23"
+  logs_config.tag_filters: "2026-11-05: ADP does not currently support logs processing."
   logs_config.tag_multi_line_logs: "ignored in initial audit 2026-04-23"
   logs_config.tag_truncated_logs: "ignored in initial audit 2026-04-23"
   logs_config.tagger_warmup_duration: "ignored in initial audit 2026-04-23"
+  logs_config.unreliable_mount.enabled: "2026-11-05: ADP does not currently support logs processing."
+  logs_config.unreliable_mount.rotation_drain_timeout: "2026-11-05: ADP does not currently support logs processing."
   logs_config.use_compression: "ignored in initial audit 2026-04-23"
   logs_config.use_container_timestamp: "2026-06-10 Container file log timestamp mode; ADP has no container log file source."
   logs_config.use_http: "ignored in initial audit 2026-04-23"
@@ -4037,9 +4457,10 @@ excluded:
   metadata_ip_resolution_from_hostname: "ignored in initial audit 2026-04-23"
   metadata_provider_stop_timeout: "ignored in initial audit 2026-04-23"
   metadata_providers: "ignored in initial audit 2026-04-23"
+  metadata_skip_secrets: "2026-11-05: ADP does not currently send inventory metadata payloads."
   metric_lookback.collection_interval: "2026-09-08 ADP does not currently support checks."
   metric_lookback.enabled_checks: "2026-09-08 ADP does not currently support checks."
-  metric_tag_filterlist_adp_only: "2026-06-10 Gate controlling whether tag filtering applies only when ADP is enabled; full-agent-only key, ADP always applies filtering unconditionally."
+  metric_tag_filterlist_adp_only: "2026-11-05: Gate controlling whether the core Agent applies `metric_tag_filterlist` only when ADP is enabled; ADP always applies the filter."
   metrics_port: "ignored in initial audit 2026-04-23"
   multi_region_failover.failover_apm: "ignored in initial audit 2026-04-23"
   multi_region_failover.failover_logs: "ignored in initial audit 2026-04-23"
@@ -4160,6 +4581,7 @@ excluded:
   network_devices.netflow.listeners: "ignored in initial audit 2026-04-23"
   network_devices.netflow.reverse_dns_enrichment_enabled: "ignored in initial audit 2026-04-23"
   network_devices.netflow.stop_timeout: "ignored in initial audit 2026-04-23"
+  network_devices.remote_config.enabled: "2026-11-05: ADP does not currently scan SNMP devices."
   network_devices.snmp_traps.bind_host: "ignored in initial audit 2026-04-23"
   network_devices.snmp_traps.community_strings: "ignored in initial audit 2026-04-23"
   network_devices.snmp_traps.enabled: "ignored in initial audit 2026-04-23"
@@ -4215,6 +4637,8 @@ excluded:
   network_path.collector.workers: "ignored in initial audit 2026-04-23"
   network_path.connections_monitoring.basic_tests_enabled: "2026-09-08 ADP does not currently run the Network Path collector."
   network_path.connections_monitoring.enabled: "ignored in initial audit 2026-04-23"
+  network_path.connections_monitoring.eudm_basic_candidate_limit: "2026-11-05: ADP does not currently run the Network Path collector."
+  network_path.connections_monitoring.eudm_basic_tests_enabled: "2026-11-05: ADP does not currently run the Network Path collector."
   network_path.forwarder.additional_endpoints: "ignored in initial audit 2026-04-23"
   network_path.forwarder.batch_max_concurrent_send: "ignored in initial audit 2026-04-23"
   network_path.forwarder.batch_max_content_size: "ignored in initial audit 2026-04-23"
@@ -4238,6 +4662,27 @@ excluded:
   network_path.forwarder.zstd_compression_level: "ignored in initial audit 2026-04-23"
   network_path.netflow_monitoring.enabled: "2026-09-08 ADP does not currently run the Network Path collector."
   network_path.remote_config.enabled: "2026-09-08 ADP does not currently run the Network Path collector."
+  network_pcap.forwarder.additional_endpoints: "2026-11-05: ADP does not currently support remote packet capture."
+  network_pcap.forwarder.batch_max_concurrent_send: "2026-11-05: ADP does not currently support remote packet capture."
+  network_pcap.forwarder.batch_max_content_size: "2026-11-05: ADP does not currently support remote packet capture."
+  network_pcap.forwarder.batch_max_size: "2026-11-05: ADP does not currently support remote packet capture."
+  network_pcap.forwarder.batch_wait: "2026-11-05: ADP does not currently support remote packet capture."
+  network_pcap.forwarder.compression_kind: "2026-11-05: ADP does not currently support remote packet capture."
+  network_pcap.forwarder.compression_level: "2026-11-05: ADP does not currently support remote packet capture."
+  network_pcap.forwarder.connection_reset_interval: "2026-11-05: ADP does not currently support remote packet capture."
+  network_pcap.forwarder.dd_url: "2026-11-05: ADP does not currently support remote packet capture."
+  network_pcap.forwarder.dev_mode_no_ssl: "2026-11-05: ADP does not currently support remote packet capture."
+  network_pcap.forwarder.input_chan_size: "2026-11-05: ADP does not currently support remote packet capture."
+  network_pcap.forwarder.logs_dd_url: "2026-11-05: ADP does not currently support remote packet capture."
+  network_pcap.forwarder.logs_no_ssl: "2026-11-05: ADP does not currently support remote packet capture."
+  network_pcap.forwarder.sender_backoff_base: "2026-11-05: ADP does not currently support remote packet capture."
+  network_pcap.forwarder.sender_backoff_factor: "2026-11-05: ADP does not currently support remote packet capture."
+  network_pcap.forwarder.sender_backoff_max: "2026-11-05: ADP does not currently support remote packet capture."
+  network_pcap.forwarder.sender_recovery_interval: "2026-11-05: ADP does not currently support remote packet capture."
+  network_pcap.forwarder.sender_recovery_reset: "2026-11-05: ADP does not currently support remote packet capture."
+  network_pcap.forwarder.use_compression: "2026-11-05: ADP does not currently support remote packet capture."
+  network_pcap.forwarder.use_v2_api: "2026-11-05: ADP does not currently support remote packet capture."
+  network_pcap.forwarder.zstd_compression_level: "2026-11-05: ADP does not currently support remote packet capture."
   notable_events.enabled: "ignored in initial audit 2026-04-23"
   observability_pipelines_worker.logs.dual_ship: "2026-06-10 Logs-only OPW dual-ship; RefImpl comment confirms no metrics equivalent."
   observability_pipelines_worker.logs.dual_ship_reliable: "2026-06-10 Logs-only OPW dual-ship backpressure; same exclusion rationale."
@@ -4265,6 +4710,7 @@ excluded:
   orchestrator_explorer.custom_sensitive_words: "ignored in initial audit 2026-04-23"
   orchestrator_explorer.enabled: "ignored in initial audit 2026-04-23"
   orchestrator_explorer.extra_tags: "ignored in initial audit 2026-04-23"
+  orchestrator_explorer.helm_releases.configmaps.enabled: "2026-11-05: ADP does not currently run the Orchestrator Explorer collectors."
   orchestrator_explorer.kubelet_config_check.enabled: "ignored in initial audit 2026-04-23"
   orchestrator_explorer.manifest_collection.buffer_flush_interval: "ignored in initial audit 2026-04-23"
   orchestrator_explorer.manifest_collection.buffer_manifest: "ignored in initial audit 2026-04-23"
@@ -4274,7 +4720,6 @@ excluded:
   orchestrator_explorer.orchestrator_additional_endpoints: "ignored in initial audit 2026-04-23"
   orchestrator_explorer.orchestrator_dd_url: "ignored in initial audit 2026-04-23"
   orchestrator_explorer.terminated_pods.enabled: "ignored in initial audit 2026-04-23"
-  orchestrator_explorer.terminated_pods_improved.enabled: "ignored in initial audit 2026-04-23"
   orchestrator_explorer.terminated_resources.enabled: "ignored in initial audit 2026-04-23"
   orchestrator_explorer.use_legacy_endpoint: "ignored in initial audit 2026-04-23"
   otel_standalone: "ignored in initial audit 2026-04-23"
@@ -4284,8 +4729,14 @@ excluded:
   otelcollector.extension_timeout: "ignored in initial audit 2026-04-23"
   otelcollector.extension_url: "ignored in initial audit 2026-04-23"
   otelcollector.flare.timeout: "ignored in initial audit 2026-04-23"
+  otelcollector.gateway.daemonset: "2026-11-05: ADP does not currently run or configure the embedded OpenTelemetry Collector (DDOT)."
   otelcollector.gateway.mode: "ignored in initial audit 2026-04-23"
   otelcollector.installation_method: "ignored in initial audit 2026-04-23"
+  otelcollector.opamp.endpoint: "2026-11-05: ADP does not currently run or configure the embedded OpenTelemetry Collector (DDOT)."
+  otelcollector.opamp.reports_raw_config: "2026-11-05: ADP does not currently run or configure the embedded OpenTelemetry Collector (DDOT)."
+  otelcollector.standalone.node_from_env_var: "2026-11-05: ADP does not currently run or configure the embedded OpenTelemetry Collector (DDOT)."
+  otelcollector.standalone.telemetry_resource_cluster_name: "2026-11-05: ADP does not currently run or configure the embedded OpenTelemetry Collector (DDOT)."
+  otelcollector.standalone.use_kubelet_collector: "2026-11-05: ADP does not currently run or configure the embedded OpenTelemetry Collector (DDOT)."
   otelcollector.submit_dummy_metadata: "ignored in initial audit 2026-04-23"
   otlp_config.debug.verbosity: "ignored in initial audit 2026-04-23"
   otlp_config.grpc_port: "ignored in initial audit 2026-04-23"
@@ -4299,8 +4750,8 @@ excluded:
   podman_db_path: "ignored in initial audit 2026-04-23"
   prioritize_go_check_loader: "ignored in initial audit 2026-04-23"
   private_action_runner.actions_allowlist: "ignored in initial audit 2026-04-23"
-  private_action_runner.agent_secret_management_enabled: "2026-09-08 ADP does not currently run or configure the Private Action Runner."
   private_action_runner.api_key_only_enrollment: "2026-06-10 Private Action Runner is a standalone Go Agent component; no ADP integration."
+  private_action_runner.credentials.values: "2026-11-05: ADP does not currently run or configure the Private Action Runner."
   private_action_runner.default_actions_enabled: "2026-06-10 Private Action Runner is a standalone Go Agent component; no ADP integration."
   private_action_runner.enabled: "ignored in initial audit 2026-04-23"
   private_action_runner.executor.socket_path: "2026-09-08 ADP does not currently run or configure the Private Action Runner."
@@ -4311,13 +4762,16 @@ excluded:
   private_action_runner.identity_secret_name: "ignored in second bulk edit 2026-05-06"
   private_action_runner.identity_use_k8s_secret: "ignored in second bulk edit 2026-05-06"
   private_action_runner.idle_timeout_seconds: "2026-09-08 ADP does not currently run or configure the Private Action Runner."
+  private_action_runner.kubernetes_allowed_custom_resources: "2026-11-05: ADP does not currently run or configure the Private Action Runner."
   private_action_runner.log_file: "ignored in second bulk edit 2026-05-06"
   private_action_runner.opms_extra_headers: "2026-06-10 Private Action Runner is a standalone Go Agent component; no ADP integration."
+  private_action_runner.par_dd_url: "2026-11-05: ADP does not currently run or configure the Private Action Runner."
   private_action_runner.private_key: "ignored in second bulk edit 2026-05-06"
   private_action_runner.restricted_shell.allowed_commands: "2026-06-10 Private Action Runner is a standalone Go Agent component; no ADP integration."
   private_action_runner.restricted_shell.allowed_paths: "2026-06-10 Private Action Runner is a standalone Go Agent component; no ADP integration."
   private_action_runner.restricted_shell.allowed_system_services: "2026-09-08 ADP does not currently run or configure the Private Action Runner."
   private_action_runner.restricted_shell.disable_detailed_telemetry: "2026-09-08 ADP does not currently run or configure the Private Action Runner."
+  private_action_runner.restricted_shell.privileged.elevatable_commands: "2026-11-05: ADP does not currently run or configure the Private Action Runner."
   private_action_runner.restricted_shell.privileged.enabled: "2026-09-08 ADP does not currently run or configure the Private Action Runner."
   private_action_runner.restricted_shell.privileged.socket: "2026-09-08 ADP does not currently run or configure the Private Action Runner."
   private_action_runner.self_enroll: "ignored in initial audit 2026-04-23"
@@ -4349,6 +4803,7 @@ excluded:
   process_config.intervals.process_realtime: "ignored in initial audit 2026-04-23"
   process_config.language_detection.grpc_port: "ignored in initial audit 2026-04-23"
   process_config.log_file: "ignored in initial audit 2026-04-23"
+  process_config.log_level: "2026-11-05: ADP does not currently support per-Agent log level overrides; ADP logs at the global `log_level`."
   process_config.max_message_bytes: "ignored in initial audit 2026-04-23"
   process_config.max_per_message: "ignored in initial audit 2026-04-23"
   process_config.orchestrator_additional_endpoints: "ignored in initial audit 2026-04-23"
@@ -4382,10 +4837,6 @@ excluded:
   remote_agent.registry.query_timeout: "ignored in initial audit 2026-04-23"
   remote_agent.registry.recommended_refresh_interval: "ignored in initial audit 2026-04-23"
   remote_configuration.agent_config.enabled: "2026-06-10 Trace-agent AGENT_CONFIG RC subscription; APM/trace concern outside ADP scope."
-  remote_configuration.agent_integrations.allow_list: "ignored in initial audit 2026-04-23"
-  remote_configuration.agent_integrations.allow_log_config_scheduling: "ignored in initial audit 2026-04-23"
-  remote_configuration.agent_integrations.block_list: "ignored in initial audit 2026-04-23"
-  remote_configuration.agent_integrations.enabled: "ignored in initial audit 2026-04-23"
   remote_configuration.api_key: "ignored in initial audit 2026-04-23"
   remote_configuration.clients.cache_bypass_limit: "ignored in initial audit 2026-04-23"
   remote_configuration.clients.ttl_seconds: "ignored in initial audit 2026-04-23"
@@ -4505,6 +4956,7 @@ excluded:
   sbom.host.additional_directories: "ignored in initial audit 2026-04-23"
   sbom.host.analyzers: "ignored in initial audit 2026-04-23"
   sbom.host.enabled: "ignored in initial audit 2026-04-23"
+  sbom.host.scan_timeout: "2026-11-05: ADP does not currently generate SBOMs."
   sbom.input_chan_size: "ignored in initial audit 2026-04-23"
   sbom.logs_dd_url: "ignored in initial audit 2026-04-23"
   sbom.logs_no_ssl: "ignored in initial audit 2026-04-23"
@@ -4574,9 +5026,13 @@ excluded:
   security_agent.internal_profiling.site: "ignored in initial audit 2026-04-23"
   security_agent.internal_profiling.unix_socket: "ignored in initial audit 2026-04-23"
   security_agent.log_file: "ignored in initial audit 2026-04-23"
+  security_agent.log_level: "2026-11-05: ADP does not currently support per-Agent log level overrides; ADP logs at the global `log_level`."
   server_timeout: "ignored in initial audit 2026-04-23"
   serverless.enabled: "ignored in initial audit 2026-04-23"
   serverless.logs_enabled: "ignored in initial audit 2026-04-23"
+  serverless.metadata_enabled: "2026-11-05: ADP does not currently support serverless environments."
+  serverless.metadata_runtime: "2026-11-05: ADP does not currently support serverless environments."
+  serverless.metadata_wrapped_command_enabled: "2026-11-05: ADP does not currently support serverless environments."
   serverless.service_mapping: "ignored in initial audit 2026-04-23"
   serverless.trace_enabled: "ignored in initial audit 2026-04-23"
   serverless.trace_managed_services: "ignored in initial audit 2026-04-23"
@@ -4671,6 +5127,7 @@ excluded:
   synthetics.forwarder.use_compression: "ignored in initial audit 2026-04-23"
   synthetics.forwarder.use_v2_api: "ignored in initial audit 2026-04-23"
   synthetics.forwarder.zstd_compression_level: "ignored in initial audit 2026-04-23"
+  system_probe.log_level: "2026-11-05: ADP does not currently support per-Agent log level overrides; ADP logs at the global `log_level`."
   system_tray.log_file: "ignored in initial audit 2026-04-23"
   tag_value_split_separator: "ignored in initial audit 2026-04-23"
   telemetry.checks: "ignored in initial audit 2026-04-23"

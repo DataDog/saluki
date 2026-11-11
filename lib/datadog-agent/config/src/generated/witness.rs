@@ -134,6 +134,10 @@ pub trait DatadogConfigWitness {
     fn consume_enable_payloads_sketches(&mut self, value: bool);
     fn consume_env(&mut self, value: String);
     fn consume_expected_tags_duration(&mut self, value: std::time::Duration);
+    fn consume_experimental_metrics_endpoint_routing_metric_allowlist(&mut self, value: HashMap<String, Vec<String>>);
+    fn consume_experimental_metrics_endpoint_routing_metric_prefix_allowlist(
+        &mut self, value: HashMap<String, Vec<String>>,
+    );
     fn consume_extra_tags(&mut self, value: Vec<String>);
     fn consume_forwarder_apikey_validation_interval(&mut self, value: i64);
     fn consume_forwarder_backoff_base(&mut self, value: f64);
@@ -259,8 +263,6 @@ pub trait DatadogConfigWitness {
     fn consume_sslkeylogfile(&mut self, value: String);
     fn consume_statsd_forward_host(&mut self, value: String);
     fn consume_statsd_forward_port(&mut self, value: i64);
-    fn consume_statsd_metric_blocklist(&mut self, value: Vec<String>);
-    fn consume_statsd_metric_blocklist_match_prefix(&mut self, value: bool);
     fn consume_statsd_metric_namespace(&mut self, value: String);
     fn consume_statsd_metric_namespace_blacklist(&mut self, value: Vec<String>);
     fn consume_syslog_rfc(&mut self, value: bool);
@@ -452,6 +454,16 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_enable_payloads_sketches(config.enable_payloads.sketches.clone());
     consumer.consume_env(config.env.clone());
     consumer.consume_expected_tags_duration(config.expected_tags_duration.clone());
+    consumer.consume_experimental_metrics_endpoint_routing_metric_allowlist(
+        config.experimental.metrics_endpoint_routing.metric_allowlist.clone(),
+    );
+    consumer.consume_experimental_metrics_endpoint_routing_metric_prefix_allowlist(
+        config
+            .experimental
+            .metrics_endpoint_routing
+            .metric_prefix_allowlist
+            .clone(),
+    );
     consumer.consume_extra_tags(config.extra_tags.clone());
     consumer.consume_forwarder_apikey_validation_interval(config.forwarder_apikey_validation_interval.clone());
     consumer.consume_forwarder_backoff_base(config.forwarder_backoff_base.clone());
@@ -700,8 +712,6 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_sslkeylogfile(config.sslkeylogfile.clone());
     consumer.consume_statsd_forward_host(config.statsd_forward_host.clone());
     consumer.consume_statsd_forward_port(config.statsd_forward_port.clone());
-    consumer.consume_statsd_metric_blocklist(config.statsd_metric_blocklist.clone());
-    consumer.consume_statsd_metric_blocklist_match_prefix(config.statsd_metric_blocklist_match_prefix.clone());
     consumer.consume_statsd_metric_namespace(config.statsd_metric_namespace.clone());
     consumer.consume_statsd_metric_namespace_blacklist(config.statsd_metric_namespace_blacklist.clone());
     consumer.consume_syslog_rfc(config.syslog_rfc.clone());
