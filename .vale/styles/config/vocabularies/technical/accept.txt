@@ -219,6 +219,7 @@ dataspace
 filterlist
 filterprocessor
 panoramic
+stele
 transformprocessor
 schema
 integrator
