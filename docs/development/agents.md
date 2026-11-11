@@ -9,11 +9,11 @@ any work, then read the linked pages relevant to your task.
 Use of LLMs while working on Saluki is **absolutely fine**. This covers all aspects of working on the project: feature
 development, testing, debugging, and so on.
 
-However, we don't allow fully autonomous or unsupervised development by agents. In practice:
+However, we don't allow fully autonomous or unsupervised commits to main or release branches. In practice:
 
-- a human operator using LLMs as part of their workflow is **OK**
-- setting up agents to run autonomously is **NOT OK**
-- a human operator reviews every contribution before submission
+- a human operator may use LLMs as part of their workflow
+- setting up agents to run autonomously is fine
+- so long as a human operator reviews every contribution before merging
 
 These rules have a single goal: keep human operators part of the development process, so that we maintain the quality
 of the software and don't lose understanding of what we're building.
