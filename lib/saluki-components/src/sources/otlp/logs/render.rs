@@ -575,10 +575,8 @@ mod tests {
         let ordinary_capacity = renderer.fields.capacity();
         assert!(ordinary_capacity >= 104);
 
-        // A log with as many fields reuses the field list.
-        renderer
-            .render(&log_with_properties("m", properties(100)))
-            .expect("log should render");
+        // A log with fewer fields keeps the field list the earlier log grew.
+        renderer.render(&Log::new("m")).expect("log should render");
         assert_eq!(renderer.fields.capacity(), ordinary_capacity);
 
         // A log with more fields than the limit renders in full, then has the excess released.
