@@ -86,7 +86,8 @@ guidelines for both prose documentation (Markdown) and code documentation (rustd
 All documentation lives under `docs/`, and all development guidance lives under `docs/development/`. New pages and
 sections **MUST** go there, whether you're updating an existing page or proposing a new one. Don't add new READMEs or
 other Markdown files next to code. Add every new page to the sidebar in `docs/.vitepress/config.mts`, and preview the
-site locally with `make run-docs`.
+site locally with `make run-docs`. Run `make generate-docs` to build the site in `docs/.vitepress/dist`, or
+`make generate-api-docs` to build the Rust API documentation in `target/doc`.
 
 The only exceptions are entrypoint files whose location is fixed by tooling, such as `AGENTS.md`,
 `.claude/CLAUDE.md`, skills under `.agents/skills/`, and `codereview_guideline.md` files. Keep these as thin pointers

@@ -945,6 +945,13 @@ ifeq ($(shell command -v bun >/dev/null || echo not-found), not-found)
 	$(error "Please install Bun: https://bun.sh/docs/installation")
 endif
 
+.PHONY: generate-docs
+generate-docs: check-js-build-tools
+generate-docs: ## Builds the documentation site
+	@echo "[*] Building documentation site..."
+	@bun install
+	@bun run docs:build
+
 .PHONY: run-docs
 run-docs: check-js-build-tools
 run-docs: ## Runs a local development server for documentation
