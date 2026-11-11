@@ -1,0 +1,5 @@
+---
+fixes:
+  - |
+    While ``expected_tags_duration`` attaches host tags to metrics, host tags of the form ``infra_mode:<value>`` are
+    no longer attached, matching the Datadog Agent.

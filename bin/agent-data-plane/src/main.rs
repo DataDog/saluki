@@ -127,6 +127,7 @@ async fn async_main(started: Instant) -> Result<(), GenericError> {
              Dotted and differently cased Datadog settings may be ignored. Use nested lowercase setting names."
         );
     }
+    local_config.warn_deprecated_names();
 
     // Bootstrap-integration probe: proves the Antithesis SDK is linked, cataloging works, and the
     // instrumentation path is wired.

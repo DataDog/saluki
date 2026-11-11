@@ -1,0 +1,9 @@
+# Supplies a list-of-maps setting, which has no env parser, as a JSON environment string.
+# Shows that the Agent decodes the JSON at load, so the value is stored, streamed and read as a
+# list of maps rather than as the raw string.
+name: env-list-of-maps-json
+group: behavior
+why: [env-list-of-maps-json-decoded]
+env:
+  DD_METRIC_TAG_FILTERLIST: '[{"metric_name":"m","tags":["t"]}]'
+keys: [metric_tag_filterlist]

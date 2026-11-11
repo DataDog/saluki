@@ -43,6 +43,9 @@ var primaryGetters = map[string][]string{
 	"map[string][]string":     {"GetStringMapStringSlice"},
 	"map[string]float64":      {"GetStringMap"},
 	"map[string]int":          {"GetStringMap"},
+	// A map of maps has no typed getter; the Agent reads its one such key
+	// (private_action_runner.credentials.values) with Get and decodes the result itself.
+	"map[string]map[string]interface {}": {"Get"},
 }
 
 // Tags are the schema annotations that may add secondary getters to a key.

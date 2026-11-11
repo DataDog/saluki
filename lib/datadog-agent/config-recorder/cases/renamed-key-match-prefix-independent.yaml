@@ -1,0 +1,15 @@
+# Sets metric_filterlist under its current name and match-prefix only under its deprecated name
+# statsd_metric_blocklist_match_prefix, in datadog.yaml.
+# Shows that each key is renamed on its own: the deprecated match-prefix value applies alongside
+# the current-name list, rather than pairing with the list it was named after.
+name: renamed-key-match-prefix-independent
+group: behavior
+why: [deprecated-name-renamed-per-key]
+yaml: |
+  metric_filterlist: [new.metric]
+  statsd_metric_blocklist_match_prefix: true
+keys:
+  - {key: metric_filterlist, getters: [GetStringSlice, Get]}
+  - {key: metric_filterlist_match_prefix, getters: [GetBool, Get]}
+  - {key: statsd_metric_blocklist, getters: [GetStringSlice, Get]}
+  - {key: statsd_metric_blocklist_match_prefix, getters: [GetBool, Get]}

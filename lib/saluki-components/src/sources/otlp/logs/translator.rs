@@ -114,7 +114,7 @@ mod tests {
     use otlp_protos::opentelemetry::proto::common::v1::{self as otlp_common};
     use otlp_protos::opentelemetry::proto::logs::v1 as otlp_logs_v1;
     use otlp_protos::opentelemetry::proto::resource::v1 as otlp_resource_v1;
-    use saluki_core::data_model::event::log::{Log, LogStatus};
+    use saluki_core::data_model::event::log::Log;
     use saluki_core::data_model::event::Event;
     use serde_json::Value as JsonValue;
 
@@ -216,7 +216,7 @@ mod tests {
         let log = translate_log(lr.clone(), empty_resource(), None);
 
         assert_eq!(log.message(), "test message");
-        assert_eq!(log.status(), Some(LogStatus::Debug));
+        assert_eq!(log.status(), "debug");
         let props = log.additional_properties();
         assert_eq!(props.get("app"), Some(&JsonValue::String("test".to_string())));
         assert_eq!(
@@ -447,7 +447,7 @@ mod tests {
             event_name: String::new(),
         };
         let log = translate_log(lr, empty_resource(), None);
-        assert_eq!(log.status(), Some(LogStatus::Alert));
+        assert_eq!(log.status(), "alert");
         let props = log.additional_properties();
         assert_eq!(
             props.get("otel.severity_text"),
@@ -477,7 +477,7 @@ mod tests {
         };
         let log = translate_log(lr, empty_resource(), None);
         assert_eq!(log.message(), "This is log");
-        assert_eq!(log.status(), Some(LogStatus::Warning));
+        assert_eq!(log.status(), "warn");
         let props = log.additional_properties();
         assert_eq!(
             props.get("otel.severity_number"),
@@ -506,7 +506,7 @@ mod tests {
         };
         let log = translate_log(lr, empty_resource(), None);
         assert_eq!(log.message(), "This is log");
-        assert_eq!(log.status(), Some(LogStatus::Error));
+        assert_eq!(log.status(), "error");
     }
 
     #[test]
@@ -621,7 +621,8 @@ mod tests {
             Some(&JsonValue::String("val2".to_string()))
         );
         assert_eq!(props.get("root.nest6"), Some(&JsonValue::String("val3".to_string())));
-        assert_eq!(log.status(), Some(LogStatus::Trace));
+        // Severity number 0 has no name, so a log with no other status has none.
+        assert_eq!(log.status(), "");
     }
 
     #[test]

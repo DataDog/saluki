@@ -39,9 +39,8 @@
 //! - [`Status::KnownBug`]: ADP is wrong today; the desired result is the Agent's. The entry pins
 //!   today's result, and fails with "remove this check's known-bug expectation" once ADP matches.
 //! - [`Status::Intentional`]: ADP deliberately differs, or the difference cannot be removed by ADP
-//!   (the Agent's wire format loses a number, the Agent writes a value only at startup, the raw
-//!   `Get` of a JSON environment variable returns the raw string). The entry pins the exact
-//!   result and the reason.
+//!   (the Agent's wire format loses a number, the Agent writes a value only at startup). The entry
+//!   pins the exact result and the reason.
 //!
 //! A panic in a production call is not an expected result: it always fails.
 //!

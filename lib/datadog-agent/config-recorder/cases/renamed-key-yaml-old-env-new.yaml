@@ -1,0 +1,17 @@
+# Sets the deprecated names in datadog.yaml and the current names by environment variable.
+# Shows that the current-name environment value outranks the deprecated-name file value by
+# ordinary source order.
+name: renamed-key-yaml-old-env-new
+group: behavior
+why: [deprecated-name-resolved-per-source]
+yaml: |
+  statsd_metric_blocklist: [old.metric]
+  statsd_metric_blocklist_match_prefix: true
+env:
+  DD_METRIC_FILTERLIST: "new.metric"
+  DD_METRIC_FILTERLIST_MATCH_PREFIX: "false"
+keys:
+  - {key: metric_filterlist, getters: [GetStringSlice, Get]}
+  - {key: metric_filterlist_match_prefix, getters: [GetBool, Get]}
+  - {key: statsd_metric_blocklist, getters: [GetStringSlice, Get]}
+  - {key: statsd_metric_blocklist_match_prefix, getters: [GetBool, Get]}

@@ -351,8 +351,10 @@ impl SchemaOverlay {
                 format!("{}.{}", prefix, name)
             };
             // `$ref`s have already been inlined by `load_resolved_schema`, so a node either
-            // carries `properties` (recurse) or is a leaf key.
-            if let Some(sub_props) = v.get("properties").and_then(|p| p.as_object()) {
+            // carries `properties` (recurse) or is a leaf key. A `setting` is a leaf even when it
+            // describes its object value with `properties`, such as `logs_config.tag_filters`.
+            let is_setting = v.get("node_type").and_then(|t| t.as_str()) == Some("setting");
+            if let Some(sub_props) = v.get("properties").and_then(|p| p.as_object()).filter(|_| !is_setting) {
                 Self::collect_schema_keys(sub_props, &full_key, keys);
             } else {
                 keys.insert(full_key);
@@ -946,6 +948,55 @@ excluded:
         let err = load_from_strs(schema, overlay).unwrap_err();
         assert!(
             err.to_string().contains("overlay key 'key_b' is not present"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn a_setting_described_with_properties_is_one_schema_key() {
+        let props = serde_json::json!({
+            "a": {
+                "node_type": "section",
+                "properties": {
+                    "b": {"node_type": "setting", "type": "string"},
+                    "c": {
+                        "node_type": "setting",
+                        "type": "object",
+                        "properties": {"include": {"type": "array"}, "exclude": {"type": "array"}},
+                    },
+                },
+            },
+        });
+        let mut keys = HashSet::new();
+
+        SchemaOverlay::collect_schema_keys(props.as_object().unwrap(), "", &mut keys);
+
+        assert_eq!(keys, HashSet::from(["a.b".to_string(), "a.c".to_string()]));
+    }
+
+    #[test]
+    fn validation_rejects_an_overlay_key_inside_a_setting() {
+        let schema = "\
+properties:
+  filters:
+    node_type: setting
+    type: object
+    properties:
+      include:
+        type: array
+";
+        let overlay = "\
+inventory:
+  filters:
+    support: full
+    pipelines: [cross_cutting]
+    description: \"Filters\"
+excluded:
+  filters.include: \"part of a setting\"
+";
+        let err = load_from_strs(schema, overlay).unwrap_err();
+        assert!(
+            err.to_string().contains("overlay key 'filters.include' is not present"),
             "unexpected error: {err}"
         );
     }

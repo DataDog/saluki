@@ -410,6 +410,42 @@ mod tests {
     const SOCKET: &str = "dogstatsd_socket";
     const LINUX_SOCKET: &str = "\"/var/run/datadog/dsd.socket\"";
 
+    /// A socket setting whose schema default depends on the platform.
+    struct Socket {
+        key: &'static str,
+        /// The `linux` and `aix` default, rendered as ADP's value; every other platform selects `""`.
+        linux: &'static str,
+        /// The environment variable the `breadth-env` origin sets for the key.
+        env: &'static str,
+        /// The origins whose bootstrap check of the key has a platform-default note.
+        assessed: &'static [&'static str],
+    }
+
+    /// Every socket with a platform default. The Agent's `fixupLinuxSockets`
+    /// (pkg/config/setup/fixup_init.go) sets both on Linux.
+    const SOCKETS: &[Socket] = &[
+        Socket {
+            key: SOCKET,
+            linux: LINUX_SOCKET,
+            env: "DD_DOGSTATSD_SOCKET",
+            assessed: &[
+                "baseline-default",
+                "breadth-env",
+                "breadth-yaml",
+                "yaml-map-for-string-key",
+            ],
+        },
+        Socket {
+            key: "apm_config.receiver_socket",
+            linux: "\"/var/run/datadog/apm.socket\"",
+            env: "DD_APM_RECEIVER_SOCKET",
+            assessed: &["baseline-default", "breadth-env", "breadth-yaml"],
+        },
+    ];
+
+    /// Whether the replay host is a platform whose sockets default to their Linux paths.
+    const HOST_HAS_LINUX_SOCKETS: bool = cfg!(any(target_os = "linux", target_os = "aix"));
+
     fn bootstrap_check(origin: &str, getter: &str, key: &str) -> CheckKey {
         CheckKey {
             origin: origin.into(),
@@ -422,6 +458,10 @@ mod tests {
 
     fn socket_check(origin: &str) -> CheckKey {
         bootstrap_check(origin, "GetString", SOCKET)
+    }
+
+    fn check_of(origin: &str, socket: &Socket) -> CheckKey {
+        bootstrap_check(origin, "GetString", socket.key)
     }
 
     /// Failure messages for this check.
@@ -447,26 +487,26 @@ mod tests {
         result.note.as_deref().unwrap_or_else(|| panic!("{check} has no note"))
     }
 
-    /// An OS whose socket default differs from this host's.
+    /// An OS whose socket defaults differ from this host's.
     fn other_socket_platform() -> &'static str {
-        if cfg!(any(target_os = "linux", target_os = "aix")) {
+        if HOST_HAS_LINUX_SOCKETS {
             "darwin"
         } else {
             "linux"
         }
     }
 
-    /// The native socket default, stated independently of ADP and the platform-default selector.
-    fn host_socket_default() -> &'static str {
-        if cfg!(any(target_os = "linux", target_os = "aix")) {
-            LINUX_SOCKET
+    /// The native default of `socket`, stated independently of ADP and the platform-default selector.
+    fn host_socket_default(socket: &Socket) -> &'static str {
+        if HOST_HAS_LINUX_SOCKETS {
+            socket.linux
         } else {
             "\"\""
         }
     }
 
-    /// The no-input baseline case expects the selected OS's socket default without adding or removing
-    /// checks. Explicit YAML and environment inputs still require the recorded value.
+    /// The no-input baseline case expects the selected OS's default of every socket without adding or
+    /// removing checks. Explicit YAML and environment inputs still require the recorded value.
     #[test]
     fn the_socket_default_follows_the_replay_platform_and_keeps_every_check() {
         let identities = |collected: &Collected| -> BTreeSet<String> {
@@ -474,109 +514,119 @@ mod tests {
         };
         let host = identities(&collect(corpus()));
         for (goos, expected) in [
-            ("linux", None),
-            ("aix", None),
-            ("darwin", Some("\"\"")),
-            ("windows", Some("\"\"")),
-            ("freebsd", Some("\"\"")),
+            ("linux", false),
+            ("aix", false),
+            ("darwin", true),
+            ("windows", true),
+            ("freebsd", true),
         ] {
             let collected = collect_for(corpus(), &PlatformDefaults::for_goos(goos));
             assert_eq!(identities(&collected), host, "{goos}");
 
-            let baseline = socket_check(BASELINE_CASE);
-            let derived = derived(&collected, &baseline);
-            match (derived.as_slice(), expected) {
-                ([], None) => assert!(note(&collected, &baseline).contains("compares with the recorded Agent result")),
-                ([e], Some(expected)) => {
-                    assert_eq!(
-                        (e.status, &e.adp),
-                        (Status::Intentional, &Adp::value(expected)),
-                        "{goos}"
-                    );
-                    let basis = e.at.to_string();
-                    for part in [
-                        "platform_defaults.rs",
-                        "goos linux, not containerized, not on ECS Fargate",
-                        &format!("goos {goos}, not containerized, not on ECS Fargate"),
-                        "from `linux`",
-                        "from `other`",
-                    ] {
-                        assert!(basis.contains(part), "{goos}: {basis}\n\nlacks: {part}");
+            for socket in SOCKETS {
+                let baseline = check_of(BASELINE_CASE, socket);
+                let derived = derived(&collected, &baseline);
+                match (derived.as_slice(), expected) {
+                    ([], false) => assert!(
+                        note(&collected, &baseline).contains("compares with the recorded Agent result"),
+                        "{goos} {}",
+                        socket.key
+                    ),
+                    ([e], true) => {
+                        assert_eq!(
+                            (e.status, &e.adp),
+                            (Status::Intentional, &Adp::value("\"\"")),
+                            "{goos} {}",
+                            socket.key
+                        );
+                        let basis = e.at.to_string();
+                        for part in [
+                            "platform_defaults.rs",
+                            &format!("`{}`", socket.key),
+                            "goos linux, not containerized, not on ECS Fargate",
+                            &format!("goos {goos}, not containerized, not on ECS Fargate"),
+                            &format!("selects {} from `linux`", socket.linux),
+                            "from `other`",
+                        ] {
+                            assert!(basis.contains(part), "{goos}: {basis}\n\nlacks: {part}");
+                        }
                     }
+                    (derived, expected) => panic!("{goos} {}: expected {expected:?}, derived {derived:#?}", socket.key),
                 }
-                (derived, expected) => panic!("{goos}: expected {expected:?}, derived {derived:#?}"),
+
+                let segment = socket.key.rsplit('.').next().expect("a key has a last segment");
+                for (origin, reason) in [
+                    ("breadth-env", format!("the case environment sets {}", socket.env)),
+                    ("breadth-yaml", format!("the case YAML mentions `{segment}`")),
+                ] {
+                    let check = check_of(origin, socket);
+                    assert!(
+                        note(&collected, &check).contains(&reason),
+                        "{goos}: {}",
+                        note(&collected, &check)
+                    );
+                }
             }
+            let baselines: BTreeSet<CheckKey> = SOCKETS.iter().map(|s| check_of(BASELINE_CASE, s)).collect();
+            let generated: BTreeSet<CheckKey> = collected.platform_defaults.iter().map(|e| e.check.clone()).collect();
             assert_eq!(
-                collected.platform_defaults.len(),
-                derived.len(),
-                "{goos}: only the baseline socket"
+                generated,
+                if expected { baselines } else { BTreeSet::new() },
+                "{goos}: only the baseline sockets"
             );
 
-            for (origin, reason) in [
-                ("breadth-env", "the case environment sets DD_DOGSTATSD_SOCKET"),
-                ("breadth-yaml", "the case YAML mentions `dogstatsd_socket`"),
-            ] {
-                let check = socket_check(origin);
-                assert!(
-                    note(&collected, &check).contains(reason),
-                    "{goos}: {}",
-                    note(&collected, &check)
-                );
-            }
-            let noted: BTreeSet<&str> = collected
+            let noted: BTreeSet<(&str, &str)> = collected
                 .results
                 .iter()
                 .filter(|r| r.note.is_some())
-                .map(|r| r.key.origin.as_str())
+                .map(|r| (r.key.origin.as_str(), r.key.key.as_str()))
+                .collect();
+            let assessed: BTreeSet<(&str, &str)> = SOCKETS
+                .iter()
+                .flat_map(|s| s.assessed.iter().map(move |origin| (*origin, s.key)))
                 .collect();
             assert_eq!(
-                noted,
-                BTreeSet::from([
-                    "baseline-default",
-                    "breadth-env",
-                    "breadth-yaml",
-                    "yaml-map-for-string-key"
-                ]),
-                "{goos}: only the socket's bootstrap checks are assessed"
+                noted, assessed,
+                "{goos}: only the sockets' bootstrap checks are assessed"
             );
         }
     }
 
-    /// Real bootstrap returns this host's socket default without a handwritten exception.
+    /// Real bootstrap returns this host's default of every socket without a handwritten exception.
     #[test]
     fn bootstrap_expects_the_native_socket_default_of_this_host() {
         let collected = collect(corpus());
-        let check = socket_check(BASELINE_CASE);
-        let result = collected
-            .results
-            .iter()
-            .find(|r| r.key == check)
-            .expect("the baseline socket is checked");
-        let derived: Vec<&Adp> = derived(&collected, &check).into_iter().map(|e| &e.adp).collect();
-        if host_socket_default() == LINUX_SOCKET {
-            assert!(
-                result.mismatch.is_none() && derived.is_empty(),
-                "{result:?} {derived:?}"
-            );
-        } else {
-            let expected = Adp::value(host_socket_default());
-            assert_eq!(result.mismatch.as_ref().map(|m| &m.adp), Some(&expected));
-            assert_eq!(derived, [&expected]);
-        }
         let judgement = judge(corpus(), &collected, &expectations());
-        assert!(naming(&judgement, &check).is_empty(), "{:#?}", judgement.problems);
+        for socket in SOCKETS {
+            let check = check_of(BASELINE_CASE, socket);
+            let result = collected
+                .results
+                .iter()
+                .find(|r| r.key == check)
+                .unwrap_or_else(|| panic!("the baseline {} is checked", socket.key));
+            let derived: Vec<&Adp> = derived(&collected, &check).into_iter().map(|e| &e.adp).collect();
+            if HOST_HAS_LINUX_SOCKETS {
+                assert!(
+                    result.mismatch.is_none() && derived.is_empty(),
+                    "{result:?} {derived:?}"
+                );
+            } else {
+                let expected = Adp::value(host_socket_default(socket));
+                assert_eq!(result.mismatch.as_ref().map(|m| &m.adp), Some(&expected));
+                assert_eq!(derived, [&expected]);
+            }
+            assert!(naming(&judgement, &check).is_empty(), "{:#?}", judgement.problems);
+        }
     }
 
-    /// Judging native ADP output against the other OS family's default fails only the baseline socket.
+    /// Judging native ADP output against the other OS family's defaults fails exactly the baseline
+    /// check of each socket.
     #[test]
     fn a_socket_default_for_the_wrong_platform_fails() {
         let goos = other_socket_platform();
         let collected = collect_for(corpus(), &PlatformDefaults::for_goos(goos));
         let judgement = judge(corpus(), &collected, &expectations());
-        assert_eq!(judgement.problems.len(), 1, "{:#?}", judgement.problems);
-        let problem = &judgement.problems[0];
-        assert!(problem.contains(&socket_check(BASELINE_CASE).to_string()), "{problem}");
-        assert!(problem.contains(&format!("for this host (goos {goos}")), "{problem}");
+        assert_eq!(judgement.problems.len(), SOCKETS.len(), "{:#?}", judgement.problems);
         let expected: &[&str] = if goos == "linux" {
             &["UNEXPECTED RESULT"]
         } else {
@@ -585,8 +635,14 @@ mod tests {
                 "derived from the schema's platform default",
             ]
         };
-        for part in expected {
-            assert!(problem.contains(part), "{problem}\n\nlacks: {part}");
+        for socket in SOCKETS {
+            let problems = naming(&judgement, &check_of(BASELINE_CASE, socket));
+            assert_eq!(problems.len(), 1, "{}: {:#?}", socket.key, judgement.problems);
+            let problem = problems[0];
+            assert!(problem.contains(&format!("for this host (goos {goos}")), "{problem}");
+            for part in expected {
+                assert!(problem.contains(part), "{problem}\n\nlacks: {part}");
+            }
         }
     }
 
@@ -594,23 +650,25 @@ mod tests {
     /// The judge must reject it without a platform exception.
     #[test]
     fn losing_an_explicit_socket_input_fails_without_allowance() {
-        let mut collected = collect(corpus());
-        let check = socket_check("breadth-env");
-        assert!(derived(&collected, &check).is_empty());
-        let result = collected
-            .results
-            .iter_mut()
-            .find(|r| r.key == check)
-            .expect("the env socket is checked");
-        assert!(result.mismatch.is_none(), "ADP reads the explicit socket: {result:?}");
-        result.mismatch = Some(Mismatch {
-            adp: Adp::value(host_socket_default()),
-        });
-        let judgement = judge(corpus(), &collected, &expectations());
-        let problems = naming(&judgement, &check);
-        assert_eq!(problems.len(), 1, "{:#?}", judgement.problems);
-        assert!(problems[0].contains("UNEXPECTED RESULT"), "{}", problems[0]);
-        assert!(problems[0].contains("does not explain this check"), "{}", problems[0]);
+        for socket in SOCKETS {
+            let mut collected = collect(corpus());
+            let check = check_of("breadth-env", socket);
+            assert!(derived(&collected, &check).is_empty());
+            let result = collected
+                .results
+                .iter_mut()
+                .find(|r| r.key == check)
+                .unwrap_or_else(|| panic!("the env {} is checked", socket.key));
+            assert!(result.mismatch.is_none(), "ADP reads the explicit socket: {result:?}");
+            result.mismatch = Some(Mismatch {
+                adp: Adp::value(host_socket_default(socket)),
+            });
+            let judgement = judge(corpus(), &collected, &expectations());
+            let problems = naming(&judgement, &check);
+            assert_eq!(problems.len(), 1, "{:#?}", judgement.problems);
+            assert!(problems[0].contains("UNEXPECTED RESULT"), "{}", problems[0]);
+            assert!(problems[0].contains("does not explain this check"), "{}", problems[0]);
+        }
     }
 
     /// Expected outcome of a baseline check using a modified test schema.

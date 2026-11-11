@@ -1,7 +1,7 @@
 use nom::{
     branch::alt,
     bytes::complete::{tag, take_while1},
-    combinator::{all_consuming, map, map_res},
+    combinator::{all_consuming, map},
     error::{Error, ErrorKind},
     number::complete::double,
     sequence::{preceded, separated_pair, terminated},
@@ -93,19 +93,37 @@ pub fn parse_dogstatsd_metric<'a>(
         let (mut remaining, _) = tag("|")(remaining)?;
 
         while let Some((chunk, tail)) = split_at_delimiter(remaining, b'|') {
+            // An empty field (for example, `metric:1|c||#tags`) is a structural defect. In permissive mode, we skip it
+            // and keep parsing the fields after it, matching the reference DogStatsD server. Otherwise, we reject the
+            // metric.
             if chunk.is_empty() {
-                break;
+                if !config.permissive {
+                    return Err(nom::Err::Error(Error::new(remaining, ErrorKind::Verify)));
+                }
+                remaining = tail;
+                continue;
             }
 
             match chunk[0] {
                 // Sample rate: indicates client-side sampling of this metric which will need to be "reinflated" at some
                 // point downstream to calculate the true metric value.
                 b'@' => {
-                    let (_, sample_rate) =
-                        all_consuming(preceded(tag("@"), map_res(double, sample_rate(metric_name, config))))
-                            .parse(chunk)?;
+                    let (_, raw_sample_rate) = all_consuming(preceded(tag("@"), double)).parse(chunk)?;
 
-                    maybe_sample_rate = Some(sample_rate);
+                    // The reference DogStatsD server treats a sample rate of zero on a distribution, histogram or timer
+                    // as unsampled. Clamping it to the minimum sample rate instead would count each point hundreds of
+                    // millions of times.
+                    maybe_sample_rate = if raw_sample_rate == 0.0
+                        && matches!(
+                            metric_type,
+                            MetricType::Distribution | MetricType::Histogram | MetricType::Timer
+                        ) {
+                        None
+                    } else {
+                        let sample_rate = sample_rate(metric_name, config)(raw_sample_rate)
+                            .map_err(|_| nom::Err::Error(Error::new(chunk, ErrorKind::MapRes)))?;
+                        Some(sample_rate)
+                    };
                 }
                 // Tags: additional tags to be added to the metric.
                 b'#' => {
@@ -118,8 +136,15 @@ pub fn parse_dogstatsd_metric<'a>(
                     maybe_local_data = Some(local_data);
                 }
                 // Timestamp: client-provided timestamp for the metric, relative to the Unix epoch, in seconds.
+                //
+                // Like the reference DogStatsD server, a timestamp of zero is rejected: it isn't a usable point in
+                // time, and treating it as "timestamped" would drop the sample rate without actually setting a
+                // timestamp.
                 b'T' if config.timestamps => {
                     let (_, timestamp) = all_consuming(preceded(tag("T"), unix_timestamp)).parse(chunk)?;
+                    if timestamp == 0 {
+                        return Err(nom::Err::Error(Error::new(chunk, ErrorKind::Verify)));
+                    }
                     maybe_timestamp = Some(timestamp);
                 }
                 // External Data: client-provided data used for resolving the entity ID that this metric originated from.
@@ -167,7 +192,7 @@ pub fn parse_dogstatsd_metric<'a>(
     };
 
     let (num_points, mut metric_values) =
-        metric_values_from_raw(raw_metric_values, metric_type, effective_sample_rate)?;
+        metric_values_from_raw(raw_metric_values, metric_type, effective_sample_rate, config.permissive)?;
 
     // If we got a timestamp, apply it to all metric values.
     if let Some(timestamp) = maybe_timestamp {
@@ -227,11 +252,6 @@ fn raw_metric_values(input: &[u8]) -> IResult<&[u8], (MetricType, &[u8])> {
     let (remaining, raw_values) = terminated(take_while1(|b| b != b'|'), tag("|")).parse(input)?;
     let (remaining, raw_kind) = alt((tag("g"), tag("c"), tag("ms"), tag("h"), tag("s"), tag("d"))).parse(remaining)?;
 
-    // Make sure the raw value(s) are valid UTF-8 before we use them later on.
-    if raw_values.is_empty() || simdutf8::basic::from_utf8(raw_values).is_err() {
-        return Err(nom::Err::Error(Error::new(raw_values, ErrorKind::Verify)));
-    }
-
     let metric_type = match raw_kind {
         b"c" => MetricType::Count,
         b"g" => MetricType::Gauge,
@@ -242,15 +262,29 @@ fn raw_metric_values(input: &[u8]) -> IResult<&[u8], (MetricType, &[u8])> {
         _ => unreachable!("should be constrained by alt parser"),
     };
 
+    // Make sure the raw value(s) are valid UTF-8 before we use them later on.
+    if simdutf8::basic::from_utf8(raw_values).is_err() {
+        return Err(nom::Err::Error(Error::new(raw_values, ErrorKind::Verify)));
+    }
+
+    // Make sure a numeric metric has at least one value. In permissive mode, empty values in a multi-value payload (for
+    // example, `1::2`) are skipped when parsing, but a payload made up of only empty values (for example, `:` or `::`)
+    // has no values at all, which the reference DogStatsD server rejects.
+    //
+    // A set's value isn't split on `:`, so `::` is a valid set member.
+    if !matches!(metric_type, MetricType::Set) && raw_values.iter().all(|&b| b == b':') {
+        return Err(nom::Err::Error(Error::new(raw_values, ErrorKind::Verify)));
+    }
+
     Ok((remaining, (metric_type, raw_values)))
 }
 
 #[inline]
 fn metric_values_from_raw(
-    input: &[u8], metric_type: MetricType, sample_rate: Option<SampleRate>,
+    input: &[u8], metric_type: MetricType, sample_rate: Option<SampleRate>, skip_empty_values: bool,
 ) -> Result<(u64, MetricValues), NomParserError<'_>> {
     let mut num_points = 0;
-    let floats = FloatIter::new(input).inspect(|_| num_points += 1);
+    let floats = FloatIter::new(input, skip_empty_values).inspect(|_| num_points += 1);
 
     let values = match metric_type {
         MetricType::Count => MetricValues::counter_sampled_fallible(floats, sample_rate)?,
@@ -271,11 +305,15 @@ fn metric_values_from_raw(
 
 struct FloatIter<'a> {
     raw_values: &'a [u8],
+    skip_empty_values: bool,
 }
 
 impl<'a> FloatIter<'a> {
-    fn new(raw_values: &'a [u8]) -> Self {
-        Self { raw_values }
+    fn new(raw_values: &'a [u8], skip_empty_values: bool) -> Self {
+        Self {
+            raw_values,
+            skip_empty_values,
+        }
     }
 }
 
@@ -290,6 +328,13 @@ impl<'a> Iterator for FloatIter<'a> {
 
             let (raw_value, tail) = split_at_delimiter(self.raw_values, b':')?;
             self.raw_values = tail;
+
+            // An empty value in a multi-value payload (for example, `1::2`) is a structural defect. In permissive mode,
+            // we skip it, matching the reference DogStatsD server. Otherwise, it fails to parse as a float below,
+            // rejecting the metric.
+            if raw_value.is_empty() && self.skip_empty_values {
+                continue;
+            }
 
             // SAFETY: The caller that creates `ValueIter` is responsible for ensuring that the entire byte slice is valid
             // UTF-8.
@@ -416,6 +461,117 @@ mod tests {
 
         let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
         check_basic_metric_eq(expected, actual);
+    }
+
+    #[test]
+    fn permissive_mode_parses_metric_fields_after_empty_field() {
+        let permissive = DogStatsDCodecConfiguration::default().with_permissive_mode(true);
+        let tags = ["tag1", "tag2"];
+
+        // An empty field before the tags.
+        let raw = format!("my.counter:1|c||#{}", tags.join(","));
+        let expected = Metric::counter(("my.counter", &tags[..]), 1.0);
+        let actual = parse_dsd_metric_with_conf(raw.as_bytes(), &permissive).expect("should not fail to parse");
+        check_basic_metric_eq(expected, actual);
+
+        // Several empty fields, with a sample rate and tags after them.
+        let raw = format!("my.counter:1|c|||@0.5||#{}|", tags.join(","));
+        let expected = Metric::counter(("my.counter", &tags[..]), 2.0);
+        let actual = parse_dsd_metric_with_conf(raw.as_bytes(), &permissive).expect("should not fail to parse");
+        check_basic_metric_eq(expected, actual);
+    }
+
+    #[test]
+    fn strict_mode_rejects_metric_with_empty_field() {
+        // Rather than silently dropping the fields after it, strict mode rejects a metric with an empty field.
+        let strict = DogStatsDCodecConfiguration::default().with_permissive_mode(false);
+        for raw in ["my.counter:1|c||#tag1", "my.counter:1|c|#tag1||@0.5"] {
+            assert!(
+                parse_dogstatsd_metric(raw.as_bytes(), &strict).is_err(),
+                "strict mode should reject {raw:?}"
+            );
+        }
+
+        // A trailing `|` isn't an empty field, and is accepted in both modes.
+        let (_, packet) = parse_dogstatsd_metric(b"my.counter:1|c|#tag1|", &strict).expect("should parse");
+        assert_eq!(packet.tags.iter().collect::<Vec<_>>(), ["tag1"]);
+    }
+
+    #[test]
+    fn strict_mode_rejects_multivalue_metric_with_empty_value() {
+        let strict = DogStatsDCodecConfiguration::default().with_permissive_mode(false);
+        for raw in ["my.distribution:1::2|d", "my.distribution::1:2|d", "my.gauge:3::4|g"] {
+            assert!(
+                parse_dogstatsd_metric(raw.as_bytes(), &strict).is_err(),
+                "strict mode should reject {raw:?}"
+            );
+        }
+
+        // A trailing `:` doesn't produce an empty value, and is accepted in both modes.
+        let (_, packet) = parse_dogstatsd_metric(b"my.distribution:1:2:|d", &strict).expect("should parse");
+        assert_eq!(packet.num_points, 2);
+    }
+
+    #[test]
+    fn permissive_mode_skips_empty_multivalue_values() {
+        let cases = [
+            (
+                "my.distribution:1::2|d",
+                Metric::distribution("my.distribution", [1.0, 2.0]),
+            ),
+            (
+                "my.distribution::1:2|d",
+                Metric::distribution("my.distribution", [1.0, 2.0]),
+            ),
+            (
+                "my.distribution:1:2:|d",
+                Metric::distribution("my.distribution", [1.0, 2.0]),
+            ),
+            ("my.gauge:3::4|g", Metric::gauge("my.gauge", [3.0, 4.0])),
+            ("my.counter:1:::2|c", Metric::counter("my.counter", [1.0, 2.0])),
+        ];
+
+        let permissive = DogStatsDCodecConfiguration::default().with_permissive_mode(true);
+        for (raw, expected) in cases {
+            let (_, packet) = parse_dogstatsd_metric(raw.as_bytes(), &permissive)
+                .unwrap_or_else(|e| panic!("should not fail to parse {raw:?}: {e:?}"));
+            assert_eq!(packet.num_points, 2, "unexpected point count for {raw:?}");
+
+            let actual = parse_dsd_metric_with_conf(raw.as_bytes(), &permissive).expect("should not fail to parse");
+            check_basic_metric_eq(expected, actual);
+        }
+    }
+
+    #[test]
+    fn set_values_made_of_colons_are_accepted() {
+        // A set's value isn't split on `:`, so a value such as `::` (the IPv6 unspecified address) is a valid set
+        // member in both modes, as in the reference DogStatsD server.
+        for permissive in [true, false] {
+            let config = DogStatsDCodecConfiguration::default().with_permissive_mode(permissive);
+            for (raw, value) in [("my.set:::|s", "::"), ("my.set::::|s", ":::")] {
+                let (_, packet) = parse_dogstatsd_metric(raw.as_bytes(), &config)
+                    .unwrap_or_else(|e| panic!("should parse {raw:?} (permissive: {permissive}): {e:?}"));
+                assert_eq!(
+                    packet.values,
+                    MetricValues::set(value),
+                    "unexpected set value for {raw:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn metrics_with_only_empty_values_are_rejected() {
+        // Like the reference DogStatsD server, a metric with no values at all is rejected, even in permissive mode.
+        for permissive in [true, false] {
+            let config = DogStatsDCodecConfiguration::default().with_permissive_mode(permissive);
+            for raw in ["my.counter::|c", "my.counter::::|c", "my.distribution::|d"] {
+                assert!(
+                    parse_dogstatsd_metric(raw.as_bytes(), &config).is_err(),
+                    "metric with no values should be rejected (permissive: {permissive}): {raw:?}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -732,6 +888,48 @@ mod tests {
 
             assert!(sketch.count() as u64 <= minimum_sample_rate.weight());
         }
+    }
+
+    #[test]
+    fn zero_sample_rate_on_distributions_and_histograms_is_unsampled() {
+        // The reference DogStatsD server treats a sample rate of zero on sketches and histograms as unsampled (a rate
+        // of 1), rather than clamping it to the minimum sample rate and counting each point hundreds of millions of
+        // times.
+        let config = DogStatsDCodecConfiguration::default();
+
+        let (_, packet) = parse_dogstatsd_metric(b"my.distribution:1|d|@0", &config).expect("should parse");
+        match packet.values {
+            MetricValues::Distribution(points) => {
+                let (_, sketch) = points.into_iter().next().expect("should have a sketch");
+                assert_eq!(sketch.count(), 1);
+            }
+            _ => panic!("expected distribution values"),
+        }
+
+        for raw in ["my.histogram:1|h|@0", "my.timer:1|ms|@0"] {
+            let (_, packet) = parse_dogstatsd_metric(raw.as_bytes(), &config).expect("should parse");
+            match packet.values {
+                MetricValues::Histogram(points) => {
+                    let (_, histogram) = points.into_iter().next().expect("should have a histogram");
+                    let weights = histogram.samples().iter().map(|s| s.weight).collect::<Vec<_>>();
+                    assert_eq!(weights, [1.0], "unexpected weights for {raw:?}");
+                }
+                _ => panic!("expected histogram values for {raw:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn zero_timestamp_is_rejected() {
+        // The reference DogStatsD server rejects a metric with a timestamp of zero.
+        let config = DogStatsDCodecConfiguration::default();
+        assert!(parse_dogstatsd_metric(b"my.counter:1|c|@0.5|T0", &config).is_err());
+
+        // When timestamps aren't read, the field is ignored entirely, as in the reference DogStatsD server.
+        let config = DogStatsDCodecConfiguration::default().with_timestamps(false);
+        let (_, packet) = parse_dogstatsd_metric(b"my.counter:1|c|@0.5|T0", &config).expect("should parse");
+        assert_eq!(packet.timestamp, None);
+        assert_eq!(packet.values, MetricValues::counter(2.0));
     }
 
     #[test]

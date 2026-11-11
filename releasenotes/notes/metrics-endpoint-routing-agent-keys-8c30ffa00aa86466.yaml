@@ -1,0 +1,11 @@
+---
+upgrade:
+  - |
+    The Datadog Agent now also reads ``experimental.metrics_endpoint_routing.metric_allowlist`` and
+    ``experimental.metrics_endpoint_routing.metric_prefix_allowlist``, applies them to its own check metrics, and
+    fails to start when a policy names an endpoint it doesn't recognize. When a policy filters the primary
+    endpoint, set ``dd_url`` explicitly: for a primary derived from ``site``, the Agent expects the endpoint with a
+    trailing dot, such as ``https://app.datadoghq.com.``, while Agent Data Plane expects it without one. The Agent
+    also rejects these policies while ``use_v2_api.series`` is ``false``. Agent Data Plane now reads these settings
+    as the Agent does: endpoint keys are converted to strings by YAML type rules, a single string is read as a
+    one-entry list, and a map can also be given as a JSON-encoded string.

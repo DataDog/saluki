@@ -15,7 +15,7 @@ use saluki_core::{
     data_model::{
         event::{
             trace::{AttributeValue, Trace},
-            trace_stats::{ClientStatsPayload, TraceStats},
+            trace_stats::{ClientStatsBucket, ClientStatsPayload, TraceStats},
             Event, EventType,
         },
         origin::OriginTagCardinality,
@@ -315,11 +315,19 @@ impl ApmStats {
     }
 }
 
-/// Splits stats payloads into multiple `TraceStats` events, each containing at most `max_entries_per_event` grouped
-/// entries.
+/// Splits stats payloads into multiple `TraceStats` events, each holding at most `max_entries_per_event` grouped
+/// entries. Each event becomes one outer stats payload when it is encoded.
 ///
-/// This function won't attempt to collapse/pack payloads to optimize the number of events generated: there will always
-/// be at least as many output client payloads as there are input client payloads.
+/// This happens in two steps:
+///
+/// 1. A client payload with more than `max_entries_per_event` entries is divided into
+///    `ceil(entry_count / max_entries_per_event)` smaller client payloads, which is the fewest that can each stay
+///    within the limit. Its entries are dealt out to them round-robin, so they end up evenly sized, and each one
+///    keeps its entries in one bucket per time window.
+/// 2. The client payloads are then packed into events in order, without being divided again. A new event is started
+///    whenever the next client payload would push the current one past the limit.
+///
+/// If the stats need more than one event, every event is marked as part of a split flush.
 fn split_into_trace_stats(client_payloads: Vec<ClientStatsPayload>, max_entries_per_event: usize) -> Vec<TraceStats> {
     if client_payloads.is_empty() {
         return Vec::new();
@@ -327,89 +335,104 @@ fn split_into_trace_stats(client_payloads: Vec<ClientStatsPayload>, max_entries_
 
     // If the total number of grouped stats entries is below the specified threshold, then we don't do any splitting or
     // collapsing or anything.
-    let total_grouped_entries = client_payloads
-        .iter()
-        .map(|p| p.stats().iter().map(|b| b.stats().len()).sum::<usize>())
-        .sum::<usize>();
+    let total_grouped_entries = client_payloads.iter().map(count_grouped_entries).sum::<usize>();
     if total_grouped_entries <= max_entries_per_event {
         return vec![TraceStats::new(client_payloads)];
     }
 
-    let mut events = Vec::new();
+    // The fewest events these entries can need. Whole client payloads are never divided while packing, so it can take
+    // more.
+    let mut finished_events = Vec::with_capacity(total_grouped_entries.div_ceil(max_entries_per_event));
     let mut current_client_payloads = Vec::new();
-    let mut current_event_len = 0;
+    let mut current_event_entries = 0;
 
-    for mut client_payload in client_payloads {
-        // If the current payload can fit entirely in the current event, then collect it as-is.
-        let client_payload_len = client_payload.stats().iter().map(|b| b.stats().len()).sum::<usize>();
-        if current_event_len + client_payload_len <= max_entries_per_event {
-            current_client_payloads.push(client_payload);
-            current_event_len += client_payload_len;
-            continue;
+    // Adds a client payload to the event being built, closing that event first if the payload would not fit.
+    let mut add_to_event = |client_payload: ClientStatsPayload, entries: usize| {
+        if !current_client_payloads.is_empty() && current_event_entries + entries > max_entries_per_event {
+            finished_events.push(std::mem::take(&mut current_client_payloads));
+            current_event_entries = 0;
         }
+        current_client_payloads.push(client_payload);
+        current_event_entries += entries;
+    };
 
-        // Consume all the stats buckets from the current client payload, and set ourselves up to go through each
-        // bucket, splitting them as necessary.
-        //
-        // We basically iterate until we find a bucket where adding its entries would cause us to exceed our threshold,
-        // and then we split that bucket, creating a new client payload in the process, and keep repeating that until
-        // we've exhausted all buckets for our starting client payload.
-        let mut current_client_stats_buckets = Vec::new();
-        for mut client_stats_bucket in client_payload.take_stats() {
-            let bucket_len = client_stats_bucket.stats().len();
-            // If this bucket can fit in the current event, then collect it as-is.
-            if current_event_len + bucket_len <= max_entries_per_event {
-                current_client_stats_buckets.push(client_stats_bucket);
-                current_event_len += bucket_len;
-                continue;
+    for client_payload in client_payloads {
+        let client_payload_entries = count_grouped_entries(&client_payload);
+        if client_payload_entries <= max_entries_per_event {
+            add_to_event(client_payload, client_payload_entries);
+        } else {
+            for split_payload in split_client_payload(client_payload, max_entries_per_event) {
+                let split_payload_entries = count_grouped_entries(&split_payload);
+                add_to_event(split_payload, split_payload_entries);
             }
-
-            // We have to split this bucket. We take the grouped entries it has, and we subdivide those into a new
-            // client bucket, or buckets in order to ensure we don't exceed our threshold.
-            let mut bucket_entries = client_stats_bucket.take_stats();
-            while current_event_len + bucket_entries.len() > max_entries_per_event {
-                // We calculate the split point this way because the returned vector from `split_off` is referenced
-                // against the end of the vector, so if we have 100 items, and we only want 20, we need to split at
-                // index 80 (100 - 20 == 80).
-                let split_amount = max_entries_per_event - current_event_len;
-                let split_point = bucket_entries.len() - split_amount;
-                let split_entries = bucket_entries.split_off(split_point);
-
-                // Create a new "split" bucket based on the current bucket (`client_stats_bucket`) but containing only
-                // the split-off entries. This will feed into the current client payload (`client_payload`) which we'll
-                // finalize and add to the current event before starting a new event.
-                let split_bucket = client_stats_bucket.clone().with_stats(split_entries);
-                current_client_stats_buckets.push(split_bucket);
-
-                let split_client_payload = client_payload
-                    .clone()
-                    .with_stats(std::mem::take(&mut current_client_stats_buckets));
-                current_client_payloads.push(split_client_payload);
-
-                events.push(TraceStats::new(std::mem::take(&mut current_client_payloads)));
-                current_event_len = 0;
-            }
-
-            // If we have any leftover entries from the bucket after splitting it up, put them back in the current bucket
-            // and add that bucket to the current client payload.
-            if !bucket_entries.is_empty() {
-                current_event_len += bucket_entries.len();
-                current_client_stats_buckets.push(client_stats_bucket.with_stats(bucket_entries));
-            }
-        }
-
-        // If we have buckets for this client payload (whether we split or not), add them back to the current client payload.
-        if !current_client_stats_buckets.is_empty() {
-            current_client_payloads.push(client_payload.with_stats(current_client_stats_buckets));
         }
     }
 
-    // Stick the remaining entries into a final `TraceStats` event, if any.
     if !current_client_payloads.is_empty() {
-        events.push(TraceStats::new(current_client_payloads));
+        finished_events.push(current_client_payloads);
     }
 
-    events
+    let is_split = finished_events.len() > 1;
+    finished_events
+        .into_iter()
+        .map(|payloads| TraceStats::new(payloads).with_split_payload(is_split))
+        .collect()
+}
+
+fn count_grouped_entries(client_payload: &ClientStatsPayload) -> usize {
+    client_payload.stats().iter().map(|b| b.stats().len()).sum()
+}
+
+/// Divides a client payload into `ceil(entry_count / max_entries)` client payloads, so that each holds at most
+/// `max_entries` grouped entries.
+///
+/// Entries are dealt out round-robin, so the resulting payloads differ in size by at most one entry, and each one has
+/// a single bucket per time window.
+fn split_client_payload(mut client_payload: ClientStatsPayload, max_entries: usize) -> Vec<ClientStatsPayload> {
+    let total_entries = count_grouped_entries(&client_payload);
+    if total_entries <= max_entries {
+        return vec![client_payload];
+    }
+
+    let payload_count = total_entries.div_ceil(max_entries);
+    let mut payload_buckets: Vec<Vec<ClientStatsBucket>> = vec![Vec::new(); payload_count];
+
+    let mut next_entry = 0;
+    for mut source_bucket in client_payload.take_stats() {
+        let entries = source_bucket.take_stats();
+
+        // Each split payload gets `entries.len() / payload_count` of this bucket's entries, and the first
+        // `entries.len() % payload_count` payloads in dealing order get one more, so a new bucket can be sized exactly.
+        let base = entries.len() / payload_count;
+        let extra = entries.len() % payload_count;
+        let first_payload = next_entry % payload_count;
+
+        for entry in entries {
+            let payload_index = next_entry % payload_count;
+            let buckets = &mut payload_buckets[payload_index];
+            next_entry += 1;
+
+            // The source bucket is now empty, so cloning it gives us a new bucket for the same time window.
+            let bucket_index = match buckets
+                .iter()
+                .position(|b| b.start() == source_bucket.start() && b.duration() == source_bucket.duration())
+            {
+                Some(index) => index,
+                None => {
+                    let dealing_order = (payload_index + payload_count - first_payload) % payload_count;
+                    let capacity = base + usize::from(dealing_order < extra);
+                    buckets.push(source_bucket.clone().with_stats(Vec::with_capacity(capacity)));
+                    buckets.len() - 1
+                }
+            };
+            buckets[bucket_index].stats_mut().push(entry);
+        }
+    }
+
+    payload_buckets
+        .into_iter()
+        .map(|buckets| client_payload.clone().with_stats(buckets))
+        .collect()
 }
 
 #[async_trait]
@@ -1400,16 +1423,16 @@ mod tests {
 
     #[test]
     fn test_split_into_trace_stats_splits_single_bucket() {
-        // 250 stats in one bucket with max 100 - should split into 3 TraceStats
+        // 250 stats in one bucket with max 100 - should split into 3 evenly sized TraceStats
         let bucket = make_bucket_with_stats(250);
         let payload = make_payload_with_buckets("host1", vec![bucket]);
 
         let result = split_into_trace_stats(vec![payload], 100);
 
         assert_eq!(result.len(), 3);
-        assert_eq!(count_grouped_stats(&result[0]), 100);
-        assert_eq!(count_grouped_stats(&result[1]), 100);
-        assert_eq!(count_grouped_stats(&result[2]), 50);
+        assert_eq!(count_grouped_stats(&result[0]), 84);
+        assert_eq!(count_grouped_stats(&result[1]), 83);
+        assert_eq!(count_grouped_stats(&result[2]), 83);
 
         // Total should be preserved
         let total: usize = result.iter().map(count_grouped_stats).sum();
@@ -1418,17 +1441,15 @@ mod tests {
 
     #[test]
     fn test_split_into_trace_stats_splits_across_payloads() {
-        // Two payloads with 60 stats each, max 100 - should combine into 2 TraceStats
+        // Two payloads with 60 stats each, max 100 - each payload stays whole, so we get 2 TraceStats
         let payload1 = make_payload_with_buckets("host1", vec![make_bucket_with_stats(60)]);
         let payload2 = make_payload_with_buckets("host2", vec![make_bucket_with_stats(60)]);
 
         let result = split_into_trace_stats(vec![payload1, payload2], 100);
 
         assert_eq!(result.len(), 2);
-        // First TraceStats: 60 from payload1 + 40 from payload2 = 100
-        assert_eq!(count_grouped_stats(&result[0]), 100);
-        // Second TraceStats: remaining 20 from payload2
-        assert_eq!(count_grouped_stats(&result[1]), 20);
+        assert_eq!(count_grouped_stats(&result[0]), 60);
+        assert_eq!(count_grouped_stats(&result[1]), 60);
     }
 
     #[test]
@@ -1511,16 +1532,114 @@ mod tests {
 
     #[test]
     fn test_split_into_trace_stats_large_split() {
-        // 10,000 stats with max 4000 - should produce 3 TraceStats
+        // 10,000 stats with max 4000 - should produce 3 evenly sized TraceStats
         let bucket = make_bucket_with_stats(10_000);
         let payload = make_payload_with_buckets("host1", vec![bucket]);
 
         let result = split_into_trace_stats(vec![payload], 4000);
 
         assert_eq!(result.len(), 3);
-        assert_eq!(count_grouped_stats(&result[0]), 4000);
-        assert_eq!(count_grouped_stats(&result[1]), 4000);
-        assert_eq!(count_grouped_stats(&result[2]), 2000);
+        assert_eq!(count_grouped_stats(&result[0]), 3334);
+        assert_eq!(count_grouped_stats(&result[1]), 3333);
+        assert_eq!(count_grouped_stats(&result[2]), 3333);
+    }
+
+    #[test]
+    fn split_into_trace_stats_marks_and_balances_by_group_count() {
+        // The sizes the backend sees for a single client payload, using the production limit.
+        let cases: [(usize, &[usize]); 4] = [
+            (1, &[1]),
+            (4000, &[4000]),
+            (4001, &[2001, 2000]),
+            (9000, &[3000, 3000, 3000]),
+        ];
+        for (groups, expected) in cases {
+            let payload = make_payload_with_buckets("host1", vec![make_bucket_with_stats(groups)]);
+
+            let result = split_into_trace_stats(vec![payload], MAX_STATS_GROUPS_PER_EVENT);
+
+            let sizes: Vec<usize> = result.iter().map(count_grouped_stats).collect();
+            assert_eq!(sizes, expected, "unexpected event sizes for {groups} groups");
+            for event in &result {
+                assert_eq!(
+                    event.is_split_payload(),
+                    expected.len() > 1,
+                    "split flag for {groups} groups"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn split_into_trace_stats_balances_entries_with_one_bucket_per_window() {
+        // 15 entries over three buckets of the same time window, max 12: two events of 8 and 7 entries, each with a
+        // single client payload holding a single bucket.
+        let buckets = vec![
+            make_bucket_with_stats(5),
+            make_bucket_with_stats(5),
+            make_bucket_with_stats(5),
+        ];
+        let payload = make_payload_with_buckets("host1", buckets);
+
+        let result = split_into_trace_stats(vec![payload.clone()], 12);
+
+        assert_eq!(result.len(), 2);
+        for (event, expected_entries) in result.iter().zip([8, 7]) {
+            assert!(event.is_split_payload());
+            assert_eq!(event.stats().len(), 1);
+            assert_eq!(event.stats()[0].stats().len(), 1);
+            assert_eq!(count_grouped_stats(event), expected_entries);
+
+            let metadata_only = event.stats()[0].clone().with_stats(Vec::new());
+            assert_eq!(metadata_only, payload.clone().with_stats(Vec::new()));
+        }
+    }
+
+    #[test]
+    fn split_into_trace_stats_keeps_one_bucket_per_window_for_each_split_payload() {
+        // Two windows of 300 entries each, max 400: two split payloads, each holding one bucket for each window.
+        let window_a = ClientStatsBucket::new(
+            1000,
+            10,
+            (0..300).map(|i| make_grouped_stats("a", &i.to_string())).collect(),
+        );
+        let window_b = ClientStatsBucket::new(
+            2000,
+            10,
+            (0..300).map(|i| make_grouped_stats("b", &i.to_string())).collect(),
+        );
+        let payload = make_payload_with_buckets("host1", vec![window_a, window_b]);
+
+        let result = split_into_trace_stats(vec![payload], 400);
+
+        assert_eq!(result.len(), 2);
+        for event in &result {
+            assert_eq!(event.stats().len(), 1);
+            let windows: Vec<(u64, u64)> = event.stats()[0]
+                .stats()
+                .iter()
+                .map(|b| (b.start(), b.duration()))
+                .collect();
+            assert_eq!(windows, [(1000, 10), (2000, 10)]);
+            assert_eq!(count_grouped_stats(event), 300);
+        }
+    }
+
+    #[test]
+    fn split_into_trace_stats_no_split_leaves_buckets_and_flag_unset() {
+        let buckets = vec![
+            make_bucket_with_stats(5),
+            make_bucket_with_stats(5),
+            make_bucket_with_stats(5),
+        ];
+        let payload = make_payload_with_buckets("host1", buckets);
+
+        let result = split_into_trace_stats(vec![payload], 1337);
+
+        assert_eq!(result.len(), 1);
+        assert!(!result[0].is_split_payload());
+        let bucket_sizes: Vec<usize> = result[0].stats()[0].stats().iter().map(|b| b.stats().len()).collect();
+        assert_eq!(bucket_sizes, [5, 5, 5]);
     }
 
     // Property test strategies
@@ -1622,6 +1741,11 @@ mod tests {
             // Property 2: Total stats should be preserved
             let output_total: usize = result.iter().map(count_grouped_stats).sum();
             prop_assert_eq!(input_total, output_total, "Total stats count should be preserved");
+
+            // Property 3: Events are marked as split exactly when there is more than one of them
+            for trace_stats in &result {
+                prop_assert_eq!(trace_stats.is_split_payload(), result.len() > 1);
+            }
         }
     }
 }

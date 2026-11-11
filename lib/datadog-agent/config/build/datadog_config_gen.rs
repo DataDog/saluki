@@ -141,7 +141,13 @@ fn prune(
             format!("{prefix}.{name}")
         };
 
-        if let Some(child_props) = node.get("properties").and_then(Value::as_object) {
+        // A `setting` is a leaf even when it describes its object value with `properties`.
+        let is_setting = node.get("node_type").and_then(Value::as_str) == Some("setting");
+        if let Some(child_props) = node
+            .get("properties")
+            .and_then(Value::as_object)
+            .filter(|_| !is_setting)
+        {
             let pruned_children = prune(child_props, &path, supported, schema_map, durations, platform_defaults);
             if pruned_children.is_empty() {
                 continue;
