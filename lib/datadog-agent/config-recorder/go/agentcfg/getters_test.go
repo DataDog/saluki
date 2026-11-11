@@ -81,6 +81,7 @@ func TestSelectGetters(t *testing.T) {
 		{"[]map[string]string", Tags{}, []string{"Get"}},
 		{"[]map[string]interface {}", Tags{}, []string{"Get"}},
 		{"map[string]float64", Tags{}, []string{"GetStringMap"}},
+		{"map[string]map[string]interface {}", Tags{}, []string{"Get"}},
 	}
 	for _, tc := range tests {
 		got, err := selectGetters(tc.typ, tc.tags)
@@ -178,7 +179,7 @@ func TestCallGetterReadConfigSection(t *testing.T) {
 // nil passed to Set into the default's zero value (here ""), which is non-nil, so IsConfigured
 // would report true instead of the false this test needs.
 func TestCallGetterIsConfigured(t *testing.T) {
-	cfg := nodetreemodel.NewNodeTreeConfig("test-is-configured", "TEST_IS_CONFIGURED", nil)
+	cfg := nodetreemodel.NewNodeTreeConfig("test-is-configured", model.CoreSchema)
 	cfg.SetDefault("default_value", "x")
 	cfg.SetDefault("null_value", "x")
 	cfg.SetDefault("section.configured_child", "x")

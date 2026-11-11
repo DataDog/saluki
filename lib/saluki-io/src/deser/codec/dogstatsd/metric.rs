@@ -1,7 +1,7 @@
 use nom::{
     branch::alt,
     bytes::complete::{tag, take_while1},
-    combinator::{all_consuming, map_res},
+    combinator::all_consuming,
     error::{Error, ErrorKind},
     number::complete::double,
     sequence::{preceded, separated_pair, terminated},
@@ -108,11 +108,22 @@ pub fn parse_dogstatsd_metric<'a>(
                 // Sample rate: indicates client-side sampling of this metric which will need to be "reinflated" at some
                 // point downstream to calculate the true metric value.
                 b'@' => {
-                    let (_, sample_rate) =
-                        all_consuming(preceded(tag("@"), map_res(double, sample_rate(metric_name, config))))
-                            .parse(chunk)?;
+                    let (_, raw_sample_rate) = all_consuming(preceded(tag("@"), double)).parse(chunk)?;
 
-                    maybe_sample_rate = Some(sample_rate);
+                    // The reference DogStatsD server treats a sample rate of zero on a distribution, histogram or timer
+                    // as unsampled. Clamping it to the minimum sample rate instead would count each point hundreds of
+                    // millions of times.
+                    maybe_sample_rate = if raw_sample_rate == 0.0
+                        && matches!(
+                            metric_type,
+                            MetricType::Distribution | MetricType::Histogram | MetricType::Timer
+                        ) {
+                        None
+                    } else {
+                        let sample_rate = sample_rate(metric_name, config)(raw_sample_rate)
+                            .map_err(|_| nom::Err::Error(Error::new(chunk, ErrorKind::MapRes)))?;
+                        Some(sample_rate)
+                    };
                 }
                 // Tags: additional tags to be added to the metric.
                 b'#' => {
@@ -134,8 +145,15 @@ pub fn parse_dogstatsd_metric<'a>(
                     }
                 }
                 // Timestamp: client-provided timestamp for the metric, relative to the Unix epoch, in seconds.
+                //
+                // Like the reference DogStatsD server, a timestamp of zero is rejected: it isn't a usable point in
+                // time, and treating it as "timestamped" would drop the sample rate without actually setting a
+                // timestamp.
                 b'T' if config.timestamps => {
                     let (_, timestamp) = all_consuming(preceded(tag("T"), unix_timestamp)).parse(chunk)?;
+                    if timestamp == 0 {
+                        return Err(nom::Err::Error(Error::new(chunk, ErrorKind::Verify)));
+                    }
                     maybe_timestamp = Some(timestamp);
                 }
                 // External Data: client-provided data used for resolving the entity ID that this metric originated from.
@@ -954,6 +972,48 @@ mod tests {
 
             assert!(sketch.count() as u64 <= minimum_sample_rate.weight());
         }
+    }
+
+    #[test]
+    fn zero_sample_rate_on_distributions_and_histograms_is_unsampled() {
+        // The reference DogStatsD server treats a sample rate of zero on sketches and histograms as unsampled (a rate
+        // of 1), rather than clamping it to the minimum sample rate and counting each point hundreds of millions of
+        // times.
+        let config = DogStatsDCodecConfiguration::default();
+
+        let (_, packet) = parse_dogstatsd_metric(b"my.distribution:1|d|@0", &config).expect("should parse");
+        match packet.values {
+            MetricValues::Distribution(points) => {
+                let (_, sketch) = points.into_iter().next().expect("should have a sketch");
+                assert_eq!(sketch.count(), 1);
+            }
+            _ => panic!("expected distribution values"),
+        }
+
+        for raw in ["my.histogram:1|h|@0", "my.timer:1|ms|@0"] {
+            let (_, packet) = parse_dogstatsd_metric(raw.as_bytes(), &config).expect("should parse");
+            match packet.values {
+                MetricValues::Histogram(points) => {
+                    let (_, histogram) = points.into_iter().next().expect("should have a histogram");
+                    let weights = histogram.samples().iter().map(|s| s.weight).collect::<Vec<_>>();
+                    assert_eq!(weights, [1.0], "unexpected weights for {raw:?}");
+                }
+                _ => panic!("expected histogram values for {raw:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn zero_timestamp_is_rejected() {
+        // The reference DogStatsD server rejects a metric with a timestamp of zero.
+        let config = DogStatsDCodecConfiguration::default();
+        assert!(parse_dogstatsd_metric(b"my.counter:1|c|@0.5|T0", &config).is_err());
+
+        // When timestamps aren't read, the field is ignored entirely, as in the reference DogStatsD server.
+        let config = DogStatsDCodecConfiguration::default().with_timestamps(false);
+        let (_, packet) = parse_dogstatsd_metric(b"my.counter:1|c|@0.5|T0", &config).expect("should parse");
+        assert_eq!(packet.timestamp, None);
+        assert_eq!(packet.values, MetricValues::counter(2.0));
     }
 
     #[test]

@@ -140,10 +140,10 @@ fields, fixed by `docs/case.md` and enforced by `go/record/case.go:192-255,310-3
 minimal example:
 
 ```yaml
-# Shows: an env var whose value is a raw JSON-encoded map, read as a typed getter.
+# Shows: the Agent decodes a JSON map in an env var at load, so the value is read as a map.
 name: additional-endpoints-env
 group: behavior
-why: [env-map-raw-string]
+why: [env-map-json-decoded]
 env:
   DD_ADDITIONAL_ENDPOINTS: '{"https://x.test": ["k"]}'
 keys: [additional_endpoints]
@@ -223,9 +223,11 @@ When a check fails because the corpus is stale, regenerate it with `make build-a
   `schema_overlay.yaml`.
 - `corpus_env_cases_stream_env_source`: a key in an env-only `breadth` or `unsupported` case did
   not stream the source `environment-variable`, so its env name is not the Agent's.
-- `vendored_schema_has_no_unrecorded_shapes`: the vendored schema grew a shape (a deprecated key
-  name, a duration-tagged integer or number) that no case covers yet; add the case the failure
-  names, in `cases/`, before regenerating.
+- `vendored_schema_has_no_unrecorded_shapes`: the vendored schema grew a shape (a duration-tagged
+  integer or number) that no case covers yet; add the case the failure names, in `cases/`, before
+  regenerating.
+- `renamed_settings_have_recorder_cases`: a setting with `renamed_from` in the vendored schema has
+  no `renamed-key-*` case by env, or none by YAML, that records it and all its former names.
 
 ```sh
 cargo nextest run --lib --bins -p datadog-agent-config-corpus

@@ -338,6 +338,12 @@ const LEAF_KINDS: &[LeafKind] = &[
         wrap: |a| format!("{a}.as_slice()"),
     },
     LeafKind {
+        rust_type: "Vec<::serde_json::Map<String, ::serde_json::Value>>",
+        variant: "JsonMapList",
+        payload: "&'a [::serde_json::Map<String, ::serde_json::Value>]",
+        wrap: |a| format!("{a}.as_slice()"),
+    },
+    LeafKind {
         rust_type: "Vec<HashMap<String, String>>",
         variant: "StringMapList",
         payload: "&'a [HashMap<String, String>]",

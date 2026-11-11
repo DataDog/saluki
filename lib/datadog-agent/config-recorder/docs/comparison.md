@@ -2,7 +2,8 @@
 
 This contract fixes how a typed agent-data-plane configuration leaf is compared with a getter result
 the corpus recorded (record.md §5.3, getter-map.md §3). The rules are per (leaf kind, getter), never
-per key. The implementation is `lib/agent-data-plane-config-system/src/corpus_replay/compare.rs`.
+per key; the one kind with a single key, `JsonMapList`, takes its rule from that key's consumer
+(decision 15). The implementation is `lib/agent-data-plane-config-system/src/corpus_replay/compare.rs`.
 
 ## 1. Scope
 
@@ -32,6 +33,7 @@ per key. The implementation is `lib/agent-data-plane-config-system/src/corpus_re
 | `I64`           | `i64`                               |
 | `JsonList`      | `&[serde_json::Value]`              |
 | `JsonMap`       | `&serde_json::Map<String, serde_json::Value>` |
+| `JsonMapList`   | `&[serde_json::Map<String, serde_json::Value>]` |
 | `OptionI64`     | `Option<i64>`                       |
 | `OptionStr`     | `Option<&str>`                      |
 | `Str`           | `&str`                              |
@@ -60,6 +62,7 @@ emulated getter is compared, and each other getter must give `NotCompared`.
 | `I64`           | `GetInt`, `GetInt64`       | rows 2 and 3; for row 4 the `GetDuration` read is not compared |
 | `JsonList`      | `Get`                      | rows 14 and 15: `Get` is the only getter                       |
 | `JsonMap`       | `GetStringMap`             | row 16                                                        |
+| `JsonMapList`   | `Get`                      | row 15: `Get` is the only getter; compared as decoded (decision 15) |
 | `OptionI64`     | `GetInt`                   | row 2 and §1.1 `integer`: the typed read                       |
 | `OptionStr`     | `GetString`                | row 7 and §1.1 `string`: the typed read                        |
 | `Str`           | `GetString`                | row 7                                                          |
@@ -85,6 +88,7 @@ round, trim, fold case, reorder a list, or coerce between integer and float.
 | `I64`           | `GetInt`, `GetInt64`      | equal integers                                                                          |
 | `JsonList`      | `Get`                     | a list of equal length, elements equal in order by the generic rule below; a top-level `null` matches `[]` (decision 6) |
 | `JsonMap`       | `GetStringMap`            | equal key sets, values equal by the generic rule below; `null` matches `{}` (decision 6) |
+| `JsonMapList`   | `Get`                     | the prefix rules each side runs with are equal in order (decision 15): ADP's are the rules its translator stores; the Agent's are the result decoded as its consumer does, or none when that decode fails |
 | `OptionI64`     | `GetInt`                  | `Some(n)` matches `n`; `None` matches `0` (decision 5)                                  |
 | `OptionStr`     | `GetString`               | `Some(s)` matches `s`; `None` matches `""` (decision 5)                                 |
 | `Str`           | `GetString`               | equal strings, byte for byte                                                            |
@@ -180,10 +184,10 @@ can't show this difference, so these rules can't catch it.
 | 11 | Map key order             | significant; ignored                                     | ignored                         | Go maps are unordered; the corpus sorts keys. |
 | 12 | List order                | significant; ignored                                     | significant                     | Slices are ordered in Go and in Rust. |
 | 13 | Explicit-only reads       | compare against a leaf; `NotCompared`                    | `NotCompared`                   | Their results describe sources, not a leaf's value (§6). |
-
 | 14 | Byte sizes                | compare the string leaf only; also compare the parsed size | both: the leaf here, the size in the derived tier | ADP parses the string itself, so equal strings can give different byte counts. |
+| 15 | Lists of objects (`JsonMapList`) | compare the raw lists by the generic rule; compare what each side's consumer decodes | what each consumer decodes | No Agent consumer uses the raw `Get` value. `metric_filterlist_prefix`, the only key of this kind, is read by `loadMetricFilterListConfig` (comp/filterlist/impl/filterlist.go) through `structure.UnmarshalKey`, which decodes weakly into prefix entries and runs with no rules when that fails. Raw values that this decode treats alike, such as a `null` entry and `{}`, or a comma-separated `except_prefix` string and a list, run the same rules. The rule is therefore specific to that key: a unit test fails when another supported key has this Rust type, which then needs its own rule. |
 
-No normalization is allowed beyond decisions 5, 6, 8 and 11.
+No normalization is allowed beyond decisions 5, 6, 8, 11 and 15.
 
 ## 9. Adding a leaf kind or a getter
 

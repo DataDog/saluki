@@ -463,6 +463,11 @@ impl Span {
         &self.span_links
     }
 
+    /// Returns a mutable reference to the span links collection.
+    pub fn span_links_mut(&mut self) -> &mut Vec<SpanLink> {
+        &mut self.span_links
+    }
+
     /// Returns the span events collection.
     pub fn span_events(&self) -> &[SpanEvent] {
         &self.span_events
