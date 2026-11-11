@@ -24,8 +24,8 @@ static OTEL_SOURCE_TAG: Tag = Tag::from_static("otel_source:datadog_agent");
 
 /// A translator for converting OTLP logs into DD native logs.
 ///
-/// Translation ends with rendering each log into its content, which is what the Agent's OTLP logs translator and logs
-/// exporter do together. The translator keeps its render buffers between logs.
+/// Translation ends with rendering each log into its content, so the logs it produces are ready for the envelope. The
+/// translator keeps its render buffers between logs.
 pub struct OtlpLogsTranslator {
     origin_tag_resolver: OtlpOriginTagResolver,
     renderer: OtlpLogsRenderer,
