@@ -4,7 +4,7 @@
 <a href=#4 id=4 data-nosnippet>4</a>    components::{destinations::<span class="kw-2">*</span>, BuildContext, ComponentContext},
 <a href=#5 id=5 data-nosnippet>5</a>    data_model::event::{
 <a href=#6 id=6 data-nosnippet>6</a>        metric::{Metric, MetricValues},
-<a href=#7 id=7 data-nosnippet>7</a>        Event, EventType,
+<a href=#7 id=7 data-nosnippet>7</a>        EventType,
 <a href=#8 id=8 data-nosnippet>8</a>    },
 <a href=#9 id=9 data-nosnippet>9</a>};
 <a href=#10 id=10 data-nosnippet>10</a><span class="kw">use </span>saluki_error::GenericError;
@@ -168,19 +168,17 @@
 <a href=#168 id=168 data-nosnippet>168</a>                <span class="kw">_ </span>= health.live() =&gt; <span class="kw">continue</span>,
 <a href=#169 id=169 data-nosnippet>169</a>                maybe_events = context.events().next() =&gt; <span class="kw">match </span>maybe_events {
 <a href=#170 id=170 data-nosnippet>170</a>                    <span class="prelude-val">Some</span>(events) =&gt; {
-<a href=#171 id=171 data-nosnippet>171</a>                        <span class="kw">for </span>event <span class="kw">in </span>events {
-<a href=#172 id=172 data-nosnippet>172</a>                            <span class="kw">if let </span>Event::Metric(metric) = event {
-<a href=#173 id=173 data-nosnippet>173</a>                                <span class="self">self</span>.record_metric(<span class="kw-2">&amp;</span>metric);
-<a href=#174 id=174 data-nosnippet>174</a>                            }
-<a href=#175 id=175 data-nosnippet>175</a>                        }
-<a href=#176 id=176 data-nosnippet>176</a>                    },
-<a href=#177 id=177 data-nosnippet>177</a>                    <span class="prelude-val">None </span>=&gt; <span class="kw">break</span>,
-<a href=#178 id=178 data-nosnippet>178</a>                },
-<a href=#179 id=179 data-nosnippet>179</a>            }
-<a href=#180 id=180 data-nosnippet>180</a>        }
-<a href=#181 id=181 data-nosnippet>181</a>
-<a href=#182 id=182 data-nosnippet>182</a>        <span class="macro">debug!</span>(<span class="string">"DogStatsD client telemetry destination stopped."</span>);
-<a href=#183 id=183 data-nosnippet>183</a>        <span class="prelude-val">Ok</span>(())
-<a href=#184 id=184 data-nosnippet>184</a>    }
-<a href=#185 id=185 data-nosnippet>185</a>}
+<a href=#171 id=171 data-nosnippet>171</a>                        <span class="kw">for </span>metric <span class="kw">in </span>events.into_events::&lt;Metric&gt;() {
+<a href=#172 id=172 data-nosnippet>172</a>                            <span class="self">self</span>.record_metric(<span class="kw-2">&amp;</span>metric);
+<a href=#173 id=173 data-nosnippet>173</a>                        }
+<a href=#174 id=174 data-nosnippet>174</a>                    },
+<a href=#175 id=175 data-nosnippet>175</a>                    <span class="prelude-val">None </span>=&gt; <span class="kw">break</span>,
+<a href=#176 id=176 data-nosnippet>176</a>                },
+<a href=#177 id=177 data-nosnippet>177</a>            }
+<a href=#178 id=178 data-nosnippet>178</a>        }
+<a href=#179 id=179 data-nosnippet>179</a>
+<a href=#180 id=180 data-nosnippet>180</a>        <span class="macro">debug!</span>(<span class="string">"DogStatsD client telemetry destination stopped."</span>);
+<a href=#181 id=181 data-nosnippet>181</a>        <span class="prelude-val">Ok</span>(())
+<a href=#182 id=182 data-nosnippet>182</a>    }
+<a href=#183 id=183 data-nosnippet>183</a>}
 </code></pre></div></section></main></body></html>

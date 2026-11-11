@@ -9,66 +9,66 @@
 <a href=#9 id=9 data-nosnippet>9</a>        transforms::{Transform, TransformBuilder, TransformContext},
 <a href=#10 id=10 data-nosnippet>10</a>        BuildContext,
 <a href=#11 id=11 data-nosnippet>11</a>    },
-<a href=#12 id=12 data-nosnippet>12</a>    data_model::event::{metric::MetricValues, Event, EventType},
-<a href=#13 id=13 data-nosnippet>13</a>    topology::{EventsBuffer, OutputDefinition},
-<a href=#14 id=14 data-nosnippet>14</a>};
-<a href=#15 id=15 data-nosnippet>15</a><span class="kw">use </span>saluki_error::GenericError;
-<a href=#16 id=16 data-nosnippet>16</a><span class="kw">use </span>tokio::select;
-<a href=#17 id=17 data-nosnippet>17</a><span class="kw">use </span>tracing::{debug, error};
-<a href=#18 id=18 data-nosnippet>18</a>
-<a href=#19 id=19 data-nosnippet>19</a><span class="kw">use </span><span class="kw">crate</span>::config::AutoscalingFailoverConfiguration;
-<a href=#20 id=20 data-nosnippet>20</a>
-<a href=#21 id=21 data-nosnippet>21</a><span class="doccomment">/// Autoscaling failover metrics gateway transform configuration.
-<a href=#22 id=22 data-nosnippet>22</a>///
-<a href=#23 id=23 data-nosnippet>23</a>/// This transform sits between the shared metrics enrichment stage and the Cluster Agent encoder/forwarder branch. It
-<a href=#24 id=24 data-nosnippet>24</a>/// forwards only configured series metrics to the Cluster Agent branch and drops everything else.
-<a href=#25 id=25 data-nosnippet>25</a></span><span class="kw">pub struct </span>AutoscalingFailoverGatewayConfiguration {
-<a href=#26 id=26 data-nosnippet>26</a>    failover_config: AutoscalingFailoverConfiguration,
-<a href=#27 id=27 data-nosnippet>27</a>}
-<a href=#28 id=28 data-nosnippet>28</a>
-<a href=#29 id=29 data-nosnippet>29</a><span class="kw">impl </span>AutoscalingFailoverGatewayConfiguration {
-<a href=#30 id=30 data-nosnippet>30</a>    <span class="doccomment">/// Creates a new `AutoscalingFailoverGatewayConfiguration` from the given failover configuration.
-<a href=#31 id=31 data-nosnippet>31</a>    </span><span class="kw">pub fn </span>new(failover_config: AutoscalingFailoverConfiguration) -&gt; <span class="self">Self </span>{
-<a href=#32 id=32 data-nosnippet>32</a>        <span class="self">Self </span>{ failover_config }
-<a href=#33 id=33 data-nosnippet>33</a>    }
-<a href=#34 id=34 data-nosnippet>34</a>}
-<a href=#35 id=35 data-nosnippet>35</a>
-<a href=#36 id=36 data-nosnippet>36</a><span class="doccomment">/// Routing and filtering state for the autoscaling failover metrics gateway.
-<a href=#37 id=37 data-nosnippet>37</a></span><span class="attr">#[derive(Debug)]
-<a href=#38 id=38 data-nosnippet>38</a></span><span class="kw">enum </span>GatewayMode {
-<a href=#39 id=39 data-nosnippet>39</a>    <span class="doccomment">/// Autoscaling failover is disabled or has no allowed metrics; drop all events.
-<a href=#40 id=40 data-nosnippet>40</a>    </span>Inactive,
-<a href=#41 id=41 data-nosnippet>41</a>    <span class="doccomment">/// Autoscaling failover is active; forward only matching series metrics.
-<a href=#42 id=42 data-nosnippet>42</a>    </span>FilteredForward { allowlist: HashSet&lt;String&gt; },
-<a href=#43 id=43 data-nosnippet>43</a>}
-<a href=#44 id=44 data-nosnippet>44</a>
-<a href=#45 id=45 data-nosnippet>45</a><span class="doccomment">/// Autoscaling failover metrics gateway transform.
-<a href=#46 id=46 data-nosnippet>46</a></span><span class="kw">pub struct </span>AutoscalingFailoverGateway {
-<a href=#47 id=47 data-nosnippet>47</a>    mode: GatewayMode,
-<a href=#48 id=48 data-nosnippet>48</a>}
-<a href=#49 id=49 data-nosnippet>49</a>
-<a href=#50 id=50 data-nosnippet>50</a><span class="kw">impl </span>AutoscalingFailoverGateway {
-<a href=#51 id=51 data-nosnippet>51</a>    <span class="kw">fn </span>new(failover_config: AutoscalingFailoverConfiguration) -&gt; <span class="self">Self </span>{
-<a href=#52 id=52 data-nosnippet>52</a>        <span class="kw">let </span>mode = <span class="self">Self</span>::mode_for_config(<span class="kw-2">&amp;</span>failover_config);
-<a href=#53 id=53 data-nosnippet>53</a>
-<a href=#54 id=54 data-nosnippet>54</a>        <span class="self">Self </span>{ mode }
-<a href=#55 id=55 data-nosnippet>55</a>    }
+<a href=#12 id=12 data-nosnippet>12</a>    data_model::event::{
+<a href=#13 id=13 data-nosnippet>13</a>        metric::{Metric, MetricValues},
+<a href=#14 id=14 data-nosnippet>14</a>        EventType,
+<a href=#15 id=15 data-nosnippet>15</a>    },
+<a href=#16 id=16 data-nosnippet>16</a>    topology::{EventsBuffer, OutputDefinition},
+<a href=#17 id=17 data-nosnippet>17</a>};
+<a href=#18 id=18 data-nosnippet>18</a><span class="kw">use </span>saluki_error::GenericError;
+<a href=#19 id=19 data-nosnippet>19</a><span class="kw">use </span>tokio::select;
+<a href=#20 id=20 data-nosnippet>20</a><span class="kw">use </span>tracing::{debug, error};
+<a href=#21 id=21 data-nosnippet>21</a>
+<a href=#22 id=22 data-nosnippet>22</a><span class="kw">use </span><span class="kw">crate</span>::config::AutoscalingFailoverConfiguration;
+<a href=#23 id=23 data-nosnippet>23</a>
+<a href=#24 id=24 data-nosnippet>24</a><span class="doccomment">/// Autoscaling failover metrics gateway transform configuration.
+<a href=#25 id=25 data-nosnippet>25</a>///
+<a href=#26 id=26 data-nosnippet>26</a>/// This transform sits between the shared metrics enrichment stage and the Cluster Agent encoder/forwarder branch. It
+<a href=#27 id=27 data-nosnippet>27</a>/// forwards only configured series metrics to the Cluster Agent branch and drops everything else.
+<a href=#28 id=28 data-nosnippet>28</a></span><span class="kw">pub struct </span>AutoscalingFailoverGatewayConfiguration {
+<a href=#29 id=29 data-nosnippet>29</a>    failover_config: AutoscalingFailoverConfiguration,
+<a href=#30 id=30 data-nosnippet>30</a>}
+<a href=#31 id=31 data-nosnippet>31</a>
+<a href=#32 id=32 data-nosnippet>32</a><span class="kw">impl </span>AutoscalingFailoverGatewayConfiguration {
+<a href=#33 id=33 data-nosnippet>33</a>    <span class="doccomment">/// Creates a new `AutoscalingFailoverGatewayConfiguration` from the given failover configuration.
+<a href=#34 id=34 data-nosnippet>34</a>    </span><span class="kw">pub fn </span>new(failover_config: AutoscalingFailoverConfiguration) -&gt; <span class="self">Self </span>{
+<a href=#35 id=35 data-nosnippet>35</a>        <span class="self">Self </span>{ failover_config }
+<a href=#36 id=36 data-nosnippet>36</a>    }
+<a href=#37 id=37 data-nosnippet>37</a>}
+<a href=#38 id=38 data-nosnippet>38</a>
+<a href=#39 id=39 data-nosnippet>39</a><span class="doccomment">/// Routing and filtering state for the autoscaling failover metrics gateway.
+<a href=#40 id=40 data-nosnippet>40</a></span><span class="attr">#[derive(Debug)]
+<a href=#41 id=41 data-nosnippet>41</a></span><span class="kw">enum </span>GatewayMode {
+<a href=#42 id=42 data-nosnippet>42</a>    <span class="doccomment">/// Autoscaling failover is disabled or has no allowed metrics; drop all events.
+<a href=#43 id=43 data-nosnippet>43</a>    </span>Inactive,
+<a href=#44 id=44 data-nosnippet>44</a>    <span class="doccomment">/// Autoscaling failover is active; forward only matching series metrics.
+<a href=#45 id=45 data-nosnippet>45</a>    </span>FilteredForward { allowlist: HashSet&lt;String&gt; },
+<a href=#46 id=46 data-nosnippet>46</a>}
+<a href=#47 id=47 data-nosnippet>47</a>
+<a href=#48 id=48 data-nosnippet>48</a><span class="doccomment">/// Autoscaling failover metrics gateway transform.
+<a href=#49 id=49 data-nosnippet>49</a></span><span class="kw">pub struct </span>AutoscalingFailoverGateway {
+<a href=#50 id=50 data-nosnippet>50</a>    mode: GatewayMode,
+<a href=#51 id=51 data-nosnippet>51</a>}
+<a href=#52 id=52 data-nosnippet>52</a>
+<a href=#53 id=53 data-nosnippet>53</a><span class="kw">impl </span>AutoscalingFailoverGateway {
+<a href=#54 id=54 data-nosnippet>54</a>    <span class="kw">fn </span>new(failover_config: AutoscalingFailoverConfiguration) -&gt; <span class="self">Self </span>{
+<a href=#55 id=55 data-nosnippet>55</a>        <span class="kw">let </span>mode = <span class="self">Self</span>::mode_for_config(<span class="kw-2">&amp;</span>failover_config);
 <a href=#56 id=56 data-nosnippet>56</a>
-<a href=#57 id=57 data-nosnippet>57</a>    <span class="kw">fn </span>mode_for_config(failover_config: <span class="kw-2">&amp;</span>AutoscalingFailoverConfiguration) -&gt; GatewayMode {
-<a href=#58 id=58 data-nosnippet>58</a>        <span class="kw">if </span>!failover_config.is_branch_requested() {
-<a href=#59 id=59 data-nosnippet>59</a>            GatewayMode::Inactive
-<a href=#60 id=60 data-nosnippet>60</a>        } <span class="kw">else </span>{
-<a href=#61 id=61 data-nosnippet>61</a>            GatewayMode::FilteredForward {
-<a href=#62 id=62 data-nosnippet>62</a>                allowlist: failover_config.metrics().iter().cloned().collect(),
-<a href=#63 id=63 data-nosnippet>63</a>            }
-<a href=#64 id=64 data-nosnippet>64</a>        }
-<a href=#65 id=65 data-nosnippet>65</a>    }
-<a href=#66 id=66 data-nosnippet>66</a>
-<a href=#67 id=67 data-nosnippet>67</a>    <span class="kw">fn </span>should_forward(<span class="kw-2">&amp;</span><span class="self">self</span>, event: <span class="kw-2">&amp;</span>Event) -&gt; bool {
-<a href=#68 id=68 data-nosnippet>68</a>        <span class="kw">let </span>GatewayMode::FilteredForward { allowlist } = <span class="kw-2">&amp;</span><span class="self">self</span>.mode <span class="kw">else </span>{
-<a href=#69 id=69 data-nosnippet>69</a>            <span class="kw">return </span><span class="bool-val">false</span>;
-<a href=#70 id=70 data-nosnippet>70</a>        };
-<a href=#71 id=71 data-nosnippet>71</a>        <span class="kw">let </span>Event::Metric(metric) = event <span class="kw">else </span>{
+<a href=#57 id=57 data-nosnippet>57</a>        <span class="self">Self </span>{ mode }
+<a href=#58 id=58 data-nosnippet>58</a>    }
+<a href=#59 id=59 data-nosnippet>59</a>
+<a href=#60 id=60 data-nosnippet>60</a>    <span class="kw">fn </span>mode_for_config(failover_config: <span class="kw-2">&amp;</span>AutoscalingFailoverConfiguration) -&gt; GatewayMode {
+<a href=#61 id=61 data-nosnippet>61</a>        <span class="kw">if </span>!failover_config.is_branch_requested() {
+<a href=#62 id=62 data-nosnippet>62</a>            GatewayMode::Inactive
+<a href=#63 id=63 data-nosnippet>63</a>        } <span class="kw">else </span>{
+<a href=#64 id=64 data-nosnippet>64</a>            GatewayMode::FilteredForward {
+<a href=#65 id=65 data-nosnippet>65</a>                allowlist: failover_config.metrics().iter().cloned().collect(),
+<a href=#66 id=66 data-nosnippet>66</a>            }
+<a href=#67 id=67 data-nosnippet>67</a>        }
+<a href=#68 id=68 data-nosnippet>68</a>    }
+<a href=#69 id=69 data-nosnippet>69</a>
+<a href=#70 id=70 data-nosnippet>70</a>    <span class="kw">fn </span>should_forward(<span class="kw-2">&amp;</span><span class="self">self</span>, metric: <span class="kw-2">&amp;</span>Metric) -&gt; bool {
+<a href=#71 id=71 data-nosnippet>71</a>        <span class="kw">let </span>GatewayMode::FilteredForward { allowlist } = <span class="kw-2">&amp;</span><span class="self">self</span>.mode <span class="kw">else </span>{
 <a href=#72 id=72 data-nosnippet>72</a>            <span class="kw">return </span><span class="bool-val">false</span>;
 <a href=#73 id=73 data-nosnippet>73</a>        };
 <a href=#74 id=74 data-nosnippet>74</a>        <span class="kw">if </span>!<span class="macro">matches!</span>(
@@ -85,7 +85,7 @@
 <a href=#85 id=85 data-nosnippet>85</a>        <span class="kw-2">&amp;</span><span class="self">self</span>, <span class="kw-2">mut </span>events: EventsBuffer, context: <span class="kw-2">&amp;mut </span>TransformContext,
 <a href=#86 id=86 data-nosnippet>86</a>    ) -&gt; <span class="prelude-ty">Result</span>&lt;(), GenericError&gt; {
 <a href=#87 id=87 data-nosnippet>87</a>        <span class="kw">let </span>input_events = events.len();
-<a href=#88 id=88 data-nosnippet>88</a>        events.remove_if(|event| !<span class="self">self</span>.should_forward(event));
+<a href=#88 id=88 data-nosnippet>88</a>        events.retain_events::&lt;Metric, <span class="kw">_</span>&gt;(|metric| <span class="self">self</span>.should_forward(metric));
 <a href=#89 id=89 data-nosnippet>89</a>
 <a href=#90 id=90 data-nosnippet>90</a>        <span class="kw">let </span>sent_events = context.dispatcher().buffered()<span class="question-mark">?</span>.send_all(events).<span class="kw">await</span><span class="question-mark">?</span>;
 <a href=#91 id=91 data-nosnippet>91</a>        <span class="kw">let </span>dropped_events = input_events - sent_events;
@@ -169,56 +169,47 @@
 <a href=#169 id=169 data-nosnippet>169</a></span><span class="kw">mod </span>tests {
 <a href=#170 id=170 data-nosnippet>170</a>    <span class="kw">use </span>std::time::Duration;
 <a href=#171 id=171 data-nosnippet>171</a>
-<a href=#172 id=172 data-nosnippet>172</a>    <span class="kw">use </span>saluki_core::data_model::event::{metric::Metric, Event};
+<a href=#172 id=172 data-nosnippet>172</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
 <a href=#173 id=173 data-nosnippet>173</a>
-<a href=#174 id=174 data-nosnippet>174</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
-<a href=#175 id=175 data-nosnippet>175</a>
-<a href=#176 id=176 data-nosnippet>176</a>    <span class="kw">fn </span>gateway_from_config(enabled: bool, metrics: <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>str]) -&gt; AutoscalingFailoverGateway {
-<a href=#177 id=177 data-nosnippet>177</a>        <span class="kw">let </span>metrics = metrics.iter().map(|name| (<span class="kw-2">*</span>name).to_string()).collect();
-<a href=#178 id=178 data-nosnippet>178</a>        AutoscalingFailoverGateway::new(AutoscalingFailoverConfiguration::new(enabled, metrics))
-<a href=#179 id=179 data-nosnippet>179</a>    }
-<a href=#180 id=180 data-nosnippet>180</a>
-<a href=#181 id=181 data-nosnippet>181</a>    <span class="attr">#[test]
-<a href=#182 id=182 data-nosnippet>182</a>    </span><span class="kw">fn </span>inactive_gateway_drops_everything() {
-<a href=#183 id=183 data-nosnippet>183</a>        <span class="kw">let </span>gw = gateway_from_config(<span class="bool-val">false</span>, <span class="kw-2">&amp;</span>[<span class="string">"allowed.metric"</span>]);
-<a href=#184 id=184 data-nosnippet>184</a>
-<a href=#185 id=185 data-nosnippet>185</a>        <span class="macro">assert!</span>(!gw.should_forward(<span class="kw-2">&amp;</span>Event::Metric(Metric::counter(<span class="string">"allowed.metric"</span>, <span class="number">1.0</span>))));
-<a href=#186 id=186 data-nosnippet>186</a>    }
-<a href=#187 id=187 data-nosnippet>187</a>
-<a href=#188 id=188 data-nosnippet>188</a>    <span class="attr">#[test]
-<a href=#189 id=189 data-nosnippet>189</a>    </span><span class="kw">fn </span>empty_metric_allowlist_drops_everything() {
-<a href=#190 id=190 data-nosnippet>190</a>        <span class="kw">let </span>gw = gateway_from_config(<span class="bool-val">true</span>, <span class="kw-2">&amp;</span>[]);
-<a href=#191 id=191 data-nosnippet>191</a>
-<a href=#192 id=192 data-nosnippet>192</a>        <span class="macro">assert!</span>(!gw.should_forward(<span class="kw-2">&amp;</span>Event::Metric(Metric::counter(<span class="string">"allowed.metric"</span>, <span class="number">1.0</span>))));
-<a href=#193 id=193 data-nosnippet>193</a>    }
-<a href=#194 id=194 data-nosnippet>194</a>
-<a href=#195 id=195 data-nosnippet>195</a>    <span class="attr">#[test]
-<a href=#196 id=196 data-nosnippet>196</a>    </span><span class="kw">fn </span>active_gateway_forwards_only_allowed_series_metrics() {
-<a href=#197 id=197 data-nosnippet>197</a>        <span class="kw">let </span>gw = gateway_from_config(
-<a href=#198 id=198 data-nosnippet>198</a>            <span class="bool-val">true</span>,
-<a href=#199 id=199 data-nosnippet>199</a>            <span class="kw-2">&amp;</span>[<span class="string">"allowed.counter"</span>, <span class="string">"allowed.gauge"</span>, <span class="string">"allowed.rate"</span>, <span class="string">"allowed.set"</span>],
-<a href=#200 id=200 data-nosnippet>200</a>        );
-<a href=#201 id=201 data-nosnippet>201</a>
-<a href=#202 id=202 data-nosnippet>202</a>        <span class="macro">assert!</span>(gw.should_forward(<span class="kw-2">&amp;</span>Event::Metric(Metric::counter(<span class="string">"allowed.counter"</span>, <span class="number">1.0</span>))));
-<a href=#203 id=203 data-nosnippet>203</a>        <span class="macro">assert!</span>(gw.should_forward(<span class="kw-2">&amp;</span>Event::Metric(Metric::gauge(<span class="string">"allowed.gauge"</span>, <span class="number">1.0</span>))));
-<a href=#204 id=204 data-nosnippet>204</a>        <span class="macro">assert!</span>(gw.should_forward(<span class="kw-2">&amp;</span>Event::Metric(Metric::rate(
-<a href=#205 id=205 data-nosnippet>205</a>            <span class="string">"allowed.rate"</span>,
-<a href=#206 id=206 data-nosnippet>206</a>            <span class="number">1.0</span>,
-<a href=#207 id=207 data-nosnippet>207</a>            Duration::from_secs(<span class="number">10</span>)
-<a href=#208 id=208 data-nosnippet>208</a>        ))));
-<a href=#209 id=209 data-nosnippet>209</a>        <span class="macro">assert!</span>(gw.should_forward(<span class="kw-2">&amp;</span>Event::Metric(Metric::set(<span class="string">"allowed.set"</span>, <span class="string">"value"</span>))));
-<a href=#210 id=210 data-nosnippet>210</a>        <span class="macro">assert!</span>(!gw.should_forward(<span class="kw-2">&amp;</span>Event::Metric(Metric::counter(<span class="string">"blocked.counter"</span>, <span class="number">1.0</span>))));
-<a href=#211 id=211 data-nosnippet>211</a>    }
-<a href=#212 id=212 data-nosnippet>212</a>
-<a href=#213 id=213 data-nosnippet>213</a>    <span class="attr">#[test]
-<a href=#214 id=214 data-nosnippet>214</a>    </span><span class="kw">fn </span>active_gateway_drops_sketch_metrics_even_when_allowed() {
-<a href=#215 id=215 data-nosnippet>215</a>        <span class="kw">let </span>gw = gateway_from_config(<span class="bool-val">true</span>, <span class="kw-2">&amp;</span>[<span class="string">"allowed.histogram"</span>, <span class="string">"allowed.distribution"</span>]);
-<a href=#216 id=216 data-nosnippet>216</a>
-<a href=#217 id=217 data-nosnippet>217</a>        <span class="macro">assert!</span>(!gw.should_forward(<span class="kw-2">&amp;</span>Event::Metric(Metric::histogram(<span class="string">"allowed.histogram"</span>, [<span class="number">1.0</span>, <span class="number">2.0</span>, <span class="number">3.0</span>]))));
-<a href=#218 id=218 data-nosnippet>218</a>        <span class="macro">assert!</span>(!gw.should_forward(<span class="kw-2">&amp;</span>Event::Metric(Metric::distribution(
-<a href=#219 id=219 data-nosnippet>219</a>            <span class="string">"allowed.distribution"</span>,
-<a href=#220 id=220 data-nosnippet>220</a>            [<span class="number">1.0</span>, <span class="number">2.0</span>, <span class="number">3.0</span>]
-<a href=#221 id=221 data-nosnippet>221</a>        ))));
-<a href=#222 id=222 data-nosnippet>222</a>    }
-<a href=#223 id=223 data-nosnippet>223</a>}
+<a href=#174 id=174 data-nosnippet>174</a>    <span class="kw">fn </span>gateway_from_config(enabled: bool, metrics: <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>str]) -&gt; AutoscalingFailoverGateway {
+<a href=#175 id=175 data-nosnippet>175</a>        <span class="kw">let </span>metrics = metrics.iter().map(|name| (<span class="kw-2">*</span>name).to_string()).collect();
+<a href=#176 id=176 data-nosnippet>176</a>        AutoscalingFailoverGateway::new(AutoscalingFailoverConfiguration::new(enabled, metrics))
+<a href=#177 id=177 data-nosnippet>177</a>    }
+<a href=#178 id=178 data-nosnippet>178</a>
+<a href=#179 id=179 data-nosnippet>179</a>    <span class="attr">#[test]
+<a href=#180 id=180 data-nosnippet>180</a>    </span><span class="kw">fn </span>inactive_gateway_drops_everything() {
+<a href=#181 id=181 data-nosnippet>181</a>        <span class="kw">let </span>gw = gateway_from_config(<span class="bool-val">false</span>, <span class="kw-2">&amp;</span>[<span class="string">"allowed.metric"</span>]);
+<a href=#182 id=182 data-nosnippet>182</a>
+<a href=#183 id=183 data-nosnippet>183</a>        <span class="macro">assert!</span>(!gw.should_forward(<span class="kw-2">&amp;</span>Metric::counter(<span class="string">"allowed.metric"</span>, <span class="number">1.0</span>)));
+<a href=#184 id=184 data-nosnippet>184</a>    }
+<a href=#185 id=185 data-nosnippet>185</a>
+<a href=#186 id=186 data-nosnippet>186</a>    <span class="attr">#[test]
+<a href=#187 id=187 data-nosnippet>187</a>    </span><span class="kw">fn </span>empty_metric_allowlist_drops_everything() {
+<a href=#188 id=188 data-nosnippet>188</a>        <span class="kw">let </span>gw = gateway_from_config(<span class="bool-val">true</span>, <span class="kw-2">&amp;</span>[]);
+<a href=#189 id=189 data-nosnippet>189</a>
+<a href=#190 id=190 data-nosnippet>190</a>        <span class="macro">assert!</span>(!gw.should_forward(<span class="kw-2">&amp;</span>Metric::counter(<span class="string">"allowed.metric"</span>, <span class="number">1.0</span>)));
+<a href=#191 id=191 data-nosnippet>191</a>    }
+<a href=#192 id=192 data-nosnippet>192</a>
+<a href=#193 id=193 data-nosnippet>193</a>    <span class="attr">#[test]
+<a href=#194 id=194 data-nosnippet>194</a>    </span><span class="kw">fn </span>active_gateway_forwards_only_allowed_series_metrics() {
+<a href=#195 id=195 data-nosnippet>195</a>        <span class="kw">let </span>gw = gateway_from_config(
+<a href=#196 id=196 data-nosnippet>196</a>            <span class="bool-val">true</span>,
+<a href=#197 id=197 data-nosnippet>197</a>            <span class="kw-2">&amp;</span>[<span class="string">"allowed.counter"</span>, <span class="string">"allowed.gauge"</span>, <span class="string">"allowed.rate"</span>, <span class="string">"allowed.set"</span>],
+<a href=#198 id=198 data-nosnippet>198</a>        );
+<a href=#199 id=199 data-nosnippet>199</a>
+<a href=#200 id=200 data-nosnippet>200</a>        <span class="macro">assert!</span>(gw.should_forward(<span class="kw-2">&amp;</span>Metric::counter(<span class="string">"allowed.counter"</span>, <span class="number">1.0</span>)));
+<a href=#201 id=201 data-nosnippet>201</a>        <span class="macro">assert!</span>(gw.should_forward(<span class="kw-2">&amp;</span>Metric::gauge(<span class="string">"allowed.gauge"</span>, <span class="number">1.0</span>)));
+<a href=#202 id=202 data-nosnippet>202</a>        <span class="macro">assert!</span>(gw.should_forward(<span class="kw-2">&amp;</span>Metric::rate(<span class="string">"allowed.rate"</span>, <span class="number">1.0</span>, Duration::from_secs(<span class="number">10</span>))));
+<a href=#203 id=203 data-nosnippet>203</a>        <span class="macro">assert!</span>(gw.should_forward(<span class="kw-2">&amp;</span>Metric::set(<span class="string">"allowed.set"</span>, <span class="string">"value"</span>)));
+<a href=#204 id=204 data-nosnippet>204</a>        <span class="macro">assert!</span>(!gw.should_forward(<span class="kw-2">&amp;</span>Metric::counter(<span class="string">"blocked.counter"</span>, <span class="number">1.0</span>)));
+<a href=#205 id=205 data-nosnippet>205</a>    }
+<a href=#206 id=206 data-nosnippet>206</a>
+<a href=#207 id=207 data-nosnippet>207</a>    <span class="attr">#[test]
+<a href=#208 id=208 data-nosnippet>208</a>    </span><span class="kw">fn </span>active_gateway_drops_sketch_metrics_even_when_allowed() {
+<a href=#209 id=209 data-nosnippet>209</a>        <span class="kw">let </span>gw = gateway_from_config(<span class="bool-val">true</span>, <span class="kw-2">&amp;</span>[<span class="string">"allowed.histogram"</span>, <span class="string">"allowed.distribution"</span>]);
+<a href=#210 id=210 data-nosnippet>210</a>
+<a href=#211 id=211 data-nosnippet>211</a>        <span class="macro">assert!</span>(!gw.should_forward(<span class="kw-2">&amp;</span>Metric::histogram(<span class="string">"allowed.histogram"</span>, [<span class="number">1.0</span>, <span class="number">2.0</span>, <span class="number">3.0</span>])));
+<a href=#212 id=212 data-nosnippet>212</a>        <span class="macro">assert!</span>(!gw.should_forward(<span class="kw-2">&amp;</span>Metric::distribution(<span class="string">"allowed.distribution"</span>, [<span class="number">1.0</span>, <span class="number">2.0</span>, <span class="number">3.0</span>])));
+<a href=#213 id=213 data-nosnippet>213</a>    }
+<a href=#214 id=214 data-nosnippet>214</a>}
 </code></pre></div></section></main></body></html>
