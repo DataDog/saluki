@@ -23,18 +23,6 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         default: DefaultValue::Json("\"tlsv1.2\""),
     },
     ClassifierEntry {
-        yaml_path: "otlp_config.traces.span_name_as_resource_name",
-        support_level: SupportLevel::Partial,
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
-        default: DefaultValue::Json("false"),
-    },
-    ClassifierEntry {
-        yaml_path: "otlp_config.traces.span_name_remappings",
-        support_level: SupportLevel::Partial,
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
-        default: DefaultValue::Json("{}"),
-    },
-    ClassifierEntry {
         yaml_path: "aggregator_buffer_size",
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),

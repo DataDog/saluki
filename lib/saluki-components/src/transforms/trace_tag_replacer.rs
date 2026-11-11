@@ -11,10 +11,7 @@ use regex::Regex;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     components::{transforms::*, BuildContext},
-    data_model::event::{
-        trace::{AttributeValue, Span},
-        Event,
-    },
+    data_model::event::trace::{AttributeValue, Span, Trace},
     topology::EventsBuffer,
 };
 use saluki_error::{generic_error, GenericError};
@@ -131,11 +128,9 @@ impl SynchronousTransform for TraceTagReplacer {
             return;
         }
 
-        for event in buffer {
-            if let Event::Trace(ref mut trace) = event {
-                for span in trace.spans_mut() {
-                    self.replace_span(span);
-                }
+        for trace in buffer.events_mut::<Trace>() {
+            for span in trace.spans_mut() {
+                self.replace_span(span);
             }
         }
     }

@@ -451,8 +451,6 @@ default values.
 | `log_level`                                                     | Log verbosity directives                        |
 | `min_tls_version`                                               | Minimum TLS version for HTTPS connections       |
 | `multi_region_failover.enabled`                                 | Enable multi-region failover mode               |
-| `otlp_config.traces.span_name_as_resource_name`                 | Use the OTLP span name as the resource name     |
-| `otlp_config.traces.span_name_remappings`                       | Remap OTLP span names to preferred names        |
 | `secret_backend_command`                                        | Path to the Agent secret-fetch executable       |
 | `secret_refresh_on_api_key_failure_interval`                    | Minutes between secret refreshes after a 403    |
 | `serializer_zstd_compressor_level`                              | Zstd compression level (Agent)                  |
@@ -481,13 +479,20 @@ aggregation windows are included is controlled by `dogstatsd_flush_incomplete_bu
 
 The core Agent uses `apm_config.features` to toggle beta APM behaviors.
 
-ADP recognizes a single value, `probabilistic_sampler_full_trace_id`, which switches the
-probabilistic sampler from hashing the low 64 bits of the trace ID to hashing the full
-128-bit ID, aligning its keep decisions with samplers that decide on 128-bit IDs. Every
-other value is ignored, without a warning: the flag inventory is not stable across agent
-versions, so unrecognized entries are inert rather than errors. Operators running multiple
-probabilistic samplers in one ingestion path should enable the flag consistently on every
-sampler that supports it.
+ADP recognizes these values:
+
+- `probabilistic_sampler_full_trace_id` switches the probabilistic sampler from hashing the
+  low 64 bits of the trace ID to hashing the full 128-bit ID, aligning its keep decisions with
+  samplers that decide on 128-bit IDs. Operators running multiple probabilistic samplers in
+  one ingestion path should enable the flag consistently on every sampler that supports it.
+- `disable_operation_and_resource_name_logic_v2` derives OTLP operation and resource names
+  with the Agent's V1 logic.
+- `disable_receive_resource_spans_v2` converts OTLP spans the way the Agent's V1 receive path
+  does.
+- `disable_otel_scope_convention` stops emitting the `otel.scope.*` tags on OTLP spans.
+
+Every other value is ignored, without a warning: the flag inventory is not stable across agent
+versions, so unrecognized entries are inert rather than errors.
 
 ### `cri_socket_path`
 
@@ -751,23 +756,6 @@ is enabled.
 | `multi_region_failover.api_key`          | API key for the failover-region endpoint.                                  | unset   |
 | `multi_region_failover.site`             | Datadog site for the failover region, used as `https://app.mrf.<site>`.    | unset   |
 | `multi_region_failover.dd_url`           | Explicit failover intake URL. Takes precedence over `site` when set.       | unset   |
-
-### `otlp_config.traces.span_name_as_resource_name`
-
-The core Agent uses `otlp_config.traces.span_name_as_resource_name` to select its V1 naming for OTLP
-spans: with the key set, the span name becomes the Datadog resource name, and without it the
-resource name is built from the instrumentation library name and span kind.
-
-ADP reads this key but does not act on it yet. It always derives span names and resource names with the
-V2 logic, so setting the key has no effect on the spans ADP emits.
-
-### `otlp_config.traces.span_name_remappings`
-
-The core Agent uses `otlp_config.traces.span_name_remappings`, a map of span names to preferred
-names, to rename the operation names of OTLP spans. A non-empty map also selects the Agent's V1 naming.
-
-ADP reads this key but does not act on it yet. It always derives span names and resource names with the
-V2 logic, so setting the key has no effect on the spans ADP emits.
 
 ### `secret_backend_command`
 
@@ -1199,6 +1187,8 @@ The following settings work in ADP with the same behavior as the core agent.
 | `otlp_config.traces.infra_attributes.enabled`                                              | OTLP trace infrastructure-attribute enrichment     |
 | `otlp_config.traces.internal_port`                                                         | otlp_config.traces.internal_port                   |
 | `otlp_config.traces.probabilistic_sampler.sampling_percentage`                             | OTLP trace sampling percentage                     |
+| `otlp_config.traces.span_name_as_resource_name`                                            | Use the OTLP span name as the operation name       |
+| `otlp_config.traces.span_name_remappings`                                                  | Remap OTLP span names to preferred names           |
 | `provider_kind`                                                                            | Provider kind static tag                           |
 | `proxy.http`                                                                               | HTTP proxy URL                                     |
 | `proxy.https`                                                                              | HTTPS proxy URL                                    |
@@ -1523,6 +1513,18 @@ Controls whether entity and global tags from the workload metadata store are enr
 The default `true` attaches the tags the local metadata store holds for the resource's container. When
 `false`, traces carry only the resource attributes the sender provided.
 
+### `otlp_config.traces.span_name_as_resource_name`
+
+Setting `otlp_config.traces.span_name_as_resource_name` selects the Agent's V1 operation and
+resource naming for OTLP spans. Despite its name, the key changes the operation name: a span
+without an `operation.name` attribute takes its OTLP span name as the operation name, instead of
+the instrumentation library name and span kind.
+
+### `otlp_config.traces.span_name_remappings`
+
+A non-empty `otlp_config.traces.span_name_remappings` selects the Agent's V1 operation and
+resource naming for OTLP spans, and renames each operation name it lists.
+
 ### `serializer_experimental_use_v3_api.sketches.beta_route`
 
 Defaults to `/api/intake/metrics/v3beta/sketches`. Overrides the route used for sampled sketch copies; the authoritative V2 route is unchanged.
@@ -1602,7 +1604,6 @@ Both commands scrub recognized secret values before writing JSON to standard out
 [#1754]: https://github.com/DataDog/saluki/issues/1754
 [#1755]: https://github.com/DataDog/saluki/issues/1755
 [#2079]: https://github.com/DataDog/saluki/issues/2079
-[#2332]: https://github.com/DataDog/saluki/issues/2332
 [#2419]: https://github.com/DataDog/saluki/issues/2419
 [#2557]: https://github.com/DataDog/saluki/issues/2557
 [#2558]: https://github.com/DataDog/saluki/issues/2558

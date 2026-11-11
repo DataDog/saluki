@@ -219,11 +219,7 @@ async fn run_request_builder(
     loop {
         select! {
             Some(event_buffer) = events_rx.recv() => {
-                for event in event_buffer {
-                    let trace_stats = match event.try_into_trace_stats() {
-                        Some(stats) => stats,
-                        None => continue,
-                    };
+                for trace_stats in event_buffer.into_events::<TraceStats>() {
 
                     // Encode the stats. If we get it back, that means the current request is full, and we need to
                     // flush it before we can try to encode the stats again.

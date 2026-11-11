@@ -86,6 +86,76 @@ impl fmt::Display for EventType {
     }
 }
 
+mod sealed {
+    pub trait Sealed {}
+}
+
+/// A type of telemetry event, such as [`Metric`] or [`Trace`].
+///
+/// This lets code work with one event type generically: for example, event buffers provide typed views over just the
+/// events of a given type. It's implemented for each type an [`Event`] can hold, and can't be implemented elsewhere.
+pub trait EventKind: sealed::Sealed + Sized + 'static {
+    /// The event type.
+    const EVENT_TYPE: EventType;
+
+    /// Wraps this value in an [`Event`].
+    fn into_event(self) -> Event;
+
+    /// Unwraps the given event if it's of this type, or returns it unchanged if it isn't.
+    // The error is the event handed back to the caller rather than an error type, so boxing it would only add an
+    // allocation.
+    #[allow(clippy::result_large_err)]
+    fn try_from_event(event: Event) -> Result<Self, Event>;
+
+    /// Returns a reference to the inner value of the given event, if it's of this type.
+    fn try_from_event_ref(event: &Event) -> Option<&Self>;
+
+    /// Returns a mutable reference to the inner value of the given event, if it's of this type.
+    fn try_from_event_mut(event: &mut Event) -> Option<&mut Self>;
+}
+
+macro_rules! impl_event_kind {
+    ($ty:ty, $variant:ident) => {
+        impl sealed::Sealed for $ty {}
+
+        impl EventKind for $ty {
+            const EVENT_TYPE: EventType = EventType::$variant;
+
+            fn into_event(self) -> Event {
+                Event::$variant(self)
+            }
+
+            fn try_from_event(event: Event) -> Result<Self, Event> {
+                match event {
+                    Event::$variant(value) => Ok(value),
+                    other => Err(other),
+                }
+            }
+
+            fn try_from_event_ref(event: &Event) -> Option<&Self> {
+                match event {
+                    Event::$variant(value) => Some(value),
+                    _ => None,
+                }
+            }
+
+            fn try_from_event_mut(event: &mut Event) -> Option<&mut Self> {
+                match event {
+                    Event::$variant(value) => Some(value),
+                    _ => None,
+                }
+            }
+        }
+    };
+}
+
+impl_event_kind!(Metric, Metric);
+impl_event_kind!(EventD, EventD);
+impl_event_kind!(ServiceCheck, ServiceCheck);
+impl_event_kind!(Log, Log);
+impl_event_kind!(Trace, Trace);
+impl_event_kind!(TraceStats, TraceStats);
+
 /// A telemetry event.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
@@ -125,126 +195,96 @@ impl Event {
     ///
     /// Otherwise, `None` is returned and the original event is consumed.
     pub fn try_into_metric(self) -> Option<Metric> {
-        match self {
-            Event::Metric(metric) => Some(metric),
-            _ => None,
-        }
+        Metric::try_from_event(self).ok()
     }
 
     /// Returns a reference inner event value, if this event is a `Metric`.
     ///
     /// Otherwise, `None` is returned.
     pub fn try_as_metric(&self) -> Option<&Metric> {
-        match self {
-            Event::Metric(metric) => Some(metric),
-            _ => None,
-        }
+        Metric::try_from_event_ref(self)
     }
 
     /// Returns a mutable reference inner event value, if this event is a `Metric`.
     ///
     /// Otherwise, `None` is returned.
     pub fn try_as_metric_mut(&mut self) -> Option<&mut Metric> {
-        match self {
-            Event::Metric(metric) => Some(metric),
-            _ => None,
-        }
+        Metric::try_from_event_mut(self)
     }
 
     /// Returns a mutable reference to the inner event value, if this event is an `EventD`.
     ///
     /// Otherwise, `None` is returned.
     pub fn try_as_eventd_mut(&mut self) -> Option<&mut EventD> {
-        match self {
-            Event::EventD(eventd) => Some(eventd),
-            _ => None,
-        }
+        EventD::try_from_event_mut(self)
     }
 
     /// Returns the inner event value, if this event is an `EventD`.
     ///
     /// Otherwise, `None` is returned and the original event is consumed.
     pub fn try_into_eventd(self) -> Option<EventD> {
-        match self {
-            Event::EventD(eventd) => Some(eventd),
-            _ => None,
-        }
+        EventD::try_from_event(self).ok()
     }
 
     /// Returns the inner event value, if this event is a `ServiceCheck`.
     ///
     /// Otherwise, `None` is returned and the original event is consumed.
     pub fn try_into_service_check(self) -> Option<ServiceCheck> {
-        match self {
-            Event::ServiceCheck(service_check) => Some(service_check),
-            _ => None,
-        }
+        ServiceCheck::try_from_event(self).ok()
     }
 
     /// Returns a mutable reference to the inner event value, if this event is a `ServiceCheck`.
     ///
     /// Otherwise, `None` is returned.
     pub fn try_as_service_check_mut(&mut self) -> Option<&mut ServiceCheck> {
-        match self {
-            Event::ServiceCheck(service_check) => Some(service_check),
-            _ => None,
-        }
+        ServiceCheck::try_from_event_mut(self)
     }
 
     /// Returns a reference inner event value, if this event is a `Trace`.
     ///
     /// Otherwise, `None` is returned.
     pub fn try_into_trace(self) -> Option<Trace> {
-        match self {
-            Event::Trace(trace) => Some(trace),
-            _ => None,
-        }
+        Trace::try_from_event(self).ok()
     }
 
     /// Returns a mutable reference inner event value, if this event is a `Trace`.
     ///
     /// Otherwise, `None` is returned.
     pub fn try_as_trace_mut(&mut self) -> Option<&mut Trace> {
-        match self {
-            Event::Trace(trace) => Some(trace),
-            _ => None,
-        }
+        Trace::try_from_event_mut(self)
     }
 
     /// Returns the inner event value, if this event is a `TraceStats`.
     ///
     /// Otherwise, `None` is returned and the original event is consumed.
     pub fn try_into_trace_stats(self) -> Option<TraceStats> {
-        match self {
-            Event::TraceStats(stats) => Some(stats),
-            _ => None,
-        }
+        TraceStats::try_from_event(self).ok()
     }
 
     #[allow(unused)]
     /// Returns `true` if the event is a `Metric`.
     pub fn is_metric(&self) -> bool {
-        matches!(self, Event::Metric(_))
+        Metric::try_from_event_ref(self).is_some()
     }
 
     /// Returns `true` if the event is an `EventD`.
     pub fn is_eventd(&self) -> bool {
-        matches!(self, Event::EventD(_))
+        EventD::try_from_event_ref(self).is_some()
     }
 
     /// Returns `true` if the event is a `ServiceCheck`.
     pub fn is_service_check(&self) -> bool {
-        matches!(self, Event::ServiceCheck(_))
+        ServiceCheck::try_from_event_ref(self).is_some()
     }
 
     /// Returns `true` if the event is a `Log`.
     pub fn is_log(&self) -> bool {
-        matches!(self, Event::Log(_))
+        Log::try_from_event_ref(self).is_some()
     }
 
     /// Returns `true` if the event is a `Trace`.
     pub fn is_trace(&self) -> bool {
-        matches!(self, Event::Trace(_))
+        Trace::try_from_event_ref(self).is_some()
     }
 }
 
