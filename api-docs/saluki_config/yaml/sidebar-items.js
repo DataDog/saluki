@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["from_str"]};
+window.SIDEBAR_ITEMS = {"fn":["from_str","from_str_seed"]};

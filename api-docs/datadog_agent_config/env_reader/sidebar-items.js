@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["apply_datadog_env","apply_datadog_env_vars","apply_env_at_path","apply_env_at_path_vars","datadog_leaf_paths"],"struct":["EnvKey"]};
+window.SIDEBAR_ITEMS = {"fn":["apply_datadog_env","apply_datadog_env_vars","apply_env_at_path","apply_env_at_path_vars","datadog_leaf_paths","datadog_renamed_keys"],"struct":["EnvKey","RenamedKey"]};
