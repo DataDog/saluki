@@ -405,70 +405,62 @@ mod tests {
         )))
     }
 
-    #[track_caller]
-    fn check_basic_metric_eq(expected: Metric, actual: Option<Metric>) -> Metric {
-        let actual = actual.expect("event should not have been None");
-        assert_eq!(expected.context(), actual.context());
-        assert_eq!(expected.values(), actual.values());
-        assert_eq!(expected.metadata(), actual.metadata());
-        actual
-    }
-
     #[test]
-    fn basic_metric() {
-        let name = "my.counter";
-        let value = 1.0;
-        let raw = format!("{}:{}|c", name, value);
-        let expected = Metric::counter(name, value);
-        let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
-        check_basic_metric_eq(expected, actual);
+    fn metric_types_values_and_units() {
+        // Timers and histograms parse identically, and multi-value timers/histograms/distributions yield one metric.
+        let cases = [
+            ("my.counter:1|c", Metric::counter("my.counter", 1.0), None),
+            ("my.gauge:2|g", Metric::gauge("my.gauge", 2.0), None),
+            (
+                "my.timer_or_histogram:3|ms",
+                Metric::histogram("my.timer_or_histogram", 3.0),
+                Some("millisecond"),
+            ),
+            (
+                "my.timer_or_histogram:3|h",
+                Metric::histogram("my.timer_or_histogram", 3.0),
+                None,
+            ),
+            (
+                "my.distribution:3|d",
+                Metric::distribution("my.distribution", 3.0),
+                None,
+            ),
+            ("my.set:value|s", Metric::set("my.set", "value"), None),
+            (
+                "my.counter:1:2:3|c",
+                Metric::counter("my.counter", [1.0, 2.0, 3.0]),
+                None,
+            ),
+            (
+                "my.gauge:42:5:-18|g",
+                Metric::gauge("my.gauge", [42.0, 5.0, -18.0]),
+                None,
+            ),
+            (
+                "my.timer_or_histogram:27.5:4.2:80.085|ms",
+                Metric::histogram("my.timer_or_histogram", [27.5, 4.20, 80.085]),
+                Some("millisecond"),
+            ),
+            (
+                "my.timer_or_histogram:27.5:4.2:80.085|h",
+                Metric::histogram("my.timer_or_histogram", [27.5, 4.20, 80.085]),
+                None,
+            ),
+            (
+                "my.distribution:27.5:4.2:80.085|d",
+                Metric::distribution("my.distribution", [27.5, 4.20, 80.085]),
+                None,
+            ),
+        ];
 
-        let name = "my.gauge";
-        let value = 2.0;
-        let raw = format!("{}:{}|g", name, value);
-        let expected = Metric::gauge(name, value);
-        let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
-        check_basic_metric_eq(expected, actual);
-
-        // Special case where we check this for both timers and histograms since we treat them both the same when
-        // parsing.
-        let name = "my.timer_or_histogram";
-        let value = 3.0;
-        for kind in &["ms", "h"] {
-            let raw = format!("{}:{}|{}", name, value, kind);
-            let expected = Metric::histogram(name, value);
-            let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
-            check_basic_metric_eq(expected, actual);
-        }
-
-        let distribution_name = "my.distribution";
-        let distribution_value = 3.0;
-        let distribution_raw = format!("{}:{}|d", distribution_name, distribution_value);
-        let distribution_expected = Metric::distribution(distribution_name, distribution_value);
-        let distribution_actual = parse_dsd_metric(distribution_raw.as_bytes()).expect("should not fail to parse");
-        check_basic_metric_eq(distribution_expected, distribution_actual);
-
-        let set_name = "my.set";
-        let set_value = "value";
-        let set_raw = format!("{}:{}|s", set_name, set_value);
-        let set_expected = Metric::set(set_name, set_value);
-        let set_actual = parse_dsd_metric(set_raw.as_bytes()).expect("should not fail to parse");
-        check_basic_metric_eq(set_expected, set_actual);
-    }
-
-    #[test]
-    fn metric_unit() {
         let config = DogStatsDCodecConfiguration::default();
+        for (raw, expected, expected_unit) in cases {
+            let actual = parse_dsd_metric(raw.as_bytes()).unwrap_or_else(|e| panic!("{raw}: failed to parse: {e:?}"));
+            assert_eq!(actual, Some(expected), "{raw}");
 
-        // Timing metrics must carry an implicit millisecond unit.
-        let (_, packet) = parse_dogstatsd_metric(b"my.timer:1.0|ms", &config).expect("should not fail to parse");
-        assert_eq!(packet.unit, Some("millisecond"));
-
-        // All other metric types must have no unit.
-        for kind in &["c", "g", "h", "d", "s"] {
-            let raw = format!("my.metric:1.0|{}", kind);
             let (_, packet) = parse_dogstatsd_metric(raw.as_bytes(), &config).expect("should not fail to parse");
-            assert_eq!(packet.unit, None, "expected no unit for metric type '{}'", kind);
+            assert_eq!(packet.unit, expected_unit, "{raw}");
         }
     }
 
@@ -481,7 +473,7 @@ mod tests {
         let expected = Metric::counter((name, &tags[..]), value);
 
         let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
-        check_basic_metric_eq(expected, actual);
+        assert_eq!(actual, Some(expected));
     }
 
     #[test]
@@ -493,13 +485,13 @@ mod tests {
         let raw = format!("my.counter:1|c||#{}", tags.join(","));
         let expected = Metric::counter(("my.counter", &tags[..]), 1.0);
         let actual = parse_dsd_metric_with_conf(raw.as_bytes(), &permissive).expect("should not fail to parse");
-        check_basic_metric_eq(expected, actual);
+        assert_eq!(actual, Some(expected));
 
         // Several empty fields, with a sample rate and tags after them.
         let raw = format!("my.counter:1|c|||@0.5||#{}|", tags.join(","));
         let expected = Metric::counter(("my.counter", &tags[..]), 2.0);
         let actual = parse_dsd_metric_with_conf(raw.as_bytes(), &permissive).expect("should not fail to parse");
-        check_basic_metric_eq(expected, actual);
+        assert_eq!(actual, Some(expected));
     }
 
     #[test]
@@ -559,7 +551,7 @@ mod tests {
             assert_eq!(packet.num_points, 2, "unexpected point count for {raw:?}");
 
             let actual = parse_dsd_metric_with_conf(raw.as_bytes(), &permissive).expect("should not fail to parse");
-            check_basic_metric_eq(expected, actual);
+            assert_eq!(actual, Some(expected));
         }
     }
 
@@ -603,7 +595,7 @@ mod tests {
         let expected = Metric::gauge(("my.gauge", &["env:prod", "tag:\u{FFFD}"][..]), 1.0);
         let actual = parse_dsd_metric(&input).expect("metric with invalid tag bytes should parse");
 
-        check_basic_metric_eq(expected, actual);
+        assert_eq!(actual, Some(expected));
     }
 
     #[test]
@@ -617,7 +609,8 @@ mod tests {
         let expected = Metric::counter(name, value_sample_rate_adjusted);
 
         let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
-        let actual = check_basic_metric_eq(expected, actual);
+        let actual = actual.expect("metric should not have been None");
+        assert_eq!(actual, expected);
         let values = match actual.values() {
             MetricValues::Counter(values) => values
                 .into_iter()
@@ -642,7 +635,8 @@ mod tests {
         expected.values_mut().set_timestamp(timestamp);
 
         let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
-        let actual = check_basic_metric_eq(expected, actual);
+        let actual = actual.expect("metric should not have been None");
+        assert_eq!(actual, expected);
         let values = match actual.values() {
             MetricValues::Counter(values) => values
                 .into_iter()
@@ -656,23 +650,6 @@ mod tests {
     }
 
     #[test]
-    fn metric_local_data() {
-        let name = "my.counter";
-        let value = 1.0;
-        let local_data = "abcdef123456";
-        let raw = format!("{}:{}|c|c:{}", name, value, local_data);
-        let expected = Metric::counter(name, value);
-
-        let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
-        check_basic_metric_eq(expected, actual);
-
-        // We need client_origin_detection on in order to parse local_data, external_data, and cardinality fields
-        let config = DogStatsDCodecConfiguration::default().with_client_origin_detection(true);
-        let (_, packet) = parse_dogstatsd_metric(raw.as_bytes(), &config).expect("should not fail to parse");
-        assert_eq!(packet.local_data, Some(local_data));
-    }
-
-    #[test]
     fn metric_unix_timestamp() {
         let name = "my.counter";
         let value = 1.0;
@@ -682,41 +659,44 @@ mod tests {
         expected.values_mut().set_timestamp(timestamp);
 
         let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
-        check_basic_metric_eq(expected, actual);
+        assert_eq!(actual, Some(expected));
     }
 
     #[test]
-    fn metric_external_data() {
-        let name = "my.counter";
-        let value = 1.0;
+    fn metric_client_origin_fields() {
         let external_data = "it-false,cn-redis,pu-810fe89d-da47-410b-8979-9154a40f8183";
-        let raw = format!("{}:{}|c|e:{}", name, value, external_data);
-        let expected = Metric::counter(name, value);
+        let cases = [
+            (
+                "my.counter:1|c|c:abcdef123456".to_string(),
+                Some("abcdef123456"),
+                None,
+                None,
+            ),
+            (
+                format!("my.counter:1|c|e:{external_data}"),
+                None,
+                Some(external_data),
+                None,
+            ),
+            (
+                "my.counter:1|c|card:high".to_string(),
+                None,
+                None,
+                Some(OriginTagCardinality::High),
+            ),
+        ];
 
-        let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
-        check_basic_metric_eq(expected, actual);
-
-        // We need client_origin_detection on in order to parse local_data, external_data, and cardinality fields
+        // The fields are only parsed with client origin detection enabled, and never affect the metric itself.
         let config = DogStatsDCodecConfiguration::default().with_client_origin_detection(true);
-        let (_, packet) = parse_dogstatsd_metric(raw.as_bytes(), &config).expect("should not fail to parse");
-        assert_eq!(packet.external_data, Some(external_data));
-    }
+        for (raw, local_data, external_data, cardinality) in cases {
+            let actual = parse_dsd_metric(raw.as_bytes()).unwrap_or_else(|e| panic!("{raw}: failed to parse: {e:?}"));
+            assert_eq!(actual, Some(Metric::counter("my.counter", 1.0)), "{raw}");
 
-    #[test]
-    fn metric_cardinality() {
-        let name = "my.counter";
-        let value = 1.0;
-        let cardinality = "high";
-        let raw = format!("{}:{}|c|card:{}", name, value, cardinality);
-        let expected = Metric::counter(name, value);
-
-        let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
-        check_basic_metric_eq(expected, actual);
-
-        // We need client_origin_detection on in order to parse local_data, external_data, and cardinality fields
-        let config = DogStatsDCodecConfiguration::default().with_client_origin_detection(true);
-        let (_, packet) = parse_dogstatsd_metric(raw.as_bytes(), &config).expect("should not fail to parse");
-        assert_eq!(packet.cardinality, Some(OriginTagCardinality::High));
+            let (_, packet) = parse_dogstatsd_metric(raw.as_bytes(), &config).expect("should not fail to parse");
+            assert_eq!(packet.local_data, local_data, "{raw}");
+            assert_eq!(packet.external_data, external_data, "{raw}");
+            assert_eq!(packet.cardinality, cardinality, "{raw}");
+        }
     }
 
     #[test]
@@ -745,7 +725,8 @@ mod tests {
         expected.values_mut().set_timestamp(timestamp);
 
         let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
-        let actual = check_basic_metric_eq(expected, actual);
+        let actual = actual.expect("metric should not have been None");
+        assert_eq!(actual, expected);
         let values = match actual.values() {
             MetricValues::Counter(values) => values
                 .into_iter()
@@ -763,46 +744,6 @@ mod tests {
         assert_eq!(packet.local_data, Some(local_data));
         assert_eq!(packet.external_data, Some(external_data));
         assert_eq!(packet.cardinality, Some(OriginTagCardinality::Orchestrator));
-    }
-
-    #[test]
-    fn multivalue_metrics() {
-        let name = "my.counter";
-        let values = [1.0, 2.0, 3.0];
-        let values_stringified = values.iter().map(|v| v.to_string()).collect::<Vec<_>>();
-        let raw = format!("{}:{}|c", name, values_stringified.join(":"));
-        let expected = Metric::counter(name, values);
-        let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
-        check_basic_metric_eq(expected, actual);
-
-        let name = "my.gauge";
-        let values = [42.0, 5.0, -18.0];
-        let values_stringified = values.iter().map(|v| v.to_string()).collect::<Vec<_>>();
-        let raw = format!("{}:{}|g", name, values_stringified.join(":"));
-        let expected = Metric::gauge(name, values);
-        let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
-        check_basic_metric_eq(expected, actual);
-
-        // Special case where we check this for both timers and histograms since we treat them both the same when
-        // parsing.
-        //
-        // Additionally, we have an optimization to return a single distribution metric from multi-value payloads, so we
-        // also check here that only one metric is generated for multi-value timers/histograms/distributions.
-        let name = "my.timer_or_histogram";
-        let values = [27.5, 4.20, 80.085];
-        let values_stringified = values.iter().map(|v| v.to_string()).collect::<Vec<_>>();
-        for kind in &["ms", "h"] {
-            let raw = format!("{}:{}|{}", name, values_stringified.join(":"), kind);
-            let expected = Metric::histogram(name, values);
-            let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
-            check_basic_metric_eq(expected, actual);
-        }
-
-        let name = "my.distribution";
-        let raw = format!("{}:{}|d", name, values_stringified.join(":"));
-        let expected = Metric::distribution(name, values);
-        let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
-        check_basic_metric_eq(expected, actual);
     }
 
     #[test]
@@ -885,7 +826,7 @@ mod tests {
             let expected = Metric::counter((name, &["env:prod"][..]), 1.0);
             let actual = parse_dsd_metric_with_conf(raw.as_bytes(), &permissive)
                 .unwrap_or_else(|e| panic!("permissive mode should accept {raw:?}: {e:?}"));
-            check_basic_metric_eq(expected, actual);
+            assert_eq!(actual, Some(expected), "{raw}");
         }
 
         // Strict mode still only accepts ASCII alphanumerics and separators.
