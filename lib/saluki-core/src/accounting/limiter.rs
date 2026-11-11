@@ -1,12 +1,12 @@
 use std::{
     sync::{
         atomic::{AtomicU64, Ordering::Relaxed},
-        Arc,
+        Arc, OnceLock,
     },
     time::Duration,
 };
 
-use metrics::{counter, gauge};
+use metrics::{counter, gauge, Counter};
 use process_memory::Querier;
 use tracing::{debug, info, warn};
 
@@ -36,6 +36,25 @@ const CHECK_INTERVAL: Duration = Duration::from_millis(250);
 #[derive(Clone)]
 pub struct MemoryLimiter {
     active_backoff_nanos: Arc<AtomicU64>,
+    throttle_counters: Arc<OnceLock<ThrottleCounters>>,
+}
+
+/// Counters for the calls that the memory limiter throttles.
+///
+/// The handles are held for the limiter's lifetime. A counter whose handles are all dropped is evicted from internal
+/// metrics once it stops changing, which would reset the throttling totals shortly after throttling stops.
+struct ThrottleCounters {
+    calls: Counter,
+    nanoseconds: Counter,
+}
+
+impl ThrottleCounters {
+    fn new() -> Self {
+        Self {
+            calls: counter!("memory_limiter.throttled_calls_total"),
+            nanoseconds: counter!("memory_limiter.throttled_nanoseconds_total"),
+        }
+    }
 }
 
 impl MemoryLimiter {
@@ -70,7 +89,10 @@ impl MemoryLimiter {
             .spawn(move || check_memory_usage(active_backoff_nanos2, policy))
             .unwrap();
 
-        Some(Self { active_backoff_nanos })
+        Some(Self {
+            active_backoff_nanos,
+            throttle_counters: Arc::new(OnceLock::new()),
+        })
     }
 
     /// Creates a no-op `MemoryLimiter` that doesn't perform any limiting.
@@ -79,6 +101,7 @@ impl MemoryLimiter {
     pub fn noop() -> Self {
         Self {
             active_backoff_nanos: Arc::new(AtomicU64::new(0)),
+            throttle_counters: Arc::new(OnceLock::new()),
         }
     }
 
@@ -89,10 +112,11 @@ impl MemoryLimiter {
     pub async fn wait_for_capacity(&self) {
         let active_backoff_nanos = self.active_backoff_nanos.load(Relaxed);
         if active_backoff_nanos > 0 {
-            // The metric handles are only looked up while throttling, where the lookup is negligible next to the sleep
-            // itself, so the unthrottled path stays a single atomic load.
-            counter!("memory_limiter.throttled_calls_total").increment(1);
-            counter!("memory_limiter.throttled_nanoseconds_total").increment(active_backoff_nanos);
+            // The counters are registered on the first throttled call rather than at construction, so that they're
+            // registered with the metrics recorder even if the limiter was created before the recorder was installed.
+            let counters = self.throttle_counters.get_or_init(ThrottleCounters::new);
+            counters.calls.increment(1);
+            counters.nanoseconds.increment(active_backoff_nanos);
 
             tokio::time::sleep(Duration::from_nanos(active_backoff_nanos)).await;
         }
@@ -202,9 +226,10 @@ fn log_transition(policy: &BackoffPolicy, actual_rss: usize, was_throttling: boo
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::Ordering::Relaxed;
     use std::time::Duration;
 
-    use super::BackoffPolicy;
+    use super::{BackoffPolicy, MemoryLimiter};
 
     // These cases reproduce the worked example from `calculate_backoff`'s own comment: minimum/maximum backoff durations
     // of 100ms/1000ms, a 100MB limit, and a band of 85% to 95%, clearing at 80%. The comment promises specific values at
@@ -272,6 +297,30 @@ mod tests {
         assert_eq!(
             backoff_while_throttling_at(90_000_000),
             Some(Duration::from_millis(550))
+        );
+    }
+
+    #[tokio::test]
+    async fn throttle_counter_handles_outlive_the_throttled_call() {
+        // Internal metrics evict a counter once none of its handles are alive and it stops changing, so the limiter
+        // must keep its throttling counters alive after a throttled call. Otherwise the totals reported on the status
+        // page would reset to zero shortly after throttling stops.
+        let limiter = MemoryLimiter::noop();
+        let clone = limiter.clone();
+
+        limiter.wait_for_capacity().await;
+        assert!(
+            limiter.throttle_counters.get().is_none(),
+            "an unthrottled call shouldn't register the counters"
+        );
+
+        limiter.active_backoff_nanos.store(1, Relaxed);
+        limiter.wait_for_capacity().await;
+
+        assert!(limiter.throttle_counters.get().is_some());
+        assert!(
+            clone.throttle_counters.get().is_some(),
+            "clones of a limiter share its counters"
         );
     }
 }
