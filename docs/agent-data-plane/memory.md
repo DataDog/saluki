@@ -41,7 +41,7 @@ ADP enforces memory bounds through three complementary mechanisms:
 - **Dynamic limiting**: a `MemoryLimiter` polls the process RSS every 250 ms and throttles
   ingestion tasks as usage approaches `memory_limit`. The slop factor doesn't apply here.
   Throttling starts above 85 % of `memory_limit` with a 1 ms delay per call, and the delay
-  grows to 25 ms at 95 %. Once started, throttling continues until usage falls to 80 %, so
+  grows to 25 ms at 95 %. Once started, throttling continues until usage falls to 75 %, so
   usage that hovers around 85 % doesn't toggle it on and off. Disable with
   `enable_global_limiter: false`.
 - **Structural backpressure**: bounded channels between components provide back-pressure

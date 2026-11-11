@@ -67,7 +67,7 @@ impl MemoryLimiter {
     /// The thresholds are measured against the grant's initial limit rather than its effective limit: the slop factor
     /// is headroom for memory bounds verification, and applying it here as well would start throttling well before the
     /// process is actually close to its limit. Throttling starts above 85% of the limit, reaches its maximum at 95%, and
-    /// clears once usage falls to 80% or below. The backoff ranges from 1 ms to 25 ms.
+    /// clears once usage falls to 75% or below. The backoff ranges from 1 ms to 25 ms.
     pub fn new(grant: MemoryGrant) -> Option<Self> {
         // Smoke test to see if we can even collect memory stats on this system.
         Querier::default().resident_set_size()?;
@@ -76,7 +76,7 @@ impl MemoryLimiter {
             rss_limit: grant.initial_limit_bytes(),
             start_ratio: 0.85,
             full_ratio: 0.95,
-            clear_ratio: 0.80,
+            clear_ratio: 0.75,
             backoff_min: Duration::from_millis(1),
             backoff_max: Duration::from_millis(25),
         };
@@ -232,7 +232,7 @@ mod tests {
     use super::{BackoffPolicy, MemoryLimiter};
 
     // These cases reproduce the worked example from `calculate_backoff`'s own comment: minimum/maximum backoff durations
-    // of 100ms/1000ms, a 100MB limit, and a band of 85% to 95%, clearing at 80%. The comment promises specific values at
+    // of 100ms/1000ms, a 100MB limit, and a band of 85% to 95%, clearing at 75%. The comment promises specific values at
     // specific fractions of the limit, so we assert those exact durations rather than merely that a backoff was
     // produced.
     const MIN: Duration = Duration::from_millis(100);
@@ -241,7 +241,7 @@ mod tests {
         rss_limit: 100_000_000,
         start_ratio: 0.85,
         full_ratio: 0.95,
-        clear_ratio: 0.80,
+        clear_ratio: 0.75,
         backoff_min: MIN,
         backoff_max: MAX,
     };
@@ -287,10 +287,10 @@ mod tests {
         // Once throttling, falling back below the starting threshold keeps the minimum backoff, so that usage hovering
         // around the starting threshold doesn't toggle throttling on every check.
         assert_eq!(backoff_while_throttling_at(85_000_000), Some(MIN));
-        assert_eq!(backoff_while_throttling_at(81_000_000), Some(MIN));
+        assert_eq!(backoff_while_throttling_at(76_000_000), Some(MIN));
 
         // At or below the clearing threshold, throttling stops.
-        assert_eq!(backoff_while_throttling_at(80_000_000), None);
+        assert_eq!(backoff_while_throttling_at(75_000_000), None);
         assert_eq!(backoff_while_throttling_at(50_000_000), None);
 
         // Above the starting threshold, the backoff follows the band regardless of the previous state.

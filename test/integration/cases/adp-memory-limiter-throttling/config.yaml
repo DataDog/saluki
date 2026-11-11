@@ -17,7 +17,7 @@ env:
 
 procedure:
   - assertion: log_contains
-    pattern: "Throttling ingestion until it falls to 80%."
+    pattern: "Throttling ingestion until it falls to 75%."
     timeout: 60s
   - parallel:
       - assertion: process_stable_for
