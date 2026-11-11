@@ -269,7 +269,6 @@ fn build_capture_record_ignores_payload_local_data() {
     let record = build_capture_record(None, None, b"test.metric:1|c|c:ci-local-container\n");
 
     assert_eq!(record.container_id, None);
-    assert!(record.ancillary.is_empty());
 }
 
 #[test]

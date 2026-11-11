@@ -1957,7 +1957,6 @@ fn build_capture_record(
         timestamp_ns: capture_timestamp_ns(),
         payload: payload.to_vec(),
         pid: process_id,
-        ancillary: Vec::new(),
         container_id: process_origin
             .and_then(ProcessOrigin::container_entity_id)
             .map(ToString::to_string),
