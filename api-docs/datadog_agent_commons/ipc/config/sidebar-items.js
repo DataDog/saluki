@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["IpcAuthConfiguration","RemoteAgentClientConfiguration"]};
+window.SIDEBAR_ITEMS = {"enum":["IpcHost"],"struct":["IpcAuthConfiguration","RemoteAgentClientConfiguration"]};
