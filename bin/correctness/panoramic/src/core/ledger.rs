@@ -341,7 +341,6 @@ mod tests {
 
     use super::*;
     use crate::core::tasks::{CaseTasks, TASK_STOP_TIME};
-    use crate::intake::test_server::install_crypto_provider;
 
     /// Bounds every reclaim in these tests.
     const BOUND: Duration = Duration::from_secs(10);
@@ -367,7 +366,7 @@ mod tests {
 
     impl FakeApi {
         async fn start(respond: Respond) -> Self {
-            install_crypto_provider();
+            let _ = crate::default_crypto_provider().install_default();
             let listener = TcpListener::bind("127.0.0.1:0")
                 .await
                 .expect("the fake API should bind");

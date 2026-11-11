@@ -8,7 +8,8 @@ use tokio::time::{timeout_at, Instant};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
-/// How long the runner waits for a case's tasks to stop. Taken out of [`RECLAIM_TIME`](crate::ledger::RECLAIM_TIME).
+/// How long the runner waits for a case's tasks to stop. Taken out of
+/// [`RECLAIM_TIME`](crate::core::ledger::RECLAIM_TIME).
 pub(crate) const TASK_STOP_TIME: Duration = Duration::from_secs(5);
 
 /// Tracks tasks spawned through [`Self::spawn`], shared by the test body and runner.
