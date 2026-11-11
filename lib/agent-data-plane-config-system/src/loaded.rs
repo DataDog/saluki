@@ -1557,4 +1557,21 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn an_empty_metric_filter_prefix_item_is_the_empty_prefix() {
+        // As in the Agent, an empty YAML list item is a null entry, whose empty prefix matches every
+        // metric.
+        let loaded = try_load("prefix_empty_item", "metric_filterlist_prefix:\n  - prefix: a.\n  -\n").expect("loads");
+        let prefixes: Vec<_> = loaded
+            .local()
+            .domains
+            .dogstatsd
+            .metric_filter
+            .prefix_rules
+            .iter()
+            .map(|rule| rule.prefix.as_str())
+            .collect();
+        assert_eq!(prefixes, ["a.", ""]);
+    }
 }

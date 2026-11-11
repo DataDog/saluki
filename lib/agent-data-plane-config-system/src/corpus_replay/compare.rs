@@ -455,6 +455,11 @@ struct AgentPrefixEntry {
 ///   fails.
 ///
 /// Written from the Agent's code, not from ADP's decoder, so the two can disagree.
+///
+/// Two known gaps cannot occur in recorded configuration. `GoValue::Null` also stands for a typed nil
+/// slice or map, which a string field reads here as `""` where Go fails, but a typed nil comes only
+/// from Go defaults or values set by code, not from YAML or environment parsing. A float32 would
+/// format differently, but YAML and JSON numbers decode as float64.
 fn agent_prefix_entries(value: &GoValue) -> Result<Vec<AgentPrefixEntry>, String> {
     fn field<'a>(entry: &'a BTreeMap<String, GoValue>, name: &str) -> &'a GoValue {
         // Go's `strings.EqualFold` equals ASCII case folding for these field names: no letter in them

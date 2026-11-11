@@ -1623,6 +1623,51 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_metric_filter_prefix_value_that_is_not_a_list_of_objects_is_rejected() {
+        // The Agent lifts a lone map into a list and runs with no rules for a string or a string entry.
+        // ADP rejects each of these instead.
+        let cases = [
+            json!({ "prefix": "a." }),
+            json!("a."),
+            json!([{ "prefix": "a." }, "b."]),
+        ];
+        for value in cases {
+            let sources = SourceTree::all_explicit(json!({ "metric_filterlist_prefix": value.clone() }));
+            assert!(
+                matches!(translate_strict(&sources), Err(Error::Deserialize { .. })),
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_null_metric_filter_prefix_entry_is_the_empty_prefix() {
+        // As in the Agent, a null entry is an empty one, whose empty prefix matches every metric. A
+        // string holding a JSON list, as an environment variable supplies it, reads as that list.
+        let cases = [json!([{ "prefix": "a." }, null]), json!(r#"[{"prefix": "a."}, null]"#)];
+        for value in cases {
+            let sources = SourceTree::all_explicit(json!({ "metric_filterlist_prefix": value.clone() }));
+            let config = translate_strict(&sources).unwrap_or_else(|e| panic!("{value}: {e}"));
+            assert_eq!(
+                config.domains.dogstatsd.metric_filter.prefix_rules,
+                vec![
+                    MetricPrefixRule {
+                        prefix: "a.".to_string(),
+                        except_prefix: Vec::new(),
+                        except_exact: Vec::new(),
+                    },
+                    MetricPrefixRule {
+                        prefix: String::new(),
+                        except_prefix: Vec::new(),
+                        except_exact: Vec::new(),
+                    },
+                ],
+                "{value}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn live_stream_yields_each_change() {
         let (system, agent_tx) = connected_system(json!({})).await;
