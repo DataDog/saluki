@@ -55,6 +55,10 @@ pub(crate) struct ParticipantSpec {
     /// Capabilities steps call by name.
     #[serde(skip)]
     pub(crate) operations: &'static [&'static dyn Operation],
+    /// How a case wires an endpoint the participant type declares and the default environment does not wire, by
+    /// endpoint.
+    #[serde(skip)]
+    pub(crate) wiring: BTreeMap<String, Wiring>,
 }
 
 impl ParticipantSpec {
@@ -131,23 +135,25 @@ pub(crate) struct FileSpec {
 }
 
 /// Where the content of a placed file comes from.
-// TODO: remove the dead_code allowance once a participant type supplies a file.
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub(crate) enum FileSource {
     /// A file or directory of the case, relative to the case directory. A template is a UTF-8 file whose
     /// references the harness resolves.
     Case { from: PathBuf, template: bool },
     /// Bytes a participant type supplies, with a label for the printed plan.
+    // TODO: remove the dead_code allowance once files are placed.
+    #[allow(dead_code)]
     Bytes { label: &'static str, bytes: &'static [u8] },
     /// Text a participant type supplies, with a label for the printed plan.
+    // TODO: remove the dead_code allowance once a participant type builds a file from the case's text.
+    #[allow(dead_code)]
     Text { label: &'static str, text: String },
 }
 
 /// The contents of a placed file.
 ///
-/// Serializes as `{"text": ...}` for UTF-8 bytes, `{"template": ...}` for a template as written, and `{"base64": ...}`
-/// for any other bytes, in standard base64 with padding.
+/// Serializes as `{"text": ...}` for UTF-8 bytes, `{"template": ...}` for a template as [`Template`] serializes, and
+/// `{"base64": ...}` for any other bytes, in standard base64 with padding.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Contents {
@@ -574,14 +580,27 @@ pub(crate) enum Keep {
 }
 
 /// A connection name a participant type knows, and what it delivers.
-// TODO: remove the dead_code allowance once connections deliver addresses.
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub(crate) struct Consumed {
     pub(crate) accepts: &'static [Protocol],
+    // TODO: check required connections with the first participant type that requires one.
+    #[allow(dead_code)]
     pub(crate) required: bool,
     /// Environment added when the case makes the connection, as template text.
     pub(crate) env: &'static [(&'static str, &'static str)],
+}
+
+/// How a case wires an endpoint that the participant type's default environment does not, for the error that says
+/// why the endpoint is not wired.
+#[derive(Clone, Debug)]
+pub(crate) struct Wiring {
+    /// Why the default environment entry that wired the endpoint was withdrawn, if one was.
+    pub(crate) withdrawn: Option<String>,
+    /// The line a case writes to wire it.
+    pub(crate) write: String,
+    /// Why the participant's image listens somewhere else whatever the case writes, if it does. The endpoint is then
+    /// not wired, even where the case refers to it.
+    pub(crate) overridden: Option<String>,
 }
 
 /// Whether `name` is a plain file name, with no directory.

@@ -8,17 +8,21 @@
 //!
 //! Core names neither participant types nor steps: the binary registers both in a [`registry::Registry`].
 
+pub(crate) mod backend;
 pub(crate) mod case;
 pub(crate) mod deadline;
 pub(crate) mod ledger;
+mod order;
 pub(crate) mod participant;
 pub(crate) mod plan;
 mod print;
 pub(crate) mod probe;
 pub(crate) mod record;
+pub(crate) mod reference;
 pub(crate) mod registry;
 pub(crate) mod result;
 pub(crate) mod spec;
 pub(crate) mod step;
 pub(crate) mod tasks;
 pub(crate) mod template;
+pub(crate) mod wiring;

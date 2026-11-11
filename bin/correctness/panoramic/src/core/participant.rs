@@ -95,13 +95,6 @@ impl Enclosure {
         !matches!(self, Self::HostProcessGroup)
     }
 
-    /// The realization options a case may set on this kind.
-    // TODO: add each option with the case that first needs it: `host_cgroup_namespace` on a Linux container, and
-    // `host_pid` and `cri_socket` on a pod.
-    pub(crate) fn options(self) -> &'static [&'static str] {
-        &[]
-    }
-
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::LinuxContainer => "linux-container",
@@ -126,7 +119,7 @@ pub(crate) struct Realization {
 }
 
 /// The endpoint of another participant that a participant consumes: `<participant>.<endpoint>`.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub(crate) struct ConnectionTarget {
     pub(crate) participant: String,
     pub(crate) endpoint: String,

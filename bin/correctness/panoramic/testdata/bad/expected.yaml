@@ -1,5 +1,8 @@
 # Each bad case under this directory, the subject OS it is planned for, and a substring of the error.
+create-order-cycle: {subject_os: linux, error: "the create order has a cycle: first -> second -> first"}
 file-source-outside-the-suite: {subject_os: linux, error: "is outside the suite directory"}
 malformed-reference-in-template-file: {subject_os: linux, error: "is not a reference"}
+own-ip-at-create: {subject_os: linux, error: "has a value once participant 'app' starts"}
 reserved-path: {subject_os: linux, error: "is reserved by the harness"}
+socket-path-too-long: {subject_os: linux, error: "and a Unix socket path on linux holds at most 107"}
 two-letter-cases-of-one-windows-path: {subject_os: windows, error: "two files land on"}

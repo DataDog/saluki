@@ -3,9 +3,11 @@
 use std::fmt::{self, Write as _};
 
 use super::plan::{CasePlan, Launch, PlannedParticipant};
-use super::spec::{CommandSpec, Contents, EndpointSpec, Evidence, ExitChannel, OutputChannel};
+use super::reference::Later;
+use super::spec::{CommandSpec, Contents, Evidence, ExitChannel, OutputChannel};
 use super::step::ProcedureNode;
 use super::template::Template;
+use super::wiring::{PlannedConnection, PlannedEndpoint};
 
 /// Width of the participant and field name columns.
 const NAME_WIDTH: usize = 12;
@@ -23,10 +25,15 @@ impl fmt::Display for CasePlan {
         if let Some(description) = &self.case.description {
             writeln!(f, "{:<10}{}", "", description.trim())?;
         }
+        for (enclosure, resources) in &self.scope {
+            writeln!(f, "{:<9} {:<20} {}", "scope", enclosure.to_string(), resources)?;
+        }
         for (name, participant) in &self.participants {
             writeln!(f)?;
             participant.print(name, f)?;
         }
+        writeln!(f)?;
+        self.print_order(f)?;
         writeln!(f)?;
         writeln!(f, "procedure")?;
         if self.procedure.is_empty() {
@@ -46,6 +53,45 @@ impl fmt::Display for CasePlan {
             }
         }
         Ok(())
+    }
+}
+
+impl CasePlan {
+    fn print_order(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "order")?;
+        let create: Vec<String> = self.create_order.iter().map(|level| level.join("  ")).collect();
+        if create.len() > 1 {
+            let levels = create
+                .iter()
+                .enumerate()
+                .map(|(index, level)| format!("{:<5}{}", index + 1, level));
+            field(f, "create", levels)?;
+        } else {
+            field(f, "create", create)?;
+        }
+        let mut lines = Vec::new();
+        for (index, level) in self.start_order.iter().enumerate() {
+            for (member, participant) in level.iter().enumerate() {
+                let number = if member == 0 {
+                    (index + 1).to_string()
+                } else {
+                    String::new()
+                };
+                let gates: Vec<String> = self
+                    .gates
+                    .get(participant)
+                    .into_iter()
+                    .flatten()
+                    .map(|gate| format!("{} {}", gate.target, gate.evidence))
+                    .collect();
+                let mut line = format!("{:<5}{:<16}", number, participant);
+                if !gates.is_empty() {
+                    let _ = write!(line, "after {}", gates.join(", "));
+                }
+                lines.push(line.trim_end().to_string());
+            }
+        }
+        field(f, "start", lines)
     }
 }
 
@@ -118,12 +164,12 @@ impl PlannedParticipant {
         let endpoints = self
             .endpoints
             .iter()
-            .map(|(name, endpoint)| endpoint_line(name, endpoint, self.ready.get(name)));
+            .map(|(name, endpoint)| endpoint_line(name, endpoint));
         field(f, "endpoints", endpoints)?;
         let connect = self
-            .connect
+            .connections
             .iter()
-            .map(|(name, target)| format!("{} -> {}", name, target));
+            .map(|(name, connection)| connection_line(name, connection));
         field(f, "connect", connect)?;
         let processes = self.processes.iter().map(|process| {
             let exit = match process.exit() {
@@ -154,6 +200,17 @@ impl PlannedParticipant {
             let names: Vec<&str> = self.operations.keys().copied().collect();
             field(f, "operations", [names.join("  ")])?;
         }
+        let later = self.later.iter().map(|(place, waits)| {
+            let waits: Vec<String> = waits
+                .iter()
+                .map(|(participant, when)| match when {
+                    Later::Created => format!("'{}' is created", participant),
+                    Later::Started => format!("'{}' starts", participant),
+                })
+                .collect();
+            format!("{} once {}", place, waits.join(" and "))
+        });
+        field(f, "filled", later)?;
         Ok(())
     }
 }
@@ -176,24 +233,47 @@ fn words(templates: &[Template]) -> String {
     words.join(" ")
 }
 
-fn endpoint_line(name: &str, endpoint: &EndpointSpec, ready: Option<&Evidence>) -> String {
+fn endpoint_line(name: &str, endpoint: &PlannedEndpoint) -> String {
     let mut protocol = endpoint.protocol.as_str().to_string();
     if endpoint.tls {
         protocol.push_str(" tls");
     }
-    // TODO: print the planned address once the harness owns addresses.
-    let mut line = format!("{:<20}{:<16}", name, protocol);
-    if let Some(ready) = ready {
-        let evidence = match ready {
-            Evidence::Accepts => "accepts".to_string(),
-            Evidence::Exists => "socket exists".to_string(),
-            Evidence::None => "none".to_string(),
-            Evidence::Http { path } => format!("answers 200 on {}", path),
-            Evidence::Output { pattern, process } => format!("{} writes '{}'", process, pattern),
-        };
-        let _ = write!(line, "ready: {}", evidence);
+    let mut line = format!("{:<22}{:<16}{:<42}", name, protocol, endpoint.address.to_string());
+    if endpoint.published {
+        line.push_str("  published; host port chosen at start");
     }
-    line.trim_end().to_string()
+    match (&endpoint.unwired, &endpoint.evidence) {
+        (Some(_), _) => line.push_str("  not wired"),
+        (None, Evidence::None) => line.push_str("  ready: none"),
+        (None, evidence) => {
+            let _ = write!(line, "  ready: {}", evidence);
+        }
+    }
+    line
+}
+
+fn connection_line(name: &str, connection: &PlannedConnection) -> String {
+    let mut line = format!(
+        "{:<37} {}",
+        format!("{} -> {}", name, connection.target),
+        connection.url
+    );
+    if !connection.delivers.is_empty() {
+        let _ = write!(line, "   delivers {}", connection.delivers.join(", "));
+    }
+    line
+}
+
+impl fmt::Display for Evidence {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Accepts => f.write_str("accepts a connection"),
+            Self::Exists => f.write_str("exists"),
+            Self::None => f.write_str("has started"),
+            Self::Http { path } => write!(f, "answers 200 on {}", path),
+            Self::Output { pattern, process } => write!(f, "has '{}' in the output of {}", pattern, process),
+        }
+    }
 }
 
 fn command_line(name: &str, command: &CommandSpec) -> String {
