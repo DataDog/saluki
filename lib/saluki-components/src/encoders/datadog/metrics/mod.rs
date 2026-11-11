@@ -288,9 +288,15 @@ impl DatadogMetricsConfiguration {
 
     fn v3_sketch_payload_limits(&self) -> V3PayloadLimits {
         let sketches = &self.v3_api.sketches;
-        V3PayloadLimits::new(
-            sketches.max_compressed_payload_size,
+        let (uncompressed_limit, compressed_limit) = clamp_payload_limits(
             sketches.max_uncompressed_payload_size,
+            sketches.max_compressed_payload_size,
+            DEFAULT_SERIALIZER_UNCOMPRESSED_SIZE_LIMIT,
+            DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT,
+        );
+        V3PayloadLimits::new(
+            compressed_limit,
+            uncompressed_limit,
             self.max_metrics_per_payload,
             sketches.max_points_per_payload,
         )
@@ -3298,7 +3304,10 @@ mod tests {
 #[cfg(test)]
 mod payload_limits {
     use super::v2;
-    use crate::common::datadog::{clamp_payload_limits, test_util::datadog_metrics_configuration};
+    use crate::common::datadog::{
+        clamp_payload_limits, test_util::datadog_metrics_configuration, DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT,
+        DEFAULT_SERIALIZER_UNCOMPRESSED_SIZE_LIMIT,
+    };
 
     #[test]
     fn v3_payload_limits_come_from_the_series_limits() {
@@ -3312,6 +3321,29 @@ mod payload_limits {
         assert_eq!(1234, limits.max_compressed_size);
         assert_eq!(5678, limits.max_uncompressed_size);
         assert_eq!(500, limits.max_points_per_payload);
+    }
+
+    #[test]
+    fn clamps_v3_sketch_payload_sizes_to_generic_limits() {
+        let mut config = datadog_metrics_configuration();
+        config.v3_api.sketches.max_points_per_payload = 43;
+        for (compressed, uncompressed, expected) in [
+            (
+                DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT + 1,
+                DEFAULT_SERIALIZER_UNCOMPRESSED_SIZE_LIMIT + 1,
+                (
+                    DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT,
+                    DEFAULT_SERIALIZER_UNCOMPRESSED_SIZE_LIMIT,
+                ),
+            ),
+            (1234, 5678, (1234, 5678)),
+        ] {
+            config.v3_api.sketches.max_compressed_payload_size = compressed;
+            config.v3_api.sketches.max_uncompressed_payload_size = uncompressed;
+            let limits = config.v3_sketch_payload_limits();
+            assert_eq!((limits.max_compressed_size, limits.max_uncompressed_size), expected);
+            assert_eq!(limits.max_points_per_payload, 43);
+        }
     }
 
     #[test]

@@ -85,10 +85,12 @@ pub struct V3ApiSettings {
     /// If empty, no V3 payloads are generated for this metric type.
     pub endpoints: Vec<String>,
 
-    /// Resolved maximum compressed V3 sketch payload size, in bytes.
+    /// Maximum compressed V3 sketch payload size in bytes, capped at 2.5 MiB.
     pub max_compressed_payload_size: usize,
-    /// Resolved maximum uncompressed V3 sketch payload size, in bytes.
+
+    /// Maximum uncompressed V3 sketch payload size in bytes, capped at 4 MiB.
     pub max_uncompressed_payload_size: usize,
+
     /// Resolved maximum sketch points per payload; `usize::MAX` disables the cap.
     pub max_points_per_payload: usize,
 }
