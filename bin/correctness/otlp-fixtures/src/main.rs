@@ -559,6 +559,13 @@ fn resource_host_fixture() -> Vec<u8> {
             ],
         ),
         (
+            "tags-duplicate-custom",
+            vec![
+                kv("datadog.container.tag.team", string("first-team")),
+                kv("datadog.container.tag.team", string("second-team")),
+            ],
+        ),
+        (
             "tags-custom-before-semconv",
             vec![
                 kv("datadog.container.tag.image_tag", string("custom")),
