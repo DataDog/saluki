@@ -98,16 +98,6 @@ static CONTAINER_MAPPINGS: LazyLock<FastHashMap<&'static str, &'static str>> = L
     m
 });
 
-// Container mappings that apply only to OTLP resource attributes, which metrics and logs use. Trace
-// resource attributes reach container-tag extraction with arrays rendered as JSON strings, so an
-// array-valued attribute can't be mapped there.
-static RESOURCE_ONLY_CONTAINER_MAPPINGS: LazyLock<FastHashMap<&'static str, &'static str>> = LazyLock::new(|| {
-    let mut m = FastHashMap::default();
-    // The first element when array-valued, otherwise the string itself
-    m.insert(CONTAINER_IMAGE_TAGS, "image_tag");
-    m
-});
-
 // The Datadog tag names produced by the container mappings; an attribute with one of these keys is
 // already a container tag.
 static CONTAINER_DD_TAG_KEYS: LazyLock<FastHashSet<&'static str>> = LazyLock::new(|| {
@@ -155,14 +145,16 @@ pub fn extract_container_tags_from_resource_attributes(attributes: &[otlp_common
     for kv in attributes {
         let value = kv.value.as_ref().and_then(|v| v.value.as_ref());
 
-        // Semantic Conventions
-        let datadog_key = CONTAINER_MAPPINGS
-            .get(kv.key.as_str())
-            .or_else(|| RESOURCE_ONLY_CONTAINER_MAPPINGS.get(kv.key.as_str()));
-        if let Some(datadog_key) = datadog_key {
-            if let Some(s_val) = container_mapping_value(&kv.key, value) {
-                insert_winning_tag(&mut resolved, datadog_key, TAG_SOURCE_SEMANTIC_CONVENTION, s_val, true);
-            }
+        // Semantic conventions. `container.image.tags` is mapped here rather than in
+        // `CONTAINER_MAPPINGS`, which traces also use: trace resource arrays reach container-tag
+        // extraction as JSON strings, so traces can't read its first element.
+        let mapped = match CONTAINER_MAPPINGS.get(kv.key.as_str()) {
+            Some(datadog_key) => non_empty_string(value).map(|s_val| (*datadog_key, s_val)),
+            None if kv.key == CONTAINER_IMAGE_TAGS => first_element_or_string(value).map(|s_val| ("image_tag", s_val)),
+            None => None,
+        };
+        if let Some((datadog_key, s_val)) = mapped {
+            insert_winning_tag(&mut resolved, datadog_key, TAG_SOURCE_SEMANTIC_CONVENTION, s_val, true);
         }
 
         // Custom (datadog.container.tag namespace)
@@ -231,16 +223,19 @@ pub fn extract_container_tags_from_attributes_map(
     }
 }
 
-/// Returns the string value of a container-mapped attribute, which for an array-valued
-/// `container.image.tags` is its first element, or `None` when it would be empty.
-fn container_mapping_value<'a>(key: &str, value: Option<&'a Value>) -> Option<&'a str> {
-    let value = match value? {
-        Value::ArrayValue(array) if key == CONTAINER_IMAGE_TAGS => array.values.first()?.value.as_ref()?,
-        value => value,
-    };
-    match value {
+/// Returns a non-empty string value.
+fn non_empty_string(value: Option<&Value>) -> Option<&str> {
+    match value? {
         Value::StringValue(s_val) if !s_val.is_empty() => Some(s_val),
         _ => None,
+    }
+}
+
+/// Returns the first element of an array value, or else the value itself, as a non-empty string.
+fn first_element_or_string(value: Option<&Value>) -> Option<&str> {
+    match value? {
+        Value::ArrayValue(array) => non_empty_string(array.values.first()?.value.as_ref()),
+        value => non_empty_string(Some(value)),
     }
 }
 
