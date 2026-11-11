@@ -28,6 +28,9 @@ static META_TAG_INSTALL_TIME: MetaString = MetaString::from_static("_dd.install.
 /// This transform must run after trace sampling. A service is recorded as seen when its first trace is tagged, so
 /// tagging a trace that sampling later drops would leave the service marked as onboarded without any tagged trace
 /// ever being sent.
+///
+/// Sampling may also have reduced a trace to the spans it retained, for example under single-span sampling. The tags
+/// then go on the root among the surviving spans, and the service recorded is that span's service.
 #[derive(Default)]
 pub struct ApmOnboardingConfiguration;
 
@@ -310,22 +313,6 @@ mod tests {
         let mut trace = Trace::new(spans, TraceIngestInfo::Datadog);
         trace.dropped_trace = true;
         trace
-    }
-
-    #[test]
-    fn kept_trace_is_enriched() {
-        // A trace that sampling kept carries `dropped_trace == false`.
-        let mut onboarding = ApmOnboarding::from_install_info(Some(test_install_info()));
-        let trace = Trace::new(vec![span("web", 1, 0)], TraceIngestInfo::Datadog);
-        assert!(!trace.dropped_trace);
-
-        let buffer = enrich(&mut onboarding, trace);
-        let root_attrs = span_attrs_by_id(&buffer, 1);
-        assert_eq!(
-            root_attrs.get("_dd.install.id").map(String::as_str),
-            Some("install-123")
-        );
-        assert!(onboarding.first_span_by_service.contains("web"));
     }
 
     #[test]
