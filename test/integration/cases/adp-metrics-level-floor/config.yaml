@@ -14,7 +14,7 @@ env:
 
 procedure:
   - assertion: log_contains
-    pattern: "`metrics_level` is set to `warn`, but it can't be less verbose than `info`"
+    pattern: "Configured metrics level `warn` is less verbose than the minimum level `info`. Using `info` instead."
     timeout: 60s
   - parallel:
       - assertion: process_stable_for

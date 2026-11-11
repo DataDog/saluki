@@ -3,10 +3,11 @@
 use metrics::Level;
 use saluki_core::runtime::Supervisor;
 use saluki_error::{ErrorContext as _, GenericError};
+use tracing::warn;
 
 use crate::{
     logging::{initialize_logging, LoggingConfiguration, LoggingGuard},
-    metrics::initialize_metrics,
+    metrics::{initialize_metrics, level_name},
     tls::initialize_tls,
 };
 
@@ -91,13 +92,14 @@ impl AppBootstrapper {
         self
     }
 
-    /// Sets the least verbose filter level that a runtime override of internal metrics may set.
+    /// Sets the least verbose filter level for internal metrics.
     ///
-    /// An override that's less verbose than this is rejected, so that it can't filter out metrics that the application
-    /// relies on. This doesn't change the default level: callers set that with
-    /// [`with_metrics_default_level`][Self::with_metrics_default_level].
+    /// This keeps internal metrics that the application relies on from being filtered out:
     ///
-    /// Defaults to [`Level::ERROR`], which allows any override.
+    /// - a default level that's less verbose than this is raised to it at bootstrap, with a warning
+    /// - a runtime override that's less verbose than this is rejected
+    ///
+    /// Defaults to [`Level::ERROR`], which allows any level.
     pub fn with_metrics_minimum_level(mut self, level: Level) -> Self {
         self.metrics_minimum_level = level;
         self
@@ -130,13 +132,20 @@ impl AppBootstrapper {
 
         // Initialize everything else.
         initialize_tls().error_context("Failed to initialize TLS subsystem.")?;
-        let metrics_supervisor = initialize_metrics(
-            self.metrics_prefix,
-            self.metrics_default_level,
-            self.metrics_minimum_level,
-        )
-        .await
-        .error_context("Failed to initialize metrics subsystem.")?;
+
+        let metrics_default_level = floor_metrics_level(self.metrics_default_level, self.metrics_minimum_level);
+        if metrics_default_level != self.metrics_default_level {
+            warn!(
+                "Configured metrics level `{}` is less verbose than the minimum level `{}`. Using `{}` instead.",
+                level_name(self.metrics_default_level),
+                level_name(self.metrics_minimum_level),
+                level_name(metrics_default_level),
+            );
+        }
+        let metrics_supervisor =
+            initialize_metrics(self.metrics_prefix, metrics_default_level, self.metrics_minimum_level)
+                .await
+                .error_context("Failed to initialize metrics subsystem.")?;
 
         // Build our combined supervisor for all bootstrap-related workers.
         let mut supervisor =
@@ -148,5 +157,37 @@ impl AppBootstrapper {
             supervisor,
             guard: BootstrapGuard { logging_guard },
         })
+    }
+}
+
+/// Returns `level`, raised to `minimum` when it's less verbose than that.
+fn floor_metrics_level(level: Level, minimum: Level) -> Level {
+    if level > minimum {
+        minimum
+    } else {
+        level
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use metrics::Level;
+
+    use super::floor_metrics_level;
+
+    #[test]
+    fn metrics_default_level_is_raised_to_the_minimum() {
+        // Levels at or more verbose than the minimum are used as given.
+        for level in [Level::TRACE, Level::DEBUG, Level::INFO] {
+            assert_eq!(floor_metrics_level(level, Level::INFO), level);
+        }
+
+        // Less verbose levels would filter out metrics the application relies on, so they're raised to the minimum.
+        for level in [Level::WARN, Level::ERROR] {
+            assert_eq!(floor_metrics_level(level, Level::INFO), Level::INFO);
+        }
+
+        // The default minimum allows any level.
+        assert_eq!(floor_metrics_level(Level::ERROR, Level::ERROR), Level::ERROR);
     }
 }

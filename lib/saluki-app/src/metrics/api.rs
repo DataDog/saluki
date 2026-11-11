@@ -22,6 +22,8 @@ use tokio::{
 };
 use tracing::info;
 
+use super::level_name;
+
 const MAXIMUM_OVERRIDE_LENGTH_SECS: u64 = 60 * 60;
 
 #[derive(Deserialize)]
@@ -36,17 +38,6 @@ pub struct MetricsHandlerState {
 
     /// Least verbose level that an override may set.
     minimum_level: Level,
-}
-
-/// Returns the configuration name of a metrics level, such as `info`.
-fn level_name(level: Level) -> &'static str {
-    match level {
-        Level::TRACE => "trace",
-        Level::DEBUG => "debug",
-        Level::INFO => "info",
-        Level::WARN => "warn",
-        Level::ERROR => "error",
-    }
 }
 
 /// An API handler for updating metric filtering directives at runtime.

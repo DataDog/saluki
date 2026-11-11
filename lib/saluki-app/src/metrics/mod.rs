@@ -16,6 +16,17 @@ use tokio::{runtime::Handle, select, time::sleep};
 mod api;
 pub use self::api::{MetricsAPIHandler, MetricsOverrideWorker};
 
+/// Returns the configuration name of a metrics level, such as `info`.
+pub(crate) fn level_name(level: Level) -> &'static str {
+    match level {
+        Level::TRACE => "trace",
+        Level::DEBUG => "debug",
+        Level::INFO => "info",
+        Level::WARN => "warn",
+        Level::ERROR => "error",
+    }
+}
+
 /// Initializes the metrics subsystem for `metrics`.
 ///
 /// The given prefix is used to namespace all metrics that are emitted by the application, and is prepended to all
