@@ -1556,6 +1556,10 @@ async fn encode_v3_payload_requests(
     }
 
     if let Some(sampled_destinations) = sampled_destinations {
+        // Validation requires the complete metric set from the already-dispatched V2 baseline.
+        if shadow_requests.iter().map(|request| request.event_count).sum::<usize>() != metrics.len() {
+            return Ok(());
+        }
         let request_count = shadow_requests.len();
         for (request_index, request) in shadow_requests.into_iter().enumerate() {
             shadow::enqueue_sketch_request(

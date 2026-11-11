@@ -353,20 +353,29 @@ mod tests {
 
     #[tokio::test]
     async fn disabled_or_failed_shadow_preserves_baseline() {
-        for (rate, route) in [(0.0, "/custom/sketch-shadow"), (1.0, "invalid route")] {
+        for (rate, route, max_points) in [
+            (0.0, "/custom/sketch-shadow", usize::MAX),
+            (1.0, "invalid route", usize::MAX),
+            // Dropping the oversized metric used to advertise the surviving V3 metric as a complete group.
+            (1.0, "/custom/sketch-shadow", 1),
+        ] {
             let mut config = configuration();
             config.v3_api.sketches.shadow_sample_rate = rate;
             config.v3_api.sketches.beta_route = route.into();
+            config.v3_api.sketches.max_points_per_payload = max_points;
             let (control, mut output) = TestComponentDriver::encoder(config).await.unwrap();
             control
-                .send_events([Event::Metric(Metric::distribution("baseline.survives", [(123, 1.0)]))])
+                .send_events([
+                    Event::Metric(Metric::distribution("baseline.large", [(123, 1.0), (124, 2.0)])),
+                    Event::Metric(Metric::distribution("baseline.small", [(123, 1.0)])),
+                ])
                 .await;
             let (result, mut payloads) = tokio::join!(control.shutdown(), output.collect());
             result.unwrap();
             assert_eq!(payloads.len(), 1);
             let (metadata, request) = payloads.pop().unwrap().try_into_http_payload().unwrap().into_parts();
             assert_eq!(request.uri(), METRICS_SKETCHES_PATH);
-            assert_eq!(metadata.event_count(), 1);
+            assert_eq!((metadata.event_count(), metadata.data_point_count()), (2, 3));
             if rate == 0.0 {
                 assert!(metadata.get::<SketchShadowMetadata>().is_none());
             }
