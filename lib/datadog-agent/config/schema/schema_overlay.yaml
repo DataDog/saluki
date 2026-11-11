@@ -2931,7 +2931,7 @@ inventory:
 
   serializer_experimental_use_v3_api.sketches.endpoints:
     support: full
-    pipelines: [dogstatsd]
+    pipelines: [checks, dogstatsd]
     description: "Endpoints enabling v3 sketches API"
 
   serializer_experimental_use_v3_api.sketches.max_compressed_payload_size:
