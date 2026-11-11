@@ -315,6 +315,16 @@ mod tests {
         .to_forwarder(ForwarderMetrics::new(&context))
     }
 
+    /// Builds a forwarder for `target_addr` and connects it under a fresh test supervisor.
+    ///
+    /// The forwarder spawns on the ambient supervisor, so it has to run under the component's own.
+    async fn start_forwarder(target_addr: SocketAddr) -> (TestSupervisor, PacketForwarder) {
+        let forwarder = build_forwarder(target_addr);
+        let supervisor = TestSupervisor::start("dogstatsd").await;
+        supervisor.scope(forwarder.clone().connect()).await;
+        (supervisor, forwarder)
+    }
+
     #[test]
     fn queue_capacity_is_a_quarter_of_the_queue_size_and_at_least_64() {
         for (queue_size, capacity) in [
@@ -334,123 +344,64 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn connect_enables_forwarding_and_delivers_payload_ipv4() {
+    async fn connect_enables_forwarding_and_delivers_payload() {
         // Connecting to a live UDP target enables forwarding, and `forward` delivers the payload verbatim.
-        let target = UdpSocket::bind("127.0.0.1:0").await.expect("target should bind");
-        let target_addr = target.local_addr().expect("target should have an address");
+        for bind_addr in ["127.0.0.1:0", "[::1]:0"] {
+            let target = match UdpSocket::bind(bind_addr).await {
+                Ok(target) => target,
+                Err(e) if bind_addr.starts_with('[') && is_ipv6_unavailable_error(&e) => continue,
+                Err(e) => panic!("target should bind to {bind_addr}: {e}"),
+            };
+            let target_addr = target.local_addr().expect("target should have an address");
 
-        let recorder = TestRecorder::default();
-        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
-        let forwarder = build_forwarder(target_addr);
+            let recorder = TestRecorder::default();
+            let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+            let (supervisor, forwarder) = start_forwarder(target_addr).await;
 
-        // The forwarder spawns on the ambient supervisor, so it has to run under the component's own.
-        let supervisor = TestSupervisor::start("dogstatsd").await;
-        let forwarder_spawn = forwarder.clone();
-        supervisor.scope(forwarder_spawn.connect()).await;
+            wait_for_forwarding(&forwarder).await;
 
-        wait_for_forwarding(&forwarder).await;
+            forwarder.forward(b"metric.name:1|c").await;
 
-        forwarder.forward(b"metric.name:1|c").await;
+            let mut buf = [0u8; 64];
+            let received = timeout(Duration::from_secs(5), target.recv(&mut buf))
+                .await
+                .unwrap_or_else(|_| panic!("forwarded payload should arrive at {bind_addr} before the timeout"))
+                .expect("recv should succeed");
+            let payload = &buf[..received];
+            assert_eq!(payload, b"metric.name:1|c", "target {bind_addr}");
 
-        let mut buf = [0u8; 64];
-        let received = timeout(Duration::from_secs(5), target.recv(&mut buf))
-            .await
-            .expect("forwarded payload should arrive before the timeout")
-            .expect("recv should succeed");
-        let payload = &buf[..received];
-        assert_eq!(payload, b"metric.name:1|c");
+            assert_eq!(
+                recorder.counter((
+                    "component_packets_forwarded_total",
+                    &[
+                        ("component_id", "dogstatsd_forwarder_test"),
+                        ("component_type", "source"),
+                        ("state", "ok"),
+                    ]
+                )),
+                Some(1),
+                "target {bind_addr}"
+            );
+            assert_eq!(
+                recorder.counter((
+                    "component_bytes_forwarded_total",
+                    &[
+                        ("component_id", "dogstatsd_forwarder_test"),
+                        ("component_type", "source"),
+                    ]
+                )),
+                Some(payload.len() as u64),
+                "target {bind_addr}"
+            );
 
-        assert_eq!(
-            recorder.counter((
-                "component_packets_forwarded_total",
-                &[
-                    ("component_id", "dogstatsd_forwarder_test"),
-                    ("component_type", "source"),
-                    ("state", "ok"),
-                ]
-            )),
-            Some(1)
-        );
-        assert_eq!(
-            recorder.counter((
-                "component_bytes_forwarded_total",
-                &[
-                    ("component_id", "dogstatsd_forwarder_test"),
-                    ("component_type", "source"),
-                ]
-            )),
-            Some(payload.len() as u64)
-        );
+            // The forwarding loop is a supervised child, so it goes away with the component rather than outliving it.
+            supervisor.wait_for_children(1).await;
 
-        // The forwarding loop is a supervised child, so it goes away with the component rather than outliving it.
-        supervisor.wait_for_children(1).await;
-
-        // The loop stops on its senders closing, not on the shutdown signal, so release our clone before shutting
-        // down. Holding it here would leave the loop waiting until it was halted at its shutdown timeout.
-        drop(forwarder);
-        assert!(supervisor.shutdown().await.is_ok());
-    }
-
-    #[tokio::test]
-    async fn connect_enables_forwarding_and_delivers_payload_ipv6() {
-        // Connecting to a live UDP target enables forwarding, and `forward` delivers the payload verbatim... but IPv6 edition.
-        let target = match UdpSocket::bind("[::1]:0").await {
-            Ok(target) => target,
-            Err(e) if is_ipv6_unavailable_error(&e) => return,
-            Err(e) => panic!("target should bind: {e}"),
-        };
-        let target_addr = target.local_addr().expect("target should have an address");
-
-        let recorder = TestRecorder::default();
-        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
-        let forwarder = build_forwarder(target_addr);
-
-        // The forwarder spawns on the ambient supervisor, so it has to run under the component's own.
-        let supervisor = TestSupervisor::start("dogstatsd").await;
-        let forwarder_spawn = forwarder.clone();
-        supervisor.scope(forwarder_spawn.connect()).await;
-
-        wait_for_forwarding(&forwarder).await;
-
-        forwarder.forward(b"metric.name:1|c").await;
-
-        let mut buf = [0u8; 64];
-        let received = timeout(Duration::from_secs(5), target.recv(&mut buf))
-            .await
-            .expect("forwarded payload should arrive before the timeout")
-            .expect("recv should succeed");
-        let payload = &buf[..received];
-        assert_eq!(payload, b"metric.name:1|c");
-
-        assert_eq!(
-            recorder.counter((
-                "component_packets_forwarded_total",
-                &[
-                    ("component_id", "dogstatsd_forwarder_test"),
-                    ("component_type", "source"),
-                    ("state", "ok"),
-                ]
-            )),
-            Some(1)
-        );
-        assert_eq!(
-            recorder.counter((
-                "component_bytes_forwarded_total",
-                &[
-                    ("component_id", "dogstatsd_forwarder_test"),
-                    ("component_type", "source"),
-                ]
-            )),
-            Some(payload.len() as u64)
-        );
-
-        // The forwarding loop is a supervised child, so it goes away with the component rather than outliving it.
-        supervisor.wait_for_children(1).await;
-
-        // The loop stops on its senders closing, not on the shutdown signal, so release our clone before shutting
-        // down. Holding it here would leave the loop waiting until it was halted at its shutdown timeout.
-        drop(forwarder);
-        assert!(supervisor.shutdown().await.is_ok());
+            // The loop stops on its senders closing, not on the shutdown signal, so release our clone before shutting
+            // down. Holding it here would leave the loop waiting until it was halted at its shutdown timeout.
+            drop(forwarder);
+            assert!(supervisor.shutdown().await.is_ok(), "target {bind_addr}");
+        }
     }
 
     #[tokio::test]
@@ -458,16 +409,11 @@ mod tests {
         // A second connect must not replace the already-established sender (the `OnceLock::set` is a no-op once set).
         let target = UdpSocket::bind("127.0.0.1:0").await.expect("target should bind");
         let target_addr = target.local_addr().expect("target should have an address");
-        let forwarder = build_forwarder(target_addr);
-
-        let supervisor = TestSupervisor::start("dogstatsd").await;
-        let forwarder_spawn = forwarder.clone();
-        supervisor.scope(forwarder_spawn.connect()).await;
+        let (supervisor, forwarder) = start_forwarder(target_addr).await;
 
         let first = wait_for_forwarding(&forwarder).await;
 
-        let forwarder_spawn = forwarder.clone();
-        supervisor.scope(forwarder_spawn.connect()).await;
+        supervisor.scope(forwarder.clone().connect()).await;
 
         // The second forwarding loop is only queued when `connect` returns, so it can't be observed here. A packet
         // arriving exactly once is what shows the first sender wasn't replaced.
@@ -495,11 +441,7 @@ mod tests {
         // stays disabled: `connected` is never set, and `forward` becomes a safe no-op rather than panicking.
         let recorder = TestRecorder::default();
         let _recorder_guard = metrics::set_default_local_recorder(&recorder);
-        let forwarder = build_forwarder(IPV4_ANY_ADDR);
-
-        let supervisor = TestSupervisor::start("dogstatsd").await;
-        let forwarder_spawn = forwarder.clone();
-        supervisor.scope(forwarder_spawn.connect()).await;
+        let (supervisor, forwarder) = start_forwarder(IPV4_ANY_ADDR).await;
 
         assert!(
             forwarder.connected.get().is_none(),
@@ -530,11 +472,7 @@ mod tests {
         // to simulate a routable address that is, in fact, not listening on the given port/
         let target = UdpSocket::bind("127.0.0.1:0").await.expect("target should bind");
         let target_addr = target.local_addr().expect("target should have an address");
-        let forwarder = build_forwarder(target_addr);
-
-        let supervisor = TestSupervisor::start("dogstatsd").await;
-        let forwarder_spawn = forwarder.clone();
-        supervisor.scope(forwarder_spawn.connect()).await;
+        let (_supervisor, forwarder) = start_forwarder(target_addr).await;
 
         yield_now().await;
 
@@ -608,11 +546,7 @@ mod tests {
             received
         });
 
-        let forwarder = build_forwarder(target_addr);
-
-        let supervisor = TestSupervisor::start("dogstatsd").await;
-        let forwarder_spawn = forwarder.clone();
-        supervisor.scope(forwarder_spawn.connect()).await;
+        let (supervisor, forwarder) = start_forwarder(target_addr).await;
 
         // Fill the queue via the sender directly. Going through `forward` would await `send_ref`, which yields to the
         // loop on every call and paces it, so no backlog would ever build up.
@@ -654,8 +588,7 @@ mod tests {
             .expect("supervisor name should be valid")
             .handle();
 
-        let forwarder_spawn = forwarder.clone();
-        dead_supervisor.scope(forwarder_spawn.connect()).await;
+        dead_supervisor.scope(forwarder.clone().connect()).await;
 
         // Give a loop that was (wrongly) started a chance to publish before concluding it never ran.
         tokio::time::sleep(Duration::from_millis(50)).await;
