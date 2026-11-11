@@ -9,7 +9,6 @@
 use std::mem;
 use std::time::{Duration, Instant};
 
-use metrics::Counter;
 use saluki_core::data_model::event::log::Log;
 use saluki_error::{generic_error, GenericError};
 use serde_json::Value as JsonValue;
@@ -181,33 +180,22 @@ const RENDER_FAILURE_LOG_INTERVAL: Duration = Duration::from_secs(10);
 ///
 /// Replaces the message of each log with its rendered content, and clears its additional properties, which the
 /// content now holds. The status, hostname, service, source, and tags stay on the log, for the envelope.
+#[derive(Default)]
 pub struct OtlpLogsRenderer {
     renderer: ContentRenderer,
-    events_dropped: Counter,
     failures_since_logged: u64,
     last_failure_logged: Option<Instant>,
 }
 
 impl OtlpLogsRenderer {
-    /// Creates a new `OtlpLogsRenderer`, counting the logs it drops in `events_dropped`.
-    pub fn new(events_dropped: Counter) -> Self {
-        Self {
-            renderer: ContentRenderer::default(),
-            events_dropped,
-            failures_since_logged: 0,
-            last_failure_logged: None,
-        }
-    }
-
     /// Renders a log's content into its message.
     ///
-    /// If the log can't be rendered, it's counted as dropped and `None` is returned. That only happens for a property
+    /// If the log can't be rendered, it's dropped and `None` is returned. That only happens for a property
     /// that can't be serialized.
     pub fn render(&mut self, log: Log) -> Option<Log> {
         match self.renderer.render(&log) {
             Ok(content) => Some(log.with_message(content).with_additional_properties(None)),
             Err(error) => {
-                self.events_dropped.increment(1);
                 self.failures_since_logged += 1;
 
                 let now = Instant::now();
@@ -229,7 +217,6 @@ impl OtlpLogsRenderer {
 mod tests {
     use std::collections::HashMap;
 
-    use metrics::Counter;
     use saluki_core::data_model::event::log::Log;
     use saluki_core::data_model::tags::{Tag, TagSet};
     use serde_json::{json, Value as JsonValue};
@@ -626,7 +613,7 @@ mod tests {
             r#"{"app":"test","hostname":"host-a","message":"hello","otel.severity_number":"5","service":"svc","status":"debug"}"#
         );
 
-        let log = OtlpLogsRenderer::new(Counter::noop())
+        let log = OtlpLogsRenderer::default()
             .render(original.clone())
             .expect("log should render");
 

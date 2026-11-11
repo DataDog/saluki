@@ -1,6 +1,5 @@
 use std::vec::IntoIter;
 
-use metrics::Counter;
 use opentelemetry_semantic_conventions::resource::{HOST_NAME, SERVICE_NAME};
 use otlp_protos::opentelemetry::proto::common::v1::InstrumentationScope;
 use otlp_protos::opentelemetry::proto::logs::v1::{LogRecord, ResourceLogs as OtlpResourceLogs, ScopeLogs};
@@ -32,12 +31,11 @@ pub struct OtlpLogsTranslator {
 }
 
 impl OtlpLogsTranslator {
-    /// Creates a new `OtlpLogsTranslator`, counting the logs it drops because they can't be rendered in
-    /// `events_dropped`.
-    pub fn new(origin_tag_resolver: OtlpOriginTagResolver, events_dropped: Counter) -> Self {
+    /// Creates a new `OtlpLogsTranslator`.
+    pub fn new(origin_tag_resolver: OtlpOriginTagResolver) -> Self {
         Self {
             origin_tag_resolver,
-            renderer: OtlpLogsRenderer::new(events_dropped),
+            renderer: OtlpLogsRenderer::default(),
         }
     }
 
@@ -145,7 +143,6 @@ impl Iterator for ResourceLogsIter {
 
 #[cfg(test)]
 mod tests {
-    use metrics::Counter;
     use otlp_common::any_value::Value::{KvlistValue, StringValue};
     use otlp_protos::opentelemetry::proto::common::v1::{self as otlp_common};
     use otlp_protos::opentelemetry::proto::logs::v1 as otlp_logs_v1;
@@ -825,12 +822,9 @@ mod tests {
             }],
             ..Default::default()
         };
-        let mut translator = OtlpLogsTranslator::new(
-            OtlpOriginTagResolver::new(std::sync::Arc::new(
-                saluki_env::workload::providers::NoopWorkloadProvider,
-            )),
-            Counter::noop(),
-        );
+        let mut translator = OtlpLogsTranslator::new(OtlpOriginTagResolver::new(std::sync::Arc::new(
+            saluki_env::workload::providers::NoopWorkloadProvider,
+        )));
 
         let contents = translator
             .translate_logs(resource_logs, &metrics)
