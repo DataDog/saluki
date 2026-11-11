@@ -1,0 +1,11 @@
+seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
+target: "unixgram:///$GROUP-airlock/metrics.sock"
+aggregation_bucket_width_secs: 10
+# Send 60 points, one per second, so they span several aggregation buckets including the window right after startup.
+volume: 60
+send_delay_us: 1000000
+corpus:
+  size: 1
+  payload:
+    static: |
+      kb.t6:1|c|#kb:t6,env:prod
