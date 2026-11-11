@@ -20,7 +20,7 @@
 // `TestLogsExporter` in
 // https://github.com/DataDog/datadog-agent/blob/e0c8d8d93befb6864f13e2d88acbe13fb2d380b7/comp/otelcol/otlp/components/exporter/logsagentexporter/logs_exporter_test.go
 // is ported too. Its case with different tags configures the OTel source `datadog_exporter` and an empty log source
-// name. Here it uses the embedded receiver's `datadog_agent` and `otlp_log_ingestion`.
+// name. Here it uses the translator's own OTel source `datadog_agent` and log source `otlp_log_ingestion`.
 
 use std::collections::BTreeSet;
 
