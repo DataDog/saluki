@@ -147,6 +147,17 @@ impl SourceFile {
         finder.found
     }
 
+    fn module_mentions(&self, root: &Path, modules: &BTreeSet<String>) -> Vec<Mention> {
+        let mut finder = ModuleFinder {
+            path: &self.path,
+            module: module_of(root, &self.path),
+            modules,
+            found: Vec::new(),
+        };
+        finder.visit_file(&self.syntax);
+        finder.found
+    }
+
     /// Adds cross-file aliases to `out`, following private alias chains within this file.
     /// [`SourceTree::aliases`] defines which bindings count across files.
     fn exported_aliases(
@@ -206,6 +217,19 @@ impl SourceTree {
     /// Comments, doc text, and string literals never count.
     pub fn mentions(&self, names: &BTreeSet<String>) -> Vec<Mention> {
         self.files.iter().flat_map(|file| file.mentions(names)).collect()
+    }
+
+    /// Returns every path in these files that names a top-level module in `modules` of the crate whose sources are
+    /// under `root`.
+    ///
+    /// Only paths that start at `crate`, `self` or `super` count, and `self` and `super` resolve from the file's
+    /// place under `root` and its inline modules. Unlike [`SourceTree::mentions`], a local variable or a field that
+    /// shares a module's name never matches. Paths in `use` items, types, expressions and macro tokens count.
+    pub fn module_mentions(&self, root: &Path, modules: &BTreeSet<String>) -> Vec<Mention> {
+        self.files
+            .iter()
+            .flat_map(|file| file.module_mentions(root, modules))
+            .collect()
     }
 
     /// Collects aliases of `names` from this tree.
@@ -332,6 +356,150 @@ impl<'ast> Visit<'ast> for MentionFinder<'_> {
     fn visit_use_rename(&mut self, i: &'ast syn::UseRename) {
         self.check(&i.ident, Form::Use);
         self.check(&i.rename, Form::Use);
+    }
+}
+
+/// The module path of a source file under `root`: empty for the crate root, the directory for `mod.rs`.
+fn module_of(root: &Path, path: &Path) -> Vec<String> {
+    let relative = path.strip_prefix(root).unwrap_or(path);
+    let mut module: Vec<String> = relative
+        .iter()
+        .map(|component| component.to_string_lossy().into_owned())
+        .collect();
+    match module.pop().as_deref() {
+        Some("main.rs" | "lib.rs") if module.is_empty() => {}
+        Some("mod.rs") | None => {}
+        Some(file) => module.push(file.trim_end_matches(".rs").to_string()),
+    }
+    module
+}
+
+struct ModuleFinder<'a> {
+    path: &'a Path,
+    module: Vec<String>,
+    modules: &'a BTreeSet<String>,
+    found: Vec<Mention>,
+}
+
+impl ModuleFinder<'_> {
+    /// Resolves a path that starts at `crate`, `self` or `super`, and records it if its top-level module is guarded.
+    fn check(&mut self, segments: &[Ident]) {
+        let Some((first, rest)) = segments.split_first() else {
+            return;
+        };
+        let mut base = match first.to_string().as_str() {
+            "crate" => Vec::new(),
+            "self" => self.module.clone(),
+            "super" => match self.module.split_last() {
+                Some((_, parent)) => parent.to_vec(),
+                None => return,
+            },
+            _ => return,
+        };
+        let mut reported = first;
+        for segment in rest {
+            match segment.to_string().as_str() {
+                "super" => {
+                    if base.pop().is_none() {
+                        return;
+                    }
+                }
+                "self" => {}
+                _ => {
+                    if base.is_empty() {
+                        base.push(segment.unraw().to_string());
+                        reported = segment;
+                    }
+                    break;
+                }
+            }
+        }
+        let Some(top) = base.first().filter(|top| self.modules.contains(*top)) else {
+            return;
+        };
+        let start = reported.span().start();
+        self.found.push(Mention {
+            path: self.path.to_path_buf(),
+            line: start.line,
+            column: start.column + 1,
+            name: top.clone(),
+            form: Form::Path,
+        });
+    }
+
+    fn use_tree(&mut self, tree: &UseTree, prefix: &mut Vec<Ident>) {
+        match tree {
+            UseTree::Path(path) => {
+                prefix.push(path.ident.clone());
+                self.use_tree(&path.tree, prefix);
+                prefix.pop();
+            }
+            UseTree::Name(name) => self.use_leaf(prefix, &name.ident),
+            UseTree::Rename(rename) => self.use_leaf(prefix, &rename.ident),
+            UseTree::Glob(_) => self.check(prefix),
+            UseTree::Group(group) => {
+                for tree in &group.items {
+                    self.use_tree(tree, prefix);
+                }
+            }
+        }
+    }
+
+    fn use_leaf(&mut self, prefix: &mut Vec<Ident>, ident: &Ident) {
+        prefix.push(ident.clone());
+        self.check(prefix);
+        prefix.pop();
+    }
+
+    /// Checks every `a::b::c` run of identifiers in a token stream.
+    fn tokens(&mut self, tokens: &TokenStream) {
+        let tokens: Vec<TokenTree> = tokens.clone().into_iter().collect();
+        let mut i = 0;
+        while i < tokens.len() {
+            match &tokens[i] {
+                TokenTree::Ident(ident) => {
+                    let mut segments = vec![ident.clone()];
+                    while let (Some(TokenTree::Punct(a)), Some(TokenTree::Punct(b)), Some(TokenTree::Ident(next))) =
+                        (tokens.get(i + 1), tokens.get(i + 2), tokens.get(i + 3))
+                    {
+                        if a.as_char() != ':' || b.as_char() != ':' {
+                            break;
+                        }
+                        segments.push(next.clone());
+                        i += 3;
+                    }
+                    self.check(&segments);
+                }
+                TokenTree::Group(group) => self.tokens(&group.stream()),
+                TokenTree::Punct(_) | TokenTree::Literal(_) => {}
+            }
+            i += 1;
+        }
+    }
+}
+
+impl<'ast> Visit<'ast> for ModuleFinder<'_> {
+    fn visit_item_mod(&mut self, i: &'ast syn::ItemMod) {
+        if i.content.is_some() {
+            self.module.push(i.ident.unraw().to_string());
+            visit::visit_item_mod(self, i);
+            self.module.pop();
+        }
+    }
+
+    fn visit_item_use(&mut self, i: &'ast syn::ItemUse) {
+        self.use_tree(&i.tree, &mut Vec::new());
+    }
+
+    fn visit_path(&mut self, i: &'ast syn::Path) {
+        let segments: Vec<Ident> = i.segments.iter().map(|segment| segment.ident.clone()).collect();
+        self.check(&segments);
+        visit::visit_path(self, i);
+    }
+
+    // Macro bodies, attribute arguments, and unparsed syntax.
+    fn visit_token_stream(&mut self, i: &'ast TokenStream) {
+        self.tokens(i);
     }
 }
 
@@ -558,6 +726,30 @@ mod tests {
         let mentions = file("dir/lib.rs", "fn f() {}\n\nfn g(value: Alias) {}\n").mentions(&names(&["Alias"]));
         let lines: Vec<_> = mentions.iter().map(Mention::to_string).collect();
         assert_eq!(lines, ["dir/lib.rs:3:13: path `Alias`"]);
+    }
+
+    #[test]
+    fn module_mentions_resolve_paths_from_the_file_and_ignore_other_names() {
+        let modules = names(&["guarded"]);
+        let cases = [
+            ("src/a.rs", "use crate::guarded::X;", 1),
+            ("src/a.rs", "use crate::{other, guarded::{X, Y}};", 2),
+            ("src/a.rs", "fn f() { crate::guarded::run(); }", 1),
+            ("src/a.rs", "fn f() { assert!(crate::guarded::ok()); }", 1),
+            ("src/a.rs", "use super::guarded;", 1),
+            ("src/a/b.rs", "use super::guarded;", 0),
+            ("src/a/b.rs", "use super::super::guarded;", 1),
+            ("src/a/mod.rs", "use super::guarded::X;", 1),
+            ("src/a.rs", "mod tests { use super::super::guarded::X; }", 1),
+            ("src/guarded/a.rs", "use super::Thing;", 1),
+            ("src/a.rs", "fn f(guarded: u8) -> u8 { let x = guarded; x }", 0),
+            ("src/a.rs", "use other::guarded::X;", 0),
+        ];
+        for (path, text, expected) in cases {
+            let found = file(path, text).module_mentions(Path::new("src"), &modules);
+            assert_eq!(found.len(), expected, "{path}: {text}: {found:?}");
+            assert!(found.iter().all(|mention| mention.name == "guarded"), "{found:?}");
+        }
     }
 
     fn tree(files: &[(&str, &str)]) -> SourceTree {

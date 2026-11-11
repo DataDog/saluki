@@ -45,12 +45,14 @@ mod interrupts;
 use self::interrupts::Interrupts;
 
 mod machine_output;
+mod participants;
 use self::machine_output::RunReport;
 
 mod reporter;
 use self::reporter::{OutputFormat, Reporter};
 
 mod runner;
+mod steps;
 mod test;
 mod test_env;
 mod traffic;
