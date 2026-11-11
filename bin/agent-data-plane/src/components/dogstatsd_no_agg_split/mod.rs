@@ -375,7 +375,7 @@ mod tests {
 
     use http_body_util::BodyExt as _;
     use saluki_components::encoders::{
-        DatadogMetricsConfiguration, UseV3ApiConfig, UseV3ApiSeriesConfig, V3ApiConfig, V3SeriesMode,
+        DatadogMetricsConfiguration, UseV3ApiConfig, UseV3ApiSeriesConfig, V3ApiConfig, V3ApiSettings, V3SeriesMode,
     };
     use saluki_components::forwarders::OpwMetricsConfiguration;
     use saluki_core::{
@@ -402,7 +402,15 @@ mod tests {
             use_v2_series_api: false,
             log_payloads: false,
             additional_tags: None,
-            v3_api: V3ApiConfig::default(),
+            v3_api: V3ApiConfig {
+                sketches: V3ApiSettings {
+                    endpoints: Vec::new(),
+                    max_compressed_payload_size: 64 * 1024,
+                    max_uncompressed_payload_size: 64 * 1024,
+                    max_points_per_payload: usize::MAX,
+                },
+                compression_level: 0,
+            },
             use_v3_api: UseV3ApiConfig {
                 series: UseV3ApiSeriesConfig {
                     enabled: V3SeriesMode::DatadogOnly,

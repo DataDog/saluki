@@ -2840,6 +2840,48 @@ mod tests {
         assert_defaulted(&config.shared.endpoints.dd_url, "");
     }
 
+    #[test]
+    fn v3_sketch_payload_limits_resolve_fallbacks_and_overrides() {
+        for (compressed, uncompressed, points, expected) in [
+            (0, 0, 0, (100_000, 300_000, usize::MAX)),
+            (-1, -2, -3, (100_000, 300_000, usize::MAX)),
+            (110_000, 330_000, 43, (110_000, 330_000, 43)),
+            (110_000, 0, 0, (110_000, 300_000, usize::MAX)),
+        ] {
+            let (config, errors) = translate_explicit(json!({
+                "serializer_max_payload_size": 100_000,
+                "serializer_max_uncompressed_payload_size": 300_000,
+                "serializer_experimental_use_v3_api": {"sketches": {
+                    "max_compressed_payload_size": compressed,
+                    "max_uncompressed_payload_size": uncompressed,
+                    "max_points_per_payload": points,
+                }},
+            }));
+            assert!(errors.is_none(), "{errors:?}");
+            let sketches = &config.shared.metrics_encoding.v3_api.sketches;
+            assert_eq!(
+                (
+                    sketches.max_compressed_payload_size,
+                    sketches.max_uncompressed_payload_size,
+                    sketches.max_points_per_payload
+                ),
+                expected
+            );
+        }
+
+        let (config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none(), "{errors:?}");
+        let sketches = &config.shared.metrics_encoding.v3_api.sketches;
+        assert_eq!(
+            (
+                sketches.max_compressed_payload_size,
+                sketches.max_uncompressed_payload_size,
+                sketches.max_points_per_payload
+            ),
+            (2_621_440, 4_194_304, usize::MAX)
+        );
+    }
+
     // The Agent streams `serializer_zstd_compressor_level` at its schema default of 1 even when the
     // operator configured nothing. ADP wants its own default of 3, so it applies the Agent's level only
     // when an input set one. Comparing the value against 1 also discarded an operator who deliberately
