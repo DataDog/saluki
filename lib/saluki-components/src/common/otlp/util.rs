@@ -94,6 +94,7 @@ static CONTAINER_MAPPINGS: LazyLock<FastHashMap<&'static str, &'static str>> = L
     m.insert(K8S_CRONJOB_NAME, "kube_cronjob");
     m.insert(K8S_NAMESPACE_NAME, "kube_namespace");
     m.insert(K8S_POD_NAME, "pod_name");
+    m.insert(K8S_NODE_NAME, "kube_node");
     m
 });
 
