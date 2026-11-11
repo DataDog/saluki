@@ -80,8 +80,10 @@ use self::metrics::{build_metrics, ForwarderMetrics, Metrics};
 mod replay;
 use self::replay::{CaptureRecord, CapturedTaggerHandle, TrafficCapture};
 pub use self::replay::{
-    DogStatsDCaptureAPIHandler, DogStatsDCaptureControl, DogStatsDReplayAPIHandler, DogStatsDReplayControl,
-    ReplaySession, TimestampResolution, TrafficCaptureReader, DEFAULT_REPLAY_LOOPS, REPLAY_CREDENTIALS_GID,
+    CaptureTriggerBody, CaptureTriggerResponseBody, DogStatsDCaptureAPIHandler, DogStatsDCaptureControl,
+    DogStatsDReplayAPIHandler, DogStatsDReplayControl, ReplayControlError, ReplaySession, ReplaySessionResponseBody,
+    TimestampResolution, TrafficCaptureReader, CAPTURE_TRIGGER_ROUTE, DEFAULT_REPLAY_LOOPS, REPLAY_CREDENTIALS_GID,
+    REPLAY_SESSION_ROUTE,
 };
 
 mod origin;
