@@ -242,6 +242,15 @@ fn transaction_metadata_from_payload_metadata(payload_meta: &PayloadMetadata) ->
     let mut transaction_meta =
         Metadata::from_event_and_data_point_count(payload_meta.event_count(), payload_meta.data_point_count());
     transaction_meta.sketch_shadow = payload_meta.get::<SketchShadowMetadata>().cloned();
+    if transaction_meta
+        .sketch_shadow
+        .as_ref()
+        .is_some_and(|shadow| shadow.is_shadow)
+    {
+        // Validation copies must not count as delivered or dropped metric data.
+        transaction_meta.event_count = 0;
+        transaction_meta.data_point_count = 0;
+    }
     transaction_meta.payload_info = payload_meta.get::<MetricsPayloadInfo>().copied();
     transaction_meta.metrics_routing_targets = payload_meta.get::<Arc<MetricsRoutingTargets>>().cloned();
     transaction_meta
@@ -271,6 +280,7 @@ mod tests {
     use super::*;
     use crate::common::datadog::{
         api_key::ApiKeyRefresher,
+        sketch_shadow::SketchShadowDestination,
         test_util::{forwarder_configuration, LiveConfiguration, LiveRoot},
     };
 
@@ -335,6 +345,31 @@ mod tests {
             cloned_meta.metrics_routing_targets.as_ref().unwrap(),
             &routing_targets
         ));
+
+        for is_shadow in [false, true] {
+            let payload_meta = PayloadMetadata::from_event_and_data_point_count(2, 7).with(SketchShadowMetadata {
+                sampled_destinations: vec![SketchShadowDestination {
+                    configured_endpoint: Arc::from("https://primary.example.com"),
+                    batch_id: "batch-id".parse().unwrap(),
+                }]
+                .into(),
+                request_index: 1,
+                request_count: 3,
+                is_shadow,
+            });
+            let transaction_meta = transaction_metadata_from_payload_metadata(&payload_meta);
+            assert_eq!(
+                (transaction_meta.event_count, transaction_meta.data_point_count),
+                if is_shadow { (0, 0) } else { (2, 7) },
+            );
+            assert_eq!((payload_meta.event_count(), payload_meta.data_point_count()), (2, 7));
+            let shadow = transaction_meta.sketch_shadow.unwrap();
+            assert_eq!(
+                (shadow.is_shadow, shadow.request_index, shadow.request_count),
+                (is_shadow, 1, 3)
+            );
+            assert_eq!(shadow.batch_id("https://primary.example.com").unwrap(), "batch-id");
+        }
     }
 
     #[tokio::test]
