@@ -51,7 +51,6 @@ mod metrics;
 mod resolver;
 use datadog_agent_apm::semantics::SemanticRegistryProvider;
 
-use self::logs::render::OtlpLogsRenderer;
 use self::logs::translator::OtlpLogsTranslator;
 pub use self::metrics::config::{
     CumulativeMonotonicMode, HistogramMode, InitialCumulativeMonotonicValue, OtlpMetricsSettings, SummaryMode,
@@ -200,7 +199,7 @@ impl SourceBuilder for OtlpConfiguration {
                 "component_events_dropped_total",
                 ["intentional:false", "drop_reason:render_failure"],
             );
-        let logs_renderer = OtlpLogsRenderer::new(logs_events_dropped);
+        let logs_translator = OtlpLogsTranslator::new(origin_tag_resolver.clone(), logs_events_dropped);
 
         Ok(Box::new(Otlp {
             context_resolver,
@@ -219,7 +218,7 @@ impl SourceBuilder for OtlpConfiguration {
             grpc_tls_config,
             metrics,
             translator_metrics,
-            logs_renderer,
+            logs_translator,
         }))
     }
 }
@@ -252,7 +251,7 @@ pub struct Otlp {
     grpc_tls_config: Option<OtlpTlsConfiguration>,
     metrics: Metrics, // Telemetry metrics, not DD native metrics.
     translator_metrics: metrics::telemetry::OtlpMetricsTranslatorMetrics,
-    logs_renderer: OtlpLogsRenderer,
+    logs_translator: OtlpLogsTranslator,
 }
 
 #[async_trait]
@@ -275,7 +274,7 @@ impl Source for Otlp {
             grpc_tls_config,
             metrics,
             translator_metrics,
-            logs_renderer,
+            logs_translator,
         } = *self;
 
         let global_shutdown = context.take_shutdown_handle();
@@ -291,7 +290,7 @@ impl Source for Otlp {
             metrics_translator_config,
             default_hostname,
             context_resolver,
-            origin_tag_resolver.clone(),
+            origin_tag_resolver,
             metric_tags,
             translator_metrics,
         )?;
@@ -331,11 +330,10 @@ impl Source for Otlp {
             run_converter(
                 rx,
                 converter_context,
-                origin_tag_resolver,
                 metrics_translator,
-                metrics,
+                logs_translator,
                 traces_translator,
-                logs_renderer,
+                metrics,
             ),
         )
         .on_runtime(context.topology_context().global_thread_pool().clone())
@@ -427,8 +425,8 @@ impl OtlpHandler for SourceHandler {
 
 async fn run_converter(
     mut receiver: mpsc::Receiver<OtlpSignal>, source_context: SourceContext,
-    origin_tag_resolver: OtlpOriginTagResolver, mut metrics_translator: OtlpMetricsTranslator, metrics: Metrics,
-    mut traces_translator: OtlpTracesTranslator, mut logs_renderer: OtlpLogsRenderer,
+    mut metrics_translator: OtlpMetricsTranslator, mut logs_translator: OtlpLogsTranslator,
+    mut traces_translator: OtlpTracesTranslator, metrics: Metrics,
 ) {
     debug!("OTLP resource converter task started.");
 
@@ -490,14 +488,7 @@ async fn run_converter(
                         }
                     }
                     OtlpSignal::Logs(resource_logs) => {
-                        let translator = OtlpLogsTranslator::from_resource_logs(resource_logs, &origin_tag_resolver);
-                        for log in translator {
-                            metrics.logs_received().increment(1);
-
-                            let Some(log) = logs_renderer.render(log) else {
-                                continue;
-                            };
-
+                        for log in logs_translator.translate_logs(resource_logs, &metrics) {
                             let dispatcher = logs_dispatcher.get_or_insert_with(|| {
                                 source_context
                                     .dispatcher()
@@ -972,7 +963,6 @@ mod tests {
             "every accepted log must be dispatched"
         );
 
-        // The source renders each log into its content before dispatching it.
         for event in events {
             let Event::Log(log) = event else {
                 panic!("expected a log, got {event:?}");

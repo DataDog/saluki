@@ -1,5 +1,6 @@
 use std::vec::IntoIter;
 
+use metrics::Counter;
 use opentelemetry_semantic_conventions::resource::{HOST_NAME, SERVICE_NAME};
 use otlp_protos::opentelemetry::proto::common::v1::InstrumentationScope;
 use otlp_protos::opentelemetry::proto::logs::v1::{LogRecord, ResourceLogs as OtlpResourceLogs, ScopeLogs};
@@ -15,12 +16,46 @@ use crate::common::otlp::attributes::raw_origin_from_attributes;
 use crate::common::otlp::attributes::{tags_from_attributes, ResourceAttributeTagMode};
 use crate::common::otlp::origin::OtlpOriginTagResolver;
 use crate::common::otlp::util::{get_string_attribute, resource_to_source, SourceKind};
+use crate::common::otlp::Metrics;
+use crate::sources::otlp::logs::render::OtlpLogsRenderer;
 use crate::sources::otlp::logs::transform::transform_log_record;
 
 static OTEL_SOURCE_TAG: Tag = Tag::from_static("otel_source:datadog_agent");
 
 /// A translator for converting OTLP logs into DD native logs.
+///
+/// Translation ends with rendering each log into its content, which is what the Agent's OTLP logs translator and logs
+/// exporter do together. The translator keeps its render buffers between logs.
 pub struct OtlpLogsTranslator {
+    origin_tag_resolver: OtlpOriginTagResolver,
+    renderer: OtlpLogsRenderer,
+}
+
+impl OtlpLogsTranslator {
+    /// Creates a new `OtlpLogsTranslator`, counting the logs it drops because they can't be rendered in
+    /// `events_dropped`.
+    pub fn new(origin_tag_resolver: OtlpOriginTagResolver, events_dropped: Counter) -> Self {
+        Self {
+            origin_tag_resolver,
+            renderer: OtlpLogsRenderer::new(events_dropped),
+        }
+    }
+
+    /// Translates the logs of an OTLP resource into rendered DD native logs.
+    ///
+    /// Every log is counted as received, including the logs that are dropped because they can't be rendered.
+    pub fn translate_logs<'a>(
+        &'a mut self, resource_logs: OtlpResourceLogs, metrics: &'a Metrics,
+    ) -> impl Iterator<Item = Log> + 'a {
+        ResourceLogsIter::new(resource_logs, &self.origin_tag_resolver).filter_map(|log| {
+            metrics.logs_received().increment(1);
+            self.renderer.render(log)
+        })
+    }
+}
+
+/// An iterator over the logs of an OTLP resource, translated but not yet rendered.
+pub(super) struct ResourceLogsIter {
     resource: Resource,
     host: Option<MetaString>,
     service: Option<MetaString>,
@@ -29,8 +64,8 @@ pub struct OtlpLogsTranslator {
     current_scope_logs: Option<(Option<InstrumentationScope>, IntoIter<LogRecord>)>,
 }
 
-impl OtlpLogsTranslator {
-    pub fn from_resource_logs(resource_logs: OtlpResourceLogs, origin_tag_resolver: &OtlpOriginTagResolver) -> Self {
+impl ResourceLogsIter {
+    pub(super) fn new(resource_logs: OtlpResourceLogs, origin_tag_resolver: &OtlpOriginTagResolver) -> Self {
         let resource = resource_logs.resource.unwrap_or_default();
         let source = resource_to_source(&resource);
         let host = match &source {
@@ -100,7 +135,7 @@ impl OtlpLogsTranslator {
     }
 }
 
-impl Iterator for OtlpLogsTranslator {
+impl Iterator for ResourceLogsIter {
     type Item = Log;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -110,15 +145,19 @@ impl Iterator for OtlpLogsTranslator {
 
 #[cfg(test)]
 mod tests {
+    use metrics::Counter;
     use otlp_common::any_value::Value::{KvlistValue, StringValue};
     use otlp_protos::opentelemetry::proto::common::v1::{self as otlp_common};
     use otlp_protos::opentelemetry::proto::logs::v1 as otlp_logs_v1;
     use otlp_protos::opentelemetry::proto::resource::v1 as otlp_resource_v1;
+    use saluki_core::components::ComponentContext;
     use saluki_core::data_model::event::log::Log;
+    use saluki_metrics::test::TestRecorder;
     use serde_json::Value as JsonValue;
 
-    use super::OtlpLogsTranslator;
     use super::SERVICE_NAME;
+    use super::{OtlpLogsTranslator, ResourceLogsIter};
+    use crate::common::otlp::build_metrics;
     use crate::common::otlp::origin::OtlpOriginTagResolver;
     use crate::sources::otlp::logs::transform::DDTAGS_ATTR;
 
@@ -179,7 +218,7 @@ mod tests {
             schema_url: String::new(),
         };
 
-        let translator = OtlpLogsTranslator::from_resource_logs(
+        let translator = ResourceLogsIter::new(
             resource_logs,
             &OtlpOriginTagResolver::new(std::sync::Arc::new(
                 saluki_env::workload::providers::NoopWorkloadProvider,
@@ -762,5 +801,57 @@ mod tests {
             props.get("otelcol.component.kind"),
             Some(&JsonValue::String("Receiver".to_string()))
         );
+    }
+
+    #[test]
+    fn translate_logs_renders_and_counts_each_log() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let metrics = build_metrics(&ComponentContext::test_source("otlp_test"));
+
+        let resource_logs = otlp_logs_v1::ResourceLogs {
+            scope_logs: vec![otlp_logs_v1::ScopeLogs {
+                log_records: vec![
+                    otlp_logs_v1::LogRecord {
+                        body: Some(string_to_any_value("first")),
+                        ..Default::default()
+                    },
+                    otlp_logs_v1::LogRecord {
+                        body: Some(string_to_any_value("second")),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut translator = OtlpLogsTranslator::new(
+            OtlpOriginTagResolver::new(std::sync::Arc::new(
+                saluki_env::workload::providers::NoopWorkloadProvider,
+            )),
+            Counter::noop(),
+        );
+
+        let contents = translator
+            .translate_logs(resource_logs, &metrics)
+            .map(|log| {
+                assert!(log.additional_properties().is_empty());
+                log.message().to_string()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            contents,
+            [
+                r#"{"message":"first","status":""}"#,
+                r#"{"message":"second","status":""}"#
+            ]
+        );
+
+        let tags: &[(&str, &str)] = &[
+            ("component_id", "otlp_test"),
+            ("component_type", "source"),
+            ("message_type", "otlp_logs"),
+        ];
+        assert_eq!(recorder.counter(("component_events_received_total", tags)), Some(2));
     }
 }

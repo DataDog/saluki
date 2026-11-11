@@ -33,7 +33,7 @@ use saluki_core::data_model::event::log::Log;
 use saluki_env::workload::providers::NoopWorkloadProvider;
 use serde_json::{json, Map, Value};
 
-use super::translator::OtlpLogsTranslator;
+use super::translator::ResourceLogsIter;
 use crate::common::otlp::logs::ContentRenderer;
 use crate::common::otlp::origin::OtlpOriginTagResolver;
 
@@ -108,7 +108,7 @@ fn translate_records(resource: &Resource, scope: &InstrumentationScope, records:
         ..Default::default()
     };
     let resolver = OtlpOriginTagResolver::new(std::sync::Arc::new(NoopWorkloadProvider));
-    OtlpLogsTranslator::from_resource_logs(resource_logs, &resolver).collect()
+    ResourceLogsIter::new(resource_logs, &resolver).collect()
 }
 
 fn tags_of(log: &Log) -> BTreeSet<String> {
