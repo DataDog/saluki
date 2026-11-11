@@ -332,6 +332,21 @@ mod tests {
         let mut encoder = LogsEndpointEncoder::new(fixed_clock);
         let mut buffer = Vec::new();
 
+        let ordinary = Log::new("m").with_tags(tag_set(["env:prod"]));
+        encoder
+            .write_envelope(&ordinary, &mut buffer)
+            .expect("envelope should serialize");
+        let ordinary_capacity = encoder.tags_buffer.capacity();
+        assert!(ordinary_capacity >= "env:prod".len());
+        assert!(ordinary_capacity <= TAGS_BUFFER_RETENTION_LIMIT_BYTES);
+
+        // An ordinary log keeps the buffer it grew.
+        encoder
+            .write_envelope(&ordinary, &mut buffer)
+            .expect("envelope should serialize");
+        assert_eq!(encoder.tags_buffer.capacity(), ordinary_capacity);
+
+        // An oversized log is written in full, then has the excess released.
         let tag = format!("big:{}", "x".repeat(2 * TAGS_BUFFER_RETENTION_LIMIT_BYTES));
         let oversized = Log::new("m").with_tags([Tag::from(tag.clone())].into_iter().collect::<TagSet>());
         encoder
@@ -339,17 +354,6 @@ mod tests {
             .expect("envelope should serialize");
         assert!(String::from_utf8_lossy(&buffer).contains(&tag));
         assert!(encoder.tags_buffer.capacity() <= TAGS_BUFFER_RETENTION_LIMIT_BYTES);
-
-        // An ordinary log keeps the buffer it grew.
-        let ordinary = Log::new("m").with_tags(tag_set(["env:prod"]));
-        encoder
-            .write_envelope(&ordinary, &mut buffer)
-            .expect("envelope should serialize");
-        let ordinary_capacity = encoder.tags_buffer.capacity();
-        encoder
-            .write_envelope(&ordinary, &mut buffer)
-            .expect("envelope should serialize");
-        assert_eq!(encoder.tags_buffer.capacity(), ordinary_capacity);
     }
 
     #[test]

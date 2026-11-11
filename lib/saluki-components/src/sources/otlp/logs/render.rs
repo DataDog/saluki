@@ -548,6 +548,7 @@ mod tests {
         let ordinary = log_with_properties("m", json!({"padding": "x".repeat(1024)}));
         renderer.render(&ordinary).expect("log should render");
         let ordinary_capacity = renderer.buffer.capacity();
+        assert!(ordinary_capacity >= 1024);
         assert!(ordinary_capacity <= CONTENT_BUFFER_RETENTION_LIMIT_BYTES);
 
         // An ordinary log keeps the buffer it grew.
