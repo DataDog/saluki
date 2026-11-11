@@ -326,11 +326,6 @@ impl FilterHandle {
         *self.state.current_level.lock().unwrap() = level;
     }
 
-    /// Returns the default metrics filter level that was configured when the metrics subsystem was initialized.
-    pub fn default_level(&self) -> Level {
-        self.state.default_level
-    }
-
     /// Resets the metrics filter level to the default that was configured when the metrics subsystem was initialized.
     pub fn reset_filter(&self) {
         *self.state.current_level.lock().unwrap() = self.state.default_level;

@@ -54,6 +54,7 @@ pub struct AppBootstrapper {
     logging_config: LoggingConfiguration,
     metrics_prefix: String,
     metrics_default_level: Level,
+    metrics_minimum_level: Level,
 }
 
 impl AppBootstrapper {
@@ -67,6 +68,7 @@ impl AppBootstrapper {
             logging_config: LoggingConfiguration::simple(),
             metrics_prefix: "saluki".to_string(),
             metrics_default_level: Level::INFO,
+            metrics_minimum_level: Level::ERROR,
         }
     }
 
@@ -86,6 +88,18 @@ impl AppBootstrapper {
     /// Defaults to [`Level::INFO`].
     pub fn with_metrics_default_level(mut self, level: Level) -> Self {
         self.metrics_default_level = level;
+        self
+    }
+
+    /// Sets the least verbose filter level that a runtime override of internal metrics may set.
+    ///
+    /// An override that's less verbose than this is rejected, so that it can't filter out metrics that the application
+    /// relies on. This doesn't change the default level: callers set that with
+    /// [`with_metrics_default_level`][Self::with_metrics_default_level].
+    ///
+    /// Defaults to [`Level::ERROR`], which allows any override.
+    pub fn with_metrics_minimum_level(mut self, level: Level) -> Self {
+        self.metrics_minimum_level = level;
         self
     }
 
@@ -116,9 +130,13 @@ impl AppBootstrapper {
 
         // Initialize everything else.
         initialize_tls().error_context("Failed to initialize TLS subsystem.")?;
-        let metrics_supervisor = initialize_metrics(self.metrics_prefix, self.metrics_default_level)
-            .await
-            .error_context("Failed to initialize metrics subsystem.")?;
+        let metrics_supervisor = initialize_metrics(
+            self.metrics_prefix,
+            self.metrics_default_level,
+            self.metrics_minimum_level,
+        )
+        .await
+        .error_context("Failed to initialize metrics subsystem.")?;
 
         // Build our combined supervisor for all bootstrap-related workers.
         let mut supervisor =

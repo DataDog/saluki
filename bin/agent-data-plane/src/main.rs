@@ -111,6 +111,7 @@ async fn async_main(started: Instant) -> Result<(), GenericError> {
     let bootstrapper = AppBootstrapper::new()
         .with_metrics_prefix("adp")
         .with_metrics_default_level(metrics_default_level)
+        .with_metrics_minimum_level(MINIMUM_METRICS_LEVEL)
         .with_logging_configuration(bootstrap_logging_config);
     let Bootstrap {
         supervisor: bootstrap_supervisor,
@@ -214,8 +215,8 @@ fn parse_metrics_level(level: &str) -> Result<Level, GenericError> {
 /// The least verbose metrics level that ADP runs with.
 ///
 /// ADP's status sections, such as `DogStatsD` and `Forwarder`, are built from internal metrics emitted at `info`. A
-/// less verbose level would filter those metrics out and leave the status page showing zeros, so `metrics_level` can
-/// only make internal metrics more verbose than this.
+/// less verbose level would filter those metrics out and leave the status page showing zeros, so neither
+/// `metrics_level` nor a runtime override through `/metrics/override` can make internal metrics less verbose than this.
 const MINIMUM_METRICS_LEVEL: Level = Level::INFO;
 
 /// Returns the metrics level to run with for the configured `metrics_level`, raising it to [`MINIMUM_METRICS_LEVEL`]

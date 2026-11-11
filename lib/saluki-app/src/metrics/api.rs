@@ -34,8 +34,8 @@ struct OverrideQueryParams {
 pub struct MetricsHandlerState {
     override_tx: mpsc::Sender<Option<(Duration, Level)>>,
 
-    /// Default filter level configured at startup, which an override can't go below.
-    default_level: Level,
+    /// Least verbose level that an override may set.
+    minimum_level: Level,
 }
 
 /// Returns the configuration name of a metrics level, such as `info`.
@@ -45,7 +45,7 @@ fn level_name(level: Level) -> &'static str {
         Level::DEBUG => "debug",
         Level::INFO => "info",
         Level::WARN => "warn",
-        _ => "error",
+        Level::ERROR => "error",
     }
 }
 
@@ -61,9 +61,8 @@ fn level_name(level: Level) -> &'static str {
 ///
 /// The maximum duration for an override is 60 minutes.
 ///
-/// An override can only make filtering more verbose than the default level configured at startup. Consumers of internal
-/// metrics, such as status reporting, rely on the metrics that the default level emits, so an override that's less
-/// verbose than the default is rejected.
+/// An override that's less verbose than the configured minimum level is rejected, so that an override can't filter out
+/// metrics that the application relies on, such as those that status reporting is built from.
 pub struct MetricsAPIHandler {
     state: MetricsHandlerState,
 }
@@ -94,13 +93,13 @@ impl MetricsAPIHandler {
                 )
             }
         };
-        if new_level > state.default_level {
+        if new_level > state.minimum_level {
             return (
                 StatusCode::BAD_REQUEST,
                 format!(
-                    "override level `{}` cannot be less verbose than the default level `{}`",
+                    "override level `{}` cannot be less verbose than `{}`",
                     level_name(new_level),
-                    level_name(state.default_level)
+                    level_name(state.minimum_level)
                 ),
             );
         }
@@ -147,12 +146,14 @@ struct MetricsOverrideWorkerState {
 
 impl MetricsOverrideWorker {
     /// Creates a new `MetricsOverrideWorker` driving the given filter handle.
-    pub(super) fn new(filter_handle: FilterHandle) -> Self {
+    ///
+    /// Overrides that are less verbose than `minimum_level` are rejected.
+    pub(super) fn new(filter_handle: FilterHandle, minimum_level: Level) -> Self {
         let (override_tx, override_rx) = mpsc::channel(1);
         let handler = MetricsAPIHandler {
             state: MetricsHandlerState {
                 override_tx,
-                default_level: filter_handle.default_level(),
+                minimum_level,
             },
         };
         Self {
@@ -198,9 +199,7 @@ async fn process_override_requests(state: &mut MetricsOverrideWorkerState, proce
             _ = &mut process_shutdown => break,
             maybe_override = state.override_rx.recv() => match maybe_override {
                 Some(Some((duration, new_level))) => {
-                    // TODO: Using the `Debug` representation of `Level` is noisy, and we should add a method upstream to
-                    // just get the stringified representation of the level instead.
-                    info!(level = ?new_level, "Overriding existing metric filtering directive for {} seconds...", duration.as_secs());
+                    info!(level = level_name(new_level), "Overriding existing metric filtering directive for {} seconds...", duration.as_secs());
 
                     state.filter_handle.override_filter(new_level);
 
@@ -330,11 +329,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn override_cannot_be_less_verbose_than_the_default_level() {
+    async fn override_cannot_be_less_verbose_than_the_minimum_level() {
         let (override_tx, mut override_rx) = mpsc::channel(1);
         let state = MetricsHandlerState {
             override_tx,
-            default_level: Level::INFO,
+            minimum_level: Level::INFO,
         };
         let request = |level: &str| {
             MetricsAPIHandler::override_handler(
@@ -344,7 +343,7 @@ mod tests {
             )
         };
 
-        // Less verbose levels would hide metrics that the default level emits, so they're rejected without being
+        // Less verbose levels would hide metrics that the application relies on, so they're rejected without being
         // forwarded to the override processor.
         for level in ["warn", "error"] {
             let response = request(level).await.into_response();
@@ -356,7 +355,7 @@ mod tests {
             assert!(override_rx.try_recv().is_err(), "`{level}` shouldn't be applied");
         }
 
-        // The default level itself and more verbose levels are accepted.
+        // The minimum level itself and more verbose levels are accepted, whatever the configured default level is.
         for (name, level) in [("info", Level::INFO), ("debug", Level::DEBUG), ("trace", Level::TRACE)] {
             let response = request(name).await.into_response();
             assert_eq!(response.status(), StatusCode::OK, "`{name}` should be accepted");
