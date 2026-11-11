@@ -188,6 +188,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Bool,
     },
     EnvKey {
+        env_vars: &["DD_APM_OBFUSCATION_REMOVE_STACK_TRACES"],
+        path: &["apm_config", "obfuscation", "remove_stack_traces"],
+        decode: EnvDecode::Bool,
+    },
+    EnvKey {
         env_vars: &["DD_APM_OBFUSCATION_VALKEY_ENABLED"],
         path: &["apm_config", "obfuscation", "valkey", "enabled"],
         decode: EnvDecode::Bool,

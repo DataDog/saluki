@@ -333,6 +333,11 @@ inventory:
     pipelines: [traces]
     description: "apm_config.obfuscation.redis.remove_all_args"
 
+  apm_config.obfuscation.remove_stack_traces:
+    support: full
+    pipelines: [traces]
+    description: "Replace stack trace tags with ?"
+
   apm_config.obfuscation.valkey.enabled:
     support: full
     pipelines: [traces]
@@ -3499,7 +3504,6 @@ excluded:
   apm_config.mode: "ignored in initial audit 2026-04-23"
   apm_config.obfuscation.cache.enabled: "ignored in initial audit 2026-04-23"
   apm_config.obfuscation.cache.max_size: "ignored in initial audit 2026-04-23"
-  apm_config.obfuscation.remove_stack_traces: "ignored in initial audit 2026-04-23"
   apm_config.obfuscation.sql_exec_plan.enabled: "ignored in initial audit 2026-04-23"
   apm_config.obfuscation.sql_exec_plan.keep_values: "ignored in initial audit 2026-04-23"
   apm_config.obfuscation.sql_exec_plan.obfuscate_sql_values: "ignored in initial audit 2026-04-23"

@@ -49,6 +49,9 @@ pub struct ReplaceRule {
     pub repl: String,
 }
 
+/// Tags that hold stack traces, replaced whole when stack trace removal is enabled.
+const STACK_TRACE_TAGS: [&str; 2] = ["error.stack", "exception.stacktrace"];
+
 /// Trace tag replacer configuration.
 pub struct TraceTagReplacerConfiguration {
     rules: Vec<ReplaceRule>,
@@ -57,8 +60,17 @@ pub struct TraceTagReplacerConfiguration {
 impl TraceTagReplacerConfiguration {
     /// Creates a new `TraceTagReplacerConfiguration` from the given rules.
     ///
-    /// Patterns compile at build time, so an invalid one fails startup naming the rule.
-    pub fn new(rules: Vec<ReplaceRule>) -> Self {
+    /// When `remove_stack_traces` is set, rules replacing the whole value of each stack trace tag with `?` run after
+    /// the given rules. Patterns compile at build time, so an invalid one fails startup naming the rule.
+    pub fn new(mut rules: Vec<ReplaceRule>, remove_stack_traces: bool) -> Self {
+        if remove_stack_traces {
+            rules.extend(STACK_TRACE_TAGS.iter().map(|tag| ReplaceRule {
+                name: (*tag).to_owned(),
+                // `(?s)` lets `.` match newlines, so the whole multi-line trace is replaced.
+                pattern: "(?s).*".to_owned(),
+                repl: "?".to_owned(),
+            }));
+        }
         Self { rules }
     }
 }
@@ -252,17 +264,20 @@ mod tests {
         SpanEvent::new(time, name).with_attributes(attrs(pairs))
     }
 
-    fn replacer(rules: &[(&str, &str, &str)]) -> TraceTagReplacer {
-        let raw = rules
+    fn raw_rules(rules: &[(&str, &str, &str)]) -> Vec<ReplaceRule> {
+        rules
             .iter()
             .map(|(name, pattern, repl)| ReplaceRule {
                 name: (*name).to_owned(),
                 pattern: (*pattern).to_owned(),
                 repl: (*repl).to_owned(),
             })
-            .collect::<Vec<_>>();
+            .collect()
+    }
+
+    fn replacer(rules: &[(&str, &str, &str)]) -> TraceTagReplacer {
         TraceTagReplacer {
-            rules: compile_rules(&raw).expect("test rules compile"),
+            rules: compile_rules(&raw_rules(rules)).expect("test rules compile"),
         }
     }
 
@@ -580,6 +595,87 @@ mod tests {
             Some("/x?token=abc123")
         );
         assert_eq!(span.resource(), "POST /pay/checkout?token=abc123");
+    }
+
+    fn configured_replacer(rules: &[(&str, &str, &str)], remove_stack_traces: bool) -> TraceTagReplacer {
+        let config = TraceTagReplacerConfiguration::new(raw_rules(rules), remove_stack_traces);
+        TraceTagReplacer {
+            rules: compile_rules(&config.rules).expect("configured rules compile"),
+        }
+    }
+
+    const STACK: &str = "Traceback (most recent call last):\n  File \"app.py\", line 7, in pay\nValueError: boom\n";
+
+    fn span_with_stack_traces() -> Span {
+        span_with(
+            "POST /pay/checkout",
+            attrs(&[
+                ("error.stack", STACK),
+                ("exception.stacktrace", STACK),
+                ("error.message", "boom"),
+            ]),
+            vec![event(1, "exception", &[("exception.stacktrace", STACK)])],
+        )
+    }
+
+    fn string_attr<'a>(span: &'a Span, key: &str) -> Option<&'a str> {
+        attr(span, key).and_then(|v| v.as_string()).map(|s| s.as_ref())
+    }
+
+    fn event_string_attr<'a>(span: &'a Span, key: &str) -> Option<&'a str> {
+        span.span_events()[0]
+            .attributes()
+            .get(key)
+            .and_then(|v| v.as_string())
+            .map(|s| s.as_ref())
+    }
+
+    #[test]
+    fn stack_trace_removal_replaces_both_stack_trace_tags() {
+        let mut span = span_with_stack_traces();
+
+        configured_replacer(&[], true).replace_span(&mut span);
+
+        assert_eq!(string_attr(&span, "error.stack"), Some("?"));
+        assert_eq!(string_attr(&span, "exception.stacktrace"), Some("?"));
+        assert_eq!(event_string_attr(&span, "exception.stacktrace"), Some("?"));
+        assert_eq!(string_attr(&span, "error.message"), Some("boom"));
+    }
+
+    #[test]
+    fn stack_trace_tags_are_untouched_without_stack_trace_removal() {
+        let mut span = span_with_stack_traces();
+
+        configured_replacer(&[], false).replace_span(&mut span);
+
+        assert_eq!(string_attr(&span, "error.stack"), Some(STACK));
+        assert_eq!(string_attr(&span, "exception.stacktrace"), Some(STACK));
+        assert_eq!(event_string_attr(&span, "exception.stacktrace"), Some(STACK));
+    }
+
+    #[test]
+    fn stack_trace_removal_runs_after_configured_rules() {
+        let rules = [
+            ("error.message", "boom", "failure"),
+            ("error.stack", r"^\?$", "replaced late"),
+        ];
+        let config = TraceTagReplacerConfiguration::new(raw_rules(&rules), true);
+        let names = config.rules.iter().map(|rule| rule.name.as_str()).collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            ["error.message", "error.stack", "error.stack", "exception.stacktrace"]
+        );
+
+        let mut span = span_with_stack_traces();
+        configured_replacer(&rules, true).replace_span(&mut span);
+
+        assert_eq!(string_attr(&span, "error.message"), Some("failure"));
+        assert_eq!(
+            string_attr(&span, "error.stack"),
+            Some("?"),
+            "the configured rule saw the original trace, not the removal's output"
+        );
+        assert_eq!(string_attr(&span, "exception.stacktrace"), Some("?"));
     }
 
     #[test]

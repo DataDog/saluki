@@ -579,6 +579,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.domains.traces.obfuscation.redis.remove_all_args = value;
     }
 
+    fn consume_apm_config_obfuscation_remove_stack_traces(&mut self, value: bool) {
+        self.config.domains.traces.obfuscation.remove_stack_traces = value;
+    }
+
     fn consume_apm_config_obfuscation_valkey_enabled(&mut self, value: bool) {
         self.config.domains.traces.obfuscation.valkey.enabled = value;
     }
@@ -1961,6 +1965,18 @@ mod tests {
                 "{rules} should apply no rules"
             );
         }
+    }
+
+    #[test]
+    fn apm_config_obfuscation_remove_stack_traces_translates() {
+        let (config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none(), "translation should succeed: {errors:?}");
+        assert!(!config.domains.traces.obfuscation.remove_stack_traces);
+
+        let (config, errors) =
+            translate_explicit(json!({ "apm_config": { "obfuscation": { "remove_stack_traces": true } } }));
+        assert!(errors.is_none(), "translation should succeed: {errors:?}");
+        assert!(config.domains.traces.obfuscation.remove_stack_traces);
     }
 
     #[test]

@@ -49,6 +49,7 @@ pub trait DatadogConfigWitness {
     fn consume_apm_config_obfuscation_opensearch_obfuscate_sql_values(&mut self, value: Vec<String>);
     fn consume_apm_config_obfuscation_redis_enabled(&mut self, value: bool);
     fn consume_apm_config_obfuscation_redis_remove_all_args(&mut self, value: bool);
+    fn consume_apm_config_obfuscation_remove_stack_traces(&mut self, value: bool);
     fn consume_apm_config_obfuscation_valkey_enabled(&mut self, value: bool);
     fn consume_apm_config_obfuscation_valkey_remove_all_args(&mut self, value: bool);
     fn consume_apm_config_peer_tags(&mut self, value: Vec<String>);
@@ -356,6 +357,8 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_apm_config_obfuscation_redis_remove_all_args(
         config.apm_config.obfuscation.redis.remove_all_args.clone(),
     );
+    consumer
+        .consume_apm_config_obfuscation_remove_stack_traces(config.apm_config.obfuscation.remove_stack_traces.clone());
     consumer.consume_apm_config_obfuscation_valkey_enabled(config.apm_config.obfuscation.valkey.enabled.clone());
     consumer.consume_apm_config_obfuscation_valkey_remove_all_args(
         config.apm_config.obfuscation.valkey.remove_all_args.clone(),

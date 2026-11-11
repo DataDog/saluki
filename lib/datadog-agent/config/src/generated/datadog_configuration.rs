@@ -923,6 +923,10 @@ pub struct ApmConfigObfuscation {
     pub redis: ApmConfigObfuscationRedis,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
+    pub remove_stack_traces: bool,
+
+    #[serde(default)]
     pub valkey: ApmConfigObfuscationValkey,
 }
 
@@ -936,6 +940,7 @@ impl Default for ApmConfigObfuscation {
             mongodb: Default::default(),
             opensearch: Default::default(),
             redis: Default::default(),
+            remove_stack_traces: Default::default(),
             valkey: Default::default(),
         }
     }
