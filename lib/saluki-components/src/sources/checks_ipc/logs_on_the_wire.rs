@@ -8,8 +8,8 @@
 //! transport itself, aren't covered here.
 //!
 //! Today, each entry is the full logs envelope: the check's message as it is, a lowercase status, an encode-time
-//! `timestamp` in milliseconds from the encoder's clock, and an empty hostname, service, source, and tag list, since
-//! check logs have none of them.
+//! `timestamp` in milliseconds from the encoder's clock, the encoder's default hostname, and an empty service, source,
+//! and tag list, since check logs have none of them.
 
 use std::time::Duration;
 
@@ -34,11 +34,14 @@ fn fixed_clock() -> DateTime<Utc> {
 /// The envelope `timestamp` of every entry, from the encoder's clock.
 const NOW_MS: i64 = 1_767_323_045_678;
 
+/// The default hostname, which the topology gives both the Checks IPC source and the logs encoder.
+const DEFAULT_HOSTNAME: &str = "default-host";
+
 /// Returns the entry for a check log, given its message as a JSON string literal.
 fn entry(message: &str, status: &str) -> String {
     format!(
-        r#"{{"message":{},"status":"{}","timestamp":{},"hostname":"","service":"","ddsource":"","ddtags":""}}"#,
-        message, status, NOW_MS
+        r#"{{"message":{},"status":"{}","timestamp":{},"hostname":"{}","service":"","ddsource":"","ddtags":""}}"#,
+        message, status, NOW_MS, DEFAULT_HOSTNAME
     )
 }
 
@@ -65,11 +68,13 @@ fn log_data(level: i32, message: &str) -> Data {
 async fn encode_check_data(data: impl IntoIterator<Item = Data>) -> Vec<WireRequest> {
     let events = data
         .into_iter()
-        .filter_map(|data| check_data_to_event(data, &MetaString::from_static("default-host")))
+        .filter_map(|data| check_data_to_event(data, &MetaString::from_static(DEFAULT_HOSTNAME)))
         .collect::<Vec<_>>();
 
     let encoder = BufferedIncrementalConfiguration::new(
-        DatadogLogsConfiguration::new("zstd", 3).with_clock(fixed_clock),
+        DatadogLogsConfiguration::new("zstd", 3)
+            .with_default_hostname(DEFAULT_HOSTNAME)
+            .with_clock(fixed_clock),
         Duration::from_secs(60),
     );
     let (control, mut payloads) = TestComponentDriver::encoder(encoder)
