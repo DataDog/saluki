@@ -20,15 +20,15 @@ use crate::common::datadog::{
     api_key::{ApiKeyView, LiveApiKeys},
     config::ForwarderConfiguration,
     endpoints::SingleDestination,
-    io::{LiveForwarderConfiguration, TransactionForwarder},
+    io::{LiveForwarderConfiguration, TransactionForwarder, ENDPOINT_CHANNEL_CAPACITY},
     protocol::MetricsPayloadInfo,
     routing::{MetricsRoutingTargets, RoutingTargetCatalog},
     sketch_shadow::SketchShadowMetadata,
     telemetry::ComponentTelemetry,
     transaction::{Metadata, Transaction},
     validation::ValidationReadiness,
-    DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, METRICS_SERIES_V3_BETA_PATH, METRICS_SERIES_V3_PATH,
-    METRICS_SKETCHES_V3_PATH,
+    DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT, METRICS_SERIES_V3_BETA_PATH,
+    METRICS_SERIES_V3_PATH, METRICS_SKETCHES_V3_PATH,
 };
 
 /// Datadog forwarder.
@@ -163,6 +163,25 @@ impl MemoryBounds for DatadogForwarderConfiguration {
                     UsageExpr::constant("maximum compressed payload size", DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT),
                 ),
             ));
+
+        if self.forwarder_config.sketch_shadowing_enabled() {
+            // Use the worker's resolved endpoint set, including additional API keys and alternate metrics intakes.
+            // Invalid endpoints prevent the forwarder from building, so they allocate no shadow buffers.
+            let Ok(endpoints) = self.forwarder_config.build_routable_endpoints() else {
+                return;
+            };
+            let request_slots = self
+                .forwarder_config
+                .endpoint_buffer_size
+                .saturating_add(ENDPOINT_CHANNEL_CAPACITY)
+                .saturating_add(self.forwarder_config.effective_endpoint_concurrency());
+            let per_endpoint_bytes = (self.forwarder_config.retry.queue_max_size_bytes as usize)
+                .saturating_add(request_slots.saturating_mul(DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT));
+            builder.firm().with_fixed_amount(
+                "sketch shadow queues and in-flight payloads",
+                endpoints.len().saturating_mul(per_endpoint_bytes),
+            );
+        }
     }
 }
 

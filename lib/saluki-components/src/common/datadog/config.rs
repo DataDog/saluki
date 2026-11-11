@@ -391,6 +391,11 @@ impl ForwarderConfiguration {
             .map(|selected| selected.use_v3_series)
     }
 
+    /// Returns whether the forwarder needs separate workers for sketch validation traffic.
+    pub(crate) fn sketch_shadowing_enabled(&self) -> bool {
+        self.v3_api.sketches.shadow_sample_rate > 0.0 && !self.compressor_disables_metrics_v3()
+    }
+
     /// Returns whether the configured metrics compressor is incompatible with Metrics V3.
     pub(crate) fn compressor_disables_metrics_v3(&self) -> bool {
         self.serializer_compressor_kind.trim().eq_ignore_ascii_case("zlib")
