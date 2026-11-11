@@ -1034,7 +1034,7 @@ async fn add_otlp_pipeline_to_blueprint(
         let config = config_system.config();
         let otlp_relay_config = OtlpRelayConfiguration::new(otlp_receiver(&config.domains.otlp.receiver));
         let otlp_decoder_config = OtlpDecoderConfiguration::new(
-            otlp_traces_settings(&config.domains.otlp.traces),
+            otlp_traces_settings(&config.domains.otlp.traces, &config.domains.traces.features),
             env_provider.workload().clone(),
         )
         .with_max_resource_len(config.domains.traces.max_resource_len)
@@ -1078,7 +1078,7 @@ async fn add_otlp_pipeline_to_blueprint(
             receiver: otlp_receiver(&otlp.receiver),
             metrics: otlp_metrics_settings(&otlp.metrics),
             traces_enabled: otlp.traces.enabled,
-            traces: otlp_traces_settings(&otlp.traces),
+            traces: otlp_traces_settings(&otlp.traces, &config.domains.traces.features),
             contexts: otlp_context_settings(&otlp.contexts),
             max_resource_len: config.domains.traces.max_resource_len,
             semantic_registry,
