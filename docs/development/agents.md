@@ -13,7 +13,7 @@ However, we don't allow fully autonomous or unsupervised commits to main or rele
 
 - a human operator may use LLMs as part of their workflow
 - setting up agents to run autonomously is fine
-- so long as a human operator reviews every contribution before merging
+- a human operator **MUST** review every contribution before it's merged
 
 These rules have a single goal: keep human operators part of the development process, so that we maintain the quality
 of the software and don't lose understanding of what we're building.
