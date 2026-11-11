@@ -22,6 +22,7 @@ use saluki_core::{
         event::{metric::context::ContextResolver, Event, EventType},
         tags::{SharedTagSet, TagSet},
     },
+    observability::ComponentMetricsExt as _,
     runtime,
     topology::{interconnect::BufferedDispatcher, EventsBuffer, OutputDefinition},
 };
@@ -29,6 +30,7 @@ use saluki_env::WorkloadProvider;
 use saluki_error::ErrorContext as _;
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::{server::http::Http2Config, ListenAddress};
+use saluki_metrics::MetricsBuilder;
 use stringtheory::MetaString;
 use tokio::pin;
 use tokio::select;
@@ -190,7 +192,12 @@ impl SourceBuilder for OtlpConfiguration {
         let metrics = build_metrics(context.component_context());
         let translator_metrics =
             metrics::telemetry::OtlpMetricsTranslatorMetrics::from_component_context(context.component_context());
-        let logs_translator = OtlpLogsTranslator::new(origin_tag_resolver.clone());
+        let logs_events_dropped = MetricsBuilder::from_component_context(context.component_context())
+            .register_counter_with_tags(
+                "component_events_dropped_total",
+                ["intentional:false", "drop_reason:render_failure"],
+            );
+        let logs_translator = OtlpLogsTranslator::new(origin_tag_resolver.clone(), logs_events_dropped);
 
         Ok(Box::new(Otlp {
             context_resolver,
