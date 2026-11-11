@@ -8,7 +8,8 @@ This contract defines which methods the recorder calls for each setting and how 
 return values as JSON in a record's `reads` ([record format](record.md) §5.3). It does not define
 how Rust tests compare those results with ADP values.
 
-Agent citations are at `281d921619d`. `getter.go` is `pkg/config/nodetreemodel/getter.go`;
+Agent citations are at `281d921619d`. The key counts in §4 are at `a682da124ff`, while the code
+citations stay at `281d921619d`. `getter.go` is `pkg/config/nodetreemodel/getter.go`;
 `codegen` is `tasks/schema/codegen_init_settings.py`.
 
 ## 1. Selection

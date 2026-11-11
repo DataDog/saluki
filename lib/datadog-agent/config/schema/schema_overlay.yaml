@@ -1869,6 +1869,13 @@ inventory:
       names the intake rejects outright, meaning empty names, names longer than 350 bytes, and names
       containing no ASCII letter, never match.
 
+      `statsd_metric_blocklist` and `statsd_metric_blocklist_match_prefix` are deprecated names of
+      `metric_filterlist` and `metric_filterlist_match_prefix`, and ADP still reads them. Within one
+      file, a deprecated name wins over the current name, even when its list is empty. In the
+      environment, `DD_STATSD_METRIC_BLOCKLIST` and `DD_STATSD_METRIC_BLOCKLIST_MATCH_PREFIX` win over
+      the current variables, but an empty variable counts as unset. Across the file and the
+      environment, the usual precedence applies, whichever name each one uses.
+
   metric_filterlist_match_prefix:
     support: full
     pipelines: [dogstatsd]

@@ -372,20 +372,21 @@ pub(crate) fn fold(agent: &mut SourceTree, update: &ConfigUpdate) {
     }
 }
 
-/// Settings that an Agent before 7.86 streams under a former name too, as a key of its own: each
-/// current name and its former name.
+/// Settings that an Agent that predates the rename (before 7.87) streams under a former name too,
+/// as a key of its own: each current name and its former name.
 const STREAMED_FORMER_NAMES: [(&str, &str); 2] = [
     ("metric_filterlist", "statsd_metric_blocklist"),
     ("metric_filterlist_match_prefix", "statsd_metric_blocklist_match_prefix"),
 ];
 
-/// Overlays the Agent layer `agent` on `base`, resolving the former names an Agent before 7.86
-/// streams.
+/// Overlays the Agent layer `agent` on `base`, resolving the former names an Agent that predates
+/// the rename (before 7.87) streams.
 ///
-/// That Agent picks `metric_filterlist` or its former name, and uses the match prefix of the one it
-/// picked. So when it supplies a list explicitly, its match prefix replaces the local one even if
-/// the Agent merely defaulted it. The local one may belong to the other list: the local loader moves
-/// a former name onto the current one, which the Agent does not.
+/// The winning list brings its own match prefix. If the Agent supplies a list explicitly, its
+/// match prefix replaces the local one, even if the Agent merely defaulted it. Otherwise the local
+/// list wins and keeps the local match prefix, even if the Agent set one explicitly. A match prefix
+/// must not cross over to the other list: the local loader moves a former name onto the current
+/// one, which the Agent does not.
 fn overlay_agent_layer(base: &SourceTree, agent: &SourceTree) -> SourceTree {
     let Some(resolved) = resolve_streamed_former_names(agent) else {
         return base.overlay(agent);
@@ -393,12 +394,15 @@ fn overlay_agent_layer(base: &SourceTree, agent: &SourceTree) -> SourceTree {
 
     let mut merged = base.overlay(&resolved);
     let [(filterlist, _), (match_prefix, _)] = STREAMED_FORMER_NAMES;
-    if resolved.provenance(filterlist) == Provenance::Explicit {
-        match resolved.value(match_prefix) {
-            Some(value) => merged.insert(match_prefix, value.clone(), resolved.provenance(match_prefix)),
-            None => {
-                merged.remove(match_prefix);
-            }
+    let winner = if resolved.provenance(filterlist) == Provenance::Explicit {
+        &resolved
+    } else {
+        base
+    };
+    match winner.value(match_prefix) {
+        Some(value) => merged.insert(match_prefix, value.clone(), winner.provenance(match_prefix)),
+        None => {
+            merged.remove(match_prefix);
         }
     }
 
@@ -409,9 +413,12 @@ fn overlay_agent_layer(base: &SourceTree, agent: &SourceTree) -> SourceTree {
 /// removes them.
 ///
 /// If `metric_filterlist` is empty, the former pair replaces the current pair, each with its value
-/// and provenance; a former name the layer lacks removes its current name. Otherwise the current
-/// pair stands. Resolving the accumulated layer on each update keeps partial updates to any of the
-/// four names correct. Returns `None` for a layer without former names.
+/// and provenance; a former name the layer lacks removes its current name. An explicit empty
+/// `metric_filterlist` still clears, though: the resolved list stays explicit, taking the former
+/// list's value if the layer has one and staying empty otherwise, so a local list cannot shadow it.
+/// If `metric_filterlist` is not empty, the current pair stands. Resolving the accumulated layer on
+/// each update keeps partial updates to any of the four names correct. Returns `None` for a layer
+/// without former names.
 fn resolve_streamed_former_names(agent: &SourceTree) -> Option<SourceTree> {
     if STREAMED_FORMER_NAMES
         .iter()
@@ -430,9 +437,13 @@ fn resolve_streamed_former_names(agent: &SourceTree) -> Option<SourceTree> {
         Some(_) => false,
     };
     if filterlist_is_empty {
+        let clears = resolved.provenance(filterlist) == Provenance::Explicit;
         for (current, former) in formers {
+            let clearing_list = clears && current == filterlist;
             match former {
+                Some((value, _)) if clearing_list => resolved.insert(current, value, Provenance::Explicit),
                 Some((value, provenance)) => resolved.insert(current, value, provenance),
+                None if clearing_list => {}
                 None => {
                     resolved.remove(current);
                 }
@@ -1707,7 +1718,8 @@ mod tests {
         }
     }
 
-    /// The four filter-list settings as an Agent before 7.86 streams them in a snapshot.
+    /// The four filter-list settings as an Agent that predates the rename (before 7.87) streams them
+    /// in a snapshot.
     fn filterlist_snapshot(current: (Value, bool), former: (Value, bool)) -> ConfigUpdate {
         let setting = |key: &str, value: Value| {
             // The Agent marks a value nobody configured as a default.
@@ -1819,6 +1831,51 @@ mod tests {
 
         assert_eq!(filter, metric_filter(&["local"], true));
         assert_eq!(merged.provenance("metric_filterlist"), Provenance::Explicit);
+    }
+
+    #[test]
+    fn an_explicitly_cleared_streamed_filterlist_shadows_the_local_one() {
+        let local = json!({ "metric_filterlist": ["request"] });
+        let (merged, filter) = streamed_metric_filter(
+            local.clone(),
+            &[ConfigUpdate::snapshot([
+                ConfigSetting::explicit("metric_filterlist", json!([])),
+                ConfigSetting::new(
+                    "metric_filterlist_match_prefix",
+                    json!(false),
+                    StreamProvenance::Default,
+                ),
+                ConfigSetting::new("statsd_metric_blocklist", json!([]), StreamProvenance::Default),
+                ConfigSetting::new(
+                    "statsd_metric_blocklist_match_prefix",
+                    json!(false),
+                    StreamProvenance::Default,
+                ),
+            ])],
+        );
+        assert_eq!(filter, metric_filter(&[], false));
+        assert_eq!(merged.provenance("metric_filterlist"), Provenance::Explicit);
+
+        // Without a former list in the layer, the explicit empty current list still clears.
+        let (_, filter) = streamed_metric_filter(
+            local,
+            &[ConfigUpdate::snapshot([
+                ConfigSetting::explicit("metric_filterlist", json!([])),
+                ConfigSetting::explicit("statsd_metric_blocklist_match_prefix", json!(true)),
+            ])],
+        );
+        assert_eq!(filter, metric_filter(&[], true));
+    }
+
+    #[test]
+    fn an_older_agents_match_prefix_does_not_join_the_local_filterlist() {
+        let (merged, filter) = streamed_metric_filter(
+            json!({ "metric_filterlist": ["local"] }),
+            &[filterlist_snapshot((json!([]), false), (json!([]), true))],
+        );
+
+        assert_eq!(filter, metric_filter(&["local"], false));
+        assert_eq!(merged.value("metric_filterlist_match_prefix"), None);
     }
 
     /// Reads `yaml` as the local loader does, moving former names onto the current ones.

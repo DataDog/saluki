@@ -317,7 +317,7 @@ captured in S1/S1b (`features`, `construction_warnings`, `side_effects`, the
 `additional_endpoints` getter's warnings) are shown as empty, which means omitted.
 
 ```json
-{"agent_commit":"281d921619d52ce7b99aef40607285992c9c2e89","container_image":"golang@sha256:c1bc3620b0460d97001977fadbe8d0e94d7be5cbb064f4f6b268d95375c3ac71","containerized":false,"features":[],"format":1,"go_version":"go1.26.10","goarch":"arm64","goos":"linux","inputs_digest":"sha256:0000000000000000000000000000000000000000000000000000000000000000","type":"header"}
+{"agent_commit":"281d921619d52ce7b99aef40607285992c9c2e89","container_image":"golang@sha256:e30143be198ab04cf7ba25fba83ab3a692ca584c994aad0bf131fa0eb32dd8c1","containerized":false,"features":[],"format":1,"go_version":"go1.26.7","goarch":"arm64","goos":"linux","inputs_digest":"sha256:0000000000000000000000000000000000000000000000000000000000000000","type":"header"}
 {"case":"additional-endpoints-env","group":"behavior",
  "inputs":{"env":{"DD_ADDITIONAL_ENDPOINTS":"{\"https://x.test\": [\"k\"]}"}},
  "origin":"datadog.yaml","type":"case","why":["env-map-raw-string"]}
