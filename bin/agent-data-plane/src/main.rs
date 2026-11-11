@@ -101,7 +101,8 @@ async fn async_main(started: Instant) -> Result<(), GenericError> {
         bootstrap_logging_config.log_to_console = false;
     }
 
-    let metrics_default_level = parse_metrics_level(&local_config.local().shared.metrics_level)?;
+    let configured_metrics_level = parse_metrics_level(&local_config.local().shared.metrics_level)?;
+    let metrics_default_level = effective_metrics_level(configured_metrics_level);
 
     // Proceed with bootstrapping.
     //
@@ -128,6 +129,13 @@ async fn async_main(started: Instant) -> Result<(), GenericError> {
         );
     }
     local_config.warn_deprecated_names();
+    if metrics_default_level != configured_metrics_level {
+        warn!(
+            "`metrics_level` is set to `{}`, but it can't be less verbose than `info`, since the status page relies on \
+             metrics at that level. Using `info` instead.",
+            local_config.local().shared.metrics_level.trim()
+        );
+    }
 
     // Bootstrap-integration probe: proves the Antithesis SDK is linked, cataloging works, and the
     // instrumentation path is wired.
@@ -203,6 +211,23 @@ fn parse_metrics_level(level: &str) -> Result<Level, GenericError> {
     Level::try_from(level).map_err(|e| generic_error!("Failed to parse `metrics_level`: {}", e))
 }
 
+/// The least verbose metrics level that ADP runs with.
+///
+/// ADP's status sections, such as `DogStatsD` and `Forwarder`, are built from internal metrics emitted at `info`. A
+/// less verbose level would filter those metrics out and leave the status page showing zeros, so `metrics_level` can
+/// only make internal metrics more verbose than this.
+const MINIMUM_METRICS_LEVEL: Level = Level::INFO;
+
+/// Returns the metrics level to run with for the configured `metrics_level`, raising it to [`MINIMUM_METRICS_LEVEL`]
+/// when it's less verbose than that.
+fn effective_metrics_level(configured: Level) -> Level {
+    if configured > MINIMUM_METRICS_LEVEL {
+        MINIMUM_METRICS_LEVEL
+    } else {
+        configured
+    }
+}
+
 async fn run_inner(
     action: Action, started: Instant, local_config: LoadedConfiguration, bootstrap_guard: &mut BootstrapGuard,
     bootstrap_supervisor: Supervisor,
@@ -260,7 +285,20 @@ async fn run_inner(
 mod tests {
     use metrics::Level;
 
-    use super::parse_metrics_level;
+    use super::{effective_metrics_level, parse_metrics_level};
+
+    #[test]
+    fn metrics_level_is_never_less_verbose_than_info() {
+        // `info` and more verbose levels are used as configured.
+        for level in [Level::TRACE, Level::DEBUG, Level::INFO] {
+            assert_eq!(effective_metrics_level(level), level);
+        }
+
+        // Less verbose levels would hide the metrics the status page is built from, so they're raised to `info`.
+        for level in [Level::WARN, Level::ERROR] {
+            assert_eq!(effective_metrics_level(level), Level::INFO);
+        }
+    }
 
     #[test]
     fn parse_metrics_level_accepts_only_a_known_level() {

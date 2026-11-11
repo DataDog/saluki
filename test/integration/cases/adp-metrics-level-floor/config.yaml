@@ -1,0 +1,25 @@
+type: integration
+name: "adp-metrics-level-floor"
+description: "Verifies that a metrics_level less verbose than info is raised to info, with a warning, so the status page keeps its metrics"
+timeout: 120s
+runtimes: [linux, mac, windows]
+
+env:
+  DD_API_KEY: "test-api-key"
+  DD_HOSTNAME: "integration-test"
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "true"
+  DD_METRICS_LEVEL: "warn"
+
+
+procedure:
+  - assertion: log_contains
+    pattern: "`metrics_level` is set to `warn`, but it can't be less verbose than `info`"
+    timeout: 60s
+  - parallel:
+      - assertion: process_stable_for
+        duration: 10s
+      - assertion: log_not_contains
+        pattern: "panic|PANIC"
+        regex: true
+        during: 10s
