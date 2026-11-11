@@ -29,10 +29,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Install protoc from the upstream release rather than apt, so the job doesn't depend on the Ubuntu
+      # archive mirrors being reachable. Keep the version in sync with WINDOWS_PROTOC_VERSION in .gitlab/windows.yml.
       - name: Install Protobuf Compiler
+        env:
+          PROTOC_VERSION: "29.3"
+          PROTOC_SHA256: "3e866620c5be27664f3d2fa2d656b5f3e09b5152b42f1bedbf427b333e90021a"
         run: |
-          sudo apt-get update
-          sudo apt-get install -y protobuf-compiler
+          curl -sSfL --retry 5 -o "$RUNNER_TEMP/protoc.zip" \
+            "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
+          echo "${PROTOC_SHA256}  $RUNNER_TEMP/protoc.zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/protoc.zip" -d "$RUNNER_TEMP/protoc"
+          echo "$RUNNER_TEMP/protoc/bin" >> "$GITHUB_PATH"
       # `make generate-api-docs` installs and pins the nightly toolchain it needs (see
       # RUST_NIGHTLY_VERSION in the Makefile); this step just provides a stable Rust and rustup/cargo.
       - name: Set up Rust stable

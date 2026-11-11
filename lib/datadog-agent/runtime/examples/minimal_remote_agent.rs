@@ -71,7 +71,7 @@ impl Settings {
 
     fn client_configuration(&self) -> Result<RemoteAgentClientConfiguration, GenericError> {
         let auth = IpcAuthConfiguration::new(PathBuf::new(), PathBuf::new());
-        RemoteAgentClientConfiguration::from_parts(self.cmd_port, auth, 4 * 1024 * 1024, "")
+        RemoteAgentClientConfiguration::from_parts("localhost", self.cmd_port, auth, 4 * 1024 * 1024, "")
     }
 
     fn secure_api_listen_address(&self) -> Result<ListenAddress, GenericError> {
