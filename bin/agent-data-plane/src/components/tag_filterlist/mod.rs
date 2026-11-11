@@ -389,36 +389,34 @@ impl Transform for TagFilterlist {
                 _ = health.live() => continue,
                 maybe_events = context.events().next() => match maybe_events {
                     Some(mut events) => {
-                        for event in &mut events {
-                            if let Some(metric) = event.try_as_metric_mut() {
-                                if metric.values().is_sketch()
-                                    || matches!(metric.values(), MetricValues::Counter(_))
-                                {
-                                    let original_context = metric.context().clone();
+                        for metric in events.events_mut::<Metric>() {
+                            if metric.values().is_sketch()
+                                || matches!(metric.values(), MetricValues::Counter(_))
+                            {
+                                let original_context = metric.context().clone();
 
-                                    if let Some(cached) = self.context_cache.get(&original_context) {
-                                        match cached {
-                                            None => self.telemetry.record(FilterMetricTagsOutcome::NoChange),
-                                            Some((filtered_ctx, removed_tags)) => {
-                                                *metric.context_mut() = filtered_ctx;
-                                                self.telemetry.record(FilterMetricTagsOutcome::Modified { removed_tags });
-                                            }
+                                if let Some(cached) = self.context_cache.get(&original_context) {
+                                    match cached {
+                                        None => self.telemetry.record(FilterMetricTagsOutcome::NoChange),
+                                        Some((filtered_ctx, removed_tags)) => {
+                                            *metric.context_mut() = filtered_ctx;
+                                            self.telemetry.record(FilterMetricTagsOutcome::Modified { removed_tags });
                                         }
-                                    } else {
-                                        let outcome = filter_metric_tags(metric, &mut view_state, &self.filters);
-                                        self.telemetry.record(outcome);
+                                    }
+                                } else {
+                                    let outcome = filter_metric_tags(metric, &mut view_state, &self.filters);
+                                    self.telemetry.record(outcome);
 
-                                        match outcome {
-                                            FilterMetricTagsOutcome::RuleMiss => {}
-                                            FilterMetricTagsOutcome::NoChange => {
-                                                self.context_cache.insert(original_context, None);
-                                            }
-                                            FilterMetricTagsOutcome::Modified { removed_tags } => {
-                                                self.context_cache.insert(
-                                                    original_context,
-                                                    Some((metric.context().clone(), removed_tags)),
-                                                );
-                                            }
+                                    match outcome {
+                                        FilterMetricTagsOutcome::RuleMiss => {}
+                                        FilterMetricTagsOutcome::NoChange => {
+                                            self.context_cache.insert(original_context, None);
+                                        }
+                                        FilterMetricTagsOutcome::Modified { removed_tags } => {
+                                            self.context_cache.insert(
+                                                original_context,
+                                                Some((metric.context().clone(), removed_tags)),
+                                            );
                                         }
                                     }
                                 }
@@ -1511,7 +1509,7 @@ mod tests {
                     }],
                     0,
                 );
-                let hist_config = HistogramConfiguration::try_new(
+                let hist_config = HistogramConfiguration::new(
                     &[
                         "max".to_string(),
                         "median".to_string(),
@@ -1521,8 +1519,7 @@ mod tests {
                     &["0.95".to_string()],
                     false,
                     String::new(),
-                )
-                .expect("histogram settings should be valid");
+                );
                 let (snapshot_handle, context_snapshot_receiver) = aggregate_context_snapshot_channel();
                 let aggregate = AggregateConfiguration {
                     window_duration_seconds: NonZeroU64::new(10).expect("not zero"),
@@ -1670,8 +1667,7 @@ mod tests {
                     &[],
                     0,
                 );
-                let hist_config = HistogramConfiguration::try_new(&[], &[], false, String::new())
-                    .expect("histogram settings should be valid");
+                let hist_config = HistogramConfiguration::new(&[], &[], false, String::new());
                 let (snapshot_handle, context_snapshot_receiver) = aggregate_context_snapshot_channel();
                 let aggregate = AggregateConfiguration {
                     window_duration_seconds: NonZeroU64::new(10).expect("not zero"),
