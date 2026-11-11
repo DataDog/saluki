@@ -101,7 +101,9 @@ mod tests {
     use saluki_core::{
         components::transforms::SynchronousTransform,
         data_model::event::{
+            eventd::EventD,
             metric::{context::Context, Metric},
+            service_check::{CheckStatus, ServiceCheck},
             Event,
         },
         topology::EventsBuffer,
@@ -136,6 +138,40 @@ mod tests {
                 panic!("expected metric event");
             };
             assert_eq!(metric.context().host(), host.as_deref());
+        }
+    }
+
+    #[test]
+    fn transform_only_fills_unset_event_and_service_check_hostnames() {
+        // An unset hostname gets the default hostname, but an explicitly empty one is left alone, as the Datadog Agent
+        // does for an empty `host:` tag.
+        let cases = [
+            (None, Some("default-host")),
+            (Some(MetaString::empty()), Some("")),
+            (Some(MetaString::from_static("custom-host")), Some("custom-host")),
+        ];
+
+        for (hostname, expected) in cases {
+            let mut events = EventsBuffer::default();
+            let eventd = EventD::new("title", "text").with_hostname(hostname.clone());
+            let service_check = ServiceCheck::new("check", CheckStatus::Ok).with_hostname(hostname.clone());
+            assert!(events.try_push(Event::EventD(eventd)).is_none());
+            assert!(events.try_push(Event::ServiceCheck(service_check)).is_none());
+
+            host_enrichment().transform_buffer(&mut events);
+
+            let mut events = events.into_iter();
+            let eventd = events.next().and_then(Event::try_into_eventd).expect("event");
+            let service_check = events
+                .next()
+                .and_then(Event::try_into_service_check)
+                .expect("service check");
+            assert_eq!(eventd.hostname(), expected, "event hostname for {hostname:?}");
+            assert_eq!(
+                service_check.hostname(),
+                expected,
+                "service check hostname for {hostname:?}"
+            );
         }
     }
 }

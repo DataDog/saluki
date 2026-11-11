@@ -844,13 +844,12 @@ async fn add_dsd_pipeline_to_blueprint(
     );
     let aggregation = &typed.domains.dogstatsd.aggregation;
     let histogram = &typed.shared.metrics_encoding.histogram;
-    let dsd_hist_config = HistogramConfiguration::try_new(
+    let dsd_hist_config = HistogramConfiguration::new(
         &histogram.aggregates,
         &histogram.percentiles,
         histogram.copy_to_distribution,
         histogram.copy_to_distribution_prefix.clone(),
-    )
-    .error_context("Failed to configure histogram aggregation.")?;
+    );
     let (dsd_context_snapshot_handle, dsd_context_snapshot_receiver) = aggregate_context_snapshot_channel();
     let dsd_agg_config = AggregateConfiguration {
         window_duration_seconds: aggregation.window_duration_seconds,
@@ -869,8 +868,7 @@ async fn add_dsd_pipeline_to_blueprint(
             .map(metric_name_filter),
         &histogram.aggregates,
         &histogram.percentiles,
-    )
-    .error_context("Failed to configure DogStatsD post-aggregate filter transform.")?;
+    );
     let events_enrich_config = ChainedConfiguration::default().with_transform_builder(
         "host_enrichment",
         HostEnrichmentConfiguration::from_environment_provider(env_provider.clone()),
@@ -1034,7 +1032,7 @@ async fn add_otlp_pipeline_to_blueprint(
         let config = config_system.config();
         let otlp_relay_config = OtlpRelayConfiguration::new(otlp_receiver(&config.domains.otlp.receiver));
         let otlp_decoder_config = OtlpDecoderConfiguration::new(
-            otlp_traces_settings(&config.domains.otlp.traces),
+            otlp_traces_settings(&config.domains.otlp.traces, &config.domains.traces.features),
             env_provider.workload().clone(),
         )
         .with_max_resource_len(config.domains.traces.max_resource_len)
@@ -1078,7 +1076,7 @@ async fn add_otlp_pipeline_to_blueprint(
             receiver: otlp_receiver(&otlp.receiver),
             metrics: otlp_metrics_settings(&otlp.metrics),
             traces_enabled: otlp.traces.enabled,
-            traces: otlp_traces_settings(&otlp.traces),
+            traces: otlp_traces_settings(&otlp.traces, &config.domains.traces.features),
             contexts: otlp_context_settings(&otlp.contexts),
             max_resource_len: config.domains.traces.max_resource_len,
             semantic_registry,

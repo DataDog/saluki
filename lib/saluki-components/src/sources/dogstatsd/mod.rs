@@ -2213,10 +2213,8 @@ fn handle_event_packet(
     let eventd = EventD::new(packet.title, packet.text)
         .with_timestamp(timestamp)
         // An `h:` field takes precedence; otherwise, fall back to a `host:` tag, matching the reference DogStatsD
-        // server.
-        //
-        // TODO: The reference DogStatsD server sends an empty hostname for an empty `host:` tag, but an empty hostname
-        // here is treated as unset, so host enrichment fills in the default hostname instead.
+        // server. An empty `host:` tag gives an explicitly empty hostname, which host enrichment leaves alone, as
+        // the reference DogStatsD server does.
         .with_hostname(packet.hostname.or(well_known_tags.hostname).map(|s| s.into()))
         .with_aggregation_key(packet.aggregation_key.map(|s| s.into()))
         .with_alert_type(packet.alert_type)
@@ -2261,10 +2259,8 @@ fn handle_service_check_packet(
     let service_check = ServiceCheck::new(packet.name, packet.status)
         .with_timestamp(timestamp)
         // An `h:` field takes precedence; otherwise, fall back to a `host:` tag, matching the reference DogStatsD
-        // server.
-        //
-        // TODO: The reference DogStatsD server sends an empty hostname for an empty `host:` tag, but an empty hostname
-        // here is treated as unset, so host enrichment fills in the default hostname instead.
+        // server. An empty `host:` tag gives an explicitly empty hostname, which host enrichment leaves alone, as
+        // the reference DogStatsD server does.
         .with_hostname(packet.hostname.or(well_known_tags.hostname).map(|s| s.into()))
         .with_tags(tags)
         .with_origin_tags(origin_tags)
@@ -3141,13 +3137,14 @@ mod tests {
         };
 
         // Like the reference DogStatsD server, a `host:` tag sets the hostname when there's no `h:` field, and `h:`
-        // wins otherwise.
-        let cases: [(&[u8], &str); 2] = [
+        // wins otherwise. An empty `host:` tag gives an explicitly empty hostname.
+        let cases: [(&[u8], &str); 3] = [
             (b"_e{5,4}:title|text|#host:tagged-host,env:prod", "tagged-host"),
             (
                 b"_e{5,4}:title|text|h:field-host|#host:tagged-host,env:prod",
                 "field-host",
             ),
+            (b"_e{5,4}:title|text|#host:,env:prod", ""),
         ];
         for (frame, expected_hostname) in cases {
             let eventd = handle(frame).try_into_eventd().expect("should be an event");
@@ -3158,9 +3155,10 @@ mod tests {
             );
         }
 
-        let cases: [(&[u8], &str); 2] = [
+        let cases: [(&[u8], &str); 3] = [
             (b"_sc|my.check|0|#host:tagged-host,env:prod", "tagged-host"),
             (b"_sc|my.check|0|h:field-host|#host:tagged-host,env:prod", "field-host"),
+            (b"_sc|my.check|0|#host:,env:prod", ""),
         ];
         for (frame, expected_hostname) in cases {
             let service_check = handle(frame)
