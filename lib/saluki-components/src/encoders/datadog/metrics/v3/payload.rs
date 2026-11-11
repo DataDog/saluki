@@ -5,7 +5,7 @@ use saluki_core::data_model::event::metric::Metric;
 use super::V3EncoderStats;
 
 /// Limits used when building V3 metrics payloads.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct V3PayloadLimits {
     pub(crate) max_compressed_size: usize,
     pub(crate) max_uncompressed_size: usize,
