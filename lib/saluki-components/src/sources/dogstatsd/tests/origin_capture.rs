@@ -1,49 +1,40 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use saluki_io::net::{ConnectionAddress, ProcessCredentials, ProcessIdentity};
+use saluki_io::net::ProcessCredentialsError;
 use saluki_metrics::test::TestRecorder;
-use tokio::{task::yield_now, time::timeout};
 
 use super::*;
 use crate::sources::dogstatsd::{build_capture_record, StreamCaptureState, REPLAY_CREDENTIALS_GID};
 use crate::sources::dogstatsd::{
-    capture_named_pipe_frame, handle_frame, metrics::build_metrics, origin_detection_error_for_telemetry,
-    resolve_process_origin, resolve_process_origin_if_needed, BufferDecodeContext, BufferDecodeMode, DecodeOutcome,
-    DogStatsDDecoder, ProcessOrigin, ReceivedBuffer, TrafficCaptureReader,
+    capture_named_pipe_frame, handle_frame, origin_detection_error_for_telemetry, resolve_process_origin,
+    resolve_process_origin_if_needed, BufferDecodeMode, DecodeOutcome, ProcessOrigin,
 };
 
-#[test]
-fn named_pipe_frames_are_written_to_an_active_capture() {
+/// Starts a capture written to a fresh temporary directory, returned alongside it to keep it alive.
+fn start_capture() -> (tempfile::TempDir, TrafficCapture, PathBuf) {
     let capture_directory = tempfile::tempdir().expect("temporary capture directory should be created");
     let capture = TrafficCapture::new(capture_directory.path().to_path_buf(), 1);
     let capture_path = capture
         .start_capture(None, Duration::from_secs(30), false)
         .expect("capture should start");
+    (capture_directory, capture, capture_path)
+}
+
+#[test]
+fn named_pipe_frames_are_written_to_an_active_capture() {
+    let (_capture_directory, capture, capture_path) = start_capture();
 
     capture_named_pipe_frame(&capture, b"captured.named_pipe.one:1|c");
     capture_named_pipe_frame(&capture, b"captured.named_pipe.two:1|c");
-    capture.stop_capture();
+    stop_capture(&capture);
 
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while capture.is_ongoing() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    assert!(!capture.is_ongoing(), "capture should stop after its sender is dropped");
-
-    let mut reader = TrafficCaptureReader::from_path(&capture_path).expect("capture should be readable");
-    let first_record = reader
-        .read_next()
-        .expect("first capture record should decode")
-        .expect("first named-pipe frame should be captured");
-    let second_record = reader
-        .read_next()
-        .expect("second capture record should decode")
-        .expect("second named-pipe frame should be captured");
-    assert_eq!(first_record.payload, b"captured.named_pipe.one:1|c");
-    assert_eq!(first_record.pid, 0);
-    assert_eq!(second_record.payload, b"captured.named_pipe.two:1|c");
-    assert_eq!(second_record.pid, 0);
-    assert!(reader.read_next().expect("capture should terminate cleanly").is_none());
+    assert_eq!(
+        read_capture_records(&capture_path),
+        [
+            (b"captured.named_pipe.one:1|c".to_vec(), 0),
+            (b"captured.named_pipe.two:1|c".to_vec(), 0),
+        ]
+    );
 }
 
 fn length_delimited(payload: &[u8]) -> Vec<u8> {
@@ -55,7 +46,7 @@ fn length_delimited(payload: &[u8]) -> Vec<u8> {
 /// Feeds `data` through the decoder the same way the connected stream reader does: each read fills whatever
 /// space is left in the I/O buffer after collapsing any partial frame retained from the previous read.
 async fn feed_connected_stream(
-    decoder: &mut DogStatsDDecoder, context: &mut BufferDecodeContext<'_>, mut io_buffer: BytesBuffer, mut data: &[u8],
+    fixture: &mut DecoderFixture, context: &mut BufferDecodeContext<'_>, mut io_buffer: BytesBuffer, mut data: &[u8],
     peer_addr: &ConnectionAddress,
 ) -> BytesBuffer {
     use saluki_io::buf::CollapsibleReadWriteIoBuffer as _;
@@ -66,30 +57,22 @@ async fn feed_connected_stream(
         io_buffer.put_slice(&data[..bytes_read]);
         data = &data[bytes_read..];
 
-        let (received, returned_buffer) = ReceivedBuffer::with_return(io_buffer, bytes_read, peer_addr.clone(), None);
-        let outcome = decoder.decode_buffer(context, received).await;
+        let (outcome, returned_buffer) = fixture.decode_once(context, io_buffer, bytes_read, peer_addr).await;
         assert_eq!(outcome, DecodeOutcome::Continue);
-        io_buffer = returned_buffer.await.expect("decoder should return the I/O buffer");
+        io_buffer = returned_buffer;
     }
     io_buffer
 }
 
-async fn finish_capture(capture: &TrafficCapture, capture_path: &std::path::Path) -> Vec<(Vec<u8>, i32)> {
-    capture.stop_capture();
-    timeout(Duration::from_secs(2), async {
-        while capture.is_ongoing() {
-            yield_now().await;
-        }
-    })
-    .await
-    .expect("capture should stop");
-
-    let mut reader = TrafficCaptureReader::from_path(capture_path).expect("capture should be readable");
-    let mut records = Vec::new();
-    while let Some(record) = reader.read_next().expect("capture record should decode") {
-        records.push((record.payload, record.pid));
-    }
-    records
+/// A decoder for a UDS stream listener that writes to `capture`.
+fn capturing_stream_decoder(capture: &TrafficCapture) -> (TestListener, DecoderFixture) {
+    let listener = TestListener::new(ListenAddress::Unix("/tmp/dsd.socket".into()));
+    // The metrics output holds more buffers than the test dispatches, so nothing needs to drain it.
+    let fixture = DecoderFixture::new(DecoderContext {
+        traffic_capture: capture.clone(),
+        ..test_decoder_context(false)
+    });
+    (listener, fixture)
 }
 
 fn stream_test_payloads(count: usize) -> Vec<Vec<u8>> {
@@ -99,59 +82,36 @@ fn stream_test_payloads(count: usize) -> Vec<Vec<u8>> {
 
 #[tokio::test]
 async fn uds_stream_capture_records_every_outer_frame_across_reads() {
-    let listen_addr = ListenAddress::Unix("/tmp/dsd.socket".into());
-    let peer_addr = ConnectionAddress::ProcessLike(ProcessIdentity::Credentials(ProcessCredentials {
-        pid: 42,
-        uid: 0,
-        gid: 0,
-    }));
-    let capture_directory = tempfile::tempdir().expect("temporary capture directory should be created");
-    let capture = TrafficCapture::new(capture_directory.path().to_path_buf(), 1);
-    let metrics = build_metrics(&listen_addr, &test_component_context(), false);
-    // The metrics output holds more buffers than the test dispatches, so nothing needs to drain it.
-    let source = test_source_context();
-    let decoder_context = DecoderContext {
-        traffic_capture: capture.clone(),
-        ..test_decoder_context(false)
-    };
-    let mut decoder = DogStatsDDecoder::new(source.context, decoder_context);
-    let mut context = BufferDecodeContext::new(&listen_addr, false, &metrics, None, BufferDecodeMode::Connected);
+    let peer_addr = creds_peer(TEST_PID);
+    let (_capture_directory, capture, capture_path) = start_capture();
+    let (listener, mut fixture) = capturing_stream_decoder(&capture);
+    let mut context = listener.decode_context(false, None, BufferDecodeMode::Connected);
 
-    let capture_path = capture
-        .start_capture(None, Duration::from_secs(30), false)
-        .expect("capture should start");
     let payloads = stream_test_payloads(40);
     let stream = payloads
         .iter()
         .flat_map(|payload| length_delimited(payload))
         .collect::<Vec<_>>();
     let io_buffer = test_io_buffer(&[], TEST_BUFFER_SIZE);
-    let io_buffer = feed_connected_stream(&mut decoder, &mut context, io_buffer, &stream, &peer_addr).await;
+    let io_buffer = feed_connected_stream(&mut fixture, &mut context, io_buffer, &stream, &peer_addr).await;
     assert_eq!(io_buffer.remaining(), 0);
 
-    let records = finish_capture(&capture, &capture_path).await;
+    stop_capture(&capture);
+    let records = read_capture_records(&capture_path);
     assert_eq!(records.len(), payloads.len());
     for ((payload, pid), expected) in records.iter().zip(&payloads) {
         assert_eq!(payload, expected);
-        assert_eq!(*pid, 42);
+        assert_eq!(*pid, TEST_PID);
     }
 }
 
 #[tokio::test]
 async fn uds_stream_capture_starting_mid_frame_captures_from_next_whole_frame_and_stops_cleanly() {
-    let listen_addr = ListenAddress::Unix("/tmp/dsd.socket".into());
     let peer_addr = ConnectionAddress::ProcessLike(ProcessIdentity::Unavailable);
     let capture_directory = tempfile::tempdir().expect("temporary capture directory should be created");
     let capture = TrafficCapture::new(capture_directory.path().to_path_buf(), 1);
-    let metrics = build_metrics(&listen_addr, &test_component_context(), false);
-    // The metrics output holds more buffers than the test dispatches, so nothing needs to drain it.
-    let source = test_source_context();
-    let decoder_context = DecoderContext {
-        traffic_capture: capture.clone(),
-        ..test_decoder_context(false)
-    };
-    let mut decoder = DogStatsDDecoder::new(source.context, decoder_context);
-    let mut context = BufferDecodeContext::new(&listen_addr, false, &metrics, None, BufferDecodeMode::Connected);
+    let (listener, mut fixture) = capturing_stream_decoder(&capture);
+    let mut context = listener.decode_context(false, None, BufferDecodeMode::Connected);
 
     let payloads = stream_test_payloads(20);
     let stream = payloads
@@ -163,14 +123,15 @@ async fn uds_stream_capture_starting_mid_frame_captures_from_next_whole_frame_an
     // Before capture starts, deliver the first frame plus half of the second.
     let split = frame_len + frame_len / 2;
     let io_buffer = test_io_buffer(&[], TEST_BUFFER_SIZE);
-    let io_buffer = feed_connected_stream(&mut decoder, &mut context, io_buffer, &stream[..split], &peer_addr).await;
+    let io_buffer = feed_connected_stream(&mut fixture, &mut context, io_buffer, &stream[..split], &peer_addr).await;
     assert_eq!(io_buffer.remaining(), frame_len / 2);
 
     let capture_path = capture
         .start_capture(None, Duration::from_secs(30), false)
         .expect("capture should start");
-    let io_buffer = feed_connected_stream(&mut decoder, &mut context, io_buffer, &stream[split..], &peer_addr).await;
-    let records = finish_capture(&capture, &capture_path).await;
+    let io_buffer = feed_connected_stream(&mut fixture, &mut context, io_buffer, &stream[split..], &peer_addr).await;
+    stop_capture(&capture);
+    let records = read_capture_records(&capture_path);
 
     assert_eq!(records.len(), payloads.len() - 1);
     for ((payload, _), expected) in records.iter().zip(&payloads[1..]) {
@@ -179,168 +140,91 @@ async fn uds_stream_capture_starting_mid_frame_captures_from_next_whole_frame_an
 
     // Once capture has stopped, the connection keeps decoding.
     let more = length_delimited(&payloads[0]);
-    let io_buffer = feed_connected_stream(&mut decoder, &mut context, io_buffer, &more, &peer_addr).await;
+    let io_buffer = feed_connected_stream(&mut fixture, &mut context, io_buffer, &more, &peer_addr).await;
     assert_eq!(io_buffer.remaining(), 0);
 }
 
 #[test]
-fn origin_telemetry_does_not_resolve_origin_when_origin_detection_is_disabled() {
-    let recorder = TestRecorder::default();
-    let _recorder_guard = metrics::set_default_local_recorder(&recorder);
-    let listen_addr = ListenAddress::Unixgram("/tmp/dsd.sock".into());
-    let context = test_component_context();
-    let metrics = build_metrics(&listen_addr, &context, true);
-    let codec = DogStatsDCodec::from_configuration(DogStatsDCodecConfiguration::default());
-    let mut context_resolvers = test_context_resolvers();
-    let capture_entity_resolver = CaptureTestEntityResolver::with_pid_mapping(
-        42,
-        EntityId::from_local_data("ci-pid-container").expect("container entity"),
-    );
-    let peer_addr = ConnectionAddress::ProcessLike(ProcessIdentity::Credentials(ProcessCredentials {
-        pid: 42,
-        uid: 0,
-        gid: 0,
-    }));
-    let process_origin = resolve_process_origin(Some(&capture_entity_resolver), &peer_addr);
+fn origin_telemetry_records_resolved_origin_only_when_origin_detection_is_enabled() {
+    // Counts of processed metrics with the resolved origin, and with the empty origin.
+    let cases = [(false, None, Some(1)), (true, Some(1), Some(0))];
 
-    let event = handle_frame(
-        b"test_metric:1|c",
-        &codec,
-        &mut context_resolvers,
-        &metrics,
-        false,
-        process_origin.as_ref(),
-        EnablePayloadsFilter::default(),
-        &[],
-        &MetaString::from_static("default-host"),
-    )
-    .expect("frame should parse");
+    for (origin_detection_enabled, resolved_count, unresolved_count) in cases {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let listen_addr = ListenAddress::Unixgram("/tmp/dsd.sock".into());
+        let metrics = build_metrics(&listen_addr, &test_component_context(), true);
+        let codec = DogStatsDCodec::from_configuration(DogStatsDCodecConfiguration::default());
+        let mut context_resolvers = ContextResolvers::for_tests(true, None);
+        let process_origin = resolve_process_origin(Some(&pid_container_resolver()), &creds_peer(TEST_PID));
 
-    assert!(event.is_some());
-    assert_eq!(
-        recorder.counter(processed_metric_key("unixgram", Some("container_id://pid-container"))),
-        None
-    );
-    assert_eq!(recorder.counter(processed_metric_key("unixgram", Some(""))), Some(1));
-}
+        let event = handle_frame(
+            b"test_metric:1|c",
+            &codec,
+            &mut context_resolvers,
+            &metrics,
+            origin_detection_enabled,
+            process_origin.as_ref(),
+            EnablePayloadsFilter::default(),
+            &[],
+            &MetaString::from_static("default-host"),
+        )
+        .expect("frame should parse");
 
-#[test]
-fn origin_telemetry_records_resolved_origin_when_origin_detection_is_enabled() {
-    let recorder = TestRecorder::default();
-    let _recorder_guard = metrics::set_default_local_recorder(&recorder);
-    let listen_addr = ListenAddress::Unixgram("/tmp/dsd.sock".into());
-    let context = test_component_context();
-    let metrics = build_metrics(&listen_addr, &context, true);
-    let codec = DogStatsDCodec::from_configuration(DogStatsDCodecConfiguration::default());
-    let mut context_resolvers = test_context_resolvers();
-    let capture_entity_resolver = CaptureTestEntityResolver::with_pid_mapping(
-        42,
-        EntityId::from_local_data("ci-pid-container").expect("container entity"),
-    );
-    let peer_addr = ConnectionAddress::ProcessLike(ProcessIdentity::Credentials(ProcessCredentials {
-        pid: 42,
-        uid: 0,
-        gid: 0,
-    }));
-    let process_origin = resolve_process_origin(Some(&capture_entity_resolver), &peer_addr);
-
-    let event = handle_frame(
-        b"test_metric:1|c",
-        &codec,
-        &mut context_resolvers,
-        &metrics,
-        true,
-        process_origin.as_ref(),
-        EnablePayloadsFilter::default(),
-        &[],
-        &MetaString::from_static("default-host"),
-    )
-    .expect("frame should parse");
-
-    assert!(event.is_some());
-    assert_eq!(
-        recorder.counter(processed_metric_key("unixgram", Some("container_id://pid-container"))),
-        Some(1)
-    );
-    assert_eq!(recorder.counter(processed_metric_key("unixgram", Some(""))), Some(0));
-}
-
-#[test]
-fn unsupported_platform_process_credentials_do_not_count_as_origin_detection_telemetry_errors() {
-    let peer_addr = ConnectionAddress::ProcessLike(ProcessIdentity::Error(
-        saluki_io::net::ProcessCredentialsError::UnsupportedPlatform,
-    ));
-
-    assert!(origin_detection_error_for_telemetry(true, 1, &peer_addr).is_none());
-}
-
-#[test]
-fn invalid_process_credentials_count_as_origin_detection_telemetry_errors() {
-    let peer_addr = ConnectionAddress::ProcessLike(ProcessIdentity::Error(
-        saluki_io::net::ProcessCredentialsError::InvalidCredentials,
-    ));
-
-    assert!(matches!(
-        origin_detection_error_for_telemetry(true, 1, &peer_addr),
-        Some(saluki_io::net::ProcessCredentialsError::InvalidCredentials)
-    ));
-}
-
-#[test]
-fn zero_pid_process_credentials_count_as_origin_detection_telemetry_errors() {
-    let peer_addr =
-        ConnectionAddress::ProcessLike(ProcessIdentity::Error(saluki_io::net::ProcessCredentialsError::ZeroPid));
-
-    assert!(matches!(
-        origin_detection_error_for_telemetry(true, 1, &peer_addr),
-        Some(saluki_io::net::ProcessCredentialsError::ZeroPid)
-    ));
+        assert!(event.is_some(), "origin detection enabled: {origin_detection_enabled}");
+        assert_eq!(
+            recorder.counter(processed_metric_key("unixgram", Some("container_id://pid-container"))),
+            resolved_count,
+            "resolved origin, origin detection enabled: {origin_detection_enabled}"
+        );
+        assert_eq!(
+            recorder.counter(processed_metric_key("unixgram", Some(""))),
+            unresolved_count,
+            "empty origin, origin detection enabled: {origin_detection_enabled}"
+        );
+    }
 }
 
 #[test]
 fn origin_detection_telemetry_errors_require_origin_detection_and_received_bytes() {
-    let peer_addr =
-        ConnectionAddress::ProcessLike(ProcessIdentity::Error(saluki_io::net::ProcessCredentialsError::ZeroPid));
+    // Which credential errors count is up to `ProcessIdentity::is_telemetry_error`, so a single error suffices here.
+    let peer_addr = ConnectionAddress::ProcessLike(ProcessIdentity::Error(ProcessCredentialsError::ZeroPid));
+    let cases = [
+        (true, 1, Some(ProcessCredentialsError::ZeroPid)),
+        (false, 1, None),
+        (true, 0, None),
+    ];
 
-    assert!(origin_detection_error_for_telemetry(false, 1, &peer_addr).is_none());
-    assert!(origin_detection_error_for_telemetry(true, 0, &peer_addr).is_none());
+    for (origin_detection_enabled, bytes_read, expected) in cases {
+        let error = origin_detection_error_for_telemetry(origin_detection_enabled, bytes_read, &peer_addr);
+        assert_eq!(
+            error.map(|error| error.identifier()),
+            expected.map(|error| error.identifier()),
+            "origin detection enabled: {origin_detection_enabled}, bytes read: {bytes_read}"
+        );
+    }
 }
 
 #[test]
 fn resolve_process_origin_pins_live_entity() {
-    let capture_entity_resolver = CaptureTestEntityResolver::with_pid_mapping(
-        42,
-        EntityId::from_local_data("ci-pid-container").expect("container entity"),
-    );
-    let peer_addr = ConnectionAddress::ProcessLike(ProcessIdentity::Credentials(ProcessCredentials {
-        pid: 42,
-        uid: 0,
-        gid: 0,
-    }));
-
     assert_eq!(
-        resolve_process_origin(Some(&capture_entity_resolver), &peer_addr),
-        Some(ProcessOrigin::Pinned(Some(
-            EntityId::from_local_data("ci-pid-container").expect("container entity")
-        )))
+        resolve_process_origin(Some(&pid_container_resolver()), &creds_peer(TEST_PID)),
+        Some(ProcessOrigin::Pinned(Some(pid_container_entity())))
     );
 }
 
 #[test]
 fn resolve_process_origin_skips_live_lookup_when_unused() {
-    let capture_entity_resolver = CaptureTestEntityResolver::with_pid_mapping(
-        42,
-        EntityId::from_local_data("ci-pid-container").expect("container entity"),
-    );
-    let peer_addr = ConnectionAddress::ProcessLike(ProcessIdentity::Credentials(ProcessCredentials {
-        pid: 42,
-        uid: 0,
-        gid: 0,
-    }));
+    let capture_entity_resolver = pid_container_resolver();
     let traffic_capture = TrafficCapture::new(PathBuf::new(), 1);
 
     assert_eq!(
-        resolve_process_origin_if_needed(false, &traffic_capture, Some(&capture_entity_resolver), &peer_addr),
+        resolve_process_origin_if_needed(
+            false,
+            &traffic_capture,
+            Some(&capture_entity_resolver),
+            &creds_peer(TEST_PID)
+        ),
         None
     );
     assert_eq!(capture_entity_resolver.resolution_count(), 0);
@@ -348,37 +232,21 @@ fn resolve_process_origin_skips_live_lookup_when_unused() {
 
 #[tokio::test]
 async fn resolve_process_origin_pins_live_entity_during_capture() {
-    let capture_entity_resolver = CaptureTestEntityResolver::with_pid_mapping(
-        42,
-        EntityId::from_local_data("ci-pid-container").expect("container entity"),
-    );
-    let peer_addr = ConnectionAddress::ProcessLike(ProcessIdentity::Credentials(ProcessCredentials {
-        pid: 42,
-        uid: 0,
-        gid: 0,
-    }));
-    let capture_dir = tempfile::tempdir().expect("capture directory should be created");
-    let traffic_capture = TrafficCapture::new(capture_dir.path().to_path_buf(), 1);
-    traffic_capture
-        .start_capture(None, Duration::from_secs(30), false)
-        .expect("capture should start");
+    let capture_entity_resolver = pid_container_resolver();
+    let (_capture_directory, traffic_capture, _) = start_capture();
 
     assert_eq!(
-        resolve_process_origin_if_needed(false, &traffic_capture, Some(&capture_entity_resolver), &peer_addr),
-        Some(ProcessOrigin::Pinned(Some(
-            EntityId::from_local_data("ci-pid-container").expect("container entity")
-        )))
+        resolve_process_origin_if_needed(
+            false,
+            &traffic_capture,
+            Some(&capture_entity_resolver),
+            &creds_peer(TEST_PID)
+        ),
+        Some(ProcessOrigin::Pinned(Some(pid_container_entity())))
     );
     assert_eq!(capture_entity_resolver.resolution_count(), 1);
 
-    traffic_capture.stop_capture();
-    timeout(Duration::from_secs(1), async {
-        while traffic_capture.is_ongoing() {
-            yield_now().await;
-        }
-    })
-    .await
-    .expect("capture should stop");
+    stop_capture(&traffic_capture);
 }
 
 #[test]

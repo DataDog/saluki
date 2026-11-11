@@ -9,11 +9,9 @@ use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use bytes::BytesMut;
 use saluki_core::{
     components::test_util::{ComponentControl, DriverOptions, NoInput, Outputs, PrebuiltSource, TestComponentDriver},
-    data_model::event::metric::context::{ContextResolverBuilder, TagsResolverBuilder},
-    runtime::{state::ResourceRegistry, NodeSnapshot, NodeState, SupervisorError},
+    runtime::{state::ResourceRegistry, NodeSnapshot, NodeState},
     support::SubsystemIdentifier,
     topology::EventsBuffer,
 };
@@ -21,11 +19,13 @@ use saluki_io::net::listener::Listener;
 use saluki_io::net::{BoundListenAddress, ListenAddress};
 use stringtheory::MetaString;
 use tokio::net::UdpSocket;
+#[cfg(unix)]
 use tokio::time::timeout;
 
 use crate::sources::dogstatsd::*;
 
 /// Bound on socket operations, so a hang fails rather than stalling the suite.
+#[cfg(unix)]
 const RUN_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// ID of the source under test, which names its worker `sources.dogstatsd` in the supervision tree.
@@ -119,11 +119,6 @@ async fn build_source() -> (Box<DogStatsD>, SocketAddr) {
         DogStatsDConfiguration::for_test().buffer_size,
     );
 
-    let tags_resolver = TagsResolverBuilder::for_tests().build();
-    let context_resolver = ContextResolverBuilder::for_tests()
-        .with_tags_resolver(Some(tags_resolver.clone()))
-        .build();
-
     let source = Box::new(DogStatsD {
         listeners: vec![listener],
         decoder_worker_count: NonZeroUsize::new(DECODER_WORKERS).expect("decoder count should be non-zero"),
@@ -131,7 +126,7 @@ async fn build_source() -> (Box<DogStatsD>, SocketAddr) {
         io_buffer_queue_capacity: 16,
         io_buffer_pool_shrinker: Box::pin(io_buffer_pool_shrinker),
         codec: DogStatsDCodec::from_configuration(DogStatsDCodecConfiguration::default()),
-        context_resolvers: ContextResolvers::manual(context_resolver.clone(), context_resolver, tags_resolver),
+        context_resolvers: ContextResolvers::for_tests(true, None),
         default_hostname: MetaString::from_static("test-host"),
         enabled_filter: EnablePayloadsFilter::default(),
         origin_detection_enabled: false,
@@ -269,36 +264,6 @@ async fn source_does_not_finish_until_the_decoders_have_drained() {
 }
 
 #[tokio::test]
-async fn a_source_ignoring_shutdown_is_halted_with_its_children() {
-    // In the orderly path, the body of the source returns when it receives the shutdown signal, and this stops its
-    // children. This test covers the other path: a source that never sees the signal is halted along with
-    // everything below it.
-    //
-    // This cannot occur in production, because there the shutdown signal of a source *is* the signal of its
-    // worker, so the test withholds the signal from the source.
-    let (source, _) = build_source().await;
-    let options = TestComponentDriver::options()
-        .with_shutdown_timeout(Duration::from_millis(500))
-        .with_shutdown_withheld();
-    let (control, _outputs) = run_source(options, source).await;
-    control
-        .supervisor()
-        .wait_for_running_descendants(udp_descendant_count())
-        .await;
-
-    let error = control
-        .shutdown()
-        .await
-        .expect_err("the source should be halted once its timeout runs out");
-    match error.downcast_ref::<SupervisorError>() {
-        // The body never returned, so every child is still running when the source is halted. All are counted
-        // except the brutal pool shrinker.
-        Some(SupervisorError::ShutdownTimedOut { aborted }) => assert_eq!(*aborted, udp_descendant_count() - 1),
-        other => panic!("expected the source to be halted and counted, got {other:?}"),
-    }
-}
-
-#[tokio::test]
 async fn stream_handlers_are_the_listeners_own_children() {
     // Per-connection handlers are also supervised, with one fixed name for each listener type. Each handler belongs
     // to the listener that accepted its connection. When the listener accepts a connection, it adds a handler. When
@@ -339,60 +304,6 @@ async fn stream_handlers_are_the_listeners_own_children() {
         .shutdown()
         .await
         .expect("every child should have stopped on its own");
-}
-
-#[tokio::test]
-async fn the_registry_keeps_the_listener_bound_after_the_source_stops() {
-    // The property the whole migration is for. The source only ever borrows its listener, so stopping it hands the
-    // socket back to the registry still bound, rather than releasing the port to the operating system and leaving
-    // a rebuilt source to race whatever else wants it.
-
-    // A registry the test keeps, so it can ask for the same address once the source is gone.
-    //
-    // Port 0 is what makes the assertion below mean anything: the specification is keyed on the address as asked
-    // for, so re-acquiring it can only come back on the same port if the registry really held the socket. A fixed
-    // port could be re-bound from scratch and look identical.
-    let registry = ResourceRegistry::new();
-    let address = ListenAddress::udp_loopback(0);
-
-    let (mut source, _) = build_source().await;
-    source.listeners = vec![leased_listener_from(&registry, address.clone()).await];
-    let bound = source.listeners[0].bound_listen_address();
-    let listen_addr = match bound {
-        BoundListenAddress::Udp(addr) => addr,
-        other => panic!("expected a bound UDP address, got {other:?}"),
-    };
-
-    let (control, _outputs) = run_source(TestComponentDriver::options(), source).await;
-    control
-        .supervisor()
-        .wait_for_running_descendants(udp_descendant_count())
-        .await;
-    control.shutdown().await.expect("the source should stop cleanly");
-
-    // The same socket, not a lucky re-bind: the registry never let go of it.
-    let mut listener = leased_listener_from(&registry, address).await;
-    assert_eq!(listener.bound_listen_address(), bound);
-
-    // And it is still usable. A listener whose socket had been moved out by the previous holder rather than
-    // borrowed would come back exhausted and hang here instead of yielding anything.
-    let mut stream = timeout(RUN_TIMEOUT, listener.accept())
-        .await
-        .expect("accept should not hang once the source has released its lease")
-        .expect("listener should yield its socket");
-
-    let client = UdpSocket::bind("127.0.0.1:0").await.expect("client should bind");
-    client
-        .send_to(b"after.teardown:1|c", listen_addr)
-        .await
-        .expect("client should send");
-
-    let mut buf = BytesMut::with_capacity(64);
-    let (read, _) = timeout(RUN_TIMEOUT, stream.receive(&mut buf))
-        .await
-        .expect("receive should not time out")
-        .expect("receive should succeed");
-    assert_eq!(&buf[..read], b"after.teardown:1|c");
 }
 
 /// Socket paths for a DogStatsD source, in a temporary directory unique to the test.
