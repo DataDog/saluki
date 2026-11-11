@@ -44,6 +44,8 @@ ADP enforces memory bounds through three complementary mechanisms:
   grows to 25 ms at 95 %. Once started, throttling continues until usage falls to 80 %, so
   usage that hovers around 85 % doesn't toggle it on and off. Disable with
   `enable_global_limiter: false`.
+- **Structural backpressure**: bounded channels between components provide back-pressure
+  independently of memory monitoring.
 
 ## Observing throttling
 
@@ -58,8 +60,6 @@ these internal metrics show its effect:
 | `adp.memory_limiter.throttled_nanoseconds_total`  | Total time that reads were delayed             |
 
 If throttling is frequent, raise `memory_limit` or reduce the load on ADP.
-- **Structural backpressure**: bounded channels between components provide back-pressure
-  independently of memory monitoring.
 
 ## Comparison with Core Agent
 

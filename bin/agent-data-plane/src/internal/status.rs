@@ -122,12 +122,13 @@ fn write_memory_limiter_section(builder: &mut StatusBuilder, metrics: &Aggregate
     let throttled_calls = metrics.get_aggregated_with_tags(MEMORY_LIMITER_THROTTLED_CALLS, &[]);
     let throttled_nanos = metrics.get_aggregated_with_tags(MEMORY_LIMITER_THROTTLED_NANOS, &[]);
 
+    // The backoff gauge never exceeds the limiter's maximum backoff, but a status request must not panic on a value
+    // `Duration` can't represent.
+    let current_backoff = Duration::try_from_secs_f64(current_backoff_secs).unwrap_or_default();
+
     builder
         .named_section("Memory Limiter")
-        .set_field(
-            "Current Backoff",
-            format!("{:?}", Duration::from_secs_f64(current_backoff_secs.max(0.0))),
-        )
+        .set_field("Current Backoff", format!("{:?}", current_backoff))
         .set_field("Throttled Calls", throttled_calls.to_string())
         .set_field(
             "Throttled Time",
