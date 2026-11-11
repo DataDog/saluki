@@ -48,7 +48,6 @@ pub(crate) struct CaptureRecord {
     pub(crate) timestamp_ns: i64,
     pub(crate) payload: Vec<u8>,
     pub(crate) pid: Option<i32>,
-    pub(crate) ancillary: Vec<u8>,
     pub(crate) container_id: Option<String>,
 }
 
@@ -56,17 +55,10 @@ pub(crate) struct CaptureRecord {
 pub(super) struct TrafficCaptureWriter {
     queue_depth: usize,
     workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
+    // Only written while holding `traffic_tx`, so it can be checked under that lock.
     ongoing: Arc<AtomicBool>,
-    state: Arc<Mutex<WriterState>>,
-}
-
-#[derive(Default)]
-struct WriterState {
-    ongoing: bool,
-    accepting: bool,
-    target_path: Option<PathBuf>,
-    compressed: bool,
-    traffic_tx: Option<SyncSender<CaptureRecord>>,
+    // `Some` while the session accepts records; `stop_capture` clears it before the session ends.
+    traffic_tx: Arc<Mutex<Option<SyncSender<CaptureRecord>>>>,
 }
 
 enum CaptureFileWriter {
@@ -117,7 +109,7 @@ impl TrafficCaptureWriter {
             queue_depth: queue_depth.max(MIN_CAPTURE_DEPTH),
             workload_provider,
             ongoing: Arc::new(AtomicBool::new(false)),
-            state: Arc::new(Mutex::new(WriterState::default())),
+            traffic_tx: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -130,9 +122,9 @@ impl TrafficCaptureWriter {
     pub(super) fn start_capture(
         &self, target_dir: CaptureTargetDir, duration: Duration, compressed: bool,
     ) -> Result<PathBuf, GenericError> {
-        let mut state = self.state.lock().expect("capture writer mutex poisoned");
+        let mut traffic_tx_slot = self.traffic_tx.lock().expect("capture writer mutex poisoned");
 
-        if state.ongoing {
+        if self.ongoing.load(Ordering::Acquire) {
             return Err(generic_error!("capture already in progress"));
         }
 
@@ -141,25 +133,26 @@ impl TrafficCaptureWriter {
         write_header(&mut writer).map_err(|e| generic_error!("Failed to write capture file header: {}", e))?;
         let (traffic_tx, traffic_rx) = mpsc::sync_channel(self.queue_depth);
 
-        state.ongoing = true;
-        state.accepting = true;
-        state.target_path = Some(target_path.clone());
-        state.compressed = compressed;
-        state.traffic_tx = Some(traffic_tx);
+        *traffic_tx_slot = Some(traffic_tx);
         self.ongoing.store(true, Ordering::Release);
 
-        let shared_state = Arc::clone(&self.state);
+        let shared_traffic_tx = Arc::clone(&self.traffic_tx);
         let ongoing = Arc::clone(&self.ongoing);
         let workload_provider = self.workload_provider.clone();
         if let Err(e) = thread::Builder::new()
             .name("dogstatsd-capture-writer".into())
-            .spawn(move || run_capture_loop(shared_state, ongoing, traffic_rx, writer, duration, workload_provider))
+            .spawn(move || {
+                run_capture_loop(
+                    shared_traffic_tx,
+                    ongoing,
+                    traffic_rx,
+                    writer,
+                    duration,
+                    workload_provider,
+                )
+            })
         {
-            state.ongoing = false;
-            state.accepting = false;
-            state.target_path = None;
-            state.compressed = false;
-            state.traffic_tx = None;
+            *traffic_tx_slot = None;
             self.ongoing.store(false, Ordering::Release);
             return Err(generic_error!("Failed to spawn capture writer thread: {}", e));
         }
@@ -169,31 +162,13 @@ impl TrafficCaptureWriter {
 
     /// Stops the current capture session, if one is running.
     pub(super) fn stop_capture(&self) {
-        let traffic_tx = {
-            let mut state = self.state.lock().expect("capture writer mutex poisoned");
-
-            if !state.ongoing {
-                return;
-            }
-
-            state.accepting = false;
-            state.traffic_tx.take()
-        };
-
+        let traffic_tx = self.traffic_tx.lock().expect("capture writer mutex poisoned").take();
         drop(traffic_tx);
     }
 
     /// Attempts to enqueue a captured packet for persistence.
     pub(super) fn enqueue(&self, record: CaptureRecord) -> bool {
-        let traffic_tx = {
-            let state = self.state.lock().expect("capture writer mutex poisoned");
-            if !state.accepting {
-                return false;
-            }
-
-            state.traffic_tx.clone()
-        };
-
+        let traffic_tx = self.traffic_tx.lock().expect("capture writer mutex poisoned").clone();
         match traffic_tx {
             Some(traffic_tx) => traffic_tx.send(record).is_ok(),
             None => false,
@@ -285,8 +260,8 @@ fn open_target_writer(target_path: &Path, compressed: bool) -> Result<CaptureFil
 }
 
 fn run_capture_loop(
-    state: Arc<Mutex<WriterState>>, ongoing: Arc<AtomicBool>, traffic_rx: Receiver<CaptureRecord>,
-    mut writer: CaptureFileWriter, duration: Duration,
+    traffic_tx: Arc<Mutex<Option<SyncSender<CaptureRecord>>>>, ongoing: Arc<AtomicBool>,
+    traffic_rx: Receiver<CaptureRecord>, mut writer: CaptureFileWriter, duration: Duration,
     workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
 ) {
     let mut pid_map = FastHashMap::<i32, String>::default();
@@ -319,12 +294,8 @@ fn run_capture_loop(
         error!("Failed to finish DogStatsD capture file: {}", e);
     }
 
-    let mut state = state.lock().expect("capture writer mutex poisoned");
-    state.ongoing = false;
-    state.accepting = false;
-    state.target_path = None;
-    state.compressed = false;
-    state.traffic_tx = None;
+    let mut traffic_tx = traffic_tx.lock().expect("capture writer mutex poisoned");
+    *traffic_tx = None;
     ongoing.store(false, Ordering::Release);
 }
 
@@ -335,7 +306,6 @@ fn write_record(
         timestamp_ns,
         payload,
         pid,
-        ancillary,
         container_id,
     } = record;
 
@@ -344,14 +314,13 @@ fn write_record(
     }
 
     let payload_size = payload.len() as i32;
-    let ancillary_size = ancillary.len() as i32;
     let message = UnixDogstatsdMsg {
         timestamp: timestamp_ns,
         payload_size,
         payload,
         pid: pid.unwrap_or_default(),
-        ancillary_size,
-        ancillary,
+        ancillary_size: 0,
+        ancillary: Vec::new(),
     };
     let serialized = message.encode_to_vec();
 
@@ -720,7 +689,6 @@ mod tests {
             timestamp_ns: 123,
             payload: b"test".to_vec(),
             pid: Some(42),
-            ancillary: Vec::new(),
             container_id: Some("container_id://container-123".to_string()),
         }
     }
