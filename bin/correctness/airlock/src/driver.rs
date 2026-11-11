@@ -15,10 +15,7 @@ use bollard::{
         ContainerCreateBody, ContainerStateStatusEnum, EndpointSettings, HealthConfig, HealthStatusEnum, HostConfig,
         HostConfigCgroupnsModeEnum, Ipam, NetworkConnectRequest, NetworkCreateRequest, VolumeCreateRequest,
     },
-    query_parameters::{
-        CreateContainerOptionsBuilder, CreateImageOptions, ListContainersOptionsBuilder, LogsOptions,
-        RemoveContainerOptionsBuilder,
-    },
+    query_parameters::{CreateContainerOptionsBuilder, CreateImageOptions, LogsOptions},
     Docker,
 };
 use futures::{StreamExt as _, TryStreamExt as _};
@@ -29,7 +26,10 @@ use tokio::{
 };
 use tracing::{debug, error, trace, warn};
 
-use crate::config::{DatadogIntakeConfig, MillstoneConfig, TargetConfig};
+use crate::{
+    config::{DatadogIntakeConfig, MillstoneConfig, TargetConfig},
+    removal::Group,
+};
 
 const MILLSTONE_CONFIG_PATH_INTERNAL: &str = "/etc/millstone/config.toml";
 
@@ -554,44 +554,12 @@ impl Driver {
     async fn remove_isolation_group(docker: &Docker, isolation_group_id: &str) -> Result<(), GenericError> {
         let isolation_group_name = format!("airlock-{}", isolation_group_id);
         let isolation_group_label = format!("airlock-isolation-group={}", isolation_group_id);
-        let mut failures = Vec::new();
-
-        let list_filters: HashMap<&str, Vec<&str>> =
-            [("label", vec!["created_by=airlock", isolation_group_label.as_str()])]
-                .into_iter()
-                .collect();
-        let list_options = ListContainersOptionsBuilder::default()
-            .all(true)
-            .filters(&list_filters)
-            .build();
-        match docker.list_containers(Some(list_options)).await {
-            Ok(containers) => {
-                for container_id in containers.into_iter().filter_map(|container| container.id) {
-                    let remove_options = RemoveContainerOptionsBuilder::default().force(true).build();
-                    match docker.remove_container(&container_id, Some(remove_options)).await {
-                        Err(e) if !is_not_found(&e) => failures.push(format!("container '{}': {}", container_id, e)),
-                        _ => debug!("Removed container '{}'.", container_id),
-                    }
-                }
-            }
-            Err(e) => failures.push(format!("container list: {}", e)),
-        }
-
-        match docker
-            .remove_volume(
-                &isolation_group_name,
-                None::<bollard::query_parameters::RemoveVolumeOptions>,
-            )
-            .await
-        {
-            Err(e) if !is_not_found(&e) => failures.push(format!("volume '{}': {}", isolation_group_name, e)),
-            _ => debug!("Removed shared volume '{}'.", isolation_group_name),
-        }
-
-        match docker.remove_network(&isolation_group_name).await {
-            Err(e) if !is_not_found(&e) => failures.push(format!("network '{}': {}", isolation_group_name, e)),
-            _ => debug!("Removed shared network '{}'.", isolation_group_name),
-        }
+        let group = Group {
+            labels: &["created_by=airlock", isolation_group_label.as_str()],
+            volume: &isolation_group_name,
+            network: &isolation_group_name,
+        };
+        let failures = group.remove(docker).await;
 
         if failures.is_empty() {
             Ok(())
@@ -1337,11 +1305,6 @@ fn strip_ansi_codes(input: &[u8]) -> Vec<u8> {
         }
     }
     out
-}
-
-/// Returns whether Docker reported a missing resource.
-fn is_not_found(error: &Error) -> bool {
-    matches!(error, Error::DockerResponseServerError { status_code: 404, .. })
 }
 
 /// Returns `true` if `error` is a transient error that can be retried.
