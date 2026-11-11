@@ -14,7 +14,7 @@ import (
 
 func TestParseDriveFlags(t *testing.T) {
 	const commit = "281d921619d52ce7b99aef40607285992c9c2e89"
-	const image = "golang@sha256:e30143be198ab04cf7ba25fba83ab3a692ca584c994aad0bf131fa0eb32dd8c1"
+	const image = "golang@sha256:c1bc3620b0460d97001977fadbe8d0e94d7be5cbb064f4f6b268d95375c3ac71"
 	const digest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	base := []string{"--cases", "c", "--workdir", "w", "--out", "o", "--schema", "s"}
 	with := func(extra ...string) []string { return append(append([]string{}, base...), extra...) }
@@ -36,7 +36,7 @@ func TestParseDriveFlags(t *testing.T) {
 		"missing digest":       with("--agent-commit", commit, "--container-image", image),
 		"short commit":         with("--agent-commit", commit[:39], "--container-image", image, "--inputs-digest", digest),
 		"uppercase commit":     with("--agent-commit", "281D921619D52CE7B99AEF40607285992C9C2E89", "--container-image", image, "--inputs-digest", digest),
-		"image by tag":         with("--agent-commit", commit, "--container-image", "golang:1.26.7", "--inputs-digest", digest),
+		"image by tag":         with("--agent-commit", commit, "--container-image", "golang:1.26.10", "--inputs-digest", digest),
 		"digest wrong prefix":  with("--agent-commit", commit, "--container-image", image, "--inputs-digest", "md5:"+digest[7:]),
 		"digest short hex":     with("--agent-commit", commit, "--container-image", image, "--inputs-digest", "sha256:abcd"),
 		"digest uppercase hex": with("--agent-commit", commit, "--container-image", image, "--inputs-digest", "sha256:"+digest[7:63]+"D"),
@@ -54,7 +54,7 @@ func TestParseDriveFlags(t *testing.T) {
 func TestParseDriveFlagsRepeatedCases(t *testing.T) {
 	f, err := parseDriveFlags([]string{"--cases", "c1", "--cases", "c2", "--workdir", "w", "--out", "o", "--schema", "s",
 		"--agent-commit", "281d921619d52ce7b99aef40607285992c9c2e89",
-		"--container-image", "golang@sha256:e30143be198ab04cf7ba25fba83ab3a692ca584c994aad0bf131fa0eb32dd8c1",
+		"--container-image", "golang@sha256:c1bc3620b0460d97001977fadbe8d0e94d7be5cbb064f4f6b268d95375c3ac71",
 		"--inputs-digest", "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"})
 	if err != nil {
 		t.Fatal(err)

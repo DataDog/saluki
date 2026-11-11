@@ -352,7 +352,7 @@ impl SchemaOverlay {
             };
             // `$ref`s have already been inlined by `load_resolved_schema`, so a node either
             // carries `properties` (recurse) or is a leaf key. A `setting` is a leaf even when it
-            // describes its object value with `properties`.
+            // describes its object value with `properties`, such as `logs_config.tag_filters`.
             let is_setting = v.get("node_type").and_then(|t| t.as_str()) == Some("setting");
             if let Some(sub_props) = v.get("properties").and_then(|p| p.as_object()).filter(|_| !is_setting) {
                 Self::collect_schema_keys(sub_props, &full_key, keys);

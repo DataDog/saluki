@@ -1542,14 +1542,8 @@ mod tests {
 
     #[tokio::test]
     async fn saluki_only_keys_keep_their_spelling() {
-        // A dotted Saluki-only key is a flat key the typed reader does not see, as before, and the keys
-        // of a Saluki-only map are not rendered.
-        let yaml = concat!(
-            "data_plane.standalone_mode: true\n",
-            "experimental:\n",
-            "  metrics_endpoint_routing:\n",
-            "    metric_allowlist: {'https://x.test': [a], 010: [b], yes: [c]}\n",
-        );
+        // A dotted Saluki-only key stays a flat key, which the typed reader does not see.
+        let yaml = "data_plane.standalone_mode: true\n";
         let base = base_from_file("saluki_only_base", yaml).unwrap();
         assert_eq!(base["data_plane.standalone_mode"], json!(true));
         assert!(base.get("data_plane").is_none());
@@ -1557,9 +1551,23 @@ mod tests {
         let loaded = load_from_file("saluki_only", yaml).await;
 
         assert!(!loaded.local().control.standalone_mode);
+    }
+
+    #[tokio::test]
+    async fn metric_allowlist_keys_reach_the_model_as_the_agent_renders_them() {
+        let loaded = load_from_file(
+            "metric_allowlist_keys",
+            concat!(
+                "experimental:\n",
+                "  metrics_endpoint_routing:\n",
+                "    metric_allowlist: {'https://x.test': [a], 010: [b], yes: [c]}\n",
+            ),
+        )
+        .await;
+
         assert_eq!(
             serde_json::to_value(&loaded.local().domains.metrics_endpoint_routing.metric_allowlists).unwrap(),
-            json!({"https://x.test": ["a"], "010": ["b"], "yes": ["c"]})
+            json!({"https://x.test": ["a"], "8": ["b"], "true": ["c"]})
         );
     }
 
@@ -1611,6 +1619,130 @@ mod tests {
             );
         }
         std::env::remove_var("DD_DATA_PLANE_API_LISTEN_ADDRESS");
+    }
+
+    #[tokio::test]
+    async fn former_setting_names_in_the_file_reach_the_current_settings() {
+        let loaded = load_from_file("renamed_list", "statsd_metric_blocklist: [a]\n").await;
+        let filter = &loaded.local().domains.dogstatsd.metric_filter;
+        assert_eq!(filter.values, ["a"]);
+        assert!(!filter.match_prefix);
+        // The sources that compatibility checks and the raw view read hold only the current name.
+        let keys: Vec<String> = loaded.base.flattened_keys().into_iter().map(|(key, ..)| key).collect();
+        assert!(keys.iter().any(|key| key == "metric_filterlist"), "{keys:?}");
+        assert!(
+            !keys.iter().any(|key| key.starts_with("statsd_metric_blocklist")),
+            "{keys:?}"
+        );
+
+        let loaded = load_from_file("renamed_prefix", "statsd_metric_blocklist_match_prefix: true\n").await;
+        let filter = &loaded.local().domains.dogstatsd.metric_filter;
+        assert!(filter.values.is_empty());
+        assert!(filter.match_prefix);
+
+        let loaded = load_from_file(
+            "renamed_both",
+            "metric_filterlist: [b]\nmetric_filterlist_match_prefix: false\nstatsd_metric_blocklist: [a]\nstatsd_metric_blocklist_match_prefix: true\n",
+        )
+        .await;
+        let filter = &loaded.local().domains.dogstatsd.metric_filter;
+        assert_eq!(filter.values, ["a"]);
+        assert!(filter.match_prefix);
+    }
+
+    #[test]
+    fn a_former_setting_name_still_moves_when_keys_are_read_as_written() {
+        let yaml = "Log_Level: [a]\nmetric_filterlist: [b]\nstatsd_metric_blocklist: [a]\n";
+        let loaded = try_load("renamed_fallback", yaml).expect("the keys-as-written reading loads");
+
+        assert!(loaded.yaml_fallback_error.is_some());
+        assert_eq!(loaded.local().domains.dogstatsd.metric_filter.values, ["a"]);
+        assert_eq!(
+            loaded.deprecated_names,
+            [DeprecatedName {
+                former: "statsd_metric_blocklist".to_string(),
+                current: "metric_filterlist".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn former_setting_names_used_by_the_file_or_environment_are_recorded() {
+        let names = |yaml: &str, vars: &[(&str, &str)]| -> Vec<(String, String)> {
+            let vars: Vec<_> = vars.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+            let (_, names) = build_base_from(
+                yaml,
+                Path::new("datadog.yaml"),
+                &vars,
+                EnvPrecedence::AfterFile,
+                KeyReading::Datadog,
+                datadog_renamed_keys(),
+            )
+            .expect("base builds");
+            names.into_iter().map(|name| (name.former, name.current)).collect()
+        };
+        let pair = |former: &str, current: &str| (former.to_string(), current.to_string());
+
+        assert_eq!(
+            names(
+                "statsd_metric_blocklist: [a]\nSTATSD_METRIC_BLOCKLIST_MATCH_PREFIX: true\n",
+                &[]
+            ),
+            [
+                pair("statsd_metric_blocklist", "metric_filterlist"),
+                pair("statsd_metric_blocklist_match_prefix", "metric_filterlist_match_prefix"),
+            ]
+        );
+        // A null former name clears its setting, so it is recorded too.
+        assert_eq!(
+            names("statsd_metric_blocklist:\n", &[]),
+            [pair("statsd_metric_blocklist", "metric_filterlist")]
+        );
+        // An empty variable is not read.
+        assert_eq!(
+            names(
+                "",
+                &[
+                    ("DD_STATSD_METRIC_BLOCKLIST", "a"),
+                    ("DD_STATSD_METRIC_BLOCKLIST_MATCH_PREFIX", "")
+                ]
+            ),
+            [pair("DD_STATSD_METRIC_BLOCKLIST", "metric_filterlist")]
+        );
+        assert!(names("metric_filterlist: [a]\n", &[("DD_METRIC_FILTERLIST", "b")]).is_empty());
+    }
+
+    #[test]
+    fn former_setting_names_beat_current_ones_only_within_a_source() {
+        let build = |yaml: &str, vars: &[(&str, &str)]| {
+            let vars: Vec<_> = vars.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+            let (base, _) = build_base_from(
+                yaml,
+                Path::new("datadog.yaml"),
+                &vars,
+                EnvPrecedence::AfterFile,
+                KeyReading::Datadog,
+                datadog_renamed_keys(),
+            )
+            .expect("base builds");
+            base["metric_filterlist"].clone()
+        };
+
+        assert_eq!(
+            build("metric_filterlist: [file]\n", &[("DD_STATSD_METRIC_BLOCKLIST", "env")]),
+            json!(["env"])
+        );
+        assert_eq!(
+            build("statsd_metric_blocklist: [file]\n", &[("DD_METRIC_FILTERLIST", "env")]),
+            json!(["env"])
+        );
+        assert_eq!(
+            build(
+                "",
+                &[("DD_METRIC_FILTERLIST", "new"), ("DD_STATSD_METRIC_BLOCKLIST", "old")]
+            ),
+            json!(["old"])
+        );
     }
 
     /// Former names for the deprecation tests, highest priority first for each setting.

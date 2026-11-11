@@ -430,6 +430,18 @@ mod tests {
     }
 
     #[test]
+    fn the_vendored_schema_renames_the_dogstatsd_blocklist() {
+        let files = crate::Files::default();
+        let schema = load_schema(&files.datadog_schema, &files.otel_schema_dir);
+
+        assert_eq!(schema["metric_filterlist"].renamed_from, ["statsd_metric_blocklist"]);
+        assert_eq!(
+            schema["metric_filterlist_match_prefix"].renamed_from,
+            ["statsd_metric_blocklist_match_prefix"]
+        );
+    }
+
+    #[test]
     #[should_panic(expected = "`renamed_from` must map former names to versions")]
     fn a_renamed_from_that_is_not_a_map_is_rejected() {
         renamed_from(json!({"node_type": "setting", "renamed_from": ["old_name"]}));

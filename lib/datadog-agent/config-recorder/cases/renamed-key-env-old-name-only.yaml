@@ -1,0 +1,15 @@
+# Sets only the deprecated variables DD_STATSD_METRIC_BLOCKLIST and
+# DD_STATSD_METRIC_BLOCKLIST_MATCH_PREFIX.
+# Shows that they set metric_filterlist and metric_filterlist_match_prefix at the environment
+# source, converted as the current names' variables are.
+name: renamed-key-env-old-name-only
+group: behavior
+why: [env-deprecated-name-bound-first, env-deprecated-name-converted-as-current]
+env:
+  DD_STATSD_METRIC_BLOCKLIST: "old.a old.b"
+  DD_STATSD_METRIC_BLOCKLIST_MATCH_PREFIX: "true"
+keys:
+  - {key: metric_filterlist, getters: [GetStringSlice, Get]}
+  - {key: metric_filterlist_match_prefix, getters: [GetBool, Get]}
+  - {key: statsd_metric_blocklist, getters: [GetStringSlice, Get]}
+  - {key: statsd_metric_blocklist_match_prefix, getters: [GetBool, Get]}
