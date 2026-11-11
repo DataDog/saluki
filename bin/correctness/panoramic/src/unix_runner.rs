@@ -45,11 +45,11 @@ use tracing::{debug, error, info};
 use crate::{
     assertions::{AssertionContext, LogBuffer, TargetCommand},
     config::parse_port_spec,
+    core::ledger::random_id,
     core::probe::{probe, ProbeError},
     core::record::Verdict,
     core::result::{ErrorKind, PhaseTiming, TestResult},
     integration::IntegrationTestCase,
-    ledger::random_id,
     test::{Test, TestContext},
 };
 

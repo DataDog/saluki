@@ -47,7 +47,6 @@ use self::interrupts::Interrupts;
 mod machine_output;
 use self::machine_output::RunReport;
 
-mod ledger;
 mod reporter;
 use self::reporter::{OutputFormat, Reporter};
 
