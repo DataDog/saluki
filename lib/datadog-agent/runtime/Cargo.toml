@@ -48,9 +48,17 @@ tokio = { workspace = true, features = ["taskdump"], optional = true }
 
 [dev-dependencies]
 arc-swap = { workspace = true }
+# The facade tests serve a fake Datadog Agent over the IPC gRPC API, which also needs `tokio/net`.
+hyper = { workspace = true, features = ["http2", "server"] }
+hyper-util = { workspace = true, features = ["tokio"] }
+saluki-tls = { workspace = true, features = ["test-util"] }
+tempfile = { workspace = true }
 # `start_paused` in tests, for deterministic clock control in the InvalidApiKey report throttle tests, and the
 # multi-threaded runtime for the `minimal_remote_agent` example.
-tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
+tokio = { workspace = true, features = ["net", "rt-multi-thread", "test-util"] }
+tokio-rustls = { workspace = true }
+tonic-prost = { workspace = true }
+tower = { workspace = true, features = ["util"] }
 
 [lints]
 workspace = true

@@ -40,10 +40,11 @@
 //! │   ├── control plane             from the binary
 //! │   │   └── remote-agent          from RemoteAgent::create_remote_agent_supervisor
 //! │   ├── resource registry
+//! │   ├── env-provider              connected mode only
+//! │   │   ├── workload
+//! │   │   └── autodiscovery
 //! │   ├── config-updates            connected mode only
-//! │   └── env-provider              connected mode only
-//! │       ├── workload
-//! │       └── autodiscovery
+//! │   └── remote-config             once RemoteAgent::remote_config_client is called
 //! └── the binary's topology
 //! ```
 //!
