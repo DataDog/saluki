@@ -4,7 +4,7 @@ analysis_mode: logs
 logs:
   # Every record carries a unique `fixture_id`, so records pair even when a gap changes their message or timestamp.
   identity_fields: ["fixture_id"]
-  min_count: 51
+  min_count: 84
   # Every difference ADP shows today, tagged with its gap from the OTLP logs parity plan (DataDog/saluki#2966). Remove
   # an entry in the change that fixes its gap.
   known_differences:
@@ -32,6 +32,19 @@ logs:
       when:
         fixture_id: [resource-types]
       reason: ADP keeps native types for resource and scope attributes instead of using `AsString`.
+    - gap: gap/as-string-coercion
+      paths: ["content.container.image.tags"]
+      kinds: [value]
+      when:
+        fixture_id:
+          - tags-image-tags-array
+          - tags-image-tags-empty-array
+          - tags-image-tags-empty-first
+          - tags-image-tags-int-first
+          - tags-image-tag-then-tags
+          - tags-image-tags-then-tag
+          - tags-custom-before-semconv
+      reason: ADP keeps an array resource attribute native instead of using `AsString`.
     - gap: gap/as-string-coercion
       paths: ["content.res_empty"]
       kinds: [missing]
