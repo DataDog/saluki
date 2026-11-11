@@ -22,9 +22,9 @@ use crate::actions::Action;
 use crate::config::{AssertionConfig, AssertionStep, LogStream};
 use crate::core::deadline::{Budget, Deadline};
 use crate::core::probe::PROBE_TIMEOUT;
+use crate::core::result::{DurationMs, ErrorKind, TestResult};
 use crate::integration::IntegrationTestCase;
 use crate::record::{step_label, ActiveStep, CaseRecord, StepResult, StepStatus, Verdict};
-use crate::reporter::{DurationMs, ErrorKind, TestResult};
 
 mod adp_config_key_equals;
 mod adp_exits;
@@ -748,8 +748,8 @@ pub(crate) mod test_support {
 mod tests {
     use super::test_support::{host_context, procedure};
     use super::*;
+    use crate::core::result::TestOutcome;
     use crate::intake::test_server::MockIntake;
-    use crate::reporter::TestOutcome;
 
     /// Shorter than the long-running test steps, so missed cancellation fails promptly.
     const BOUND: Duration = Duration::from_secs(120);

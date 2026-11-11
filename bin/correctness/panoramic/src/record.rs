@@ -6,7 +6,7 @@ use std::time::Duration;
 use serde::Serialize;
 
 use crate::assertions::RunningStep;
-use crate::reporter::{PhaseTiming, TestResult};
+use crate::core::result::{PhaseTiming, TestResult};
 
 /// Shared step states and verdict, retained by the runner when it drops the test future.
 ///

@@ -17,7 +17,7 @@ use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tokio::time::{sleep, timeout_at, Instant};
 use tokio_util::sync::CancellationToken;
 
-use crate::reporter::{Issue, IssueKind, ReclaimEntry, ReclaimResult};
+use crate::core::result::{Issue, IssueKind, ReclaimEntry, ReclaimResult};
 
 /// Shared budget for stopping a case's tracked tasks and removing its resources.
 pub(crate) const RECLAIM_TIME: Duration = Duration::from_secs(30);

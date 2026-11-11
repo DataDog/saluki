@@ -8,10 +8,10 @@ use chrono::Local;
 use serde::Serialize;
 use tracing::warn;
 
-use crate::record::StepStatus;
-use crate::reporter::{
+use crate::core::result::{
     DurationMs, Issue, PhaseTiming, ReclaimEntry, StopCause, TestError, TestOutcome, TestResult, TimeoutAttribution,
 };
+use crate::record::StepStatus;
 
 /// Reported when the build could not read a repository to get a revision from.
 const UNKNOWN_REVISION: &str = "unknown";
@@ -601,8 +601,8 @@ mod tests {
     use super::*;
     use crate::assertions::{AssertionResult, AssertionStatus};
     use crate::collector::RunCollector;
+    use crate::core::result::{ErrorKind, TestOutcome, TimeoutAttribution};
     use crate::events::TestEvent;
-    use crate::reporter::{ErrorKind, TestOutcome, TimeoutAttribution};
 
     fn assertion(name: &str, status: AssertionStatus) -> AssertionResult {
         AssertionResult {
