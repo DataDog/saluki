@@ -1,0 +1,10 @@
+timeout: 1m
+subject_os: [windows]
+participants:
+  app:
+    subject: true
+    image: mcr.microsoft.com/windows/nanoserver:ltsc2022
+    files:
+      C:/App/a.txt: a.txt
+      'c:\app\a.txt': a.txt
+procedure: []

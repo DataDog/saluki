@@ -4,6 +4,7 @@
 #![deny(missing_docs)]
 
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::{io::IsTerminal, process::ExitCode};
 
 use clap::Parser as _;
@@ -13,6 +14,10 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt as _, util::SubscriberInitExt as _};
 
+use crate::core::case::{self, CaseError};
+use crate::core::participant::Os;
+use crate::core::plan::{self, CasePlan};
+use crate::core::registry::Registry;
 use crate::runner::Runner;
 
 mod kind;
@@ -86,7 +91,7 @@ async fn main() -> ExitCode {
             !cmd.no_tui && matches!(cmd.output, OutputFormat::Text) && std::io::stdout().is_terminal(),
             true,
         ),
-        Command::List(_) => (false, false),
+        Command::List(_) | Command::Plan(_) => (false, false),
     };
 
     if !use_tui {
@@ -96,9 +101,11 @@ async fn main() -> ExitCode {
         }
     }
 
+    let is_plan = matches!(cli.command, Command::Plan(_));
     let result = match cli.command {
         Command::Run(cmd) => run_tests(cmd, use_tui).await,
         Command::List(cmd) => list_tests(cmd).await,
+        Command::Plan(cmd) => plan_case(cmd),
     };
 
     if !use_tui {
@@ -108,6 +115,8 @@ async fn main() -> ExitCode {
                     info!("Panoramic stopped.")
                 }
             }
+            // `plan` reports its own errors, and exits 3 for a case it skips.
+            _ if is_plan => {}
             _ => error!("Panoramic stopped with errors."),
         }
     }
@@ -482,9 +491,134 @@ async fn list_tests(cmd: cli::ListCommand) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// The participant types and steps a participant case may name.
+fn registry() -> Registry {
+    let mut registry = Registry::default();
+    participants::register(&mut registry);
+    steps::register(&mut registry);
+    registry
+}
+
+/// Loads a participant case and plans it for every OS it declares.
+fn load_and_plan(dir: &Path) -> Result<BTreeMap<Os, CasePlan>, Vec<CaseError>> {
+    let registry = registry();
+    let case = case::load(dir, &registry)?;
+    plan::plan_all(&case, &registry)
+}
+
+fn plan_case(cmd: cli::PlanCommand) -> ExitCode {
+    let plans = match load_and_plan(&cmd.case_dir) {
+        Ok(plans) => plans,
+        Err(errors) => {
+            for error in errors {
+                eprintln!("{}", error);
+            }
+            return ExitCode::from(EXIT_HARNESS_ERROR);
+        }
+    };
+    let Some(plan) = plans.get(&cmd.subject_os) else {
+        eprintln!(
+            "The case does not declare subject OS {}, so a run skips it. It declares: {}.",
+            cmd.subject_os,
+            plans.keys().map(ToString::to_string).collect::<Vec<_>>().join(", ")
+        );
+        return ExitCode::from(EXIT_NO_TESTS_SELECTED);
+    };
+    if cmd.text {
+        print!("{}", plan);
+    } else {
+        match serde_json::to_string_pretty(plan) {
+            Ok(json) => println!("{}", json),
+            Err(e) => {
+                eprintln!("Failed to serialize the plan: {}", e);
+                return ExitCode::from(EXIT_HARNESS_ERROR);
+            }
+        }
+    }
+    ExitCode::SUCCESS
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn testdata(path: &str) -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata").join(path)
+    }
+
+    fn case_dirs(dir: &Path) -> Vec<std::path::PathBuf> {
+        let mut dirs: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.is_dir())
+            .collect();
+        dirs.sort();
+        dirs
+    }
+
+    #[test]
+    fn every_bad_case_is_rejected_for_its_subject_os_with_its_message() {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Expected {
+            subject_os: Os,
+            error: String,
+        }
+
+        let dir = testdata("bad");
+        let expected: BTreeMap<String, Expected> =
+            serde_saphyr::from_str(&std::fs::read_to_string(dir.join("expected.yaml")).unwrap()).unwrap();
+        let cases: Vec<String> = case_dirs(&dir)
+            .iter()
+            .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(cases, expected.keys().cloned().collect::<Vec<_>>());
+
+        let mut failures = Vec::new();
+        for (name, expected) in &expected {
+            let errors = match load_and_plan(&dir.join(name)) {
+                Ok(_) => {
+                    failures.push(format!("{}: planned without an error", name));
+                    continue;
+                }
+                Err(errors) => errors,
+            };
+            let found = errors.iter().any(|error| {
+                error.subject_os.is_none_or(|os| os == expected.subject_os)
+                    && error.to_string().contains(&expected.error)
+            });
+            if !found {
+                let errors: Vec<String> = errors.iter().map(ToString::to_string).collect();
+                failures.push(format!(
+                    "{}: no error for {} holds '{}':\n  {}",
+                    name,
+                    expected.subject_os,
+                    expected.error,
+                    errors.join("\n  ")
+                ));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn example_cases_plan_for_every_os_they_declare() {
+        for dir in case_dirs(&testdata("examples")) {
+            let plans = load_and_plan(&dir).unwrap_or_else(|errors| {
+                let errors: Vec<String> = errors.iter().map(ToString::to_string).collect();
+                panic!("{}", errors.join("\n"))
+            });
+            assert!(!plans.is_empty(), "{} planned for no OS", dir.display());
+        }
+    }
+
+    #[test]
+    fn two_plans_of_one_example_serialize_to_the_same_json() {
+        for dir in case_dirs(&testdata("examples")) {
+            let dump = || serde_json::to_string_pretty(&load_and_plan(&dir).unwrap()).unwrap();
+            assert_eq!(dump(), dump(), "{}", dir.display());
+        }
+    }
 
     #[test]
     fn log_level_scopes_the_selected_level_to_first_party_crates() {
