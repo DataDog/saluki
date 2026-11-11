@@ -1,7 +1,7 @@
 use nom::{
     branch::alt,
     bytes::complete::{tag, take_while1},
-    combinator::all_consuming,
+    combinator::{all_consuming, value},
     error::{Error, ErrorKind},
     number::complete::double,
     sequence::{preceded, separated_pair, terminated},
@@ -12,6 +12,7 @@ use tracing::{debug, warn};
 
 use super::{helpers::*, DogStatsDCodecConfiguration, NomParserError};
 
+#[derive(Clone)]
 enum MetricType {
     Count,
     Gauge,
@@ -271,17 +272,15 @@ fn sample_rate<'a>(
 #[inline]
 fn raw_metric_values(input: &[u8]) -> IResult<&[u8], (MetricType, &[u8])> {
     let (remaining, raw_values) = terminated(take_while1(|b| b != b'|'), tag("|")).parse(input)?;
-    let (remaining, raw_kind) = alt((tag("g"), tag("c"), tag("ms"), tag("h"), tag("s"), tag("d"))).parse(remaining)?;
-
-    let metric_type = match raw_kind {
-        b"c" => MetricType::Count,
-        b"g" => MetricType::Gauge,
-        b"s" => MetricType::Set,
-        b"ms" => MetricType::Timer,
-        b"h" => MetricType::Histogram,
-        b"d" => MetricType::Distribution,
-        _ => unreachable!("should be constrained by alt parser"),
-    };
+    let (remaining, metric_type) = alt((
+        value(MetricType::Gauge, tag("g")),
+        value(MetricType::Count, tag("c")),
+        value(MetricType::Timer, tag("ms")),
+        value(MetricType::Histogram, tag("h")),
+        value(MetricType::Set, tag("s")),
+        value(MetricType::Distribution, tag("d")),
+    ))
+    .parse(remaining)?;
 
     // Make sure the raw value(s) are valid UTF-8 before we use them later on.
     if simdutf8::basic::from_utf8(raw_values).is_err() {
