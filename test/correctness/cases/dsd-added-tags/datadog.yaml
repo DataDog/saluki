@@ -47,3 +47,8 @@ dogstatsd_tags:
 # arbitrary long duration that outlasts the test run, so every metric in the test contains those tags. Has no effect on
 # `dogstatsd_tags`, which the DSD source applies per-packet regardless of duration.
 expected_tags_duration: 1000m
+
+# Uncomment once `.datadog-agent-version` is 7.86.0 or later (https://github.com/DataDog/saluki/issues/3119). The core
+# agent adds an `infra_mode:basic` host tag, and neither DSD nor ADP should copy it onto metrics. Before 7.86.0, the
+# core agent's DSD still copies it, so this case would fail on the pinned version.
+# infrastructure_mode: basic

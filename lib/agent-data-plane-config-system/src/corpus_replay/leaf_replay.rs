@@ -194,6 +194,7 @@ pub(crate) fn kind_name(leaf: &LeafValue<'_>) -> &'static str {
         LeafValue::I64(_) => "I64",
         LeafValue::JsonList(_) => "JsonList",
         LeafValue::JsonMap(_) => "JsonMap",
+        LeafValue::JsonMapList(_) => "JsonMapList",
         LeafValue::OptionI64(_) => "OptionI64",
         LeafValue::OptionStr(_) => "OptionStr",
         LeafValue::Str(_) => "Str",

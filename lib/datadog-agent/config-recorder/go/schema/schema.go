@@ -87,9 +87,17 @@ type rawNode struct {
 	EnvParser            string                 `yaml:"env_parser"`
 	Tags                 []string               `yaml:"tags"`
 	RenamedFrom          map[string]interface{} `yaml:"renamed_from"`
-	Items                *rawNode               `yaml:"items"`
-	AdditionalProperties *rawNode               `yaml:"additionalProperties"`
+	Items                *rawElem               `yaml:"items"`
+	AdditionalProperties *rawElem               `yaml:"additionalProperties"`
 	Properties           map[string]*rawNode    `yaml:"properties"`
+}
+
+// rawElem is a setting's `items` or `additionalProperties` node, read only for its element type.
+// Its JSON Schema constraints are not read: they include an item's own `properties`, whose `type`
+// may be a list (gpu.unschedulable_nodes.labels), which rawNode's string `type` cannot decode.
+type rawElem struct {
+	Type  string   `yaml:"type"`
+	Items *rawElem `yaml:"items"`
 }
 
 // Load reads the Agent's merged core schema (`$ref`s inlined, every annotation kept) from path, as
@@ -153,7 +161,7 @@ func leaf(path string, c *rawNode) *Key {
 		// The recorder runs on Linux; the Agent's getPlatformDefault picks `linux` there.
 		k.Default = c.PlatformDefault["linux"]
 	}
-	var elem *rawNode
+	var elem *rawElem
 	switch c.Type {
 	case "array":
 		elem = c.Items

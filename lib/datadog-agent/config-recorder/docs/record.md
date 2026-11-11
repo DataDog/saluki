@@ -42,7 +42,7 @@ Agent citations are at `281d921619d`. Value encodings for getter results are in 
 | `format`           | integer          | Contract version; this document is `1`.                              |
 | `agent_commit`     | string           | Full 40-hex datadog-agent commit the harness built against.          |
 | `goos`, `goarch`   | string           | `runtime.GOOS`, `runtime.GOARCH` of the harness processes.           |
-| `go_version`       | string           | `runtime.Version()`, for example `go1.26.7`.                                |
+| `go_version`       | string           | `runtime.Version()`, for example `go1.26.10`.                               |
 | `container_image`  | string           | Digest-pinned reference of the image the harness processes ran in (the Go image; codegen runs in a separate pinned image). |
 | `containerized`    | boolean          | `env.IsContainerized()` in the baseline process (§3.2).              |
 | `features`         | array of string  | Sorted detected features in the baseline process (§6).               |

@@ -1,6 +1,8 @@
 #![allow(dead_code)]
 
+use std::borrow::Cow;
 use std::convert::TryFrom;
+use std::fmt::Write as _;
 
 use base64::{engine::general_purpose, Engine as _};
 use datadog_agent_apm::semantics::{lookup_int64, lookup_string, Accessor, Concept, Registry};
@@ -8,7 +10,7 @@ use opentelemetry_semantic_conventions::resource::{
     CONTAINER_ID, DEPLOYMENT_ENVIRONMENT_NAME, K8S_POD_UID, SERVICE_NAME, SERVICE_VERSION,
 };
 use otlp_protos::opentelemetry::proto::common::v1::{
-    any_value::Value as OtlpValue, InstrumentationScope as OtlpInstrumentationScope, KeyValue,
+    any_value::Value as OtlpValue, AnyValue, InstrumentationScope as OtlpInstrumentationScope, KeyValue,
 };
 use otlp_protos::opentelemetry::proto::resource::v1::Resource;
 use otlp_protos::opentelemetry::proto::trace::v1::{
@@ -17,7 +19,7 @@ use otlp_protos::opentelemetry::proto::trace::v1::{
 };
 use saluki_common::collections::FastHashMap;
 use saluki_common::strings::StringBuilder;
-use saluki_core::data_model::event::trace::{AttributeValue, Span as DdSpan};
+use saluki_core::data_model::event::trace::{AttributeValue, Span as DdSpan, SpanEvent, SpanLink};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use stringtheory::interning::{GenericMapInterner, Interner};
 use stringtheory::MetaString;
@@ -33,7 +35,7 @@ use crate::common::otlp::traces::normalize::{
     validate_and_fix_start_time, PeerServiceChange, MAX_META_KEY_LEN, MAX_META_VAL_LEN, MAX_TYPE_LEN,
 };
 use crate::common::otlp::traces::sampling::sample_rate_from_tracestate;
-use crate::common::otlp::traces::translator::convert_span_id;
+use crate::common::otlp::traces::translator::{convert_span_id, convert_trace_id, convert_trace_id_high};
 use crate::common::otlp::util::get_string_attribute;
 use crate::common::otlp::util::{
     DEPLOYMENT_ENVIRONMENT_KEY, KEY_DATADOG_CONTAINER_ID, KEY_DATADOG_ENVIRONMENT, KEY_DATADOG_VERSION,
@@ -113,6 +115,18 @@ const DD_NAMESPACED_TO_APM_CONVENTIONS: &[(&str, &str)] = &[
 // `otel.scope.{name,version}` span meta were added to the Agent's OTLP trace conversion in 7.82; only emit them when
 // the Agent version meets that threshold.
 const EMIT_OTEL_SCOPE_META: bool = datadog_agent_commons::agent_version::meets(7, 82, 0);
+
+// From 7.87 the Agent sends the links and events of an OTLP span as span links and span events. Before that it wrote
+// them as the `_dd.span_links` and `events` JSON tags, the legacy form. Regular CI builds ADP against the last Agent
+// release and nightly CI against the nightly Agent, so ADP follows whichever it is paired with.
+// TODO(#3069): remove this gate, the legacy tag path, and `marshal_links`/`marshal_events` once regular CI's
+// `PUBLIC_DD_AGENT_VERSION` reaches 7.87.
+const LEGACY_TAG_LINKS_AND_EVENTS: bool = !datadog_agent_commons::agent_version::meets(7, 87, 0);
+
+// Bit 31 of a span link's flags marks the flags as present, telling "not sampled" apart from "unknown".
+const SPAN_LINK_FLAGS_PRESENT: u32 = 1 << 31;
+// Only the low 8 bits of an OTLP link's flags are W3C trace flags; bits 8 and 9 are OTLP's `is_remote`.
+const SPAN_LINK_TRACE_FLAGS_MASK: u32 = 0xff;
 
 /// Resolves `peer.service` and `_dd.base_service` on a converted span and writes each normalized
 /// value back under its canonical key.
@@ -242,22 +256,17 @@ pub fn otel_span_to_dd_span(
         }
     }
 
-    if let Some(events_json) = marshal_events(&otel_span.events) {
-        attrs.insert(
-            MetaString::from_static("events"),
-            AttributeValue::String(events_json.into()),
-        );
-    }
+    set_links_and_events(
+        &mut dd_span,
+        &mut attrs,
+        otel_span,
+        LEGACY_TAG_LINKS_AND_EVENTS,
+        interner,
+    );
     if span_contains_exception_event(&otel_span.events) {
         attrs.insert(
             MetaString::from_static("_dd.span_events.has_exception"),
             AttributeValue::String(MetaString::from_static("true")),
-        );
-    }
-    if let Some(links_json) = marshal_links(&otel_span.links) {
-        attrs.insert(
-            MetaString::from_static("_dd.span_links"),
-            AttributeValue::String(links_json.into()),
         );
     }
 
@@ -1235,6 +1244,244 @@ fn span_contains_exception_event(events: &[OtlpSpanEvent]) -> bool {
     events.iter().any(|event| event.name == "exception")
 }
 
+/// Records the links and events of `otel_span` on `dd_span`.
+///
+/// They become the span's links and events, unless `legacy_tags` is set, in which case they go in `attrs` as the
+/// `_dd.span_links` and `events` JSON tags.
+fn set_links_and_events(
+    dd_span: &mut DdSpan, attrs: &mut FastHashMap<MetaString, AttributeValue>, otel_span: &OtlpSpan, legacy_tags: bool,
+    interner: &GenericMapInterner,
+) {
+    if !legacy_tags {
+        *dd_span.span_links_mut() = otlp_links_to_span_links(&otel_span.links, interner);
+        *dd_span.span_events_mut() = otlp_events_to_span_events(&otel_span.events, interner);
+        return;
+    }
+
+    if let Some(events_json) = marshal_events(&otel_span.events) {
+        attrs.insert(
+            MetaString::from_static("events"),
+            AttributeValue::String(events_json.into()),
+        );
+    }
+    if let Some(links_json) = marshal_links(&otel_span.links) {
+        attrs.insert(
+            MetaString::from_static("_dd.span_links"),
+            AttributeValue::String(links_json.into()),
+        );
+    }
+}
+
+/// Converts OTLP span links into [`SpanLink`]s.
+///
+/// Mirrors the Agent's `OTelSpanLinksToDD` (`pkg/trace/transform/transform.go`). Link attributes are strings in the
+/// Datadog model, so arrays are flattened into `key.0`, `key.1`, and so on, and maps into `key.subkey`. The `link.name`
+/// attribute is normalized here, since nothing downstream does it for ADP.
+pub(crate) fn otlp_links_to_span_links(links: &[OtlpSpanLink], interner: &GenericMapInterner) -> Vec<SpanLink> {
+    // One buffer builds every flattened key, so flattening allocates only for what the interner keeps.
+    let mut key = String::new();
+    links
+        .iter()
+        .map(|link| {
+            let mut span_link = SpanLink::new(convert_trace_id(&link.trace_id), convert_span_id(&link.span_id))
+                .with_trace_id_high(convert_trace_id_high(&link.trace_id));
+            if !link.trace_state.is_empty() {
+                span_link = span_link.with_tracestate(MetaString::from_interner(link.trace_state.as_str(), interner));
+            }
+            if link.flags != 0 {
+                span_link = span_link.with_flags((link.flags & SPAN_LINK_TRACE_FLAGS_MASK) | SPAN_LINK_FLAGS_PRESENT);
+            }
+            if !link.attributes.is_empty() {
+                let mut attributes = FastHashMap::default();
+                for attribute in &link.attributes {
+                    let value = attribute.value.as_ref().and_then(|wrapper| wrapper.value.as_ref());
+                    key.clear();
+                    key.push_str(&attribute.key);
+                    flatten_link_attribute(&mut attributes, &mut key, value, interner);
+                }
+                if let Some(AttributeValue::String(link_name)) = attributes.get_mut(LINK_NAME_KEY) {
+                    if needs_name_normalization(link_name.as_ref()) {
+                        *link_name = normalize_name(link_name.clone());
+                    }
+                }
+                span_link = span_link.with_attributes(attributes);
+            }
+            span_link
+        })
+        .collect()
+}
+
+/// Sets `key` in the string-valued attributes of a [`SpanLink`], flattening arrays and maps.
+fn flatten_link_attribute(
+    attributes: &mut FastHashMap<MetaString, AttributeValue>, key: &mut String, value: Option<&OtlpValue>,
+    interner: &GenericMapInterner,
+) {
+    match value {
+        Some(OtlpValue::ArrayValue(array)) => {
+            let base = key.len();
+            for (index, item) in array.values.iter().enumerate() {
+                let _ = write!(key, ".{index}");
+                flatten_link_attribute(attributes, key, item.value.as_ref(), interner);
+                key.truncate(base);
+            }
+        }
+        Some(OtlpValue::KvlistValue(list)) => {
+            let base = key.len();
+            for entry in &list.values {
+                key.push('.');
+                key.push_str(&entry.key);
+                let value = entry.value.as_ref().and_then(|wrapper| wrapper.value.as_ref());
+                flatten_link_attribute(attributes, key, value, interner);
+                key.truncate(base);
+            }
+        }
+        scalar => {
+            attributes.insert(
+                MetaString::from_interner(key.as_str(), interner),
+                AttributeValue::String(MetaString::from_interner(&otlp_scalar_as_string(scalar), interner)),
+            );
+        }
+    }
+}
+
+/// Renders a scalar OTLP value the way `pcommon.Value.AsString` does. An absent value is the empty string.
+fn otlp_scalar_as_string(value: Option<&OtlpValue>) -> Cow<'_, str> {
+    match value {
+        Some(OtlpValue::StringValue(value)) => Cow::Borrowed(value.as_str()),
+        Some(OtlpValue::BoolValue(value)) => Cow::Borrowed(if *value { "true" } else { "false" }),
+        Some(OtlpValue::IntValue(value)) => Cow::Owned(value.to_string()),
+        Some(OtlpValue::DoubleValue(value)) => Cow::Owned(float64_as_string(*value)),
+        Some(OtlpValue::BytesValue(value)) => Cow::Owned(general_purpose::STANDARD.encode(value)),
+        // Callers flatten arrays and maps, so they never reach this point.
+        Some(OtlpValue::ArrayValue(_) | OtlpValue::KvlistValue(_)) | None => Cow::Borrowed(""),
+    }
+}
+
+/// Renders a double like `pcommon`'s `float64AsString` in `pdata` v1.70.0, the version the Agent pins: ES6
+/// number-to-string, which is decimal from 1e-6 up to 1e21 and exponent form outside that range, with `NaN`,
+/// `Infinity`, and `-Infinity` spelled out.
+fn float64_as_string(value: f64) -> String {
+    if value.is_nan() {
+        return "NaN".to_string();
+    }
+    if value.is_infinite() {
+        return if value > 0.0 { "Infinity" } else { "-Infinity" }.to_string();
+    }
+
+    let magnitude = value.abs();
+    if magnitude != 0.0 && !(1e-6..1e21).contains(&magnitude) {
+        // Rust writes `1e21` and `1.5e-7`; ES6 writes a sign on positive exponents, as in `1e+21`.
+        let exponent_form = format!("{value:e}");
+        return match exponent_form.split_once('e') {
+            Some((mantissa, exponent)) if !exponent.starts_with('-') => format!("{mantissa}e+{exponent}"),
+            _ => exponent_form,
+        };
+    }
+    value.to_string()
+}
+
+/// Converts OTLP span events into [`SpanEvent`]s.
+///
+/// Mirrors the Agent's `OTelSpanEventsToDD` (`pkg/trace/transform/transform.go`). String, bool, int, and double
+/// attributes keep their type, and so do arrays whose values all share one of those types. Bytes become base64
+/// strings, other arrays are flattened into `key.0`, `key.1`, and so on, maps into `key.subkey`, and empty values are
+/// dropped.
+pub(crate) fn otlp_events_to_span_events(events: &[OtlpSpanEvent], interner: &GenericMapInterner) -> Vec<SpanEvent> {
+    // One buffer builds every flattened key, so flattening allocates only for what the interner keeps.
+    let mut key = String::new();
+    events
+        .iter()
+        .map(|event| {
+            let mut attributes = FastHashMap::default();
+            for attribute in &event.attributes {
+                let value = attribute.value.as_ref().and_then(|wrapper| wrapper.value.as_ref());
+                key.clear();
+                key.push_str(&attribute.key);
+                set_event_attribute(&mut attributes, &mut key, value, interner);
+            }
+            SpanEvent::new(
+                event.time_unix_nano,
+                MetaString::from_interner(event.name.as_str(), interner),
+            )
+            .with_attributes(attributes)
+        })
+        .collect()
+}
+
+/// Sets `key` in the attributes of a [`SpanEvent`].
+fn set_event_attribute(
+    attributes: &mut FastHashMap<MetaString, AttributeValue>, key: &mut String, value: Option<&OtlpValue>,
+    interner: &GenericMapInterner,
+) {
+    let typed = match value {
+        None => return,
+        Some(OtlpValue::StringValue(value)) => {
+            AttributeValue::String(MetaString::from_interner(value.as_str(), interner))
+        }
+        Some(OtlpValue::BoolValue(value)) => AttributeValue::Bool(*value),
+        Some(OtlpValue::IntValue(value)) => AttributeValue::Int(*value),
+        Some(OtlpValue::DoubleValue(value)) => AttributeValue::Float(*value),
+        Some(OtlpValue::BytesValue(value)) => AttributeValue::String(MetaString::from_interner(
+            general_purpose::STANDARD.encode(value).as_str(),
+            interner,
+        )),
+        Some(OtlpValue::ArrayValue(array)) => {
+            if let Some(values) = event_attribute_array(&array.values, interner) {
+                AttributeValue::Array(values)
+            } else {
+                let base = key.len();
+                for (index, item) in array.values.iter().enumerate() {
+                    let _ = write!(key, ".{index}");
+                    set_event_attribute(attributes, key, item.value.as_ref(), interner);
+                    key.truncate(base);
+                }
+                return;
+            }
+        }
+        Some(OtlpValue::KvlistValue(list)) => {
+            let base = key.len();
+            for entry in &list.values {
+                key.push('.');
+                key.push_str(&entry.key);
+                let value = entry.value.as_ref().and_then(|wrapper| wrapper.value.as_ref());
+                set_event_attribute(attributes, key, value, interner);
+                key.truncate(base);
+            }
+            return;
+        }
+    };
+    attributes.insert(MetaString::from_interner(key.as_str(), interner), typed);
+}
+
+/// Converts `values` into a typed array attribute, which is empty for an empty slice.
+///
+/// Returns `None` unless every value is a string, a bool, an int, or a double, all of the same type.
+fn event_attribute_array(values: &[AnyValue], interner: &GenericMapInterner) -> Option<Vec<AttributeValue>> {
+    let Some(first) = values.first() else {
+        return Some(Vec::new());
+    };
+    let kind = std::mem::discriminant(first.value.as_ref()?);
+    values
+        .iter()
+        .map(|item| {
+            match item
+                .value
+                .as_ref()
+                .filter(|value| std::mem::discriminant(*value) == kind)?
+            {
+                OtlpValue::StringValue(value) => Some(AttributeValue::String(MetaString::from_interner(
+                    value.as_str(),
+                    interner,
+                ))),
+                OtlpValue::BoolValue(value) => Some(AttributeValue::Bool(*value)),
+                OtlpValue::IntValue(value) => Some(AttributeValue::Int(*value)),
+                OtlpValue::DoubleValue(value) => Some(AttributeValue::Float(*value)),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
 // MarshalEvents marshals events into JSON.
 fn marshal_events(events: &[OtlpSpanEvent]) -> Option<String> {
     if events.is_empty() {
@@ -1872,7 +2119,7 @@ mod tests {
     use std::num::NonZeroUsize;
 
     use datadog_agent_apm::semantics::{test_util::registry_json, EMBEDDED_REGISTRY};
-    use otlp_protos::opentelemetry::proto::common::v1::{AnyValue, KeyValue};
+    use otlp_protos::opentelemetry::proto::common::v1::{AnyValue, ArrayValue, KeyValue, KeyValueList};
     use otlp_protos::opentelemetry::proto::resource::v1::Resource;
     use otlp_protos::opentelemetry::proto::trace::v1::Span as OtlpSpan;
 
@@ -3270,8 +3517,448 @@ mod tests {
         );
     }
 
+    fn kv_value(key: &str, value: OtlpValue) -> KeyValue {
+        KeyValue {
+            key: key.to_string(),
+            value: Some(AnyValue { value: Some(value) }),
+        }
+    }
+
+    fn kv_empty(key: &str) -> KeyValue {
+        KeyValue {
+            key: key.to_string(),
+            value: Some(AnyValue { value: None }),
+        }
+    }
+
+    fn any_value(value: OtlpValue) -> AnyValue {
+        AnyValue { value: Some(value) }
+    }
+
+    fn array_value(values: Vec<OtlpValue>) -> OtlpValue {
+        OtlpValue::ArrayValue(ArrayValue {
+            values: values.into_iter().map(any_value).collect(),
+        })
+    }
+
+    fn map_value(entries: Vec<KeyValue>) -> OtlpValue {
+        OtlpValue::KvlistValue(KeyValueList { values: entries })
+    }
+
+    fn link_with(trace_id: Vec<u8>, flags: u32, attributes: Vec<KeyValue>) -> OtlpSpanLink {
+        OtlpSpanLink {
+            trace_id,
+            span_id: vec![0, 0, 0, 0, 0, 0, 0, 9],
+            attributes,
+            flags,
+            ..Default::default()
+        }
+    }
+
+    fn converted_link_attributes(attributes: Vec<KeyValue>) -> Vec<(String, String)> {
+        let (interner, _) = extraction_env();
+        let links = otlp_links_to_span_links(&[link_with(vec![1; 16], 0, attributes)], &interner);
+        let mut pairs: Vec<_> = links[0]
+            .attributes()
+            .iter()
+            .map(|(key, value)| {
+                (
+                    key.as_ref().to_string(),
+                    value
+                        .as_string()
+                        .expect("link attributes are strings")
+                        .as_ref()
+                        .to_string(),
+                )
+            })
+            .collect();
+        pairs.sort();
+        pairs
+    }
+
+    fn converted_event_attributes(attributes: Vec<KeyValue>) -> Vec<(String, AttributeValue)> {
+        let (interner, _) = extraction_env();
+        let event = OtlpSpanEvent {
+            attributes,
+            ..Default::default()
+        };
+        let events = otlp_events_to_span_events(&[event], &interner);
+        let mut pairs: Vec<_> = events[0]
+            .attributes()
+            .iter()
+            .map(|(key, value)| (key.as_ref().to_string(), value.clone()))
+            .collect();
+        pairs.sort_by(|a, b| a.0.cmp(&b.0));
+        pairs
+    }
+
+    fn string_value(value: &str) -> AttributeValue {
+        AttributeValue::String(MetaString::from(value))
+    }
+
+    fn pairs(entries: &[(&str, &str)]) -> Vec<(String, String)> {
+        entries.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
     #[test]
-    fn otel_span_to_dd_span_normalizes_link_name() {
+    fn span_links_split_the_trace_id_and_keep_the_span_id_and_tracestate() {
+        let trace_id: Vec<u8> = (1..=16).collect();
+        let mut link = link_with(trace_id, 0, vec![]);
+        link.trace_state = "vendor=value".to_string();
+        let (interner, _) = extraction_env();
+
+        let links = otlp_links_to_span_links(&[link], &interner);
+
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].trace_id_high(), 0x0102_0304_0506_0708);
+        assert_eq!(links[0].trace_id(), 0x090a_0b0c_0d0e_0f10);
+        assert_eq!(links[0].span_id(), 9);
+        assert_eq!(links[0].tracestate(), "vendor=value");
+        assert_eq!(links[0].flags(), 0);
+        assert!(links[0].attributes().is_empty());
+    }
+
+    #[test]
+    fn span_link_flags_keep_the_trace_flags_and_mark_them_present() {
+        let (interner, _) = extraction_env();
+        // (OTLP flags, Datadog flags): unset stays unset; any set flags keep their low 8 bits and gain bit 31, and
+        // the `is_remote` bits (8 and 9) are dropped.
+        for (otlp, datadog) in [
+            (0, 0),
+            (0x01, 0x8000_0001),
+            (0x300 | 0x01, 0x8000_0001),
+            (0x100, 0x8000_0000),
+            (0xff, 0x8000_00ff),
+        ] {
+            let links = otlp_links_to_span_links(&[link_with(vec![1; 16], otlp, vec![])], &interner);
+            assert_eq!(links[0].flags(), datadog, "OTLP flags {otlp:#x}");
+        }
+    }
+
+    #[test]
+    fn span_link_attributes_are_strings_and_flatten_arrays_and_maps() {
+        let attributes = converted_link_attributes(vec![
+            kv_str("s", "text"),
+            kv_value("b", OtlpValue::BoolValue(true)),
+            kv_value("i", OtlpValue::IntValue(-42)),
+            kv_value("d", OtlpValue::DoubleValue(1.5)),
+            kv_value("bytes", OtlpValue::BytesValue(b"hi".to_vec())),
+            kv_value(
+                "arr",
+                array_value(vec![
+                    OtlpValue::StringValue("a".to_string()),
+                    OtlpValue::IntValue(2),
+                    array_value(vec![OtlpValue::BoolValue(false)]),
+                ]),
+            ),
+            kv_value(
+                "m",
+                map_value(vec![kv_str("x", "1"), kv_value("y", map_value(vec![kv_str("z", "2")]))]),
+            ),
+            kv_empty("empty"),
+        ]);
+
+        assert_eq!(
+            attributes,
+            pairs(&[
+                ("arr.0", "a"),
+                ("arr.1", "2"),
+                ("arr.2.0", "false"),
+                ("b", "true"),
+                ("bytes", "aGk="),
+                ("d", "1.5"),
+                ("empty", ""),
+                ("i", "-42"),
+                ("m.x", "1"),
+                ("m.y.z", "2"),
+                ("s", "text"),
+            ])
+        );
+    }
+
+    #[test]
+    fn float64_as_string_matches_pcommon() {
+        for (value, expected) in [
+            (0.0, "0"),
+            (-0.0, "-0"),
+            (1.0, "1"),
+            (1.5, "1.5"),
+            (-2.25, "-2.25"),
+            (1e-6, "0.000001"),
+            (1e-7, "1e-7"),
+            (1.5e-7, "1.5e-7"),
+            (1e-10, "1e-10"),
+            (1e20, "100000000000000000000"),
+            (1e21, "1e+21"),
+            (1.5e300, "1.5e+300"),
+            (-1e21, "-1e+21"),
+            (f64::NAN, "NaN"),
+            (f64::INFINITY, "Infinity"),
+            (f64::NEG_INFINITY, "-Infinity"),
+        ] {
+            assert_eq!(float64_as_string(value), expected, "{value:?}");
+        }
+    }
+
+    #[test]
+    fn span_links_normalize_link_name() {
+        let (interner, _) = extraction_env();
+        for (raw, normalized) in [("bad link name!", "bad_link_name"), ("中文link", "link")] {
+            let links = otlp_links_to_span_links(
+                &[link_with(
+                    vec![1; 16],
+                    0,
+                    vec![kv_str("link.name", raw), kv_str("other.attribute", "untouched")],
+                )],
+                &interner,
+            );
+
+            let attributes = links[0].attributes();
+            assert_eq!(attributes.get("link.name"), Some(&string_value(normalized)), "{raw}");
+            assert_eq!(attributes.get("other.attribute"), Some(&string_value("untouched")));
+        }
+    }
+
+    #[test]
+    fn span_events_keep_name_time_and_typed_attributes() {
+        let (interner, _) = extraction_env();
+        let event = OtlpSpanEvent {
+            time_unix_nano: 1_700_000_000_123,
+            name: "exception".to_string(),
+            attributes: vec![
+                kv_str("s", "text"),
+                kv_value("b", OtlpValue::BoolValue(true)),
+                kv_value("i", OtlpValue::IntValue(7)),
+                kv_value("d", OtlpValue::DoubleValue(2.5)),
+                kv_value("bytes", OtlpValue::BytesValue(b"hi".to_vec())),
+                kv_str("blank", ""),
+            ],
+            // The Datadog model has no place for the count of dropped attributes.
+            dropped_attributes_count: 3,
+        };
+
+        let events = otlp_events_to_span_events(&[event], &interner);
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].time_unix_nano(), 1_700_000_000_123);
+        assert_eq!(events[0].name(), "exception");
+        let mut attributes: Vec<_> = events[0]
+            .attributes()
+            .iter()
+            .map(|(k, v)| (k.as_ref().to_string(), v.clone()))
+            .collect();
+        attributes.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(
+            attributes,
+            vec![
+                ("b".to_string(), AttributeValue::Bool(true)),
+                ("blank".to_string(), string_value("")),
+                ("bytes".to_string(), string_value("aGk=")),
+                ("d".to_string(), AttributeValue::Float(2.5)),
+                ("i".to_string(), AttributeValue::Int(7)),
+                ("s".to_string(), string_value("text")),
+            ]
+        );
+    }
+
+    #[test]
+    fn span_event_arrays_stay_typed_only_when_every_value_has_one_scalar_type() {
+        let attributes = converted_event_attributes(vec![
+            kv_value(
+                "strs",
+                array_value(vec![
+                    OtlpValue::StringValue("a".to_string()),
+                    OtlpValue::StringValue("b".to_string()),
+                ]),
+            ),
+            kv_value(
+                "ints",
+                array_value(vec![OtlpValue::IntValue(1), OtlpValue::IntValue(2)]),
+            ),
+            kv_value("doubles", array_value(vec![OtlpValue::DoubleValue(0.5)])),
+            kv_value(
+                "bools",
+                array_value(vec![OtlpValue::BoolValue(true), OtlpValue::BoolValue(false)]),
+            ),
+            kv_value("none", array_value(vec![])),
+            // Mixed types, arrays of arrays, and bytes can't be a typed array, so they flatten. Each flattened
+            // element is then converted on its own, so an inner array that is typed stays typed.
+            kv_value(
+                "mixed",
+                array_value(vec![OtlpValue::IntValue(1), OtlpValue::StringValue("a".to_string())]),
+            ),
+            kv_value("nested", array_value(vec![array_value(vec![OtlpValue::IntValue(5)])])),
+            kv_value(
+                "deep",
+                array_value(vec![array_value(vec![
+                    OtlpValue::IntValue(1),
+                    OtlpValue::StringValue("a".to_string()),
+                ])]),
+            ),
+            kv_value("blobs", array_value(vec![OtlpValue::BytesValue(b"hi".to_vec())])),
+        ]);
+
+        assert_eq!(
+            attributes,
+            vec![
+                ("blobs.0".to_string(), string_value("aGk=")),
+                (
+                    "bools".to_string(),
+                    AttributeValue::Array(vec![AttributeValue::Bool(true), AttributeValue::Bool(false)])
+                ),
+                ("deep.0.0".to_string(), AttributeValue::Int(1)),
+                ("deep.0.1".to_string(), string_value("a")),
+                (
+                    "doubles".to_string(),
+                    AttributeValue::Array(vec![AttributeValue::Float(0.5)])
+                ),
+                (
+                    "ints".to_string(),
+                    AttributeValue::Array(vec![AttributeValue::Int(1), AttributeValue::Int(2)])
+                ),
+                ("mixed.0".to_string(), AttributeValue::Int(1)),
+                ("mixed.1".to_string(), string_value("a")),
+                (
+                    "nested.0".to_string(),
+                    AttributeValue::Array(vec![AttributeValue::Int(5)])
+                ),
+                ("none".to_string(), AttributeValue::Array(vec![])),
+                (
+                    "strs".to_string(),
+                    AttributeValue::Array(vec![string_value("a"), string_value("b")])
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn span_event_maps_flatten_and_empty_values_are_dropped() {
+        let attributes = converted_event_attributes(vec![
+            kv_value(
+                "m",
+                map_value(vec![
+                    kv_value("a", OtlpValue::IntValue(1)),
+                    kv_value("b", map_value(vec![kv_str("c", "x")])),
+                    kv_empty("gone"),
+                ]),
+            ),
+            kv_value("empty_map", map_value(vec![])),
+            kv_value("only_empty", array_value(vec![])),
+            kv_empty("empty"),
+        ]);
+
+        assert_eq!(
+            attributes,
+            vec![
+                ("m.a".to_string(), AttributeValue::Int(1)),
+                ("m.b.c".to_string(), string_value("x")),
+                // An empty array is a real value, unlike an empty map.
+                ("only_empty".to_string(), AttributeValue::Array(vec![])),
+            ]
+        );
+    }
+
+    fn span_with_links_and_events() -> OtlpSpan {
+        OtlpSpan {
+            name: "span-name".to_string(),
+            kind: SpanKind::Server as i32,
+            links: vec![link_with(vec![1; 16], 0, vec![kv_str("k", "v")])],
+            events: vec![OtlpSpanEvent {
+                name: "exception".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn links_and_events_become_span_links_and_events_without_tags_by_default() {
+        let (interner, _) = extraction_env();
+        let mut attributes = FastHashMap::default();
+
+        let mut dd_span = DdSpan::default();
+        set_links_and_events(
+            &mut dd_span,
+            &mut attributes,
+            &span_with_links_and_events(),
+            false,
+            &interner,
+        );
+
+        assert_eq!(dd_span.span_links().len(), 1);
+        assert_eq!(dd_span.span_events().len(), 1);
+        assert!(!attributes.contains_key("_dd.span_links"));
+        assert!(!attributes.contains_key("events"));
+    }
+
+    #[test]
+    fn links_and_events_go_in_tags_without_span_links_and_events_when_legacy() {
+        let (interner, _) = extraction_env();
+        let mut attributes = FastHashMap::default();
+
+        let mut dd_span = DdSpan::default();
+        set_links_and_events(
+            &mut dd_span,
+            &mut attributes,
+            &span_with_links_and_events(),
+            true,
+            &interner,
+        );
+
+        assert!(dd_span.span_links().is_empty());
+        assert!(dd_span.span_events().is_empty());
+        assert!(attributes.contains_key("_dd.span_links"));
+        assert!(attributes.contains_key("events"));
+    }
+
+    #[test]
+    fn legacy_tags_are_used_exactly_for_agents_before_7_87() {
+        // `DD_AGENT_VERSION` is the build input the gate reads. An unknown version means the newest behavior, and so
+        // does a development build such as `nightly`.
+        let version =
+            option_env!("DD_AGENT_VERSION").and_then(datadog_agent_commons::agent_version::AgentVersion::parse);
+        let expected = version.is_some_and(|version| !version.meets(7, 87, 0));
+
+        assert_eq!(LEGACY_TAG_LINKS_AND_EVENTS, expected);
+    }
+
+    #[test]
+    fn otel_span_to_dd_span_follows_the_legacy_tags_gate_and_always_flags_exceptions() {
+        let (interner, mut sb) = extraction_env();
+        let dd_span = otel_span_to_dd_span(
+            &span_with_links_and_events(),
+            &Resource::default(),
+            None,
+            false,
+            true,
+            &EMBEDDED_REGISTRY,
+            &interner,
+            &mut sb,
+            None,
+            5000,
+        );
+
+        // Whichever path the Agent version selects, the other one is empty.
+        assert_eq!(!dd_span.span_links().is_empty(), !LEGACY_TAG_LINKS_AND_EVENTS);
+        assert_eq!(!dd_span.span_events().is_empty(), !LEGACY_TAG_LINKS_AND_EVENTS);
+        assert_eq!(
+            dd_span.attributes.contains_key("_dd.span_links"),
+            LEGACY_TAG_LINKS_AND_EVENTS
+        );
+        assert_eq!(dd_span.attributes.contains_key("events"), LEGACY_TAG_LINKS_AND_EVENTS);
+        // The exception flag is a tag on both paths.
+        assert_eq!(
+            dd_span
+                .attributes
+                .get("_dd.span_events.has_exception")
+                .and_then(AttributeValue::as_string)
+                .map(AsRef::as_ref),
+            Some("true")
+        );
+    }
+
+    #[test]
+    fn tag_span_links_normalize_link_name() {
         let link = OtlpSpanLink {
             trace_id: vec![1; 16],
             span_id: vec![2; 8],
@@ -3287,22 +3974,11 @@ mod tests {
             links: vec![link],
             ..Default::default()
         };
-        let (interner, mut sb) = extraction_env();
-        let dd_span = otel_span_to_dd_span(
-            &span,
-            &Resource::default(),
-            None,
-            false,
-            true,
-            &EMBEDDED_REGISTRY,
-            &interner,
-            &mut sb,
-            None,
-            5000,
-        );
+        let (interner, _) = extraction_env();
+        let mut attributes = FastHashMap::default();
+        set_links_and_events(&mut DdSpan::default(), &mut attributes, &span, true, &interner);
 
-        let links_json = dd_span
-            .attributes
+        let links_json = attributes
             .get("_dd.span_links")
             .and_then(AttributeValue::as_string)
             .map(|s| s.as_ref().to_owned())
@@ -3331,7 +4007,7 @@ mod tests {
     }
 
     #[test]
-    fn otel_span_to_dd_span_repairs_unicode_leading_link_names() {
+    fn tag_span_links_repair_unicode_leading_link_names() {
         let link = OtlpSpanLink {
             trace_id: vec![1; 16],
             span_id: vec![2; 8],
@@ -3344,22 +4020,11 @@ mod tests {
             links: vec![link],
             ..Default::default()
         };
-        let (interner, mut sb) = extraction_env();
-        let dd_span = otel_span_to_dd_span(
-            &span,
-            &Resource::default(),
-            None,
-            false,
-            true,
-            &EMBEDDED_REGISTRY,
-            &interner,
-            &mut sb,
-            None,
-            5000,
-        );
+        let (interner, _) = extraction_env();
+        let mut attributes = FastHashMap::default();
+        set_links_and_events(&mut DdSpan::default(), &mut attributes, &span, true, &interner);
 
-        let links_json = dd_span
-            .attributes
+        let links_json = attributes
             .get("_dd.span_links")
             .and_then(AttributeValue::as_string)
             .map(|s| s.as_ref().to_owned())
