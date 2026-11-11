@@ -495,6 +495,7 @@ symlink,https://gitlab.com/chris-morgan/symlink,MIT OR Apache-2.0,Chris Morgan <
 syn,https://github.com/dtolnay/syn,MIT OR Apache-2.0,David Tolnay <dtolnay@gmail.com>
 sync_wrapper,https://github.com/Actyx/sync_wrapper,Apache-2.0,Actyx AG <developer@actyx.io>
 synstructure,https://github.com/mystor/synstructure,MIT,Nika Layzell <nika@thelayzells.com>
+tar,https://github.com/composefs/tar-rs,MIT OR Apache-2.0,Alex Crichton <alex@alexcrichton.com>
 target-lexicon,https://github.com/bytecodealliance/target-lexicon,Apache-2.0 WITH LLVM-exception,Dan Gohman <sunfish@mozilla.com>
 target-spec,https://github.com/guppy-rs/guppy,MIT OR Apache-2.0,"Jack Moffitt <metajack@fb.com>, Rain <rain1@fb.com>"
 target-tuple,https://github.com/dtolnay/target-tuple,MIT OR Apache-2.0,David Tolnay <dtolnay@gmail.com>

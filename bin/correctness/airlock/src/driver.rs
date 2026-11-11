@@ -556,10 +556,12 @@ impl Driver {
         let isolation_group_label = format!("airlock-isolation-group={}", isolation_group_id);
         let group = Group {
             labels: &["created_by=airlock", isolation_group_label.as_str()],
-            volume: &isolation_group_name,
+            volume: Some(&isolation_group_name),
             network: &isolation_group_name,
+            owner_label: None,
+            remove_anonymous_volumes: false,
         };
-        let failures = group.remove(docker).await;
+        let failures = group.remove(docker, None).await;
 
         if failures.is_empty() {
             Ok(())
@@ -1356,7 +1358,7 @@ fn transient_error_retry_backoff(attempt: u32, seed: &str) -> Duration {
 ///
 /// Each retry is logged at warning level so that runs which only passed because of a retry stay visible in CI output,
 /// rather than the mitigation quietly hiding how often the collision fires.
-async fn with_transient_error_retry<F, Fut, T>(
+pub(crate) async fn with_transient_error_retry<F, Fut, T>(
     operation: &str, seed: &str, mut run_attempt: F,
 ) -> Result<T, GenericError>
 where
@@ -1374,7 +1376,7 @@ where
 
                 let backoff = transient_error_retry_backoff(attempt, seed);
                 warn!(
-                    isolation_group = seed,
+                    seed,
                     error = %e,
                     "Transient error during {}. Retrying in {:?} (attempt {} of {}).",
                     operation,
@@ -1760,15 +1762,16 @@ mod tests {
             .iter()
             .map(|request| request.split('?').next().unwrap_or_default())
             .collect();
+        // Containers are removed concurrently, so either may be requested first.
+        let (listing, rest) = paths.split_at(1);
+        let (containers, rest) = rest.split_at(2);
+        assert_eq!(listing, ["GET /containers/json"]);
+        let mut containers = containers.to_vec();
+        containers.sort_unstable();
+        assert_eq!(containers, ["DELETE /containers/c1", "DELETE /containers/c2"]);
         assert_eq!(
-            paths,
-            [
-                "GET /containers/json",
-                "DELETE /containers/c1",
-                "DELETE /containers/c2",
-                "DELETE /volumes/airlock-ab12cd34",
-                "DELETE /networks/airlock-ab12cd34",
-            ]
+            rest,
+            ["DELETE /volumes/airlock-ab12cd34", "DELETE /networks/airlock-ab12cd34"]
         );
         for container_removal in &requests[1..3] {
             assert!(container_removal.contains("force=true"), "{container_removal}");

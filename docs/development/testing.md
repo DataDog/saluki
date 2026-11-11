@@ -23,6 +23,12 @@ shared fixtures, and assertion density, see [Testing patterns](./testing-pattern
 
 CI: `.gitlab/test.yml`—runs on both Linux (amd64/arm64) and macOS (amd64/arm64).
 
+### Tests that need a Docker daemon
+
+Unit tests that create containers are ignored by default, so `make test` doesn't need Docker. Run them with
+`make test-container-daemon`, which needs a reachable Docker daemon. Their image comes from the internal registry.
+CI doesn't run them, so run them by hand when you change the container mechanisms.
+
 ### Architecture tests
 
 The `architecture-tests` crate in `test/architecture/` protects architectural invariants as part of the unit-test
