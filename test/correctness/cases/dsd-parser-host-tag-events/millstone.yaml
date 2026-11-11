@@ -5,8 +5,10 @@ volume: 1000
 corpus:
   size: 1
   payload:
-    # The Core Agent uses a `host:` tag as the event hostname when there's no `h:` field.
+    # The Core Agent uses a `host:` tag as the event hostname when there's no `h:` field. An empty `host:` tag gives an
+    # empty hostname rather than the agent's hostname.
     static: |
       _e{7,4}:control|text|#env:prod
       _e{8,4}:host.tag|text|#host:tagged-host,env:prod
       _e{15,4}:host.field_wins|text|h:field-host|#host:tagged-host,env:prod
+      _e{10,4}:host.empty|text|#host:,env:prod
