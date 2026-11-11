@@ -8,7 +8,6 @@ use saluki_env::{
     workload::{origin::ResolvedOrigin, EntityId},
     WorkloadProvider,
 };
-use saluki_io::deser::codec::dogstatsd::{EventPacket, MetricPacket, ServiceCheckPacket};
 use tracing::trace;
 
 use super::{replay::CapturedTaggerHandle, tags::WellKnownTags};
@@ -276,53 +275,19 @@ impl OriginTagsResolver for DogStatsDOriginTagResolver {
     }
 }
 
-/// Builds an `RawOrigin` object from the given metric packet.
-pub fn origin_from_metric_packet<'packet, 'tags>(
-    packet: &'tags MetricPacket<'packet>, well_known_tags: &'tags WellKnownTags<'tags>,
-) -> RawOrigin<'tags>
-where
-    'packet: 'tags,
-{
-    let cardinality = packet.cardinality.or(well_known_tags.cardinality);
+/// Builds a `RawOrigin` from the origin fields of a DogStatsD packet and its well-known tags.
+///
+/// Metric, event, and service check packets all carry the same origin fields.
+pub fn origin_from_packet<'a>(
+    local_data: Option<&'a str>, external_data: Option<&'a str>, cardinality: Option<OriginTagCardinality>,
+    well_known_tags: &WellKnownTags<'a>,
+) -> RawOrigin<'a> {
+    let cardinality = cardinality.or(well_known_tags.cardinality);
 
     let mut origin = RawOrigin::default();
     origin.set_pod_uid(well_known_tags.pod_uid);
-    origin.set_local_data(packet.local_data);
-    origin.set_external_data(packet.external_data);
-    origin.set_cardinality(cardinality);
-    origin
-}
-
-/// Builds an `RawOrigin` object from the given event packet.
-pub fn origin_from_event_packet<'packet, 'tags>(
-    packet: &'tags EventPacket<'packet>, well_known_tags: &'tags WellKnownTags<'tags>,
-) -> RawOrigin<'tags>
-where
-    'packet: 'tags,
-{
-    let cardinality = packet.cardinality.or(well_known_tags.cardinality);
-
-    let mut origin = RawOrigin::default();
-    origin.set_pod_uid(well_known_tags.pod_uid);
-    origin.set_local_data(packet.local_data);
-    origin.set_external_data(packet.external_data);
-    origin.set_cardinality(cardinality);
-    origin
-}
-
-/// Builds an `RawOrigin` object from the given service check packet.
-pub fn origin_from_service_check_packet<'packet, 'tags>(
-    packet: &'tags ServiceCheckPacket<'packet>, well_known_tags: &'tags WellKnownTags<'tags>,
-) -> RawOrigin<'tags>
-where
-    'packet: 'tags,
-{
-    let cardinality = packet.cardinality.or(well_known_tags.cardinality);
-
-    let mut origin = RawOrigin::default();
-    origin.set_pod_uid(well_known_tags.pod_uid);
-    origin.set_local_data(packet.local_data);
-    origin.set_external_data(packet.external_data);
+    origin.set_local_data(local_data);
+    origin.set_external_data(external_data);
     origin.set_cardinality(cardinality);
     origin
 }
@@ -331,10 +296,7 @@ where
 mod tests {
     use std::collections::HashMap;
 
-    use saluki_core::data_model::{
-        event::{metric::MetricValues, service_check::CheckStatus},
-        tags::{RawTags, TagSet},
-    };
+    use saluki_core::data_model::tags::{RawTags, TagSet};
     use saluki_env::workload::{origin::ResolvedExternalData, providers::TestWorkloadProvider, EntityId};
     use stringtheory::MetaString;
 
@@ -405,111 +367,43 @@ mod tests {
         DogStatsDOriginTagResolver::new(config, Arc::new(workload_provider), captured_tagger)
     }
 
-    fn metric_origin_cardinality(
-        tags: RawTags<'_>, cardinality: Option<OriginTagCardinality>, well_known_tags: &WellKnownTags<'_>,
-    ) -> Option<OriginTagCardinality> {
-        let packet = MetricPacket {
-            metric_name: "test_metric",
-            tags,
-            values: MetricValues::counter(1.0),
-            num_points: 1,
-            timestamp: None,
-            local_data: None,
-            external_data: None,
-            cardinality,
-            unit: None,
-        };
-        origin_from_metric_packet(&packet, well_known_tags).cardinality()
-    }
-
-    fn event_origin_cardinality(
-        tags: RawTags<'_>, cardinality: Option<OriginTagCardinality>, well_known_tags: &WellKnownTags<'_>,
-    ) -> Option<OriginTagCardinality> {
-        let packet = EventPacket {
-            title: MetaString::empty(),
-            text: MetaString::empty(),
-            timestamp: None,
-            hostname: None,
-            aggregation_key: None,
-            priority: None,
-            alert_type: None,
-            source_type_name: None,
-            tags,
-            local_data: None,
-            external_data: None,
-            cardinality,
-        };
-        origin_from_event_packet(&packet, well_known_tags).cardinality()
-    }
-
-    fn service_check_origin_cardinality(
-        tags: RawTags<'_>, cardinality: Option<OriginTagCardinality>, well_known_tags: &WellKnownTags<'_>,
-    ) -> Option<OriginTagCardinality> {
-        let packet = ServiceCheckPacket {
-            name: MetaString::empty(),
-            status: CheckStatus::Ok,
-            timestamp: None,
-            hostname: None,
-            message: None,
-            tags,
-            local_data: None,
-            external_data: None,
-            cardinality,
-        };
-        origin_from_service_check_packet(&packet, well_known_tags).cardinality()
-    }
-
     #[test]
     fn packet_cardinality_takes_precedence_over_cardinality_tag() {
         // The cardinality specified in a packet (`|card:high`, etc) takes precedence over the cardinality specified via
         // the deprecated `dd.internal.card` tag.
-        type OriginCardinality =
-            fn(RawTags<'_>, Option<OriginTagCardinality>, &WellKnownTags<'_>) -> Option<OriginTagCardinality>;
-        let cases: [(
-            &str,
-            OriginCardinality,
-            &str,
-            OriginTagCardinality,
-            OriginTagCardinality,
-        ); 3] = [
+        let cases = [
             (
-                "metric",
-                metric_origin_cardinality,
                 "dd.internal.card:high",
                 OriginTagCardinality::High,
                 OriginTagCardinality::Low,
             ),
             (
-                "event",
-                event_origin_cardinality,
                 "dd.internal.card:low",
                 OriginTagCardinality::Low,
                 OriginTagCardinality::Orchestrator,
             ),
             (
-                "service check",
-                service_check_origin_cardinality,
                 "dd.internal.card:orchestrator",
                 OriginTagCardinality::Orchestrator,
                 OriginTagCardinality::Low,
             ),
         ];
 
-        for (name, origin_cardinality, raw_tags, tag_cardinality, packet_cardinality) in cases {
-            let raw_tags = RawTags::new(raw_tags, usize::MAX, usize::MAX);
+        for (tag, tag_cardinality, packet_cardinality) in cases {
+            let raw_tags = RawTags::new(tag, usize::MAX, usize::MAX);
             let (well_known_tags, _) = WellKnownTags::split_raw_tags(&raw_tags);
-            assert_eq!(well_known_tags.cardinality, Some(tag_cardinality), "{name}");
-            assert_ne!(packet_cardinality, tag_cardinality, "{name}");
+            assert_eq!(well_known_tags.cardinality, Some(tag_cardinality), "{tag}");
+            assert_ne!(packet_cardinality, tag_cardinality, "{tag}");
 
             assert_eq!(
-                origin_cardinality(raw_tags.clone(), Some(packet_cardinality), &well_known_tags),
+                origin_from_packet(None, None, Some(packet_cardinality), &well_known_tags).cardinality(),
                 Some(packet_cardinality),
-                "{name} with packet cardinality"
+                "{tag} with packet cardinality"
             );
             assert_eq!(
-                origin_cardinality(raw_tags.clone(), None, &well_known_tags),
+                origin_from_packet(None, None, None, &well_known_tags).cardinality(),
                 Some(tag_cardinality),
-                "{name} without packet cardinality"
+                "{tag} without packet cardinality"
             );
         }
     }

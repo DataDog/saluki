@@ -301,13 +301,7 @@ pub(super) fn build_metrics(
 ) -> Metrics {
     let builder = MetricsBuilder::from_component_context(component_context);
 
-    let listener_type = match listen_addr {
-        ListenAddress::Tcp(_) => "tcp",
-        ListenAddress::Udp(_) => "udp",
-        ListenAddress::Unix(_) => "unix",
-        ListenAddress::Unixgram(_) => "unixgram",
-        ListenAddress::NamedPipe { .. } => "named_pipe",
-    };
+    let listener_type = listen_addr.listener_type();
 
     Metrics {
         metrics_received: builder.register_counter_with_tags(

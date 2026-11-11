@@ -6,6 +6,7 @@
 
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
+#[cfg(unix)]
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -22,6 +23,7 @@ use tokio::net::UdpSocket;
 #[cfg(unix)]
 use tokio::time::timeout;
 
+use super::test_decoder_context;
 use crate::sources::dogstatsd::*;
 
 /// Bound on socket operations, so a hang fails rather than stalling the suite.
@@ -125,18 +127,13 @@ async fn build_source() -> (Box<DogStatsD>, SocketAddr) {
         io_buffer_pool,
         io_buffer_queue_capacity: 16,
         io_buffer_pool_shrinker: Box::pin(io_buffer_pool_shrinker),
-        codec: DogStatsDCodec::from_configuration(DogStatsDCodecConfiguration::default()),
-        context_resolvers: ContextResolvers::for_tests(true, None),
-        default_hostname: MetaString::from_static("test-host"),
-        enabled_filter: EnablePayloadsFilter::default(),
-        origin_detection_enabled: false,
+        decoder_context: DecoderContext {
+            default_hostname: MetaString::from_static("test-host"),
+            ..test_decoder_context(false)
+        },
         origin_telemetry_enabled: false,
-        stream_log_too_big: false,
-        disable_verbose_logs: false,
         eol_required: EolRequired::default(),
-        additional_tags: Vec::<String>::new().into(),
         capture_entity_resolver: None,
-        traffic_capture: TrafficCapture::new(PathBuf::new(), 1),
         packet_forwarder_target: None,
     });
 
