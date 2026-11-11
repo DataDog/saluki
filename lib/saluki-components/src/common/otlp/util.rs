@@ -66,7 +66,6 @@ static CONTAINER_MAPPINGS: LazyLock<FastHashMap<&'static str, &'static str>> = L
     m.insert(CONTAINER_NAME, "container_name");
     m.insert(CONTAINER_IMAGE_NAME, "image_name");
     m.insert("container.image.tag", "image_tag"); // For older semconv versions
-    m.insert(CONTAINER_IMAGE_TAGS, "image_tag"); // Array-valued: the first element is the tag
     m.insert("container.runtime", "runtime"); // Not re-exported by semconv 0.32.1+
 
     // Cloud conventions
@@ -96,6 +95,16 @@ static CONTAINER_MAPPINGS: LazyLock<FastHashMap<&'static str, &'static str>> = L
     m.insert(K8S_NAMESPACE_NAME, "kube_namespace");
     m.insert(K8S_POD_NAME, "pod_name");
     m.insert(K8S_NODE_NAME, "kube_node");
+    m
+});
+
+// Container mappings that apply only to OTLP resource attributes, which metrics and logs use. Trace
+// resource attributes reach container-tag extraction with arrays rendered as JSON strings, so an
+// array-valued attribute can't be mapped there.
+static RESOURCE_ONLY_CONTAINER_MAPPINGS: LazyLock<FastHashMap<&'static str, &'static str>> = LazyLock::new(|| {
+    let mut m = FastHashMap::default();
+    // The first element when array-valued, otherwise the string itself
+    m.insert(CONTAINER_IMAGE_TAGS, "image_tag");
     m
 });
 
@@ -147,7 +156,10 @@ pub fn extract_container_tags_from_resource_attributes(attributes: &[otlp_common
         let value = kv.value.as_ref().and_then(|v| v.value.as_ref());
 
         // Semantic Conventions
-        if let Some(datadog_key) = CONTAINER_MAPPINGS.get(kv.key.as_str()) {
+        let datadog_key = CONTAINER_MAPPINGS
+            .get(kv.key.as_str())
+            .or_else(|| RESOURCE_ONLY_CONTAINER_MAPPINGS.get(kv.key.as_str()));
+        if let Some(datadog_key) = datadog_key {
             if let Some(s_val) = container_mapping_value(&kv.key, value) {
                 insert_winning_tag(&mut resolved, datadog_key, TAG_SOURCE_SEMANTIC_CONVENTION, s_val, true);
             }
@@ -172,10 +184,6 @@ pub fn extract_container_tags_from_resource_attributes(attributes: &[otlp_common
 ///
 /// Tags come from three sources, ranked by the `TAG_SOURCE_*` precedences; empty values produce no
 /// tag.
-///
-/// When two semantic-convention attributes map to the same tag, the first one in attribute order
-/// should win, but a map has no attribute order, so `container.image.tags` always wins over the
-/// older `container.image.tag` here.
 pub fn extract_container_tags_from_attributes_map(
     attributes: &FastHashMap<MetaString, AttributeValue>, tags: &mut TagSet,
 ) {
@@ -183,22 +191,20 @@ pub fn extract_container_tags_from_attributes_map(
     let mut resolved: FastHashMap<&str, (u8, &str)> = FastHashMap::default();
 
     for (key, value) in attributes {
-        // Semantic Conventions
-        if let Some(datadog_key) = CONTAINER_MAPPINGS.get(key.as_ref()) {
-            if let Some(str_val) = container_mapping_attribute_value(key, value) {
-                insert_winning_tag(
-                    &mut resolved,
-                    datadog_key,
-                    TAG_SOURCE_SEMANTIC_CONVENTION,
-                    str_val,
-                    key.as_ref() == CONTAINER_IMAGE_TAGS,
-                );
-            }
-        }
-
         let Some(str_val) = value.as_string() else { continue };
         if str_val.is_empty() {
             continue;
+        }
+
+        // Semantic Conventions
+        if let Some(datadog_key) = CONTAINER_MAPPINGS.get(key.as_ref()) {
+            insert_winning_tag(
+                &mut resolved,
+                datadog_key,
+                TAG_SOURCE_SEMANTIC_CONVENTION,
+                str_val.as_ref(),
+                false,
+            );
         }
 
         // Pre-mapped Datadog-convention tag name
@@ -236,18 +242,6 @@ fn container_mapping_value<'a>(key: &str, value: Option<&'a Value>) -> Option<&'
         Value::StringValue(s_val) if !s_val.is_empty() => Some(s_val),
         _ => None,
     }
-}
-
-/// Typed-map counterpart of [`container_mapping_value`].
-fn container_mapping_attribute_value<'a>(key: &str, value: &'a AttributeValue) -> Option<&'a str> {
-    let value = match value {
-        AttributeValue::Array(values) if key == CONTAINER_IMAGE_TAGS => values.first()?,
-        value => value,
-    };
-    value
-        .as_string()
-        .map(|s_val| s_val.as_ref())
-        .filter(|s_val| !s_val.is_empty())
 }
 
 /// Records a tag for `tag_key` unless a higher-precedence source already claimed it. With
@@ -912,54 +906,6 @@ mod tests {
             resource_container_tags(attributes),
             vec!["container_id:second", "team:first"]
         );
-    }
-
-    /// A named map extraction case: the attributes and the expected sorted tags.
-    type MapTagCase = (&'static str, Vec<(&'static str, AttributeValue)>, Vec<&'static str>);
-
-    #[test]
-    fn map_extraction_maps_container_image_tags() {
-        let array = |values: &[&str]| {
-            AttributeValue::Array(
-                values
-                    .iter()
-                    .map(|value| AttributeValue::String(MetaString::from(*value)))
-                    .collect(),
-            )
-        };
-        let cases: Vec<MapTagCase> = vec![
-            (
-                "array takes the first element",
-                vec![(CONTAINER_IMAGE_TAGS, array(&["v1", "latest"]))],
-                vec!["image_tag:v1"],
-            ),
-            ("empty array", vec![(CONTAINER_IMAGE_TAGS, array(&[]))], vec![]),
-            (
-                "container.image.tags beats container.image.tag",
-                vec![
-                    ("container.image.tag", AttributeValue::String(MetaString::from("old"))),
-                    (CONTAINER_IMAGE_TAGS, array(&["new"])),
-                ],
-                vec!["image_tag:new"],
-            ),
-            (
-                "array-valued Datadog-convention key is ignored",
-                vec![("image_tag", array(&["v1"]))],
-                vec![],
-            ),
-        ];
-
-        for (name, entries, expected) in cases {
-            let attributes: FastHashMap<MetaString, AttributeValue> = entries
-                .into_iter()
-                .map(|(key, value)| (MetaString::from(key), value))
-                .collect();
-            let mut tags = TagSet::default();
-            extract_container_tags_from_attributes_map(&attributes, &mut tags);
-            let mut got: Vec<String> = tags.into_iter().map(|tag| tag.as_str().to_string()).collect();
-            got.sort();
-            assert_eq!(got, expected, "{name}");
-        }
     }
 
     #[test]

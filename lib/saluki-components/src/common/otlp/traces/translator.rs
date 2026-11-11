@@ -576,15 +576,17 @@ mod tests {
 
     use datadog_agent_apm::semantics::test_util::{registry_json, TestRegistryPublisher};
     use otlp_protos::opentelemetry::proto::common::v1::any_value::Value;
-    use otlp_protos::opentelemetry::proto::common::v1::{AnyValue, KeyValue};
+    use otlp_protos::opentelemetry::proto::common::v1::{AnyValue, ArrayValue, KeyValue};
     use otlp_protos::opentelemetry::proto::resource::v1::Resource;
     use otlp_protos::opentelemetry::proto::trace::v1::{ResourceSpans, ScopeSpans, Span as OtlpSpan};
     use saluki_core::components::ComponentContext;
+    use saluki_core::data_model::tags::TagSet;
     use saluki_env::workload::{providers::TestWorkloadProvider, EntityId};
     use saluki_metrics::test::TestRecorder;
 
     use super::*;
     use crate::common::otlp::origin::OtlpOriginTagResolver;
+    use crate::common::otlp::util::extract_container_tags_from_attributes_map;
     use crate::common::otlp::{build_metrics, Metrics};
 
     /// Default maximum resource name length, in bytes.
@@ -1019,6 +1021,31 @@ mod tests {
         assert_eq!(payload.container_id.as_ref(), "abc123");
         assert_eq!(payload.language_name.as_ref(), "go");
         assert_eq!(payload.tracer_version.as_ref(), "1.0");
+    }
+
+    #[test]
+    fn translate_spans_maps_no_image_tag_from_container_image_tags() {
+        let image_tags = KeyValue {
+            key: "container.image.tags".to_string(),
+            value: Some(AnyValue {
+                value: Some(Value::ArrayValue(ArrayValue {
+                    values: vec![AnyValue {
+                        value: Some(Value::StringValue("v1".to_string())),
+                    }],
+                })),
+            }),
+        };
+        let rs = build_resource_spans(
+            vec![image_tags, string_kv("container.name", "web")],
+            vec![span([1u8; 16], [1u8; 8], vec![])],
+        );
+
+        let traces = translate(rs);
+        assert_eq!(traces.len(), 1);
+        let mut tags = TagSet::default();
+        extract_container_tags_from_attributes_map(&traces[0].attributes, &mut tags);
+        let tags: Vec<_> = tags.into_iter().map(|tag| tag.as_str().to_string()).collect();
+        assert_eq!(tags, vec!["container_name:web"]);
     }
 
     /// Returns a provider holding one convention tag and one custom tag for the given container.
