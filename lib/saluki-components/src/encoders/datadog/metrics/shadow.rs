@@ -155,6 +155,8 @@ impl<'a> SketchShadowState<'a> {
                 }
             }
         }
+        // Splitting can discard a V2 subrequest without returning an error.
+        baseline_failed |= requests.iter().map(|(events, _, _)| *events).sum::<usize>() != metrics.len();
         let request_count = requests.len();
         for (request_index, (events, points, request)) in requests.into_iter().enumerate() {
             enqueue_sketch_request(
@@ -216,7 +218,13 @@ pub(super) async fn enqueue_sketch_request(
 mod tests {
     use std::collections::BTreeMap;
 
-    use saluki_core::{components::test_util::TestComponentDriver, data_model::event::Event};
+    use saluki_core::{
+        components::test_util::TestComponentDriver,
+        data_model::{
+            event::{metric::context::Context, Event},
+            tags::TagSet,
+        },
+    };
 
     use super::*;
     use crate::common::datadog::{test_util::datadog_metrics_configuration, METRICS_SKETCHES_PATH};
@@ -349,6 +357,44 @@ mod tests {
                 "the V3 point limit splits each sketch separately"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn incomplete_v2_baseline_skips_shadow() {
+        let config = configuration();
+        let shadow_config = config.build_sketch_shadow_config(false).unwrap();
+        let mut state = SketchShadowState::new(&shadow_config);
+        let endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), 10, usize::MAX, None);
+        let mut builder = v2::create_v2_request_builder(MetricsEndpoint::Sketches, &endpoint_config)
+            .await
+            .unwrap();
+        let telemetry = ComponentTelemetry::from_builder(&MetricsBuilder::default());
+        let serializer_telemetry = V3SerializerTelemetry::from_builder(&MetricsBuilder::default());
+        let context = V3FlushContext {
+            endpoint_config: &endpoint_config,
+            payload_limits: config.v3_sketch_payload_limits(),
+            series_endpoint_uri: METRICS_SERIES_V3_PATH,
+            serializer_telemetry: &serializer_telemetry,
+            telemetry: &telemetry,
+            is_shadow: false,
+        };
+        let (mut tx, mut rx) = mpsc::channel(8);
+        for name in ["a".repeat(256), "b".repeat(256), "small.one".into(), "small.two".into()] {
+            let metric = Metric::distribution(Context::from_parts(name, TagSet::default()), [(123, 1.0)]);
+            state.encode(&mut builder, metric, context, &mut tx).await.unwrap();
+        }
+        // Force a split: each large metric fits alone, but their half is silently discarded during re-encoding.
+        builder.with_len_limits(512, 512).unwrap();
+        state.flush(&mut builder, context, &mut tx).await.unwrap();
+        drop(tx);
+
+        let (metadata, request) = rx.recv().await.unwrap().try_into_http_payload().unwrap().into_parts();
+        assert_eq!(request.uri(), METRICS_SKETCHES_PATH);
+        assert_eq!((metadata.event_count(), metadata.data_point_count()), (2, 2));
+        assert!(
+            rx.recv().await.is_none(),
+            "an incomplete baseline must not emit a shadow"
+        );
     }
 
     #[tokio::test]
