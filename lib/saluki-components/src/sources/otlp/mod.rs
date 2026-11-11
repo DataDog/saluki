@@ -19,7 +19,7 @@ use saluki_core::{
         BuildContext,
     },
     data_model::{
-        event::{metric::context::ContextResolver, EventType},
+        event::{metric::context::ContextResolver, Event, EventType},
         tags::{SharedTagSet, TagSet},
     },
     runtime,
@@ -473,7 +473,7 @@ async fn run_converter(
                     }
                     OtlpSignal::Logs(resource_logs) => {
                         let translator = OtlpLogsTranslator::from_resource_logs(resource_logs, &origin_tag_resolver);
-                        for log_event in translator {
+                        for log in translator {
                             metrics.logs_received().increment(1);
 
                             let dispatcher = logs_dispatcher.get_or_insert_with(|| {
@@ -482,7 +482,7 @@ async fn run_converter(
                                     .buffered_named("logs")
                                     .expect("logs output should exist")
                             });
-                            if let Err(e) = dispatcher.push(log_event).await {
+                            if let Err(e) = dispatcher.push(Event::Log(log)).await {
                                 error!(error = %e, "Failed to dispatch log event.");
                             }
                         }

@@ -29,7 +29,7 @@ use otlp_protos::opentelemetry::proto::common::v1::{
 };
 use otlp_protos::opentelemetry::proto::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
 use otlp_protos::opentelemetry::proto::resource::v1::Resource;
-use saluki_core::data_model::event::{log::Log, Event};
+use saluki_core::data_model::event::log::Log;
 use saluki_env::workload::providers::NoopWorkloadProvider;
 use serde_json::{json, Map, Value};
 
@@ -108,12 +108,7 @@ fn translate_records(resource: &Resource, scope: &InstrumentationScope, records:
         ..Default::default()
     };
     let resolver = OtlpOriginTagResolver::new(std::sync::Arc::new(NoopWorkloadProvider));
-    OtlpLogsTranslator::from_resource_logs(resource_logs, &resolver)
-        .map(|event| match event {
-            Event::Log(log) => log,
-            other => panic!("expected a log event, got {:?}", other),
-        })
-        .collect()
+    OtlpLogsTranslator::from_resource_logs(resource_logs, &resolver).collect()
 }
 
 fn tags_of(log: &Log) -> BTreeSet<String> {

@@ -5,7 +5,7 @@ use otlp_protos::opentelemetry::proto::common::v1::InstrumentationScope;
 use otlp_protos::opentelemetry::proto::logs::v1::{LogRecord, ResourceLogs as OtlpResourceLogs, ScopeLogs};
 use otlp_protos::opentelemetry::proto::resource::v1::Resource;
 use saluki_core::data_model::{
-    event::Event,
+    event::log::Log,
     origin::OriginTagsResolver,
     tags::{Tag, TagSet},
 };
@@ -57,7 +57,7 @@ impl OtlpLogsTranslator {
         }
     }
 
-    fn next_log(&mut self) -> Option<Event> {
+    fn next_log(&mut self) -> Option<Log> {
         loop {
             let (current_scope, current_log_records) = match self.current_scope_logs.as_mut() {
                 Some(current) => current,
@@ -90,7 +90,7 @@ impl OtlpLogsTranslator {
                         self.attribute_tags.clone(),
                     );
 
-                    return Some(Event::Log(log));
+                    return Some(log);
                 }
                 None => {
                     self.current_scope_logs = None;
@@ -101,7 +101,7 @@ impl OtlpLogsTranslator {
 }
 
 impl Iterator for OtlpLogsTranslator {
-    type Item = Event;
+    type Item = Log;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.next_log()
@@ -115,7 +115,6 @@ mod tests {
     use otlp_protos::opentelemetry::proto::logs::v1 as otlp_logs_v1;
     use otlp_protos::opentelemetry::proto::resource::v1 as otlp_resource_v1;
     use saluki_core::data_model::event::log::Log;
-    use saluki_core::data_model::event::Event;
     use serde_json::Value as JsonValue;
 
     use super::OtlpLogsTranslator;
@@ -187,13 +186,9 @@ mod tests {
             )),
         );
 
-        let mut events = translator.collect::<Vec<_>>();
-        assert_eq!(events.len(), 1);
-
-        match events.remove(0) {
-            Event::Log(log) => log,
-            other => panic!("expected log event, got {:?}", other),
-        }
+        let mut logs = translator.collect::<Vec<_>>();
+        assert_eq!(logs.len(), 1);
+        logs.remove(0)
     }
 
     #[test]
