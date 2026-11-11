@@ -86,12 +86,6 @@ logs:
       when:
         fixture_id: [no-host]
       reason: ADP doesn't fall back to the Agent's hostname when the log has none.
-    - gap: gap/kube-node-tag
-      paths: ["envelope.ddtags"]
-      kinds: [missing]
-      when:
-        fixture_id: [host-k8s-node-and-cluster]
-      reason: ADP doesn't derive the `kube_node` tag from `k8s.node.name`.
     - gap: gap/missing-headers
       paths:
         - headers.dd-protocol

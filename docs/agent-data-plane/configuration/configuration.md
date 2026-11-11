@@ -1060,6 +1060,7 @@ The following settings work in ADP with the same behavior as the core agent.
 | `cluster_agent.kubernetes_service_name`                                                    | Cluster Agent Kubernetes service name              |
 | `cluster_agent.url`                                                                        | Cluster Agent HTTPS endpoint                       |
 | `cluster_name`                                                                             | EKS Fargate cluster name static tag                |
+| `cmd_host`                                                                                 | Core Agent CMD API host for ADP gRPC IPC           |
 | `cmd_port`                                                                                 | Core Agent CMD API port for ADP gRPC IPC           |
 | `container_cgroup_root`                                                                    | cgroupfs root for container metadata               |
 | `container_proc_root`                                                                      | procfs root for container metadata                 |
@@ -1143,6 +1144,7 @@ The following settings work in ADP with the same behavior as the core agent.
 | `histogram_copy_to_distribution_prefix`                                                    | Prefix for hist-to-dist copies                     |
 | `histogram_percentiles`                                                                    | Histogram percentile aggregates                    |
 | `hostname`                                                                                 | Forced hostname for emitted data                   |
+| `ipc_address`                                                                              | Deprecated `cmd_host`; takes precedence when set   |
 | `ipc_cert_file_path`                                                                       | Agent IPC certificate file path                    |
 | `kubernetes_kubelet_nodename`                                                              | Kubernetes node name for EKS Fargate static tags   |
 | `log_file_max_rolls`                                                                       | Max rolled log files to retain                     |

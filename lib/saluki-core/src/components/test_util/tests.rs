@@ -308,7 +308,7 @@ struct DropNamed;
 
 impl SynchronousTransform for DropNamed {
     fn transform_buffer(&mut self, buffer: &mut EventsBuffer) {
-        buffer.remove_if(|event| matches!(event, Event::Metric(metric) if metric.context().name() == "drop"));
+        buffer.retain_events::<Metric, _>(|metric| metric.context().name() != "drop");
     }
 }
 
