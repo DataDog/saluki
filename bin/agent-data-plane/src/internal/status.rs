@@ -116,18 +116,24 @@ impl StatusSectionProvider for MemoryLimiterStatusSection {
 }
 
 fn write_memory_limiter_section(builder: &mut StatusBuilder, metrics: &AggregatedMetricsState) {
-    let current_backoff_secs = metrics
-        .find_single_with_tags(MEMORY_LIMITER_CURRENT_BACKOFF, &[])
-        .unwrap_or(0.0);
+    // Only the limiter's checker thread sets the backoff gauge, and it does so on every check, so the gauge is missing
+    // exactly when no limiter is running: memory limiting is disabled, or no memory limit is in effect.
+    let maybe_backoff_secs = metrics.find_single_with_tags(MEMORY_LIMITER_CURRENT_BACKOFF, &[]);
+    let state = match maybe_backoff_secs {
+        None => "Not enabled",
+        Some(secs) if secs > 0.0 => "Throttling",
+        Some(_) => "Not throttling",
+    };
     let throttled_calls = metrics.get_aggregated_with_tags(MEMORY_LIMITER_THROTTLED_CALLS, &[]);
     let throttled_nanos = metrics.get_aggregated_with_tags(MEMORY_LIMITER_THROTTLED_NANOS, &[]);
 
     // The backoff gauge never exceeds the limiter's maximum backoff, but a status request must not panic on a value
     // `Duration` can't represent.
-    let current_backoff = Duration::try_from_secs_f64(current_backoff_secs).unwrap_or_default();
+    let current_backoff = Duration::try_from_secs_f64(maybe_backoff_secs.unwrap_or(0.0)).unwrap_or_default();
 
     builder
         .named_section("Memory Limiter")
+        .set_field("State", state)
         .set_field("Current Backoff", format!("{:?}", current_backoff))
         .set_field("Throttled Calls", throttled_calls.to_string())
         .set_field(
@@ -366,31 +372,50 @@ mod tests {
 
     #[test]
     fn memory_limiter_section_reports_throttling() {
-        let fields = status_fields(Vec::new(), "Memory Limiter", write_memory_limiter_section);
-        let expected = [
-            ("Current Backoff", "0ns"),
-            ("Throttled Calls", "0"),
-            ("Throttled Time", "0ns"),
-        ]
-        .map(|(name, value)| (name.to_string(), value.to_string()));
-        assert_eq!(fields, expected);
+        let memory_limiter_fields =
+            |metrics: Vec<Event>| status_fields(metrics, "Memory Limiter", write_memory_limiter_section);
+        let expected = |fields: [(&str, &str); 4]| fields.map(|(name, value)| (name.to_string(), value.to_string()));
 
-        let fields = status_fields(
-            vec![
+        // Without the backoff gauge, no limiter is running. All-zero fields alone would read like "running, but not
+        // throttling".
+        assert_eq!(
+            memory_limiter_fields(Vec::new()),
+            expected([
+                ("Current Backoff", "0ns"),
+                ("State", "Not enabled"),
+                ("Throttled Calls", "0"),
+                ("Throttled Time", "0ns"),
+            ])
+        );
+
+        // A running limiter that throttled earlier keeps reporting its totals after throttling stops.
+        assert_eq!(
+            memory_limiter_fields(vec![
+                gauge(MEMORY_LIMITER_CURRENT_BACKOFF, &[], 0.0),
+                counter(MEMORY_LIMITER_THROTTLED_CALLS, &[], 40.0),
+                counter(MEMORY_LIMITER_THROTTLED_NANOS, &[], 1_500_000_000.0),
+            ]),
+            expected([
+                ("Current Backoff", "0ns"),
+                ("State", "Not throttling"),
+                ("Throttled Calls", "40"),
+                ("Throttled Time", "1.5s"),
+            ])
+        );
+
+        assert_eq!(
+            memory_limiter_fields(vec![
                 gauge(MEMORY_LIMITER_CURRENT_BACKOFF, &[], 0.0125),
                 counter(MEMORY_LIMITER_THROTTLED_CALLS, &[], 40.0),
                 counter(MEMORY_LIMITER_THROTTLED_NANOS, &[], 1_500_000_000.0),
-            ],
-            "Memory Limiter",
-            write_memory_limiter_section,
+            ]),
+            expected([
+                ("Current Backoff", "12.5ms"),
+                ("State", "Throttling"),
+                ("Throttled Calls", "40"),
+                ("Throttled Time", "1.5s"),
+            ])
         );
-        let expected = [
-            ("Current Backoff", "12.5ms"),
-            ("Throttled Calls", "40"),
-            ("Throttled Time", "1.5s"),
-        ]
-        .map(|(name, value)| (name.to_string(), value.to_string()));
-        assert_eq!(fields, expected);
     }
 
     #[test]

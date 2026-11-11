@@ -8,6 +8,7 @@ upgrade:
 enhancements:
   - |
     ADP now logs a warning when the global memory limiter starts throttling ingestion and an info message when it
-    stops. The Agent status page has a new ``Memory Limiter`` section showing the current delay, the number of
-    throttled reads, and the total time reads were throttled. These are also reported as the internal metrics
+    stops. The Agent status page has a new ``Memory Limiter`` section showing whether the limiter is enabled, the
+    current delay, the number of throttled calls, and the total time calls were throttled. Throttled calls include
+    DogStatsD reads and OTLP requests. The totals are also reported as the internal metrics
     ``adp.memory_limiter.throttled_calls_total`` and ``adp.memory_limiter.throttled_nanoseconds_total``.

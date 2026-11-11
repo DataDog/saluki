@@ -40,7 +40,7 @@ ADP enforces memory bounds through three complementary mechanisms:
   other bounded allocations.
 - **Dynamic limiting**: a `MemoryLimiter` polls the process RSS every 250 ms and throttles
   ingestion tasks as usage approaches `memory_limit`. The slop factor doesn't apply here.
-  Throttling starts above 85 % of `memory_limit` with a 1 ms delay per read, and the delay
+  Throttling starts above 85 % of `memory_limit` with a 1 ms delay per call, and the delay
   grows to 25 ms at 95 %. Once started, throttling continues until usage falls to 80 %, so
   usage that hovers around 85 % doesn't toggle it on and off. Disable with
   `enable_global_limiter: false`.
@@ -50,14 +50,15 @@ ADP enforces memory bounds through three complementary mechanisms:
 ## Observing throttling
 
 ADP logs a warning when the memory limiter starts throttling and an info message when it
-stops. While throttling is active, the `Memory Limiter` section of the Agent status page and
-these internal metrics show its effect:
+stops. Throttled calls include DogStatsD reads and OTLP requests. The `Memory Limiter` section
+of the Agent status page shows whether the limiter is enabled and currently throttling, and how
+much it has throttled since ADP started. These internal metrics report the same values:
 
 | Metric                                            | Description                                    |
 | ------------------------------------------------- | ---------------------------------------------- |
-| `adp.memory_limiter.current_backoff_secs`         | Delay currently applied to each throttled read |
-| `adp.memory_limiter.throttled_calls_total`        | Reads delayed by the memory limiter            |
-| `adp.memory_limiter.throttled_nanoseconds_total`  | Total time that reads were delayed             |
+| `adp.memory_limiter.current_backoff_secs`         | Delay currently applied to each throttled call |
+| `adp.memory_limiter.throttled_calls_total`        | Calls delayed by the memory limiter            |
+| `adp.memory_limiter.throttled_nanoseconds_total`  | Total time that calls were delayed             |
 
 If throttling is frequent, raise `memory_limit` or reduce the load on ADP.
 
