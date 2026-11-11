@@ -502,199 +502,196 @@
 <a href=#502 id=502 data-nosnippet>502</a>    /// already-prefixed keys are exempt in every mode.
 <a href=#503 id=503 data-nosnippet>503</a>    </span><span class="kw">pub </span>container_tag_promotion: ContainerTagPromotion,
 <a href=#504 id=504 data-nosnippet>504</a>
-<a href=#505 id=505 data-nosnippet>505</a>    <span class="doccomment">/// Whether the Agent uses the OTLP span name as the Datadog resource name of OTLP spans.
+<a href=#505 id=505 data-nosnippet>505</a>    <span class="doccomment">/// Whether the OTLP span name becomes the operation name of OTLP spans that have no `operation.name`.
 <a href=#506 id=506 data-nosnippet>506</a>    ///
-<a href=#507 id=507 data-nosnippet>507</a>    /// ADP reads this value but does not apply it yet: translation always derives names with the V2 logic, so
-<a href=#508 id=508 data-nosnippet>508</a>    /// `true` has no effect on emitted spans (#2332). Defaults to `false`, which is the Agent's default of
-<a href=#509 id=509 data-nosnippet>509</a>    /// building the resource name from the instrumentation library name and span kind.
-<a href=#510 id=510 data-nosnippet>510</a>    </span><span class="kw">pub </span>span_name_as_resource_name: bool,
-<a href=#511 id=511 data-nosnippet>511</a>
-<a href=#512 id=512 data-nosnippet>512</a>    <span class="doccomment">/// Preferred operation names by OTLP span name, as the Agent applies them.
-<a href=#513 id=513 data-nosnippet>513</a>    ///
-<a href=#514 id=514 data-nosnippet>514</a>    /// ADP reads this value but does not apply it yet: translation always derives names with the V2 logic, so a
-<a href=#515 id=515 data-nosnippet>515</a>    /// non-empty map leaves span names unchanged (#2332). Defaults to empty.
-<a href=#516 id=516 data-nosnippet>516</a>    </span><span class="kw">pub </span>span_name_remappings: HashMap&lt;String, String&gt;,
-<a href=#517 id=517 data-nosnippet>517</a>}
-<a href=#518 id=518 data-nosnippet>518</a>
-<a href=#519 id=519 data-nosnippet>519</a><span class="kw">impl </span>Default <span class="kw">for </span>Traces {
-<a href=#520 id=520 data-nosnippet>520</a>    <span class="kw">fn </span>default() -&gt; <span class="self">Self </span>{
-<a href=#521 id=521 data-nosnippet>521</a>        <span class="self">Self </span>{
-<a href=#522 id=522 data-nosnippet>522</a>            enabled: <span class="bool-val">false</span>,
-<a href=#523 id=523 data-nosnippet>523</a>            internal_port: <span class="number">0</span>,
-<a href=#524 id=524 data-nosnippet>524</a>            <span class="comment">// Witnessed; overwritten during drive.
-<a href=#525 id=525 data-nosnippet>525</a>            </span>probabilistic_sampler_sampling_percentage: <span class="number">0.0</span>,
-<a href=#526 id=526 data-nosnippet>526</a>            string_interner_size: DEFAULT_STRING_INTERNER_SIZE_BYTES,
-<a href=#527 id=527 data-nosnippet>527</a>            enable_compute_top_level_by_span_kind: <span class="bool-val">true</span>,
-<a href=#528 id=528 data-nosnippet>528</a>            ignore_missing_datadog_fields: <span class="bool-val">false</span>,
-<a href=#529 id=529 data-nosnippet>529</a>            infra_attributes_enabled: <span class="bool-val">true</span>,
-<a href=#530 id=530 data-nosnippet>530</a>            container_tag_promotion: ContainerTagPromotion::default(),
-<a href=#531 id=531 data-nosnippet>531</a>            <span class="comment">// Witnessed; overwritten during drive.
-<a href=#532 id=532 data-nosnippet>532</a>            </span>span_name_as_resource_name: <span class="bool-val">false</span>,
-<a href=#533 id=533 data-nosnippet>533</a>            span_name_remappings: HashMap::new(),
-<a href=#534 id=534 data-nosnippet>534</a>        }
-<a href=#535 id=535 data-nosnippet>535</a>    }
-<a href=#536 id=536 data-nosnippet>536</a>}
-<a href=#537 id=537 data-nosnippet>537</a>
-<a href=#538 id=538 data-nosnippet>538</a><span class="doccomment">/// OTLP proxy gating: which signals the proxy forwards, and the proxy receiver endpoint.
-<a href=#539 id=539 data-nosnippet>539</a></span><span class="attr">#[derive(Clone, Debug, Default, PartialEq, Serialize)]
-<a href=#540 id=540 data-nosnippet>540</a></span><span class="kw">pub struct </span>Proxy {
-<a href=#541 id=541 data-nosnippet>541</a>    <span class="doccomment">/// Whether the OTLP proxy is enabled.
-<a href=#542 id=542 data-nosnippet>542</a>    </span><span class="kw">pub </span>enabled: bool,
+<a href=#507 id=507 data-nosnippet>507</a>    /// `true` selects V1 operation and resource naming. Defaults to `false`.
+<a href=#508 id=508 data-nosnippet>508</a>    </span><span class="kw">pub </span>span_name_as_resource_name: bool,
+<a href=#509 id=509 data-nosnippet>509</a>
+<a href=#510 id=510 data-nosnippet>510</a>    <span class="doccomment">/// Preferred operation names, keyed by the operation name V1 naming derives.
+<a href=#511 id=511 data-nosnippet>511</a>    ///
+<a href=#512 id=512 data-nosnippet>512</a>    /// A non-empty map selects V1 operation and resource naming. Defaults to empty.
+<a href=#513 id=513 data-nosnippet>513</a>    </span><span class="kw">pub </span>span_name_remappings: HashMap&lt;String, String&gt;,
+<a href=#514 id=514 data-nosnippet>514</a>}
+<a href=#515 id=515 data-nosnippet>515</a>
+<a href=#516 id=516 data-nosnippet>516</a><span class="kw">impl </span>Default <span class="kw">for </span>Traces {
+<a href=#517 id=517 data-nosnippet>517</a>    <span class="kw">fn </span>default() -&gt; <span class="self">Self </span>{
+<a href=#518 id=518 data-nosnippet>518</a>        <span class="self">Self </span>{
+<a href=#519 id=519 data-nosnippet>519</a>            enabled: <span class="bool-val">false</span>,
+<a href=#520 id=520 data-nosnippet>520</a>            internal_port: <span class="number">0</span>,
+<a href=#521 id=521 data-nosnippet>521</a>            <span class="comment">// Witnessed; overwritten during drive.
+<a href=#522 id=522 data-nosnippet>522</a>            </span>probabilistic_sampler_sampling_percentage: <span class="number">0.0</span>,
+<a href=#523 id=523 data-nosnippet>523</a>            string_interner_size: DEFAULT_STRING_INTERNER_SIZE_BYTES,
+<a href=#524 id=524 data-nosnippet>524</a>            enable_compute_top_level_by_span_kind: <span class="bool-val">true</span>,
+<a href=#525 id=525 data-nosnippet>525</a>            ignore_missing_datadog_fields: <span class="bool-val">false</span>,
+<a href=#526 id=526 data-nosnippet>526</a>            infra_attributes_enabled: <span class="bool-val">true</span>,
+<a href=#527 id=527 data-nosnippet>527</a>            container_tag_promotion: ContainerTagPromotion::default(),
+<a href=#528 id=528 data-nosnippet>528</a>            <span class="comment">// Witnessed; overwritten during drive.
+<a href=#529 id=529 data-nosnippet>529</a>            </span>span_name_as_resource_name: <span class="bool-val">false</span>,
+<a href=#530 id=530 data-nosnippet>530</a>            span_name_remappings: HashMap::new(),
+<a href=#531 id=531 data-nosnippet>531</a>        }
+<a href=#532 id=532 data-nosnippet>532</a>    }
+<a href=#533 id=533 data-nosnippet>533</a>}
+<a href=#534 id=534 data-nosnippet>534</a>
+<a href=#535 id=535 data-nosnippet>535</a><span class="doccomment">/// OTLP proxy gating: which signals the proxy forwards, and the proxy receiver endpoint.
+<a href=#536 id=536 data-nosnippet>536</a></span><span class="attr">#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+<a href=#537 id=537 data-nosnippet>537</a></span><span class="kw">pub struct </span>Proxy {
+<a href=#538 id=538 data-nosnippet>538</a>    <span class="doccomment">/// Whether the OTLP proxy is enabled.
+<a href=#539 id=539 data-nosnippet>539</a>    </span><span class="kw">pub </span>enabled: bool,
+<a href=#540 id=540 data-nosnippet>540</a>
+<a href=#541 id=541 data-nosnippet>541</a>    <span class="doccomment">/// Whether the proxy forwards logs.
+<a href=#542 id=542 data-nosnippet>542</a>    </span><span class="kw">pub </span>logs_enabled: bool,
 <a href=#543 id=543 data-nosnippet>543</a>
-<a href=#544 id=544 data-nosnippet>544</a>    <span class="doccomment">/// Whether the proxy forwards logs.
-<a href=#545 id=545 data-nosnippet>545</a>    </span><span class="kw">pub </span>logs_enabled: bool,
+<a href=#544 id=544 data-nosnippet>544</a>    <span class="doccomment">/// Whether the proxy forwards metrics.
+<a href=#545 id=545 data-nosnippet>545</a>    </span><span class="kw">pub </span>metrics_enabled: bool,
 <a href=#546 id=546 data-nosnippet>546</a>
-<a href=#547 id=547 data-nosnippet>547</a>    <span class="doccomment">/// Whether the proxy forwards metrics.
-<a href=#548 id=548 data-nosnippet>548</a>    </span><span class="kw">pub </span>metrics_enabled: bool,
+<a href=#547 id=547 data-nosnippet>547</a>    <span class="doccomment">/// Whether the proxy forwards traces.
+<a href=#548 id=548 data-nosnippet>548</a>    </span><span class="kw">pub </span>traces_enabled: bool,
 <a href=#549 id=549 data-nosnippet>549</a>
-<a href=#550 id=550 data-nosnippet>550</a>    <span class="doccomment">/// Whether the proxy forwards traces.
-<a href=#551 id=551 data-nosnippet>551</a>    </span><span class="kw">pub </span>traces_enabled: bool,
-<a href=#552 id=552 data-nosnippet>552</a>
-<a href=#553 id=553 data-nosnippet>553</a>    <span class="doccomment">/// Address the proxy's gRPC receiver listens on.
-<a href=#554 id=554 data-nosnippet>554</a>    </span><span class="kw">pub </span>grpc_endpoint: String,
-<a href=#555 id=555 data-nosnippet>555</a>}
-<a href=#556 id=556 data-nosnippet>556</a>
-<a href=#557 id=557 data-nosnippet>557</a><span class="doccomment">/// OTLP context cache sizing.
-<a href=#558 id=558 data-nosnippet>558</a></span><span class="attr">#[derive(Clone, Debug, PartialEq, Serialize)]
-<a href=#559 id=559 data-nosnippet>559</a></span><span class="kw">pub struct </span>Contexts {
-<a href=#560 id=560 data-nosnippet>560</a>    <span class="doccomment">/// Whether contexts may be heap-allocated when the interner is full. (not in Datadog Agent
-<a href=#561 id=561 data-nosnippet>561</a>    /// config schema)
-<a href=#562 id=562 data-nosnippet>562</a>    </span><span class="kw">pub </span>allow_context_heap_allocs: bool,
+<a href=#550 id=550 data-nosnippet>550</a>    <span class="doccomment">/// Address the proxy's gRPC receiver listens on.
+<a href=#551 id=551 data-nosnippet>551</a>    </span><span class="kw">pub </span>grpc_endpoint: String,
+<a href=#552 id=552 data-nosnippet>552</a>}
+<a href=#553 id=553 data-nosnippet>553</a>
+<a href=#554 id=554 data-nosnippet>554</a><span class="doccomment">/// OTLP context cache sizing.
+<a href=#555 id=555 data-nosnippet>555</a></span><span class="attr">#[derive(Clone, Debug, PartialEq, Serialize)]
+<a href=#556 id=556 data-nosnippet>556</a></span><span class="kw">pub struct </span>Contexts {
+<a href=#557 id=557 data-nosnippet>557</a>    <span class="doccomment">/// Whether contexts may be heap-allocated when the interner is full. (not in Datadog Agent
+<a href=#558 id=558 data-nosnippet>558</a>    /// config schema)
+<a href=#559 id=559 data-nosnippet>559</a>    </span><span class="kw">pub </span>allow_context_heap_allocs: bool,
+<a href=#560 id=560 data-nosnippet>560</a>
+<a href=#561 id=561 data-nosnippet>561</a>    <span class="doccomment">/// Maximum number of metric contexts held in the cache. (not in Datadog Agent config schema)
+<a href=#562 id=562 data-nosnippet>562</a>    </span><span class="kw">pub </span>cached_contexts_limit: usize,
 <a href=#563 id=563 data-nosnippet>563</a>
-<a href=#564 id=564 data-nosnippet>564</a>    <span class="doccomment">/// Maximum number of metric contexts held in the cache. (not in Datadog Agent config schema)
-<a href=#565 id=565 data-nosnippet>565</a>    </span><span class="kw">pub </span>cached_contexts_limit: usize,
+<a href=#564 id=564 data-nosnippet>564</a>    <span class="doccomment">/// Maximum number of tagsets held in the cache. (not in Datadog Agent config schema)
+<a href=#565 id=565 data-nosnippet>565</a>    </span><span class="kw">pub </span>cached_tagsets_limit: usize,
 <a href=#566 id=566 data-nosnippet>566</a>
-<a href=#567 id=567 data-nosnippet>567</a>    <span class="doccomment">/// Maximum number of tagsets held in the cache. (not in Datadog Agent config schema)
-<a href=#568 id=568 data-nosnippet>568</a>    </span><span class="kw">pub </span>cached_tagsets_limit: usize,
-<a href=#569 id=569 data-nosnippet>569</a>
-<a href=#570 id=570 data-nosnippet>570</a>    <span class="doccomment">/// Size, in bytes, of the context string interner. (not in Datadog Agent config schema)
-<a href=#571 id=571 data-nosnippet>571</a>    </span><span class="kw">pub </span>string_interner_size: u64,
-<a href=#572 id=572 data-nosnippet>572</a>}
-<a href=#573 id=573 data-nosnippet>573</a>
-<a href=#574 id=574 data-nosnippet>574</a><span class="kw">impl </span>Default <span class="kw">for </span>Contexts {
-<a href=#575 id=575 data-nosnippet>575</a>    <span class="kw">fn </span>default() -&gt; <span class="self">Self </span>{
-<a href=#576 id=576 data-nosnippet>576</a>        <span class="self">Self </span>{
-<a href=#577 id=577 data-nosnippet>577</a>            allow_context_heap_allocs: <span class="bool-val">true</span>,
-<a href=#578 id=578 data-nosnippet>578</a>            cached_contexts_limit: <span class="number">500_000</span>,
-<a href=#579 id=579 data-nosnippet>579</a>            cached_tagsets_limit: <span class="number">500_000</span>,
-<a href=#580 id=580 data-nosnippet>580</a>            string_interner_size: <span class="number">2 </span>* <span class="number">1024 </span>* <span class="number">1024</span>,
-<a href=#581 id=581 data-nosnippet>581</a>        }
-<a href=#582 id=582 data-nosnippet>582</a>    }
-<a href=#583 id=583 data-nosnippet>583</a>}
-<a href=#584 id=584 data-nosnippet>584</a>
-<a href=#585 id=585 data-nosnippet>585</a><span class="attr">#[cfg(test)]
-<a href=#586 id=586 data-nosnippet>586</a></span><span class="kw">mod </span>tests {
-<a href=#587 id=587 data-nosnippet>587</a>    <span class="kw">use </span>super::{
-<a href=#588 id=588 data-nosnippet>588</a>        ContainerTagPromotion, CumulativeMonotonicMode, GrpcReceiver, GrpcTransport, HttpReceiver,
-<a href=#589 id=589 data-nosnippet>589</a>        InitialCumulativeMonotonicValue,
-<a href=#590 id=590 data-nosnippet>590</a>    };
-<a href=#591 id=591 data-nosnippet>591</a>
-<a href=#592 id=592 data-nosnippet>592</a>    <span class="attr">#[test]
-<a href=#593 id=593 data-nosnippet>593</a>    </span><span class="kw">fn </span>container_tag_promotion_parses_known_values() {
-<a href=#594 id=594 data-nosnippet>594</a>        <span class="kw">for </span>(value, expected) <span class="kw">in </span>[
-<a href=#595 id=595 data-nosnippet>595</a>            (<span class="string">"off"</span>, ContainerTagPromotion::Off),
-<a href=#596 id=596 data-nosnippet>596</a>            (<span class="string">"duplicate"</span>, ContainerTagPromotion::Duplicate),
-<a href=#597 id=597 data-nosnippet>597</a>            (<span class="string">"rename"</span>, ContainerTagPromotion::Rename),
-<a href=#598 id=598 data-nosnippet>598</a>        ] {
-<a href=#599 id=599 data-nosnippet>599</a>            <span class="macro">assert_eq!</span>(
-<a href=#600 id=600 data-nosnippet>600</a>                value
-<a href=#601 id=601 data-nosnippet>601</a>                    .parse::&lt;ContainerTagPromotion&gt;()
-<a href=#602 id=602 data-nosnippet>602</a>                    .expect(<span class="string">"known value should parse"</span>),
-<a href=#603 id=603 data-nosnippet>603</a>                expected
-<a href=#604 id=604 data-nosnippet>604</a>            );
-<a href=#605 id=605 data-nosnippet>605</a>        }
-<a href=#606 id=606 data-nosnippet>606</a>    }
-<a href=#607 id=607 data-nosnippet>607</a>
-<a href=#608 id=608 data-nosnippet>608</a>    <span class="attr">#[test]
-<a href=#609 id=609 data-nosnippet>609</a>    </span><span class="kw">fn </span>container_tag_promotion_rejects_unknown_values() {
-<a href=#610 id=610 data-nosnippet>610</a>        <span class="kw">let </span>error = <span class="string">"unsupported"
-<a href=#611 id=611 data-nosnippet>611</a>            </span>.parse::&lt;ContainerTagPromotion&gt;()
-<a href=#612 id=612 data-nosnippet>612</a>            .expect_err(<span class="string">"unsupported mode should be rejected"</span>);
-<a href=#613 id=613 data-nosnippet>613</a>
-<a href=#614 id=614 data-nosnippet>614</a>        <span class="macro">assert_eq!</span>(
-<a href=#615 id=615 data-nosnippet>615</a>            error.to_string(),
-<a href=#616 id=616 data-nosnippet>616</a>            <span class="string">"unknown container tag promotion mode `unsupported`; expected `off`, `duplicate`, or `rename`"
-<a href=#617 id=617 data-nosnippet>617</a>        </span>);
-<a href=#618 id=618 data-nosnippet>618</a>    }
-<a href=#619 id=619 data-nosnippet>619</a>
-<a href=#620 id=620 data-nosnippet>620</a>    <span class="attr">#[test]
-<a href=#621 id=621 data-nosnippet>621</a>    </span><span class="kw">fn </span>grpc_transport_parses_known_values() {
-<a href=#622 id=622 data-nosnippet>622</a>        <span class="macro">assert_eq!</span>(<span class="string">"tcp"</span>.parse::&lt;GrpcTransport&gt;().unwrap(), GrpcTransport::Tcp);
-<a href=#623 id=623 data-nosnippet>623</a>        <span class="macro">assert_eq!</span>(<span class="string">"unix"</span>.parse::&lt;GrpcTransport&gt;().unwrap(), GrpcTransport::Unix);
-<a href=#624 id=624 data-nosnippet>624</a>    }
-<a href=#625 id=625 data-nosnippet>625</a>
-<a href=#626 id=626 data-nosnippet>626</a>    <span class="attr">#[test]
-<a href=#627 id=627 data-nosnippet>627</a>    </span><span class="kw">fn </span>grpc_transport_rejects_unknown_values() {
-<a href=#628 id=628 data-nosnippet>628</a>        <span class="macro">assert!</span>(<span class="string">"tcp4"</span>.parse::&lt;GrpcTransport&gt;().is_err());
-<a href=#629 id=629 data-nosnippet>629</a>        <span class="macro">assert!</span>(<span class="string">"udp"</span>.parse::&lt;GrpcTransport&gt;().is_err());
-<a href=#630 id=630 data-nosnippet>630</a>    }
-<a href=#631 id=631 data-nosnippet>631</a>
-<a href=#632 id=632 data-nosnippet>632</a>    <span class="attr">#[test]
-<a href=#633 id=633 data-nosnippet>633</a>    </span><span class="kw">fn </span>cumulative_monotonic_mode_parses_known_values() {
-<a href=#634 id=634 data-nosnippet>634</a>        <span class="macro">assert_eq!</span>(
-<a href=#635 id=635 data-nosnippet>635</a>            <span class="string">"to_delta"
-<a href=#636 id=636 data-nosnippet>636</a>                </span>.parse::&lt;CumulativeMonotonicMode&gt;()
-<a href=#637 id=637 data-nosnippet>637</a>                .expect(<span class="string">"to_delta should parse"</span>),
-<a href=#638 id=638 data-nosnippet>638</a>            CumulativeMonotonicMode::ToDelta
-<a href=#639 id=639 data-nosnippet>639</a>        );
-<a href=#640 id=640 data-nosnippet>640</a>        <span class="macro">assert_eq!</span>(
-<a href=#641 id=641 data-nosnippet>641</a>            <span class="string">"raw_value"
-<a href=#642 id=642 data-nosnippet>642</a>                </span>.parse::&lt;CumulativeMonotonicMode&gt;()
-<a href=#643 id=643 data-nosnippet>643</a>                .expect(<span class="string">"raw_value should parse"</span>),
-<a href=#644 id=644 data-nosnippet>644</a>            CumulativeMonotonicMode::RawValue
-<a href=#645 id=645 data-nosnippet>645</a>        );
-<a href=#646 id=646 data-nosnippet>646</a>    }
-<a href=#647 id=647 data-nosnippet>647</a>
-<a href=#648 id=648 data-nosnippet>648</a>    <span class="attr">#[test]
-<a href=#649 id=649 data-nosnippet>649</a>    </span><span class="kw">fn </span>cumulative_monotonic_mode_rejects_unknown_values() {
-<a href=#650 id=650 data-nosnippet>650</a>        <span class="kw">let </span>error = <span class="string">"unsupported"
-<a href=#651 id=651 data-nosnippet>651</a>            </span>.parse::&lt;CumulativeMonotonicMode&gt;()
-<a href=#652 id=652 data-nosnippet>652</a>            .expect_err(<span class="string">"unsupported mode should be rejected"</span>);
-<a href=#653 id=653 data-nosnippet>653</a>
-<a href=#654 id=654 data-nosnippet>654</a>        <span class="macro">assert_eq!</span>(
-<a href=#655 id=655 data-nosnippet>655</a>            error.to_string(),
-<a href=#656 id=656 data-nosnippet>656</a>            <span class="string">"unknown cumulative monotonic sum mode `unsupported`; expected `to_delta` or `raw_value`"
-<a href=#657 id=657 data-nosnippet>657</a>        </span>);
-<a href=#658 id=658 data-nosnippet>658</a>    }
-<a href=#659 id=659 data-nosnippet>659</a>
-<a href=#660 id=660 data-nosnippet>660</a>    <span class="attr">#[test]
-<a href=#661 id=661 data-nosnippet>661</a>    </span><span class="kw">fn </span>initial_cumulative_monotonic_value_parses_known_values() {
-<a href=#662 id=662 data-nosnippet>662</a>        <span class="kw">for </span>(value, expected) <span class="kw">in </span>[
-<a href=#663 id=663 data-nosnippet>663</a>            (<span class="string">"auto"</span>, InitialCumulativeMonotonicValue::Auto),
-<a href=#664 id=664 data-nosnippet>664</a>            (<span class="string">"drop"</span>, InitialCumulativeMonotonicValue::Drop),
-<a href=#665 id=665 data-nosnippet>665</a>            (<span class="string">"keep"</span>, InitialCumulativeMonotonicValue::Keep),
-<a href=#666 id=666 data-nosnippet>666</a>        ] {
-<a href=#667 id=667 data-nosnippet>667</a>            <span class="macro">assert_eq!</span>(
-<a href=#668 id=668 data-nosnippet>668</a>                value
-<a href=#669 id=669 data-nosnippet>669</a>                    .parse::&lt;InitialCumulativeMonotonicValue&gt;()
-<a href=#670 id=670 data-nosnippet>670</a>                    .expect(<span class="string">"known value should parse"</span>),
-<a href=#671 id=671 data-nosnippet>671</a>                expected
-<a href=#672 id=672 data-nosnippet>672</a>            );
-<a href=#673 id=673 data-nosnippet>673</a>        }
-<a href=#674 id=674 data-nosnippet>674</a>    }
-<a href=#675 id=675 data-nosnippet>675</a>
-<a href=#676 id=676 data-nosnippet>676</a>    <span class="attr">#[test]
-<a href=#677 id=677 data-nosnippet>677</a>    </span><span class="kw">fn </span>initial_cumulative_monotonic_value_rejects_unknown_values() {
-<a href=#678 id=678 data-nosnippet>678</a>        <span class="kw">let </span>error = <span class="string">"unsupported"
-<a href=#679 id=679 data-nosnippet>679</a>            </span>.parse::&lt;InitialCumulativeMonotonicValue&gt;()
-<a href=#680 id=680 data-nosnippet>680</a>            .expect_err(<span class="string">"unsupported value should be rejected"</span>);
-<a href=#681 id=681 data-nosnippet>681</a>
-<a href=#682 id=682 data-nosnippet>682</a>        <span class="macro">assert_eq!</span>(
-<a href=#683 id=683 data-nosnippet>683</a>            error.to_string(),
-<a href=#684 id=684 data-nosnippet>684</a>            <span class="string">"unknown initial cumulative monotonic value `unsupported`; expected `auto`, `drop`, or `keep`"
-<a href=#685 id=685 data-nosnippet>685</a>        </span>);
-<a href=#686 id=686 data-nosnippet>686</a>    }
-<a href=#687 id=687 data-nosnippet>687</a>
-<a href=#688 id=688 data-nosnippet>688</a>    <span class="attr">#[test]
-<a href=#689 id=689 data-nosnippet>689</a>    </span><span class="kw">fn </span>grpc_receiver_defaults_to_agent_compatible_values() {
-<a href=#690 id=690 data-nosnippet>690</a>        <span class="kw">let </span>grpc = GrpcReceiver::default();
-<a href=#691 id=691 data-nosnippet>691</a>        <span class="macro">assert_eq!</span>(grpc.max_concurrent_streams, <span class="number">0</span>, <span class="string">"0 means no limit (Agent default)"</span>);
-<a href=#692 id=692 data-nosnippet>692</a>    }
-<a href=#693 id=693 data-nosnippet>693</a>
-<a href=#694 id=694 data-nosnippet>694</a>    <span class="attr">#[test]
-<a href=#695 id=695 data-nosnippet>695</a>    </span><span class="kw">fn </span>http_receiver_defaults_to_agent_compatible_values() {
-<a href=#696 id=696 data-nosnippet>696</a>        <span class="kw">let </span>http = HttpReceiver::default();
-<a href=#697 id=697 data-nosnippet>697</a>        <span class="macro">assert_eq!</span>(http.max_request_body_size, <span class="number">0</span>, <span class="string">"0 means 20 MiB default (Agent default)"</span>);
-<a href=#698 id=698 data-nosnippet>698</a>    }
-<a href=#699 id=699 data-nosnippet>699</a>}
+<a href=#567 id=567 data-nosnippet>567</a>    <span class="doccomment">/// Size, in bytes, of the context string interner. (not in Datadog Agent config schema)
+<a href=#568 id=568 data-nosnippet>568</a>    </span><span class="kw">pub </span>string_interner_size: u64,
+<a href=#569 id=569 data-nosnippet>569</a>}
+<a href=#570 id=570 data-nosnippet>570</a>
+<a href=#571 id=571 data-nosnippet>571</a><span class="kw">impl </span>Default <span class="kw">for </span>Contexts {
+<a href=#572 id=572 data-nosnippet>572</a>    <span class="kw">fn </span>default() -&gt; <span class="self">Self </span>{
+<a href=#573 id=573 data-nosnippet>573</a>        <span class="self">Self </span>{
+<a href=#574 id=574 data-nosnippet>574</a>            allow_context_heap_allocs: <span class="bool-val">true</span>,
+<a href=#575 id=575 data-nosnippet>575</a>            cached_contexts_limit: <span class="number">500_000</span>,
+<a href=#576 id=576 data-nosnippet>576</a>            cached_tagsets_limit: <span class="number">500_000</span>,
+<a href=#577 id=577 data-nosnippet>577</a>            string_interner_size: <span class="number">2 </span>* <span class="number">1024 </span>* <span class="number">1024</span>,
+<a href=#578 id=578 data-nosnippet>578</a>        }
+<a href=#579 id=579 data-nosnippet>579</a>    }
+<a href=#580 id=580 data-nosnippet>580</a>}
+<a href=#581 id=581 data-nosnippet>581</a>
+<a href=#582 id=582 data-nosnippet>582</a><span class="attr">#[cfg(test)]
+<a href=#583 id=583 data-nosnippet>583</a></span><span class="kw">mod </span>tests {
+<a href=#584 id=584 data-nosnippet>584</a>    <span class="kw">use </span>super::{
+<a href=#585 id=585 data-nosnippet>585</a>        ContainerTagPromotion, CumulativeMonotonicMode, GrpcReceiver, GrpcTransport, HttpReceiver,
+<a href=#586 id=586 data-nosnippet>586</a>        InitialCumulativeMonotonicValue,
+<a href=#587 id=587 data-nosnippet>587</a>    };
+<a href=#588 id=588 data-nosnippet>588</a>
+<a href=#589 id=589 data-nosnippet>589</a>    <span class="attr">#[test]
+<a href=#590 id=590 data-nosnippet>590</a>    </span><span class="kw">fn </span>container_tag_promotion_parses_known_values() {
+<a href=#591 id=591 data-nosnippet>591</a>        <span class="kw">for </span>(value, expected) <span class="kw">in </span>[
+<a href=#592 id=592 data-nosnippet>592</a>            (<span class="string">"off"</span>, ContainerTagPromotion::Off),
+<a href=#593 id=593 data-nosnippet>593</a>            (<span class="string">"duplicate"</span>, ContainerTagPromotion::Duplicate),
+<a href=#594 id=594 data-nosnippet>594</a>            (<span class="string">"rename"</span>, ContainerTagPromotion::Rename),
+<a href=#595 id=595 data-nosnippet>595</a>        ] {
+<a href=#596 id=596 data-nosnippet>596</a>            <span class="macro">assert_eq!</span>(
+<a href=#597 id=597 data-nosnippet>597</a>                value
+<a href=#598 id=598 data-nosnippet>598</a>                    .parse::&lt;ContainerTagPromotion&gt;()
+<a href=#599 id=599 data-nosnippet>599</a>                    .expect(<span class="string">"known value should parse"</span>),
+<a href=#600 id=600 data-nosnippet>600</a>                expected
+<a href=#601 id=601 data-nosnippet>601</a>            );
+<a href=#602 id=602 data-nosnippet>602</a>        }
+<a href=#603 id=603 data-nosnippet>603</a>    }
+<a href=#604 id=604 data-nosnippet>604</a>
+<a href=#605 id=605 data-nosnippet>605</a>    <span class="attr">#[test]
+<a href=#606 id=606 data-nosnippet>606</a>    </span><span class="kw">fn </span>container_tag_promotion_rejects_unknown_values() {
+<a href=#607 id=607 data-nosnippet>607</a>        <span class="kw">let </span>error = <span class="string">"unsupported"
+<a href=#608 id=608 data-nosnippet>608</a>            </span>.parse::&lt;ContainerTagPromotion&gt;()
+<a href=#609 id=609 data-nosnippet>609</a>            .expect_err(<span class="string">"unsupported mode should be rejected"</span>);
+<a href=#610 id=610 data-nosnippet>610</a>
+<a href=#611 id=611 data-nosnippet>611</a>        <span class="macro">assert_eq!</span>(
+<a href=#612 id=612 data-nosnippet>612</a>            error.to_string(),
+<a href=#613 id=613 data-nosnippet>613</a>            <span class="string">"unknown container tag promotion mode `unsupported`; expected `off`, `duplicate`, or `rename`"
+<a href=#614 id=614 data-nosnippet>614</a>        </span>);
+<a href=#615 id=615 data-nosnippet>615</a>    }
+<a href=#616 id=616 data-nosnippet>616</a>
+<a href=#617 id=617 data-nosnippet>617</a>    <span class="attr">#[test]
+<a href=#618 id=618 data-nosnippet>618</a>    </span><span class="kw">fn </span>grpc_transport_parses_known_values() {
+<a href=#619 id=619 data-nosnippet>619</a>        <span class="macro">assert_eq!</span>(<span class="string">"tcp"</span>.parse::&lt;GrpcTransport&gt;().unwrap(), GrpcTransport::Tcp);
+<a href=#620 id=620 data-nosnippet>620</a>        <span class="macro">assert_eq!</span>(<span class="string">"unix"</span>.parse::&lt;GrpcTransport&gt;().unwrap(), GrpcTransport::Unix);
+<a href=#621 id=621 data-nosnippet>621</a>    }
+<a href=#622 id=622 data-nosnippet>622</a>
+<a href=#623 id=623 data-nosnippet>623</a>    <span class="attr">#[test]
+<a href=#624 id=624 data-nosnippet>624</a>    </span><span class="kw">fn </span>grpc_transport_rejects_unknown_values() {
+<a href=#625 id=625 data-nosnippet>625</a>        <span class="macro">assert!</span>(<span class="string">"tcp4"</span>.parse::&lt;GrpcTransport&gt;().is_err());
+<a href=#626 id=626 data-nosnippet>626</a>        <span class="macro">assert!</span>(<span class="string">"udp"</span>.parse::&lt;GrpcTransport&gt;().is_err());
+<a href=#627 id=627 data-nosnippet>627</a>    }
+<a href=#628 id=628 data-nosnippet>628</a>
+<a href=#629 id=629 data-nosnippet>629</a>    <span class="attr">#[test]
+<a href=#630 id=630 data-nosnippet>630</a>    </span><span class="kw">fn </span>cumulative_monotonic_mode_parses_known_values() {
+<a href=#631 id=631 data-nosnippet>631</a>        <span class="macro">assert_eq!</span>(
+<a href=#632 id=632 data-nosnippet>632</a>            <span class="string">"to_delta"
+<a href=#633 id=633 data-nosnippet>633</a>                </span>.parse::&lt;CumulativeMonotonicMode&gt;()
+<a href=#634 id=634 data-nosnippet>634</a>                .expect(<span class="string">"to_delta should parse"</span>),
+<a href=#635 id=635 data-nosnippet>635</a>            CumulativeMonotonicMode::ToDelta
+<a href=#636 id=636 data-nosnippet>636</a>        );
+<a href=#637 id=637 data-nosnippet>637</a>        <span class="macro">assert_eq!</span>(
+<a href=#638 id=638 data-nosnippet>638</a>            <span class="string">"raw_value"
+<a href=#639 id=639 data-nosnippet>639</a>                </span>.parse::&lt;CumulativeMonotonicMode&gt;()
+<a href=#640 id=640 data-nosnippet>640</a>                .expect(<span class="string">"raw_value should parse"</span>),
+<a href=#641 id=641 data-nosnippet>641</a>            CumulativeMonotonicMode::RawValue
+<a href=#642 id=642 data-nosnippet>642</a>        );
+<a href=#643 id=643 data-nosnippet>643</a>    }
+<a href=#644 id=644 data-nosnippet>644</a>
+<a href=#645 id=645 data-nosnippet>645</a>    <span class="attr">#[test]
+<a href=#646 id=646 data-nosnippet>646</a>    </span><span class="kw">fn </span>cumulative_monotonic_mode_rejects_unknown_values() {
+<a href=#647 id=647 data-nosnippet>647</a>        <span class="kw">let </span>error = <span class="string">"unsupported"
+<a href=#648 id=648 data-nosnippet>648</a>            </span>.parse::&lt;CumulativeMonotonicMode&gt;()
+<a href=#649 id=649 data-nosnippet>649</a>            .expect_err(<span class="string">"unsupported mode should be rejected"</span>);
+<a href=#650 id=650 data-nosnippet>650</a>
+<a href=#651 id=651 data-nosnippet>651</a>        <span class="macro">assert_eq!</span>(
+<a href=#652 id=652 data-nosnippet>652</a>            error.to_string(),
+<a href=#653 id=653 data-nosnippet>653</a>            <span class="string">"unknown cumulative monotonic sum mode `unsupported`; expected `to_delta` or `raw_value`"
+<a href=#654 id=654 data-nosnippet>654</a>        </span>);
+<a href=#655 id=655 data-nosnippet>655</a>    }
+<a href=#656 id=656 data-nosnippet>656</a>
+<a href=#657 id=657 data-nosnippet>657</a>    <span class="attr">#[test]
+<a href=#658 id=658 data-nosnippet>658</a>    </span><span class="kw">fn </span>initial_cumulative_monotonic_value_parses_known_values() {
+<a href=#659 id=659 data-nosnippet>659</a>        <span class="kw">for </span>(value, expected) <span class="kw">in </span>[
+<a href=#660 id=660 data-nosnippet>660</a>            (<span class="string">"auto"</span>, InitialCumulativeMonotonicValue::Auto),
+<a href=#661 id=661 data-nosnippet>661</a>            (<span class="string">"drop"</span>, InitialCumulativeMonotonicValue::Drop),
+<a href=#662 id=662 data-nosnippet>662</a>            (<span class="string">"keep"</span>, InitialCumulativeMonotonicValue::Keep),
+<a href=#663 id=663 data-nosnippet>663</a>        ] {
+<a href=#664 id=664 data-nosnippet>664</a>            <span class="macro">assert_eq!</span>(
+<a href=#665 id=665 data-nosnippet>665</a>                value
+<a href=#666 id=666 data-nosnippet>666</a>                    .parse::&lt;InitialCumulativeMonotonicValue&gt;()
+<a href=#667 id=667 data-nosnippet>667</a>                    .expect(<span class="string">"known value should parse"</span>),
+<a href=#668 id=668 data-nosnippet>668</a>                expected
+<a href=#669 id=669 data-nosnippet>669</a>            );
+<a href=#670 id=670 data-nosnippet>670</a>        }
+<a href=#671 id=671 data-nosnippet>671</a>    }
+<a href=#672 id=672 data-nosnippet>672</a>
+<a href=#673 id=673 data-nosnippet>673</a>    <span class="attr">#[test]
+<a href=#674 id=674 data-nosnippet>674</a>    </span><span class="kw">fn </span>initial_cumulative_monotonic_value_rejects_unknown_values() {
+<a href=#675 id=675 data-nosnippet>675</a>        <span class="kw">let </span>error = <span class="string">"unsupported"
+<a href=#676 id=676 data-nosnippet>676</a>            </span>.parse::&lt;InitialCumulativeMonotonicValue&gt;()
+<a href=#677 id=677 data-nosnippet>677</a>            .expect_err(<span class="string">"unsupported value should be rejected"</span>);
+<a href=#678 id=678 data-nosnippet>678</a>
+<a href=#679 id=679 data-nosnippet>679</a>        <span class="macro">assert_eq!</span>(
+<a href=#680 id=680 data-nosnippet>680</a>            error.to_string(),
+<a href=#681 id=681 data-nosnippet>681</a>            <span class="string">"unknown initial cumulative monotonic value `unsupported`; expected `auto`, `drop`, or `keep`"
+<a href=#682 id=682 data-nosnippet>682</a>        </span>);
+<a href=#683 id=683 data-nosnippet>683</a>    }
+<a href=#684 id=684 data-nosnippet>684</a>
+<a href=#685 id=685 data-nosnippet>685</a>    <span class="attr">#[test]
+<a href=#686 id=686 data-nosnippet>686</a>    </span><span class="kw">fn </span>grpc_receiver_defaults_to_agent_compatible_values() {
+<a href=#687 id=687 data-nosnippet>687</a>        <span class="kw">let </span>grpc = GrpcReceiver::default();
+<a href=#688 id=688 data-nosnippet>688</a>        <span class="macro">assert_eq!</span>(grpc.max_concurrent_streams, <span class="number">0</span>, <span class="string">"0 means no limit (Agent default)"</span>);
+<a href=#689 id=689 data-nosnippet>689</a>    }
+<a href=#690 id=690 data-nosnippet>690</a>
+<a href=#691 id=691 data-nosnippet>691</a>    <span class="attr">#[test]
+<a href=#692 id=692 data-nosnippet>692</a>    </span><span class="kw">fn </span>http_receiver_defaults_to_agent_compatible_values() {
+<a href=#693 id=693 data-nosnippet>693</a>        <span class="kw">let </span>http = HttpReceiver::default();
+<a href=#694 id=694 data-nosnippet>694</a>        <span class="macro">assert_eq!</span>(http.max_request_body_size, <span class="number">0</span>, <span class="string">"0 means 20 MiB default (Agent default)"</span>);
+<a href=#695 id=695 data-nosnippet>695</a>    }
+<a href=#696 id=696 data-nosnippet>696</a>}
 </code></pre></div></section></main></body></html>
