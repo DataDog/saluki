@@ -95,6 +95,7 @@ pub struct ComponentTelemetry {
     bytes_sent: Counter,
     data_points_sent_by_domain: Arc<Mutex<FastHashMap<String, Gauge>>>,
     data_points_dropped_by_domain: Arc<Mutex<FastHashMap<String, Gauge>>>,
+    bytes_dropped_by_domain: Arc<Mutex<FastHashMap<String, Counter>>>,
     events_dropped_http: Counter,
     events_dropped_encoder: Counter,
     events_dropped_queue: Counter,
@@ -114,6 +115,7 @@ impl ComponentTelemetry {
             bytes_sent: builder.register_counter("component_bytes_sent_total"),
             data_points_sent_by_domain: Arc::new(Mutex::new(FastHashMap::default())),
             data_points_dropped_by_domain: Arc::new(Mutex::new(FastHashMap::default())),
+            bytes_dropped_by_domain: Arc::new(Mutex::new(FastHashMap::default())),
             events_dropped_http: builder.register_counter_with_tags(
                 "component_events_dropped_total",
                 ["intentional:false", "drop_reason:http_failure"],
@@ -238,12 +240,26 @@ impl ComponentTelemetry {
     pub fn track_dropped_events(&self, event_count: u64) {
         self.events_dropped_queue.increment(event_count);
     }
+
+    /// Tracks the size, in bytes, of transactions dropped from queue eviction.
+    pub fn track_dropped_bytes(&self, domain: &str, bytes: u64) {
+        if bytes == 0 {
+            return;
+        }
+
+        let mut counters = self.bytes_dropped_by_domain.lock().unwrap();
+        let counter = counters.entry(domain.to_string()).or_insert_with(|| {
+            self.builder
+                .register_counter_with_tags("component_bytes_dropped_total", [("domain", domain.to_string())])
+        });
+        counter.increment(bytes);
+    }
 }
 
 /// Endpoint-specific transaction queue telemetry.
 ///
 /// This type covers high-level transaction queue telemetry, such as number of queued transactions, transactions pending
-/// retry, etc.
+/// retry, in-flight requests, etc.
 #[derive(Clone)]
 pub struct TransactionQueueTelemetry {
     endpoint_id: MetaString,
@@ -263,10 +279,12 @@ pub struct SharedTransactionQueueTelemetry {
 
 struct SharedTransactionQueueTelemetryInner {
     builder: MetricsBuilder,
-    per_endpoint: FastHashMap<MetaString, RetryQueueStats>,
+    per_endpoint: FastHashMap<MetaString, EndpointQueueStats>,
     capacity: RetryQueueCapacityAggregator,
-    retry_queue_size: Gauge,
-    retry_queue_size_by_domain: FastHashMap<String, Gauge>,
+    retry_queue_size: DomainAggregatedGauge,
+    in_flight_requests: DomainAggregatedGauge,
+    high_prio_queue_size: DomainAggregatedGauge,
+    high_prio_queue_capacity: DomainAggregatedGauge,
     retry_queue_bytes_per_sec: Gauge,
     retry_queue_bytes_per_sec_by_domain: FastHashMap<String, Gauge>,
     retry_queue_capacity_secs_by_domain: FastHashMap<String, Gauge>,
@@ -274,10 +292,56 @@ struct SharedTransactionQueueTelemetryInner {
 }
 
 #[derive(Default)]
-struct RetryQueueStats {
+struct EndpointQueueStats {
     domain: MetaString,
-    size: usize,
+    retry_queue_size: usize,
     bytes_per_sec: f64,
+    in_flight_requests: usize,
+    high_prio_queue_size: usize,
+    high_prio_queue_capacity: usize,
+}
+
+/// A gauge summed over every endpoint.
+///
+/// The sum over all endpoints is emitted without tags, and the sum over the endpoints of each domain is emitted with a
+/// `domain` tag.
+struct DomainAggregatedGauge {
+    name: &'static str,
+    total: Gauge,
+    by_domain: FastHashMap<String, Gauge>,
+}
+
+impl DomainAggregatedGauge {
+    fn from_builder(builder: &MetricsBuilder, name: &'static str) -> Self {
+        Self {
+            name,
+            total: builder.register_gauge(name),
+            by_domain: FastHashMap::default(),
+        }
+    }
+
+    /// Recomputes the total and the sum for `domain` from the current endpoint stats.
+    fn update<F>(
+        &mut self, builder: &MetricsBuilder, per_endpoint: &FastHashMap<MetaString, EndpointQueueStats>,
+        domain: &MetaString, value: F,
+    ) where
+        F: Fn(&EndpointQueueStats) -> usize,
+    {
+        let total = per_endpoint.values().map(&value).sum::<usize>();
+        self.total.set(total as f64);
+
+        let domain_total = per_endpoint
+            .values()
+            .filter(|stats| stats.domain == *domain)
+            .map(&value)
+            .sum::<usize>();
+        let name = self.name;
+        let domain_gauge = self
+            .by_domain
+            .entry(domain.to_string())
+            .or_insert_with(|| builder.register_gauge_with_tags(name, [("domain", domain.to_string())]));
+        domain_gauge.set(domain_total as f64);
+    }
 }
 
 impl SharedTransactionQueueTelemetryInner {
@@ -286,8 +350,13 @@ impl SharedTransactionQueueTelemetryInner {
             builder: builder.clone(),
             per_endpoint: FastHashMap::default(),
             capacity: RetryQueueCapacityAggregator::new(),
-            retry_queue_size: builder.register_gauge("network_http_retry_queue_size"),
-            retry_queue_size_by_domain: FastHashMap::default(),
+            retry_queue_size: DomainAggregatedGauge::from_builder(builder, "network_http_retry_queue_size"),
+            in_flight_requests: DomainAggregatedGauge::from_builder(builder, "network_http_in_flight_requests"),
+            high_prio_queue_size: DomainAggregatedGauge::from_builder(builder, "network_http_high_prio_queue_size"),
+            high_prio_queue_capacity: DomainAggregatedGauge::from_builder(
+                builder,
+                "network_http_high_prio_queue_capacity",
+            ),
             retry_queue_bytes_per_sec: builder.register_gauge("network_http_retry_queue_bytes_per_sec"),
             retry_queue_bytes_per_sec_by_domain: FastHashMap::default(),
             retry_queue_capacity_secs_by_domain: FastHashMap::default(),
@@ -295,28 +364,42 @@ impl SharedTransactionQueueTelemetryInner {
         }
     }
 
-    fn record_size(&mut self, endpoint_id: &MetaString, domain: &MetaString, len: usize) {
+    fn endpoint_stats(&mut self, endpoint_id: &MetaString, domain: &MetaString) -> &mut EndpointQueueStats {
         let stats = self.per_endpoint.entry(endpoint_id.clone()).or_default();
         stats.domain = domain.clone();
-        stats.size = len;
+        stats
+    }
 
-        let total_size = self.per_endpoint.values().map(|stats| stats.size).sum::<usize>();
-        self.retry_queue_size.set(total_size as f64);
-
-        let domain_size = self
-            .per_endpoint
-            .values()
-            .filter(|stats| stats.domain == *domain)
-            .map(|stats| stats.size)
-            .sum::<usize>();
-        let domain_size_gauge = self
-            .retry_queue_size_by_domain
-            .entry(domain.to_string())
-            .or_insert_with(|| {
-                self.builder
-                    .register_gauge_with_tags("network_http_retry_queue_size", [("domain", domain.to_string())])
+    fn record_size(&mut self, endpoint_id: &MetaString, domain: &MetaString, len: usize) {
+        self.endpoint_stats(endpoint_id, domain).retry_queue_size = len;
+        self.retry_queue_size
+            .update(&self.builder, &self.per_endpoint, domain, |stats| {
+                stats.retry_queue_size
             });
-        domain_size_gauge.set(domain_size as f64);
+    }
+
+    fn record_in_flight_requests(&mut self, endpoint_id: &MetaString, domain: &MetaString, count: usize) {
+        self.endpoint_stats(endpoint_id, domain).in_flight_requests = count;
+        self.in_flight_requests
+            .update(&self.builder, &self.per_endpoint, domain, |stats| {
+                stats.in_flight_requests
+            });
+    }
+
+    fn record_high_prio_queue_size(&mut self, endpoint_id: &MetaString, domain: &MetaString, len: usize) {
+        self.endpoint_stats(endpoint_id, domain).high_prio_queue_size = len;
+        self.high_prio_queue_size
+            .update(&self.builder, &self.per_endpoint, domain, |stats| {
+                stats.high_prio_queue_size
+            });
+    }
+
+    fn record_high_prio_queue_capacity(&mut self, endpoint_id: &MetaString, domain: &MetaString, capacity: usize) {
+        self.endpoint_stats(endpoint_id, domain).high_prio_queue_capacity = capacity;
+        self.high_prio_queue_capacity
+            .update(&self.builder, &self.per_endpoint, domain, |stats| {
+                stats.high_prio_queue_capacity
+            });
     }
 
     fn record_bytes_per_sec(&mut self, endpoint_id: &MetaString, bytes_per_sec: f64) {
@@ -403,6 +486,27 @@ impl SharedTransactionQueueTelemetry {
             .record_bytes_per_sec(endpoint_id, bytes_per_sec);
     }
 
+    fn record_in_flight_requests(&self, endpoint_id: &MetaString, domain: &MetaString, count: usize) {
+        self.inner
+            .lock()
+            .unwrap()
+            .record_in_flight_requests(endpoint_id, domain, count);
+    }
+
+    fn record_high_prio_queue_size(&self, endpoint_id: &MetaString, domain: &MetaString, len: usize) {
+        self.inner
+            .lock()
+            .unwrap()
+            .record_high_prio_queue_size(endpoint_id, domain, len);
+    }
+
+    fn record_high_prio_queue_capacity(&self, endpoint_id: &MetaString, domain: &MetaString, capacity: usize) {
+        self.inner
+            .lock()
+            .unwrap()
+            .record_high_prio_queue_capacity(endpoint_id, domain, capacity);
+    }
+
     fn record_retry_queue_capacity_stats(
         &self, endpoint_id: &MetaString, domain: &MetaString, bytes_per_sec: f64, in_memory_capacity_bytes: u64,
         disk_available_capacity_bytes: u64,
@@ -464,6 +568,22 @@ impl TransactionQueueTelemetry {
             .record_retry_queue_bytes_per_sec(&self.endpoint_id, bytes_per_sec);
     }
 
+    /// Records the number of requests this endpoint has in flight.
+    pub fn record_in_flight_requests(&self, domain: &MetaString, count: usize) {
+        self.shared.record_in_flight_requests(&self.endpoint_id, domain, count);
+    }
+
+    /// Records the number of transactions in this endpoint's high-priority queue.
+    pub fn record_high_prio_queue_size(&self, domain: &MetaString, len: usize) {
+        self.shared.record_high_prio_queue_size(&self.endpoint_id, domain, len);
+    }
+
+    /// Records the maximum number of transactions this endpoint's high-priority queue holds.
+    pub fn record_high_prio_queue_capacity(&self, domain: &MetaString, capacity: usize) {
+        self.shared
+            .record_high_prio_queue_capacity(&self.endpoint_id, domain, capacity);
+    }
+
     pub fn record_retry_queue_capacity_stats(
         &self, domain: &MetaString, bytes_per_sec: f64, in_memory_capacity_bytes: u64,
         disk_available_capacity_bytes: u64,
@@ -486,7 +606,11 @@ mod tests {
 
     fn aggregate_snapshot(shared: &SharedTransactionQueueTelemetry) -> (usize, f64) {
         let inner = shared.inner.lock().unwrap();
-        let total_size = inner.per_endpoint.values().map(|stats| stats.size).sum::<usize>();
+        let total_size = inner
+            .per_endpoint
+            .values()
+            .map(|stats| stats.retry_queue_size)
+            .sum::<usize>();
         let total_bytes_per_sec = inner
             .per_endpoint
             .values()
@@ -627,6 +751,65 @@ mod tests {
             recorder.gauge(("network_http_retry_queue_size", &[("domain", "https://one.example")])),
             Some(4.0)
         );
+    }
+
+    #[test]
+    fn shared_transaction_queue_telemetry_records_in_flight_and_high_prio_fill_by_domain() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let builder = MetricsBuilder::default();
+        let shared = SharedTransactionQueueTelemetry::from_builder(&builder);
+        let first = TransactionQueueTelemetry::from_builder(&builder, "https://one.example/a", shared.clone());
+        let second = TransactionQueueTelemetry::from_builder(&builder, "https://one.example/b", shared.clone());
+        let third = TransactionQueueTelemetry::from_builder(&builder, "https://two.example", shared.clone());
+        let one = MetaString::from_static("https://one.example");
+        let two = MetaString::from_static("https://two.example");
+        let one_tags = &[("domain", "https://one.example")];
+        let two_tags = &[("domain", "https://two.example")];
+
+        first.record_high_prio_queue_capacity(&one, 100);
+        second.record_high_prio_queue_capacity(&one, 100);
+        third.record_high_prio_queue_capacity(&two, 50);
+        first.record_high_prio_queue_size(&one, 10);
+        second.record_high_prio_queue_size(&one, 20);
+        third.record_high_prio_queue_size(&two, 5);
+        first.record_in_flight_requests(&one, 1);
+        second.record_in_flight_requests(&one, 2);
+        third.record_in_flight_requests(&two, 4);
+
+        assert_eq!(recorder.gauge("network_http_high_prio_queue_capacity"), Some(250.0));
+        assert_eq!(
+            recorder.gauge(("network_http_high_prio_queue_capacity", one_tags)),
+            Some(200.0)
+        );
+        assert_eq!(
+            recorder.gauge(("network_http_high_prio_queue_capacity", two_tags)),
+            Some(50.0)
+        );
+        assert_eq!(recorder.gauge("network_http_high_prio_queue_size"), Some(35.0));
+        assert_eq!(
+            recorder.gauge(("network_http_high_prio_queue_size", one_tags)),
+            Some(30.0)
+        );
+        assert_eq!(
+            recorder.gauge(("network_http_high_prio_queue_size", two_tags)),
+            Some(5.0)
+        );
+        assert_eq!(recorder.gauge("network_http_in_flight_requests"), Some(7.0));
+        assert_eq!(recorder.gauge(("network_http_in_flight_requests", one_tags)), Some(3.0));
+        assert_eq!(recorder.gauge(("network_http_in_flight_requests", two_tags)), Some(4.0));
+
+        first.record_high_prio_queue_size(&one, 0);
+        first.record_in_flight_requests(&one, 0);
+
+        assert_eq!(recorder.gauge("network_http_high_prio_queue_size"), Some(25.0));
+        assert_eq!(
+            recorder.gauge(("network_http_high_prio_queue_size", one_tags)),
+            Some(20.0)
+        );
+        assert_eq!(recorder.gauge("network_http_in_flight_requests"), Some(6.0));
+        assert_eq!(recorder.gauge(("network_http_in_flight_requests", one_tags)), Some(2.0));
+        assert_eq!(recorder.gauge(("network_http_in_flight_requests", two_tags)), Some(4.0));
     }
 
     #[test]
@@ -799,6 +982,32 @@ mod tests {
                 &[("intentional", "true"), ("drop_reason", "queue_limit")],
             )),
             Some(3)
+        );
+    }
+
+    #[test]
+    fn track_dropped_bytes_records_by_domain_and_ignores_zero() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let telemetry = component_telemetry();
+
+        // A zero count short-circuits before registering the counter, so no metric is emitted.
+        telemetry.track_dropped_bytes("datadoghq.com", 0);
+        assert_eq!(
+            recorder.counter(("component_bytes_dropped_total", &[("domain", "datadoghq.com")])),
+            None
+        );
+
+        telemetry.track_dropped_bytes("datadoghq.com", 10);
+        telemetry.track_dropped_bytes("datadoghq.com", 32);
+        telemetry.track_dropped_bytes("datadoghq.eu", 7);
+        assert_eq!(
+            recorder.counter(("component_bytes_dropped_total", &[("domain", "datadoghq.com")])),
+            Some(42)
+        );
+        assert_eq!(
+            recorder.counter(("component_bytes_dropped_total", &[("domain", "datadoghq.eu")])),
+            Some(7)
         );
     }
 }
