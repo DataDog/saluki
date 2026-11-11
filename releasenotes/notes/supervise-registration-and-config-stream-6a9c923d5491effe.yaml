@@ -1,0 +1,7 @@
+---
+fixes:
+  - |
+    Agent Data Plane stops refreshing its registration with the Datadog Agent, and stops receiving configuration
+    updates from it, when it shuts down, instead of continuing until the process exits. Both run as supervised
+    processes, ``adp-remote-agent-task`` and ``config-stream``, which ``agent-data-plane debug runtime show-processes``
+    lists under ``internal-sup``, and are restarted if they fail.

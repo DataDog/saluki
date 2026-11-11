@@ -127,12 +127,12 @@ where
         // Agent's config stream as authority; standalone mode treats the local sources as authoritative. Both block
         // until the first configuration is received and validated, failing the boot if it cannot be -- the strict
         // startup gate.
-        let (config, ra_bootstrap, config_updates) = if standalone {
+        let (config, ra_bootstrap, config_stream_worker, config_updates) = if standalone {
             let config = local
                 .into_standalone()
                 .await
                 .error_context("Failed to load configuration.")?;
-            (config, None, None)
+            (config, None, None, None)
         } else {
             // Blocks until the Core Agent acknowledges registration.
             let client_config = local.client_configuration()?;
@@ -144,8 +144,8 @@ where
             .error_context("Failed to bootstrap remote agent state.")?;
 
             // The configuration system owns the config stream. `ra_bootstrap` is kept to build the remote agent workers
-            // in `create_remote_agent_supervisor`.
-            let config_stream = ra_bootstrap.create_config_stream();
+            // in `create_remote_agent_supervisor`, and the registration worker in `run_until`.
+            let (config_stream, config_stream_worker) = ra_bootstrap.create_config_stream();
 
             info!("Waiting for initial configuration from Datadog Agent...");
             let (config, config_updates) = local
@@ -154,7 +154,12 @@ where
                 .error_context("Failed to load initial configuration from the Datadog Agent.")?;
             info!("Initial configuration received.");
 
-            (config, Some(ra_bootstrap), Some(config_updates))
+            (
+                config,
+                Some(ra_bootstrap),
+                Some(config_stream_worker),
+                Some(config_updates),
+            )
         };
 
         // Connected mode may have replaced the bootstrap-phase settings with the Agent's authoritative config, so
@@ -181,6 +186,7 @@ where
             inner: StartedData {
                 config,
                 ra_bootstrap,
+                config_stream_worker,
                 config_updates,
                 bootstrap_supervisor,
                 start_time,
@@ -387,7 +393,8 @@ where
         } = self.inner;
         let StartedData {
             config,
-            ra_bootstrap: _,
+            ra_bootstrap,
+            config_stream_worker,
             config_updates,
             bootstrap_supervisor,
             start_time,
@@ -407,6 +414,14 @@ where
 
         if let Some(env_supervisor) = env_supervisor {
             internal_supervisor.add_worker(env_supervisor);
+        }
+
+        if let Some(ra_bootstrap) = ra_bootstrap {
+            internal_supervisor.add_worker(ra_bootstrap.create_registration_worker());
+        }
+
+        if let Some(config_stream_worker) = config_stream_worker {
+            internal_supervisor.add_worker(config_stream_worker);
         }
 
         if let Some(config_updates) = config_updates {

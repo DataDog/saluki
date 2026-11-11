@@ -3,10 +3,24 @@
 //! [`RemoteAgentBootstrap`] registers the process with the Datadog Agent over the Remote Agent Registry, keeps that
 //! registration alive, and creates everything that depends on it: the configuration stream, and the workers that serve
 //! the status, flare, and telemetry services and report diagnostic events back to the Datadog Agent.
+//!
+//! # Before the supervision tree runs
+//!
+//! Registration and the initial configuration have to arrive before the supervision tree exists, but both have to keep
+//! going while the rest of the remote agent is built: the registration expires unless it is refreshed, and
+//! configuration updates can arrive at any time. So the registration loop and the configuration stream loop each start
+//! in a task, and each has a worker that takes the loop over when it first starts. The worker continues from the state
+//! that the task left, with the same session, refresh schedule, and open stream, and so does each restart of the
+//! worker.
+//!
+//! The task finishes a registration attempt in flight before it hands over, so a handoff never registers twice. A
+//! worker stops at once on shutdown, even in the middle of an attempt, and a restarted worker retries an interrupted
+//! attempt right away. If no worker ever takes over, the task stops once its loop has no owner left: the config stream
+//! worker, or the `RemoteAgentBootstrap` and every registration worker created from it.
 
 use std::collections::HashMap;
-use std::sync::OnceLock;
-use std::{sync::Arc, time::Duration};
+use std::sync::{OnceLock, PoisonError};
+use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -17,17 +31,18 @@ use datadog_agent_commons::ipc::{
 };
 use datadog_protos::agent::v1::{
     event::Details as RemoteAgentEventDetails, Event as RemoteAgentEvent, InvalidApiKeyEvent,
-    ReportRemoteAgentEventRequest,
+    RegisterRemoteAgentResponse, ReportRemoteAgentEventRequest,
 };
 use datadog_protos::agent::{
     flare::v1::{flare_provider_server::*, *},
     status::v1::{status_provider_server::*, *},
     telemetry::v1::{get_telemetry_response::*, telemetry_provider_server::*, *},
+    ConfigEvent,
 };
-use futures::StreamExt;
+use futures::{Stream, StreamExt};
 use process_memory::Querier as MemoryQuerier;
 use saluki_api::{DynamicRoute, EndpointType};
-use saluki_common::sync::shutdown::ShutdownHandle;
+use saluki_common::sync::shutdown::{ShutdownCoordinator, ShutdownHandle};
 use saluki_common::task::spawn_traced_named;
 use saluki_config::dynamic::ConfigUpdate;
 use saluki_core::{
@@ -43,12 +58,12 @@ use saluki_core::{
 };
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::{GrpcTargetAddress, ListenAddress};
-use tokio::task::spawn_blocking;
-use tokio::time::{timeout, Instant};
+use tokio::task::{spawn_blocking, AbortHandle};
+use tokio::time::{sleep_until, timeout, Instant};
 use tokio::{
-    select,
-    sync::{mpsc, oneshot, Mutex},
-    time::{interval, MissedTickBehavior},
+    pin, select,
+    sync::{mpsc, Mutex},
+    time::{interval, Interval, MissedTickBehavior},
 };
 use tonic::{server::NamedService, service::Routes, Status};
 use tracing::{debug, error, info, warn};
@@ -60,11 +75,15 @@ pub use self::status::{StatusBuilder, StatusSectionProvider, StatusSectionWriter
 
 const DEFAULT_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 const REFRESH_FAILED_RETRY_INTERVAL: Duration = Duration::from_secs(5);
+const CONFIG_STREAM_RETRY_INTERVAL: Duration = Duration::from_secs(5);
 
 // RAR sessions can change without restarting the process. Keep this identity for the entire process lifetime.
 static PROCESS_INSTANCE_ID: OnceLock<String> = OnceLock::new();
 
 const SESSION_ID_METADATA_KEY: &str = "session_id";
+
+const CONFIG_STREAM_WORKER_NAME: &str = "config-stream";
+const CONFIG_STREAM_CAPACITY: usize = 100;
 
 /// Remote agent initialization.
 ///
@@ -73,6 +92,7 @@ const SESSION_ID_METADATA_KEY: &str = "session_id";
 pub struct RemoteAgentBootstrap {
     client: RemoteAgentClient,
     session_id: SessionIdHandle,
+    registration: RemoteAgentRegistrationWorker,
     internal_metrics: Reflector<AggregatedMetricsProcessor>,
     dataspace: Arc<OnceLock<DataspaceRegistry>>,
 }
@@ -84,20 +104,14 @@ impl RemoteAgentBootstrap {
     /// `secure_api_listen_address` as the address where the Core Agent reaches the status, flare, and telemetry
     /// services. This function does not return until the first registration attempt finishes, whether successful or
     /// not. `additional_service_names` advertises services the binary adds through
-    /// [`create_services_worker`](Self::create_services_worker).
-    ///
-    /// Registration runs in a background task that this function spawns outside of any supervision tree. The task
-    /// refreshes the registration periodically, and registers again whenever a refresh fails, for the rest of the
-    /// process's lifetime: it doesn't stop on shutdown, or when the returned `RemoteAgentBootstrap` is dropped.
+    /// [`create_services_worker`](Self::create_services_worker). Once registered, a task keeps the registration alive
+    /// until the worker from [`create_registration_worker`][Self::create_registration_worker] takes over.
     ///
     /// # Errors
     ///
     /// Returns an error if `secure_api_listen_address` isn't a valid gRPC target address, if the client can't connect
-    /// to the Core Agent, or if the first registration attempt fails.
-    ///
-    /// If the first registration attempt fails, the background task keeps running and retries registration
-    /// periodically, so it may still register with the Core Agent later. Treat this error as fatal rather than calling
-    /// this function again: each call starts another background task, and each task registers its own session.
+    /// to the Core Agent, or if the first registration attempt fails. Nothing is left running when this returns an
+    /// error.
     pub async fn new(
         client_config: &RemoteAgentClientConfiguration, secure_api_listen_address: &ListenAddress,
         additional_service_names: &[&str],
@@ -112,33 +126,29 @@ impl RemoteAgentBootstrap {
             <TelemetryProviderServer<()> as NamedService>::NAME.to_string(),
         ];
         service_names.extend(additional_service_names.iter().map(|name| (*name).to_owned()));
+        let details = RegistrationDetails::new(api_listen_addr, service_names);
+        let session_id = SessionIdHandle::empty();
 
-        let (state, init_reg_rx) = RemoteAgentState::new(api_listen_addr, service_names);
-        let session_id = state.session_id.clone();
-
-        // Create our client, and then immediately start the registration loop.
-        //
-        // Wait for the result of the initial registration attempt before proceeding.
         let client = RemoteAgentClient::connect(client_config).await?;
-        let task_name = format!("{}-remote-agent-task", saluki_metadata::get_app_details().identifier());
-        spawn_traced_named(task_name, run_remote_agent_registration_loop(client.clone(), state));
-
-        match init_reg_rx.await {
-            Ok(Ok(())) => (),
-            Ok(Err(e)) => return Err(e),
-            Err(_) => {
-                return Err(generic_error!(
-                    "Failed to initialize remote agent state. Registration task failed unexpectedly."
-                ))
-            }
-        }
+        let registration = Registration::new(Box::new(client.clone()), details, session_id.clone())
+            .register_and_spawn()
+            .await?;
 
         Ok(Self {
             client,
             session_id,
+            registration,
             internal_metrics: get_shared_metrics_state(),
             dataspace: Arc::new(OnceLock::new()),
         })
+    }
+
+    /// Creates a worker that keeps the registration with the Core Agent alive.
+    ///
+    /// The worker is named `{identifier}-remote-agent-task`, where `{identifier}` is the identifier of the application
+    /// details, and must be added to the supervision tree.
+    pub fn create_registration_worker(&self) -> RemoteAgentRegistrationWorker {
+        self.registration.share()
     }
 
     fn build_impl(
@@ -202,165 +212,368 @@ impl RemoteAgentBootstrap {
         }
     }
 
-    /// Creates a config stream that receives configuration events from the Core Agent.
+    /// Creates a config stream that receives configuration events from the Core Agent, along with the worker that
+    /// feeds it.
     ///
-    /// The stream is fed by a background task that this method spawns outside of any supervision tree. The task
-    /// reconnects whenever the stream from the Core Agent ends, and doesn't stop on shutdown. It only stops when it
-    /// tries to deliver an update after the returned receiver is dropped.
-    pub fn create_config_stream(&self) -> mpsc::Receiver<ConfigUpdate> {
-        let (sender, receiver) = mpsc::channel(100);
-
-        let client = self.client.clone();
-        let session_id = self.session_id.clone();
-
-        tokio::spawn(run_config_stream_event_loop(client, sender, session_id));
-
-        receiver
+    /// A task feeds the stream until the worker takes over, so that the initial configuration can arrive before the
+    /// supervision tree runs. The worker is named `config-stream`, and must be added to the supervision tree.
+    pub fn create_config_stream(&self) -> (mpsc::Receiver<ConfigUpdate>, ConfigStreamWorker) {
+        ConfigStreamWorker::spawn(Box::new(self.client.clone()), self.session_id.clone())
     }
 }
 
-struct RemoteAgentState {
+/// A loop that has to start before the supervision tree exists, and continue in a worker once it runs.
+trait BootstrapLoop: Send + 'static {
+    /// Runs the loop until `handoff` resolves, stopping only where that loses no work.
+    ///
+    /// Each call continues from wherever the previous call stopped, including a call that was dropped partway through.
+    fn run(&mut self, handoff: ShutdownHandle) -> impl Future<Output = ()> + Send + '_;
+}
+
+/// The task that runs a [`BootstrapLoop`] until a worker takes it over.
+struct BootstrapTask {
+    handoff: ShutdownCoordinator,
+    task: AbortHandle,
+}
+
+/// Hands a [`BootstrapLoop`] over from the task that starts it to the worker that continues it.
+struct Handoff<L> {
+    name: String,
+    state: Arc<Mutex<L>>,
+    task: std::sync::Mutex<Option<BootstrapTask>>,
+}
+
+impl<L: BootstrapLoop> Handoff<L> {
+    /// Starts the loop in a task named `name`.
+    fn spawn(name: String, state: L) -> Self {
+        let state = Arc::new(Mutex::new(state));
+        // Locked before the task is spawned, so that a worker can't take the state first.
+        let mut task_state = Arc::clone(&state)
+            .try_lock_owned()
+            .expect("a new mutex should be unlocked");
+        let (handoff, stop) = ShutdownHandle::paired();
+        let task = spawn_traced_named(name.clone(), async move { task_state.run(stop).await }).abort_handle();
+
+        Self {
+            name,
+            state,
+            task: std::sync::Mutex::new(Some(BootstrapTask { handoff, task })),
+        }
+    }
+
+    /// Hands the loop over from the task, if no worker has yet, and returns the future of a worker that continues it.
+    fn take_over(&self, process_shutdown: ShutdownHandle) -> SupervisorFuture {
+        let task =
+            self.task
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take()
+                .map(|BootstrapTask { handoff, task }| {
+                    handoff.shutdown();
+                    task
+                });
+
+        let state = Arc::clone(&self.state);
+        let run = async move {
+            let mut state = state.lock_owned().await;
+            state.run(ShutdownHandle::noop()).await;
+        };
+
+        Box::pin(async move {
+            select! {
+                biased;
+                _ = process_shutdown => {
+                    // The task may still be in the middle of an attempt, which a restart retries.
+                    if let Some(task) = task {
+                        task.abort();
+                    }
+                }
+                _ = run => {}
+            }
+            Ok(())
+        })
+    }
+}
+
+impl<L> Drop for Handoff<L> {
+    fn drop(&mut self) {
+        // No worker can take the loop over any more, so the task has nothing to finish.
+        if let Some(BootstrapTask { task, .. }) = self.task.get_mut().unwrap_or_else(PoisonError::into_inner).take() {
+            task.abort();
+        }
+    }
+}
+
+/// What the remote agent advertises when it registers.
+struct RegistrationDetails {
     pid: u32,
     process_instance_id: &'static str,
     display_name: String,
     flavor: String,
     api_listen_addr: String,
-    session_id: SessionIdHandle,
     service_names: Vec<String>,
-    initial_registration_tx: Option<oneshot::Sender<Result<(), GenericError>>>,
 }
 
-impl RemoteAgentState {
-    fn new(
-        api_listen_addr: GrpcTargetAddress, service_names: Vec<String>,
-    ) -> (Self, oneshot::Receiver<Result<(), GenericError>>) {
+impl RegistrationDetails {
+    fn new(api_listen_addr: GrpcTargetAddress, service_names: Vec<String>) -> Self {
         let app_details = saluki_metadata::get_app_details();
-        let display_name = app_details.full_name().to_string();
-        let flavor = app_details.full_name().replace(" ", "_").to_lowercase();
 
-        let (init_reg_tx, init_reg_rx) = oneshot::channel();
-
-        let state = Self {
+        Self {
             pid: std::process::id(),
             process_instance_id: PROCESS_INSTANCE_ID
                 .get_or_init(|| uuid::Uuid::new_v4().to_string())
                 .as_str(),
-            display_name,
-            flavor,
+            display_name: app_details.full_name().to_string(),
+            flavor: app_details.full_name().replace(" ", "_").to_lowercase(),
             api_listen_addr: api_listen_addr.to_string(),
-            session_id: SessionIdHandle::empty(),
             service_names,
-            initial_registration_tx: Some(init_reg_tx),
-        };
-
-        (state, init_reg_rx)
+        }
     }
 }
 
-async fn run_remote_agent_registration_loop(mut client: RemoteAgentClient, mut state: RemoteAgentState) {
-    let mut loop_timer = interval(DEFAULT_REFRESH_INTERVAL);
-    loop_timer.set_missed_tick_behavior(MissedTickBehavior::Delay);
+/// The Remote Agent Registry calls that registration makes, so that tests can stand in for the Core Agent.
+#[async_trait]
+trait RegistryClient: Send {
+    async fn register(&mut self, details: &RegistrationDetails) -> Result<RegisterRemoteAgentResponse, GenericError>;
 
-    debug!("Remote Agent registration task started.");
+    async fn refresh(&mut self, session_id: &SessionId) -> Result<(), GenericError>;
+}
 
-    loop {
-        loop_timer.tick().await;
+#[async_trait]
+impl RegistryClient for RemoteAgentClient {
+    async fn register(&mut self, details: &RegistrationDetails) -> Result<RegisterRemoteAgentResponse, GenericError> {
+        let response = self
+            .register_remote_agent(
+                details.pid,
+                details.process_instance_id,
+                &details.display_name,
+                &details.flavor,
+                &details.api_listen_addr,
+                details.service_names.clone(),
+            )
+            .await?;
+        Ok(response.into_inner())
+    }
 
-        match state.session_id.get() {
+    async fn refresh(&mut self, session_id: &SessionId) -> Result<(), GenericError> {
+        self.refresh_remote_agent(session_id).await.map(|_| ())
+    }
+}
+
+/// The registration loop, which refreshes the registration periodically and registers again whenever a refresh fails.
+struct Registration {
+    client: Box<dyn RegistryClient>,
+    details: RegistrationDetails,
+    session_id: SessionIdHandle,
+    timer: Interval,
+    attempt_in_flight: bool,
+}
+
+impl Registration {
+    fn new(client: Box<dyn RegistryClient>, details: RegistrationDetails, session_id: SessionIdHandle) -> Self {
+        let mut timer = interval(DEFAULT_REFRESH_INTERVAL);
+        timer.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
+        Self {
+            client,
+            details,
+            session_id,
+            timer,
+            attempt_in_flight: false,
+        }
+    }
+
+    /// Registers, and then starts the registration loop in a task until the returned worker takes it over.
+    ///
+    /// # Errors
+    ///
+    /// If a registration attempt fails before one succeeds, an error is returned, and no task is started.
+    async fn register_and_spawn(mut self) -> Result<RemoteAgentRegistrationWorker, GenericError> {
+        debug!("Remote Agent registration task started.");
+
+        // An invalid session ID leaves us unregistered without failing the attempt, so we try again on the next tick.
+        while self.session_id.get().is_none() {
+            self.timer.tick().await;
+            self.register().await?;
+        }
+
+        let name = format!("{}-remote-agent-task", saluki_metadata::get_app_details().identifier());
+        Ok(RemoteAgentRegistrationWorker {
+            registration: Arc::new(Handoff::spawn(name, self)),
+        })
+    }
+
+    async fn refresh_or_register(&mut self) {
+        match self.session_id.get() {
             Some(session_id) => {
                 debug!(%session_id, "Refreshing registration with Datadog Agent.");
 
-                if client.refresh_remote_agent(&session_id).await.is_err() {
-                    loop_timer.reset_after(REFRESH_FAILED_RETRY_INTERVAL);
-                    state.session_id.update(None);
+                if self.client.refresh(&session_id).await.is_err() {
+                    self.timer.reset_after(REFRESH_FAILED_RETRY_INTERVAL);
+                    self.session_id.update(None);
                     warn!("Failed to refresh registration with the Datadog Agent. Resetting session ID and attempting to re-register shortly.");
-
-                    continue;
                 }
             }
             None => {
-                match client
-                    .register_remote_agent(
-                        state.pid,
-                        state.process_instance_id,
-                        &state.display_name,
-                        &state.flavor,
-                        &state.api_listen_addr,
-                        state.service_names.clone(),
-                    )
-                    .await
-                {
-                    Ok(resp) => {
-                        let resp = resp.into_inner();
-                        let new_session_id = match SessionId::new(&resp.session_id) {
-                            Ok(session_id) => session_id,
-                            Err(e) => {
-                                warn!(error = %e, "Received invalid session ID from Datadog Agent after registation. Registration will be retried periodically in the background.");
-                                loop_timer.reset_after(DEFAULT_REFRESH_INTERVAL);
-                                continue;
-                            }
-                        };
-                        let new_refresh_interval = resp.recommended_refresh_interval_secs;
-                        info!(
-                            session_id = %new_session_id,
-                            process_instance_id = %state.process_instance_id,
-                            "Successfully registered with the Datadog Agent. Refreshing every {} seconds.",
-                            new_refresh_interval
-                        );
+                // `register` logs its own failures.
+                let _ = self.register().await;
+            }
+        }
+    }
 
-                        state.session_id.update(Some(new_session_id));
-                        loop_timer.reset_after(Duration::from_secs(new_refresh_interval as u64));
+    async fn register(&mut self) -> Result<(), GenericError> {
+        let resp = match self.client.register(&self.details).await {
+            Ok(resp) => resp,
+            Err(e) => {
+                warn!(error = %e, "Failed to register with the Datadog Agent. Registration will be retried periodically in the background.");
+                self.timer.reset_after(DEFAULT_REFRESH_INTERVAL);
+                return Err(e);
+            }
+        };
 
-                        if let Some(tx) = state.initial_registration_tx.take() {
-                            let _ = tx.send(Ok(()));
-                        }
+        match SessionId::new(&resp.session_id) {
+            Ok(new_session_id) => {
+                let new_refresh_interval = resp.recommended_refresh_interval_secs;
+                info!(
+                    session_id = %new_session_id,
+                    process_instance_id = %self.details.process_instance_id,
+                    "Successfully registered with the Datadog Agent. Refreshing every {} seconds.",
+                    new_refresh_interval
+                );
+
+                self.session_id.update(Some(new_session_id));
+                self.timer.reset_after(Duration::from_secs(new_refresh_interval as u64));
+            }
+            Err(e) => {
+                warn!(error = %e, "Received invalid session ID from Datadog Agent after registation. Registration will be retried periodically in the background.");
+                self.timer.reset_after(DEFAULT_REFRESH_INTERVAL);
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl BootstrapLoop for Registration {
+    async fn run(&mut self, handoff: ShutdownHandle) {
+        pin!(handoff);
+
+        loop {
+            // An attempt that a dropped call interrupted is retried right away.
+            if !self.attempt_in_flight {
+                select! {
+                    biased;
+                    _ = &mut handoff => return,
+                    _ = self.timer.tick() => {}
+                }
+                self.attempt_in_flight = true;
+            }
+
+            self.refresh_or_register().await;
+            self.attempt_in_flight = false;
+        }
+    }
+}
+
+type ConfigEventStream = Pin<Box<dyn Stream<Item = Result<ConfigEvent, Status>> + Send>>;
+
+/// Opens configuration event streams, so that tests can stand in for the Core Agent.
+trait ConfigEventSource: Send {
+    fn open(&mut self, session_id: &SessionId) -> ConfigEventStream;
+}
+
+impl ConfigEventSource for RemoteAgentClient {
+    fn open(&mut self, session_id: &SessionId) -> ConfigEventStream {
+        Box::pin(self.stream_config_events(session_id))
+    }
+}
+
+/// The configuration stream loop, which forwards configuration events from the Core Agent to a channel.
+struct ConfigStream {
+    source: Box<dyn ConfigEventSource>,
+    sender: mpsc::Sender<ConfigUpdate>,
+    session_id: SessionIdHandle,
+    events: Option<ConfigEventStream>,
+    reconnect_at: Option<Instant>,
+    pending: Option<ConfigUpdate>,
+}
+
+impl ConfigStream {
+    fn new(
+        source: Box<dyn ConfigEventSource>, sender: mpsc::Sender<ConfigUpdate>, session_id: SessionIdHandle,
+    ) -> Self {
+        Self {
+            source,
+            sender,
+            session_id,
+            events: None,
+            reconnect_at: None,
+            pending: None,
+        }
+    }
+
+    /// Forwards configuration events until the receiver is dropped.
+    ///
+    /// Every await point is cancel-safe: the open stream, the reconnect deadline, and an update waiting for room in the
+    /// channel are all kept in `self`.
+    async fn forward(&mut self) {
+        if self.sender.is_closed() {
+            return;
+        }
+
+        loop {
+            if self.pending.is_some() {
+                let Ok(permit) = self.sender.reserve().await else {
+                    warn!("Dynamic configuration channel closed. Config stream shutting down.");
+                    self.events = None;
+                    self.pending = None;
+                    return;
+                };
+                permit.send(self.pending.take().expect("pending update should be present"));
+            }
+
+            let events = match &mut self.events {
+                Some(events) => events,
+                None => {
+                    if let Some(reconnect_at) = self.reconnect_at {
+                        sleep_until(reconnect_at).await;
+                        self.reconnect_at = None;
                     }
-                    Err(e) => {
-                        warn!(error = %e, "Failed to register with the Datadog Agent. Registration will be retried periodically in the background.");
-                        loop_timer.reset_after(DEFAULT_REFRESH_INTERVAL);
 
-                        if let Some(tx) = state.initial_registration_tx.take() {
-                            let _ = tx.send(Err(e));
-                        }
-                    }
+                    debug!("Establishing a new config stream connection to the Core Agent.");
+
+                    // Read the session ID on every reconnect, since it can change in the background due to
+                    // re-registration.
+                    let session_id = self.session_id.wait_for_update().await;
+                    self.events.insert(self.source.open(&session_id))
+                }
+            };
+
+            match events.next().await {
+                Some(Ok(event)) => self.pending = config_event_to_update(event),
+                Some(Err(e)) => error!("Error while reading config event stream: {}.", e),
+                None => {
+                    debug!("Config stream ended, retrying in 5 seconds...");
+                    self.events = None;
+                    self.reconnect_at = Some(Instant::now() + CONFIG_STREAM_RETRY_INTERVAL);
                 }
             }
         }
     }
 }
 
-async fn run_config_stream_event_loop(
-    mut client: RemoteAgentClient, sender: mpsc::Sender<ConfigUpdate>, session_id: SessionIdHandle,
-) {
-    loop {
-        debug!("Establishing a new config stream connection to the Core Agent.");
+impl BootstrapLoop for ConfigStream {
+    async fn run(&mut self, handoff: ShutdownHandle) {
+        pin!(handoff);
 
-        // Read the current session ID.
-        //
-        // We do this every loop since it can change in the background due to re-registration.
-        let current_session_id = session_id.wait_for_update().await;
-
-        let mut stream = client.stream_config_events(&current_session_id);
-        while let Some(result) = stream.next().await {
-            match result {
-                Ok(event) => {
-                    let update = config_event_to_update(event);
-
-                    if let Some(update) = update {
-                        if sender.send(update).await.is_err() {
-                            warn!("Dynamic configuration channel closed. Config stream shutting down.");
-                            return;
-                        }
-                    }
-                }
-                Err(e) => {
-                    error!("Error while reading config event stream: {}.", e);
-                }
-            }
+        select! {
+            biased;
+            _ = &mut handoff => return,
+            _ = self.forward() => {}
         }
 
-        debug!("Config stream ended, retrying in 5 seconds...");
-        tokio::time::sleep(Duration::from_secs(5)).await;
+        // The receiver is gone. Wait to be stopped rather than return, which would make a worker restart.
+        handoff.await;
     }
 }
 
@@ -648,6 +861,64 @@ impl FlareProvider for RemoteAgentImpl {
     }
 }
 
+/// A worker that keeps the registration with the Core Agent alive.
+///
+/// It refreshes the registration periodically, and registers again whenever a refresh fails.
+pub struct RemoteAgentRegistrationWorker {
+    registration: Arc<Handoff<Registration>>,
+}
+
+impl RemoteAgentRegistrationWorker {
+    fn share(&self) -> Self {
+        Self {
+            registration: Arc::clone(&self.registration),
+        }
+    }
+}
+
+#[async_trait]
+impl Supervisable for RemoteAgentRegistrationWorker {
+    fn name(&self) -> &str {
+        &self.registration.name
+    }
+
+    async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
+        Ok(self.registration.take_over(process_shutdown))
+    }
+}
+
+/// A worker that feeds the config stream from [`RemoteAgentBootstrap::create_config_stream`].
+///
+/// It forwards configuration events from the Core Agent, and reconnects whenever the stream from the Core Agent ends.
+/// The config stream stays open across restarts of the worker.
+pub struct ConfigStreamWorker {
+    stream: Handoff<ConfigStream>,
+}
+
+impl ConfigStreamWorker {
+    /// Starts forwarding events from `source` in a task until the returned worker takes it over.
+    fn spawn(source: Box<dyn ConfigEventSource>, session_id: SessionIdHandle) -> (mpsc::Receiver<ConfigUpdate>, Self) {
+        let (sender, receiver) = mpsc::channel(CONFIG_STREAM_CAPACITY);
+        let stream = ConfigStream::new(source, sender, session_id);
+        let worker = Self {
+            stream: Handoff::spawn(CONFIG_STREAM_WORKER_NAME.to_string(), stream),
+        };
+
+        (receiver, worker)
+    }
+}
+
+#[async_trait]
+impl Supervisable for ConfigStreamWorker {
+    fn name(&self) -> &str {
+        &self.stream.name
+    }
+
+    async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
+        Ok(self.stream.take_over(process_shutdown))
+    }
+}
+
 /// A worker that captures the dataspace from the supervisor context and stores it in a shared
 /// [`OnceLock`] for use by the diagnostic artifact collection service.
 ///
@@ -829,25 +1100,28 @@ fn diagnostic_to_remote_agent_event(event: &DiagnosticEvent) -> Option<RemoteAge
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
+
     use saluki_core::{
         data_model::event::{
             metric::{context::Context, Metric},
             Event,
         },
         observability::metrics::{MetricsSnapshot, Processor as _},
+        runtime::Supervisor,
     };
 
     use super::*;
 
     #[test]
-    fn remote_agent_process_instance_id_is_shared_across_states() {
+    fn remote_agent_process_instance_id_is_shared_across_registrations() {
         let address = || GrpcTargetAddress::Tcp("127.0.0.1:1234".parse().unwrap());
-        let (first, _) = RemoteAgentState::new(address(), vec![]);
+        let first = RegistrationDetails::new(address(), vec![]);
         assert!(uuid::Uuid::parse_str(first.process_instance_id).is_ok());
         assert_eq!(first.pid, std::process::id());
 
-        // Each bootstrap creates a fresh state, but all states share one process identity.
-        let (second, _) = RemoteAgentState::new(address(), vec![]);
+        // Each bootstrap creates fresh registration details, but all of them share one process identity.
+        let second = RegistrationDetails::new(address(), vec![]);
         assert_eq!(second.pid, first.pid);
         assert_eq!(second.process_instance_id, first.process_instance_id);
     }
@@ -968,5 +1242,518 @@ mod tests {
 
         throttle.record();
         assert!(!throttle.is_allowed());
+    }
+
+    /// A Datadog Agent for registration and the config stream to talk to.
+    ///
+    /// Registration responses are scripted, and an unscripted registration is rejected. Every call is recorded with the
+    /// number of seconds since the fake was created, which is exact with a paused clock.
+    #[derive(Clone)]
+    struct FakeAgent {
+        state: Arc<std::sync::Mutex<FakeAgentState>>,
+    }
+
+    struct FakeAgentState {
+        created: Instant,
+        calls: Vec<(u64, Call)>,
+        registrations: VecDeque<RegisterRemoteAgentResponse>,
+        rejected_registrations: usize,
+        failed_refreshes: usize,
+        hung_refreshes: usize,
+        streams: VecDeque<mpsc::UnboundedReceiver<ConfigEvent>>,
+    }
+
+    #[derive(Clone, Debug, PartialEq)]
+    enum Call {
+        Register,
+        Refresh(String),
+        Open(String),
+    }
+
+    impl FakeAgent {
+        fn new() -> Self {
+            Self {
+                state: Arc::new(std::sync::Mutex::new(FakeAgentState {
+                    created: Instant::now(),
+                    calls: Vec::new(),
+                    registrations: VecDeque::new(),
+                    rejected_registrations: 0,
+                    failed_refreshes: 0,
+                    hung_refreshes: 0,
+                    streams: VecDeque::new(),
+                })),
+            }
+        }
+
+        fn lock(&self) -> std::sync::MutexGuard<'_, FakeAgentState> {
+            self.state.lock().unwrap()
+        }
+
+        fn accept_registration(&self, session_id: &str, recommended_refresh_interval_secs: u32) {
+            self.lock().registrations.push_back(RegisterRemoteAgentResponse {
+                session_id: session_id.to_string(),
+                recommended_refresh_interval_secs,
+            });
+        }
+
+        /// Rejects the next registration, ahead of any scripted response.
+        fn reject_next_registration(&self) {
+            self.lock().rejected_registrations += 1;
+        }
+
+        fn fail_next_refresh(&self) {
+            self.lock().failed_refreshes += 1;
+        }
+
+        /// Never answers the next refresh, ahead of any failed one.
+        fn hang_next_refresh(&self) {
+            self.lock().hung_refreshes += 1;
+        }
+
+        /// Queues a stream for the next `open`, and returns the sender that feeds it.
+        fn add_stream(&self) -> mpsc::UnboundedSender<ConfigEvent> {
+            let (events_tx, events_rx) = mpsc::unbounded_channel();
+            self.lock().streams.push_back(events_rx);
+            events_tx
+        }
+
+        fn calls(&self) -> Vec<(u64, Call)> {
+            self.lock().calls.clone()
+        }
+
+        /// Returns `true` if nothing other than this handle holds the fake.
+        fn is_released(&self) -> bool {
+            Arc::strong_count(&self.state) == 1
+        }
+    }
+
+    impl FakeAgentState {
+        fn record(&mut self, call: Call) {
+            let elapsed = self.created.elapsed().as_secs();
+            self.calls.push((elapsed, call));
+        }
+    }
+
+    #[async_trait]
+    impl RegistryClient for FakeAgent {
+        async fn register(&mut self, _: &RegistrationDetails) -> Result<RegisterRemoteAgentResponse, GenericError> {
+            let mut state = self.lock();
+            state.record(Call::Register);
+            if state.rejected_registrations > 0 {
+                state.rejected_registrations -= 1;
+                return Err(generic_error!("registration rejected"));
+            }
+            state
+                .registrations
+                .pop_front()
+                .ok_or_else(|| generic_error!("registration rejected"))
+        }
+
+        async fn refresh(&mut self, session_id: &SessionId) -> Result<(), GenericError> {
+            let hang = {
+                let mut state = self.lock();
+                state.record(Call::Refresh(session_id.to_string()));
+                if state.hung_refreshes > 0 {
+                    state.hung_refreshes -= 1;
+                    true
+                } else if state.failed_refreshes > 0 {
+                    state.failed_refreshes -= 1;
+                    return Err(generic_error!("unknown session"));
+                } else {
+                    false
+                }
+            };
+            if hang {
+                std::future::pending::<()>().await;
+            }
+            Ok(())
+        }
+    }
+
+    impl ConfigEventSource for FakeAgent {
+        fn open(&mut self, session_id: &SessionId) -> ConfigEventStream {
+            let mut state = self.lock();
+            state.record(Call::Open(session_id.to_string()));
+            match state.streams.pop_front() {
+                Some(mut events) => Box::pin(futures::stream::poll_fn(move |cx| {
+                    events.poll_recv(cx).map(|event| event.map(Ok))
+                })),
+                None => Box::pin(futures::stream::pending()),
+            }
+        }
+    }
+
+    fn registration(agent: &FakeAgent, session_id: &SessionIdHandle) -> Registration {
+        let details = RegistrationDetails {
+            pid: 1,
+            process_instance_id: "test-instance",
+            display_name: "Test Agent".to_string(),
+            flavor: "test_agent".to_string(),
+            api_listen_addr: "localhost:5101".to_string(),
+            service_names: Vec::new(),
+        };
+        Registration::new(Box::new(agent.clone()), details, session_id.clone())
+    }
+
+    async fn registration_worker(agent: &FakeAgent, session_id: &SessionIdHandle) -> RemoteAgentRegistrationWorker {
+        registration(agent, session_id)
+            .register_and_spawn()
+            .await
+            .expect("registration should succeed")
+    }
+
+    fn config_stream_worker(
+        agent: &FakeAgent, session_id: &SessionIdHandle,
+    ) -> (mpsc::Receiver<ConfigUpdate>, ConfigStreamWorker) {
+        ConfigStreamWorker::spawn(Box::new(agent.clone()), session_id.clone())
+    }
+
+    /// Starts `worker` the way a supervisor does, returning the coordinator that stops it and the task that runs it.
+    async fn start(worker: &dyn Supervisable) -> (ShutdownCoordinator, tokio::task::JoinHandle<()>) {
+        let (coordinator, shutdown) = ShutdownHandle::paired();
+        let run = worker.initialize(shutdown).await.expect("worker should initialize");
+        let task = tokio::spawn(async move { run.await.expect("worker should exit cleanly") });
+        (coordinator, task)
+    }
+
+    async fn stop(coordinator: ShutdownCoordinator, task: tokio::task::JoinHandle<()>) {
+        coordinator.shutdown();
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("worker should stop promptly")
+            .expect("worker task should not panic");
+    }
+
+    fn update_event(key: &str) -> ConfigEvent {
+        ConfigEvent {
+            event: Some(datadog_protos::agent::config_event::Event::Update(
+                datadog_protos::agent::ConfigUpdate {
+                    origin: "core-agent".to_string(),
+                    sequence_id: 1,
+                    setting: Some(datadog_protos::agent::ConfigSetting {
+                        source: "file".to_string(),
+                        key: key.to_string(),
+                        value: Some(prost_types::Value {
+                            kind: Some(prost_types::value::Kind::StringValue("value".to_string())),
+                        }),
+                        ..Default::default()
+                    }),
+                },
+            )),
+        }
+    }
+
+    async fn next_key(updates: &mut mpsc::Receiver<ConfigUpdate>) -> String {
+        let update = tokio::time::timeout(Duration::from_secs(60), updates.recv())
+            .await
+            .expect("an update should arrive");
+        match update {
+            Some(ConfigUpdate::Partial(setting)) => setting.key,
+            other => panic!("expected a partial update, got {other:?}"),
+        }
+    }
+
+    fn session(id: &str) -> SessionIdHandle {
+        let handle = SessionIdHandle::empty();
+        handle.update(Some(SessionId::new(id).unwrap()));
+        handle
+    }
+
+    fn session_id_of(handle: &SessionIdHandle) -> Option<String> {
+        handle.get().map(|session_id| session_id.to_string())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn registration_worker_refreshes_after_the_recommended_interval_and_then_every_thirty_seconds() {
+        let agent = FakeAgent::new();
+        agent.accept_registration("session-1", 10);
+        let session_id = SessionIdHandle::empty();
+
+        let worker = registration_worker(&agent, &session_id).await;
+        let _running = start(&worker).await;
+        tokio::time::sleep(Duration::from_secs(75)).await;
+
+        // Only the first refresh follows the Agent's recommendation; the timer's own period paces the rest.
+        let refresh = || Call::Refresh("session-1".to_string());
+        assert_eq!(
+            agent.calls(),
+            vec![(0, Call::Register), (10, refresh()), (40, refresh()), (70, refresh())]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn registration_worker_registers_again_after_a_failed_refresh() {
+        let agent = FakeAgent::new();
+        agent.accept_registration("session-1", 10);
+        let session_id = SessionIdHandle::empty();
+        let worker = registration_worker(&agent, &session_id).await;
+
+        // The refresh at 10s fails, the registration 5s later is rejected, and the next one 30s after that succeeds.
+        agent.fail_next_refresh();
+        agent.reject_next_registration();
+        agent.accept_registration("session-2", 10);
+        let _running = start(&worker).await;
+
+        tokio::time::sleep(Duration::from_secs(12)).await;
+        assert_eq!(
+            session_id_of(&session_id),
+            None,
+            "a failed refresh should clear the session"
+        );
+
+        tokio::time::sleep(Duration::from_secs(44)).await;
+        assert_eq!(
+            agent.calls(),
+            vec![
+                (0, Call::Register),
+                (10, Call::Refresh("session-1".to_string())),
+                (15, Call::Register),
+                (45, Call::Register),
+                (55, Call::Refresh("session-2".to_string())),
+            ]
+        );
+        assert_eq!(session_id_of(&session_id).as_deref(), Some("session-2"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn registration_worker_keeps_the_session_and_schedule_across_takeover_and_restart() {
+        let agent = FakeAgent::new();
+        agent.accept_registration("session-1", 10);
+        let session_id = SessionIdHandle::empty();
+        let worker = registration_worker(&agent, &session_id).await;
+
+        // The worker takes over from the task at 3s, stops at 5s, and is started again at 7s.
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let (coordinator, task) = start(&worker).await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        stop(coordinator, task).await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let _running = start(&worker).await;
+
+        tokio::time::sleep(Duration::from_secs(4)).await;
+        assert_eq!(
+            agent.calls(),
+            vec![(0, Call::Register), (10, Call::Refresh("session-1".to_string()))]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_interrupts_a_refresh_in_flight_which_a_restart_retries_right_away() {
+        let agent = FakeAgent::new();
+        agent.accept_registration("session-1", 10);
+        agent.hang_next_refresh();
+        let session_id = SessionIdHandle::empty();
+        let worker = registration_worker(&agent, &session_id).await;
+
+        // The refresh at 10s never returns. The worker is stopped at 12s, and started again at 14s.
+        let (coordinator, task) = start(&worker).await;
+        tokio::time::sleep(Duration::from_secs(12)).await;
+        stop(coordinator, task).await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let _running = start(&worker).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        let refresh = || Call::Refresh("session-1".to_string());
+        assert_eq!(
+            agent.calls(),
+            vec![(0, Call::Register), (10, refresh()), (14, refresh())]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_stops_a_worker_and_its_task_while_the_task_is_in_an_attempt() {
+        let agent = FakeAgent::new();
+        agent.accept_registration("session-1", 10);
+        agent.hang_next_refresh();
+        let session_id = SessionIdHandle::empty();
+        let worker = registration_worker(&agent, &session_id).await;
+
+        // The task's refresh at 10s never returns, so the worker that starts at 12s is still waiting for the task.
+        tokio::time::sleep(Duration::from_secs(12)).await;
+        let (coordinator, task) = start(&worker).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        stop(coordinator, task).await;
+
+        drop(worker);
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert!(agent.is_released(), "the task should stop with the worker");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn failed_first_registration_leaves_nothing_running() {
+        let agent = FakeAgent::new();
+        agent.reject_next_registration();
+        let session_id = SessionIdHandle::empty();
+
+        let result = registration(&agent, &session_id).register_and_spawn().await;
+        assert!(result.is_err(), "a rejected registration should fail");
+
+        tokio::time::sleep(Duration::from_secs(300)).await;
+        assert_eq!(agent.calls(), vec![(0, Call::Register)]);
+        assert!(agent.is_released(), "nothing should still hold the client");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_stops_the_registration_and_config_stream_workers() {
+        let agent = FakeAgent::new();
+        agent.accept_registration("session-1", 10);
+        let events = agent.add_stream();
+        let session_id = SessionIdHandle::empty();
+        let registration = registration_worker(&agent, &session_id).await;
+        let (mut updates, config_stream) = config_stream_worker(&agent, &session_id);
+
+        let mut supervisor = Supervisor::new("test-sup").unwrap();
+        supervisor.add_worker(registration);
+        supervisor.add_worker(config_stream);
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let run = tokio::spawn(async move { supervisor.run_with_shutdown(shutdown_rx).await });
+
+        events.send(update_event("before_shutdown")).unwrap();
+        assert_eq!(next_key(&mut updates).await, "before_shutdown");
+        tokio::time::sleep(Duration::from_secs(15)).await;
+
+        // A worker that ignored the signal would be halted at its shutdown timeout, which fails the shutdown.
+        shutdown_tx.send(()).unwrap();
+        let result = run.await.expect("supervisor task should not panic");
+        assert!(result.is_ok(), "shutdown should be clean, got {result:?}");
+
+        let calls = agent.calls();
+        tokio::time::sleep(Duration::from_secs(120)).await;
+        assert_eq!(agent.calls(), calls, "registration should not continue after shutdown");
+        assert!(events.is_closed(), "the config stream should be closed");
+        assert!(
+            updates.recv().await.is_none(),
+            "the config stream channel should be closed"
+        );
+        assert!(agent.is_released(), "nothing should still hold the client");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn config_stream_worker_continues_the_same_stream_without_losing_an_update() {
+        let agent = FakeAgent::new();
+        let events = agent.add_stream();
+        let session_id = session("session-1");
+
+        // With the channel full, `b` is waiting for room in it when the worker takes over, and `c` hasn't been read
+        // from the stream yet.
+        let (mut updates, worker) = config_stream_worker(&agent, &session_id);
+        let queued = (0..CONFIG_STREAM_CAPACITY)
+            .map(|i| format!("queued-{i}"))
+            .collect::<Vec<_>>();
+        for key in queued.iter().map(String::as_str).chain(["b", "c"]) {
+            events.send(update_event(key)).unwrap();
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        let _running = start(&worker).await;
+        events.send(update_event("d")).unwrap();
+
+        for key in queued.iter().map(String::as_str).chain(["b", "c", "d"]) {
+            assert_eq!(next_key(&mut updates).await, key);
+        }
+        assert_eq!(agent.calls(), vec![(0, Call::Open("session-1".to_string()))]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn config_stream_worker_restarts_on_the_same_stream_and_channel() {
+        let agent = FakeAgent::new();
+        let events = agent.add_stream();
+        let session_id = session("session-1");
+        let (mut updates, worker) = config_stream_worker(&agent, &session_id);
+
+        let (coordinator, task) = start(&worker).await;
+        events.send(update_event("a")).unwrap();
+        assert_eq!(next_key(&mut updates).await, "a");
+        stop(coordinator, task).await;
+
+        // `b` arrives while the worker is stopped.
+        events.send(update_event("b")).unwrap();
+        let _running = start(&worker).await;
+        events.send(update_event("c")).unwrap();
+
+        for key in ["b", "c"] {
+            assert_eq!(next_key(&mut updates).await, key);
+        }
+        assert_eq!(agent.calls(), vec![(0, Call::Open("session-1".to_string()))]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn config_stream_worker_waits_for_shutdown_once_the_receiver_is_dropped() {
+        let agent = FakeAgent::new();
+        let events = agent.add_stream();
+        let session_id = session("session-1");
+        let (mut updates, worker) = config_stream_worker(&agent, &session_id);
+        let (coordinator, task) = start(&worker).await;
+        events.send(update_event("a")).unwrap();
+        assert_eq!(next_key(&mut updates).await, "a");
+
+        drop(updates);
+        events.send(update_event("b")).unwrap();
+        tokio::time::sleep(Duration::from_secs(60)).await;
+
+        assert!(events.is_closed(), "the config stream should be closed");
+        assert!(!task.is_finished(), "the worker should keep running until shutdown");
+        stop(coordinator, task).await;
+        assert_eq!(agent.calls(), vec![(0, Call::Open("session-1".to_string()))]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn config_stream_reconnects_five_seconds_after_the_stream_ends_with_the_current_session() {
+        let agent = FakeAgent::new();
+        let first = agent.add_stream();
+        let second = agent.add_stream();
+        let session_id = session("session-1");
+        let (mut updates, worker) = config_stream_worker(&agent, &session_id);
+        let _running = start(&worker).await;
+
+        first.send(update_event("a")).unwrap();
+        assert_eq!(next_key(&mut updates).await, "a");
+        session_id.update(Some(SessionId::new("session-2").unwrap()));
+        drop(first);
+
+        second.send(update_event("b")).unwrap();
+        assert_eq!(next_key(&mut updates).await, "b");
+        assert_eq!(
+            agent.calls(),
+            vec![
+                (0, Call::Open("session-1".to_string())),
+                (5, Call::Open("session-2".to_string()))
+            ]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn tasks_stop_when_their_workers_are_dropped_without_starting() {
+        let agent = FakeAgent::new();
+        agent.accept_registration("session-1", 10);
+        agent.hang_next_refresh();
+        let events = agent.add_stream();
+        let session_id = SessionIdHandle::empty();
+        let registration = registration_worker(&agent, &session_id).await;
+        let (mut updates, config_stream) = config_stream_worker(&agent, &session_id);
+
+        events.send(update_event("a")).unwrap();
+        assert_eq!(next_key(&mut updates).await, "a");
+
+        // The registration task is still in the refresh at 10s, which never returns, when its worker is dropped.
+        tokio::time::sleep(Duration::from_secs(12)).await;
+        drop(registration);
+        drop(config_stream);
+        tokio::time::sleep(Duration::from_secs(120)).await;
+
+        assert_eq!(
+            agent.calls(),
+            vec![
+                (0, Call::Register),
+                (0, Call::Open("session-1".to_string())),
+                (10, Call::Refresh("session-1".to_string()))
+            ]
+        );
+        assert!(events.is_closed(), "the config stream should be closed");
+        assert!(
+            updates.recv().await.is_none(),
+            "the config stream channel should be closed"
+        );
+        assert!(agent.is_released(), "nothing should still hold the client");
     }
 }

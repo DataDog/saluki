@@ -34,21 +34,28 @@
 //! registers with `saluki_metadata::set_app_details`:
 //!
 //! ```text
-//! {identifier}-root                 one-for-one, no restarts
-//! ├── bootstrap supervisor          from AppBootstrapper
+//! {identifier}-root                       one-for-one, no restarts
+//! ├── bootstrap supervisor                from AppBootstrapper
 //! ├── internal-sup
-//! │   ├── control plane             from the binary
-//! │   │   └── remote-agent          from RemoteAgent::create_remote_agent_supervisor
+//! │   ├── control plane                   from the binary
+//! │   │   └── remote-agent                from RemoteAgent::create_remote_agent_supervisor
 //! │   ├── resource registry
-//! │   ├── config-updates            connected mode only
-//! │   └── env-provider              connected mode only
-//! │       ├── workload
-//! │       └── autodiscovery
+//! │   ├── env-provider                    connected mode only
+//! │   │   ├── workload
+//! │   │   └── autodiscovery
+//! │   ├── {identifier}-remote-agent-task  connected mode only
+//! │   ├── config-stream                   connected mode only
+//! │   └── config-updates                  connected mode only
 //! └── the binary's topology
 //! ```
 //!
+//! `{identifier}-remote-agent-task` keeps the registration with the Datadog Agent alive, and `config-stream` feeds the
+//! configuration stream.
+//!
 //! A configuration stream that closes fails `config-updates` on every restart, which escalates to the root and stops the
-//! process, rather than leaving it to run on a configuration that can no longer change.
+//! process, rather than leaving it to run on a configuration that can no longer change. `config-stream` keeps the stream
+//! open across its own restarts, so a failing `config-stream` reaches the root by exceeding the restart limit of
+//! `internal-sup` instead.
 //!
 //! # Control plane
 //!
@@ -95,11 +102,12 @@
 //! [`Supervisable`][saluki_core::runtime::Supervisable] worker or [`Supervisor`][saluki_core::runtime::Supervisor] for
 //! the caller to place in its supervision tree.
 //!
-//! [`RemoteAgentBootstrap`][remote_agent::RemoteAgentBootstrap] is the one exception for now. Registration has to
-//! finish before the supervision tree exists, so [`RemoteAgentBootstrap::new`][remote_agent::RemoteAgentBootstrap::new]
-//! spawns the registration loop, and
-//! [`RemoteAgentBootstrap::create_config_stream`][remote_agent::RemoteAgentBootstrap::create_config_stream] spawns the
-//! configuration stream loop. Neither task is supervised, and neither stops on shutdown.
+//! [`RemoteAgentBootstrap`][remote_agent::RemoteAgentBootstrap] is the one exception. Registration and the initial
+//! configuration have to arrive before the supervision tree exists, so
+//! [`RemoteAgentBootstrap::new`][remote_agent::RemoteAgentBootstrap::new] starts the registration loop in a task, and
+//! [`RemoteAgentBootstrap::create_config_stream`][remote_agent::RemoteAgentBootstrap::create_config_stream] starts the
+//! configuration stream loop in another. Each task only bridges the gap until the tree runs, when a worker takes its
+//! loop over. The [`remote_agent`] module documentation covers the handoff.
 //!
 //! Each subsystem that talks to the Datadog Agent opens its own connection with
 //! [`RemoteAgentClient::connect`][datadog_agent_commons::ipc::client::RemoteAgentClient::connect], rather than sharing a
