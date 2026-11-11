@@ -1,11 +1,14 @@
 //! Shared test-support helpers for the DogStatsD capture/replay tests.
 
 use std::{
-    fs,
     path::PathBuf,
     thread,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
+
+use tempfile::TempDir;
+
+use super::writer::{CaptureRecord, CaptureTargetDir, TrafficCaptureWriter};
 
 /// Polls `is_ongoing` until it reports inactive (up to a fixed deadline), then asserts it actually stopped.
 ///
@@ -20,18 +23,31 @@ pub(in crate::sources::dogstatsd) fn wait_until_inactive(is_ongoing: impl Fn() -
     assert!(!is_ongoing(), "capture did not stop in time");
 }
 
-/// Creates, and returns the path to, a unique, freshly created temporary directory for a test.
-pub(super) fn unique_dir(label: &str) -> PathBuf {
-    let path = unique_path(label);
-    fs::create_dir_all(&path).expect("test directory should be created");
-    path
+/// Creates a fresh temporary directory, removed when the returned guard drops.
+pub(super) fn temp_dir() -> TempDir {
+    tempfile::tempdir().expect("temporary directory should be created")
 }
 
-/// Returns a unique temporary path scoped to the current process and a nanosecond timestamp.
-pub(super) fn unique_path(label: &str) -> PathBuf {
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock should be after epoch")
-        .as_nanos();
-    std::env::temp_dir().join(format!("saluki-{}-{}-{}", label, std::process::id(), timestamp))
+/// Captures `records` with `writer` into a fresh temporary directory, waiting for the capture file to be finished.
+///
+/// Returns the directory guard, which must outlive any use of the returned capture path.
+pub(super) fn run_capture(
+    writer: &TrafficCaptureWriter, compressed: bool, records: impl IntoIterator<Item = CaptureRecord>,
+) -> (TempDir, PathBuf) {
+    let dir = temp_dir();
+    let path = writer
+        .start_capture(
+            CaptureTargetDir::Explicit(dir.path().to_path_buf()),
+            Duration::from_secs(5),
+            compressed,
+        )
+        .expect("capture should start");
+
+    for record in records {
+        assert!(writer.enqueue(record), "capture should accept the record");
+    }
+    writer.stop_capture();
+    wait_until_inactive(|| writer.is_ongoing());
+
+    (dir, path)
 }
