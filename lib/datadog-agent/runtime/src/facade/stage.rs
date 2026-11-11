@@ -13,7 +13,11 @@ use saluki_core::{
 };
 
 use super::RemoteAgentSpecification;
-use crate::{env::RemoteAgentEnvironmentProvider, logging::LoggingTranslator, remote_agent::RemoteAgentBootstrap};
+use crate::{
+    env::RemoteAgentEnvironmentProvider,
+    logging::LoggingTranslator,
+    remote_agent::{ConfigStreamWorker, RemoteAgentBootstrap},
+};
 
 /// A remote agent that hasn't started yet.
 pub enum Unstarted {}
@@ -71,6 +75,7 @@ mod data {
     pub struct StartedData<R: RemoteAgentSpecification> {
         pub config: R::AuthoritativeConfiguration,
         pub ra_bootstrap: Option<RemoteAgentBootstrap>,
+        pub config_stream_worker: Option<ConfigStreamWorker>,
         pub config_updates: Option<R::ConfigurationUpdates>,
         pub bootstrap_supervisor: Supervisor,
         pub start_time: Instant,
