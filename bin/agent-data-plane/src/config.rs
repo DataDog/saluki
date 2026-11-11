@@ -126,8 +126,22 @@ impl<'a> DataPlaneConfiguration<'a> {
     }
 
     /// Returns `true` if the OTLP pipeline is enabled.
+    ///
+    /// The pipeline needs at least one OTLP signal. Like the Agent, ADP treats OTLP as disabled when none is enabled,
+    /// instead of failing startup.
     pub const fn otlp_enabled(&self) -> bool {
-        self.config.control.otlp
+        self.config.control.otlp && self.otlp_signals_enabled()
+    }
+
+    /// Returns `true` if the OTLP pipeline is enabled but every OTLP signal (metrics, logs, and traces) is disabled.
+    pub const fn otlp_enabled_without_signals(&self) -> bool {
+        self.config.control.otlp && !self.otlp_signals_enabled()
+    }
+
+    /// Returns `true` if at least one OTLP signal (metrics, logs, or traces) is enabled.
+    const fn otlp_signals_enabled(&self) -> bool {
+        let otlp = &self.config.domains.otlp;
+        otlp.receiver.metrics_enabled || otlp.receiver.logs_enabled || otlp.traces.enabled
     }
 
     /// Returns `true` if the OTLP proxy is enabled.
@@ -243,6 +257,37 @@ mod tests {
     }
 
     #[test]
+    fn otlp_needs_at_least_one_signal() {
+        let otlp_enabled = |metrics, logs, traces| {
+            let mut config = SalukiConfiguration::default();
+            config.control.otlp = true;
+            config.domains.otlp.receiver.metrics_enabled = metrics;
+            config.domains.otlp.receiver.logs_enabled = logs;
+            config.domains.otlp.traces.enabled = traces;
+            let dp = DataPlaneConfiguration::from_configuration(&config);
+            (dp.otlp_enabled(), dp.otlp_enabled_without_signals())
+        };
+
+        assert_eq!(otlp_enabled(false, false, false), (false, true));
+        assert_eq!(otlp_enabled(true, false, false), (true, false));
+        assert_eq!(otlp_enabled(false, true, false), (true, false));
+        assert_eq!(otlp_enabled(false, false, true), (true, false));
+    }
+
+    #[test]
+    fn otlp_without_signals_activates_no_otlp_pipelines() {
+        let mut config = pipeline_configuration(false, false, true, false, false);
+        config.domains.otlp.receiver.metrics_enabled = false;
+        let dp = DataPlaneConfiguration::from_configuration(&config);
+
+        assert!(!dp.data_pipelines_enabled());
+        assert!(!dp.metrics_pipeline_required());
+        assert!(!dp.logs_pipeline_required());
+        assert!(!dp.traces_pipeline_required());
+        assert!(dp.active_pipelines().is_empty());
+    }
+
+    #[test]
     fn remote_agent_client_configuration_uses_typed_auth_paths() {
         let mut config = SalukiConfiguration::default();
         config.control.ipc.auth_token_file_path = "/secret/auth_token".into();
@@ -326,6 +371,8 @@ mod tests {
         config.control.checks = checks_enabled;
         config.control.dogstatsd = dogstatsd_enabled;
         config.control.otlp = otlp_enabled;
+        // The OTLP pipeline needs at least one signal, and the Agent enables metrics by default.
+        config.domains.otlp.receiver.metrics_enabled = true;
         config.domains.otlp.proxy.enabled = otlp_proxy_enabled;
         config.domains.otlp.proxy.traces_enabled = otlp_proxy_traces_enabled;
         config

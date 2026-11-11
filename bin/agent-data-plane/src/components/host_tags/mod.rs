@@ -56,14 +56,7 @@ impl SynchronousTransformBuilder for HostTagsConfiguration {
             // We only pay attention to the "system" tags, as the "google_cloud_platform" tags are not relevant here.
             let client = RemoteAgentClient::connect(&self.client_config).await?;
             let host_tags_reply = client.get_host_tags().await?.into_inner();
-            let host_tags = host_tags_reply
-                .system
-                .into_iter()
-                .map(|s| Arc::from(s.as_str()))
-                .map(MetaString::from)
-                .map(Tag::from)
-                .collect::<SharedTagSet>();
-            Some(host_tags)
+            Some(metric_host_tags(host_tags_reply.system))
         } else {
             None
         };
@@ -82,6 +75,23 @@ impl MemoryBounds for HostTagsConfiguration {
             .minimum()
             .with_single_value::<HostTagsEnrichment>("component struct");
     }
+}
+
+/// Prefix of the Agent's infrastructure-mode mark (`InfraModeTagKey` in `pkg/config/utils/inframode.go`).
+const INFRA_MODE_TAG_PREFIX: &str = "infra_mode:";
+
+/// Converts the Core Agent's system host tags into the tags attached to metrics.
+///
+/// `GetHostTags` includes the Agent's `infra_mode:*` mark, which the Agent strips before copying host tags onto
+/// metrics: the intake moves series carrying it out of the customer's metric namespace.
+fn metric_host_tags(system: Vec<String>) -> SharedTagSet {
+    system
+        .into_iter()
+        .filter(|tag| !tag.starts_with(INFRA_MODE_TAG_PREFIX))
+        .map(|s| Arc::from(s.as_str()))
+        .map(MetaString::from)
+        .map(Tag::from)
+        .collect()
 }
 
 pub struct HostTagsEnrichment {
@@ -147,5 +157,28 @@ mod tests {
         let mut metric2 = Metric::gauge(Context::from_static_parts("test", &[]), 1.0);
         host_tags_enrichment.enrich_metric(&mut metric2);
         assert_eq!(metric2.context().tags().len(), 0);
+    }
+
+    #[test]
+    fn infra_mode_host_tags_are_not_attached_to_metrics() {
+        // Mirrors the Agent's `WithoutInfraModeTags` (DataDog/datadog-agent#57905), which drops only
+        // `infra_mode:*`.
+        let host_tags = metric_host_tags(vec![
+            "env:prod".to_string(),
+            "infra_mode:cloud_cost_only".to_string(),
+            "infra_mode:".to_string(),
+            "infra_mode".to_string(),
+            "infra_mode_extra:x".to_string(),
+        ]);
+
+        let expected = SharedTagSet::from_iter(vec![
+            Tag::from("env:prod"),
+            Tag::from("infra_mode"),
+            Tag::from("infra_mode_extra:x"),
+        ]);
+        assert_eq!(host_tags.len(), expected.len());
+        for tag in &expected {
+            assert!(host_tags.has_tag(tag), "{tag:?}");
+        }
     }
 }

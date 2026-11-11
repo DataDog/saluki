@@ -7,8 +7,9 @@
 //! These [`Cause`] values mark an [`Entry`] as `intentional` (an expected difference):
 //! - `agent-load-write`: Agent-only startup adjustments.
 //! - `translator-rejects-value`: ADP rejects an invalid enum or size string.
+//! - `agent-consumer-rejects-value`: ADP rejects an invalid enum string that the Agent's consumer
+//!   also rejects.
 //! - `wire-number-loss`: the wire format loses numeric precision.
-//! - `raw-json-representation`: ADP decodes structure from a raw string.
 //! - `nil-map-element`: ADP cannot represent nil maps.
 //! - `numeric-map-representation`: ADP reads numeric map values as floats instead of integers.
 //!
@@ -236,6 +237,17 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             cause: TRANSLATOR_REJECTS_VALUE,
         }),
         intentional(Entry {
+            origin: "breadth-env",
+            tier: Translate,
+            at: "snapshot",
+            getter: "-",
+            key: "otlp_config.traces.infra_attributes.container_tag_promotion",
+            adp: Adp::error(
+                "error translating config key `otlp_config.traces.infra_attributes.container_tag_promotion`: unknown container tag promotion mode `cr-a`; expected `off`, `duplicate`, or `rename`",
+            ),
+            cause: AGENT_CONSUMER_REJECTS_VALUE,
+        }),
+        intentional(Entry {
             origin: "breadth-yaml",
             tier: Bootstrap,
             at: "snapshot",
@@ -368,6 +380,17 @@ pub(crate) fn expectations() -> Vec<Expectation> {
         intentional(Entry {
             origin: "breadth-yaml",
             tier: Translate,
+            at: "snapshot",
+            getter: "-",
+            key: "otlp_config.traces.infra_attributes.container_tag_promotion",
+            adp: Adp::error(
+                "error translating config key `otlp_config.traces.infra_attributes.container_tag_promotion`: unknown container tag promotion mode `cr-a`; expected `off`, `duplicate`, or `rename`",
+            ),
+            cause: AGENT_CONSUMER_REJECTS_VALUE,
+        }),
+        intentional(Entry {
+            origin: "breadth-yaml",
+            tier: Translate,
             at: "update dogstatsd_log_file_max_size #1",
             getter: "-",
             key: "dogstatsd_log_file_max_size",
@@ -485,6 +508,17 @@ pub(crate) fn expectations() -> Vec<Expectation> {
                 "error translating config key `otlp_config.receiver.protocols.grpc.transport`: unknown gRPC transport `cr-b`; expected `tcp` or `unix`",
             ),
             cause: TRANSLATOR_REJECTS_VALUE,
+        }),
+        intentional(Entry {
+            origin: "breadth-yaml",
+            tier: Translate,
+            at: "update otlp_config.traces.infra_attributes.container_tag_promotion #1",
+            getter: "-",
+            key: "otlp_config.traces.infra_attributes.container_tag_promotion",
+            adp: Adp::error(
+                "error translating config key `otlp_config.traces.infra_attributes.container_tag_promotion`: unknown container tag promotion mode `cr-b`; expected `off`, `duplicate`, or `rename`",
+            ),
+            cause: AGENT_CONSUMER_REJECTS_VALUE,
         }),
         known_bug(Entry {
             origin: "cli-stop-timeout-not-recomputed",
@@ -624,15 +658,6 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             adp: Adp::value("[{}, {}]"),
             cause: NIL_MAP_ELEMENT,
         }),
-        intentional(Entry {
-            origin: "depth-env-json-list",
-            tier: Leaf,
-            at: "snapshot",
-            getter: "Get",
-            key: "metric_tag_filterlist",
-            adp: Adp::value("[\"cr-a\",\"cr-b\"]"),
-            cause: RAW_JSON_REPRESENTATION,
-        }),
         known_bug(Entry {
             origin: "depth-env-json-list",
             tier: Bootstrap,
@@ -642,14 +667,14 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             adp: Adp::error("data did not match any variant of untagged enum JsonArrayOrString"),
             cause: COLLECTION_SHAPE_MISMATCH,
         }),
-        intentional(Entry {
+        known_bug(Entry {
             origin: "depth-env-json-list",
             tier: Bootstrap,
             at: "snapshot",
             getter: "Get",
-            key: "metric_tag_filterlist",
-            adp: Adp::value("[\"cr-a\",\"cr-b\"]"),
-            cause: RAW_JSON_REPRESENTATION,
+            key: "metric_filterlist_prefix",
+            adp: Adp::error("data did not match any variant of untagged enum JsonArrayOrString"),
+            cause: COLLECTION_SHAPE_MISMATCH,
         }),
         intentional(Entry {
             origin: "depth-env-json-list",
@@ -958,6 +983,15 @@ pub(crate) fn expectations() -> Vec<Expectation> {
         }),
         known_bug(Entry {
             origin: "depth-set-mixed-string",
+            tier: Leaf,
+            at: "final",
+            getter: "Get",
+            key: "metric_filterlist_prefix",
+            adp: Adp::error("expected value at line 1 column 1"),
+            cause: MALFORMED_JSON_STRING,
+        }),
+        known_bug(Entry {
+            origin: "depth-set-mixed-string",
             tier: Deserialize,
             at: "update apm_config.replace_tags #1",
             getter: "-",
@@ -971,6 +1005,15 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             at: "update dogstatsd_mapper_profiles #1",
             getter: "-",
             key: "dogstatsd_mapper_profiles",
+            adp: Adp::error("expected value at line 1 column 1"),
+            cause: MALFORMED_JSON_STRING,
+        }),
+        known_bug(Entry {
+            origin: "depth-set-mixed-string",
+            tier: Deserialize,
+            at: "update metric_filterlist_prefix #1",
+            getter: "-",
+            key: "metric_filterlist_prefix",
             adp: Adp::error("expected value at line 1 column 1"),
             cause: MALFORMED_JSON_STRING,
         }),
@@ -1286,6 +1329,15 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             origin: "depth-yaml-empty-map",
             tier: Leaf,
             at: "snapshot",
+            getter: "Get",
+            key: "metric_filterlist_prefix",
+            adp: Adp::error("data did not match any variant of untagged enum JsonArrayOrString"),
+            cause: COLLECTION_SHAPE_MISMATCH,
+        }),
+        known_bug(Entry {
+            origin: "depth-yaml-empty-map",
+            tier: Leaf,
+            at: "snapshot",
             getter: "GetBool",
             key: "allow_arbitrary_tags",
             adp: Adp::error("invalid type: map, expected a boolean, a boolean string, or a number"),
@@ -1362,6 +1414,15 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             at: "snapshot",
             getter: "Get",
             key: "dogstatsd_mapper_profiles",
+            adp: Adp::error("data did not match any variant of untagged enum JsonArrayOrString"),
+            cause: COLLECTION_SHAPE_MISMATCH,
+        }),
+        known_bug(Entry {
+            origin: "depth-yaml-empty-map",
+            tier: Bootstrap,
+            at: "snapshot",
+            getter: "Get",
+            key: "metric_filterlist_prefix",
             adp: Adp::error("data did not match any variant of untagged enum JsonArrayOrString"),
             cause: COLLECTION_SHAPE_MISMATCH,
         }),
@@ -1529,6 +1590,15 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             ),
             cause: SCALAR_GIVEN_COLLECTION,
         }),
+        known_bug(Entry {
+            origin: "depth-yaml-empty-map",
+            tier: Deserialize,
+            at: "snapshot",
+            getter: "-",
+            key: "metric_filterlist_prefix",
+            adp: Adp::error("data did not match any variant of untagged enum JsonArrayOrString"),
+            cause: COLLECTION_SHAPE_MISMATCH,
+        }),
         intentional(Entry {
             origin: "depth-yaml-map-int-values",
             tier: Leaf,
@@ -1598,6 +1668,15 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             origin: "depth-yaml-mixed-string",
             tier: Leaf,
             at: "snapshot",
+            getter: "Get",
+            key: "metric_filterlist_prefix",
+            adp: Adp::error("expected value at line 1 column 1"),
+            cause: MALFORMED_JSON_STRING,
+        }),
+        known_bug(Entry {
+            origin: "depth-yaml-mixed-string",
+            tier: Leaf,
+            at: "snapshot",
             getter: "GetStringMap",
             key: "apm_config.analyzed_rate_by_service",
             adp: Adp::error("invalid JSON-encoded map: expected value at line 1 column 1"),
@@ -1645,6 +1724,15 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             at: "snapshot",
             getter: "Get",
             key: "dogstatsd_mapper_profiles",
+            adp: Adp::error("expected value at line 1 column 1"),
+            cause: MALFORMED_JSON_STRING,
+        }),
+        known_bug(Entry {
+            origin: "depth-yaml-mixed-string",
+            tier: Bootstrap,
+            at: "snapshot",
+            getter: "Get",
+            key: "metric_filterlist_prefix",
             adp: Adp::error("expected value at line 1 column 1"),
             cause: MALFORMED_JSON_STRING,
         }),
@@ -1728,6 +1816,15 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             at: "snapshot",
             getter: "-",
             key: "dogstatsd_mapper_profiles",
+            adp: Adp::error("expected value at line 1 column 1"),
+            cause: MALFORMED_JSON_STRING,
+        }),
+        known_bug(Entry {
+            origin: "depth-yaml-mixed-string",
+            tier: Deserialize,
+            at: "snapshot",
+            getter: "-",
+            key: "metric_filterlist_prefix",
             adp: Adp::error("expected value at line 1 column 1"),
             cause: MALFORMED_JSON_STRING,
         }),
@@ -2099,24 +2196,6 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             ),
             cause: UNPARSEABLE_SCALAR_STRING,
         }),
-        intentional(Entry {
-            origin: "env-list-of-maps-raw-string",
-            tier: Leaf,
-            at: "snapshot",
-            getter: "Get",
-            key: "metric_tag_filterlist",
-            adp: Adp::value("[{\"metric_name\":\"m\",\"tags\":[\"t\"]}]"),
-            cause: RAW_JSON_REPRESENTATION,
-        }),
-        intentional(Entry {
-            origin: "env-list-of-maps-raw-string",
-            tier: Bootstrap,
-            at: "snapshot",
-            getter: "Get",
-            key: "metric_tag_filterlist",
-            adp: Adp::value("[{\"metric_name\":\"m\",\"tags\":[\"t\"]}]"),
-            cause: RAW_JSON_REPRESENTATION,
-        }),
         known_bug(Entry {
             origin: "env-map-bad-json",
             tier: Leaf,
@@ -2167,6 +2246,15 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             cause: AGENT_LOAD_WRITE,
         }),
         known_bug(Entry {
+            origin: "k8s-env-container-defaults",
+            tier: Bootstrap,
+            at: "snapshot",
+            getter: "GetBool",
+            key: "apm_config.apm_non_local_traffic",
+            adp: Adp::value("false"),
+            cause: UNRESOLVED_AGENT_DEFAULT,
+        }),
+        known_bug(Entry {
             origin: "mapper-profiles-wrong-field-type",
             tier: Translate,
             at: "snapshot",
@@ -2212,28 +2300,6 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             key: "proxy.no_proxy",
             adp: Adp::value("[]"),
             cause: AGENT_LOAD_WRITE,
-        }),
-        intentional(Entry {
-            origin: "unsupported-env",
-            tier: Translate,
-            at: "snapshot",
-            getter: "-",
-            key: "otlp_config.traces.infra_attributes.container_tag_promotion",
-            adp: Adp::error(
-                "error translating config key `otlp_config.traces.infra_attributes.container_tag_promotion`: unknown container tag promotion mode `cr-a`; expected `off`, `duplicate`, or `rename`",
-            ),
-            cause: TRANSLATOR_REJECTS_VALUE,
-        }),
-        intentional(Entry {
-            origin: "unsupported-yaml",
-            tier: Translate,
-            at: "snapshot",
-            getter: "-",
-            key: "otlp_config.traces.infra_attributes.container_tag_promotion",
-            adp: Adp::error(
-                "error translating config key `otlp_config.traces.infra_attributes.container_tag_promotion`: unknown container tag promotion mode `cr-a`; expected `off`, `duplicate`, or `rename`",
-            ),
-            cause: TRANSLATOR_REJECTS_VALUE,
         }),
         intentional(Entry {
             origin: "valid-stream-updates",
@@ -2338,21 +2404,15 @@ const BOOTSTRAP_YAML_LOADING: Cause = Cause {
 
 const COLLECTION_SHAPE_MISMATCH: Cause = Cause {
     name: "collection-shape-mismatch",
-    why: "a collection key given the wrong collection (a list for a map, strings for a list of maps); the Agent casts, ADP rejects",
+    why: "a collection key given the wrong collection (a list for a map, strings or an empty map for a list of maps); the Agent casts, ADP rejects",
     issue: Some(2756),
-};
-
-const RAW_JSON_REPRESENTATION: Cause = Cause {
-    name: "raw-json-representation",
-    why: "the environment variable holds JSON text: ADP's reader decodes it into the structured value, \
-while the Agent's raw `Get` returns the string verbatim; `Get` is not how an Agent consumer reads \
-this key, so the difference is one of representation, not behavior",
-    issue: None,
 };
 
 const MALFORMED_JSON_STRING: Cause = Cause {
     name: "malformed-json-string",
-    why: "a non-JSON string for a map or JSON-list key; the Agent's getter returns empty with a warning, ADP rejects",
+    why: "a non-JSON string for a map or JSON-list key; the Agent's getter returns empty with a warning, ADP rejects. \
+For `metric_filterlist_prefix` the getter returns the string, and the Agent's consumer logs an error and applies \
+no prefix rules",
     issue: Some(2756),
 };
 
@@ -2393,6 +2453,15 @@ const TRANSLATOR_REJECTS_VALUE: Cause = Cause {
     issue: None,
 };
 
+const AGENT_CONSUMER_REJECTS_VALUE: Cause = Cause {
+    name: "agent-consumer-rejects-value",
+    why: "the translator rejects a string that is not a valid enum value, and with it the whole update; the Agent's \
+getter passes it through, but the Agent's consumer rejects it too: the OTLP infraattributes processor's \
+Config.Validate (comp/otelcol/otlp/components/processor/infraattributesprocessor/config.go) accepts only off, \
+duplicate or rename",
+    issue: None,
+};
+
 const UNPARSEABLE_SCALAR_STRING: Cause = Cause {
     name: "unparseable-scalar-string",
     why: "a string that does not parse as the key's bool or number (on, yes, empty, 2.5); the Agent's getter reads zero, ADP rejects",
@@ -2401,7 +2470,9 @@ const UNPARSEABLE_SCALAR_STRING: Cause = Cause {
 
 const UNRESOLVED_AGENT_DEFAULT: Cause = Cause {
     name: "unresolved-agent-default",
-    why: "ADP's defaults differ from the Agent's resolved defaults (unexpanded ${log_path} and ${run_path}, container paths)",
+    why: "ADP's defaults differ from the Agent's resolved defaults (unexpanded ${log_path} and ${run_path}, container \
+paths, and the Kubernetes container defaults the Agent sets at load at source default, applyKubernetesContainerDefaults \
+in pkg/config/setup/fixup_init.go)",
     issue: Some(1802),
 };
 

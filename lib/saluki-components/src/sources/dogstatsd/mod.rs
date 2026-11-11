@@ -2212,7 +2212,12 @@ fn handle_event_packet(
 
     let eventd = EventD::new(packet.title, packet.text)
         .with_timestamp(timestamp)
-        .with_hostname(packet.hostname.map(|s| s.into()))
+        // An `h:` field takes precedence; otherwise, fall back to a `host:` tag, matching the reference DogStatsD
+        // server.
+        //
+        // TODO: The reference DogStatsD server sends an empty hostname for an empty `host:` tag, but an empty hostname
+        // here is treated as unset, so host enrichment fills in the default hostname instead.
+        .with_hostname(packet.hostname.or(well_known_tags.hostname).map(|s| s.into()))
         .with_aggregation_key(packet.aggregation_key.map(|s| s.into()))
         .with_alert_type(packet.alert_type)
         .with_priority(packet.priority)
@@ -2255,7 +2260,12 @@ fn handle_service_check_packet(
 
     let service_check = ServiceCheck::new(packet.name, packet.status)
         .with_timestamp(timestamp)
-        .with_hostname(packet.hostname.map(|s| s.into()))
+        // An `h:` field takes precedence; otherwise, fall back to a `host:` tag, matching the reference DogStatsD
+        // server.
+        //
+        // TODO: The reference DogStatsD server sends an empty hostname for an empty `host:` tag, but an empty hostname
+        // here is treated as unset, so host enrichment fills in the default hostname instead.
+        .with_hostname(packet.hostname.or(well_known_tags.hostname).map(|s| s.into()))
         .with_tags(tags)
         .with_origin_tags(origin_tags)
         .with_message(packet.message.map(|s| s.into()));
@@ -3103,6 +3113,61 @@ mod tests {
             Some(1)
         );
         assert_eq!(recorder.counter(processed_metric_key("unixgram", Some(""))), Some(0));
+    }
+
+    #[test]
+    fn events_and_service_checks_fall_back_to_host_tag_for_hostname() {
+        let listen_addr = ListenAddress::Unixgram("/tmp/dsd.sock".into());
+        let context = test_component_context();
+        let metrics = build_metrics(&listen_addr, &context, false);
+        let codec = DogStatsDCodec::from_configuration(DogStatsDCodecConfiguration::default());
+        let mut context_resolvers = test_context_resolvers();
+        let default_hostname = MetaString::from_static("default-host");
+
+        let mut handle = |frame: &[u8]| {
+            handle_frame(
+                frame,
+                &codec,
+                &mut context_resolvers,
+                &metrics,
+                false,
+                None,
+                EnablePayloadsFilter::default(),
+                &[],
+                &default_hostname,
+            )
+            .expect("frame should parse")
+            .expect("frame should produce an event")
+        };
+
+        // Like the reference DogStatsD server, a `host:` tag sets the hostname when there's no `h:` field, and `h:`
+        // wins otherwise.
+        let cases: [(&[u8], &str); 2] = [
+            (b"_e{5,4}:title|text|#host:tagged-host,env:prod", "tagged-host"),
+            (
+                b"_e{5,4}:title|text|h:field-host|#host:tagged-host,env:prod",
+                "field-host",
+            ),
+        ];
+        for (frame, expected_hostname) in cases {
+            let eventd = handle(frame).try_into_eventd().expect("should be an event");
+            assert_eq!(eventd.hostname(), Some(expected_hostname));
+            assert_eq!(
+                eventd.tags().into_iter().map(|t| t.as_str()).collect::<Vec<_>>(),
+                ["env:prod"]
+            );
+        }
+
+        let cases: [(&[u8], &str); 2] = [
+            (b"_sc|my.check|0|#host:tagged-host,env:prod", "tagged-host"),
+            (b"_sc|my.check|0|h:field-host|#host:tagged-host,env:prod", "field-host"),
+        ];
+        for (frame, expected_hostname) in cases {
+            let service_check = handle(frame)
+                .try_into_service_check()
+                .expect("should be a service check");
+            assert_eq!(service_check.hostname(), Some(expected_hostname));
+        }
     }
 
     #[test]

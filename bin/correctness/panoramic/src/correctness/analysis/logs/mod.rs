@@ -5,22 +5,30 @@
 //! single property regression still pairs the right logs and shows up as a field difference. Each pair is then diffed
 //! field by field, keeping track of where each field was found: in the envelope, among other top-level keys, or in the
 //! content parsed from the envelope `message`. Differences covered by the case's known differences are allowed.
+//!
+//! The headers of the requests that carry the logs are compared separately, per side rather than per log, since the two
+//! sides batch logs into requests differently. See the `headers` module.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
+    ops::RangeInclusive,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use saluki_error::{generic_error, GenericError};
 use serde::Deserialize;
 use serde_json::Value;
-use stele::Log;
+use stele::{Log, LogsRequest};
 use tracing::{error, info};
 
+pub use self::headers::HeaderRule;
+use self::headers::{compare_headers, default_header_rules};
 pub use self::ratchet::KnownDifference;
 use self::ratchet::Ratchet;
 use crate::intake::CollectedData;
 
+mod headers;
 mod ratchet;
 
 /// Envelope fields held as raw values, in the order they're compared.
@@ -33,6 +41,15 @@ const SAMPLE_MISMATCH_LIMIT: usize = 20;
 ///
 /// Each side sets this field when it encodes the payload, so it can't match exactly.
 const ENCODE_TIMESTAMP_TOLERANCE_MS: u64 = 60_000;
+
+/// How long before the analysis a timestamp header may be and still count as plausible.
+///
+/// Logs analysis runs right after the run that produced the logs, and runs take minutes, so this rejects zero values and
+/// values in the wrong unit while leaving ample room for slow runs.
+const TIMESTAMP_HEADER_MAX_AGE: Duration = Duration::from_secs(3_600);
+
+/// How far after the analysis a timestamp header may be and still count as plausible, to allow for clock skew.
+const TIMESTAMP_HEADER_MAX_SKEW: Duration = Duration::from_secs(60);
 
 fn default_identity_fields() -> Vec<String> {
     ["message", "otel.timestamp", "otel.trace_id", "otel.span_id"]
@@ -56,6 +73,16 @@ pub struct LogsAnalysisOptions {
     /// are paired in content order, which only works reliably for duplicates, so the key should be close to unique.
     pub identity_fields: Vec<String>,
 
+    /// Headers of the logs requests to compare between the two sides. Other headers are ignored.
+    ///
+    /// Defaults to `DD-PROTOCOL`, `DD-EVP-ORIGIN`, and `Content-Encoding`, compared exactly; `DD-EVP-ORIGIN-VERSION`,
+    /// compared by presence; and `dd-message-timestamp` and `dd-current-timestamp`, compared as timestamps. Setting
+    /// this replaces the defaults rather than extending them, and an empty list compares no headers at all.
+    /// Differences are reported at `headers.<name>`, with the name lowercased, and can be covered by known
+    /// differences. A header difference belongs to no log, so an entry scoped with `when` never covers one, and its
+    /// header paths are reported as stale.
+    pub headers: Vec<HeaderRule>,
+
     /// Differences that are expected, each tagged with the gap that explains it.
     ///
     /// A matching difference doesn't fail the case, but an entry path that matches nothing does, so that fixing a
@@ -68,6 +95,7 @@ impl Default for LogsAnalysisOptions {
         Self {
             min_count: None,
             identity_fields: default_identity_fields(),
+            headers: default_header_rules(),
             known_differences: Vec::new(),
         }
     }
@@ -379,9 +407,12 @@ fn diff_values(path: String, baseline: &Value, comparison: &Value, diffs: &mut V
 
 /// Analyzes logs for correctness.
 pub struct LogsAnalyzer<'a> {
+    baseline_requests: &'a [LogsRequest],
+    comparison_requests: &'a [LogsRequest],
     baseline_logs: Vec<&'a Log>,
     comparison_logs: Vec<&'a Log>,
     options: LogsAnalysisOptions,
+    timestamp_header_range: RangeInclusive<u64>,
 }
 
 impl<'a> LogsAnalyzer<'a> {
@@ -390,9 +421,12 @@ impl<'a> LogsAnalyzer<'a> {
         baseline_data: &'a CollectedData, comparison_data: &'a CollectedData, options: LogsAnalysisOptions,
     ) -> Self {
         Self {
+            baseline_requests: baseline_data.log_requests(),
+            comparison_requests: comparison_data.log_requests(),
             baseline_logs: baseline_data.logs().collect(),
             comparison_logs: comparison_data.logs().collect(),
             options,
+            timestamp_header_range: timestamp_header_range(SystemTime::now()),
         }
     }
 
@@ -400,9 +434,9 @@ impl<'a> LogsAnalyzer<'a> {
     ///
     /// # Errors
     ///
-    /// If either side has no logs or fewer than the minimum count, if any log can't be paired, if any pair has a
-    /// difference that isn't known, or if any known difference is stale, an error is returned alongside the mismatch
-    /// details.
+    /// If either side has no logs or fewer than the minimum count, if any log can't be paired, if any pair or the
+    /// compared request headers have a difference that isn't known, or if any known difference is stale, an error is
+    /// returned alongside the mismatch details.
     pub fn run_analysis(self) -> Result<(), (GenericError, Vec<String>)> {
         info!(
             "Analyzing {} logs from baseline target, and {} logs from comparison target.",
@@ -443,9 +477,22 @@ impl<'a> LogsAnalyzer<'a> {
                 unknown.push((pair, diffs));
             }
         }
+
+        // Header differences belong to no log, so entries scoped to logs with `when` never cover them.
+        let header_diffs = compare_headers(
+            self.baseline_requests,
+            self.comparison_requests,
+            &self.options.headers,
+            &self.timestamp_header_range,
+        );
+        let no_view = BTreeMap::new();
+        let unknown_headers = header_diffs
+            .iter()
+            .filter(|diff| !ratchet.allows(diff, &no_view))
+            .collect::<Vec<_>>();
         let stale = ratchet.stale_entries();
 
-        let details = self.describe(&unknown, &comparison, &stale);
+        let details = self.describe(&unknown, &unknown_headers, &comparison, &stale);
         if details.is_empty() {
             info!(
                 "All {} logs matched between baseline and comparison, apart from known differences.",
@@ -460,11 +507,12 @@ impl<'a> LogsAnalyzer<'a> {
         Err((
             generic_error!(
                 "Logs did not match: {} paired logs have unexpected differences, {} baseline logs are missing from \
-                 comparison, {} comparison logs are not in baseline, and {} known differences are stale (baseline \
-                 has {} logs, comparison has {}).",
+                 comparison, {} comparison logs are not in baseline, {} request headers have unexpected differences, \
+                 and {} known differences are stale (baseline has {} logs, comparison has {}).",
                 unknown.len(),
                 comparison.missing.len(),
                 comparison.extra.len(),
+                unknown_headers.len(),
                 stale.len(),
                 self.baseline_logs.len(),
                 self.comparison_logs.len()
@@ -474,7 +522,8 @@ impl<'a> LogsAnalyzer<'a> {
     }
 
     fn describe(
-        &self, unknown: &[(&LogPair, Vec<&FieldDiff>)], comparison: &LogsComparison, stale: &[String],
+        &self, unknown: &[(&LogPair, Vec<&FieldDiff>)], unknown_headers: &[&FieldDiff], comparison: &LogsComparison,
+        stale: &[String],
     ) -> Vec<String> {
         let mut details = Vec::new();
 
@@ -506,9 +555,23 @@ impl<'a> LogsAnalyzer<'a> {
             }
         }
 
+        details.extend(
+            unknown_headers
+                .iter()
+                .map(|diff| format!("Logs request header mismatch: {}", diff)),
+        );
         details.extend(stale.iter().cloned());
         details
     }
+}
+
+/// Returns the plausible range of timestamp headers, in epoch milliseconds, for an analysis run at `now`.
+fn timestamp_header_range(now: SystemTime) -> RangeInclusive<u64> {
+    let millis = |time: SystemTime| {
+        time.duration_since(UNIX_EPOCH)
+            .map_or(0, |since| u64::try_from(since.as_millis()).unwrap_or(u64::MAX))
+    };
+    millis(now - TIMESTAMP_HEADER_MAX_AGE)..=millis(now + TIMESTAMP_HEADER_MAX_SKEW)
 }
 
 #[cfg(test)]
@@ -692,6 +755,27 @@ mod tests {
     }
 
     #[test]
+    fn configured_headers_replace_the_defaults() {
+        let options: LogsAnalysisOptions =
+            serde_saphyr::from_str("headers: [{name: X-Custom, check: exact}]").expect("options should parse");
+        assert_eq!(
+            options.headers,
+            vec![HeaderRule {
+                name: "X-Custom".to_string(),
+                check: headers::HeaderCheck::Exact,
+            }]
+        );
+
+        let options: LogsAnalysisOptions = serde_saphyr::from_str("headers: []").expect("options should parse");
+        assert!(options.headers.is_empty());
+
+        let options: LogsAnalysisOptions = serde_saphyr::from_str("min_count: 1").expect("options should parse");
+        assert_eq!(options.headers, default_header_rules());
+
+        assert!(serde_saphyr::from_str::<LogsAnalysisOptions>("header: []").is_err());
+    }
+
+    #[test]
     fn identity_fields_are_configurable() {
         let baseline = agent_log(json!({"message": "a", "otel.timestamp": "1"}));
         let comparison = agent_log(json!({"message": "a", "otel.timestamp": "2"}));
@@ -826,5 +910,109 @@ mod tests {
         let diffs = diff_logs(&with_timestamp(json!(base)), &log(json!({"message": "a"})));
         assert_eq!(paths(&diffs), vec!["envelope.timestamp"]);
         assert_eq!(diffs[0].kind, DiffKind::Missing);
+    }
+
+    fn data_with_headers(headers: &[(&str, &str)], logs: Vec<Log>) -> CollectedData {
+        CollectedData::with_logs(vec![stele::LogsRequest::new(
+            "/api/v2/logs",
+            headers.iter().copied(),
+            logs,
+        )])
+    }
+
+    #[test]
+    fn request_header_differences_go_through_the_ratchet() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after the epoch")
+            .as_millis()
+            .to_string();
+        let a = agent_log(json!({"message": "a"}));
+        let baseline = data_with_headers(
+            &[
+                ("DD-PROTOCOL", "agent-json"),
+                ("dd-current-timestamp", &now),
+                ("Content-Encoding", "zstd"),
+                ("User-Agent", "datadog-agent/7.70.0"),
+            ],
+            vec![a.clone()],
+        );
+        let comparison = data_with_headers(
+            &[("content-encoding", "gzip"), ("user-agent", "agent-data-plane/0.1.0")],
+            vec![a],
+        );
+        let options = |known_differences| LogsAnalysisOptions {
+            known_differences,
+            ..LogsAnalysisOptions::default()
+        };
+
+        // Unexpected header differences fail the case, even when every log matches.
+        let (error, details) = LogsAnalyzer::new(&baseline, &comparison, options(vec![]))
+            .run_analysis()
+            .expect_err("missing headers should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("3 request headers have unexpected differences"),
+            "{}",
+            error
+        );
+        assert_eq!(
+            details,
+            vec![
+                r#"Logs request header mismatch: headers.dd-protocol: Missing (baseline: ["agent-json"], comparison: <absent>)"#,
+                r#"Logs request header mismatch: headers.dd-current-timestamp: Missing (baseline: ["<timestamp>"], comparison: <absent>)"#,
+                r#"Logs request header mismatch: headers.content-encoding: Value (baseline: ["zstd"], comparison: ["gzip"])"#,
+            ]
+        );
+
+        let entry = |gap: &str, paths: &[&str], kinds: &[&str]| {
+            serde_json::from_value::<KnownDifference>(
+                json!({"gap": gap, "paths": paths, "kinds": kinds, "reason": "test"}),
+            )
+            .expect("entry should parse")
+        };
+        let missing = entry(
+            "gap/missing-headers",
+            &["headers.dd-protocol", "headers.dd-current-timestamp"],
+            &["missing"],
+        );
+        let encoding = entry("gap/compression", &["headers.content-encoding"], &["value"]);
+        assert!(
+            LogsAnalyzer::new(&baseline, &comparison, options(vec![missing.clone(), encoding.clone()]))
+                .run_analysis()
+                .is_ok()
+        );
+
+        // An entry that matches no header difference is stale.
+        let unused = entry("gap/missing-headers", &["headers.dd-evp-origin"], &["missing"]);
+        let (error, details) = LogsAnalyzer::new(&baseline, &comparison, options(vec![missing, encoding, unused]))
+            .run_analysis()
+            .expect_err("an unused header entry should be stale");
+        assert!(error.to_string().contains("1 known differences are stale"), "{}", error);
+        assert!(details[0].contains("`headers.dd-evp-origin`"), "{}", details[0]);
+
+        // Entries scoped to logs never cover header differences.
+        let mut scoped = entry("gap/compression", &["headers.content-encoding"], &[]);
+        scoped.when = BTreeMap::from([("message".to_string(), vec![json!("a")])]);
+        let (error, _) = LogsAnalyzer::new(&baseline, &comparison, options(vec![scoped]))
+            .run_analysis()
+            .expect_err("a scoped entry shouldn't cover a header difference");
+        assert!(
+            error
+                .to_string()
+                .contains("3 request headers have unexpected differences"),
+            "{}",
+            error
+        );
+    }
+
+    #[test]
+    fn timestamp_headers_are_plausible_within_the_run() {
+        let now = UNIX_EPOCH + Duration::from_millis(1_793_268_000_000);
+        let range = timestamp_header_range(now);
+
+        assert_eq!(*range.start(), 1_793_268_000_000 - 3_600_000);
+        assert_eq!(*range.end(), 1_793_268_000_000 + 60_000);
     }
 }

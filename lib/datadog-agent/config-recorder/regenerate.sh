@@ -6,7 +6,8 @@
 # recorder. See README.md.
 set -euo pipefail
 
-GO_IMAGE="golang@sha256:e30143be198ab04cf7ba25fba83ab3a692ca584c994aad0bf131fa0eb32dd8c1"
+# Multi-arch index of golang:1.26.10, the Go version the Agent pin's go.work requires.
+GO_IMAGE="golang@sha256:c1bc3620b0460d97001977fadbe8d0e94d7be5cbb064f4f6b268d95375c3ac71"
 # Multi-arch index of uv 0.9-python3.12-bookworm-slim (uv 0.9.30, Python 3.12.12).
 PYTHON_IMAGE="ghcr.io/astral-sh/uv@sha256:e5b65587bce7de595f299855d7385fe7fca39b8a74baa261ba1b7147afa78e58"
 GOMOD_VOLUME="saluki-config-recorder-gomod"

@@ -1,5 +1,7 @@
 # Sets a DD_ environment variable with no bound configuration key.
-# Shows that the Agent warns about it rather than adding it to the config stream.
+# Shows that the Agent does not add it to the config stream: the snapshot has no such key, and
+# Get returns nil from source unknown with a "config key ... is unknown" warning. Loading logs
+# nothing about the variable; the Agent only adds it to cfg.Warnings(), which is not recorded.
 name: env-unbound-dd-var
 group: behavior
 why: [env-unbound-dd-vars-warned-not-applied]

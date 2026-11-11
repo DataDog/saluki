@@ -1,0 +1,15 @@
+# Sets only the deprecated names statsd_metric_blocklist and statsd_metric_blocklist_match_prefix
+# in datadog.yaml, as strings rather than a list and a bool.
+# Shows that the value moves to metric_filterlist and metric_filterlist_match_prefix at the file
+# source as written: not split into a list or converted to a bool, unlike the current names.
+name: renamed-key-yaml-old-name-only
+group: behavior
+why: [yaml-deprecated-name-replaces-current, yaml-deprecated-name-value-not-converted]
+yaml: |
+  statsd_metric_blocklist: "old.a old.b"
+  statsd_metric_blocklist_match_prefix: "true"
+keys:
+  - {key: metric_filterlist, getters: [GetStringSlice, Get]}
+  - {key: metric_filterlist_match_prefix, getters: [GetBool, Get]}
+  - {key: statsd_metric_blocklist, getters: [GetStringSlice, Get]}
+  - {key: statsd_metric_blocklist_match_prefix, getters: [GetBool, Get]}

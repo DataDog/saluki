@@ -10,7 +10,7 @@ pub(crate) mod classifier_data;
 pub mod datadog_configuration;
 
 /// Table of every modeled key's real environment variable names, nested path, and decode
-/// strategy, driving the figment-free `env_reader`.
+/// strategy, driving the figment-free `env_reader`, and the table of former key names.
 pub(crate) mod env_keys;
 
 /// Table of supported keys and borrowing accessors into `DatadogConfiguration`.

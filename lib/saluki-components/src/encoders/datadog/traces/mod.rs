@@ -995,6 +995,160 @@ mod tests {
         trace
     }
 
+    /// Reads the spans of the first tracer payload and chunk of an encoded `AgentPayload`, with its string table.
+    fn decode_etp_first_span(buf: &[u8]) -> (idx::Span, Vec<String>) {
+        let payload = AgentPayload::parse_from_bytes(buf).expect("AgentPayload should decode");
+        let tracer_payload = &payload.idxTracerPayloads[0];
+        let span = tracer_payload.chunks()[0].spans()[0].clone();
+        (span, tracer_payload.strings().to_vec())
+    }
+
+    #[test]
+    fn otlp_links_and_events_are_encoded_as_span_links_and_span_events() {
+        use std::num::NonZeroUsize;
+
+        use otlp_protos::opentelemetry::proto::common::v1::{any_value::Value, AnyValue, ArrayValue, KeyValue};
+        use otlp_protos::opentelemetry::proto::trace::v1::span::{Event, Link};
+        use stringtheory::interning::GenericMapInterner;
+
+        use crate::common::otlp::traces::transform::{otlp_events_to_span_events, otlp_links_to_span_links};
+
+        let kv = |key: &str, value: Value| KeyValue {
+            key: key.to_string(),
+            value: Some(AnyValue { value: Some(value) }),
+        };
+        let link = Link {
+            trace_id: (1..=16).collect(),
+            span_id: vec![0, 0, 0, 0, 0, 0, 0, 9],
+            trace_state: "vendor=value".to_string(),
+            // The low 8 bits are the W3C trace flags; bit 8 is OTLP's `is_remote`, which Datadog doesn't carry.
+            flags: 0x101,
+            attributes: vec![
+                kv("k", Value::StringValue("v".to_string())),
+                kv("n", Value::IntValue(42)),
+                kv(
+                    "list",
+                    Value::ArrayValue(ArrayValue {
+                        values: vec![AnyValue {
+                            value: Some(Value::BoolValue(true)),
+                        }],
+                    }),
+                ),
+            ],
+            ..Default::default()
+        };
+        let event = Event {
+            time_unix_nano: 1_700_000_000_123,
+            name: "exception".to_string(),
+            attributes: vec![
+                kv("message", Value::StringValue("boom".to_string())),
+                kv("count", Value::IntValue(3)),
+                kv("ratio", Value::DoubleValue(0.5)),
+                kv("fatal", Value::BoolValue(false)),
+                kv(
+                    "codes",
+                    Value::ArrayValue(ArrayValue {
+                        values: vec![
+                            AnyValue {
+                                value: Some(Value::IntValue(1)),
+                            },
+                            AnyValue {
+                                value: Some(Value::IntValue(2)),
+                            },
+                        ],
+                    }),
+                ),
+            ],
+            ..Default::default()
+        };
+
+        let interner = GenericMapInterner::new(NonZeroUsize::new(64 * 1024).unwrap());
+        let span = make_trace(TraceIngestInfo::Datadog).spans()[0]
+            .clone()
+            .with_span_links(otlp_links_to_span_links(&[link], &interner))
+            .with_span_events(otlp_events_to_span_events(&[event], &interner));
+        let mut trace = Trace::new(vec![span], TraceIngestInfo::Datadog);
+        trace.priority = Some(1);
+
+        let mut buf = Vec::new();
+        make_encoder(false)
+            .encode(&trace, &mut buf)
+            .expect("encode should succeed");
+        let (span, strings) = decode_etp_first_span(&buf);
+
+        // Resolves a string-table ref, or a string-valued attribute value.
+        let text = |string_ref: u32| resolve_ref(&strings, string_ref).to_string();
+        let attribute = |attributes: &HashMap<u32, idx::AnyValue>, key: &str| {
+            attributes
+                .iter()
+                .find(|(k_ref, _)| resolve_ref(&strings, **k_ref) == key)
+                .map(|(_, value)| value.value.clone().expect("attribute has a value"))
+        };
+
+        assert_eq!(span.links().len(), 1);
+        let link = &span.links()[0];
+        let trace_id: Vec<u8> = (1..=16).collect();
+        assert_eq!(
+            link.traceID(),
+            trace_id.as_slice(),
+            "128-bit trace ID, high bytes first"
+        );
+        assert_eq!(link.spanID(), 9);
+        assert_eq!(text(link.tracestateRef()), "vendor=value");
+        assert_eq!(
+            link.flags(),
+            0x8000_0001,
+            "trace flags kept, is_remote dropped, bit 31 marks them present"
+        );
+        assert!(matches!(
+            attribute(link.attributes(), "k"),
+            Some(idx::any_value::Value::StringValueRef(v_ref)) if text(v_ref) == "v"
+        ));
+        // Link attributes are strings in the Datadog model, so the int is stringified and the array is flattened.
+        assert!(matches!(
+            attribute(link.attributes(), "n"),
+            Some(idx::any_value::Value::StringValueRef(v_ref)) if text(v_ref) == "42"
+        ));
+        assert!(matches!(
+            attribute(link.attributes(), "list.0"),
+            Some(idx::any_value::Value::StringValueRef(v_ref)) if text(v_ref) == "true"
+        ));
+
+        assert_eq!(span.events().len(), 1);
+        let event = &span.events()[0];
+        assert_eq!(event.time(), 1_700_000_000_123);
+        assert_eq!(text(event.nameRef()), "exception");
+        assert!(matches!(
+            attribute(event.attributes(), "message"),
+            Some(idx::any_value::Value::StringValueRef(v_ref)) if text(v_ref) == "boom"
+        ));
+        assert!(matches!(
+            attribute(event.attributes(), "count"),
+            Some(idx::any_value::Value::IntValue(3))
+        ));
+        assert!(
+            matches!(attribute(event.attributes(), "ratio"), Some(idx::any_value::Value::DoubleValue(r)) if r == 0.5)
+        );
+        assert!(matches!(
+            attribute(event.attributes(), "fatal"),
+            Some(idx::any_value::Value::BoolValue(false))
+        ));
+        match attribute(event.attributes(), "codes") {
+            Some(idx::any_value::Value::ArrayValue(array)) => {
+                let ints: Vec<_> = array
+                    .values()
+                    .iter()
+                    .map(|v| match v.value {
+                        Some(idx::any_value::Value::IntValue(i)) => i,
+                        ref other => panic!("array values keep their type, got {other:?}"),
+                    })
+                    .collect();
+                assert_eq!(ints, [1, 2]);
+            }
+            other => panic!("typed arrays stay arrays on the wire, got {other:?}"),
+        }
+    }
+
     #[test]
     fn ets_header_present_when_enabled() {
         let encoder = make_encoder(true);
