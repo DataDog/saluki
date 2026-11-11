@@ -844,13 +844,12 @@ async fn add_dsd_pipeline_to_blueprint(
     );
     let aggregation = &typed.domains.dogstatsd.aggregation;
     let histogram = &typed.shared.metrics_encoding.histogram;
-    let dsd_hist_config = HistogramConfiguration::try_new(
+    let dsd_hist_config = HistogramConfiguration::new(
         &histogram.aggregates,
         &histogram.percentiles,
         histogram.copy_to_distribution,
         histogram.copy_to_distribution_prefix.clone(),
-    )
-    .error_context("Failed to configure histogram aggregation.")?;
+    );
     let (dsd_context_snapshot_handle, dsd_context_snapshot_receiver) = aggregate_context_snapshot_channel();
     let dsd_agg_config = AggregateConfiguration {
         window_duration_seconds: aggregation.window_duration_seconds,
@@ -869,8 +868,7 @@ async fn add_dsd_pipeline_to_blueprint(
             .map(metric_name_filter),
         &histogram.aggregates,
         &histogram.percentiles,
-    )
-    .error_context("Failed to configure DogStatsD post-aggregate filter transform.")?;
+    );
     let events_enrich_config = ChainedConfiguration::default().with_transform_builder(
         "host_enrichment",
         HostEnrichmentConfiguration::from_environment_provider(env_provider.clone()),
