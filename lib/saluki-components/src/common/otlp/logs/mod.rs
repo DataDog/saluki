@@ -1,4 +1,4 @@
-//! OTLP logs helpers shared between the OTLP logs path's components.
+//! OTLP logs helpers.
 
 use std::mem;
 

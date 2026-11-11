@@ -22,6 +22,7 @@ use saluki_core::{
         event::{metric::context::ContextResolver, Event, EventType},
         tags::{SharedTagSet, TagSet},
     },
+    observability::ComponentMetricsExt as _,
     runtime,
     topology::{interconnect::BufferedDispatcher, EventsBuffer, OutputDefinition},
 };
@@ -29,6 +30,7 @@ use saluki_env::WorkloadProvider;
 use saluki_error::ErrorContext as _;
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::{server::http::Http2Config, ListenAddress};
+use saluki_metrics::MetricsBuilder;
 use stringtheory::MetaString;
 use tokio::pin;
 use tokio::select;
@@ -37,8 +39,11 @@ use tokio::time::{interval, MissedTickBehavior};
 use tracing::{debug, error};
 
 use crate::common::otlp::{
-    build_metrics, receiver::OtlpReceiver, traces::translator::OtlpTracesSettings, CorsConfiguration, Metrics,
-    OtlpHandler, OtlpServerConfiguration, OtlpTlsConfiguration,
+    build_metrics,
+    logs::{CONTENT_BUFFER_RETENTION_LIMIT_BYTES, CONTENT_FIELDS_RETENTION_LIMIT_BYTES},
+    receiver::OtlpReceiver,
+    traces::translator::OtlpTracesSettings,
+    CorsConfiguration, Metrics, OtlpHandler, OtlpServerConfiguration, OtlpTlsConfiguration,
 };
 
 mod logs;
@@ -46,6 +51,7 @@ mod metrics;
 mod resolver;
 use datadog_agent_apm::semantics::SemanticRegistryProvider;
 
+use self::logs::render::OtlpLogsRenderer;
 use self::logs::translator::OtlpLogsTranslator;
 pub use self::metrics::config::{
     CumulativeMonotonicMode, HistogramMode, InitialCumulativeMonotonicValue, OtlpMetricsSettings, SummaryMode,
@@ -189,6 +195,12 @@ impl SourceBuilder for OtlpConfiguration {
         let metrics = build_metrics(context.component_context());
         let translator_metrics =
             metrics::telemetry::OtlpMetricsTranslatorMetrics::from_component_context(context.component_context());
+        let logs_events_dropped = MetricsBuilder::from_component_context(context.component_context())
+            .register_counter_with_tags(
+                "component_events_dropped_total",
+                ["intentional:false", "drop_reason:render_failure"],
+            );
+        let logs_renderer = OtlpLogsRenderer::new(logs_events_dropped);
 
         Ok(Box::new(Otlp {
             context_resolver,
@@ -207,6 +219,7 @@ impl SourceBuilder for OtlpConfiguration {
             grpc_tls_config,
             metrics,
             translator_metrics,
+            logs_renderer,
         }))
     }
 }
@@ -216,7 +229,9 @@ impl MemoryBounds for OtlpConfiguration {
         builder
             .minimum()
             .with_single_value::<Otlp>("source struct")
-            .with_single_value::<SourceHandler>("source handler");
+            .with_single_value::<SourceHandler>("source handler")
+            .with_fixed_amount("logs render buffer", CONTENT_BUFFER_RETENTION_LIMIT_BYTES)
+            .with_fixed_amount("logs render field list", CONTENT_FIELDS_RETENTION_LIMIT_BYTES);
     }
 }
 
@@ -237,6 +252,7 @@ pub struct Otlp {
     grpc_tls_config: Option<OtlpTlsConfiguration>,
     metrics: Metrics, // Telemetry metrics, not DD native metrics.
     translator_metrics: metrics::telemetry::OtlpMetricsTranslatorMetrics,
+    logs_renderer: OtlpLogsRenderer,
 }
 
 #[async_trait]
@@ -259,6 +275,7 @@ impl Source for Otlp {
             grpc_tls_config,
             metrics,
             translator_metrics,
+            logs_renderer,
         } = *self;
 
         let global_shutdown = context.take_shutdown_handle();
@@ -318,6 +335,7 @@ impl Source for Otlp {
                 metrics_translator,
                 metrics,
                 traces_translator,
+                logs_renderer,
             ),
         )
         .on_runtime(context.topology_context().global_thread_pool().clone())
@@ -410,7 +428,7 @@ impl OtlpHandler for SourceHandler {
 async fn run_converter(
     mut receiver: mpsc::Receiver<OtlpSignal>, source_context: SourceContext,
     origin_tag_resolver: OtlpOriginTagResolver, mut metrics_translator: OtlpMetricsTranslator, metrics: Metrics,
-    mut traces_translator: OtlpTracesTranslator,
+    mut traces_translator: OtlpTracesTranslator, mut logs_renderer: OtlpLogsRenderer,
 ) {
     debug!("OTLP resource converter task started.");
 
@@ -475,6 +493,10 @@ async fn run_converter(
                         let translator = OtlpLogsTranslator::from_resource_logs(resource_logs, &origin_tag_resolver);
                         for log in translator {
                             metrics.logs_received().increment(1);
+
+                            let Some(log) = logs_renderer.render(log) else {
+                                continue;
+                            };
 
                             let dispatcher = logs_dispatcher.get_or_insert_with(|| {
                                 source_context
@@ -555,6 +577,7 @@ mod tests {
     use otlp_protos::opentelemetry::proto::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
     use prost::Message;
     use saluki_core::components::{test_util::TestComponentDriver, ComponentContext};
+    use saluki_core::data_model::event::Event;
     use saluki_core::data_model::origin::OriginTagCardinality;
     use saluki_core::runtime::state::{DataspaceUpdate, IdentifierFilter};
     use saluki_io::net::BoundListenAddress;
@@ -948,5 +971,14 @@ mod tests {
             REQUESTS * RECORDS,
             "every accepted log must be dispatched"
         );
+
+        // The source renders each log into its content before dispatching it.
+        for event in events {
+            let Event::Log(log) = event else {
+                panic!("expected a log, got {event:?}");
+            };
+            assert_eq!(log.message(), r#"{"message":"","status":""}"#);
+            assert!(log.additional_properties().is_empty());
+        }
     }
 }
