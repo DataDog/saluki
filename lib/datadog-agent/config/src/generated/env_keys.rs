@@ -2,7 +2,7 @@
 // Regenerate by running `cargo build -p datadog-agent-config`.
 
 use crate::env_decode::EnvDecode;
-use crate::env_reader::EnvKey;
+use crate::env_reader::{EnvKey, RenamedKey};
 
 /// Every modeled Datadog key: its environment variable names (highest priority first),
 /// its nested path, and how to decode the raw value.
@@ -1344,3 +1344,6 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::RawString,
     },
 ];
+
+/// Every former name of a Datadog schema setting, highest priority first for each setting.
+pub static DATADOG_RENAMED_KEYS: &[RenamedKey] = &[];

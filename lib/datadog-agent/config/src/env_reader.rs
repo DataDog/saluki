@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use serde_json::{Map, Value};
 
 use crate::env_decode::{decode, EnvDecode};
-use crate::generated::env_keys::DATADOG_ENV_KEYS;
+use crate::generated::env_keys::{DATADOG_ENV_KEYS, DATADOG_RENAMED_KEYS};
 
 /// One modeled configuration key and how to read it from the environment.
 #[derive(Clone, Copy, Debug)]
@@ -24,6 +24,18 @@ pub struct EnvKey {
     pub decode: EnvDecode,
 }
 
+/// A former name of a Datadog schema setting, from the schema's `renamed_from`.
+#[derive(Clone, Copy, Debug)]
+pub struct RenamedKey {
+    /// The former nested path (for example, `["old_name"]`).
+    pub former: &'static [&'static str],
+    /// The nested path of the setting it was renamed to.
+    pub path: &'static [&'static str],
+    /// The environment variable derived from the former name, if the setting is read from the
+    /// environment. It is also in the setting's [`EnvKey::env_vars`].
+    pub env_var: Option<&'static str>,
+}
+
 /// Decodes process environment variables into modeled Datadog paths in `base`.
 ///
 /// Same as [`apply_datadog_env_vars`], but reads the process environment.
@@ -34,13 +46,15 @@ pub struct EnvKey {
 /// declared shape.
 // This function is in use by action-check-runner, do not delete
 pub fn apply_datadog_env(base: &mut Value, overwrite: bool) -> Result<(), String> {
-    apply_env_snapshot(base, EnvSnapshot::capture(), overwrite)
+    apply_env_snapshot(base, EnvSnapshot::capture(), overwrite).map(drop)
 }
 
-/// Decodes supplied environment variables into modeled Datadog paths in `base`.
+/// Decodes supplied environment variables into modeled Datadog paths in `base`, and returns the name
+/// of each variable that supplied a key of [`DATADOG_ENV_KEYS`], as written in `vars`.
 ///
 /// Also applies `HTTP_PROXY`/`HTTPS_PROXY` as fallbacks for their `DD_` forms. When `overwrite` is
-/// true, environment values replace existing values; otherwise, only absent paths are filled.
+/// true, environment values replace existing values; otherwise, only absent paths are filled. A
+/// variable that supplied a key is returned either way.
 ///
 /// # Errors
 ///
@@ -48,19 +62,20 @@ pub fn apply_datadog_env(base: &mut Value, overwrite: bool) -> Result<(), String
 /// declared shape. At startup this aborts the boot rather than silently dropping the value.
 pub fn apply_datadog_env_vars(
     base: &mut Value, vars: impl IntoIterator<Item = (String, String)>, overwrite: bool,
-) -> Result<(), String> {
+) -> Result<Vec<String>, String> {
     apply_env_snapshot(base, EnvSnapshot::from_vars(vars), overwrite)
 }
 
-fn apply_env_snapshot(base: &mut Value, env: EnvSnapshot, overwrite: bool) -> Result<(), String> {
+fn apply_env_snapshot(base: &mut Value, env: EnvSnapshot, overwrite: bool) -> Result<Vec<String>, String> {
     let Some(root) = base.as_object_mut() else {
-        return Ok(());
+        return Ok(Vec::new());
     };
+    let mut read = Vec::new();
     for key in DATADOG_ENV_KEYS {
-        apply_one(root, &env, key.env_vars, key.path, key.decode, overwrite)?;
+        read.extend(apply_one(root, &env, key.env_vars, key.path, key.decode, overwrite)?);
     }
     apply_proxy_env(root, &env, overwrite);
-    Ok(())
+    Ok(read)
 }
 
 /// The nested path of every modeled Datadog key.
@@ -70,6 +85,15 @@ fn apply_env_snapshot(base: &mut Value, env: EnvSnapshot, overwrite: bool) -> Re
 /// map-typed leaf is never key-unioned across sources.
 pub fn datadog_leaf_paths() -> impl Iterator<Item = &'static [&'static str]> {
     DATADOG_ENV_KEYS.iter().map(|key| key.path)
+}
+
+/// Every former name of a Datadog schema setting, modeled or not.
+///
+/// Entries for one setting are adjacent and highest priority first: the name deprecated earliest
+/// comes first, as in the Agent. No former path is a schema path, or contains or is contained by
+/// one.
+pub fn datadog_renamed_keys() -> &'static [RenamedKey] {
+    DATADOG_RENAMED_KEYS
 }
 
 /// Decodes one key from the process environment into `base` at the supplied path.
@@ -87,7 +111,7 @@ pub fn apply_env_at_path(
         return Ok(());
     };
     let env = EnvSnapshot::capture();
-    apply_one(root, &env, env_vars, path, decode, overwrite)
+    apply_one(root, &env, env_vars, path, decode, overwrite).map(drop)
 }
 
 /// Decodes one key from supplied environment variables into `base` at the supplied path.
@@ -107,7 +131,7 @@ pub fn apply_env_at_path_vars(
         return Ok(());
     };
     let env = EnvSnapshot::from_vars(vars);
-    apply_one(root, &env, env_vars, path, decode, overwrite)
+    apply_one(root, &env, env_vars, path, decode, overwrite).map(drop)
 }
 
 /// The canonical proxy variables that carry no `DD_` prefix.
@@ -137,16 +161,16 @@ fn apply_proxy_env(root: &mut Map<String, Value>, env: &EnvSnapshot, overwrite: 
     }
 }
 
-/// Reads, decodes, and writes one key.
+/// Reads, decodes, and writes one key, and returns the name of the variable read.
 fn apply_one(
     root: &mut Map<String, Value>, env: &EnvSnapshot, env_vars: &[&str], path: &[&str], how: EnvDecode, overwrite: bool,
-) -> Result<(), String> {
+) -> Result<Option<String>, String> {
     let Some((name, raw)) = env.lookup(env_vars) else {
-        return Ok(());
+        return Ok(None);
     };
     let value = decode(raw, how).map_err(|msg| format!("environment variable `{name}` ({}): {msg}", path.join(".")))?;
     write_at_path(root, path, value, overwrite);
-    Ok(())
+    Ok(Some(name.to_owned()))
 }
 
 /// A snapshot of the non-empty process environment, with exact-case lookup and a case-insensitive
@@ -361,6 +385,22 @@ mod tests {
     fn an_exact_case_later_alias_beats_a_different_case_earlier_alias() {
         let base = apply_vars(&[("dd_apm_max_eps", "100"), ("DD_MAX_EPS", "200")]).unwrap();
         assert_eq!(at(&base, &["apm_config", "max_events_per_second"]), Some(&json!(200.0)));
+    }
+
+    #[test]
+    fn the_variables_read_are_returned_as_written() {
+        let read = |pairs: &[(&str, &str)]| apply_datadog_env_vars(&mut json!({}), vars(pairs), false).unwrap();
+
+        assert_eq!(read(&[("dd_apm_max_eps", "100")]), ["dd_apm_max_eps"]);
+        // A variable set in another case is not read when another bound name is set in its exact case.
+        assert_eq!(
+            read(&[("dd_apm_max_eps", "100"), ("DD_MAX_EPS", "200")]),
+            ["DD_MAX_EPS"]
+        );
+        assert_eq!(
+            read(&[("DD_APM_MAX_EPS", ""), ("DD_UNBOUND", "1")]),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
