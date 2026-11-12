@@ -34,9 +34,7 @@ impl OtlpLogsTranslator {
         let resource = resource_logs.resource.unwrap_or_default();
         let source = resource_to_source(&resource);
         let host = match &source {
-            Some(src) if matches!(src.kind, SourceKind::HostnameKind) => {
-                Some(MetaString::from(src.identifier.as_str()))
-            }
+            Some(src) if matches!(src.kind, SourceKind::Hostname) => Some(MetaString::from(src.identifier.as_str())),
             _ => None,
         };
 
