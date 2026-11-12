@@ -1,12 +1,11 @@
 use nom::{
     bytes::complete::{tag, take},
     character::complete::u32 as parse_u32,
-    combinator::all_consuming,
     error::{Error, ErrorKind},
-    sequence::{delimited, preceded, separated_pair},
+    sequence::{delimited, separated_pair},
     IResult, Parser as _,
 };
-use saluki_core::data_model::{event::eventd::*, origin::OriginTagCardinality, tags::RawTags};
+use saluki_core::data_model::{event::eventd::*, tags::RawTags};
 use stringtheory::MetaString;
 use tracing::debug;
 
@@ -23,9 +22,7 @@ pub struct EventPacket<'a> {
     pub alert_type: Option<AlertType>,
     pub source_type_name: Option<&'a str>,
     pub tags: RawTags<'a>,
-    pub local_data: Option<&'a str>,
-    pub external_data: Option<&'a str>,
-    pub cardinality: Option<OriginTagCardinality>,
+    pub origin: ClientOrigin<'a>,
 }
 
 #[inline]
@@ -73,9 +70,7 @@ pub fn parse_dogstatsd_event<'a>(
     let mut maybe_aggregation_key = None;
     let mut maybe_source_type = None;
     let mut maybe_tags = None;
-    let mut maybe_local_data = None;
-    let mut maybe_external_data = None;
-    let mut maybe_cardinality = None;
+    let mut origin = ClientOrigin::default();
 
     // In permissive mode, string fields (hostname, aggregation key, source type) accept any UTF-8, matching the Datadog
     // Agent. Otherwise, they're restricted to ASCII alphanumerics and separators.
@@ -91,47 +86,43 @@ pub fn parse_dogstatsd_event<'a>(
         match chunk.get(..2).unwrap_or(chunk) {
             // Timestamp: client-provided timestamp for the event, relative to the Unix epoch, in seconds.
             TIMESTAMP_PREFIX => {
-                let (_, timestamp) = all_consuming(preceded(tag(TIMESTAMP_PREFIX), unix_timestamp)).parse(chunk)?;
+                let timestamp = field(chunk, TIMESTAMP_PREFIX, unix_timestamp)?;
                 maybe_timestamp = Some(timestamp);
             }
             // Hostname: client-provided hostname for the host that this event originated from.
             HOSTNAME_PREFIX if chunk != HOSTNAME_PREFIX => {
-                let (_, hostname) = all_consuming(preceded(tag(HOSTNAME_PREFIX), string_field)).parse(chunk)?;
+                let hostname = field(chunk, HOSTNAME_PREFIX, string_field)?;
                 maybe_hostname = Some(hostname);
             }
             // Aggregation key: key to be used to group this event with others that have the same key.
             AGGREGATION_KEY_PREFIX if chunk != AGGREGATION_KEY_PREFIX => {
-                let (_, aggregation_key) =
-                    all_consuming(preceded(tag(AGGREGATION_KEY_PREFIX), string_field)).parse(chunk)?;
+                let aggregation_key = field(chunk, AGGREGATION_KEY_PREFIX, string_field)?;
                 maybe_aggregation_key = Some(aggregation_key);
             }
             // Priority: client-provided priority of the event.
             PRIORITY_PREFIX => {
-                let (_, priority) =
-                    all_consuming(preceded(tag(PRIORITY_PREFIX), ascii_alphanum_and_seps)).parse(chunk)?;
+                let priority = field(chunk, PRIORITY_PREFIX, ascii_alphanum_and_seps)?;
                 maybe_priority = Priority::try_from_string(priority);
             }
             // Source type name: client-provided source type name of the event.
             SOURCE_TYPE_PREFIX if chunk != SOURCE_TYPE_PREFIX => {
-                let (_, source_type) = all_consuming(preceded(tag(SOURCE_TYPE_PREFIX), string_field)).parse(chunk)?;
+                let source_type = field(chunk, SOURCE_TYPE_PREFIX, string_field)?;
                 maybe_source_type = Some(source_type);
             }
             // Alert type: client-provided alert type of the event.
             ALERT_TYPE_PREFIX => {
-                let (_, alert_type) =
-                    all_consuming(preceded(tag(ALERT_TYPE_PREFIX), ascii_alphanum_and_seps)).parse(chunk)?;
+                let alert_type = field(chunk, ALERT_TYPE_PREFIX, ascii_alphanum_and_seps)?;
                 maybe_alert_type = AlertType::try_from_string(alert_type);
             }
             // Local Data: client-provided data used for resolving the entity ID that this event originated from.
             LOCAL_DATA_PREFIX if config.client_origin_detection && chunk != LOCAL_DATA_PREFIX => {
-                let (_, local_data) = all_consuming(preceded(tag(LOCAL_DATA_PREFIX), local_data)).parse(chunk)?;
-                maybe_local_data = Some(local_data);
+                let local_data = field(chunk, LOCAL_DATA_PREFIX, local_data)?;
+                origin.local_data = Some(local_data);
             }
             // External Data: client-provided data used for resolving the entity ID that this event originated from.
             EXTERNAL_DATA_PREFIX if config.client_origin_detection && chunk != EXTERNAL_DATA_PREFIX => {
-                let (_, external_data) =
-                    all_consuming(preceded(tag(EXTERNAL_DATA_PREFIX), external_data)).parse(chunk)?;
-                maybe_external_data = Some(external_data);
+                let external_data = field(chunk, EXTERNAL_DATA_PREFIX, external_data)?;
+                origin.external_data = Some(external_data);
             }
             // Cardinality: client-provided cardinality for the event.
             _ if chunk.starts_with(CARDINALITY_PREFIX)
@@ -139,11 +130,11 @@ pub fn parse_dogstatsd_event<'a>(
                 && chunk != CARDINALITY_PREFIX =>
             {
                 let (_, cardinality) = cardinality(chunk)?;
-                maybe_cardinality = cardinality;
+                origin.cardinality = cardinality;
             }
             // Tags: additional tags to be added to the event. A bare `#` is a valid, empty set of tags.
             _ if chunk.starts_with(TAGS_PREFIX) => {
-                let (_, tags) = all_consuming(preceded(tag("#"), tags(config))).parse(chunk)?;
+                let tags = field(chunk, b"#", tags(config))?;
                 maybe_tags = Some(tags);
             }
             // A known field with an empty value (for example, `h:`) is treated as missing.
@@ -208,9 +199,7 @@ pub fn parse_dogstatsd_event<'a>(
         priority: maybe_priority,
         alert_type: maybe_alert_type,
         source_type_name: maybe_source_type,
-        local_data: maybe_local_data,
-        external_data: maybe_external_data,
-        cardinality: maybe_cardinality,
+        origin,
     };
     Ok((remaining, eventd))
 }
@@ -388,9 +377,9 @@ mod tests {
         // We need client_origin_detection on in order to parse local_data, external_data, and cardinality fields
         let config = DogStatsDCodecConfiguration::default().with_client_origin_detection(true);
         let (_, packet) = parse_dogstatsd_event(raw.as_bytes(), &config).expect("should not fail to parse");
-        assert_eq!(packet.local_data, Some(event_local_data));
-        assert_eq!(packet.external_data, Some(event_external_data));
-        assert_eq!(packet.cardinality, Some(OriginTagCardinality::Low));
+        assert_eq!(packet.origin.local_data, Some(event_local_data));
+        assert_eq!(packet.origin.external_data, Some(event_external_data));
+        assert_eq!(packet.origin.cardinality, Some(OriginTagCardinality::Low));
     }
 
     #[test]
@@ -488,9 +477,9 @@ mod tests {
         let raw = format!("_e{{5,4}}:title|text|c:{}|e:{}|card:low", local_data, external_data);
         let config = DogStatsDCodecConfiguration::default().with_client_origin_detection(false);
         let (_, packet) = parse_dogstatsd_event(raw.as_bytes(), &config).expect("should not fail to parse");
-        assert_eq!(packet.local_data, None);
-        assert_eq!(packet.external_data, None);
-        assert_eq!(packet.cardinality, None);
+        assert_eq!(packet.origin.local_data, None);
+        assert_eq!(packet.origin.external_data, None);
+        assert_eq!(packet.origin.cardinality, None);
     }
 
     #[test]
@@ -502,9 +491,9 @@ mod tests {
         assert_eq!(packet.hostname, None);
         assert_eq!(packet.aggregation_key, None);
         assert_eq!(packet.source_type_name, None);
-        assert_eq!(packet.local_data, None);
-        assert_eq!(packet.external_data, None);
-        assert_eq!(packet.cardinality, None);
+        assert_eq!(packet.origin.local_data, None);
+        assert_eq!(packet.origin.external_data, None);
+        assert_eq!(packet.origin.cardinality, None);
         assert!(packet.tags.iter().next().is_none());
     }
 }

@@ -32,7 +32,6 @@ use saluki_core::{
             service_check::ServiceCheck,
             Event, EventType,
         },
-        origin::OriginTagCardinality,
         tags::{RawTags, SharedTagSet},
     },
     pooling::{ElasticObjectPool, ObjectPool as _},
@@ -1755,12 +1754,7 @@ fn handle_metric_packet(
     let (well_known_tags, mut tags) = WellKnownTags::split_raw_tags(&packet.tags);
     tags.extend(additional_tags.iter().map(String::as_str));
 
-    let origin = origin_from_packet(
-        packet.local_data,
-        packet.external_data,
-        packet.cardinality,
-        &well_known_tags,
-    );
+    let origin = origin_from_packet(&packet.origin, &well_known_tags);
     let origin_tags = context_resolvers.resolve_origin_tags(origin, process_origin);
 
     // Choose the right context resolver based on whether or not this metric is pre-aggregated.
@@ -1791,14 +1785,13 @@ fn handle_metric_packet(
 ///
 /// Returns `None` if the tags can't be resolved.
 fn resolve_tags_and_origin_tags<'a>(
-    context_resolvers: &mut ContextResolvers, raw_tags: &'a RawTags<'_>, local_data: Option<&str>,
-    external_data: Option<&str>, cardinality: Option<OriginTagCardinality>, process_origin: Option<&ProcessOrigin>,
-    additional_tags: &'a [String],
+    context_resolvers: &mut ContextResolvers, raw_tags: &'a RawTags<'_>, client_origin: &ClientOrigin<'_>,
+    process_origin: Option<&ProcessOrigin>, additional_tags: &'a [String],
 ) -> Option<(SharedTagSet, SharedTagSet, Option<&'a str>)> {
     let (well_known_tags, mut tags) = WellKnownTags::split_raw_tags(raw_tags);
     tags.extend(additional_tags.iter().map(String::as_str));
 
-    let origin = origin_from_packet(local_data, external_data, cardinality, &well_known_tags);
+    let origin = origin_from_packet(client_origin, &well_known_tags);
     let origin_tags = context_resolvers.resolve_origin_tags(origin, process_origin);
 
     let tags = context_resolvers.tags().create_tag_set(&tags)?;
@@ -1812,9 +1805,7 @@ fn handle_event_packet(
     let (tags, origin_tags, tagged_hostname) = resolve_tags_and_origin_tags(
         context_resolvers,
         &packet.tags,
-        packet.local_data,
-        packet.external_data,
-        packet.cardinality,
+        &packet.origin,
         process_origin,
         additional_tags,
     )?;
@@ -1858,9 +1849,7 @@ fn handle_service_check_packet(
     let (tags, origin_tags, tagged_hostname) = resolve_tags_and_origin_tags(
         context_resolvers,
         &packet.tags,
-        packet.local_data,
-        packet.external_data,
-        packet.cardinality,
+        &packet.origin,
         process_origin,
         additional_tags,
     )?;

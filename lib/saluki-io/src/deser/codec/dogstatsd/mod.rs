@@ -4,7 +4,7 @@ mod event;
 pub use self::event::EventPacket;
 
 mod helpers;
-pub use self::helpers::{parse_message_type, MessageType};
+pub use self::helpers::{parse_message_type, ClientOrigin, MessageType};
 
 mod metric;
 pub use self::metric::MetricPacket;

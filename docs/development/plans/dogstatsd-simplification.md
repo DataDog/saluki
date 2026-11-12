@@ -43,7 +43,9 @@ abstraction would have one caller.
   benchmark comparison runs in this pull request's CI.
 - [x] **6. Capture/replay:** eager controls, marker-bit removal, typed errors (landed with step 4), `EntityId`
   conversions, then relocation out of `sources/dogstatsd` into `common/dogstatsd_capture`. Four pull requests.
-- [ ] **7. Codec:** `ClientOrigin` and field helpers; tag-limit removal only if approved.
+- [x] **7. Codec:** `ClientOrigin` and the `field()` helper. The shared extension-field loop was dropped: since #3071
+  and #3073 the three loops differ on purpose (empty and unknown fields are handled per packet type to match the
+  Agent), so one loop would need as many knobs as it saves lines. Tag-limit removal is still awaiting approval.
 - [ ] **8. Split `mod.rs` production code** into `config`/`listener`/`decoder`/`packets`.
 
 ## Tier 1: easy (local, mechanical, low risk)

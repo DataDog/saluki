@@ -4,11 +4,11 @@ use nom::{
     combinator::{all_consuming, rest},
     error::{Error, ErrorKind},
     sequence::preceded,
-    IResult, Parser as _,
+    IResult, Parser,
 };
 use saluki_core::data_model::{origin::OriginTagCardinality, tags::RawTags};
 
-use super::DogStatsDCodecConfiguration;
+use super::{DogStatsDCodecConfiguration, NomParserError};
 
 /// Parses one or more bytes matching `pred` and returns them as a string.
 ///
@@ -79,6 +79,41 @@ pub fn split_at_delimiter(input: &[u8], delimiter: u8) -> Option<(&[u8], &[u8])>
             }
         }
     }
+}
+
+/// Parses an entire field as `prefix` followed by a value matching `parser`.
+#[inline]
+pub fn field<'a, P>(chunk: &'a [u8], prefix: &'static [u8], parser: P) -> Result<P::Output, NomParserError<'a>>
+where
+    P: Parser<&'a [u8], Error = Error<&'a [u8]>>,
+{
+    all_consuming(preceded(tag(prefix), parser))
+        .parse(chunk)
+        .map(|(_, value)| value)
+}
+
+/// Client-provided origin fields of a packet.
+///
+/// See the [DogStatsD datagram format][datagram] reference for the protocol versions that introduced each field.
+///
+/// [datagram]: https://docs.datadoghq.com/extend/dogstatsd/datagram_shell/?tab=metrics
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ClientOrigin<'a> {
+    /// Local Data, carried in the `c:` field (protocol v1.2, extended in v1.4).
+    ///
+    /// Identifies the workload that emitted the packet. Carries a container ID (`ci-<id>`) or, when unavailable, a
+    /// cgroup node inode (`in-<inode>`).
+    pub local_data: Option<&'a str>,
+
+    /// External Data, carried in the `e:` field (protocol v1.5).
+    ///
+    /// Used to convey a richer blob of workload identity data resolved by the receiver.
+    pub external_data: Option<&'a str>,
+
+    /// Cardinality hint for origin tag enrichment, carried in the `card:` field (protocol v1.6).
+    ///
+    /// Specifies which origin tags the receiver should attach to the packet.
+    pub cardinality: Option<OriginTagCardinality>,
 }
 
 /// Maps the input slice as a UTF-8 string.
