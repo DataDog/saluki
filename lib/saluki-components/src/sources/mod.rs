@@ -5,9 +5,11 @@ pub use self::checks_ipc::ChecksIPCConfiguration;
 
 mod dogstatsd;
 pub use self::dogstatsd::{
+    DogStatsDConfiguration, EnablePayloadsConfiguration, ListenerRequirement, OriginEnrichmentConfiguration,
+};
+pub use crate::common::dogstatsd_capture::{
     CaptureTriggerBody, CaptureTriggerResponseBody, DogStatsDCaptureAPIHandler, DogStatsDCaptureControl,
-    DogStatsDConfiguration, DogStatsDReplayAPIHandler, DogStatsDReplayControl, EnablePayloadsConfiguration,
-    ListenerRequirement, OriginEnrichmentConfiguration, ReplayControlError, ReplaySession, ReplaySessionResponseBody,
+    DogStatsDReplayAPIHandler, DogStatsDReplayControl, ReplayControlError, ReplaySession, ReplaySessionResponseBody,
     TimestampResolution, TrafficCaptureReader, CAPTURE_TRIGGER_ROUTE, DEFAULT_REPLAY_LOOPS, REPLAY_CREDENTIALS_GID,
     REPLAY_SESSION_ROUTE,
 };
