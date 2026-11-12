@@ -1,7 +1,8 @@
 //! Entity identifiers.
 
-use std::{cmp::Ordering, fmt};
+use std::{cmp::Ordering, fmt, str::FromStr};
 
+use datadog_protos::agent::EntityId as RemoteEntityId;
 use stringtheory::MetaString;
 use tracing::warn;
 
@@ -15,6 +16,7 @@ const ENTITY_PREFIX_POD_UID: &str = "kubernetes_pod_uid://";
 const ENTITY_PREFIX_PROCESS: &str = "process://";
 const ENTITY_PREFIX_CONTAINER_INODE: &str = "container_inode://";
 const ENTITY_PREFIX_CONTAINER_PID: &str = "container_pid://";
+const ENTITY_GLOBAL: &str = "system://global";
 
 const LOCAL_DATA_PREFIX_INODE: &str = "in-";
 const LOCAL_DATA_PREFIX_CID: &str = "ci-";
@@ -175,7 +177,7 @@ impl EntityId {
 impl fmt::Display for EntityId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Global => write!(f, "system://global"),
+            Self::Global => f.write_str(ENTITY_GLOBAL),
             Self::Container(container_id) => write!(f, "{}{}", ENTITY_PREFIX_CONTAINER_ID, container_id),
             Self::ContainerImageMetadata(digest) => write!(f, "{}{}", ENTITY_PREFIX_CONTAINER_IMAGE_METADATA, digest),
             Self::EcsTask(task_arn) => write!(f, "{}{}", ENTITY_PREFIX_ECS_TASK, task_arn),
@@ -188,6 +190,67 @@ impl fmt::Display for EntityId {
             Self::Process(process_id) => write!(f, "{}{}", ENTITY_PREFIX_PROCESS, process_id),
             Self::ContainerInode(inode) => write!(f, "{}{}", ENTITY_PREFIX_CONTAINER_INODE, inode),
             Self::ContainerPid(pid) => write!(f, "{}{}", ENTITY_PREFIX_CONTAINER_PID, pid),
+        }
+    }
+}
+
+/// An error from parsing a string that isn't a valid [`EntityId`].
+#[derive(Debug, Eq, PartialEq)]
+pub struct ParseEntityIdError;
+
+impl fmt::Display for ParseEntityIdError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("unrecognized entity ID")
+    }
+}
+
+impl std::error::Error for ParseEntityIdError {}
+
+impl FromStr for EntityId {
+    type Err = ParseEntityIdError;
+
+    /// Parses an entity ID from the form its `Display` implementation writes, such as `container_id://<id>`.
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if value == ENTITY_GLOBAL {
+            return Ok(Self::Global);
+        }
+
+        let split = value.find("://").ok_or(ParseEntityIdError)? + 3;
+        let (prefix, id) = value.split_at(split);
+        let entity_id = match prefix {
+            ENTITY_PREFIX_CONTAINER_ID => Self::Container(id.into()),
+            ENTITY_PREFIX_CONTAINER_IMAGE_METADATA => Self::ContainerImageMetadata(id.into()),
+            ENTITY_PREFIX_ECS_TASK => Self::EcsTask(id.into()),
+            ENTITY_PREFIX_KUBERNETES_DEPLOYMENT => Self::KubernetesDeployment(id.into()),
+            ENTITY_PREFIX_KUBERNETES_METADATA => Self::KubernetesMetadata(id.into()),
+            ENTITY_PREFIX_KUBERNETES_NODE => Self::KubernetesNode(id.into()),
+            ENTITY_PREFIX_POD_UID => Self::PodUid(id.into()),
+            ENTITY_PREFIX_PROCESS => Self::Process(id.into()),
+            ENTITY_PREFIX_CONTAINER_INODE => Self::ContainerInode(id.parse().map_err(|_| ParseEntityIdError)?),
+            ENTITY_PREFIX_CONTAINER_PID => Self::ContainerPid(id.parse().map_err(|_| ParseEntityIdError)?),
+            _ => return Err(ParseEntityIdError),
+        };
+        Ok(entity_id)
+    }
+}
+
+impl From<&EntityId> for RemoteEntityId {
+    /// Converts an entity ID into the prefix and identifier that the Agent's tagger uses for it.
+    fn from(entity_id: &EntityId) -> Self {
+        if let EntityId::Global = entity_id {
+            return Self {
+                prefix: "internal".to_string(),
+                uid: "global-entity-id".to_string(),
+            };
+        }
+
+        let value = entity_id.to_string();
+        let (prefix, uid) = value
+            .split_once("://")
+            .expect("non-global entity IDs always display with a prefix");
+        Self {
+            prefix: prefix.to_string(),
+            uid: uid.to_string(),
         }
     }
 }
@@ -294,6 +357,65 @@ fn parse_local_data_value(raw_local_data_value: &str) -> Result<Option<EntityId>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn every_entity_id() -> [EntityId; 11] {
+        [
+            EntityId::Global,
+            EntityId::Container("abc123".into()),
+            EntityId::ContainerImageMetadata("sha256:abc".into()),
+            EntityId::EcsTask("arn:aws:ecs:task/1".into()),
+            EntityId::KubernetesDeployment("default/web".into()),
+            EntityId::KubernetesMetadata("pods//default/web".into()),
+            EntityId::KubernetesNode("node-1".into()),
+            EntityId::PodUid("pod-uid".into()),
+            EntityId::Process("1234".into()),
+            EntityId::ContainerInode(42),
+            EntityId::ContainerPid(7),
+        ]
+    }
+
+    #[test]
+    fn parse_is_the_inverse_of_display() {
+        for entity_id in every_entity_id() {
+            assert_eq!(entity_id.to_string().parse::<EntityId>(), Ok(entity_id));
+        }
+    }
+
+    #[test]
+    fn parse_rejects_unknown_prefixes_and_malformed_ids() {
+        for value in [
+            "",
+            "container_id",
+            "unknown://x",
+            "container_pid://not-a-number",
+            "system://other",
+        ] {
+            assert_eq!(value.parse::<EntityId>(), Err(ParseEntityIdError), "{value}");
+        }
+    }
+
+    #[test]
+    fn remote_entity_id_uses_the_tagger_prefixes() {
+        let cases = [
+            (EntityId::Global, "internal", "global-entity-id"),
+            (EntityId::Container("abc123".into()), "container_id", "abc123"),
+            (
+                EntityId::KubernetesDeployment("default/web".into()),
+                "deployment",
+                "default/web",
+            ),
+            (EntityId::PodUid("pod-uid".into()), "kubernetes_pod_uid", "pod-uid"),
+            (EntityId::ContainerPid(7), "container_pid", "7"),
+        ];
+        for (entity_id, prefix, uid) in cases {
+            let remote = RemoteEntityId::from(&entity_id);
+            assert_eq!(
+                (remote.prefix.as_str(), remote.uid.as_str()),
+                (prefix, uid),
+                "{entity_id}"
+            );
+        }
+    }
 
     #[test]
     fn local_data() {
