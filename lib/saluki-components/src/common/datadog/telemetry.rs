@@ -280,6 +280,7 @@ pub struct SharedTransactionQueueTelemetry {
 struct SharedTransactionQueueTelemetryInner {
     builder: MetricsBuilder,
     per_endpoint: FastHashMap<MetaString, EndpointQueueStats>,
+    next_endpoint_index: usize,
     capacity: RetryQueueCapacityAggregator,
     retry_queue_size: DomainAggregatedGauge,
     in_flight_requests: DomainAggregatedGauge,
@@ -349,6 +350,7 @@ impl SharedTransactionQueueTelemetryInner {
         Self {
             builder: builder.clone(),
             per_endpoint: FastHashMap::default(),
+            next_endpoint_index: 0,
             capacity: RetryQueueCapacityAggregator::new(),
             retry_queue_size: DomainAggregatedGauge::from_builder(builder, "network_http_retry_queue_size"),
             in_flight_requests: DomainAggregatedGauge::from_builder(builder, "network_http_in_flight_requests"),
@@ -475,6 +477,17 @@ impl SharedTransactionQueueTelemetry {
         }
     }
 
+    /// Returns an identifier for one endpoint I/O loop, unique among the loops sharing this telemetry.
+    ///
+    /// Loops can share an endpoint URL, for example one per API key of an additional endpoint, so the URL alone can't
+    /// tell their queue statistics apart. Stats keyed by the URL would overwrite each other instead of adding up.
+    fn unique_endpoint_id(&self, endpoint_url: &str) -> MetaString {
+        let mut inner = self.inner.lock().unwrap();
+        let index = inner.next_endpoint_index;
+        inner.next_endpoint_index += 1;
+        MetaString::from(format!("{endpoint_url}#{index}"))
+    }
+
     fn record_retry_queue_size(&self, endpoint_id: &MetaString, domain: &MetaString, len: usize) {
         self.inner.lock().unwrap().record_size(endpoint_id, domain, len);
     }
@@ -528,7 +541,7 @@ impl TransactionQueueTelemetry {
         let builder = builder.clone().add_default_tag(("endpoint", endpoint_url.to_string()));
 
         Self {
-            endpoint_id: MetaString::from(endpoint_url),
+            endpoint_id: shared.unique_endpoint_id(endpoint_url),
             shared,
             high_prio_queue_insertions: builder.register_debug_counter("endpoint_high_prio_queue_insertions_total"),
             high_prio_queue_removals: builder.register_debug_counter("endpoint_high_prio_queue_removals_total"),
@@ -751,6 +764,37 @@ mod tests {
             recorder.gauge(("network_http_retry_queue_size", &[("domain", "https://one.example")])),
             Some(4.0)
         );
+    }
+
+    #[test]
+    fn loops_sharing_an_endpoint_url_add_up_instead_of_overwriting() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let builder = MetricsBuilder::default();
+        let shared = SharedTransactionQueueTelemetry::from_builder(&builder);
+        let first = TransactionQueueTelemetry::from_builder(&builder, "https://one.example/a", shared.clone());
+        let second = TransactionQueueTelemetry::from_builder(&builder, "https://one.example/a", shared.clone());
+        let one = MetaString::from_static("https://one.example");
+        let one_tags = &[("domain", "https://one.example")];
+
+        first.record_in_flight_requests(&one, 3);
+        second.record_in_flight_requests(&one, 4);
+        first.record_high_prio_queue_size(&one, 10);
+        second.record_high_prio_queue_size(&one, 20);
+        first.record_retry_queue_size(&one, 5);
+        second.record_retry_queue_size(&one, 6);
+
+        assert_eq!(recorder.gauge(("network_http_in_flight_requests", one_tags)), Some(7.0));
+        assert_eq!(recorder.gauge("network_http_in_flight_requests"), Some(7.0));
+        assert_eq!(
+            recorder.gauge(("network_http_high_prio_queue_size", one_tags)),
+            Some(30.0)
+        );
+        assert_eq!(recorder.gauge(("network_http_retry_queue_size", one_tags)), Some(11.0));
+
+        // A loop's later report replaces only its own earlier one.
+        first.record_in_flight_requests(&one, 1);
+        assert_eq!(recorder.gauge(("network_http_in_flight_requests", one_tags)), Some(5.0));
     }
 
     #[test]
