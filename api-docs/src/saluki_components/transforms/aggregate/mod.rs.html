@@ -2195,9 +2195,9 @@
 <a href=#2195 id=2195 data-nosnippet>2195</a>
 <a href=#2196 id=2196 data-nosnippet>2196</a>    <span class="attr">#[tokio::test]
 <a href=#2197 id=2197 data-nosnippet>2197</a>    </span><span class="kw">async fn </span>telemetry() {
-<a href=#2198 id=2198 data-nosnippet>2198</a>        <span class="comment">// TODO: We don't check `component_events_dropped_total` here as it's set directly in the aggregate
-<a href=#2199 id=2199 data-nosnippet>2199</a>        // component future rather than `AggregationState`, which is harder to drive overall and would have
-<a href=#2200 id=2200 data-nosnippet>2200</a>        // required even more boilerplate.
+<a href=#2198 id=2198 data-nosnippet>2198</a>        <span class="comment">// TODO: We don't check that `component_events_dropped_total` increments when a context limit is hit,
+<a href=#2199 id=2199 data-nosnippet>2199</a>        // since that increment happens in the aggregate component future rather than `AggregationState`,
+<a href=#2200 id=2200 data-nosnippet>2200</a>        // which is harder to drive overall and would have required even more boilerplate.
 <a href=#2201 id=2201 data-nosnippet>2201</a>        //
 <a href=#2202 id=2202 data-nosnippet>2202</a>        // Leaving that as a future improvement.
 <a href=#2203 id=2203 data-nosnippet>2203</a>
