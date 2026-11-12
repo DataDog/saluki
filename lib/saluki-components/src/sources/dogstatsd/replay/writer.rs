@@ -359,7 +359,7 @@ fn build_saved_entity_state(
     let mut seen_entities = HashSet::new();
 
     for raw_entity_id in pid_map.values() {
-        let Some(entity_id) = parse_entity_id_str(raw_entity_id) else {
+        let Some(entity_id) = raw_entity_id.parse::<EntityId>().ok() else {
             warn!(
                 raw_entity_id,
                 "Skipping captured entity with an unsupported ID while building capture state trailer."
@@ -399,7 +399,7 @@ fn build_saved_entity(
     }
 
     Some(Entity {
-        id: Some(entity_id_to_remote_entity_id(entity_id)),
+        id: Some(RemoteEntityId::from(entity_id)),
         low_cardinality_tags: low_tags,
         orchestrator_cardinality_tags: orchestrator_tags,
         high_cardinality_tags: high_tags,
@@ -429,94 +429,6 @@ fn subtract_tag_strings(current: Vec<String>, lower: &[String]) -> Vec<String> {
         .into_iter()
         .filter(|tag| !lower.contains(tag.as_str()))
         .collect()
-}
-
-fn entity_id_to_remote_entity_id(entity_id: &EntityId) -> RemoteEntityId {
-    match entity_id {
-        EntityId::Container(container_id) => RemoteEntityId {
-            prefix: "container_id".to_string(),
-            uid: container_id.to_string(),
-        },
-        EntityId::ContainerImageMetadata(digest) => RemoteEntityId {
-            prefix: "container_image_metadata".to_string(),
-            uid: digest.to_string(),
-        },
-        EntityId::EcsTask(task_arn) => RemoteEntityId {
-            prefix: "ecs_task".to_string(),
-            uid: task_arn.to_string(),
-        },
-        EntityId::KubernetesDeployment(deployment) => RemoteEntityId {
-            prefix: "deployment".to_string(),
-            uid: deployment.to_string(),
-        },
-        EntityId::KubernetesMetadata(metadata) => RemoteEntityId {
-            prefix: "kubernetes_metadata".to_string(),
-            uid: metadata.to_string(),
-        },
-        EntityId::KubernetesNode(node) => RemoteEntityId {
-            prefix: "kubernetes_node".to_string(),
-            uid: node.to_string(),
-        },
-        EntityId::PodUid(pod_uid) => RemoteEntityId {
-            prefix: "kubernetes_pod_uid".to_string(),
-            uid: pod_uid.to_string(),
-        },
-        EntityId::Global => RemoteEntityId {
-            prefix: "internal".to_string(),
-            uid: "global-entity-id".to_string(),
-        },
-        EntityId::Process(process_id) => RemoteEntityId {
-            prefix: "process".to_string(),
-            uid: process_id.to_string(),
-        },
-        EntityId::ContainerPid(pid) => RemoteEntityId {
-            prefix: "container_pid".to_string(),
-            uid: pid.to_string(),
-        },
-        EntityId::ContainerInode(inode) => RemoteEntityId {
-            prefix: "container_inode".to_string(),
-            uid: inode.to_string(),
-        },
-    }
-}
-
-pub(super) fn parse_entity_id_str(value: &str) -> Option<EntityId> {
-    const CONTAINER_ID_PREFIX: &str = "container_id://";
-    const CONTAINER_IMAGE_METADATA_PREFIX: &str = "container_image_metadata://";
-    const ECS_TASK_PREFIX: &str = "ecs_task://";
-    const KUBERNETES_DEPLOYMENT_PREFIX: &str = "deployment://";
-    const KUBERNETES_METADATA_PREFIX: &str = "kubernetes_metadata://";
-    const KUBERNETES_NODE_PREFIX: &str = "kubernetes_node://";
-    const POD_UID_PREFIX: &str = "kubernetes_pod_uid://";
-    const PROCESS_PREFIX: &str = "process://";
-    const CONTAINER_PID_PREFIX: &str = "container_pid://";
-    const CONTAINER_INODE_PREFIX: &str = "container_inode://";
-
-    if let Some(container_id) = value.strip_prefix(CONTAINER_ID_PREFIX) {
-        Some(EntityId::Container(container_id.into()))
-    } else if let Some(digest) = value.strip_prefix(CONTAINER_IMAGE_METADATA_PREFIX) {
-        Some(EntityId::ContainerImageMetadata(digest.into()))
-    } else if let Some(task_arn) = value.strip_prefix(ECS_TASK_PREFIX) {
-        Some(EntityId::EcsTask(task_arn.into()))
-    } else if let Some(deployment) = value.strip_prefix(KUBERNETES_DEPLOYMENT_PREFIX) {
-        Some(EntityId::KubernetesDeployment(deployment.into()))
-    } else if let Some(metadata) = value.strip_prefix(KUBERNETES_METADATA_PREFIX) {
-        Some(EntityId::KubernetesMetadata(metadata.into()))
-    } else if let Some(node) = value.strip_prefix(KUBERNETES_NODE_PREFIX) {
-        Some(EntityId::KubernetesNode(node.into()))
-    } else if let Some(pod_uid) = value.strip_prefix(POD_UID_PREFIX) {
-        Some(EntityId::PodUid(pod_uid.into()))
-    } else if let Some(process_id) = value.strip_prefix(PROCESS_PREFIX) {
-        Some(EntityId::Process(process_id.into()))
-    } else if let Some(pid) = value.strip_prefix(CONTAINER_PID_PREFIX) {
-        pid.parse().ok().map(EntityId::ContainerPid)
-    } else if let Some(inode) = value.strip_prefix(CONTAINER_INODE_PREFIX) {
-        inode.parse().ok().map(EntityId::ContainerInode)
-    } else if value == "system://global" {
-        Some(EntityId::Global)
-    } else {
-        None
-    }
 }
 
 #[cfg(test)]
