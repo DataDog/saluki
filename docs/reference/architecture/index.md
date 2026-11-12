@@ -122,8 +122,7 @@ Examples of destinations (some of which don't currently exist):
 
 In order to facilitate communication between components in a generic way, Saluki uses a unified data
 model based on a single enum type, `Event`. Events represent all possible data types that Saluki is
-able to handle, such as metrics (currently supported), logs and traces (not yet supported), and so
-on.
+able to handle, such as metrics, logs, traces, DogStatsD events, service checks, and trace statistics.
 
 Naturally, not every component will emit all event types, and not every component will be able to
 handle all event types. This is dealt with by the logic mentioned prior, where connected components
