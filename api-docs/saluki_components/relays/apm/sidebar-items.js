@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["ApmRelay","ApmRelayConfiguration"]};
+window.SIDEBAR_ITEMS = {"struct":["ApmRelay","ApmRelayConfiguration","TracerFlareConfiguration"]};
