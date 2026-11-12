@@ -9,10 +9,6 @@ After listing findings, produce an overall correctness verdict ("patch is correc
 concise justification.
 Ensure that file citations and line numbers are exactly correct using the tools available; if they are incorrect your
 comments will be rejected.
-In every string value of your JSON output, including comment bodies and `suggestion` blocks, keep `{` and `}` balanced:
-each string must contain as many `{` as `}`. If any string has unbalanced braces, the review action can't parse your
-output and posts nothing. When you need to quote code that opens a block, such as `impl Foo for Bar {`, either quote the
-complete block or describe it in prose instead.
 
 ## Project-specific review checklist
 
