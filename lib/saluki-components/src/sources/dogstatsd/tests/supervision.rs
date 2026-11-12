@@ -285,16 +285,16 @@ async fn stream_handlers_are_the_listeners_own_children() {
         .await
         .expect("client should connect");
 
-    // Each connection adds two processes. One is the handler, below the listener. The other is the stream reader
-    // that the handler starts below itself.
-    control.supervisor().wait_for_running_descendants(baseline + 2).await;
+    // Each connection adds one process: the handler, below the listener. It reads and decodes the stream itself.
+    control.supervisor().wait_for_running_descendants(baseline + 1).await;
     let root = control.supervisor().tree_handle().snapshot().root;
     let listener_node = find_node(&root, "listener_tcp").expect("the listener is running");
     let handler_node = find_node(listener_node, "conn_tcp")
         .expect("the handler should hang beneath the listener that accepted its connection");
-    assert!(
-        find_node(handler_node, "stream_reader").is_some(),
-        "the stream reader should hang beneath the handler that started it"
+    assert_eq!(
+        running_beneath(handler_node),
+        0,
+        "the handler should run no children of its own"
     );
 
     control

@@ -37,10 +37,9 @@ use saluki_io::{
 use stringtheory::MetaString;
 
 use super::{
-    filters::EnablePayloadsConfiguration, metrics::build_metrics, metrics::Metrics,
-    replay::test_support::wait_until_inactive, BufferDecodeContext, BufferDecodeMode, ContextResolvers, DecodeOutcome,
-    DecoderContext, DogStatsDConfiguration, DogStatsDDecoder, PacketForwarder, ReceivedBuffer, TrafficCapture,
-    TrafficCaptureReader,
+    build_io_buffer_pool, filters::EnablePayloadsConfiguration, metrics::build_metrics,
+    replay::test_support::wait_until_inactive, BufferDecodeContext, ContextResolvers, DecodeOutcome, DecoderContext,
+    DogStatsDConfiguration, DogStatsDDecoder, ListenerState, TrafficCapture, TrafficCaptureReader,
 };
 
 const TEST_WINDOWS_PIPE_SECURITY_DESCRIPTOR: &str = "D:AI(A;;GA;;;WD)";
@@ -172,23 +171,25 @@ fn named_pipe_listen_address() -> ListenAddress {
     )
 }
 
-/// A listen address with its telemetry, for building the per-listener context a decoder decodes with.
-struct TestListener {
-    listen_addr: ListenAddress,
-    metrics: Metrics,
+/// The state of a listener on `listen_addr` with a single-buffer I/O pool, no forwarder, and no required EOL.
+fn test_listener_state(listen_addr: ListenAddress) -> ListenerState {
+    let (io_buffer_pool, _shrinker) = build_io_buffer_pool(1, 1, TEST_BUFFER_SIZE);
+    ListenerState {
+        metrics: build_metrics(&listen_addr, &test_component_context(), false),
+        listen_addr,
+        eol_required: false,
+        packet_forwarder: None,
+        io_buffer_pool,
+        decoder_context: test_decoder_context(false),
+        capture_entity_resolver: None,
+    }
 }
 
-impl TestListener {
-    fn new(listen_addr: ListenAddress) -> Self {
-        let metrics = build_metrics(&listen_addr, &test_component_context(), false);
-        Self { listen_addr, metrics }
-    }
-
-    fn decode_context<'a>(
-        &'a self, eol_required: bool, packet_forwarder: Option<&'a PacketForwarder>, mode: BufferDecodeMode,
-    ) -> BufferDecodeContext<'a> {
-        BufferDecodeContext::new(&self.listen_addr, eol_required, &self.metrics, packet_forwarder, mode)
-    }
+/// Prefixes `payload` with its length, as a UDS stream client frames it.
+fn length_delimited(payload: &[u8]) -> Vec<u8> {
+    let mut frame = (payload.len() as u32).to_le_bytes().to_vec();
+    frame.extend_from_slice(payload);
+    frame
 }
 
 /// A decoder wired to a test source context, along with the outputs it dispatches to.
@@ -207,14 +208,15 @@ impl DecoderFixture {
     }
 
     /// Hands `io_buffer`, holding `bytes_read` freshly read bytes, to the decoder, and returns the outcome along with
-    /// the I/O buffer the decoder gives back.
+    /// the I/O buffer, which keeps any partial frame.
     async fn decode_once(
-        &mut self, context: &mut BufferDecodeContext<'_>, io_buffer: BytesBuffer, bytes_read: usize,
+        &mut self, context: &mut BufferDecodeContext<'_>, mut io_buffer: BytesBuffer, bytes_read: usize,
         peer_addr: &ConnectionAddress,
     ) -> (DecodeOutcome, BytesBuffer) {
-        let (received, returned_buffer) = ReceivedBuffer::with_return(io_buffer, bytes_read, peer_addr.clone(), None);
-        let outcome = self.decoder.decode_buffer(context, received).await;
-        let io_buffer = returned_buffer.await.expect("decoder should return the I/O buffer");
+        let outcome = self
+            .decoder
+            .decode_buffer(context, &mut io_buffer, bytes_read, peer_addr, None)
+            .await;
         (outcome, io_buffer)
     }
 }

@@ -20,7 +20,7 @@ use async_trait::async_trait;
 use bytes::{Buf, BufMut};
 use bytesize::ByteSize;
 use saluki_common::sync::{
-    shutdown::{ShutdownCoordinator, ShutdownHandle},
+    shutdown::ShutdownHandle,
     work_queue::{self, WorkQueueReceiver, WorkQueueSender},
 };
 use saluki_core::{
@@ -59,8 +59,7 @@ use snafu::Snafu;
 use stringtheory::MetaString;
 use tokio::{
     pin, select,
-    sync::{mpsc, oneshot},
-    time::{interval, MissedTickBehavior},
+    time::{interval, Interval, MissedTickBehavior},
 };
 use tracing::{debug, error, info, trace, warn};
 
@@ -906,28 +905,15 @@ pub struct DogStatsD {
     packet_forwarder_target: Option<PacketForwarderTarget>,
 }
 
-struct ListenerContext {
-    listener: ResourceLease<Listener>,
-    datagram_sender: WorkQueueSender<QueuedDatagram>,
-    io_buffer_pool: ElasticObjectPool<BytesBuffer>,
-    origin_telemetry_enabled: bool,
-    eol_required: EolRequired,
-    decoder_context: DecoderContext,
-    capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
-    packet_forwarder: Option<PacketForwarder>,
-}
-
-#[derive(Clone)]
-struct HandlerContext {
+/// State shared by every stream of one listener, and by the datagrams queued from them.
+struct ListenerState {
     listen_addr: ListenAddress,
     eol_required: bool,
-    io_buffer_pool: ElasticObjectPool<BytesBuffer>,
-    datagram_sender: WorkQueueSender<QueuedDatagram>,
-    datagram_context: Option<Arc<DatagramSocketContext>>,
     metrics: Metrics,
+    packet_forwarder: Option<PacketForwarder>,
+    io_buffer_pool: ElasticObjectPool<BytesBuffer>,
     decoder_context: DecoderContext,
     capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
-    packet_forwarder: Option<PacketForwarder>,
 }
 
 #[derive(Clone)]
@@ -943,16 +929,17 @@ struct DecoderContext {
     traffic_capture: TrafficCapture,
 }
 
-struct DatagramSocketContext {
-    listen_addr: ListenAddress,
-    eol_required: bool,
-    metrics: Metrics,
-    packet_forwarder: Option<PacketForwarder>,
+/// A datagram read by a listener, along with the origin pinned at read time.
+struct ReceivedDatagram {
+    buffer: BytesBuffer,
+    bytes_read: usize,
+    peer_addr: ConnectionAddress,
+    process_origin: Option<ProcessOrigin>,
 }
 
 struct QueuedDatagram {
-    result: io::Result<ReceivedBuffer>,
-    socket_context: Arc<DatagramSocketContext>,
+    result: io::Result<ReceivedDatagram>,
+    listener: Arc<ListenerState>,
 }
 
 struct DogStatsDDecoder {
@@ -984,10 +971,9 @@ impl BufferDecodeMode {
     }
 }
 
+/// Decode state of one connection, or of one datagram.
 struct BufferDecodeContext<'a> {
-    listen_addr: &'a ListenAddress,
-    metrics: &'a Metrics,
-    packet_forwarder: Option<&'a PacketForwarder>,
+    listener: &'a ListenerState,
     mode: BufferDecodeMode,
     framer: DsdFramer,
 
@@ -996,16 +982,11 @@ struct BufferDecodeContext<'a> {
 }
 
 impl<'a> BufferDecodeContext<'a> {
-    fn new(
-        listen_addr: &'a ListenAddress, eol_required: bool, metrics: &'a Metrics,
-        packet_forwarder: Option<&'a PacketForwarder>, mode: BufferDecodeMode,
-    ) -> Self {
+    fn new(listener: &'a ListenerState, mode: BufferDecodeMode) -> Self {
         Self {
-            listen_addr,
-            metrics,
-            packet_forwarder,
+            listener,
             mode,
-            framer: get_framer(listen_addr, eol_required),
+            framer: get_framer(&listener.listen_addr, listener.eol_required),
             last_pid: None,
         }
     }
@@ -1083,16 +1064,18 @@ impl Source for DogStatsD {
             // already be scoped properly, otherwise all we can do here at present is either have a relative name, like
             // `uds-stream`, or try and hardcode the full component name, which we will inevitably forget to update if
             // we tweak the topology configuration, etc.
-            let listener_context = ListenerContext {
-                listener,
-                datagram_sender: datagram_sender.clone(),
+            let listen_addr = listener.listen_address().clone();
+            let metrics = build_metrics(&listen_addr, context.component_context(), self.origin_telemetry_enabled);
+            let listener_state = Arc::new(ListenerState {
+                eol_required: self.eol_required.for_listener(&listen_addr),
+                listen_addr,
+                metrics,
+                packet_forwarder: packet_forwarder.clone(),
                 io_buffer_pool: self.io_buffer_pool.clone(),
-                origin_telemetry_enabled: self.origin_telemetry_enabled,
-                eol_required: self.eol_required,
                 decoder_context: decoder_context.clone(),
                 capture_entity_resolver: self.capture_entity_resolver.clone(),
-                packet_forwarder: packet_forwarder.clone(),
-            };
+            });
+            let datagram_sender = datagram_sender.clone();
 
             // An accept loop has no terminal condition of its own, so the listener needs the shutdown signal. It has no
             // shutdown timeout of its own: the topology shutdown timeout applies to the source and everything it spawned.
@@ -1100,7 +1083,13 @@ impl Source for DogStatsD {
             // Each listener is needed. A fatal accept error stops a listener without a request to stop. Then the source
             // has nothing to listen on, so the listener stops the source. The source does not continue to run.
             runtime::worker_with_shutdown(task_name, move |process_shutdown| {
-                process_listener(listener_source_context, listener_context, process_shutdown)
+                process_listener(
+                    listener_source_context,
+                    listener,
+                    listener_state,
+                    datagram_sender,
+                    process_shutdown,
+                )
             })
             .with_shutdown_timeout(Duration::MAX)
             .needed()
@@ -1149,45 +1138,13 @@ fn build_io_buffer_pool(
     })
 }
 
-fn is_connectionless_listen_address(listen_addr: &ListenAddress) -> bool {
-    match listen_addr {
-        ListenAddress::Udp(_) => true,
-        #[cfg(unix)]
-        ListenAddress::Unixgram(_) => true,
-        _ => false,
-    }
-}
-
 async fn process_listener(
-    source_context: SourceContext, listener_context: ListenerContext, process_shutdown: ShutdownHandle,
+    source_context: SourceContext, mut listener: ResourceLease<Listener>, listener_state: Arc<ListenerState>,
+    datagram_sender: WorkQueueSender<QueuedDatagram>, process_shutdown: ShutdownHandle,
 ) {
-    let ListenerContext {
-        mut listener,
-        datagram_sender,
-        io_buffer_pool,
-        origin_telemetry_enabled,
-        eol_required,
-        decoder_context,
-        capture_entity_resolver,
-        packet_forwarder,
-    } = listener_context;
-
     pin!(process_shutdown);
 
-    let listen_addr = listener.listen_address().clone();
-    let metrics = build_metrics(
-        &listen_addr,
-        source_context.component_context(),
-        origin_telemetry_enabled,
-    );
-    let datagram_context = is_connectionless_listen_address(&listen_addr).then(|| {
-        Arc::new(DatagramSocketContext {
-            listen_addr: listen_addr.clone(),
-            eol_required: eol_required.for_listener(&listen_addr),
-            metrics: metrics.clone(),
-            packet_forwarder: packet_forwarder.clone(),
-        })
-    });
+    let listen_addr = &listener_state.listen_addr;
 
     info!(%listen_addr, "DogStatsD listener started.");
 
@@ -1203,26 +1160,16 @@ async fn process_listener(
                 Ok(stream) => {
                     debug!(%listen_addr, "Spawning new stream handler.");
 
-                    let handler_context = HandlerContext {
-                        listen_addr: listen_addr.clone(),
-                        eol_required: eol_required.for_listener(&listen_addr),
-                        io_buffer_pool: io_buffer_pool.clone(),
-                        datagram_sender: datagram_sender.clone(),
-                        datagram_context: datagram_context.clone(),
-                        metrics: metrics.clone(),
-                        decoder_context: decoder_context.clone(),
-                        capture_entity_resolver: capture_entity_resolver.clone(),
-                        packet_forwarder: packet_forwarder.clone(),
-                    };
-
                     let task_name = format!("conn_{}", listen_addr.listener_type());
 
                     // Each handler is a child of the listener. Thus, the listener does not finish until its stream
                     // handlers finish. The handlers receive the shutdown signal when the listener no longer accepts
                     // connections.
                     let handler_source_context = source_context.clone();
+                    let handler_state = Arc::clone(&listener_state);
+                    let handler_datagram_sender = datagram_sender.clone();
                     runtime::worker_with_shutdown(task_name, move |shutdown| {
-                        process_stream(stream, handler_source_context, handler_context, shutdown)
+                        process_stream(stream, handler_source_context, handler_state, handler_datagram_sender, shutdown)
                     })
                     .spawn();
                 }
@@ -1238,13 +1185,14 @@ async fn process_listener(
 }
 
 async fn process_stream(
-    stream: Stream, source_context: SourceContext, handler_context: HandlerContext, shutdown_handle: ShutdownHandle,
+    stream: Stream, source_context: SourceContext, listener_state: Arc<ListenerState>,
+    datagram_sender: WorkQueueSender<QueuedDatagram>, shutdown_handle: ShutdownHandle,
 ) {
     select! {
         _ = shutdown_handle => {
             debug!("Stream handler received shutdown signal.");
         },
-        _ = drive_stream(stream, source_context, handler_context) => {},
+        _ = drive_stream(stream, source_context, listener_state, datagram_sender) => {},
     }
 }
 
@@ -1261,219 +1209,54 @@ fn origin_detection_error_for_telemetry(
     }
 }
 
-struct ReceivedBuffer {
-    buffer: Option<BytesBuffer>,
-    bytes_read: usize,
-    peer_addr: ConnectionAddress,
-    process_origin: Option<ProcessOrigin>,
-    buffer_sender: Option<oneshot::Sender<BytesBuffer>>,
-}
-
-impl ReceivedBuffer {
-    fn with_return(
-        buffer: BytesBuffer, bytes_read: usize, peer_addr: ConnectionAddress, process_origin: Option<ProcessOrigin>,
-    ) -> (Self, oneshot::Receiver<BytesBuffer>) {
-        let (buffer_sender, returned_buffer) = oneshot::channel();
-        (
-            Self {
-                buffer: Some(buffer),
-                bytes_read,
-                peer_addr,
-                process_origin,
-                buffer_sender: Some(buffer_sender),
-            },
-            returned_buffer,
-        )
-    }
-
-    fn without_return(
-        buffer: BytesBuffer, bytes_read: usize, peer_addr: ConnectionAddress, process_origin: Option<ProcessOrigin>,
-    ) -> Self {
-        Self {
-            buffer: Some(buffer),
-            bytes_read,
-            peer_addr,
-            process_origin,
-            buffer_sender: None,
-        }
-    }
-
-    fn parts_mut(&mut self) -> (&mut BytesBuffer, usize, &ConnectionAddress, Option<&ProcessOrigin>) {
-        let Self {
-            buffer,
-            bytes_read,
-            peer_addr,
-            process_origin,
-            ..
-        } = self;
-        (
-            buffer.as_mut().expect("Received buffer already taken."),
-            *bytes_read,
-            peer_addr,
-            process_origin.as_ref(),
-        )
-    }
-
-    #[cfg(all(test, unix))]
-    fn buffer(&self) -> &BytesBuffer {
-        self.buffer.as_ref().expect("Received buffer already taken.")
-    }
-
-    #[cfg(all(test, unix))]
-    fn buffer_mut(&mut self) -> &mut BytesBuffer {
-        self.buffer.as_mut().expect("Received buffer already taken.")
-    }
-}
-
-impl Drop for ReceivedBuffer {
-    fn drop(&mut self) {
-        if let Some(sender) = self.buffer_sender.take() {
-            let buffer = self.buffer.take().expect("Received buffer already taken.");
-            let _ = sender.send(buffer);
-        }
-    }
-}
-
-struct BufferedStreamReader {
-    receiver: Option<mpsc::Receiver<io::Result<ReceivedBuffer>>>,
-
-    // Held but never fired explicitly, so that dropping this reader signals the worker to stop.
-    _shutdown_coordinator: ShutdownCoordinator,
-}
-
-impl BufferedStreamReader {
-    fn new(
-        stream: Stream, io_buffer_pool: ElasticObjectPool<BytesBuffer>, memory_limiter: MemoryLimiter,
-        origin_detection_enabled: bool, traffic_capture: TrafficCapture,
-        capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
-    ) -> Self {
-        debug_assert!(!stream.is_connectionless());
-        let (packets_tx, receiver) = mpsc::channel(1);
-        let (shutdown_coordinator, shutdown_handle) = ShutdownHandle::paired();
-
-        let reader = receive_connected_stream(
-            stream,
-            io_buffer_pool,
-            memory_limiter,
-            origin_detection_enabled,
-            traffic_capture,
-            capture_entity_resolver,
-            packets_tx,
-        );
-
-        runtime::worker("stream_reader", async move {
-            select! {
-                _ = shutdown_handle => debug!("Stream reader cancelled."),
-                _ = reader => {},
-            }
-        })
-        .spawn();
-
-        Self {
-            receiver: Some(receiver),
-            _shutdown_coordinator: shutdown_coordinator,
-        }
-    }
-
-    fn take_receiver(&mut self) -> mpsc::Receiver<io::Result<ReceivedBuffer>> {
-        self.receiver.take().expect("Buffered stream receiver already taken")
-    }
-}
-
-async fn receive_connected_stream(
-    mut stream: Stream, io_buffer_pool: ElasticObjectPool<BytesBuffer>, memory_limiter: MemoryLimiter,
-    origin_detection_enabled: bool, traffic_capture: TrafficCapture,
-    capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
-    packets_tx: mpsc::Sender<io::Result<ReceivedBuffer>>,
-) {
-    debug!("Stream reader started.");
-
-    let mut retained_buffer: Option<BytesBuffer> = None;
-    loop {
-        memory_limiter.wait_for_capacity().await;
-
-        let mut buffer = match retained_buffer.take() {
-            Some(mut buffer) => {
-                buffer.collapse();
-                buffer
-            }
-            None => acquire_io_buffer(&io_buffer_pool).await,
-        };
-        let (bytes_read, peer_addr) = match stream.receive(&mut buffer).await {
-            Ok(received) => received,
-            Err(error) => {
-                let _ = packets_tx.send(Err(error)).await;
-                break;
-            }
-        };
-        let process_origin = resolve_process_origin_if_needed(
-            origin_detection_enabled,
-            &traffic_capture,
-            capture_entity_resolver.as_deref(),
-            &peer_addr,
-        );
-
-        let (received, returned_buffer) = ReceivedBuffer::with_return(buffer, bytes_read, peer_addr, process_origin);
-
-        if packets_tx.send(Ok(received)).await.is_err() {
-            debug!("Failed to enqueue DogStatsD packet for decoding: receiver dropped.");
-            break;
-        }
-
-        match returned_buffer.await {
-            Ok(buffer) if buffer.has_remaining() => retained_buffer = Some(buffer),
-            Ok(buffer) => drop(buffer),
-            Err(_) => break,
-        }
-    }
-
-    debug!("Stream reader stopped.");
-}
-
 async fn receive_connectionless_stream(
-    mut stream: Stream, io_buffer_pool: ElasticObjectPool<BytesBuffer>, memory_limiter: MemoryLimiter,
-    origin_detection_enabled: bool, traffic_capture: TrafficCapture,
-    capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
-    mut datagram_sender: WorkQueueSender<QueuedDatagram>, socket_context: Arc<DatagramSocketContext>,
+    mut stream: Stream, memory_limiter: MemoryLimiter, mut datagram_sender: WorkQueueSender<QueuedDatagram>,
+    listener_state: Arc<ListenerState>,
 ) {
-    debug!(listen_addr = %socket_context.listen_addr, "Datagram reader started.");
+    let ListenerState {
+        listen_addr,
+        io_buffer_pool,
+        decoder_context,
+        capture_entity_resolver,
+        ..
+    } = listener_state.as_ref();
+
+    debug!(%listen_addr, "Datagram reader started.");
 
     loop {
         memory_limiter.wait_for_capacity().await;
 
-        let mut buffer = acquire_io_buffer(&io_buffer_pool).await;
+        let mut buffer = acquire_io_buffer(io_buffer_pool).await;
         let result = match stream.receive(&mut buffer).await {
             Ok((bytes_read, peer_addr)) => {
+                // Pin the origin now: the sender's PID may be reused before a decoder reaches this datagram.
                 let process_origin = resolve_process_origin_if_needed(
-                    origin_detection_enabled,
-                    &traffic_capture,
+                    decoder_context.origin_detection_enabled,
+                    &decoder_context.traffic_capture,
                     capture_entity_resolver.as_deref(),
                     &peer_addr,
                 );
-                Ok(ReceivedBuffer::without_return(
+                Ok(ReceivedDatagram {
                     buffer,
                     bytes_read,
                     peer_addr,
                     process_origin,
-                ))
+                })
             }
             Err(error) => Err(error),
         };
 
         let queued = QueuedDatagram {
             result,
-            socket_context: socket_context.clone(),
+            listener: Arc::clone(&listener_state),
         };
         if datagram_sender.send(queued).await.is_err() {
-            debug!(
-                listen_addr = %socket_context.listen_addr,
-                "Failed to enqueue DogStatsD packet for decoding: receiver dropped."
-            );
+            debug!(%listen_addr, "Failed to enqueue DogStatsD packet for decoding: receiver dropped.");
             break;
         }
     }
 
-    debug!(listen_addr = %socket_context.listen_addr, "Datagram reader stopped.");
+    debug!(%listen_addr, "Datagram reader stopped.");
 }
 
 async fn acquire_io_buffer(io_buffer_pool: &ElasticObjectPool<BytesBuffer>) -> BytesBuffer {
@@ -1496,20 +1279,13 @@ impl DogStatsDDecoder {
     }
 
     async fn decode_buffer(
-        &mut self, context: &mut BufferDecodeContext<'_>, mut received: ReceivedBuffer,
-    ) -> DecodeOutcome {
-        let (buffer, bytes_read, peer_addr, process_origin) = received.parts_mut();
-        self.decode_buffer_contents(context, buffer, bytes_read, peer_addr, process_origin)
-            .await
-    }
-
-    async fn decode_buffer_contents(
         &mut self, context: &mut BufferDecodeContext<'_>, io_buffer: &mut BytesBuffer, bytes_read: usize,
         peer_addr: &ConnectionAddress, process_origin: Option<&ProcessOrigin>,
     ) -> DecodeOutcome {
-        let listen_addr = context.listen_addr;
-        let metrics = context.metrics;
-        let packet_forwarder = context.packet_forwarder;
+        let listener = context.listener;
+        let listen_addr = &listener.listen_addr;
+        let metrics = &listener.metrics;
+        let packet_forwarder = listener.packet_forwarder.as_ref();
         let mode = context.mode;
 
         let payload = received_payload(io_buffer, bytes_read);
@@ -1754,44 +1530,46 @@ impl DogStatsDDecoder {
     }
 }
 
+/// Builds the interval that flushes buffered events at least every 100 milliseconds while a decoder is otherwise idle.
+fn buffer_flush_interval() -> Interval {
+    let mut buffer_flush = interval(Duration::from_millis(100));
+    buffer_flush.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    buffer_flush
+}
+
 async fn drive_datagram_decoder(
     mut datagram_receiver: WorkQueueReceiver<QueuedDatagram>, source_context: SourceContext,
     decoder_context: DecoderContext,
 ) {
     let mut decoder = DogStatsDDecoder::new(source_context, decoder_context);
-    let mut buffer_flush = interval(Duration::from_millis(100));
-    buffer_flush.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut buffer_flush = buffer_flush_interval();
 
     loop {
         select! {
             maybe_datagram = datagram_receiver.recv() => {
-                let Some(QueuedDatagram { result, socket_context }) = maybe_datagram else {
+                let Some(QueuedDatagram { result, listener }) = maybe_datagram else {
                     break;
                 };
-                let DatagramSocketContext {
-                    listen_addr,
-                    eol_required,
-                    metrics,
-                    packet_forwarder,
-                } = socket_context.as_ref();
 
-                let received = match result {
+                let mut received = match result {
                     Ok(received) => received,
                     Err(error) => {
-                        metrics.packet_receive_failure().increment(1);
-                        warn!(%listen_addr, %error, "I/O error while reading datagram. Continuing listener.");
+                        listener.metrics.packet_receive_failure().increment(1);
+                        warn!(listen_addr = %listener.listen_addr, %error, "I/O error while reading datagram. Continuing listener.");
                         continue;
                     }
                 };
 
-                let mut buffer_decode_context = BufferDecodeContext::new(
-                    listen_addr,
-                    *eol_required,
-                    metrics,
-                    packet_forwarder.as_ref(),
-                    BufferDecodeMode::Connectionless,
-                );
-                let outcome = decoder.decode_buffer(&mut buffer_decode_context, received).await;
+                let mut buffer_decode_context = BufferDecodeContext::new(&listener, BufferDecodeMode::Connectionless);
+                let outcome = decoder
+                    .decode_buffer(
+                        &mut buffer_decode_context,
+                        &mut received.buffer,
+                        received.bytes_read,
+                        &received.peer_addr,
+                        received.process_origin.as_ref(),
+                    )
+                    .await;
                 debug_assert_eq!(outcome, DecodeOutcome::Continue);
             }
             _ = buffer_flush.tick() => {
@@ -1804,107 +1582,100 @@ async fn drive_datagram_decoder(
     debug!("Datagram decoder drained its queue.");
 }
 
-async fn drive_stream(stream: Stream, source_context: SourceContext, handler_context: HandlerContext) {
+async fn drive_stream(
+    stream: Stream, source_context: SourceContext, listener_state: Arc<ListenerState>,
+    datagram_sender: WorkQueueSender<QueuedDatagram>,
+) {
+    let memory_limiter = source_context.topology_context().memory_limiter().clone();
     if stream.is_connectionless() {
-        let memory_limiter = source_context.topology_context().memory_limiter().clone();
-        let socket_context = handler_context
-            .datagram_context
-            .clone()
-            .expect("connectionless stream must have a datagram context");
-        receive_connectionless_stream(
-            stream,
-            handler_context.io_buffer_pool,
-            memory_limiter,
-            handler_context.decoder_context.origin_detection_enabled,
-            handler_context.decoder_context.traffic_capture.clone(),
-            handler_context.capture_entity_resolver,
-            handler_context.datagram_sender,
-            socket_context,
-        )
-        .await;
-        return;
+        receive_connectionless_stream(stream, memory_limiter, datagram_sender, listener_state).await;
+    } else {
+        drive_connected_stream(stream, source_context, memory_limiter, &listener_state).await;
     }
-
-    drive_connected_stream(stream, source_context, handler_context).await;
 }
 
-async fn drive_connected_stream(stream: Stream, source_context: SourceContext, handler_context: HandlerContext) {
-    let listen_addr = handler_context.listen_addr.clone();
-    let metrics = handler_context.metrics.clone();
-    let memory_limiter = source_context.topology_context().memory_limiter().clone();
-    let mut stream_reader = BufferedStreamReader::new(
-        stream,
-        handler_context.io_buffer_pool.clone(),
-        memory_limiter,
-        handler_context.decoder_context.origin_detection_enabled,
-        handler_context.decoder_context.traffic_capture.clone(),
-        handler_context.capture_entity_resolver.clone(),
-    );
-    let receiver = stream_reader.take_receiver();
+/// Reads and decodes a connected stream until it ends or fails.
+///
+/// Reads and decodes alternate on this one task: a stream is ordered, so there is nothing to decode until the read
+/// before it is done.
+async fn drive_connected_stream(
+    mut stream: Stream, source_context: SourceContext, memory_limiter: MemoryLimiter, listener_state: &ListenerState,
+) {
+    let ListenerState {
+        listen_addr,
+        metrics,
+        io_buffer_pool,
+        decoder_context,
+        capture_entity_resolver,
+        ..
+    } = listener_state;
+
+    let mut decoder = DogStatsDDecoder::new(source_context, decoder_context.clone());
+    let mut buffer_decode_context = BufferDecodeContext::new(listener_state, BufferDecodeMode::Connected);
+    let mut buffer_flush = buffer_flush_interval();
 
     debug!(%listen_addr, "Stream handler started.");
-
     metrics.connections_active().increment(1);
-    drive_decoder(receiver, source_context, handler_context).await;
-    metrics.connections_active().decrement(1);
 
-    debug!(%listen_addr, "Stream handler stopped.");
-}
+    // Holds a partial frame between reads, and the buffer acquired for the next read across flush ticks.
+    let mut retained_buffer: Option<BytesBuffer> = None;
+    loop {
+        memory_limiter.wait_for_capacity().await;
 
-async fn drive_decoder(
-    mut stream_receiver: mpsc::Receiver<io::Result<ReceivedBuffer>>, source_context: SourceContext,
-    handler_context: HandlerContext,
-) {
-    let HandlerContext {
-        listen_addr,
-        eol_required,
-        metrics,
-        decoder_context,
-        packet_forwarder,
-        ..
-    } = handler_context;
-    let mut decoder = DogStatsDDecoder::new(source_context, decoder_context);
-    // Set a buffer flush interval of 100ms, which will ensure we always flush buffered events at least every 100ms if
-    // we're otherwise idle and not receiving packets from the client.
-    let mut buffer_flush = interval(Duration::from_millis(100));
-    buffer_flush.set_missed_tick_behavior(MissedTickBehavior::Delay);
-    let mut buffer_decode_context = BufferDecodeContext::new(
-        &listen_addr,
-        eol_required,
-        &metrics,
-        packet_forwarder.as_ref(),
-        BufferDecodeMode::Connected,
-    );
+        let mut buffer = match retained_buffer.take() {
+            Some(mut buffer) => {
+                buffer.collapse();
+                buffer
+            }
+            None => acquire_io_buffer(io_buffer_pool).await,
+        };
 
-    'read: loop {
+        // `Stream::receive` is cancel-safe, so a flush tick that wins the race loses no bytes.
         select! {
-            // We read from the stream.
-            maybe_read_result = stream_receiver.recv() => match maybe_read_result {
-                Some(Ok(received)) => {
-                    let outcome = decoder.decode_buffer(&mut buffer_decode_context, received).await;
+            result = stream.receive(&mut buffer) => match result {
+                Ok((bytes_read, peer_addr)) => {
+                    let process_origin = resolve_process_origin_if_needed(
+                        decoder_context.origin_detection_enabled,
+                        &decoder_context.traffic_capture,
+                        capture_entity_resolver.as_deref(),
+                        &peer_addr,
+                    );
+                    let outcome = decoder
+                        .decode_buffer(
+                            &mut buffer_decode_context,
+                            &mut buffer,
+                            bytes_read,
+                            &peer_addr,
+                            process_origin.as_ref(),
+                        )
+                        .await;
                     if outcome == DecodeOutcome::Stop {
-                        break 'read;
+                        break;
                     }
-                },
-                Some(Err(e)) => {
+
+                    // Return a drained buffer to the pool rather than holding it while the connection idles.
+                    if !buffer.has_remaining() {
+                        continue;
+                    }
+                }
+                Err(e) => {
                     metrics.packet_receive_failure().increment(1);
                     warn!(%listen_addr, error = %e, "I/O error while decoding. Stopping stream.");
-                    break 'read;
-                },
-                None => {
-                    warn!(%listen_addr, "Buffered stream reader stopped unexpectedly. Stopping stream.");
-                    break 'read;
+                    break;
                 }
             },
-
             _ = buffer_flush.tick() => {
                 decoder.flush_events().await;
             },
-
         }
+
+        retained_buffer = Some(buffer);
     }
 
     decoder.flush_events().await;
+    metrics.connections_active().decrement(1);
+
+    debug!(%listen_addr, "Stream handler stopped.");
 }
 
 fn should_drop_oversized_named_pipe_frame(listen_addr: &ListenAddress, buffer: &BytesBuffer) -> bool {
