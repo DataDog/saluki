@@ -2,7 +2,7 @@
 
 use std::io;
 
-use http::{HeaderName, HeaderValue, Method, Request, Uri};
+use http::{HeaderMap, HeaderName, HeaderValue, Method, Request, Uri};
 use saluki_common::buf::{ChunkedBytesBuffer, FrozenChunkedBytesBuffer};
 use saluki_io::compression::*;
 use snafu::{ResultExt, Snafu};
@@ -87,13 +87,11 @@ pub trait EndpointEncoder: std::fmt::Debug {
         &[]
     }
 
-    /// Returns HTTP headers that depend on the inputs of a request, given the inputs in the order they were encoded.
+    /// Adds HTTP headers that depend on the inputs of a request, given the inputs in the order they were encoded.
     ///
     /// Called once for every request, including each request that a split produces, with exactly the inputs that the
-    /// request holds. Defaults to no headers.
-    fn input_headers(&self, _inputs: &[Self::Input]) -> Vec<(HeaderName, HeaderValue)> {
-        Vec::new()
-    }
+    /// request holds. Defaults to adding no headers.
+    fn add_input_headers(&self, _inputs: &[Self::Input], _headers: &mut HeaderMap) {}
 }
 
 // Request builder errors.
@@ -779,11 +777,9 @@ where
             builder = builder.header(name, value);
         }
 
-        for (name, value) in self.encoder.input_headers(inputs) {
-            builder = builder.header(name, value);
-        }
-
-        builder.body(buffer).context(Http)
+        let mut request = builder.body(buffer).context(Http)?;
+        self.encoder.add_input_headers(inputs, request.headers_mut());
+        Ok(request)
     }
 }
 
