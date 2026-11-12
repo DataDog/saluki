@@ -323,8 +323,8 @@ pub fn transform_log_record(
         }
     }
 
-    // Scope attributes overwrite both, under their own keys: the Agent neither maps their aliases nor prefixes
-    // `hostname` and `service`. The scope's name and version then fill in only what's still missing.
+    // Scope attributes overwrite both, under their own keys: their aliases aren't mapped, and `hostname` and `service`
+    // aren't prefixed. The scope's name and version then fill in only what's still missing.
     if let Some(scope) = scope {
         for kv in &scope.attributes {
             if let Some(av) = kv.value.as_ref() {
