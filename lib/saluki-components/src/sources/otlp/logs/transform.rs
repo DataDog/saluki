@@ -468,7 +468,7 @@ mod tests {
 
         struct Case {
             name: &'static str,
-            attributes: &'static [(&'static str, &'static str)],
+            attributes: &'static [(&'static str, Option<&'static str>)],
             message: &'static str,
             status: &'static str,
             tags: &'static [&'static str],
@@ -480,7 +480,11 @@ mod tests {
         let cases = [
             Case {
                 name: "the last message wins",
-                attributes: &[("message", "first"), ("MESSAGE", "second"), ("Log", "third")],
+                attributes: &[
+                    ("message", Some("first")),
+                    ("MESSAGE", Some("second")),
+                    ("Log", Some("third")),
+                ],
                 message: "third",
                 status: "notice",
                 tags: &["res:tag"],
@@ -489,7 +493,16 @@ mod tests {
             },
             Case {
                 name: "an empty last message falls back to the body",
-                attributes: &[("msg", "first"), ("Message", "")],
+                attributes: &[("msg", Some("first")), ("Message", Some(""))],
+                message: "body",
+                status: "notice",
+                tags: &["res:tag"],
+                trace_id: None,
+                span_id: None,
+            },
+            Case {
+                name: "a last message without a value falls back to the body",
+                attributes: &[("message", Some("first")), ("MESSAGE", None)],
                 message: "body",
                 status: "notice",
                 tags: &["res:tag"],
@@ -498,7 +511,11 @@ mod tests {
             },
             Case {
                 name: "the last status wins",
-                attributes: &[("status", "info"), ("Level", "warn"), ("SYSLOG.SEVERITY", "error")],
+                attributes: &[
+                    ("status", Some("info")),
+                    ("Level", Some("warn")),
+                    ("SYSLOG.SEVERITY", Some("error")),
+                ],
                 message: "body",
                 status: "error",
                 tags: &["res:tag"],
@@ -507,7 +524,16 @@ mod tests {
             },
             Case {
                 name: "an empty last status falls back to the severity text",
-                attributes: &[("severity", "error"), ("LEVEL", "")],
+                attributes: &[("severity", Some("error")), ("LEVEL", Some(""))],
+                message: "body",
+                status: "notice",
+                tags: &["res:tag"],
+                trace_id: None,
+                span_id: None,
+            },
+            Case {
+                name: "a last status without a value falls back to the severity text",
+                attributes: &[("status", Some("warn")), ("Level", None)],
                 message: "body",
                 status: "notice",
                 tags: &["res:tag"],
@@ -516,7 +542,7 @@ mod tests {
             },
             Case {
                 name: "the last ddtags wins after the resource tags",
-                attributes: &[("ddtags", "a:1,b:2"), ("DDTags", "c:3")],
+                attributes: &[("ddtags", Some("a:1,b:2")), ("DDTags", Some("c:3"))],
                 message: "body",
                 status: "notice",
                 tags: &["c:3", "res:tag"],
@@ -525,7 +551,16 @@ mod tests {
             },
             Case {
                 name: "an empty last ddtags leaves only the resource tags",
-                attributes: &[("ddtags", "a:1"), ("DDTAGS", "")],
+                attributes: &[("ddtags", Some("a:1")), ("DDTAGS", Some(""))],
+                message: "body",
+                status: "notice",
+                tags: &["res:tag"],
+                trace_id: None,
+                span_id: None,
+            },
+            Case {
+                name: "a last ddtags without a value leaves only the resource tags",
+                attributes: &[("ddtags", Some("a:1")), ("DDTags", None)],
                 message: "body",
                 status: "notice",
                 tags: &["res:tag"],
@@ -534,7 +569,7 @@ mod tests {
             },
             Case {
                 name: "the first trace ID wins",
-                attributes: &[("traceid", TRACE_A), ("Trace_Id", TRACE_B)],
+                attributes: &[("traceid", Some(TRACE_A)), ("Trace_Id", Some(TRACE_B))],
                 message: "body",
                 status: "notice",
                 tags: &["res:tag"],
@@ -543,7 +578,7 @@ mod tests {
             },
             Case {
                 name: "a trace ID that doesn't decode is skipped",
-                attributes: &[("trace_id", "not-hex"), ("OtelTraceID", TRACE_B)],
+                attributes: &[("trace_id", Some("not-hex")), ("OtelTraceID", Some(TRACE_B))],
                 message: "body",
                 status: "notice",
                 tags: &["res:tag"],
@@ -552,7 +587,7 @@ mod tests {
             },
             Case {
                 name: "the first span ID wins",
-                attributes: &[("spanid", SPAN_A), ("SPAN_ID", SPAN_B)],
+                attributes: &[("spanid", Some(SPAN_A)), ("SPAN_ID", Some(SPAN_B))],
                 message: "body",
                 status: "notice",
                 tags: &["res:tag"],
@@ -561,7 +596,7 @@ mod tests {
             },
             Case {
                 name: "a span ID that doesn't decode is skipped",
-                attributes: &[("span_id", "0a"), ("ContextMap.SpanID", SPAN_B)],
+                attributes: &[("span_id", Some("0a")), ("ContextMap.SpanID", Some(SPAN_B))],
                 message: "body",
                 status: "notice",
                 tags: &["res:tag"],
@@ -572,7 +607,14 @@ mod tests {
 
         for case in cases {
             let lr = LogRecord {
-                attributes: case.attributes.iter().map(|(k, v)| key_value(k, string(v))).collect(),
+                attributes: case
+                    .attributes
+                    .iter()
+                    .map(|(key, value)| KeyValue {
+                        key: key.to_string(),
+                        value: value.map(string),
+                    })
+                    .collect(),
                 body: Some(string("body")),
                 severity_text: "notice".to_string(),
                 ..Default::default()
