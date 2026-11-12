@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use saluki_core::data_model::{
-    origin::{OriginTagCardinality, OriginTagsResolver, RawOrigin},
+    origin::{OriginTagCardinality, RawOrigin},
     tags::SharedTagSet,
 };
 use saluki_env::{
@@ -11,8 +11,6 @@ use saluki_env::{
 use tracing::trace;
 
 use super::{replay::CapturedTaggerHandle, tags::WellKnownTags};
-
-const REPLAY_PROCESS_ID_MARKER: u32 = 1u32 << 31;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum ProcessOrigin {
@@ -27,18 +25,6 @@ impl ProcessOrigin {
             Self::Pinned(entity_id) => entity_id.as_ref(),
             Self::Unpinned(_) | Self::Replay(_) => None,
         }
-    }
-}
-
-pub(super) fn mark_replay_process_id(process_id: u32) -> u32 {
-    process_id | REPLAY_PROCESS_ID_MARKER
-}
-
-fn captured_process_id_from_replay(process_id: u32) -> Option<u32> {
-    if process_id & REPLAY_PROCESS_ID_MARKER != 0 {
-        Some(process_id & !REPLAY_PROCESS_ID_MARKER)
-    } else {
-        None
     }
 }
 
@@ -225,17 +211,15 @@ impl DogStatsDOriginTagResolver {
         self.collect_origin_tags_with_process_entity(origin, origin.process_id())
     }
 
-    pub(super) fn resolve_origin_tags_with_process_origin(
+    /// Resolves the origin tags of a packet, using the sender identity pinned when the packet was received.
+    pub(super) fn resolve_origin_tags(
         &self, mut origin: RawOrigin<'_>, process_origin: Option<&ProcessOrigin>,
     ) -> SharedTagSet {
         match process_origin {
-            Some(ProcessOrigin::Replay(process_id)) => {
-                origin.set_process_id(mark_replay_process_id(*process_id));
-                self.resolve_origin_tags(origin)
-            }
+            Some(ProcessOrigin::Replay(process_id)) => self.resolve_replay_origin_tags(*process_id, &origin),
             Some(ProcessOrigin::Unpinned(process_id)) => {
                 origin.set_process_id(*process_id);
-                self.resolve_origin_tags(origin)
+                self.resolve_live_origin_tags(origin)
             }
             Some(ProcessOrigin::Pinned(process_entity_id)) => {
                 let resolved_origin = self
@@ -244,27 +228,25 @@ impl DogStatsDOriginTagResolver {
                     .unwrap_or_else(|| ResolvedOrigin::from_parts(origin.cardinality(), None, None, None, None));
                 self.collect_origin_tags_with_process_entity(&resolved_origin, process_entity_id.as_ref())
             }
-            None => self.resolve_origin_tags(origin),
+            None => self.resolve_live_origin_tags(origin),
         }
     }
-}
 
-impl OriginTagsResolver for DogStatsDOriginTagResolver {
-    fn resolve_origin_tags(&self, origin: RawOrigin<'_>) -> SharedTagSet {
-        // Replay traffic is tagged by setting the marker bit on the origin process ID. It bypasses the live enrichment
-        // pipeline entirely: the captured `TaggerState` already contains fully-resolved tags per entity, so the
-        // resolver's entity-ID-walking logic has nothing to add.
-        if let Some(captured_process_id) = origin.process_id().and_then(captured_process_id_from_replay) {
-            if let Some(store) = self.captured_tagger.current() {
-                let cardinality = origin.cardinality().unwrap_or(self.config.tag_cardinality);
-                return store
-                    .lookup(captured_process_id as i32, cardinality)
-                    .unwrap_or_default();
-            }
-            trace!(?origin, "Replay-flagged origin but no captured tagger available.");
+    /// Resolves the origin tags of replayed traffic from the captured tagger state.
+    ///
+    /// The captured state already holds fully resolved tags per entity, so this bypasses live enrichment entirely.
+    fn resolve_replay_origin_tags(&self, captured_process_id: u32, origin: &RawOrigin<'_>) -> SharedTagSet {
+        let Some(store) = self.captured_tagger.current() else {
+            trace!(?origin, "Replayed origin but no captured tagger available.");
             return SharedTagSet::default();
-        }
+        };
+        let cardinality = origin.cardinality().unwrap_or(self.config.tag_cardinality);
+        store
+            .lookup(captured_process_id as i32, cardinality)
+            .unwrap_or_default()
+    }
 
+    fn resolve_live_origin_tags(&self, origin: RawOrigin<'_>) -> SharedTagSet {
         match self.workload_provider.get_resolved_origin(origin.clone()) {
             Some(resolved_origin) => self.collect_origin_tags(&resolved_origin),
             None => {
@@ -587,7 +569,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_origin_tags_dispatches_to_captured_store_when_replay_flag_set() {
+    fn replayed_origin_tags_come_from_the_captured_store() {
         use datadog_protos::agent::{Entity as ProtoEntity, TaggerState};
 
         // Build a captured store with a single entity keyed by PID 7777.
@@ -616,29 +598,24 @@ mod tests {
         let resolver = enabled_resolver(OriginTagCardinality::Low, TestWorkloadProvider::new(), captured_tagger);
 
         let mut origin = RawOrigin::default();
-        origin.set_process_id(mark_replay_process_id(7777));
         origin.set_cardinality(OriginTagCardinality::Low);
 
-        let tags = resolver.resolve_origin_tags(origin);
+        let tags = resolver.resolve_origin_tags(origin, Some(&ProcessOrigin::Replay(7777)));
         let tag_strs: Vec<String> = tags.into_iter().map(|t| t.as_str().to_string()).collect();
         assert!(tag_strs.contains(&"env:captured".to_string()));
         assert!(tag_strs.contains(&"service:replayed".to_string()));
     }
 
     #[test]
-    fn resolve_origin_tags_returns_empty_when_replay_flag_set_but_no_captured_store() {
-        // If the replay flag is set but no captured store is current, the resolver returns an empty tag set
-        // (no fallback to the live tagger). This guards against accidentally serving live tags for replay packets.
+    fn replayed_origin_tags_are_empty_without_a_captured_store() {
+        // With no captured store current, replayed traffic gets no tags rather than falling back to the live tagger.
         let resolver = enabled_resolver(
             OriginTagCardinality::Low,
             TestWorkloadProvider::new(),
             CapturedTaggerHandle::new(),
         );
 
-        let mut origin = RawOrigin::default();
-        origin.set_process_id(mark_replay_process_id(7777));
-
-        let tags = resolver.resolve_origin_tags(origin);
+        let tags = resolver.resolve_origin_tags(RawOrigin::default(), Some(&ProcessOrigin::Replay(7777)));
         assert!(
             tags.is_empty(),
             "replay path with no captured store must return empty tags"
@@ -647,10 +624,8 @@ mod tests {
 
     #[test]
     fn resolve_origin_tags_live_path_resolves_tags_via_workload_provider() {
-        // Exercises the real, non-replay production entry point: `resolve_origin_tags` asks the workload provider to
-        // resolve the raw origin, then walks the resolved entity IDs to collect tags. Every other test either drives
-        // the internal `collect_origin_tags` directly or takes the replay bypass, so this is the only coverage of the
-        // live `get_resolved_origin` -> `collect_origin_tags` path through the trait method.
+        // The live path asks the workload provider to resolve the raw origin, then walks the resolved entity IDs to
+        // collect tags.
         let mut workload_provider = TestWorkloadProvider::new();
         workload_provider.add_entity_shared_tags(EntityId::ContainerPid(4242), single_tag("tag_source:live-pid"));
         let resolver = enabled_resolver(
@@ -659,11 +634,8 @@ mod tests {
             CapturedTaggerHandle::new(),
         );
 
-        // A plain process ID (no replay marker bit) resolves to `EntityId::ContainerPid(4242)` via the live path.
-        let mut origin = RawOrigin::default();
-        origin.set_process_id(4242);
-
-        let tags = resolver.resolve_origin_tags(origin);
+        // An unpinned process ID resolves to `EntityId::ContainerPid(4242)` via the live path.
+        let tags = resolver.resolve_origin_tags(RawOrigin::default(), Some(&ProcessOrigin::Unpinned(4242)));
         assert_eq!(tags, single_tag("tag_source:live-pid"));
     }
 
@@ -679,7 +651,7 @@ mod tests {
         );
         let process_origin = ProcessOrigin::Pinned(Some(pinned_entity));
 
-        let tags = resolver.resolve_origin_tags_with_process_origin(RawOrigin::default(), Some(&process_origin));
+        let tags = resolver.resolve_origin_tags(RawOrigin::default(), Some(&process_origin));
 
         assert_eq!(tags, single_tag("tag_source:pinned-container"));
     }
@@ -694,7 +666,7 @@ mod tests {
             CapturedTaggerHandle::new(),
         );
 
-        let tags = resolver.resolve_origin_tags(RawOrigin::default());
+        let tags = resolver.resolve_origin_tags(RawOrigin::default(), None);
         assert!(tags.is_empty(), "unresolved origin must produce no tags");
     }
 }
