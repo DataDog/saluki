@@ -21,8 +21,11 @@ use saluki_error::{generic_error, GenericError};
 use tracing::{debug, error, warn};
 use zstd::stream::write::Encoder as ZstdEncoder;
 
-use super::super::MIN_CAPTURE_DEPTH;
 use super::file_header::write_header;
+
+/// The minimum depth of the capture queue, so that a zero-depth rendezvous channel never serializes the stream
+/// handlers behind capture persistence.
+const MIN_CAPTURE_DEPTH: usize = 1024;
 
 const FILE_TEMPLATE_PREFIX: &str = "datadog-capture";
 
@@ -439,7 +442,7 @@ mod tests {
 
     use super::super::test_support::{run_capture, temp_dir, wait_until_inactive};
     use super::{CaptureRecord, CaptureTargetDir, TrafficCaptureWriter, MIN_CAPTURE_DEPTH};
-    use crate::sources::dogstatsd::replay::{file_header::valid_header, TrafficCaptureReader};
+    use crate::common::dogstatsd_capture::{file_header::valid_header, TrafficCaptureReader};
 
     #[test]
     fn queue_depth_is_raised_to_minimum() {

@@ -191,7 +191,7 @@ mod tests {
 
     use super::super::test_support::{run_capture, temp_dir};
     use super::*;
-    use crate::sources::dogstatsd::replay::writer::{CaptureRecord, TrafficCaptureWriter};
+    use crate::common::dogstatsd_capture::writer::{CaptureRecord, TrafficCaptureWriter};
 
     #[test]
     fn plain_capture_round_trip() {
