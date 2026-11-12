@@ -1,5 +1,5 @@
 use std::sync::LazyLock;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use datadog_protos::checks::{
@@ -11,6 +11,7 @@ use datadog_protos::checks::{
     service_check::{ServiceCheck as ProtoServiceCheck, Status as ServiceCheckStatus},
     SendCheckPayloadRequest, SendCheckPayloadResponse,
 };
+use saluki_common::time::get_unix_timestamp_nanos;
 use saluki_core::{
     accounting::{MemoryBounds, MemoryBoundsBuilder},
     components::{sources::*, BuildContext},
@@ -231,14 +232,10 @@ fn check_data_to_event(check_data: Data, default_hostname: &MetaString) -> Optio
             let level = LogLevel::try_from(level).ok()?;
             let status = log_level_to_log_status(level);
 
-            let ingestion_timestamp = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|elapsed| elapsed.as_nanos() as u64)
-                .unwrap_or_default();
             Some(Event::Log(
                 Log::new(message)
                     .with_status(status)
-                    .with_ingestion_timestamp(ingestion_timestamp),
+                    .with_ingestion_timestamp(get_unix_timestamp_nanos()),
             ))
         }
         Data::Event(event) => {
