@@ -429,13 +429,13 @@ impl APIHandler for ApmRelayAPIHandler {
 #[cfg(test)]
 mod tests {
     use std::net::SocketAddr;
+    use std::sync::OnceLock;
     use std::time::Duration;
 
     use http::{Request, StatusCode};
     use saluki_core::components::test_util::TestComponentDriver;
     use saluki_core::runtime::state::{DataspaceUpdate, IdentifierFilter};
     use saluki_core::runtime::test_util::TestSupervisor;
-    use saluki_core::runtime::SupervisorError;
     use saluki_io::net::{BoundListenAddress, ProcessCredentials};
     #[cfg(unix)]
     use tempfile::tempdir;
@@ -443,6 +443,7 @@ mod tests {
     use tokio::net::TcpStream;
     #[cfg(unix)]
     use tokio::net::UnixStream;
+    use tower::service_fn;
     use tower::ServiceExt;
 
     use super::*;
@@ -737,74 +738,55 @@ mod tests {
         );
     }
 
-    /// Serves the router that `route_to` builds for a port on that loopback port, returning the address it bound.
-    ///
-    /// The port is found by binding it and releasing it again, so another process can take it before the server binds
-    /// it. The server then fails to initialize, and is served again on a new port.
-    async fn serve_on_free_port(route_to: impl Fn(u16) -> Router) -> (TestSupervisor, SocketAddr) {
-        const ATTEMPTS: usize = 5;
-        const SERVER_ID: &str = "apm-relay-free-port";
-
-        for _ in 0..ATTEMPTS {
-            let port = std::net::TcpListener::bind("127.0.0.1:0")
-                .and_then(|listener| listener.local_addr())
-                .expect("should find a free port")
-                .port();
-            let server = HttpServer::from_listen_address(ListenAddress::tcp_loopback(port))
-                .with_routes(route_to(port))
-                .with_server_id(SERVER_ID)
-                .with_worker_pool(tokio::runtime::Handle::current());
-
-            let supervisor = TestSupervisor::start_with("apm-relay-free-port-test", |supervisor| {
-                supervisor.add_worker(server.into_supervisor());
-            })
-            .await;
-            let mut bound_address_subscription = supervisor
-                .dataspace()
-                .subscribe::<BoundListenAddress>(IdentifierFilter::exact(format!("http-server-{SERVER_ID}")));
-
-            let update = tokio::time::timeout(Duration::from_secs(5), async {
-                while !supervisor.is_finished() {
-                    if let Ok(update) =
-                        tokio::time::timeout(Duration::from_millis(10), bound_address_subscription.recv()).await
-                    {
-                        return Some(update);
-                    }
-                }
-                None
-            })
-            .await;
-
-            match update {
-                Ok(Some(Some(DataspaceUpdate::Asserted(_, BoundListenAddress::Tcp(address))))) => {
-                    return (supervisor, address)
-                }
-                Ok(None) => match supervisor.wait().await {
-                    Err(SupervisorError::FailedToInitialize { source, .. })
-                        if source.to_string().contains("Failed to bind listener") => {}
-                    result => panic!("expected the server to fail to bind port {port}, got {result:?}"),
-                },
-                update => panic!("expected a bound address assertion for `{SERVER_ID}`, got {update:?}"),
-            }
-        }
-
-        panic!("another process took the free port found for the server {ATTEMPTS} times in a row");
-    }
-
     #[tokio::test]
     async fn answers_a_request_proxied_back_to_itself_with_loop_detected() {
-        // Point the destination at the listener itself. The relay is served directly rather than built, as building
-        // rejects this configuration.
-        let (_supervisor, bound_addr) = serve_on_free_port(|port| {
-            build_router(RelayState {
-                proxy: TraceAgentProxy::from_destination(&format!("http://127.0.0.1:{port}"))
+        const BOUND_ADDRESS_ID: &str = "apm-relay-loop-test-bound-address";
+
+        let supervisor = TestSupervisor::start("apm-relay-loop-test").await;
+
+        // The relay's destination has to be its own listener, whose port is only known once it's bound. So the server
+        // is given a pass-through to the relay router, which is built once the listener is bound. The relay is served
+        // directly rather than built, as building rejects this configuration.
+        let relay_router = Arc::new(OnceLock::<Router>::new());
+        let pass_through = Router::new().fallback_service(service_fn({
+            let relay_router = Arc::clone(&relay_router);
+            move |request: AxumRequest| {
+                let relay_router = relay_router
+                    .get()
+                    .cloned()
+                    .expect("the relay router should be set before any request arrives");
+                relay_router.oneshot(request)
+            }
+        }));
+        let server = HttpServer::from_listen_address(ListenAddress::tcp_loopback(0))
+            .with_routes(pass_through)
+            .with_server_id(BOUND_ADDRESS_ID)
+            .with_worker_pool(tokio::runtime::Handle::current());
+
+        let mut bound_address_subscription = supervisor
+            .dataspace()
+            .subscribe::<BoundListenAddress>(IdentifierFilter::exact(format!("http-server-{BOUND_ADDRESS_ID}")));
+
+        supervisor
+            .scope(async {
+                runtime::nested_supervisor(server.into_supervisor()).spawn();
+            })
+            .await;
+
+        let bound_addr = match tokio::time::timeout(Duration::from_secs(5), bound_address_subscription.recv()).await {
+            Ok(Some(DataspaceUpdate::Asserted(_, BoundListenAddress::Tcp(address)))) => address,
+            update => panic!("expected a bound address assertion for `{BOUND_ADDRESS_ID}`, got {update:?}"),
+        };
+
+        relay_router
+            .set(build_router(RelayState {
+                proxy: TraceAgentProxy::from_destination(&format!("http://{bound_addr}"))
                     .expect("destination should parse"),
                 tracer_flare: unreachable_tracer_flare(),
                 capture_entity_resolver: None,
                 metrics: Metrics::new("dd_traces_relay", "relays"),
-            })
-        })
-        .await;
+            }))
+            .expect("the relay router should be set only once");
 
         let mut stream = TcpStream::connect(bound_addr)
             .await
