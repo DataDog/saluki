@@ -192,6 +192,22 @@ impl PlannedEndpoint {
         })
     }
 
+    /// The address the courier reaches the endpoint at from inside `participant`, the endpoint's own participant, to do
+    /// `operation`: by the participant's name, as a peer would, and without TLS, which the courier does not speak. A
+    /// send writes raw bytes, so it reaches an `http` or `grpc` port as `tcp`.
+    pub(crate) fn courier_address(&self, participant: &str, operation: EndpointOperation) -> String {
+        let protocol = match (operation, self.protocol) {
+            (EndpointOperation::Send, Protocol::Http | Protocol::Grpc) => Protocol::Tcp,
+            (_, protocol) => protocol,
+        };
+        let scheme = protocol.scheme(false);
+        match &self.address {
+            PlannedAddress::Port(port) => format!("{}://{}:{}", scheme, participant, port),
+            PlannedAddress::Path(path) => format!("{}://{}", scheme, path),
+            PlannedAddress::Pipe(name) => format!("{}://{}", scheme, name),
+        }
+    }
+
     /// The address space the endpoint's listener holds its address in, and the address as that space compares it.
     ///
     /// Two listeners cannot hold one address in one space, so every endpoint counts, wired or not. `tcp`, `http` and

@@ -17,7 +17,7 @@ use tokio::io::AsyncWrite;
 use tokio::time::Instant;
 
 use super::backend::{Exec, Realized};
-use super::step::HandleError;
+use super::handle::HandleError;
 
 /// The courier's exit code when the software refused or is not there yet.
 const EXIT_SOFTWARE: i64 = 1;
