@@ -1,5 +1,6 @@
 //! Run reports and their durable artifacts.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::path::{Path, PathBuf};
@@ -8,9 +9,12 @@ use chrono::Local;
 use serde::Serialize;
 use tracing::warn;
 
+use crate::core::observe::Collected;
+use crate::core::participant::Os;
 use crate::core::record::StepStatus;
 use crate::core::result::{
-    DurationMs, Issue, PhaseTiming, ReclaimEntry, StopCause, TestError, TestOutcome, TestResult, TimeoutAttribution,
+    DurationMs, Issue, ParticipantRun, PhaseTiming, ReclaimEntry, StopCause, TestError, TestOutcome, TestResult,
+    TimeoutAttribution,
 };
 
 /// Reported when the build could not read a repository to get a revision from.
@@ -75,6 +79,8 @@ pub struct RunReport {
     pub suite_dirs: Vec<PathBuf>,
     /// Integration-test runtime the run was scoped to.
     pub runtime: String,
+    /// The images participant cases run in place of those they name, by the name as written.
+    pub(crate) set: BTreeMap<String, String>,
     /// How many tests ran concurrently.
     pub parallelism: usize,
     /// When the run started, as an RFC 3339 timestamp.
@@ -144,6 +150,8 @@ pub struct RunTotals {
     pub errored: usize,
     /// Tests that exceeded their timeout.
     pub timed_out: usize,
+    /// Tests that do not run on the selected subject OS.
+    pub skipped: usize,
     /// Selected tests that never started.
     pub not_run: usize,
 }
@@ -175,6 +183,18 @@ pub struct TestReport {
     pub reclaim: Vec<ReclaimEntry>,
     /// Problems after the verdict or during cleanup. They never change `outcome`.
     pub issues: Vec<Issue>,
+    /// Why the test was skipped, when `outcome` is `skipped`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) skip_reason: Option<String>,
+    /// The subject OS a participant case ran for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) subject_os: Option<Os>,
+    /// Each participant of a participant case: its realization and, once it started, each process's exit and output.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) participants: BTreeMap<String, ParticipantRun>,
+    /// The files collected from a participant case that its outcome keeps.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) collected: Vec<Collected>,
     /// Captured output lines worth reading first. Empty for a passing test.
     pub diagnostic_lines: Vec<DiagnosticLine>,
     /// Whether `diagnostic_lines` was capped.
@@ -311,6 +331,7 @@ impl RunReport {
             build_revision: build_revision(),
             suite_dirs,
             runtime,
+            set: BTreeMap::new(),
             parallelism,
             started_at: Local::now().to_rfc3339(),
             duration_ms: 0,
@@ -333,6 +354,7 @@ impl RunTotals {
             failed: count(|outcome| *outcome == TestOutcome::Failed),
             errored: count(TestOutcome::is_error),
             timed_out: count(|outcome| *outcome == TestOutcome::TimedOut),
+            skipped: count(|outcome| *outcome == TestOutcome::Skipped),
             not_run,
         }
     }
@@ -373,12 +395,12 @@ impl TestReport {
 
         let artifacts = result.log_dir.as_deref().map(list_artifacts).unwrap_or_default();
 
-        // Only non-passing tests get their output scanned. Error-looking lines are common in output
+        // Only failing tests get their output scanned. Error-looking lines are common in output
         // that every assertion accepted.
-        let (diagnostic_lines, diagnostic_lines_truncated) = if result.outcome.is_passed() {
-            (Vec::new(), false)
-        } else {
+        let (diagnostic_lines, diagnostic_lines_truncated) = if result.outcome.is_failure() {
             collect_diagnostic_lines(&artifacts)
+        } else {
+            (Vec::new(), false)
         };
 
         Self {
@@ -394,6 +416,10 @@ impl TestReport {
             cause: result.cause.clone(),
             reclaim: result.reclaim.clone(),
             issues: result.issues.clone(),
+            skip_reason: result.skip_reason.clone(),
+            subject_os: result.subject_os,
+            participants: result.participants.clone(),
+            collected: result.collected.clone(),
             diagnostic_lines,
             diagnostic_lines_truncated,
             assertions,

@@ -259,7 +259,7 @@ fn interrupt_key(key: &KeyEvent) -> Option<&'static str> {
 fn completed_test_lines(result: &TestResult, log_dir: &Path) -> Vec<FormattedLine> {
     let total_assertions = result.assertion_results.len();
 
-    if result.outcome.is_passed() {
+    if !result.outcome.is_failure() {
         let mut lines = vec![FormattedLine::with_prefix(
             result.label(),
             LineColor::Green,

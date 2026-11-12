@@ -65,8 +65,6 @@ pub(crate) struct CaseInfo {
 #[serde(into = "String")]
 pub(crate) struct Timeout {
     pub(crate) text: String,
-    // TODO: remove the dead_code allowance once the lifecycle runs cases.
-    #[allow(dead_code)]
     pub(crate) duration: Duration,
 }
 

@@ -66,16 +66,16 @@ impl Reporter {
 
     /// The text lines [`Reporter::report_test_result`] prints for one test.
     pub fn test_result_lines(&self, result: &TestResult, log_dir: &Path) -> Vec<String> {
-        let label = if result.outcome.is_passed() {
-            result.label().green().bold()
-        } else {
+        let label = if result.outcome.is_failure() {
             result.label().red().bold()
+        } else {
+            result.label().green().bold()
         };
 
         let mut lines = vec![format!("{} {} ({:.2?})", label, result.name, result.duration)];
         lines.extend(result.cause_lines().into_iter().map(|line| format!("  {}", line)));
 
-        if !result.outcome.is_passed() || self.verbose {
+        if result.outcome.is_failure() || self.verbose {
             let ran = result
                 .assertion_results
                 .iter()
@@ -122,11 +122,11 @@ impl Reporter {
                 };
                 println!("{}: {}", status, run_counts(report));
 
-                if report.tests.iter().any(|test| !test.outcome.is_passed()) {
+                if report.tests.iter().any(|test| test.outcome.is_failure()) {
                     println!();
                     println!("{}", "Failed tests:".red().bold());
                     for test in &report.tests {
-                        if !test.outcome.is_passed() {
+                        if test.outcome.is_failure() {
                             println!("  - {} (outcome={})", test.name, test.outcome);
                         }
                     }
@@ -156,9 +156,10 @@ impl Reporter {
 /// Status label of a run whose tests all passed.
 pub const RUN_PASSED_LABEL: &str = "PASSED";
 
-/// The run's one-word status: `PASSED`, `FAILED`, or `INCOMPLETE` for an interrupted run.
+/// The run's one-word status: `PASSED`, `FAILED`, or `INCOMPLETE` for an interrupted run. A skipped test does not fail
+/// the run.
 pub fn run_status_label(report: &RunReport) -> &'static str {
-    let all_passed = report.tests.iter().all(|test| test.outcome.is_passed())
+    let all_passed = report.tests.iter().all(|test| !test.outcome.is_failure())
         && report.running.is_empty()
         && report.not_run.is_empty();
 
@@ -173,7 +174,7 @@ pub fn run_status_label(report: &RunReport) -> &'static str {
 
 /// Formats outcome counts, the selected-test total, and elapsed time.
 ///
-/// Timed-out, running, and not-run counts appear only when nonzero.
+/// Timed-out, skipped, running, and not-run counts appear only when nonzero.
 pub fn run_counts(report: &RunReport) -> String {
     let totals = &report.totals;
     let mut counts = format!(
@@ -182,6 +183,9 @@ pub fn run_counts(report: &RunReport) -> String {
     );
     if totals.timed_out > 0 {
         counts.push_str(&format!(" ({} timed out)", totals.timed_out));
+    }
+    if totals.skipped > 0 {
+        counts.push_str(&format!(", {} skipped", totals.skipped));
     }
     if !report.running.is_empty() {
         counts.push_str(&format!(", {} running", report.running.len()));
