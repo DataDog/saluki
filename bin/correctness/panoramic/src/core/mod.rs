@@ -17,6 +17,9 @@ pub(crate) mod container;
 #[allow(dead_code)]
 pub(crate) mod courier;
 pub(crate) mod deadline;
+// TODO: remove the dead_code allowance once steps run.
+#[allow(dead_code)]
+pub(crate) mod handle;
 pub(crate) mod ledger;
 mod order;
 pub(crate) mod participant;

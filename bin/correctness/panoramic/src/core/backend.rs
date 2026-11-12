@@ -17,9 +17,9 @@ use bytes::Bytes;
 use tokio::io::AsyncWrite;
 use tokio::time::Instant;
 
+use super::handle::HandleError;
 use super::participant::Enclosure;
 use super::spec::Protocol;
-use super::step::HandleError;
 
 /// The environment variable that names the participant's [`Facts::exit_dir`].
 pub(crate) const EXIT_DIR_ENV: &str = "PANORAMIC_EXIT_DIR";
@@ -164,8 +164,6 @@ pub(crate) struct Exec {
 
 /// A started participant, as its backend realized it: what steps, readiness gates and output capture act on. Each
 /// failure says whether it is the software's or the harness's.
-// TODO: remove the dead_code allowance once participant cases run.
-#[allow(dead_code)]
 #[async_trait]
 pub(crate) trait Realized: fmt::Debug + Send + Sync {
     /// Runs `exec` in the participant, writes its output to `stdout` and `stderr` as it arrives, and returns its exit

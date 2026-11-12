@@ -31,12 +31,12 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use super::backend::{Exec, Facts, Realized, EXIT_DIR_ENV, LOG_DIR_ENV};
+use super::handle::HandleError;
 use super::ledger::{random_id, ResourceLedger};
 use super::participant::Enclosure;
 use super::plan::{Launch, PlannedParticipant};
 use super::reference::Values;
 use super::spec::Contents;
-use super::step::HandleError;
 use super::template::Template;
 use super::wiring::PlannedAddress;
 
