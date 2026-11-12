@@ -4,7 +4,7 @@ analysis_mode: logs
 logs:
   # Every record carries a unique `fixture_id`, so records pair even when a gap changes their message or timestamp.
   identity_fields: ["fixture_id"]
-  min_count: 87
+  min_count: 126
   # Every difference ADP shows today, tagged with its gap from the OTLP logs parity plan (DataDog/saluki#2966). Remove
   # an entry in the change that fixes its gap.
   known_differences:
@@ -46,6 +46,18 @@ logs:
           - tags-custom-before-semconv
       reason: ADP keeps an array resource attribute native instead of using `AsString`.
     - gap: gap/as-string-coercion
+      paths: ["content.host"]
+      kinds: [value]
+      when:
+        fixture_id: [source-literal-host-int, source-literal-host-bool, source-literal-host-double]
+      reason: ADP keeps a non-string resource attribute native instead of using `AsString`.
+    - gap: gap/as-string-coercion
+      paths: ["envelope.hostname"]
+      kinds: [value]
+      when:
+        fixture_id: [source-literal-host-double]
+      reason: ADP doesn't render a double literal `host` with `AsString`, so the hostname falls through to `host.name`.
+    - gap: gap/as-string-coercion
       paths: ["content.res_empty"]
       kinds: [missing]
       when:
@@ -85,7 +97,17 @@ logs:
       paths: ["envelope.hostname"]
       kinds: [missing]
       when:
-        fixture_id: [no-host, host-localhost]
+        fixture_id:
+          - no-host
+          - host-localhost
+          - source-azure-functions
+          - source-azure-app-service
+          - source-azure-container-apps
+          - source-azure-container-apps-no-replica
+          - source-gcp-cloud-run
+          - source-gcp-cloud-functions
+          - source-gcp-cloud-run-incomplete
+          - source-gcp-cloud-run-job
       reason: ADP doesn't fall back to the Agent's hostname when the log has none.
     - gap: gap/missing-headers
       paths:

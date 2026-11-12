@@ -582,6 +582,74 @@ fn resource_host_fixture() -> Vec<u8> {
         ));
     }
 
+    // Serverless sources take precedence over the resource's `host.name`, and non-string literal `host` values.
+    let azure = |platform: &str| {
+        vec![
+            kv("cloud.platform", string(platform)),
+            kv("cloud.account.id", string("sub-1")),
+            kv("azure.resource_group.name", string("rg-1")),
+        ]
+    };
+    let gcp = |platform: &str| {
+        vec![
+            kv("cloud.platform", string(platform)),
+            kv("cloud.account.id", string("project-1")),
+            kv("cloud.region", string("us-central1")),
+            kv("faas.name", string("svc-1")),
+            kv("faas.instance", string("instance-1")),
+            kv("faas.version", string("rev-1")),
+        ]
+    };
+    let without = |mut attributes: Vec<KeyValue>, key: &str| {
+        attributes.retain(|attribute| attribute.key != key);
+        attributes
+    };
+    let with = |mut attributes: Vec<KeyValue>, attribute: KeyValue| {
+        attributes.push(attribute);
+        attributes
+    };
+    let source_cases: Vec<(&str, Vec<KeyValue>)> = vec![
+        ("source-azure-functions", azure("azure.functions")),
+        (
+            "source-azure-functions-incomplete",
+            without(azure("azure.functions"), "azure.resource_group.name"),
+        ),
+        ("source-azure-app-service", azure("azure.app_service")),
+        (
+            "source-azure-app-service-incomplete",
+            without(azure("azure.app_service"), "cloud.account.id"),
+        ),
+        (
+            "source-azure-container-apps",
+            with(
+                azure("azure.container_apps"),
+                kv("azure.container_app.instance.id", string("replica-1")),
+            ),
+        ),
+        ("source-azure-container-apps-no-replica", azure("azure.container_apps")),
+        ("source-gcp-cloud-run", gcp("gcp_cloud_run")),
+        ("source-gcp-cloud-functions", gcp("gcp_cloud_functions")),
+        (
+            "source-gcp-cloud-run-incomplete",
+            without(gcp("gcp_cloud_run"), "faas.instance"),
+        ),
+        (
+            "source-gcp-cloud-run-job",
+            with(gcp("gcp_cloud_run"), kv("gcp.cloud_run.job.execution", string("job-1"))),
+        ),
+        ("source-literal-host-int", vec![kv("host", int(5))]),
+        ("source-literal-host-bool", vec![kv("host", boolean(true))]),
+        ("source-literal-host-double", vec![kv("host", double(1.5))]),
+    ];
+    for (index, (id, mut attributes)) in source_cases.into_iter().enumerate() {
+        attributes.push(kv("service.name", string("fixture-source")));
+        attributes.push(kv("host.name", string("source-host")));
+        resources.push(resource_logs(
+            attributes,
+            vec![scope_logs(no_scope(), vec![record(40 + index as u64, id, vec![])])],
+        ));
+    }
+
     ExportLogsServiceRequest {
         resource_logs: resources,
     }
