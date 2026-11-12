@@ -595,6 +595,7 @@ async fn add_baseline_traces_pipeline_to_blueprint(
                 repl: rule.repl,
             })
             .collect(),
+        config.domains.traces.obfuscation.remove_stack_traces,
     );
 
     let ottl_filter = &config.domains.traces.ottl_filter;

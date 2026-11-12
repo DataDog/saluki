@@ -1027,6 +1027,7 @@ The following settings work in ADP with the same behavior as the core agent.
 | `apm_config.obfuscation.opensearch.obfuscate_sql_values`                                   | Obfuscate SQL values in OpenSearch queries         |
 | `apm_config.obfuscation.redis.enabled`                                                     | apm_config.obfuscation.redis.enabled               |
 | `apm_config.obfuscation.redis.remove_all_args`                                             | apm_config.obfuscation.redis.remove_all_args       |
+| `apm_config.obfuscation.remove_stack_traces`                                               | Replace stack trace tags with ?                    |
 | `apm_config.obfuscation.valkey.enabled`                                                    | apm_config.obfuscation.valkey.enabled              |
 | `apm_config.obfuscation.valkey.remove_all_args`                                            | apm_config.obfuscation.valkey.remove_all_args      |
 | `apm_config.peer_tags`                                                                     | Extra peer tags for stats aggregation              |

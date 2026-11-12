@@ -311,6 +311,9 @@ pub struct Obfuscation {
     /// Redis command obfuscation.
     pub redis: CacheObfuscation,
 
+    /// Whether the `error.stack` and `exception.stacktrace` tags are replaced with `?`.
+    pub remove_stack_traces: bool,
+
     /// Valkey command obfuscation.
     pub valkey: CacheObfuscation,
 
