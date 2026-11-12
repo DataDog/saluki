@@ -8,44 +8,38 @@
 # The test currently runs ADP in standalone mode until converged OTLP proxy endpoint ownership is
 # configurable; see the standalone-mode env comment below.
 
-type: integration
-name: "adp-ipc-no-dns"
 description: "Verifies ADP can start when /etc/resolv.conf has no nameservers"
 timeout: 120s
-runtimes: [linux]
+subject_os: [linux]
 
-env:
-  DD_API_KEY: "00000000000000000000000000000000"
-  DD_HOSTNAME: "integration-test-ipc-no-dns"
-  DD_DATA_PLANE_ENABLED: "true"
-  # Keep this DNS test independent of converged OTLP endpoint ownership.
-  #
-  # TODO(#2177): Run in converged mode after endpoint ownership prevents ADP and the Core Agent
-  # from attempting to bind the same canonical OTLP ports.
-  DD_DATA_PLANE_STANDALONE_MODE: "true"
-  # OTLP proxy mode keeps ADP running without creating the normal Datadog forwarder,
-  # so this test avoids normal intake DNS while /etc/resolv.conf is empty.
-  DD_DATA_PLANE_DOGSTATSD_ENABLED: "false"
-  DD_DATA_PLANE_OTLP_ENABLED: "true"
-  DD_DATA_PLANE_OTLP_PROXY_ENABLED: "true"
-
-container:
-  files:
-    - "empty-resolv-conf.sh:/etc/cont-init.d/01-empty-resolv-conf.sh"
-  exposed_ports:
-    - "48125/udp"
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    env:
+      DD_API_KEY: "00000000000000000000000000000000"
+      DD_HOSTNAME: "integration-test-ipc-no-dns"
+      DD_DATA_PLANE_ENABLED: "true"
+      # Keep this DNS test independent of converged OTLP endpoint ownership.
+      #
+      # TODO(#2177): Run in converged mode after endpoint ownership prevents ADP and the Core Agent
+      # from attempting to bind the same canonical OTLP ports.
+      DD_DATA_PLANE_STANDALONE_MODE: "true"
+      # OTLP proxy mode keeps ADP running without creating the normal Datadog forwarder,
+      # so this test avoids normal intake DNS while /etc/resolv.conf is empty.
+      DD_DATA_PLANE_DOGSTATSD_ENABLED: "false"
+      DD_DATA_PLANE_OTLP_ENABLED: "true"
+      DD_DATA_PLANE_OTLP_PROXY_ENABLED: "true"
+    files:
+      # s6 runs the scripts in /etc/cont-init.d before it starts the Agent and ADP.
+      /etc/cont-init.d/01-empty-resolv-conf.sh: {from: empty-resolv-conf.sh, mode: "0755"}
 
 procedure:
   - parallel:
-      - assertion: process_stable_for
-        duration: 10s
-      - assertion: log_contains
-        pattern: "Topology healthy"
-        timeout: 60s
-      - assertion: log_not_contains
+      - {step: process_stable_for, on: adp, process: adp, duration: 10s}
+      - {step: log_contains, on: adp, pattern: "Topology healthy", timeout: 60s}
+      - step: log_not_contains
+        on: adp
         pattern: "Failed to load system DNS configuration when creating DNS resolver for HTTP client"
         during: 10s
-      - assertion: log_not_contains
-        pattern: "panic|PANIC"
-        regex: true
-        during: 10s
+      - {step: log_not_contains, on: adp, pattern: "panic|PANIC", regex: true, during: 10s}
