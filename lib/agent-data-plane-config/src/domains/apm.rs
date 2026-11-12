@@ -1,7 +1,7 @@
 //! APM domain: the experimental trace receiver proxy.
 //!
 //! With the proxy enabled, ADP takes over the trace-agent's receiver: it listens where the trace-agent normally listens
-//! and forwards every request to the trace-agent, which the Datadog Agent moves to
+//! and forwards requests for endpoints it does not handle itself to the trace-agent, which the Datadog Agent moves to
 //! [`proxy_destination`](Domain::proxy_destination). Trace *processing* (obfuscation, sampling, stats) is shared with
 //! the OTLP path and lives in the [`traces`](super::traces) domain.
 //!

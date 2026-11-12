@@ -1,7 +1,7 @@
 //! APM relay.
 //!
-//! Listens on TCP and/or a Unix domain socket where the trace-agent normally listens and forwards every request
-//! to the relocated trace-agent.
+//! Listens on TCP and/or a Unix domain socket where the trace-agent normally listens. Requests for endpoints the relay
+//! does not handle itself are forwarded to the relocated trace-agent.
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, LazyLock};
@@ -9,6 +9,7 @@ use std::sync::{Arc, LazyLock};
 use async_trait::async_trait;
 use axum::extract::{ConnectInfo, Request as AxumRequest, State};
 use axum::response::IntoResponse;
+use axum::routing::any;
 use axum::Router;
 use http::{HeaderName, HeaderValue};
 use metrics::Counter;
@@ -83,8 +84,12 @@ pub struct ApmRelayConfiguration {
 #[static_metrics(prefix = component, labels(component_id, component_type))]
 #[derive(Clone)]
 struct Metrics {
+    /// Requests forwarded to the trace-agent that it answered, whatever the status of its answer.
     requests_relayed_total: Counter,
+    /// Requests forwarded to the trace-agent that it never answered, such as when it was unreachable.
     requests_failed_total: Counter,
+    /// Requests the relay answered itself, without forwarding them to the trace-agent.
+    requests_served_locally_total: Counter,
 }
 
 impl ApmRelayConfiguration {
@@ -331,6 +336,11 @@ impl ApmRelayAPIHandler {
         }
         result
     }
+
+    async fn handle_services(State(RelayState { metrics, .. }): State<RelayState>) -> impl IntoResponse {
+        metrics.requests_served_locally_total().increment(1);
+        "OK\n"
+    }
 }
 
 /// Sets `Datadog-Container-ID` to the container of the tracer that sent `request`, when the tracer is connected over the
@@ -372,9 +382,15 @@ impl APIHandler for ApmRelayAPIHandler {
         self.state.clone()
     }
 
-    /// Forwards every request to the trace-agent.
+    /// Forwards requests for endpoints not handled here to the trace-agent.
     fn generate_routes(&self) -> Router<Self::State> {
-        Router::new().fallback(Self::proxy_request)
+        Router::new()
+            .route("/services", any(Self::handle_services))
+            .route("/v0.1/services", any(Self::handle_services))
+            .route("/v0.2/services", any(Self::handle_services))
+            .route("/v0.3/services", any(Self::handle_services))
+            .route("/v0.4/services", any(Self::handle_services))
+            .fallback(Self::proxy_request)
     }
 }
 
@@ -508,6 +524,59 @@ mod tests {
             recorder.counter(metric_key("component_requests_relayed_total")),
             Some(0)
         );
+    }
+
+    #[tokio::test]
+    async fn answers_the_services_endpoints_for_any_method() {
+        let recorder = saluki_metrics::test::TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let router = test_router();
+
+        let paths = [
+            "/services",
+            "/v0.1/services",
+            "/v0.2/services",
+            "/v0.3/services",
+            "/v0.4/services",
+        ];
+        let methods = ["GET", "PUT", "POST"];
+        for path in paths {
+            for method in methods {
+                let response = router
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .method(method)
+                            .uri(path)
+                            .body(axum::body::Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::OK, "{method} {path}");
+                let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+                assert_eq!(&body[..], b"OK\n", "{method} {path}");
+            }
+        }
+
+        let metric_key = |name| {
+            metrics::Key::from_parts(
+                name,
+                vec![
+                    metrics::Label::new("component_id", "dd_traces_relay"),
+                    metrics::Label::new("component_type", "relays"),
+                ],
+            )
+        };
+        assert_eq!(
+            recorder.counter(metric_key("component_requests_served_locally_total")),
+            Some((paths.len() * methods.len()) as u64)
+        );
+        assert_eq!(
+            recorder.counter(metric_key("component_requests_relayed_total")),
+            Some(0)
+        );
+        assert_eq!(recorder.counter(metric_key("component_requests_failed_total")), Some(0));
     }
 
     #[tokio::test]
