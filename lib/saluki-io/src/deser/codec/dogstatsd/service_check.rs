@@ -1,12 +1,11 @@
 use nom::{
     bytes::complete::{tag, take_while1},
     character::complete::u8 as parse_u8,
-    combinator::all_consuming,
     error::{Error, ErrorKind},
     sequence::{preceded, separated_pair},
     IResult, Parser as _,
 };
-use saluki_core::data_model::{event::service_check::*, origin::OriginTagCardinality, tags::RawTags};
+use saluki_core::data_model::{event::service_check::*, tags::RawTags};
 use stringtheory::MetaString;
 use tracing::debug;
 
@@ -29,9 +28,7 @@ pub struct ServiceCheckPacket<'a> {
     pub hostname: Option<&'a str>,
     pub message: Option<&'a str>,
     pub tags: RawTags<'a>,
-    pub local_data: Option<&'a str>,
-    pub external_data: Option<&'a str>,
-    pub cardinality: Option<OriginTagCardinality>,
+    pub origin: ClientOrigin<'a>,
 }
 
 pub fn parse_dogstatsd_service_check<'a>(
@@ -58,9 +55,7 @@ pub fn parse_dogstatsd_service_check<'a>(
     let mut maybe_hostname = None;
     let mut maybe_tags = None;
     let mut maybe_message = None;
-    let mut maybe_local_data = None;
-    let mut maybe_external_data = None;
-    let mut maybe_cardinality = None;
+    let mut origin = ClientOrigin::default();
 
     let mut parse_field = |chunk: &'a [u8]| -> Result<(), NomParserError<'a>> {
         // Match on the two-byte field prefix. A one-byte field (for example, a bare `#`) can't match any of the
@@ -68,39 +63,38 @@ pub fn parse_dogstatsd_service_check<'a>(
         match chunk.get(..2).unwrap_or(chunk) {
             // Timestamp: client-provided timestamp for the event, relative to the Unix epoch, in seconds.
             TIMESTAMP_PREFIX => {
-                let (_, timestamp) = all_consuming(preceded(tag(TIMESTAMP_PREFIX), unix_timestamp)).parse(chunk)?;
+                let timestamp = field(chunk, TIMESTAMP_PREFIX, unix_timestamp)?;
                 maybe_timestamp = Some(timestamp);
             }
             // Hostname: client-provided hostname for the host that this service check originated from.
             HOSTNAME_PREFIX if chunk != HOSTNAME_PREFIX => {
-                let (_, hostname) = all_consuming(preceded(tag(HOSTNAME_PREFIX), string_field)).parse(chunk)?;
+                let hostname = field(chunk, HOSTNAME_PREFIX, string_field)?;
                 maybe_hostname = Some(hostname);
             }
             // Local Data: client-provided data used for resolving the entity ID that this service check originated from.
             LOCAL_DATA_PREFIX if config.client_origin_detection && chunk != LOCAL_DATA_PREFIX => {
-                let (_, local_data) = all_consuming(preceded(tag(LOCAL_DATA_PREFIX), local_data)).parse(chunk)?;
-                maybe_local_data = Some(local_data);
+                let local_data = field(chunk, LOCAL_DATA_PREFIX, local_data)?;
+                origin.local_data = Some(local_data);
             }
             // External Data: client-provided data used for resolving the entity ID that this service check originated from.
             EXTERNAL_DATA_PREFIX if config.client_origin_detection && chunk != EXTERNAL_DATA_PREFIX => {
-                let (_, external_data) =
-                    all_consuming(preceded(tag(EXTERNAL_DATA_PREFIX), external_data)).parse(chunk)?;
-                maybe_external_data = Some(external_data);
+                let external_data = field(chunk, EXTERNAL_DATA_PREFIX, external_data)?;
+                origin.external_data = Some(external_data);
             }
             // Tags: additional tags to be added to the service check. A bare `#` is a valid, empty set of tags.
             _ if chunk.starts_with(TAGS_PREFIX) => {
-                let (_, tags) = all_consuming(preceded(tag(TAGS_PREFIX), tags(config))).parse(chunk)?;
+                let tags = field(chunk, TAGS_PREFIX, tags(config))?;
                 maybe_tags = Some(tags);
             }
             // Message: A message describing the current state of the service check.
             SERVICE_CHECK_MESSAGE_PREFIX => {
-                let (_, message) = all_consuming(preceded(tag(SERVICE_CHECK_MESSAGE_PREFIX), utf8)).parse(chunk)?;
+                let message = field(chunk, SERVICE_CHECK_MESSAGE_PREFIX, utf8)?;
                 maybe_message = Some(message);
             }
             // Cardinality: client-provided cardinality for the service check.
             _ if chunk.starts_with(CARDINALITY_PREFIX) && config.client_origin_detection => {
                 let (_, cardinality) = cardinality(chunk)?;
-                maybe_cardinality = cardinality;
+                origin.cardinality = cardinality;
             }
             // A known field with an empty value (for example, `h:`) is treated as missing, as for events. Origin
             // detection fields are also ignored when client origin detection is disabled.
@@ -155,9 +149,7 @@ pub fn parse_dogstatsd_service_check<'a>(
         timestamp: maybe_timestamp,
         hostname: maybe_hostname,
         message: maybe_message,
-        local_data: maybe_local_data,
-        external_data: maybe_external_data,
-        cardinality: maybe_cardinality,
+        origin,
     };
     Ok((remaining, service_check_packet))
 }
@@ -258,9 +250,9 @@ mod tests {
                 .unwrap_or_else(|e| panic!("permissive={permissive}: failed to parse: {e:?}"));
             assert!(remaining.is_empty());
             assert_eq!(packet.hostname, None);
-            assert_eq!(packet.local_data, None);
-            assert_eq!(packet.external_data, None);
-            assert_eq!(packet.cardinality, None);
+            assert_eq!(packet.origin.local_data, None);
+            assert_eq!(packet.origin.external_data, None);
+            assert_eq!(packet.origin.cardinality, None);
             assert_eq!(packet.tags.iter().collect::<Vec<_>>(), ["env:prod"]);
         }
     }
@@ -325,8 +317,8 @@ mod tests {
         // We need client_origin_detection on in order to parse local_data, external_data, and cardinality fields
         let config = DogStatsDCodecConfiguration::default().with_client_origin_detection(true);
         let (_, packet) = parse_dogstatsd_service_check(raw.as_bytes(), &config).expect("should not fail to parse");
-        assert_eq!(packet.local_data, Some(sc_local_data));
-        assert_eq!(packet.external_data, Some(sc_external_data));
+        assert_eq!(packet.origin.local_data, Some(sc_local_data));
+        assert_eq!(packet.origin.external_data, Some(sc_external_data));
     }
 
     #[test]
@@ -364,9 +356,9 @@ mod tests {
         // We need client_origin_detection on in order to parse local_data, external_data, and cardinality fields
         let config = DogStatsDCodecConfiguration::default().with_client_origin_detection(true);
         let (_, packet) = parse_dogstatsd_service_check(raw.as_bytes(), &config).expect("should not fail to parse");
-        assert_eq!(packet.local_data, Some(sc_local_data));
-        assert_eq!(packet.external_data, Some(sc_external_data));
-        assert_eq!(packet.cardinality, Some(OriginTagCardinality::None));
+        assert_eq!(packet.origin.local_data, Some(sc_local_data));
+        assert_eq!(packet.origin.external_data, Some(sc_external_data));
+        assert_eq!(packet.origin.cardinality, Some(OriginTagCardinality::None));
     }
 
     #[test]
@@ -405,9 +397,9 @@ mod tests {
         let raw = format!("_sc|testsvc|0|c:{}|e:{}|card:low", local_data, external_data);
         let config = DogStatsDCodecConfiguration::default().with_client_origin_detection(false);
         let (_, packet) = parse_dogstatsd_service_check(raw.as_bytes(), &config).expect("should not fail to parse");
-        assert_eq!(packet.local_data, None);
-        assert_eq!(packet.external_data, None);
-        assert_eq!(packet.cardinality, None);
+        assert_eq!(packet.origin.local_data, None);
+        assert_eq!(packet.origin.external_data, None);
+        assert_eq!(packet.origin.cardinality, None);
     }
 
     #[test]

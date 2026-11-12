@@ -8,6 +8,7 @@ use saluki_env::{
     workload::{origin::ResolvedOrigin, EntityId},
     WorkloadProvider,
 };
+use saluki_io::deser::codec::dogstatsd::ClientOrigin;
 use tracing::trace;
 
 use super::tags::WellKnownTags;
@@ -258,20 +259,13 @@ impl DogStatsDOriginTagResolver {
     }
 }
 
-/// Builds a `RawOrigin` from the origin fields of a DogStatsD packet and its well-known tags.
-///
-/// Metric, event, and service check packets all carry the same origin fields.
-pub fn origin_from_packet<'a>(
-    local_data: Option<&'a str>, external_data: Option<&'a str>, cardinality: Option<OriginTagCardinality>,
-    well_known_tags: &WellKnownTags<'a>,
-) -> RawOrigin<'a> {
-    let cardinality = cardinality.or(well_known_tags.cardinality);
-
+/// Builds a `RawOrigin` from the client-provided origin of a DogStatsD packet and its well-known tags.
+pub fn origin_from_packet<'a>(client_origin: &ClientOrigin<'a>, well_known_tags: &WellKnownTags<'a>) -> RawOrigin<'a> {
     let mut origin = RawOrigin::default();
     origin.set_pod_uid(well_known_tags.pod_uid);
-    origin.set_local_data(local_data);
-    origin.set_external_data(external_data);
-    origin.set_cardinality(cardinality);
+    origin.set_local_data(client_origin.local_data);
+    origin.set_external_data(client_origin.external_data);
+    origin.set_cardinality(client_origin.cardinality.or(well_known_tags.cardinality));
     origin
 }
 
@@ -379,12 +373,19 @@ mod tests {
             assert_ne!(packet_cardinality, tag_cardinality, "{tag}");
 
             assert_eq!(
-                origin_from_packet(None, None, Some(packet_cardinality), &well_known_tags).cardinality(),
+                origin_from_packet(
+                    &ClientOrigin {
+                        cardinality: Some(packet_cardinality),
+                        ..Default::default()
+                    },
+                    &well_known_tags
+                )
+                .cardinality(),
                 Some(packet_cardinality),
                 "{tag} with packet cardinality"
             );
             assert_eq!(
-                origin_from_packet(None, None, None, &well_known_tags).cardinality(),
+                origin_from_packet(&ClientOrigin::default(), &well_known_tags).cardinality(),
                 Some(tag_cardinality),
                 "{tag} without packet cardinality"
             );
