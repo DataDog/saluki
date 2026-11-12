@@ -331,7 +331,7 @@ impl fmt::Display for IssueKind {
 /// The runner's cleanup result for one registered resource.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ReclaimEntry {
-    /// The resource: `isolation_group:<id>`, `process:<name>`, or `directory:<path>`.
+    /// The resource: `isolation_group:<id>`, `case_scope:<name>`, `process:<name>`, or `directory:<path>`.
     pub resource: String,
     /// Cleanup status. Failed or unconfirmed removal also adds an issue.
     pub result: ReclaimResult,
