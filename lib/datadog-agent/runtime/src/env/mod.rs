@@ -131,7 +131,8 @@ impl RemoteAgentEnvironmentProvider {
     /// drives the provider's background work, if it has any.
     ///
     /// In connected mode, the host, workload, and autodiscovery providers each open their own connection to the Datadog
-    /// Agent, and the supervisor drives them. In standalone mode, the provider reports the configured hostname, everything
+    /// Agent, and the supervisor drives them. The autodiscovery provider doesn't stream events from the Datadog Agent
+    /// until something subscribes to it. In standalone mode, the provider reports the configured hostname, everything
     /// else is a no-op, and no supervisor is returned.
     ///
     /// # Errors

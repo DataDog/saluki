@@ -35,6 +35,9 @@ const MILLSTONE_CONFIG_PATH_INTERNAL: &str = "/etc/millstone/config.toml";
 
 /// Default image for the shared-volume permission fix-up container.
 pub const DEFAULT_ALPINE_IMAGE: &str = "alpine:latest";
+/// Ephemeral port range for Linux containers. Must stay above every fixed port that a test process
+/// listens on.
+const LINUX_EPHEMERAL_PORT_RANGE: &str = "60000 65535";
 const DATADOG_INTAKE_HEALTHCHECK_INTERVAL: Duration = Duration::from_secs(1);
 const DATADOG_INTAKE_HEALTHCHECK_TIMEOUT: Duration = Duration::from_secs(1);
 const DATADOG_INTAKE_HEALTHCHECK_RETRIES: i64 = 30;
@@ -797,6 +800,19 @@ impl Driver {
         let cgroupns_mode = (self.config.container_os == ContainerOs::Linux && self.config.host_cgroup_namespace)
             .then_some(HostConfigCgroupnsModeEnum::HOST);
 
+        // Linux's default ephemeral port range (32768-60999) covers the fixed ports that test
+        // processes listen on, such as ADP's API on 45100 and the OTLP receivers on 54317. When
+        // a long-lived outbound connection inside the container is assigned one of those as its
+        // source port, the listener fails to bind with `EADDRINUSE` for as long as the
+        // connection stays open. Each container has its own network namespace, so move its
+        // ephemeral range above every fixed listen port.
+        let sysctls = (self.config.container_os == ContainerOs::Linux).then(|| {
+            HashMap::from([(
+                "net.ipv4.ip_local_port_range".to_string(),
+                LINUX_EPHEMERAL_PORT_RANGE.to_string(),
+            )])
+        });
+
         let container_config = ContainerCreateBody {
             hostname: Some(self.config.driver_id.to_string()),
             env,
@@ -809,6 +825,7 @@ impl Driver {
                 publish_all_ports,
                 pid_mode,
                 cgroupns_mode,
+                sysctls,
                 ..Default::default()
             }),
             healthcheck: self.config.healthcheck.clone(),

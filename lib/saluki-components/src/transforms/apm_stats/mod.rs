@@ -477,10 +477,8 @@ impl Transform for ApmStats {
                         Some(events) => {
                             // Use one peer tag key set for the whole buffer.
                             self.concentrator.refresh_registry();
-                            for event in events {
-                                if let Event::Trace(trace) = event {
-                                    self.process_trace(&trace);
-                                }
+                            for trace in events.into_events::<Trace>() {
+                                self.process_trace(&trace);
                             }
                         },
                         None => {

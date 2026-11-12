@@ -3,6 +3,7 @@
 //! Drops post-aggregation scalar metrics whose generated histogram aggregate names match the metric filterlist.
 use async_trait::async_trait;
 use saluki_common::sync::live::Live;
+use saluki_components::transforms::HistogramConfiguration;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     components::{
@@ -16,7 +17,7 @@ use saluki_core::{
     observability::ComponentMetricsExt,
     topology::{EventsBuffer, OutputDefinition},
 };
-use saluki_error::{generic_error, GenericError};
+use saluki_error::GenericError;
 use saluki_metrics::MetricsBuilder;
 use stringtheory::MetaString;
 use tokio::select;
@@ -40,16 +41,14 @@ pub struct DogStatsDPostAggregateFilterConfiguration {
 impl DogStatsDPostAggregateFilterConfiguration {
     /// Creates a new `DogStatsDPostAggregateFilterConfiguration`.
     ///
-    /// # Errors
-    ///
-    /// Returns an error when a percentile is not a number from `0.0` through `1.0`.
+    /// Like the Agent, a percentile that isn't a number from `0.0` through `1.0` is skipped.
     pub fn new(
         metric_filter: Live<MetricNameFilter>, histogram_aggregates: &[String], histogram_percentiles: &[String],
-    ) -> Result<Self, GenericError> {
-        Ok(Self {
+    ) -> Self {
+        Self {
             metric_filter,
-            histogram_suffixes: HistogramSuffixes::try_new(histogram_aggregates, histogram_percentiles)?,
-        })
+            histogram_suffixes: HistogramSuffixes::new(histogram_aggregates, histogram_percentiles),
+        }
     }
 }
 
@@ -92,28 +91,23 @@ struct HistogramSuffixes {
 }
 
 impl HistogramSuffixes {
-    fn try_new(aggregates: &[String], percentiles: &[String]) -> Result<Self, GenericError> {
+    /// Builds the suffixes of histogram aggregate outputs, matching the Agent's histogram filterlist:
+    /// <https://github.com/DataDog/datadog-agent/blob/e02f16838240688a60db91d6b99cd8fbecbd9750/comp/filterlist/impl/filterlist.go#L203-L215>
+    ///
+    /// Like the Agent, every configured aggregate is a suffix, and a percentile that isn't a number between 0 and 1 is
+    /// skipped rather than failing the configuration:
+    /// <https://github.com/DataDog/datadog-agent/blob/e02f16838240688a60db91d6b99cd8fbecbd9750/pkg/metrics/histogram.go#L60-L78>
+    ///
+    /// Percentiles are parsed by the aggregate transform's histogram configuration, so these suffixes always match the
+    /// percentile series it emits. Skipped percentiles aren't logged here: that configuration logs each one.
+    fn new(aggregates: &[String], percentiles: &[String]) -> Self {
         let mut values = aggregates
             .iter()
             .map(|aggregate| MetaString::from(aggregate.as_str()))
             .collect::<Vec<_>>();
+        values.extend(HistogramConfiguration::percentile_suffixes(percentiles));
 
-        for percentile in percentiles {
-            let quantile = percentile
-                .parse::<f64>()
-                .map_err(|_| generic_error!("Invalid percentile: {}", percentile))?;
-            if !(0.0..=1.0).contains(&quantile) {
-                return Err(generic_error!("Percentile out of range: {}", percentile));
-            }
-
-            // Match the Agent histogram filterlist suffix generation:
-            // https://github.com/DataDog/datadog-agent/blob/12213fe95538f47d98d73bd945a87b3e24189285/comp/filterlist/impl/filterlist.go#L197-L217
-            // https://github.com/DataDog/datadog-agent/blob/12213fe95538f47d98d73bd945a87b3e24189285/pkg/metrics/histogram.go#L51-L69
-            let suffix = format!("{}percentile", (quantile * 100.0 + 0.5) as u32);
-            values.push(suffix.into());
-        }
-
-        Ok(Self { values })
+        Self { values }
     }
 
     /// Returns whether the filterlist entry targets a generated histogram aggregate output.
@@ -156,17 +150,13 @@ impl DogStatsDPostAggregateFilter {
     }
 
     fn transform_buffer(&self, buffer: &mut EventsBuffer) {
-        buffer.remove_if(|event| {
-            let should_filter = event
-                .try_as_metric()
-                .map(|metric| self.should_filter_metric(metric))
-                .unwrap_or(false);
-
+        buffer.retain_events::<Metric, _>(|metric| {
+            let should_filter = self.should_filter_metric(metric);
             if should_filter {
                 self.telemetry.increment_filtered_metrics();
             }
 
-            should_filter
+            !should_filter
         });
     }
 }
@@ -235,7 +225,7 @@ mod tests {
             .into_iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>();
-        let histogram_suffixes = HistogramSuffixes::try_new(&histogram_aggregates, &histogram_percentiles).unwrap();
+        let histogram_suffixes = HistogramSuffixes::new(&histogram_aggregates, &histogram_percentiles);
         let metric_filter = MetricNameFilter {
             values: values.into_iter().map(ToString::to_string).collect(),
             match_prefix,
@@ -318,7 +308,7 @@ mod tests {
     // https://github.com/DataDog/datadog-agent/blob/12213fe95538f47d98d73bd945a87b3e24189285/comp/filterlist/impl/filterlist_test.go#L19
     #[test]
     fn prefix_rules_apply_to_histogram_outputs_with_global_exceptions() {
-        let histogram_suffixes = HistogramSuffixes::try_new(&["avg".to_string()], &[]).unwrap();
+        let histogram_suffixes = HistogramSuffixes::new(&["avg".to_string()], &[]);
         let metric_filter = MetricNameFilter {
             values: Vec::new(),
             match_prefix: false,
@@ -422,17 +412,17 @@ mod tests {
     }
 
     #[test]
-    fn invalid_percentiles_are_rejected() {
-        // `HistogramSuffixes::try_new` documents two rejection branches: a value that isn't a number,
-        // and a numeric value outside the [0.0, 1.0] range. Both must produce an error.
-        let non_numeric = HistogramSuffixes::try_new(&[], &["abc".to_string()]);
-        assert!(non_numeric.is_err(), "a non-numeric percentile must be rejected");
+    fn invalid_percentiles_are_skipped() {
+        // Like the Agent's `ParsePercentiles`, a value that isn't a number, or a number outside [0.0, 1.0], is skipped
+        // and the valid percentiles around it still apply. Aggregates are kept as configured.
+        let to_strings = |values: &[&str]| values.iter().map(|v| v.to_string()).collect::<Vec<_>>();
+        let suffixes = HistogramSuffixes::new(
+            &to_strings(&["max", "p99"]),
+            &to_strings(&["abc", "0.95", "1.1", "-0.1"]),
+        );
 
-        let above_range = HistogramSuffixes::try_new(&[], &["1.1".to_string()]);
-        assert!(above_range.is_err(), "a percentile above 1.0 must be rejected");
-
-        let below_range = HistogramSuffixes::try_new(&[], &["-0.1".to_string()]);
-        assert!(below_range.is_err(), "a percentile below 0.0 must be rejected");
+        let values = suffixes.values.iter().map(|v| v.as_ref()).collect::<Vec<&str>>();
+        assert_eq!(values, ["max", "p99", "95percentile"]);
     }
 
     // Mirrors Datadog Agent time-sampler filtering, which filters series while keeping sketches:
@@ -494,8 +484,7 @@ mod tests {
         });
         let metric_filter = source.live(|filter| filter);
         let aggregates = ["max", "median", "avg", "count"].map(String::from);
-        let builder = DogStatsDPostAggregateFilterConfiguration::new(metric_filter, &aggregates, &["0.95".to_string()])
-            .expect("filter configuration should be valid");
+        let builder = DogStatsDPostAggregateFilterConfiguration::new(metric_filter, &aggregates, &["0.95".to_string()]);
         let (control, mut outputs) = TestComponentDriver::transform(builder)
             .await
             .expect("post-aggregate filter should build");

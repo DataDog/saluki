@@ -120,7 +120,7 @@ print_environment() {
     echo "APP_GIT_HASH=${APP_GIT_HASH}"
     echo "APP_BUILD_TIME=${APP_BUILD_TIME}"
     echo "APP_DEV_BUILD=${APP_DEV_BUILD}"
-    echo "cargo build --profile ${BUILD_PROFILE} --bin agent-data-plane --features ${BUILD_FEATURES}"
+    echo "cargo build --profile ${BUILD_PROFILE} --package agent-data-plane --bin agent-data-plane --features ${BUILD_FEATURES}"
 }
 
 if [[ "${ADP_AIX_BUILD_DRY_RUN}" == "true" ]]; then
@@ -158,7 +158,8 @@ cargo fetch
 
 echo "[*] Building agent-data-plane for AIX..."
 # cargo-auditable currently emits ELF/generic Unix linker inputs and flags that AIX's XCOFF
-# linker rejects.
-cargo build --profile "${BUILD_PROFILE}" --bin agent-data-plane --features "${BUILD_FEATURES}"
+# linker rejects. Selecting the package keeps other workspace members' dependency features (such as `rustix/termios`,
+# which doesn't compile for AIX) out of the build.
+cargo build --profile "${BUILD_PROFILE}" --package agent-data-plane --bin agent-data-plane --features "${BUILD_FEATURES}"
 
 echo "[*] AIX ADP binary ready at ${CARGO_TARGET_DIR}/${BUILD_PROFILE}/agent-data-plane"

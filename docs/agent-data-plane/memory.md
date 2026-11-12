@@ -38,11 +38,29 @@ ADP enforces memory bounds through three complementary mechanisms:
   exceeded, preventing over-commitment before any traffic arrives. This covers string
   interning caches (context strings, tag strings, OTLP strings), aggregation state, and
   other bounded allocations.
-- **Dynamic limiting**: a `MemoryLimiter` polls the process RSS every 250 ms. When usage
-  exceeds 95 % of the effective limit it applies proportional async backpressure (1–25 ms)
-  to ingestion tasks. Disable with `enable_global_limiter: false`.
+- **Dynamic limiting**: a `MemoryLimiter` polls the process RSS every 250 ms and throttles
+  ingestion tasks as usage approaches `memory_limit`. The slop factor doesn't apply here.
+  Throttling starts above 85 % of `memory_limit` with a 1 ms delay per call, and the delay
+  grows to 25 ms at 95 %. Once started, throttling continues until usage falls to 75 %, so
+  usage that hovers around 85 % doesn't toggle it on and off. Disable with
+  `enable_global_limiter: false`.
 - **Structural backpressure**: bounded channels between components provide back-pressure
   independently of memory monitoring.
+
+## Observing throttling
+
+ADP logs a warning when the memory limiter starts throttling and an info message when it
+stops. Throttled calls include DogStatsD reads and OTLP requests. The `Memory Limiter` section
+of the Agent status page shows whether the limiter is enabled and currently throttling, and how
+much it has throttled since ADP started. These internal metrics report the same values:
+
+| Metric                                            | Description                                    |
+| ------------------------------------------------- | ---------------------------------------------- |
+| `adp.memory_limiter.current_backoff_secs`         | Delay currently applied to each throttled call |
+| `adp.memory_limiter.throttled_calls_total`        | Calls delayed by the memory limiter            |
+| `adp.memory_limiter.throttled_nanoseconds_total`  | Total time that calls were delayed             |
+
+If throttling is frequent, raise `memory_limit` or reduce the load on ADP.
 
 ## Comparison with Core Agent
 

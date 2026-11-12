@@ -49,6 +49,7 @@ pub trait DatadogConfigWitness {
     fn consume_apm_config_obfuscation_opensearch_obfuscate_sql_values(&mut self, value: Vec<String>);
     fn consume_apm_config_obfuscation_redis_enabled(&mut self, value: bool);
     fn consume_apm_config_obfuscation_redis_remove_all_args(&mut self, value: bool);
+    fn consume_apm_config_obfuscation_remove_stack_traces(&mut self, value: bool);
     fn consume_apm_config_obfuscation_valkey_enabled(&mut self, value: bool);
     fn consume_apm_config_obfuscation_valkey_remove_all_args(&mut self, value: bool);
     fn consume_apm_config_peer_tags(&mut self, value: Vec<String>);
@@ -70,6 +71,7 @@ pub trait DatadogConfigWitness {
     fn consume_cluster_agent_kubernetes_service_name(&mut self, value: String);
     fn consume_cluster_agent_url(&mut self, value: String);
     fn consume_cluster_name(&mut self, value: String);
+    fn consume_cmd_host(&mut self, value: String);
     fn consume_cmd_port(&mut self, value: i64);
     fn consume_container_cgroup_root(&mut self, value: String);
     fn consume_container_proc_root(&mut self, value: String);
@@ -166,6 +168,7 @@ pub trait DatadogConfigWitness {
     fn consume_histogram_copy_to_distribution_prefix(&mut self, value: String);
     fn consume_histogram_percentiles(&mut self, value: Vec<String>);
     fn consume_hostname(&mut self, value: String);
+    fn consume_ipc_address(&mut self, value: String);
     fn consume_ipc_cert_file_path(&mut self, value: String);
     fn consume_kubernetes_kubelet_nodename(&mut self, value: String);
     fn consume_log_file_max_rolls(&mut self, value: i64);
@@ -356,6 +359,8 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_apm_config_obfuscation_redis_remove_all_args(
         config.apm_config.obfuscation.redis.remove_all_args.clone(),
     );
+    consumer
+        .consume_apm_config_obfuscation_remove_stack_traces(config.apm_config.obfuscation.remove_stack_traces.clone());
     consumer.consume_apm_config_obfuscation_valkey_enabled(config.apm_config.obfuscation.valkey.enabled.clone());
     consumer.consume_apm_config_obfuscation_valkey_remove_all_args(
         config.apm_config.obfuscation.valkey.remove_all_args.clone(),
@@ -382,6 +387,7 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_cluster_agent_kubernetes_service_name(config.cluster_agent.kubernetes_service_name.clone());
     consumer.consume_cluster_agent_url(config.cluster_agent.url.clone());
     consumer.consume_cluster_name(config.cluster_name.clone());
+    consumer.consume_cmd_host(config.cmd_host.clone());
     consumer.consume_cmd_port(config.cmd_port.clone());
     consumer.consume_container_cgroup_root(config.container_cgroup_root.clone());
     consumer.consume_container_proc_root(config.container_proc_root.clone());
@@ -494,6 +500,7 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_histogram_copy_to_distribution_prefix(config.histogram_copy_to_distribution_prefix.clone());
     consumer.consume_histogram_percentiles(config.histogram_percentiles.clone());
     consumer.consume_hostname(config.hostname.clone());
+    consumer.consume_ipc_address(config.ipc_address.clone());
     consumer.consume_ipc_cert_file_path(config.ipc_cert_file_path.clone());
     consumer.consume_kubernetes_kubelet_nodename(config.kubernetes_kubelet_nodename.clone());
     consumer.consume_log_file_max_rolls(config.log_file_max_rolls.clone());

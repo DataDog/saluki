@@ -595,6 +595,7 @@ async fn add_baseline_traces_pipeline_to_blueprint(
                 repl: rule.repl,
             })
             .collect(),
+        config.domains.traces.obfuscation.remove_stack_traces,
     );
 
     let ottl_filter = &config.domains.traces.ottl_filter;
@@ -612,9 +613,10 @@ async fn add_baseline_traces_pipeline_to_blueprint(
     let dd_traces_enrich_config = ChainedConfiguration::default()
         .with_transform_builder("ottl_filter", ottl_filter_config)
         .with_transform_builder("ottl_transform", ottl_transform_config)
-        .with_transform_builder("apm_onboarding", ApmOnboardingConfiguration)
         .with_transform_builder("trace_obfuscation", trace_obfuscation_config)
         .with_transform_builder("trace_tag_replacer", trace_tag_replacer_config);
+    let apm_onboarding_config =
+        ChainedConfiguration::default().with_transform_builder("apm_onboarding", ApmOnboardingConfiguration);
     let apm_stats_transform_config =
         apm_stats_configuration(&config.domains.traces, agent_env.clone(), semantic_registry)
             .with_environment_provider(env_provider.clone())
@@ -627,11 +629,13 @@ async fn add_baseline_traces_pipeline_to_blueprint(
     blueprint
         .add_transform("traces_enrich", dd_traces_enrich_config)?
         .add_transform("trace_sampler", trace_sampler_config)?
+        .add_transform("apm_onboarding", apm_onboarding_config)?
         .add_transform("dd_apm_stats", apm_stats_transform_config)?
         .add_encoder("dd_stats_encode", dd_apm_stats_encoder)?
         .add_encoder("dd_traces_encode", dd_traces_config)?
-        .connect_components("traces_enrich", "trace_sampler")?
-        .connect_components("trace_sampler", ["dd_apm_stats", "dd_traces_encode"])?
+        // Onboarding runs after sampling, so a service is only recorded as seen once one of its traces is kept.
+        .connect_components_in_order(["traces_enrich", "trace_sampler", "apm_onboarding"])?
+        .connect_components("apm_onboarding", ["dd_apm_stats", "dd_traces_encode"])?
         // The sampler reports its sampling telemetry as metric events through this dedicated
         // output, delivering the metrics through the metrics pipeline to the backend.
         .connect_components("trace_sampler.metrics", "metrics_enrich")?
@@ -844,13 +848,12 @@ async fn add_dsd_pipeline_to_blueprint(
     );
     let aggregation = &typed.domains.dogstatsd.aggregation;
     let histogram = &typed.shared.metrics_encoding.histogram;
-    let dsd_hist_config = HistogramConfiguration::try_new(
+    let dsd_hist_config = HistogramConfiguration::new(
         &histogram.aggregates,
         &histogram.percentiles,
         histogram.copy_to_distribution,
         histogram.copy_to_distribution_prefix.clone(),
-    )
-    .error_context("Failed to configure histogram aggregation.")?;
+    );
     let (dsd_context_snapshot_handle, dsd_context_snapshot_receiver) = aggregate_context_snapshot_channel();
     let dsd_agg_config = AggregateConfiguration {
         window_duration_seconds: aggregation.window_duration_seconds,
@@ -869,8 +872,7 @@ async fn add_dsd_pipeline_to_blueprint(
             .map(metric_name_filter),
         &histogram.aggregates,
         &histogram.percentiles,
-    )
-    .error_context("Failed to configure DogStatsD post-aggregate filter transform.")?;
+    );
     let events_enrich_config = ChainedConfiguration::default().with_transform_builder(
         "host_enrichment",
         HostEnrichmentConfiguration::from_environment_provider(env_provider.clone()),
@@ -1002,6 +1004,7 @@ async fn add_apm_pipeline_to_blueprint(
         &config.shared,
         datadog_agent_config::is_containerized(),
         Some(Arc::new(env_provider.workload().clone())),
+        config_system.live(|config| &config.shared.endpoints.api_key),
     );
     blueprint
         .add_relay("dd_traces_relay", dd_traces_relay)?
@@ -1034,7 +1037,7 @@ async fn add_otlp_pipeline_to_blueprint(
         let config = config_system.config();
         let otlp_relay_config = OtlpRelayConfiguration::new(otlp_receiver(&config.domains.otlp.receiver));
         let otlp_decoder_config = OtlpDecoderConfiguration::new(
-            otlp_traces_settings(&config.domains.otlp.traces),
+            otlp_traces_settings(&config.domains.otlp.traces, &config.domains.traces.features),
             env_provider.workload().clone(),
         )
         .with_max_resource_len(config.domains.traces.max_resource_len)
@@ -1078,7 +1081,7 @@ async fn add_otlp_pipeline_to_blueprint(
             receiver: otlp_receiver(&otlp.receiver),
             metrics: otlp_metrics_settings(&otlp.metrics),
             traces_enabled: otlp.traces.enabled,
-            traces: otlp_traces_settings(&otlp.traces),
+            traces: otlp_traces_settings(&otlp.traces, &config.domains.traces.features),
             contexts: otlp_context_settings(&otlp.contexts),
             max_resource_len: config.domains.traces.max_resource_len,
             semantic_registry,

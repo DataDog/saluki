@@ -188,6 +188,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Bool,
     },
     EnvKey {
+        env_vars: &["DD_APM_OBFUSCATION_REMOVE_STACK_TRACES"],
+        path: &["apm_config", "obfuscation", "remove_stack_traces"],
+        decode: EnvDecode::Bool,
+    },
+    EnvKey {
         env_vars: &["DD_APM_OBFUSCATION_VALKEY_ENABLED"],
         path: &["apm_config", "obfuscation", "valkey", "enabled"],
         decode: EnvDecode::Bool,
@@ -290,6 +295,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
     EnvKey {
         env_vars: &["DD_CLUSTER_NAME"],
         path: &["cluster_name"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
+        env_vars: &["DD_CMD_HOST"],
+        path: &["cmd_host"],
         decode: EnvDecode::RawString,
     },
     EnvKey {
@@ -768,6 +778,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
     EnvKey {
         env_vars: &["DD_HOSTNAME"],
         path: &["hostname"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
+        env_vars: &["DD_IPC_ADDRESS"],
+        path: &["ipc_address"],
         decode: EnvDecode::RawString,
     },
     EnvKey {

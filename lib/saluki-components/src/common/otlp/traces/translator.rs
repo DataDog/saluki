@@ -19,7 +19,7 @@ use crate::common::datadog::SAMPLING_PRIORITY_METRIC_KEY;
 use crate::common::otlp::origin::OtlpOriginTagResolver;
 use crate::common::otlp::traces::transform::{
     bytes_to_hex_lowercase, get_otel_container_id, get_otel_env, get_otel_version, normalize_peer_service_tags,
-    otel_span_to_dd_span, otlp_value_to_string,
+    otel_span_to_dd_span, otel_span_to_dd_span_v1, otlp_value_to_string, SpanConversion, SpanNaming,
 };
 use crate::common::otlp::util::{get_string_attribute, set_resource_attributes, write_infra_tag_attributes};
 use crate::common::otlp::Metrics;
@@ -206,15 +206,24 @@ pub struct OtlpTracesSettings {
     /// How custom infrastructure tags are promoted into container tags.
     pub container_tag_promotion: ContainerTagPromotion,
 
-    /// Whether the span name becomes the Datadog resource name.
+    /// Whether the span name becomes the operation name of a span without `operation.name`.
     ///
-    /// Not applied yet: translation always derives names with the V2 logic (see the V1 TODO in `transform.rs`).
+    /// `true` selects V1 operation and resource naming.
     pub span_name_as_resource_name: bool,
 
-    /// Preferred operation names by span name.
+    /// Preferred operation names, keyed by the operation name V1 naming derives.
     ///
-    /// Not applied yet: translation always derives names with the V2 logic (see the V1 TODO in `transform.rs`).
+    /// A non-empty map selects V1 operation and resource naming.
     pub span_name_remappings: HashMap<String, String>,
+
+    /// Whether operation and resource names are derived with V1 naming.
+    pub disable_operation_and_resource_name_logic_v2: bool,
+
+    /// Whether spans are converted on the V1 receive path.
+    pub disable_receive_resource_spans_v2: bool,
+
+    /// Whether the `otel.scope.*` tags are left off spans.
+    pub disable_otel_scope_convention: bool,
 }
 
 /// How custom infrastructure tags are promoted into container tags on OTLP traces.
@@ -243,6 +252,9 @@ pub(crate) fn traces_settings() -> OtlpTracesSettings {
         container_tag_promotion: ContainerTagPromotion::Off,
         span_name_as_resource_name: false,
         span_name_remappings: HashMap::new(),
+        disable_operation_and_resource_name_logic_v2: false,
+        disable_receive_resource_spans_v2: false,
+        disable_otel_scope_convention: false,
     }
 }
 
@@ -250,8 +262,8 @@ pub struct OtlpTracesTranslator {
     config: OtlpTracesSettings,
     /// Receiver sampling rate stamped on every translated trace.
     receiver_sampling_rate: f64,
-    /// Maximum length of a span's resource name, in bytes.
-    max_resource_len: usize,
+    /// How spans are converted, derived from `config` once.
+    conversion: SpanConversion,
     /// Resolves entity and global tags for a resource's container.
     origin_tag_resolver: OtlpOriginTagResolver,
     interner: GenericMapInterner,
@@ -276,10 +288,21 @@ impl OtlpTracesTranslator {
         let string_builder = StringBuilder::new().with_interner(interner.clone());
         let rate = config.probabilistic_sampler_sampling_percentage / 100.0;
         let receiver_sampling_rate = if rate > 0.0 && rate < 1.0 { rate } else { 1.0 };
+        let conversion = SpanConversion {
+            ignore_missing_fields: config.ignore_missing_datadog_fields,
+            compute_top_level_by_span_kind: config.enable_compute_top_level_by_span_kind,
+            max_resource_len,
+            naming: SpanNaming::select(
+                config.span_name_as_resource_name,
+                &config.span_name_remappings,
+                config.disable_operation_and_resource_name_logic_v2,
+            ),
+            emit_otel_scope: !config.disable_otel_scope_convention,
+        };
         Self {
             config,
             receiver_sampling_rate,
-            max_resource_len,
+            conversion,
             origin_tag_resolver,
             interner,
             string_builder,
@@ -290,7 +313,8 @@ impl OtlpTracesTranslator {
     pub fn translate_spans(&mut self, resource_spans: ResourceSpans, metrics: &Metrics) -> impl Iterator<Item = Event> {
         let mut resource: OtlpResource = resource_spans.resource.unwrap_or_default();
         let ignore_missing_fields = self.config.ignore_missing_datadog_fields;
-        let compute_top_level = self.config.enable_compute_top_level_by_span_kind;
+        let receive_v1 = self.config.disable_receive_resource_spans_v2;
+        let conversion = &self.conversion;
         let interner = &self.interner;
         let string_builder = &mut self.string_builder;
         let registry = self.registry.snapshot();
@@ -358,18 +382,28 @@ impl OtlpTracesTranslator {
                     entry.trace_id_hex = trace_id_hex_meta(&span.trace_id);
                 }
 
-                let dd_span = otel_span_to_dd_span(
-                    &span,
-                    &resource,
-                    scope_ref,
-                    ignore_missing_fields,
-                    compute_top_level,
-                    registry,
-                    interner,
-                    string_builder,
-                    entry.trace_id_hex.as_ref(),
-                    self.max_resource_len,
-                );
+                let dd_span = if receive_v1 {
+                    otel_span_to_dd_span_v1(
+                        &span,
+                        &resource,
+                        scope_ref,
+                        conversion,
+                        interner,
+                        string_builder,
+                        entry.trace_id_hex.as_ref(),
+                    )
+                } else {
+                    otel_span_to_dd_span(
+                        &span,
+                        &resource,
+                        scope_ref,
+                        conversion,
+                        registry,
+                        interner,
+                        string_builder,
+                        entry.trace_id_hex.as_ref(),
+                    )
+                };
 
                 // Malformed self-parented spans (parent == span == trace ID) get their parent
                 // cleared so root selection treats them as roots.
@@ -679,6 +713,73 @@ mod tests {
             .get(key)
             .and_then(|value| value.as_string())
             .map(|value| value.as_ref().to_string())
+    }
+
+    #[test]
+    fn translate_spans_selects_the_conversion_from_the_settings() {
+        use otlp_protos::opentelemetry::proto::common::v1::InstrumentationScope;
+        use otlp_protos::opentelemetry::proto::trace::v1::span::SpanKind;
+
+        let translate_span = |settings: OtlpTracesSettings| {
+            let mut client_span = span([1; 16], [2; 8], vec![string_kv("db.system", "redis")]);
+            client_span.kind = SpanKind::Client as i32;
+            let resource_spans = ResourceSpans {
+                resource: Some(Resource::default()),
+                scope_spans: vec![ScopeSpans {
+                    scope: Some(InstrumentationScope {
+                        name: "lib".to_string(),
+                        ..Default::default()
+                    }),
+                    spans: vec![client_span],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let mut translator = OtlpTracesTranslator::new(
+                settings,
+                MAX_RESOURCE_LEN,
+                SemanticRegistryProvider::default(),
+                OtlpOriginTagResolver::new(Arc::new(TestWorkloadProvider::new())),
+            );
+            let mut traces: Vec<Trace> = translator
+                .translate_spans(resource_spans, &Metrics::for_tests())
+                .filter_map(Event::try_into_trace)
+                .collect();
+            assert_eq!(traces.len(), 1);
+            traces.remove(0).spans().first().cloned().expect("one span")
+        };
+        let scope_name = |span: &DdSpan| span.attributes.get("otel.scope.name").cloned();
+
+        let default = translate_span(translator_config());
+        assert_eq!(default.span_type(), "redis");
+        assert_eq!(default.name(), "redis.query");
+        assert!(scope_name(&default).is_some());
+
+        let v1_receive = translate_span(OtlpTracesSettings {
+            disable_receive_resource_spans_v2: true,
+            ..translator_config()
+        });
+        assert_eq!(v1_receive.span_type(), "cache");
+        assert_eq!(scope_name(&v1_receive), None);
+
+        let no_scope_convention = translate_span(OtlpTracesSettings {
+            disable_otel_scope_convention: true,
+            ..translator_config()
+        });
+        assert_eq!(no_scope_convention.span_type(), "redis");
+        assert_eq!(scope_name(&no_scope_convention), None);
+
+        let v1_naming = translate_span(OtlpTracesSettings {
+            disable_operation_and_resource_name_logic_v2: true,
+            ..translator_config()
+        });
+        assert_eq!(v1_naming.name(), "lib.client");
+
+        let remapped = translate_span(OtlpTracesSettings {
+            span_name_remappings: HashMap::from([("lib.client".to_string(), "renamed".to_string())]),
+            ..translator_config()
+        });
+        assert_eq!(remapped.name(), "renamed");
     }
 
     #[test]
