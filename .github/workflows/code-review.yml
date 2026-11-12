@@ -13,8 +13,8 @@ name: "Code review"
 on:
   pull_request:
     types: [opened, reopened, ready_for_review]
-    branches:
-      - main
+    branches-ignore:
+      - "**/graphite-base/**"
   issue_comment:
     types: [created]
 
