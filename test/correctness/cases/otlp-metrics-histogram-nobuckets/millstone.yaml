@@ -8,6 +8,4 @@ corpus:
     # One valid delta histogram with two explicit bounds and three bucket counts. In `nobuckets`
     # mode with aggregation metrics enabled, the translator emits the `.count`/`.sum` aggregation
     # series and omits the per-bucket series.
-    # Built by bin/correctness/otlp-fixtures. Regenerate it with `make generate-correctness-fixtures` rather than
-    # editing it here.
     static_base64: "CmoSaBJmCg5vdGxwLmhpc3RvZ3JhbUpUClARAMqaOwAAAAAZAJQ1dwAAAAAhBgAAAAAAAAApAAAAAACAN0AyGAEAAAAAAAAAAgAAAAAAAAADAAAAAAAAADoQAAAAAAAA8D8AAAAAAAAkQBAB"

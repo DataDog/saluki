@@ -6,6 +6,4 @@ corpus:
   size: 1
   payload:
     # ExportMetricsServiceRequest with one SummaryDataPoint and two quantiles.
-    # Built by bin/correctness/otlp-fixtures. Regenerate it with `make generate-correctness-fixtures` rather than
-    # editing it here.
     static_base64: "CmMSYRJfChZvdGxwLnN1bW1hcnkucXVhbnRpbGVzWkUKQxkAACo2/pyXFyEKAAAAAAAAACkAAAAAAABZQDISCQAAAAAAAOA/EQAAAAAAAClAMhIJrkfhehSu7z8RAAAAAAAAOUA="
