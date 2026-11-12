@@ -10,6 +10,15 @@ use std::{
     time::Duration,
 };
 
+/// Default stateful metrics dictionary entry cap, for the sender.
+pub const DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_ENTRIES: NonZeroUsize = NonZeroUsize::new(60_000).unwrap();
+
+/// Default stateful metrics dictionary estimated-byte cap, for the sender (256 MiB).
+pub const DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_BYTES: NonZeroU64 = NonZeroU64::new(256 * 1024 * 1024).unwrap();
+
+/// Largest accepted stateful metrics dictionary byte cap; the dictionary tracks its estimate as an `i64`.
+pub const MAX_STATEFUL_METRICS_DICTIONARY_MAX_BYTES: u64 = i64::MAX as u64;
+
 /// Default internal telemetry verbosity.
 pub const DEFAULT_METRICS_LEVEL: &str = "info";
 

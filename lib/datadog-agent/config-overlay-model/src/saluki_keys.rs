@@ -11,6 +11,24 @@ pub struct SalukiKey {
 
 pub static SALUKI_KEYS: &[SalukiKey] = &[
     SalukiKey {
+        yaml_path: "data_plane.experimental.stateful_metrics.dictionary_max_entries",
+        description: "Stateful metrics dictionary entry cap for the sender",
+        default: "60000",
+        documentation: Some("Positive entry cap for the stateful metrics sender's dictionary, default 60000. Eviction starts near the cap, but entries younger than the 30-second grace period are protected. A cap below the live series working set re-sends many definitions on every flush. Dictionary memory grows with the series the sender sees, not with the cap. Requires a restart."),
+    },
+    SalukiKey {
+        yaml_path: "data_plane.experimental.stateful_metrics.dictionary_max_bytes",
+        description: "Stateful metrics dictionary byte cap for the sender",
+        default: "256MiB",
+        documentation: Some("Positive estimated-byte cap for the stateful metrics sender's dictionary, default 256MiB (268435456). Accepts a bare byte count or a byte-size string such as 128MiB. The estimate excludes allocator slack and buffered or inflight metrics, so actual memory use is higher. Requires a restart."),
+    },
+    SalukiKey {
+        yaml_path: "data_plane.experimental.stateful_metrics.additional_endpoints",
+        description: "Further stateful series gRPC intake endpoints",
+        default: "[]",
+        documentation: Some("List of distinct http://host:port endpoints that also receive every stateful metrics payload, using the primary API key. Requires data_plane.experimental.stateful_metrics.endpoint and a restart. Retry memory and disk budgets are split between a shared queue and one retry lane per endpoint. Removing an additional endpoint discards its persisted retries at startup with a warning."),
+    },
+    SalukiKey {
         yaml_path: "data_plane.experimental.stateful_metrics.endpoint",
         description: "Experimental stateful series gRPC intake endpoint",
         default: "unset (disabled)",

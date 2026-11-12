@@ -1,6 +1,6 @@
 //! Shared priority scheduling and persistent retry storage for delivery components.
 
-use std::sync::Arc;
+use std::{num::NonZeroU64, path::Path, sync::Arc};
 
 use saluki_error::GenericError;
 use saluki_io::net::util::retry::{DiskUsageRetrieverImpl, PersistedQueueArgs, RetryQueue, Retryable};
@@ -21,7 +21,8 @@ pub struct DeliveryQueueConfiguration {
 
 impl DeliveryQueueConfiguration {
     /// Creates delivery storage from priority capacity and retry settings.
-    pub fn new(high_priority_capacity: usize, retry: RetryConfiguration) -> Self {
+    pub fn new(high_priority_capacity: usize, mut retry: RetryConfiguration) -> Self {
+        retry.storage_path = retry.resolved_storage_path();
         Self {
             high_priority_capacity,
             retry,
@@ -33,15 +34,29 @@ impl DeliveryQueueConfiguration {
         self.retry.queue_max_size_bytes
     }
 
-    /// Builds a queue with a distinct storage namespace and endpoint telemetry.
+    /// Returns the storage root when disk persistence is enabled.
+    pub fn storage_path(&self) -> Option<&Path> {
+        (self.retry.storage_max_size_bytes > 0).then_some(self.retry.storage_path.as_path())
+    }
+
+    /// Returns settings whose retry disk budget is an even share across `parts` queues.
+    ///
+    /// High-priority capacity and the in-memory retry limit are unchanged. Use this when one delivery worker
+    /// persists retries in several queues and enforces their combined in-memory limit itself.
+    pub fn with_storage_budget_share(&self, parts: NonZeroU64) -> Self {
+        Self {
+            high_priority_capacity: self.high_priority_capacity,
+            retry: self.retry.with_storage_budget_share(parts),
+        }
+    }
+
+    /// Builds a retry-only queue with a distinct storage namespace and no high-priority fast path.
     ///
     /// Callers must use a stable queue name unique to the payload format, destination, and worker.
     ///
     /// # Errors
     /// Returns an error if explicitly configured disk persistence cannot be initialized.
-    pub async fn build<T: Retryable>(
-        &self, queue_name: String, endpoint: &str, builder: &MetricsBuilder,
-    ) -> Result<PendingTransactions<T>, GenericError> {
+    pub async fn build_retry_queue<T: Retryable>(&self, queue_name: String) -> Result<RetryQueue<T>, GenericError> {
         let retry = &self.retry;
         let storage_path = retry.resolved_storage_path();
         let mut queue = RetryQueue::new(queue_name, retry.queue_max_size_bytes)
@@ -57,6 +72,20 @@ impl DeliveryQueueConfiguration {
                 })
                 .await?;
         }
+        Ok(queue)
+    }
+
+    /// Builds a queue with a distinct storage namespace and endpoint telemetry.
+    ///
+    /// Callers must use a stable queue name unique to the payload format, destination, and worker.
+    ///
+    /// # Errors
+    /// Returns an error if explicitly configured disk persistence cannot be initialized.
+    pub async fn build<T: Retryable>(
+        &self, queue_name: String, endpoint: &str, builder: &MetricsBuilder,
+    ) -> Result<PendingTransactions<T>, GenericError> {
+        let retry = &self.retry;
+        let queue = self.build_retry_queue(queue_name).await?;
         let shared = SharedTransactionQueueTelemetry::from_builder(builder);
         let telemetry = TransactionQueueTelemetry::from_builder(builder, endpoint, shared);
         Ok(PendingTransactions::new(
