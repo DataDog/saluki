@@ -181,11 +181,11 @@ impl OtlpMetricsTranslator {
 
         let host = match source {
             Some(Source {
-                kind: SourceKind::HostnameKind,
+                kind: SourceKind::Hostname,
                 identifier,
             }) => Some(MetaString::from(identifier)),
             Some(Source {
-                kind: SourceKind::AwsEcsFargateKind,
+                kind: SourceKind::AwsEcsFargate,
                 ..
             }) => None,
             None => Some(self.default_hostname.clone()),
