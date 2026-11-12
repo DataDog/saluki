@@ -71,7 +71,7 @@ crate = "aws-lc-fips-sys"
 allow = ["OpenSSL"]
 
 [sources]
-allow-registry = ["https://github.com/rust-lang/crates.io-index", "sparse+https://depot-read-api-rust.us1.ddbuild.io/datadog/rust-testing/"]
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = [
   # Stateful metrics client pinned to the Foldspace metrics stack.
   "https://github.com/DataDog/foldspace",

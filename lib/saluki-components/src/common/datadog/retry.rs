@@ -1,4 +1,5 @@
 use std::{
+    num::NonZeroU64,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -197,6 +198,17 @@ pub struct RetryConfiguration {
 }
 
 impl RetryConfiguration {
+    /// Returns a copy whose on-disk retry budget is an even share of this one.
+    ///
+    /// A nonzero disk budget stays nonzero so that sharing it never disables persistence.
+    pub(crate) fn with_storage_budget_share(&self, parts: NonZeroU64) -> Self {
+        let mut shared = self.clone();
+        if shared.storage_max_size_bytes > 0 {
+            shared.storage_max_size_bytes = (shared.storage_max_size_bytes / parts.get()).max(1);
+        }
+        shared
+    }
+
     /// Returns the path to the directory where the retry queue will be stored on disk.
     ///
     /// A configured storage path is used as-is. Otherwise the path is derived from `run_path`, matching the Datadog

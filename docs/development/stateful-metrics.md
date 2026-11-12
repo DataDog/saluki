@@ -1,7 +1,7 @@
 # Testing stateful metrics delivery
 
 ADP embeds `foldspace-core` through a pinned Cargo dependency from the
-[Foldspace metrics stack](https://github.com/DataDog/foldspace/pull/80). You do not copy Foldspace
+[Foldspace metrics stack](https://github.com/DataDog/foldspace/pull/129). You do not copy Foldspace
 source into Saluki or run a separate client binary.
 
 Configuration selects delivery for count, rate, and gauge series. When the stateful endpoint is
@@ -16,25 +16,27 @@ flowchart TB
         Route -->|Other metric types| Encode[dd_metrics_encode]
         Encode --> Out[dd_out]
         Sender --> High[High-priority logical batches]
-        High --> Worker[Sender worker task]
-        Low[Low-priority logical retries] --> Worker
+        High --> Worker[Sender event loop]
+        Low[Shared low-priority logical retries] --> Worker
+        Lanes[Per-endpoint retry lanes] --> Worker
         Low <--> Disk[Retry disk storage]
+        Lanes <--> Disk
         subgraph Foldspace[Embedded Foldspace library: sans-I/O]
-            Core[Worker-owned StatefulMetricsClient]
+            Core[Sender-owned StatefulMetricsClient]
         end
         Worker -->|Logical batches, flush signals, acknowledgements| Core
-        Core -->|Encoded payloads| Transport[Worker-owned gRPC transport]
+        Core -->|Encoded payloads| Transport[Sender-owned gRPC transport per endpoint]
         Transport -->|acknowledgements and failures| Worker
-        Core -->|Recovered logical batches| Low
+        Core -->|Unsent and rejected logical batches| Low
+        Core -->|Batches returned by one endpoint| Lanes
     end
-    Transport <-->|Stateful gRPC stream| Intake[Separate metrics intake binary]
+    Transport <-->|One stateful gRPC stream per endpoint| Intake[Separate metrics intake binaries]
     Out -->|HTTP| HTTP[HTTP intake]
 ```
 
-Each sender worker task owns one core and one stream. Workers never share dictionaries or inflight
-state. This topology starts one worker; future sharding can route metrics to additional workers.
-Ownership is per async task, without OS-thread affinity. The transport is internal to the destination,
-not a separate topology component, and never retries encoded payloads independently.
+One sender task owns one core and one stream per configured endpoint. The core sends every
+payload to every endpoint, sharing one dictionary across them. The transport is internal to the
+destination, not a separate topology component, and never retries encoded payloads independently.
 
 ## Build and configure
 
@@ -44,9 +46,9 @@ Build ADP from this branch:
 cargo build --bin agent-data-plane
 ```
 
-Building requires `protoc`, access to the private Foldspace Git repository, and access to the
-Datadog Rust testing registry used by Foldspace's tokenizer dependency. The pinned Foldspace
-revision is recorded in the workspace manifest and `Cargo.lock`.
+Building requires `protoc` and access to the private Foldspace Git repository. Foldspace includes
+its tokenizer source. The pinned Foldspace revision is recorded in the workspace manifest and
+`Cargo.lock`.
 
 For local testing, add this setting to your ADP configuration:
 
@@ -61,10 +63,23 @@ You can also set `DD_DATA_PLANE_EXPERIMENTAL_STATEFUL_METRICS_ENDPOINT`. The end
 origin without a path, query, or embedded credentials. It is a startup-only setting: restart ADP to
 change it. Leaving it unset preserves the existing HTTP pipeline.
 
-From a Foldspace checkout at revision `9d4b57edee8095b2fc827b6480dcda39df749a4f`, build and run
-its separate metrics intake binary. This is the tested revision of
-[Foldspace PR #80](https://github.com/DataDog/foldspace/pull/80), which includes the metrics intake
-from [Foldspace PR #79](https://github.com/DataDog/foldspace/pull/79):
+To send every stateful payload to further intakes as well, list them after the primary endpoint:
+
+```yaml
+data_plane:
+  experimental:
+    stateful_metrics:
+      endpoint: http://127.0.0.1:8080
+      additional_endpoints:
+        - http://127.0.0.1:8081
+```
+
+`DD_DATA_PLANE_EXPERIMENTAL_STATEFUL_METRICS_ADDITIONAL_ENDPOINTS` takes a space-separated list. Each entry follows
+the primary endpoint's rules, must be distinct, and uses the primary API key. The setting requires
+`data_plane.experimental.stateful_metrics.endpoint` and is startup-only.
+
+From a Foldspace checkout at the revision pinned in `Cargo.toml`, build and run its separate
+metrics intake binary, once per endpoint:
 
 ```sh
 cargo build -p foldspace-grpc-server --bin foldspace-intake
@@ -98,9 +113,11 @@ storage machinery with a distinct logical-batch entry type:
 
 - Fresh batches enter the high-priority queue. Overflow enters the low-priority queue.
 - Recovery transfers unacknowledged and unsent partial logical batches into the low-priority queue.
+  With several endpoints, batches one endpoint gives back go to that endpoint's lane instead (see
+  [Multiple endpoints](#multiple-endpoints)).
 - High-priority work is selected first. Low-priority memory entries are read before disk entries,
   following the existing queue's preference for recent data.
-- Batches removed from the queue enter the worker's current core and are encoded again with the stateful protocol. Neither the
+- Batches removed from the queue enter the sender's current core and are encoded again with the stateful protocol. Neither the
   retry entry nor its disk representation contains stream-specific IDs or encoded wire payloads.
 - Foldspace retains inflight logical work until ACK or recovery. A successful channel enqueue is
   not a delivery acknowledgement. Lost acknowledgements can cause duplicates on retry.
@@ -112,36 +129,146 @@ forwarder settings, including `forwarder_high_prio_buffer_size`,
 including series, points, tags, and resource strings. This is not a total process memory bound.
 
 Disk storage is enabled only when configured. Its directory is separate from HTTP transactions and
-includes the logical format version, destination hash, and worker index. If requested storage cannot
+includes the logical format version, destination hash, and the original single-sender suffix. If requested storage cannot
 be initialized, component startup fails. Overflow spills to disk; graceful shutdown flushes remaining
 entries to disk. This is not a write-ahead log: a crash can lose memory-only and inflight work.
 Without disk storage, overflow and shutdown can drop queued data. The process-wide shutdown timeout can interrupt delivery or persistence, so persistence is best effort within the remaining shutdown time. Queue evictions, oversized entries,
 and spill failures are reported through drop accounting; a rejected entry does not stop the sender.
 Shutdown persistence errors are returned to the component supervisor.
 
-Transient failures reconnect with exponential backoff from 250 milliseconds to 30 seconds. The new
-stream starts from acknowledged dictionary state and re-encodes work taken from the queue. The core allows up to
-8 payloads inflight. A full transport channel retains the payload and waits for capacity while
+Transient failures reconnect with exponential backoff from 250 milliseconds to 30 seconds, tracked per
+endpoint. The new stream assumes the intake holds no dictionary state and re-encodes work taken from
+the queue. The core allows up to 8 payloads inflight per endpoint. A full transport channel retains the payload and waits for capacity while
 continuing to receive acknowledgements. A closed channel fails the stream and recovers logical work.
 
-`UNAUTHENTICATED` suspends delivery until the API key changes. Credential changes clear dictionary
-state and restart delivery. `FAILED_PRECONDITION` and `UNIMPLEMENTED` also suspend delivery while
-retaining logical retries: configuration does not permit automatic HTTP fallback. Correct the
-endpoint and restart, or reset via a credential change. `INVALID_ARGUMENT` abandons the speculative
-payloads returned under `DoNotRetry`, counts their points, and suspends delivery; unsent partial and
-queued work remains recoverable. Invalid ACK order retains returned work and suspends delivery.
+Failures apply to the endpoint whose stream failed. `UNAUTHENTICATED` suspends that endpoint until the
+API key changes. Credential changes replace every endpoint's stream and resume suspended endpoints.
+`FAILED_PRECONDITION` and `UNIMPLEMENTED` also suspend the endpoint while retaining logical retries:
+configuration does not permit automatic HTTP fallback. Correct the endpoint and restart, or reset via
+a credential change. `INVALID_ARGUMENT` abandons the speculative payloads returned under
+`DoNotRetry`, counts their points, and suspends the endpoint; unsent partial and queued work remains
+recoverable. Invalid ACK order retains returned work and suspends the endpoint. Unsent partial work
+returns to the shared queue only once every endpoint is suspended.
 
 Opening a stream times out after 10 seconds; waiting for ACK progress times out after 30 seconds.
 Streams rotate after 15 minutes and drain for up to 5 seconds. When input closes, the destination
 flushes partial work and uses at most half the configured ADP stop budget (capped at 30 seconds)
-waiting for delivery, leaving time for retry persistence. On timeout or suspended delivery,
-it recovers remaining core-owned logical work and flushes the queue through its persistence path.
+waiting for delivery, leaving time for retry persistence. It stops waiting once everything
+deliverable is acknowledged; a suspended endpoint's lane is persisted rather than awaited. On timeout
+or when every endpoint is suspended, it recovers remaining core-owned logical work and flushes the
+queues through their persistence path.
+
+### Multiple endpoints
+
+Foldspace sends each flushed payload to every endpoint with an open stream and holds the logical
+batch until each of those endpoints acknowledges it or gives it back. An endpoint that is down,
+draining, or suspended gets its copy back immediately, tagged with that endpoint. The sender keeps
+these copies in a retry lane for that endpoint and resubmits them only to that endpoint, with
+`send_batch_to`, once it has inflight capacity again. Each resubmission is re-encoded for that
+endpoint alone, so it can interleave with newer payloads there. Lanes are independent: an endpoint
+that cannot send never blocks retries or fresh input for the others.
+
+Fresh input, overflow, rejected `push_batch` submissions, and unsent partial batches stay in the shared queue,
+which feeds every endpoint through `push_batch`. With one endpoint there are no lanes, and returned
+batches use the shared low-priority queue as before.
+
+Each lane is a `RetryQueue<T>` with the same spill-to-disk and drop-oldest policy. The shared
+low-priority queue and every lane draw from one retry memory budget: any of them can use all of it
+while the others are empty. When an entry does not fit, the sender evicts the oldest in-memory entry
+across all of those queues, spilling it to disk when persistence is enabled and dropping it
+otherwise, until the entry fits. A long outage on one endpoint can therefore push out older retries
+for the others. The high-priority capacity stays with the shared queue and is bounded by count, not
+by this budget.
+
+The disk budget is still split evenly between the shared queue and the lanes, so with two endpoints
+each of the three queues gets a third. Each persisted queue enforces its own disk limit and evicts
+only its own files, so pooling disk would need shared accounting across their directories.
+
+Before a batch enters the memory budget, the sender splits it into consecutive batches estimated at
+no more than a quarter of the budget, preserving series order. A 10,000-series batch estimates about
+7 MB, so with the default 15 MiB budget it becomes two entries. A single series larger than a quarter
+of the budget stays whole, and an entry larger than the whole budget is dropped and counted. Each
+split entry counts separately in `stateful_metrics_batches_retried_total` and
+`stateful_metrics_batches_abandoned_total`; points are counted once.
 
 Telemetry includes `stateful_metrics_batches_acked_total`, `stateful_metrics_batches_retried_total`,
 `stateful_metrics_stream_failures_total`, `stateful_metrics_batches_abandoned_total`, and
 `stateful_metrics_points_dropped_total`, alongside the shared priority-queue telemetry.
 
-## Worker flush timing
+## Storage and memory
+
+The sender uses `stateful-metrics-v1-<destination-hash>-0` beneath the configured forwarder storage root,
+preserving the original single-sender namespace. With multiple endpoints, each retry lane appends
+`-endpoint-<endpoint-hash>`. Reordering additional endpoints keeps their saved retries. Removing an
+endpoint discards only its saved retries with a warning. Returning to one endpoint moves that
+endpoint's lane into the shared queue. Changing the primary endpoint selects a different namespace.
+Use a separate storage root for each ADP process.
+
+Fresh batches take priority over retries. The high-priority queue is FIFO; retries can be overtaken by
+fresh work. Lost acknowledgements can cause duplicates. Input order within each logical batch is preserved.
+
+The forwarder queue capacities and disk limits apply once to the sender. Endpoint lanes share one
+retry-memory budget, and divide the disk budget with the shared queue. Each endpoint has its own
+transport and inflight window of eight payloads.
+
+The sender's dictionary uses Foldspace local eviction, capped by two startup-only settings:
+
+| Setting | Environment variable | Default |
+| --- | --- | --- |
+| `data_plane.experimental.stateful_metrics.dictionary_max_entries` | `DD_DATA_PLANE_EXPERIMENTAL_STATEFUL_METRICS_DICTIONARY_MAX_ENTRIES` | `60000` |
+| `data_plane.experimental.stateful_metrics.dictionary_max_bytes` | `DD_DATA_PLANE_EXPERIMENTAL_STATEFUL_METRICS_DICTIONARY_MAX_BYTES` | `256MiB` (268435456) |
+
+Both must be positive; zero, negative, and non-numeric values fail startup. The byte cap accepts a
+bare byte count or a byte-size string such as `128MiB`, up to `i64::MAX`. Entries no payload has
+referenced for 30 minutes are removed regardless of the caps; that interval is not configurable.
+
+The caps are eviction targets, not reservations: the sender's dictionary grows only with the series routed
+to it. The defaults cover the live working set of most nodes, so in normal operation eviction only
+removes definitions for series that stopped reporting, such as departed pods. Raising the caps
+costs memory only on nodes that actually have that many contexts; nodes whose working set exceeds
+the caps fall back to admission control, described below. The frequency sketch starts with a
+64-byte counter table and doubles as the dictionary grows, up to a size derived from both caps:
+about 512 KiB in the dictionary at the defaults, plus bookkeeping. It does not shrink after entries leave.
+Growth preserves the frequency estimates; periodic counter halving ages them with recent use.
+
+A cap below the live working set causes more definition traffic and can slow draining under load.
+Tune these limits against the sender's observed working set. For memory-constrained hosts, for example:
+
+```yaml
+data_plane:
+  experimental:
+    stateful_metrics:
+      dictionary_max_entries: 30000
+      dictionary_max_bytes: 128MiB
+```
+
+Actual heap use is higher than the estimate, which excludes allocator slack, per-endpoint sent sets,
+and eviction bookkeeping such as the frequency sketch and per-entry hashes. Recently created
+definitions are protected by Foldspace's 30-second grace period, so retained definitions can exceed
+the caps temporarily. Transient definitions and payloads also consume memory outside these targets.
+
+Once an eviction pass has had to relieve pressure and the dictionary is at its cap, Foldspace admits
+a new or returning definition only if its frequency sketch counts it more often than the
+entry it would displace. Otherwise the definition is **transient**: it is sent with the payload that
+needs it but is not counted against the caps, and it is removed once no payload in progress
+references it. A working set above the caps therefore costs one definition per payload that
+references each value outside the retained set, rather than churning the retained set itself.
+
+The sender reports its dictionary through these gauges:
+
+- `stateful_metrics_dictionary_entries` and `stateful_metrics_dictionary_estimated_bytes`: retained
+  definitions only, the figures the caps govern. Transient definitions are not included.
+- `stateful_metrics_dictionary_transient_entries` and `stateful_metrics_dictionary_transient_bytes`:
+  transient definitions, outside the caps. Sustained nonzero values mean the live working set
+  exceeds the caps.
+- `stateful_metrics_dictionary_frequency_sketch_bytes`: the current size of the frequency sketch,
+  which grows with the dictionary up to the limit derived from the caps. It is not part of the estimate.
+
+Closing destination input starts the sender's bounded delivery window. It then recovers remaining
+logical data and flushes its retry storage. The overall process deadline can interrupt persistence;
+disk flush time depends on the storage system. An event-loop error still attempts recovery and persistence.
+
+## Flush timing
 
 ADP owns the flush timer. The first logical batch accepted into a partial core buffer starts the
 `flush_timeout_secs` countdown (default 2 seconds; zero uses 10 milliseconds). Later arrivals do not
@@ -152,10 +279,9 @@ Foldspace itself reads no clock and creates no runtime task.
 
 ## Scope and validation
 
-This is an opt-in plaintext integration experiment with one destination and one worker.
-`additional_endpoints` or experimental metric endpoint-routing policies select the existing HTTP pipeline with a warning instead of stateful delivery. Existing MRF and autoscaling-failover branches remain separate
-from this primary path. TLS, proxy support, sharding, and byte limits on core inflight data and
-protocol dictionaries remain future work.
+This is an opt-in plaintext integration experiment with one or more stateful endpoints sharing the
+primary API key. HTTP `additional_endpoints` or experimental metric endpoint-routing policies select the HTTP pipeline with a warning instead of stateful delivery. Existing MRF and autoscaling-failover branches remain separate
+from this primary path. TLS, proxy support, and byte limits on core inflight data remain future work.
 
 Run focused tests with:
 
@@ -163,8 +289,9 @@ Run focused tests with:
 cargo nextest run -p agent-data-plane -p agent-data-plane-config-system -E 'test(stateful_metrics)'
 ```
 
-Tests cover routing, conversion, priority scheduling, disk spill/reload, shutdown recovery, worker
-isolation, timer flushing, inflight limits, failure policies, and local gRPC exchanges. The gRPC tests
+Tests cover routing, conversion, priority scheduling, disk spill/reload, shutdown recovery, credential
+refresh, timer flushing, inflight limits, failure policies, per-endpoint retry lanes and
+acknowledgement deadlines, lane persistence across endpoint changes, and local gRPC exchanges. The gRPC tests
 verify compression, acknowledgements, dictionary reuse, and re-encoding after reconnect. For decoded-output
 validation, run the separate intake process and inspect its JSONL journal.
 

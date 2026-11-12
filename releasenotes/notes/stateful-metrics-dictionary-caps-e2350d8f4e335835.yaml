@@ -1,0 +1,21 @@
+enhancements:
+  - |
+    Add ``data_plane.experimental.stateful_metrics.dictionary_max_entries`` (default
+    ``60000``) and ``data_plane.experimental.stateful_metrics.dictionary_max_bytes``
+    (default ``256MiB``) to the experimental stateful metrics path. They cap
+    the sender's metrics dictionary. The caps are targets rather than reservations:
+    memory grows with the series the sender sees. The frequency sketch grows with
+    the dictionary, up to about 512 KiB at the defaults, and does not shrink after
+    entries leave. The 30-second grace period can let retained definitions exceed
+    the targets temporarily. Tune the caps against the observed working set; lower them
+    only on memory-constrained hosts. Both require a restart and reject zero.
+  - |
+    Report the stateful metrics sender's dictionary size through the
+    ``stateful_metrics_dictionary_entries``,
+    ``stateful_metrics_dictionary_estimated_bytes``,
+    ``stateful_metrics_dictionary_transient_entries``,
+    ``stateful_metrics_dictionary_transient_bytes``, and
+    ``stateful_metrics_dictionary_frequency_sketch_bytes`` gauges. Entries and
+    estimated bytes count only retained definitions, which the caps govern;
+    transient definitions, sent only with the payloads that need them once the
+    dictionary is full, are reported separately.

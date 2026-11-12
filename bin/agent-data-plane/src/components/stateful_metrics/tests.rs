@@ -1,16 +1,21 @@
 use std::{mem::replace, pin::Pin, sync::Arc};
 
-use agent_data_plane_config::{shared::SharedConfiguration, ConfigValue};
+use agent_data_plane_config::{
+    defaults::{DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_BYTES, DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_ENTRIES},
+    shared::SharedConfiguration,
+    ConfigValue,
+};
 use foldspace_core::{
     proto::stateful::{
         metric_datum,
         stateful_intake_server::{StatefulIntake, StatefulIntakeServer},
         BatchStatus, MetricDatumSequence, StatefulBatch, StatelessRequest, StatelessResponse,
     },
-    MetricOrigin as FoldspaceOrigin, MetricPoint, MetricResource, MetricSeriesType,
+    LogicalMetricSeries, MetricOrigin as FoldspaceOrigin, MetricPoint, MetricResource, MetricSeriesType,
 };
 use futures::Stream;
 use prost::Message as _;
+use saluki_common::sync::live::{channel, Live};
 use saluki_core::data_model::{event::metric::context::Context, tags::TagSet};
 use saluki_core::{
     accounting::{ComponentRegistry, MemoryLimiter},
@@ -18,7 +23,10 @@ use saluki_core::{
         transforms::{TransformBuilder, TransformContext},
         ComponentContext,
     },
-    data_model::event::metric::{Metric, MetricMetadata, MetricOrigin, MetricValues},
+    data_model::event::{
+        metric::{Metric, MetricMetadata, MetricOrigin, MetricValues},
+        Event,
+    },
     health::HealthRegistry,
     runtime::state::{DataspaceRegistry, ResourceRegistry},
     support::SubsystemIdentifier,
@@ -28,6 +36,7 @@ use saluki_core::{
     },
 };
 use saluki_io::net::util::retry::{EventContainer, Retryable};
+use saluki_metrics::test::TestRecorder;
 use tempfile::TempDir;
 use tokio::{
     net::TcpListener,
@@ -39,9 +48,11 @@ use tokio::{
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::{transport::Server, Request, Response, Status, Streaming};
 
-use super::*;
+use super::{retry::RetryBatch, *};
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(5);
+const E0: MetricEndpointId = MetricEndpointId(0);
+const E1: MetricEndpointId = MetricEndpointId(1);
 
 fn shared() -> SharedConfiguration {
     let mut shared = SharedConfiguration::default();
@@ -57,44 +68,92 @@ fn queue_configuration(shared: &SharedConfiguration) -> DeliveryQueueConfigurati
     DeliveryQueueConfiguration::new(config.endpoint_buffer_size, config.retry)
 }
 
-async fn queue() -> PendingTransactions<RetryBatch> {
-    build_queue(
-        &queue_configuration(&shared()),
-        "http://127.0.0.1:8080",
-        0,
-        &MetricsBuilder::default(),
-    )
-    .await
-    .unwrap()
+fn test_endpoints(count: usize) -> Vec<MetaString> {
+    (0..count)
+        .map(|port| format!("http://127.0.0.1:{}", 8080 + port).into())
+        .collect()
 }
 
-async fn worker() -> StatefulMetricsWorker {
+async fn queue_for(settings: &SharedConfiguration, endpoints: &[MetaString]) -> LanedRetryQueue {
+    LanedRetryQueue::build(&queue_configuration(settings), endpoints, &MetricsBuilder::default())
+        .await
+        .unwrap()
+}
+
+fn configuration(endpoints: usize, batch_capacity: usize) -> StatefulMetricsConfiguration {
+    StatefulMetricsConfiguration {
+        endpoints: test_endpoints(endpoints),
+
+        api_key: Live::new_fixed("test-key".to_string()),
+        compression_level: 3,
+        flush_timeout: Duration::from_secs(2),
+        batch_capacity,
+        dictionary_max_entries: DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_ENTRIES,
+        dictionary_max_bytes: DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_BYTES,
+        queue: queue_configuration(&shared()),
+        stop_timeout: TEST_TIMEOUT,
+    }
+}
+
+fn core_config(endpoints: usize, batch_capacity: usize) -> CoreConfig {
+    configuration(endpoints, batch_capacity).core_config()
+}
+
+async fn worker_with(endpoints: usize, batch_capacity: usize) -> StatefulMetricsWorker {
+    let addresses = test_endpoints(endpoints);
     StatefulMetricsWorker::new(
-        Endpoint::from_static("http://127.0.0.1:8080"),
+        addresses
+            .iter()
+            .map(|endpoint| Endpoint::from_shared(endpoint.to_string()).unwrap())
+            .collect(),
         parse_api_key("test-key").unwrap(),
+        core_config(endpoints, batch_capacity),
         3,
         Duration::from_secs(2),
-        512,
-        queue().await,
+        queue_for(&shared(), &addresses).await,
         MetricsBuilder::default(),
     )
 }
 
-async fn open_worker() -> (StatefulMetricsWorker, mpsc::Receiver<StatefulBatch>, StreamId) {
-    let mut worker = worker().await;
-    let effects = worker.core.start().unwrap();
-    let MetricClientEffect::OpenStream { stream_id } = effects[0] else {
-        panic!("missing open")
-    };
-    worker.core.handle_stream_opened(stream_id).unwrap();
+async fn worker() -> StatefulMetricsWorker {
+    worker_with(1, 512).await
+}
+
+/// Marks a stream open and replaces its transport with an in-memory wire.
+async fn attach(
+    worker: &mut StatefulMetricsWorker, endpoint: MetricEndpointId, stream_id: StreamId,
+) -> mpsc::Receiver<StatefulBatch> {
+    let effects = worker.core.handle_stream_opened(stream_id);
+    worker.apply(effects).await.unwrap();
     let (sender, receiver) = mpsc::channel(MAX_INFLIGHT_BATCHES + 1);
-    worker.transport = Some(Transport {
+    worker.transports[endpoint.get()] = Some(Transport {
+        endpoint,
         stream_id,
         sender,
         state: TransportState::Connecting(pending().boxed()),
         pending: VecDeque::new(),
     });
-    (worker, receiver, stream_id)
+    receiver
+}
+
+async fn start_all(worker: &mut StatefulMetricsWorker) -> Vec<(mpsc::Receiver<StatefulBatch>, StreamId)> {
+    let effects = worker.core.start();
+    worker.apply(effects.clone()).await.unwrap();
+    let mut opened = Vec::new();
+    for effect in effects {
+        let MetricClientEffect::OpenStream { endpoint, stream_id } = effect else {
+            panic!("unexpected start effect")
+        };
+        assert_eq!(endpoint.get(), opened.len());
+        opened.push((attach(worker, endpoint, stream_id).await, stream_id));
+    }
+    opened
+}
+
+async fn open_worker() -> (StatefulMetricsWorker, mpsc::Receiver<StatefulBatch>, StreamId) {
+    let mut worker = worker().await;
+    let (wire, stream_id) = start_all(&mut worker).await.pop().unwrap();
+    (worker, wire, stream_id)
 }
 
 async fn buffer(worker: &mut StatefulMetricsWorker, name: &'static str) {
@@ -107,9 +166,9 @@ async fn submit(worker: &mut StatefulMetricsWorker, name: &'static str) {
     worker.flush().await.unwrap();
 }
 
-async fn queued_names(worker: &mut StatefulMetricsWorker) -> Vec<String> {
+async fn shared_names(queue: &mut LanedRetryQueue) -> Vec<String> {
     let mut names = Vec::new();
-    while let Some(attempt) = worker.queue.pop().await {
+    while let Some(attempt) = queue.pop_shared().await {
         let batch = match attempt {
             PendingTransaction::HighPriority(batch) | PendingTransaction::LowPriority(batch) => batch,
         };
@@ -118,8 +177,29 @@ async fn queued_names(worker: &mut StatefulMetricsWorker) -> Vec<String> {
     names
 }
 
+async fn lane_names(queue: &mut LanedRetryQueue, endpoint: MetricEndpointId) -> Vec<String> {
+    let mut names = Vec::new();
+    while let Some(batch) = queue.pop_lane(endpoint).await {
+        names.extend(batch.0.series().iter().map(|s| s.name().to_owned()));
+    }
+    names
+}
+
+async fn queued_names(worker: &mut StatefulMetricsWorker) -> Vec<String> {
+    let mut names = shared_names(&mut worker.queue).await;
+    for index in 0..worker.queue.lane_count() {
+        names.extend(lane_names(&mut worker.queue, MetricEndpointId(index)).await);
+    }
+    names
+}
+
 fn ack(stream_id: StreamId, batch_id: u32) -> TransportEvent {
+    ack_on(E0, stream_id, batch_id)
+}
+
+fn ack_on(endpoint: MetricEndpointId, stream_id: StreamId, batch_id: u32) -> TransportEvent {
     TransportEvent {
+        endpoint,
         stream_id,
         kind: TransportEventKind::Ack(BatchStatus { batch_id, status: 1 }),
     }
@@ -198,6 +278,52 @@ fn conversion_discards_series_without_finite_points() {
 }
 
 #[test]
+fn conversion_deduplicates_tags_and_resource_tags() {
+    let tagset = |tags: &[&str]| tags.iter().copied().map(Into::into).collect::<TagSet>();
+    let context = Context::from_parts(
+        "requests",
+        tagset(&[
+            "env:prod",
+            "device:sdb",
+            "device:sda",
+            "env:prod",
+            "dd.internal.resource:container:abc",
+            "dd.internal.resource:kind:",
+            "device",
+            "a:b:c",
+            "pod:é",
+        ]),
+    )
+    .with_origin_tags(tagset(&["device:sda", "dd.internal.resource:container:abc", "pod:é"]))
+    .with_host(MetaString::from("host-a"));
+    let series = conversion::convert(&Metric::from_parts(
+        context,
+        MetricValues::gauge([(123, 1.0)]),
+        MetricMetadata::default(),
+    ))
+    .unwrap();
+    // Origin tags are read first and a repeated device tag is skipped, so the last distinct one wins.
+    assert_eq!(
+        series.resources(),
+        [
+            MetricResource::new("host", "host-a"),
+            MetricResource::new("container", "abc"),
+            MetricResource::new("device", "sdb"),
+        ]
+    );
+    assert_eq!(series.tags().values, ["a:b:c", "device", "env:prod", "pod:é"]);
+
+    let cleared = conversion::convert(&Metric::from_parts(
+        Context::from_parts("requests", tagset(&["device:sda", "device:"])),
+        MetricValues::gauge([(123, 1.0)]),
+        MetricMetadata::default(),
+    ))
+    .unwrap();
+    assert!(cleared.resources().is_empty());
+    assert!(cleared.tags().values.is_empty());
+}
+
+#[test]
 fn zero_interval_and_source_type_survive_conversion() {
     let mut metric = Metric::rate("rate", (123, 20.0), Duration::ZERO);
     metric.metadata_mut().set_source_type(Arc::<str>::from("integration"));
@@ -272,12 +398,12 @@ impl Harness {
                 .unwrap();
         });
         let mut worker = StatefulMetricsWorker::new(
-            endpoint,
+            vec![endpoint],
             parse_api_key("test-key").unwrap(),
+            core_config(1, 512),
             3,
             Duration::from_secs(2),
-            512,
-            queue().await,
+            queue_for(&shared(), &test_endpoints(1)).await,
             MetricsBuilder::default(),
         );
         let effects = worker.core.start();
@@ -294,7 +420,7 @@ impl Harness {
     }
 
     async fn progress(&mut self) {
-        let event = timeout(TEST_TIMEOUT, next_transport_event(&mut self.worker.transport))
+        let event = timeout(TEST_TIMEOUT, next_transport_event(&mut self.worker.transports))
             .await
             .unwrap();
         self.worker.on_transport(event).await.unwrap();
@@ -324,7 +450,7 @@ async fn grpc_sends_compressed_metrics_and_reuses_acknowledged_dictionary() {
     assert_eq!(first.batch_id, 1);
     assert!(has_name(&sequence(&first)));
     harness.ack(first.batch_id).await;
-    assert!(harness.worker.is_empty());
+    assert!(harness.worker.is_drained());
     submit(&mut harness.worker, "requests").await;
     let second = harness.receive().await;
     assert_eq!(second.batch_id, 2);
@@ -333,12 +459,12 @@ async fn grpc_sends_compressed_metrics_and_reuses_acknowledged_dictionary() {
 }
 
 #[tokio::test]
-async fn grpc_disconnect_reconnects_with_snapshot_and_reencodes_unacknowledged_batch() {
+async fn grpc_disconnect_reconnects_and_reencodes_unacknowledged_batch() {
     let mut harness = Harness::new().await;
     submit(&mut harness.worker, "confirmed").await;
     let first = harness.receive().await;
     harness.ack(first.batch_id).await;
-    submit(&mut harness.worker, "speculative").await;
+    submit(&mut harness.worker, "unconfirmed").await;
     let second = harness.receive().await;
     assert_eq!(second.batch_id, 2);
     harness
@@ -348,68 +474,58 @@ async fn grpc_disconnect_reconnects_with_snapshot_and_reencodes_unacknowledged_b
         .unwrap();
     harness.progress().await;
     assert!(!harness.worker.queue.is_empty());
-    let (id, kind) = timeout(TEST_TIMEOUT, harness.worker.timers.next())
+    let (id, kind) = timeout(TEST_TIMEOUT, next_timer(&mut harness.worker.endpoints))
         .await
-        .unwrap()
         .unwrap();
     let effects = harness.worker.core.handle_timer(id, kind);
     harness.worker.apply(effects).await.unwrap();
     harness.progress().await;
-    let snapshot = harness.receive().await;
-    assert_eq!(snapshot.batch_id, 0);
-    assert!(has_name(&sequence(&snapshot)));
-    harness.ack(0).await;
     harness.worker.pump().await.unwrap();
     harness.worker.flush().await.unwrap();
+    // The replacement stream holds no definitions, so the retry defines its name again.
     let replay = harness.receive().await;
     assert_eq!(replay.batch_id, 1);
     assert!(has_name(&sequence(&replay)));
     harness.ack(1).await;
-    assert!(harness.worker.is_empty());
+    assert!(harness.worker.is_drained());
 }
 
 #[tokio::test]
-async fn failure_requeues_inflight_and_partial_behind_fresh_work() {
+async fn failure_requeues_inflight_behind_fresh_work() {
     let (mut worker, _wire, _) = open_worker().await;
     submit(&mut worker, "inflight").await;
     buffer(&mut worker, "partial").await;
     worker.accept([Event::Metric(Metric::gauge("fresh", (123, 1.0)))]).await;
     worker
-        .fail(MetricStreamFailureKind::Unavailable, "disconnect")
+        .fail(E0, MetricStreamFailureKind::Unavailable, "disconnect")
         .await
         .unwrap();
     assert_eq!(worker.core.inflight_len(), 0);
-    assert_eq!(worker.core.buffered_series_len(), 0);
-    assert_eq!(queued_names(&mut worker).await, ["fresh", "inflight", "partial"]);
-    assert_eq!(worker.timers.len(), 1);
+    // A retryable failure leaves the unsent partial batch in the core for the next flush.
+    assert_eq!(worker.core.buffered_series_len(), 1);
+    assert_eq!(queued_names(&mut worker).await, ["fresh", "inflight"]);
+    assert_eq!(worker.endpoints[0].timers.len(), 1);
 }
 
 #[tokio::test]
 async fn failure_policy_never_switches_to_http() {
-    for (kind, suspended, retry) in [
-        (MetricStreamFailureKind::Unavailable, false, true),
-        (MetricStreamFailureKind::DeadlineExceeded, false, true),
-        (MetricStreamFailureKind::ResourceExhausted, false, true),
-        (MetricStreamFailureKind::Unauthenticated, true, true),
-        (MetricStreamFailureKind::InvalidArgument, true, false),
-        (MetricStreamFailureKind::FailedPrecondition, true, true),
+    // Suspending the only endpoint also returns the unsent partial batch.
+    for (kind, suspended, queued) in [
+        (MetricStreamFailureKind::Unavailable, false, &["sent"][..]),
+        (MetricStreamFailureKind::DeadlineExceeded, false, &["sent"]),
+        (MetricStreamFailureKind::ResourceExhausted, false, &["sent"]),
+        (MetricStreamFailureKind::Unauthenticated, true, &["sent", "partial"]),
+        (MetricStreamFailureKind::InvalidArgument, true, &["partial"]),
+        (MetricStreamFailureKind::FailedPrecondition, true, &["sent", "partial"]),
     ] {
         let (mut worker, _wire, _) = open_worker().await;
         submit(&mut worker, "sent").await;
         buffer(&mut worker, "partial").await;
-        worker.fail(kind, "injected failure").await.unwrap();
-        assert_eq!(worker.suspended, suspended);
-        assert!(worker.transport.is_none());
-        assert_eq!(worker.timers.len(), usize::from(!suspended));
-        let names = queued_names(&mut worker).await;
-        assert_eq!(
-            names,
-            if retry {
-                vec!["sent", "partial"]
-            } else {
-                vec!["partial"]
-            }
-        );
+        worker.fail(E0, kind, "injected failure").await.unwrap();
+        assert_eq!(worker.endpoints[0].suspended, suspended);
+        assert!(worker.transports[0].is_none());
+        assert_eq!(worker.endpoints[0].timers.len(), usize::from(!suspended));
+        assert_eq!(queued_names(&mut worker).await, queued);
     }
 }
 
@@ -419,8 +535,8 @@ async fn invalid_ack_recovers_all_work_and_suspends() {
     submit(&mut worker, "sent").await;
     buffer(&mut worker, "partial").await;
     worker.on_transport(ack(stream_id, 99)).await.unwrap();
-    assert!(worker.suspended);
-    assert!(worker.timers.is_empty());
+    assert!(worker.endpoints[0].suspended);
+    assert!(worker.endpoints[0].timers.is_empty());
     assert_eq!(queued_names(&mut worker).await, ["sent", "partial"]);
 }
 
@@ -431,7 +547,7 @@ async fn acknowledged_batches_are_not_retried() {
     worker.on_transport(ack(stream_id, 1)).await.unwrap();
     submit(&mut worker, "unacked").await;
     worker
-        .fail(MetricStreamFailureKind::Unavailable, "disconnect")
+        .fail(E0, MetricStreamFailureKind::Unavailable, "disconnect")
         .await
         .unwrap();
     assert_eq!(queued_names(&mut worker).await, ["unacked"]);
@@ -442,7 +558,7 @@ async fn closed_transport_recovers_logical_work() {
     let (mut worker, wire, _) = open_worker().await;
     drop(wire);
     submit(&mut worker, "sent").await;
-    assert!(worker.transport.is_none());
+    assert!(worker.transports[0].is_none());
     assert_eq!(worker.core.inflight_len(), 0);
     assert_eq!(queued_names(&mut worker).await, ["sent"]);
 }
@@ -451,32 +567,18 @@ async fn closed_transport_recovers_logical_work() {
 async fn full_transport_preserves_payload_without_failing_stream() {
     let (mut worker, _wire, stream_id) = open_worker().await;
     let (sender, mut receiver) = mpsc::channel(1);
-    worker.transport.as_mut().unwrap().sender = sender;
+    worker.transports[0].as_mut().unwrap().sender = sender;
     submit(&mut worker, "first").await;
     submit(&mut worker, "second").await;
-    assert_eq!(worker.core.current_stream_id(), Some(stream_id));
+    assert_eq!(worker.core.current_stream_id(E0), Some(stream_id));
     assert_eq!(worker.core.inflight_len(), 2);
     assert!(worker.queue.is_empty());
     assert_eq!(receiver.try_recv().unwrap().batch_id, 1);
-    assert_eq!(worker.transport.as_ref().unwrap().pending.front().unwrap().batch_id, 2);
-    assert!(worker.timers.is_empty());
-}
-
-#[tokio::test]
-async fn worker_cores_and_flush_timers_are_independent() {
-    let (mut first, mut first_wire, _) = open_worker().await;
-    let (mut second, mut second_wire, _) = open_worker().await;
-    submit(&mut first, "same").await;
-    submit(&mut second, "same").await;
-    assert!(has_name(&sequence(&first_wire.try_recv().unwrap())));
-    assert!(has_name(&sequence(&second_wire.try_recv().unwrap())));
-    first
-        .fail(MetricStreamFailureKind::Unauthenticated, "rejected")
-        .await
-        .unwrap();
-    assert!(first.suspended);
-    assert!(!second.suspended);
-    assert_eq!(second.core.inflight_len(), 1);
+    assert_eq!(
+        worker.transports[0].as_ref().unwrap().pending.front().unwrap().batch_id,
+        2
+    );
+    assert!(worker.endpoints[0].timers.is_empty());
 }
 
 #[tokio::test(start_paused = true)]
@@ -528,8 +630,9 @@ async fn rotation_and_credentials_return_logical_batches() {
             worker.apply(effects).await.unwrap();
         }
         assert_eq!(worker.core.inflight_len(), 0);
-        assert_eq!(queued_names(&mut worker).await, ["sent", "partial"]);
-        assert_ne!(worker.core.current_stream_id(), Some(id));
+        assert_eq!(worker.core.buffered_series_len(), 1);
+        assert_eq!(queued_names(&mut worker).await, ["sent"]);
+        assert_ne!(worker.core.current_stream_id(E0), Some(id));
     }
 }
 
@@ -552,18 +655,18 @@ async fn invalid_credential_updates_preserve_delivery_and_shutdown_persistence()
     submit(&mut worker, "inflight").await;
     buffer(&mut worker, "partial").await;
     worker.accept([Event::Metric(Metric::gauge("fresh", (123, 1.0)))]).await;
-    let ack_deadline = worker.ack_deadline;
+    let ack_deadline = worker.endpoints[0].ack_deadline;
     let buffered_deadline = worker.buffered_deadline;
 
     for key in ["", " \t\r\n", "bad\nkey", "bad\u{7f}key", " \ttest-key\r\n"] {
         worker.update_credentials(key).await.unwrap();
         assert_eq!(worker.api_key, "test-key");
-        assert_eq!(worker.core.current_stream_id(), Some(id));
+        assert_eq!(worker.core.current_stream_id(E0), Some(id));
         assert_eq!(worker.core.inflight_len(), 1);
         assert_eq!(worker.core.buffered_series_len(), 1);
-        assert_eq!(worker.ack_deadline, ack_deadline);
+        assert_eq!(worker.endpoints[0].ack_deadline, ack_deadline);
         assert_eq!(worker.buffered_deadline, buffered_deadline);
-        assert!(!worker.suspended);
+        assert!(!worker.endpoints[0].suspended);
     }
 
     worker.on_transport(ack(id, 1)).await.unwrap();
@@ -581,15 +684,15 @@ async fn valid_credential_update_resumes_after_ignored_invalid_update() {
     let (mut worker, _wire, _) = open_worker().await;
     submit(&mut worker, "inflight").await;
     worker
-        .fail(MetricStreamFailureKind::Unauthenticated, "rejected key")
+        .fail(E0, MetricStreamFailureKind::Unauthenticated, "rejected key")
         .await
         .unwrap();
-    assert!(worker.suspended);
+    assert!(worker.endpoints[0].suspended);
     worker.update_credentials("bad\nkey").await.unwrap();
-    assert!(worker.suspended);
+    assert!(worker.endpoints[0].suspended);
     assert_eq!(worker.api_key, "test-key");
     worker.update_credentials(" \tnew-key\r\n").await.unwrap();
-    assert!(!worker.suspended);
+    assert!(!worker.endpoints[0].suspended);
     assert_eq!(worker.api_key, "new-key");
     assert_eq!(queued_names(&mut worker).await, ["inflight"]);
 }
@@ -604,23 +707,22 @@ fn persisted_settings(dir: &TempDir, memory_bytes: u64) -> SharedConfiguration {
     settings
 }
 
-async fn persisted_queue(settings: &SharedConfiguration) -> PendingTransactions<RetryBatch> {
-    build_queue(
-        &queue_configuration(settings),
-        "http://127.0.0.1:8080",
-        0,
-        &MetricsBuilder::default(),
-    )
-    .await
-    .unwrap()
+async fn persisted_queue(settings: &SharedConfiguration) -> LanedRetryQueue {
+    queue_for(settings, &test_endpoints(1)).await
 }
 
-fn logical(name: &'static str) -> RetryBatch {
-    RetryBatch(LogicalMetricBatch::new(vec![conversion::convert(&Metric::gauge(
-        name,
-        (123, 2.0),
-    ))
-    .unwrap()]))
+fn logical(name: &'static str) -> LogicalMetricBatch {
+    LogicalMetricBatch::new(vec![gauge(name)])
+}
+
+fn gauge(name: &str) -> LogicalMetricSeries {
+    let context = Context::from_parts(name.to_owned(), TagSet::default());
+    conversion::convert(&Metric::gauge(context, (123, 2.0))).unwrap()
+}
+
+/// Returns the retry memory `batch` occupies as one entry.
+fn entry_bytes(batch: &LogicalMetricBatch) -> u64 {
+    RetryBatch(batch.clone(), 0).size_bytes()
 }
 
 #[tokio::test]
@@ -635,21 +737,21 @@ async fn disk_spill_restores_complete_logical_batches() {
             .with_unit("request"),
     );
     let expected = LogicalMetricBatch::new(vec![conversion::convert(&metric).unwrap()]);
-    let entry = RetryBatch(expected.clone());
+    let entry = RetryBatch(expected.clone(), 0);
     assert_eq!(entry.event_count(), 1);
     assert_eq!(entry.data_point_count(), 1);
-    let settings = persisted_settings(&dir, entry.size_bytes() + logical("new").size_bytes() - 1);
+    let settings = persisted_settings(&dir, entry.size_bytes() + entry_bytes(&logical("new")) - 1);
     let mut queue = persisted_queue(&settings).await;
-    assert!(!queue.push_low_priority(entry).await.unwrap().had_drops());
-    assert!(!queue.push_low_priority(logical("new")).await.unwrap().had_drops());
+    assert!(!queue.push_retry(None, expected.clone()).await.had_drops());
+    assert!(!queue.push_retry(None, logical("new")).await.had_drops());
     // Memory is read before disk. Remove the newer entry, then reopen storage.
-    let Some(PendingTransaction::LowPriority(new)) = queue.pop().await else {
+    let Some(PendingTransaction::LowPriority(new)) = queue.pop_shared().await else {
         panic!("missing new")
     };
     assert_eq!(new.0.series()[0].name(), "new");
     drop(queue);
     let mut queue = persisted_queue(&settings).await;
-    let Some(PendingTransaction::LowPriority(restored)) = queue.pop().await else {
+    let Some(PendingTransaction::LowPriority(restored)) = queue.pop_shared().await else {
         panic!("missing persisted entry")
     };
     assert_eq!(restored.0, expected);
@@ -690,23 +792,24 @@ async fn shutdown_persists_unacknowledged_partial_and_queued_work_for_reencoding
 #[tokio::test]
 async fn queue_prioritizes_new_input_and_counts_evicted_retries() {
     let dir = TempDir::new().unwrap();
-    let mut settings = persisted_settings(&dir, logical("old").size_bytes());
+    let mut settings = persisted_settings(&dir, entry_bytes(&logical("old")));
     settings.endpoints.forwarder.storage_max_size_in_bytes = 0;
     settings.endpoints.forwarder.high_prio_buffer_size = 1;
     let mut queue = persisted_queue(&settings).await;
-    assert!(!queue.push_low_priority(logical("old")).await.unwrap().had_drops());
-    assert!(!queue.push_high_priority(logical("new")).await.unwrap().had_drops());
-    let evicted = queue.push_high_priority(logical("overflow")).await;
-    // An oversized entry is reported explicitly by the queue.
-    assert!(evicted.is_err());
-    let evicted = queue.push_low_priority(logical("two")).await.unwrap();
+    assert!(!queue.push_retry(None, logical("old")).await.had_drops());
+    assert!(!queue.push_fresh(logical("new")).await.had_drops());
+    let evicted = queue.push_fresh(logical("overflow")).await;
+    // An oversized entry is counted as dropped without evicting the retry that does fit.
     assert_eq!(evicted.items_dropped, 1);
     assert_eq!(evicted.data_points_dropped, 1);
-    let Some(PendingTransaction::HighPriority(first)) = queue.pop().await else {
+    let evicted = queue.push_retry(None, logical("two")).await;
+    assert_eq!(evicted.items_dropped, 1);
+    assert_eq!(evicted.data_points_dropped, 1);
+    let Some(PendingTransaction::HighPriority(first)) = queue.pop_shared().await else {
         panic!("missing fresh")
     };
     assert_eq!(first.0.series()[0].name(), "new");
-    let Some(PendingTransaction::LowPriority(second)) = queue.pop().await else {
+    let Some(PendingTransaction::LowPriority(second)) = queue.pop_shared().await else {
         panic!("missing retry")
     };
     assert_eq!(second.0.series()[0].name(), "two");
@@ -723,8 +826,8 @@ async fn grpc_capability_failure_retains_logical_work_without_http_fallback() {
         .await
         .unwrap();
     harness.progress().await;
-    assert!(harness.worker.suspended);
-    assert!(harness.worker.transport.is_none());
+    assert!(harness.worker.endpoints[0].suspended);
+    assert!(harness.worker.transports[0].is_none());
     assert_eq!(queued_names(&mut harness.worker).await, ["requests"]);
 }
 
@@ -732,14 +835,23 @@ async fn start_destination(
     endpoint: MetaString, flush_timeout: Duration, settings: &SharedConfiguration,
 ) -> (mpsc::Sender<EventsBuffer>, JoinHandle<Result<(), GenericError>>) {
     let configuration = StatefulMetricsConfiguration {
-        endpoint,
+        endpoints: vec![endpoint],
+
         api_key: Live::new_fixed("test-key".to_string()),
         compression_level: 3,
         flush_timeout,
         batch_capacity: 512,
+        dictionary_max_entries: DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_ENTRIES,
+        dictionary_max_bytes: DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_BYTES,
         queue: queue_configuration(settings),
         stop_timeout: TEST_TIMEOUT,
     };
+    start_configured_destination(configuration).await
+}
+
+async fn start_configured_destination(
+    configuration: StatefulMetricsConfiguration,
+) -> (mpsc::Sender<EventsBuffer>, JoinHandle<Result<(), GenericError>>) {
     let component = ComponentContext::test_destination("dd_stateful_metrics_out");
     let destination = configuration
         .build(BuildContext::new(component.clone(), ResourceRegistry::new()))
@@ -770,9 +882,9 @@ async fn start_destination(
 #[tokio::test]
 async fn destination_flushes_sparse_input_and_waits_for_ack_on_shutdown() {
     let mut harness = Harness::new().await;
-    harness.worker.transport = None;
+    harness.worker.transports[0] = None;
     let (in_tx, task) = start_destination(
-        harness.worker.endpoint.uri().to_string().into(),
+        harness.worker.endpoints[0].address.uri().to_string().into(),
         Duration::from_millis(20),
         &shared(),
     )
@@ -860,45 +972,26 @@ async fn router_sends_supported_series_only_to_stateful_destination() {
 async fn transport_backpressure_drains_in_order_without_an_ack() {
     let mut harness = Harness::new().await;
     let (sender, mut receiver) = mpsc::channel(1);
-    let _request_sender = replace(&mut harness.worker.transport.as_mut().unwrap().sender, sender);
+    let _request_sender = replace(&mut harness.worker.transports[0].as_mut().unwrap().sender, sender);
     submit(&mut harness.worker, "first").await;
     submit(&mut harness.worker, "second").await;
     assert_eq!(receiver.try_recv().unwrap().batch_id, 1);
     // Cancel the event wait after it moves the pending payload into the available slot.
     assert!(timeout(
         Duration::from_millis(20),
-        next_transport_event(&mut harness.worker.transport)
+        next_transport_event(&mut harness.worker.transports)
     )
     .await
     .is_err());
     assert_eq!(receiver.try_recv().unwrap().batch_id, 2);
-    assert!(harness.worker.transport.as_ref().unwrap().pending.is_empty());
+    assert!(harness.worker.transports[0].as_ref().unwrap().pending.is_empty());
     assert_eq!(harness.worker.core.inflight_len(), 2);
 }
 
 #[tokio::test]
 async fn threshold_flush_and_rejected_partial_remain_recoverable() {
-    let mut worker = StatefulMetricsWorker::new(
-        Endpoint::from_static("http://127.0.0.1:8080"),
-        parse_api_key("test-key").unwrap(),
-        3,
-        Duration::from_secs(2),
-        2,
-        queue().await,
-        MetricsBuilder::default(),
-    );
-    let effects = worker.core.start().unwrap();
-    let MetricClientEffect::OpenStream { stream_id } = effects[0] else {
-        panic!("missing stream")
-    };
-    worker.core.handle_stream_opened(stream_id).unwrap();
-    let (sender, mut wire) = mpsc::channel(9);
-    worker.transport = Some(Transport {
-        stream_id,
-        sender,
-        state: TransportState::Connecting(pending().boxed()),
-        pending: VecDeque::new(),
-    });
+    let mut worker = worker_with(1, 2).await;
+    let (mut wire, stream_id) = start_all(&mut worker).await.pop().unwrap();
     buffer(&mut worker, "first").await;
     buffer(&mut worker, "second").await;
     assert!(wire.try_recv().is_ok());
@@ -915,17 +1008,17 @@ async fn threshold_flush_and_rejected_partial_remain_recoverable() {
 #[tokio::test]
 async fn oversized_retry_does_not_stop_remaining_recovery() {
     let dir = TempDir::new().unwrap();
-    let settings = persisted_settings(&dir, logical("tiny").size_bytes());
+    let settings = persisted_settings(&dir, entry_bytes(&logical("tiny")));
     let (mut worker, _wire, _) = open_worker().await;
     worker.queue = persisted_queue(&settings).await;
     submit(&mut worker, "too-large-to-retry").await;
     submit(&mut worker, "tiny").await;
     worker
-        .fail(MetricStreamFailureKind::Unavailable, "disconnect")
+        .fail(E0, MetricStreamFailureKind::Unavailable, "disconnect")
         .await
         .unwrap();
     assert_eq!(queued_names(&mut worker).await, ["tiny"]);
-    assert_eq!(worker.timers.len(), 1);
+    assert_eq!(worker.endpoints[0].timers.len(), 1);
 }
 
 #[tokio::test]
@@ -933,8 +1026,8 @@ async fn destination_shutdown_timeout_persists_missing_ack() {
     let dir = TempDir::new().unwrap();
     let settings = persisted_settings(&dir, 1024 * 1024);
     let mut harness = Harness::new().await;
-    harness.worker.transport = None;
-    let endpoint: MetaString = harness.worker.endpoint.uri().to_string().into();
+    harness.worker.transports[0] = None;
+    let endpoint: MetaString = harness.worker.endpoints[0].address.uri().to_string().into();
     let (in_tx, task) = start_destination(endpoint.clone(), Duration::from_millis(10), &settings).await;
     let mut events = EventsBuffer::default();
     assert!(events
@@ -945,17 +1038,676 @@ async fn destination_shutdown_timeout_persists_missing_ack() {
     drop(in_tx);
     // The intake deliberately never acknowledges this payload.
     timeout(TEST_TIMEOUT, task).await.unwrap().unwrap().unwrap();
-    let mut queue = build_queue(
-        &queue_configuration(&settings),
-        &endpoint,
-        0,
-        &MetricsBuilder::default(),
-    )
-    .await
-    .unwrap();
-    let Some(PendingTransaction::LowPriority(batch)) = queue.pop().await else {
+    let mut queue = queue_for(&settings, &[endpoint]).await;
+    let Some(PendingTransaction::LowPriority(batch)) = queue.pop_shared().await else {
         panic!("shutdown lost unacknowledged data")
     };
     assert_eq!(batch.0.series()[0].name(), "unacknowledged");
     assert!(queue.is_empty());
+}
+
+struct TestSession {
+    key: String,
+    received: mpsc::Receiver<StatefulBatch>,
+    replies: mpsc::Sender<Result<BatchStatus, Status>>,
+}
+
+impl TestSession {
+    async fn receive(&mut self) -> StatefulBatch {
+        timeout(TEST_TIMEOUT, self.received.recv()).await.unwrap().unwrap()
+    }
+
+    async fn acknowledge(&self, batch: &StatefulBatch) {
+        self.replies
+            .send(Ok(BatchStatus {
+                batch_id: batch.batch_id,
+                status: 1,
+            }))
+            .await
+            .unwrap();
+    }
+}
+
+#[derive(Clone)]
+struct SessionIntake {
+    sessions: mpsc::Sender<TestSession>,
+}
+
+#[tonic::async_trait]
+impl StatefulIntake for SessionIntake {
+    type StatefulStreamStream = Pin<Box<dyn Stream<Item = Result<BatchStatus, Status>> + Send>>;
+
+    async fn stateful_stream(
+        &self, request: Request<Streaming<StatefulBatch>>,
+    ) -> Result<Response<Self::StatefulStreamStream>, Status> {
+        let key = request
+            .metadata()
+            .get("dd-api-key")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let (received, received_rx) = mpsc::channel(32);
+        let (replies_tx, mut replies) = mpsc::channel(32);
+        self.sessions
+            .send(TestSession {
+                key,
+                received: received_rx,
+                replies: replies_tx,
+            })
+            .await
+            .unwrap();
+        let mut inbound = request.into_inner();
+        let stream = async_stream::try_stream! {
+            while let Some(batch) = inbound.message().await? {
+                received.send(batch).await.map_err(|_| Status::cancelled("test finished"))?;
+                yield replies.recv().await.ok_or_else(|| Status::cancelled("test finished"))??;
+            }
+        };
+        Ok(Response::new(Box::pin(stream)))
+    }
+
+    async fn stateless(&self, _: Request<StatelessRequest>) -> Result<Response<StatelessResponse>, Status> {
+        Err(Status::unimplemented("stateless"))
+    }
+}
+
+struct EndpointHarness {
+    endpoint: MetaString,
+    sessions: mpsc::Receiver<TestSession>,
+    server: JoinHandle<()>,
+}
+
+impl EndpointHarness {
+    async fn new() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap()).into();
+        let (sessions, sessions_rx) = mpsc::channel(32);
+        let server = tokio::spawn(async move {
+            Server::builder()
+                .add_service(StatefulIntakeServer::new(SessionIntake { sessions }))
+                .serve_with_incoming(TcpListenerStream::new(listener))
+                .await
+                .unwrap();
+        });
+        Self {
+            endpoint,
+            sessions: sessions_rx,
+            server,
+        }
+    }
+
+    async fn session(&mut self) -> TestSession {
+        timeout(TEST_TIMEOUT, self.sessions.recv()).await.unwrap().unwrap()
+    }
+
+    async fn start(
+        &self, settings: &SharedConfiguration, key: Live<String>,
+    ) -> (mpsc::Sender<EventsBuffer>, JoinHandle<Result<(), GenericError>>) {
+        start_configured_destination(StatefulMetricsConfiguration {
+            endpoints: vec![self.endpoint.clone()],
+
+            api_key: key,
+            compression_level: 3,
+            flush_timeout: Duration::from_millis(10),
+            batch_capacity: 512,
+            dictionary_max_entries: DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_ENTRIES,
+            dictionary_max_bytes: DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_BYTES,
+            queue: queue_configuration(settings),
+            stop_timeout: Duration::from_millis(200),
+        })
+        .await
+    }
+}
+
+impl Drop for EndpointHarness {
+    fn drop(&mut self) {
+        self.server.abort();
+    }
+}
+
+#[tokio::test]
+async fn down_endpoint_retries_wait_in_its_lane_without_blocking_others() {
+    let mut worker = worker_with(2, 512).await;
+    let mut opened = start_all(&mut worker).await;
+    let (_down_wire, down_stream) = opened.pop().unwrap();
+    let (mut healthy_wire, healthy_stream) = opened.pop().unwrap();
+    submit(&mut worker, "first").await;
+    worker
+        .fail(E1, MetricStreamFailureKind::Unavailable, "disconnect")
+        .await
+        .unwrap();
+    // The down endpoint's copy of later payloads comes straight back to its lane.
+    submit(&mut worker, "second").await;
+    assert_eq!(healthy_wire.try_recv().unwrap().batch_id, 1);
+    assert_eq!(healthy_wire.try_recv().unwrap().batch_id, 2);
+    assert!(worker.queue.shared_is_empty());
+    assert!(worker.queue.lane_is_empty(E0));
+    assert!(!worker.queue.lane_is_empty(E1));
+    worker.on_transport(ack_on(E0, healthy_stream, 1)).await.unwrap();
+    worker.on_transport(ack_on(E0, healthy_stream, 2)).await.unwrap();
+    assert_eq!(worker.core.inflight_len(), 0);
+    assert!(!worker.can_pump());
+    submit(&mut worker, "third").await;
+    assert_eq!(healthy_wire.try_recv().unwrap().batch_id, 3);
+
+    let effects = worker.core.handle_timer(down_stream, TimerKind::Reconnect);
+    worker.apply(effects).await.unwrap();
+    let reconnected = worker.core.current_stream_id(E1).unwrap();
+    let mut replay_wire = attach(&mut worker, E1, reconnected).await;
+    worker.pump().await.unwrap();
+    let mut replayed = Vec::new();
+    while let Ok(batch) = replay_wire.try_recv() {
+        assert!(has_name(&sequence(&batch)));
+        replayed.push(batch.batch_id);
+    }
+    assert_eq!(replayed, [1, 2, 3]);
+    assert!(healthy_wire.try_recv().is_err());
+    assert!(worker.queue.is_empty());
+}
+
+#[tokio::test]
+async fn acknowledgement_deadlines_are_tracked_per_endpoint() {
+    let mut worker = worker_with(2, 512).await;
+    let opened = start_all(&mut worker).await;
+    submit(&mut worker, "sent").await;
+    assert!(worker.endpoints.iter().all(|endpoint| endpoint.ack_deadline.is_some()));
+    worker.on_transport(ack_on(E0, opened[0].1, 1)).await.unwrap();
+    assert_eq!(worker.endpoints[0].ack_deadline, None);
+    let (endpoint, deadline) = worker.next_ack_deadline();
+    assert_eq!(endpoint, E1);
+    assert_eq!(deadline, worker.endpoints[1].ack_deadline);
+    assert!(deadline.is_some());
+    // The batch stays held until the second endpoint acknowledges it too.
+    assert_eq!(worker.core.inflight_len(), 1);
+    worker.on_transport(ack_on(E1, opened[1].1, 1)).await.unwrap();
+    assert_eq!(worker.next_ack_deadline().1, None);
+    assert!(worker.is_drained());
+}
+
+#[tokio::test]
+async fn suspended_endpoint_keeps_its_lane_while_others_drain() {
+    let mut worker = worker_with(2, 512).await;
+    let opened = start_all(&mut worker).await;
+    submit(&mut worker, "sent").await;
+    worker
+        .fail(E1, MetricStreamFailureKind::Unauthenticated, "rejected key")
+        .await
+        .unwrap();
+    assert!(worker.endpoints[1].suspended);
+    assert!(!worker.all_suspended());
+    worker.on_transport(ack_on(E0, opened[0].1, 1)).await.unwrap();
+    assert!(worker.is_drained());
+    assert!(!worker.queue.lane_is_empty(E1));
+    worker.update_credentials("new-key").await.unwrap();
+    assert!(!worker.endpoints[1].suspended);
+    assert_eq!(lane_names(&mut worker.queue, E1).await, ["sent"]);
+}
+
+#[tokio::test]
+async fn endpoint_lanes_persist_by_address_across_endpoint_reordering() {
+    let dir = TempDir::new().unwrap();
+    let settings = persisted_settings(&dir, 1024 * 1024);
+    let config = queue_configuration(&settings);
+    let [primary, removed, added]: [MetaString; 3] = test_endpoints(3).try_into().unwrap();
+    let original = [primary.clone(), removed.clone()];
+    prepare_storage(&config, &original).await.unwrap();
+    let mut queue = queue_for(&settings, &original).await;
+    assert!(!queue.push_retry(Some(E1), logical("lane")).await.had_drops());
+    assert!(!queue.push_retry(None, logical("shared")).await.had_drops());
+    assert!(!queue.flush().await.unwrap().had_drops());
+
+    // Lanes are keyed by address, so adding or reordering endpoints keeps each endpoint's retries.
+    let reordered = [primary.clone(), added, removed];
+    prepare_storage(&config, &reordered).await.unwrap();
+    let mut queue = queue_for(&settings, &reordered).await;
+    assert_eq!(shared_names(&mut queue).await, ["shared"]);
+    assert!(lane_names(&mut queue, E1).await.is_empty());
+    assert_eq!(lane_names(&mut queue, MetricEndpointId(2)).await, ["lane"]);
+    assert!(!queue.flush().await.unwrap().had_drops());
+    prepare_storage(&config, &[primary]).await.unwrap();
+}
+
+#[tokio::test]
+async fn endpoint_removal_discards_only_removed_endpoints_persisted_retries() {
+    for keep_additional in [false, true] {
+        let dir = TempDir::new().unwrap();
+        let settings = persisted_settings(&dir, 1024 * 1024);
+        let config = queue_configuration(&settings);
+        let original = test_endpoints(3);
+        prepare_storage(&config, &original).await.unwrap();
+        {
+            let mut queue = queue_for(&settings, &original).await;
+            assert!(!queue.push_retry(None, logical("shared")).await.had_drops());
+            assert!(!queue.push_retry(Some(E0), logical("primary")).await.had_drops());
+            assert!(!queue.push_retry(Some(E1), logical("removed")).await.had_drops());
+            assert!(!queue
+                .push_retry(Some(MetricEndpointId(2)), logical("other"))
+                .await
+                .had_drops());
+            assert!(!queue.flush().await.unwrap().had_drops());
+        }
+
+        let retained = if keep_additional {
+            vec![original[0].clone(), original[2].clone()]
+        } else {
+            vec![original[0].clone()]
+        };
+        prepare_storage(&config, &retained).await.unwrap();
+        // Repeating startup is safe, including after migration to a single endpoint.
+        prepare_storage(&config, &retained).await.unwrap();
+        {
+            let mut queue = queue_for(&settings, &retained).await;
+            if keep_additional {
+                assert_eq!(shared_names(&mut queue).await, ["shared"]);
+                assert_eq!(lane_names(&mut queue, E0).await, ["primary"]);
+                assert_eq!(lane_names(&mut queue, E1).await, ["other"]);
+            } else {
+                let mut names = shared_names(&mut queue).await;
+                names.sort();
+                assert_eq!(names, ["primary", "shared"]);
+            }
+            assert!(!queue.flush().await.unwrap().had_drops());
+        }
+
+        // Re-adding an endpoint must not resurrect the retries discarded during its removal.
+        prepare_storage(&config, &original).await.unwrap();
+        {
+            let queue = queue_for(&settings, &original).await;
+            assert!(queue.is_empty());
+            assert!(!queue.flush().await.unwrap().had_drops());
+        }
+    }
+}
+
+fn names(count: usize) -> Vec<String> {
+    (0..count).map(|index| format!("series-{index:03}")).collect()
+}
+
+fn batch_of(names: &[String]) -> LogicalMetricBatch {
+    LogicalMetricBatch::new(names.iter().map(|name| gauge(name)).collect())
+}
+
+fn settings_with_budget(memory_bytes: u64) -> SharedConfiguration {
+    let mut settings = shared();
+    settings.endpoints.forwarder.retry_queue_payloads_max_size = ConfigValue::explicit(memory_bytes);
+    settings
+}
+
+/// A series whose tags make it far larger than an untagged gauge.
+fn tagged(name: &'static str, tags: usize) -> LogicalMetricSeries {
+    let tags: TagSet = (0..tags).map(|index| format!("tag-{index:04}:value").into()).collect();
+    conversion::convert(&Metric::gauge(Context::from_parts(name, tags), (123, 2.0))).unwrap()
+}
+
+#[test]
+fn retry_entries_persist_as_plain_logical_batches() {
+    let batch = logical("persisted");
+    let stored = serde_json::to_vec(&RetryBatch(batch.clone(), 42)).unwrap();
+    assert_eq!(stored, serde_json::to_vec(&batch).unwrap());
+    let restored: RetryBatch = serde_json::from_slice(&stored).unwrap();
+    assert_eq!(restored.0, batch);
+}
+
+#[tokio::test]
+async fn returned_batch_larger_than_a_lane_share_is_queued_as_ordered_chunks() {
+    let names = names(40);
+    let bytes = entry_bytes(&batch_of(&names));
+    // The former even split gave each of the three queues a third of this budget, less than the batch.
+    let budget = 2 * bytes;
+    let mut worker = worker_with(2, 512).await;
+    worker.queue = queue_for(&settings_with_budget(budget), &test_endpoints(2)).await;
+    let mut opened = start_all(&mut worker).await;
+    let (_down_wire, _) = opened.pop().unwrap();
+    let (mut healthy_wire, _) = opened.pop().unwrap();
+    worker
+        .accept(names.iter().map(|name| {
+            Event::Metric(Metric::gauge(
+                Context::from_parts(name.clone(), TagSet::default()),
+                (123, 2.0),
+            ))
+        }))
+        .await;
+    worker.pump().await.unwrap();
+    worker.flush().await.unwrap();
+    assert_eq!(healthy_wire.try_recv().unwrap().batch_id, 1);
+    worker
+        .fail(E1, MetricStreamFailureKind::Unavailable, "disconnect")
+        .await
+        .unwrap();
+
+    let mut chunks = 0;
+    let mut queued = Vec::new();
+    while let Some(entry) = worker.queue.pop_lane(E1).await {
+        assert!(entry.size_bytes() <= budget / 4);
+        chunks += 1;
+        queued.extend(entry.0.series().iter().map(|series| series.name().to_owned()));
+    }
+    assert!(chunks > 1);
+    assert_eq!(queued, names);
+    assert!(worker.queue.is_empty());
+}
+
+#[tokio::test]
+async fn oversized_retry_splits_without_drops_and_preserves_series_order() {
+    let names = names(40);
+    let batch = batch_of(&names);
+    let budget = 2 * entry_bytes(&batch);
+    let mut queue = queue_for(&settings_with_budget(budget), &test_endpoints(2)).await;
+    let result = queue.push_retry(Some(E1), batch).await;
+    assert!(!result.had_drops());
+    let mut chunks = Vec::new();
+    while let Some(entry) = queue.pop_lane(E1).await {
+        assert!(entry.size_bytes() <= budget / 4);
+        chunks.push(entry.0);
+    }
+    assert!(chunks.len() > 1);
+    assert_eq!(
+        chunks.iter().map(LogicalMetricBatch::point_count).sum::<usize>(),
+        names.len()
+    );
+    let queued: Vec<_> = chunks
+        .iter()
+        .flat_map(|chunk| chunk.series().iter().map(|series| series.name().to_owned()))
+        .collect();
+    assert_eq!(queued, names);
+}
+
+#[tokio::test]
+async fn one_lane_can_use_the_whole_pooled_budget() {
+    let names = names(6);
+    let entry = entry_bytes(&logical("series-000"));
+    // The former even split capped this lane at two entries.
+    let mut queue = queue_for(&settings_with_budget(6 * entry), &test_endpoints(2)).await;
+    for name in &names {
+        assert!(!queue
+            .push_retry(Some(E0), batch_of(std::slice::from_ref(name)))
+            .await
+            .had_drops());
+    }
+    assert_eq!(lane_names(&mut queue, E0).await, names);
+    assert!(queue.is_empty());
+}
+
+#[tokio::test]
+async fn pooled_budget_evicts_the_globally_oldest_retry() {
+    let mut queue = queue_for(
+        &settings_with_budget(3 * entry_bytes(&logical("s1"))),
+        &test_endpoints(2),
+    )
+    .await;
+    assert!(!queue.push_retry(None, logical("s1")).await.had_drops());
+    assert!(!queue.push_retry(Some(E0), logical("x1")).await.had_drops());
+    assert!(!queue.push_retry(Some(E1), logical("y1")).await.had_drops());
+    // A lane push evicts the oldest retry, which waits in the shared queue.
+    let evicted = queue.push_retry(Some(E1), logical("y2")).await;
+    assert_eq!(evicted.items_dropped, 1);
+    assert_eq!(evicted.events_dropped, 1);
+    assert_eq!(evicted.data_points_dropped, 1);
+    // A shared push evicts the oldest retry, which now waits in the other lane.
+    let evicted = queue.push_retry(None, logical("s2")).await;
+    assert_eq!(evicted.items_dropped, 1);
+    assert_eq!(evicted.data_points_dropped, 1);
+    assert_eq!(shared_names(&mut queue).await, ["s2"]);
+    assert!(lane_names(&mut queue, E0).await.is_empty());
+    assert_eq!(lane_names(&mut queue, E1).await, ["y1", "y2"]);
+}
+
+#[tokio::test]
+async fn pooled_budget_spills_the_globally_oldest_retry_to_disk() {
+    let dir = TempDir::new().unwrap();
+    let mut settings = persisted_settings(&dir, 3 * entry_bytes(&logical("s1")));
+    settings.endpoints.forwarder.flush_to_disk_mem_ratio = 0.0;
+    let mut queue = queue_for(&settings, &test_endpoints(2)).await;
+    assert!(!queue.push_retry(None, logical("s1")).await.had_drops());
+    assert!(!queue.push_retry(Some(E0), logical("x1")).await.had_drops());
+    assert!(!queue.push_retry(Some(E1), logical("y1")).await.had_drops());
+    assert!(!queue.push_retry(Some(E1), logical("y2")).await.had_drops());
+    // The shared retry moved to disk; memory now holds the lanes' retries.
+    assert!(!queue.push_retry(Some(E0), logical("x2")).await.had_drops());
+    assert_eq!(lane_names(&mut queue, E0).await, ["x2", "x1"]);
+    assert_eq!(lane_names(&mut queue, E1).await, ["y1", "y2"]);
+    assert_eq!(shared_names(&mut queue).await, ["s1"]);
+    assert!(queue.is_empty());
+}
+
+#[tokio::test]
+async fn single_endpoint_queue_keeps_the_whole_budget_without_lanes() {
+    let names = names(4);
+    let entry = entry_bytes(&logical("series-000"));
+    let mut queue = queue_for(&settings_with_budget(3 * entry), &test_endpoints(1)).await;
+    assert_eq!(queue.lane_count(), 0);
+    for name in &names[..3] {
+        assert!(!queue
+            .push_retry(Some(E0), batch_of(std::slice::from_ref(name)))
+            .await
+            .had_drops());
+    }
+    let evicted = queue.push_retry(Some(E0), batch_of(&names[3..])).await;
+    assert_eq!(evicted.items_dropped, 1);
+    assert_eq!(evicted.data_points_dropped, 1);
+    assert_eq!(shared_names(&mut queue).await, names[1..]);
+}
+
+#[tokio::test]
+async fn series_larger_than_the_chunk_limit_is_queued_alone() {
+    let large = tagged("large", 60);
+    let large_bytes = entry_bytes(&LogicalMetricBatch::new(vec![large.clone()]));
+    let budget = 2 * large_bytes;
+    let huge = tagged("huge", 600);
+    assert!(entry_bytes(&LogicalMetricBatch::new(vec![huge.clone()])) > budget);
+    assert!(entry_bytes(&LogicalMetricBatch::new(vec![gauge("a"), gauge("b")])) <= budget / 4);
+    let mut queue = queue_for(&settings_with_budget(budget), &test_endpoints(2)).await;
+
+    let batch = LogicalMetricBatch::new(vec![gauge("a"), gauge("b"), large, gauge("c"), gauge("d")]);
+    assert!(!queue.push_retry(Some(E0), batch).await.had_drops());
+    let mut chunks = Vec::new();
+    while let Some(entry) = queue.pop_lane(E0).await {
+        chunks.push(entry.0.series().iter().map(|s| s.name().to_owned()).collect::<Vec<_>>());
+    }
+    assert_eq!(chunks, [vec!["a", "b"], vec!["large"], vec!["c", "d"]]);
+
+    // A series larger than the whole budget is still rejected and counted, without blocking its neighbours.
+    let batch = LogicalMetricBatch::new(vec![gauge("a"), huge, gauge("b")]);
+    let result = queue.push_retry(Some(E0), batch).await;
+    assert_eq!(result.items_dropped, 1);
+    assert_eq!(result.events_dropped, 1);
+    assert_eq!(result.data_points_dropped, 1);
+    assert_eq!(lane_names(&mut queue, E0).await, ["a", "b"]);
+}
+
+#[tokio::test]
+async fn destination_sends_every_payload_to_every_endpoint_and_replays_only_to_the_failed_one() {
+    let mut healthy = EndpointHarness::new().await;
+    let mut flaky = EndpointHarness::new().await;
+    let (input, task) = start_configured_destination(StatefulMetricsConfiguration {
+        endpoints: vec![healthy.endpoint.clone(), flaky.endpoint.clone()],
+
+        api_key: Live::new_fixed("test-key".to_owned()),
+        compression_level: 3,
+        flush_timeout: Duration::from_millis(10),
+        batch_capacity: 512,
+        dictionary_max_entries: DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_ENTRIES,
+        dictionary_max_bytes: DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_BYTES,
+        queue: queue_configuration(&shared()),
+        stop_timeout: TEST_TIMEOUT,
+    })
+    .await;
+    let mut healthy_session = healthy.session().await;
+    let mut flaky_session = flaky.session().await;
+    send_metrics(&input, 123).await;
+    let first = healthy_session.receive().await;
+    let copy = flaky_session.receive().await;
+    assert_eq!(first.batch_id, 1);
+    assert_eq!(sequence(&first), sequence(&copy));
+    flaky_session
+        .replies
+        .send(Err(Status::unavailable("disconnect")))
+        .await
+        .unwrap();
+    healthy_session.acknowledge(&first).await;
+    let mut reconnected = flaky.session().await;
+    let replay = reconnected.receive().await;
+    assert_eq!(replay.batch_id, 1);
+    assert_eq!(sequence(&replay), sequence(&copy));
+    reconnected.acknowledge(&replay).await;
+    drop(input);
+    timeout(TEST_TIMEOUT, task).await.unwrap().unwrap().unwrap();
+    assert!(healthy_session.received.try_recv().is_err());
+}
+
+#[test]
+fn core_config_uses_default_dictionary_caps() {
+    let config = core_config(2, 256);
+    assert_eq!(config.batch_capacity, 256);
+    assert_eq!(config.metrics_endpoints, 2);
+    assert_eq!(config.sender.max_inflight_payloads, MAX_INFLIGHT_BATCHES);
+    assert_eq!(
+        config.metrics_dictionary_eviction,
+        MetricDictionaryEvictionConfig {
+            max_item_count: 60_000,
+            max_memory_bytes: 256 * 1024 * 1024,
+            stale_after: Duration::from_secs(30 * 60),
+            ..MetricDictionaryEvictionConfig::default()
+        }
+    );
+}
+
+#[test]
+fn core_config_applies_configured_dictionary_caps() {
+    let mut configuration = configuration(1, 512);
+    configuration.dictionary_max_entries = NonZeroUsize::new(100_000).unwrap();
+    configuration.dictionary_max_bytes = NonZeroU64::new(128 * 1024 * 1024).unwrap();
+    let eviction = configuration.core_config().metrics_dictionary_eviction;
+    assert_eq!(eviction.max_item_count, 100_000);
+    assert_eq!(eviction.max_memory_bytes, 128 * 1024 * 1024);
+    assert_eq!(eviction.stale_after, DICTIONARY_STALE_AFTER);
+
+    configuration.dictionary_max_bytes = NonZeroU64::MAX;
+    let eviction = configuration.core_config().metrics_dictionary_eviction;
+    assert_eq!(eviction.max_memory_bytes, i64::MAX);
+}
+
+#[tokio::test]
+async fn dictionary_gauges_report_core_dictionary_stats() {
+    let recorder = TestRecorder::default();
+    let _local = metrics::set_default_local_recorder(&recorder);
+    let (mut worker, _wire, _) = open_worker().await;
+    submit(&mut worker, "requests").await;
+    worker.telemetry.record_dictionary(worker.core.dictionary_stats());
+
+    let stats = worker.core.dictionary_stats();
+    assert!(stats.entries > 0);
+    assert!(stats.estimated_bytes > 0);
+    // Below the caps every definition is retained.
+    assert_eq!(stats.transient_entries, 0);
+    assert!(stats.frequency_sketch_bytes > 0);
+    for (name, value) in [
+        ("stateful_metrics_dictionary_entries", stats.entries),
+        ("stateful_metrics_dictionary_estimated_bytes", stats.estimated_bytes),
+        ("stateful_metrics_dictionary_transient_entries", stats.transient_entries),
+        ("stateful_metrics_dictionary_transient_bytes", stats.transient_bytes),
+        (
+            "stateful_metrics_dictionary_frequency_sketch_bytes",
+            stats.frequency_sketch_bytes,
+        ),
+    ] {
+        assert_eq!(recorder.gauge(name), Some(value as f64), "{name}");
+    }
+}
+
+mod memory_accounting {
+    use std::num::NonZeroU64;
+
+    use agent_data_plane_config::ConfigValue;
+    use saluki_core::{
+        accounting::{ComponentRegistry, MemoryBounds as _, MemoryGrant, VerifierError},
+        support::SubsystemIdentifier,
+    };
+
+    use super::{configuration, queue_configuration, shared};
+
+    #[test]
+    fn startup_memory_verification_includes_shared_budgets() {
+        // Struct-only accounting admitted grants smaller than the configured dictionary and logical retry budgets.
+        for endpoints in [1, 3] {
+            for (retry_bytes, budget_bytes) in [(8192, 73_728), (0, 65_536)] {
+                let mut config = configuration(endpoints, 512);
+                config.dictionary_max_bytes = NonZeroU64::new(65_536).unwrap();
+                let mut shared = shared();
+                shared.endpoints.forwarder.retry_queue_payloads_max_size = ConfigValue::explicit(retry_bytes);
+                config.queue = queue_configuration(&shared);
+
+                let registry = ComponentRegistry::default();
+                config.specify_bounds(&mut registry.bounds_builder(&SubsystemIdentifier::from_dotted("test")));
+                let required_bytes = registry.as_bounds().total_minimum_required_bytes() + budget_bytes;
+
+                // Endpoint lanes share one retry budget for the sender, including when retry memory is disabled.
+                assert!(registry
+                    .root()
+                    .verify_bounds(MemoryGrant::effective(required_bytes).unwrap())
+                    .is_ok());
+                assert_eq!(
+                    registry
+                        .root()
+                        .verify_bounds(MemoryGrant::effective(required_bytes - 1).unwrap())
+                        .err(),
+                    Some(VerifierError::FirmLimitExceedsAvailable {
+                        available_bytes: required_bytes - 1,
+                        firm_limit_bytes: required_bytes,
+                    })
+                );
+            }
+        }
+    }
+}
+
+async fn send_metrics(input: &mpsc::Sender<EventsBuffer>, timestamp: u64) {
+    let mut events = EventsBuffer::default();
+    for name in ["first", "second"] {
+        assert!(events
+            .try_push(Event::Metric(Metric::gauge(name, (timestamp, 1.0))))
+            .is_none());
+    }
+    input.send(events).await.unwrap();
+}
+
+#[tokio::test]
+async fn destination_shutdown_and_restart_preserves_unacknowledged_metrics() {
+    let mut harness = EndpointHarness::new().await;
+    let dir = TempDir::new().unwrap();
+    let settings = persisted_settings(&dir, 1024 * 1024);
+    let (input, task) = harness.start(&settings, Live::new_fixed("test-key".to_owned())).await;
+    let mut session = harness.session().await;
+    send_metrics(&input, 123).await;
+    let original = sequence(&session.receive().await);
+    drop(input);
+    timeout(TEST_TIMEOUT, task).await.unwrap().unwrap().unwrap();
+    let (input, task) = harness.start(&settings, Live::new_fixed("test-key".to_owned())).await;
+    let mut replay_session = harness.session().await;
+    let batch = replay_session.receive().await;
+    assert_eq!(sequence(&batch), original);
+    replay_session.acknowledge(&batch).await;
+    drop(input);
+    timeout(TEST_TIMEOUT, task).await.unwrap().unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn destination_refreshes_credentials_and_resumes_delivery() {
+    let mut harness = EndpointHarness::new().await;
+    let (mut publisher, source) = channel("test-key".to_owned());
+    let (input, task) = harness.start(&shared(), source.live(|key| key)).await;
+    let mut session = harness.session().await;
+    assert_eq!(session.key, "test-key");
+    send_metrics(&input, 123).await;
+    let batch = session.receive().await;
+    session.acknowledge(&batch).await;
+    publisher.publish("new-key".to_owned());
+    let mut updated = harness.session().await;
+    assert_eq!(updated.key, "new-key");
+    send_metrics(&input, 124).await;
+    let batch = updated.receive().await;
+    updated.acknowledge(&batch).await;
+    drop(input);
+    timeout(TEST_TIMEOUT, task).await.unwrap().unwrap().unwrap();
 }
