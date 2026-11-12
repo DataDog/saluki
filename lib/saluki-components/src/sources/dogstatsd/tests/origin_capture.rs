@@ -37,12 +37,6 @@ fn named_pipe_frames_are_written_to_an_active_capture() {
     );
 }
 
-fn length_delimited(payload: &[u8]) -> Vec<u8> {
-    let mut frame = (payload.len() as u32).to_le_bytes().to_vec();
-    frame.extend_from_slice(payload);
-    frame
-}
-
 /// Feeds `data` through the decoder the same way the connected stream reader does: each read fills whatever
 /// space is left in the I/O buffer after collapsing any partial frame retained from the previous read.
 async fn feed_connected_stream(
@@ -65,8 +59,8 @@ async fn feed_connected_stream(
 }
 
 /// A decoder for a UDS stream listener that writes to `capture`.
-fn capturing_stream_decoder(capture: &TrafficCapture) -> (TestListener, DecoderFixture) {
-    let listener = TestListener::new(ListenAddress::Unix("/tmp/dsd.socket".into()));
+fn capturing_stream_decoder(capture: &TrafficCapture) -> (ListenerState, DecoderFixture) {
+    let listener = test_listener_state(ListenAddress::Unix("/tmp/dsd.socket".into()));
     // The metrics output holds more buffers than the test dispatches, so nothing needs to drain it.
     let fixture = DecoderFixture::new(DecoderContext {
         traffic_capture: capture.clone(),
@@ -85,7 +79,7 @@ async fn uds_stream_capture_records_every_outer_frame_across_reads() {
     let peer_addr = creds_peer(TEST_PID);
     let (_capture_directory, capture, capture_path) = start_capture();
     let (listener, mut fixture) = capturing_stream_decoder(&capture);
-    let mut context = listener.decode_context(false, None, BufferDecodeMode::Connected);
+    let mut context = BufferDecodeContext::new(&listener, BufferDecodeMode::Connected);
 
     let payloads = stream_test_payloads(40);
     let stream = payloads
@@ -111,7 +105,7 @@ async fn uds_stream_capture_starting_mid_frame_captures_from_next_whole_frame_an
     let capture_directory = tempfile::tempdir().expect("temporary capture directory should be created");
     let capture = TrafficCapture::new(capture_directory.path().to_path_buf(), 1);
     let (listener, mut fixture) = capturing_stream_decoder(&capture);
-    let mut context = listener.decode_context(false, None, BufferDecodeMode::Connected);
+    let mut context = BufferDecodeContext::new(&listener, BufferDecodeMode::Connected);
 
     let payloads = stream_test_payloads(20);
     let stream = payloads
@@ -148,7 +142,7 @@ async fn uds_stream_capture_starting_mid_frame_captures_from_next_whole_frame_an
 async fn uds_stream_capture_keeps_last_pid_for_reads_without_credentials() {
     let (_capture_directory, capture, capture_path) = start_capture();
     let (listener, mut fixture) = capturing_stream_decoder(&capture);
-    let mut context = listener.decode_context(false, None, BufferDecodeMode::Connected);
+    let mut context = BufferDecodeContext::new(&listener, BufferDecodeMode::Connected);
 
     // The first read carries the sender's credentials, and the second carries none.
     let payloads = stream_test_payloads(2);
