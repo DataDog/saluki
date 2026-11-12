@@ -36,9 +36,10 @@ pub struct ScopePlatform {
     pub volume_path: Option<&'static str>,
 }
 
+#[cfg(test)]
 impl ScopePlatform {
     /// Linux containers: a bridge network, and a volume at `/airlock` in every container.
-    pub const LINUX: Self = Self {
+    pub(crate) const LINUX: Self = Self {
         network_driver: "bridge",
         volume_path: Some("/airlock"),
     };

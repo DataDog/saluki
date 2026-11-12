@@ -8,6 +8,9 @@ repository = { workspace = true }
 [lints]
 workspace = true
 
+[features]
+test-util = []
+
 [dependencies]
 bollard = { workspace = true, features = ["http", "pipe"] }
 bytes = { workspace = true }

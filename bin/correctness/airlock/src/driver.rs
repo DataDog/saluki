@@ -28,6 +28,7 @@ use tracing::{debug, error, trace, warn};
 
 use crate::{
     config::{DatadogIntakeConfig, MillstoneConfig, TargetConfig},
+    container::LINUX_EPHEMERAL_PORT_RANGE,
     removal::Group,
 };
 
@@ -35,9 +36,6 @@ const MILLSTONE_CONFIG_PATH_INTERNAL: &str = "/etc/millstone/config.toml";
 
 /// Default image for the shared-volume permission fix-up container.
 pub const DEFAULT_ALPINE_IMAGE: &str = "alpine:latest";
-/// Ephemeral port range for Linux containers. Must stay above every fixed port that a test process
-/// listens on.
-const LINUX_EPHEMERAL_PORT_RANGE: &str = "60000 65535";
 const DATADOG_INTAKE_HEALTHCHECK_INTERVAL: Duration = Duration::from_secs(1);
 const DATADOG_INTAKE_HEALTHCHECK_TIMEOUT: Duration = Duration::from_secs(1);
 const DATADOG_INTAKE_HEALTHCHECK_RETRIES: i64 = 30;
