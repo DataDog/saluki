@@ -24,6 +24,13 @@ static META_TAG_INSTALL_TIME: MetaString = MetaString::from_static("_dd.install.
 ///
 /// Enriches traces on a service-by-service basis with metadata that indicates that a given service has been onboarded
 /// to Datadog APM.
+///
+/// This transform must run after trace sampling. A service is recorded as seen when its first trace is tagged, so
+/// tagging a trace that sampling later drops would leave the service marked as onboarded without any tagged trace
+/// ever being sent.
+///
+/// Sampling may also have reduced a trace to the spans it retained, for example under single-span sampling. The tags
+/// then go on the root among the surviving spans, and the service recorded is that span's service.
 #[derive(Default)]
 pub struct ApmOnboardingConfiguration;
 
@@ -63,6 +70,12 @@ impl ApmOnboarding {
     }
 
     fn enrich_trace(&mut self, trace: &mut Trace) {
+        // Sampling can still forward a trace it decided to drop, for example so that error tracking or analyzed span
+        // events still see it. That trace isn't kept, so we leave it untagged and don't record its service.
+        if trace.dropped_trace {
+            return;
+        }
+
         // Find the root span of the trace.
         let root_span = match get_root_span_from_trace_mut(trace) {
             Some(root_span) => root_span,
@@ -290,6 +303,48 @@ mod tests {
             Trace::new(vec![span("api", 4, 0)], TraceIngestInfo::Datadog),
         );
         assert!(span_attrs_by_id(&third, 4).contains_key("_dd.install.id"));
+    }
+
+    fn dropped_trace(spans: Vec<Span>) -> Trace {
+        let mut trace = Trace::new(spans, TraceIngestInfo::Datadog);
+        trace.dropped_trace = true;
+        trace
+    }
+
+    #[test]
+    fn dropped_trace_is_not_enriched() {
+        let mut onboarding = ApmOnboarding::from_install_info(Some(test_install_info()));
+        let buffer = enrich(
+            &mut onboarding,
+            dropped_trace(vec![span("web", 2, 1), span("web", 1, 0)]),
+        );
+
+        for span_id in [1, 2] {
+            let attrs = span_attrs_by_id(&buffer, span_id);
+            assert!(
+                !attrs.keys().any(|key| key.starts_with("_dd.install.")),
+                "a dropped trace must not carry onboarding tags, span {span_id} has {attrs:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn dropped_first_trace_leaves_service_unseen() {
+        let mut onboarding = ApmOnboarding::from_install_info(Some(test_install_info()));
+
+        let _ = enrich(&mut onboarding, dropped_trace(vec![span("web", 1, 0)]));
+        assert!(
+            onboarding.first_span_by_service.is_empty(),
+            "a dropped trace must not record its service as seen"
+        );
+
+        // The next kept trace for the same service is the first one tagged.
+        let kept = enrich(
+            &mut onboarding,
+            Trace::new(vec![span("web", 2, 0)], TraceIngestInfo::Datadog),
+        );
+        assert!(span_attrs_by_id(&kept, 2).contains_key("_dd.install.id"));
+        assert!(onboarding.first_span_by_service.contains("web"));
     }
 
     #[test]
