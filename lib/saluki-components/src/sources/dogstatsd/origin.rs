@@ -333,7 +333,7 @@ mod tests {
             workload_provider.add_entity_shared_tags(entity_id.clone(), single_tag(tag));
         }
 
-        DogStatsDOriginTagResolver::new(config, Arc::new(workload_provider), CapturedTaggerHandle::new())
+        DogStatsDOriginTagResolver::new(config, Arc::new(workload_provider), CapturedTaggerHandle::default())
     }
 
     /// Builds a resolver with origin detection enabled at `tag_cardinality`.
@@ -588,7 +588,7 @@ mod tests {
             pid_map,
             duration: 0,
         };
-        let captured_tagger = CapturedTaggerHandle::new();
+        let captured_tagger = CapturedTaggerHandle::default();
         captured_tagger.set_current(Some(super::super::replay::CapturedTaggerStore::from_tagger_state(
             state,
         )));
@@ -612,7 +612,7 @@ mod tests {
         let resolver = enabled_resolver(
             OriginTagCardinality::Low,
             TestWorkloadProvider::new(),
-            CapturedTaggerHandle::new(),
+            CapturedTaggerHandle::default(),
         );
 
         let tags = resolver.resolve_origin_tags(RawOrigin::default(), Some(&ProcessOrigin::Replay(7777)));
@@ -631,7 +631,7 @@ mod tests {
         let resolver = enabled_resolver(
             OriginTagCardinality::High,
             workload_provider,
-            CapturedTaggerHandle::new(),
+            CapturedTaggerHandle::default(),
         );
 
         // An unpinned process ID resolves to `EntityId::ContainerPid(4242)` via the live path.
@@ -647,7 +647,7 @@ mod tests {
         let resolver = enabled_resolver(
             OriginTagCardinality::High,
             workload_provider,
-            CapturedTaggerHandle::new(),
+            CapturedTaggerHandle::default(),
         );
         let process_origin = ProcessOrigin::Pinned(Some(pinned_entity));
 
@@ -663,7 +663,7 @@ mod tests {
         let resolver = enabled_resolver(
             OriginTagCardinality::High,
             TestWorkloadProvider::new(),
-            CapturedTaggerHandle::new(),
+            CapturedTaggerHandle::default(),
         );
 
         let tags = resolver.resolve_origin_tags(RawOrigin::default(), None);
