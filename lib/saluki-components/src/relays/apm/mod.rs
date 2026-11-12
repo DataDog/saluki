@@ -435,6 +435,7 @@ mod tests {
     use saluki_core::components::test_util::TestComponentDriver;
     use saluki_core::runtime::state::{DataspaceUpdate, IdentifierFilter};
     use saluki_core::runtime::test_util::TestSupervisor;
+    use saluki_core::runtime::SupervisorError;
     use saluki_io::net::{BoundListenAddress, ProcessCredentials};
     #[cfg(unix)]
     use tempfile::tempdir;
@@ -736,46 +737,74 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn answers_a_request_proxied_back_to_itself_with_loop_detected() {
-        const BOUND_ADDRESS_ID: &str = "apm-relay-loop-test-bound-address";
+    /// Serves the router that `route_to` builds for a port on that loopback port, returning the address it bound.
+    ///
+    /// The port is found by binding it and releasing it again, so another process can take it before the server binds
+    /// it. The server then fails to initialize, and is served again on a new port.
+    async fn serve_on_free_port(route_to: impl Fn(u16) -> Router) -> (TestSupervisor, SocketAddr) {
+        const ATTEMPTS: usize = 5;
+        const SERVER_ID: &str = "apm-relay-free-port";
 
-        let supervisor = TestSupervisor::start("apm-relay-loop-test").await;
+        for _ in 0..ATTEMPTS {
+            let port = std::net::TcpListener::bind("127.0.0.1:0")
+                .and_then(|listener| listener.local_addr())
+                .expect("should find a free port")
+                .port();
+            let server = HttpServer::from_listen_address(ListenAddress::tcp_loopback(port))
+                .with_routes(route_to(port))
+                .with_server_id(SERVER_ID)
+                .with_worker_pool(tokio::runtime::Handle::current());
 
-        // Find a free port, then point both the listener and the destination at it. The relay is served directly
-        // rather than built, as building rejects this configuration.
-        let port = std::net::TcpListener::bind("127.0.0.1:0")
-            .and_then(|listener| listener.local_addr())
-            .expect("should find a free port")
-            .port();
-        let tcp_endpoint =
-            ListenAddress::try_from(format!("tcp://127.0.0.1:{port}")).expect("TCP APM endpoint should parse");
-        let router = build_router(RelayState {
-            proxy: TraceAgentProxy::from_destination(&format!("http://127.0.0.1:{port}"))
-                .expect("destination should parse"),
-            tracer_flare: unreachable_tracer_flare(),
-            capture_entity_resolver: None,
-            metrics: Metrics::new("dd_traces_relay", "relays"),
-        });
-        let server = HttpServer::from_listen_address(tcp_endpoint)
-            .with_routes(router)
-            .with_server_id(BOUND_ADDRESS_ID)
-            .with_worker_pool(tokio::runtime::Handle::current());
+            let supervisor = TestSupervisor::start_with("apm-relay-free-port-test", |supervisor| {
+                supervisor.add_worker(server.into_supervisor());
+            })
+            .await;
+            let mut bound_address_subscription = supervisor
+                .dataspace()
+                .subscribe::<BoundListenAddress>(IdentifierFilter::exact(format!("http-server-{SERVER_ID}")));
 
-        let mut bound_address_subscription = supervisor
-            .dataspace()
-            .subscribe::<BoundListenAddress>(IdentifierFilter::exact(format!("http-server-{BOUND_ADDRESS_ID}")));
-
-        supervisor
-            .scope(async {
-                runtime::nested_supervisor(server.into_supervisor()).spawn();
+            let update = tokio::time::timeout(Duration::from_secs(5), async {
+                while !supervisor.is_finished() {
+                    if let Ok(update) =
+                        tokio::time::timeout(Duration::from_millis(10), bound_address_subscription.recv()).await
+                    {
+                        return Some(update);
+                    }
+                }
+                None
             })
             .await;
 
-        let bound_addr = match tokio::time::timeout(Duration::from_secs(5), bound_address_subscription.recv()).await {
-            Ok(Some(DataspaceUpdate::Asserted(_, BoundListenAddress::Tcp(address)))) => address,
-            update => panic!("expected a bound address assertion for `{BOUND_ADDRESS_ID}`, got {update:?}"),
-        };
+            match update {
+                Ok(Some(Some(DataspaceUpdate::Asserted(_, BoundListenAddress::Tcp(address))))) => {
+                    return (supervisor, address)
+                }
+                Ok(None) => match supervisor.wait().await {
+                    Err(SupervisorError::FailedToInitialize { source, .. })
+                        if source.to_string().contains("Failed to bind listener") => {}
+                    result => panic!("expected the server to fail to bind port {port}, got {result:?}"),
+                },
+                update => panic!("expected a bound address assertion for `{SERVER_ID}`, got {update:?}"),
+            }
+        }
+
+        panic!("another process took the free port found for the server {ATTEMPTS} times in a row");
+    }
+
+    #[tokio::test]
+    async fn answers_a_request_proxied_back_to_itself_with_loop_detected() {
+        // Point the destination at the listener itself. The relay is served directly rather than built, as building
+        // rejects this configuration.
+        let (_supervisor, bound_addr) = serve_on_free_port(|port| {
+            build_router(RelayState {
+                proxy: TraceAgentProxy::from_destination(&format!("http://127.0.0.1:{port}"))
+                    .expect("destination should parse"),
+                tracer_flare: unreachable_tracer_flare(),
+                capture_entity_resolver: None,
+                metrics: Metrics::new("dd_traces_relay", "relays"),
+            })
+        })
+        .await;
 
         let mut stream = TcpStream::connect(bound_addr)
             .await
