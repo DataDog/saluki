@@ -63,6 +63,9 @@ impl TraceTagReplacerConfiguration {
     /// When `remove_stack_traces` is set, rules replacing the whole value of each stack trace tag with `?` run after
     /// the given rules. Patterns compile at build time, so an invalid one fails startup naming the rule.
     pub fn new(mut rules: Vec<ReplaceRule>, remove_stack_traces: bool) -> Self {
+        // TODO: Add a way to specify a direct replace rule, one that overwrites the whole value without a regex. The
+        // value is always discarded, but `Regex::replace_all` still allocates a buffer the size of the stack trace and
+        // scans it, for every blanked tag of every span.
         if remove_stack_traces {
             rules.extend(STACK_TRACE_TAGS.iter().map(|tag| ReplaceRule {
                 name: (*tag).to_owned(),
