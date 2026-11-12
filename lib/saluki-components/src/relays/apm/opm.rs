@@ -132,7 +132,7 @@ fn parse_validate_response(status: StatusCode, body: &[u8]) -> Result<String, Ge
 }
 
 /// Computes the marker of an organization UUID, as the trace-agent's `computeOPM` does: the first eight bytes of its
-/// SHA-256, with the low four bits of the last one cleared, in unpadded URL-safe base64.
+/// SHA-256, with the low four bits of the last one cleared, in URL-safe base64 without padding.
 fn compute_marker(org_uuid: &str) -> String {
     let digest = Sha256::digest(org_uuid.as_bytes());
     let mut truncated = [0u8; 8];
