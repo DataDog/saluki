@@ -116,8 +116,6 @@ pub(crate) struct PlannedStep {
     pub(crate) name: String,
     pub(crate) fields: StepFields,
     #[serde(skip)]
-    // TODO: remove the dead_code allowance once the lifecycle runs steps.
-    #[allow(dead_code)]
     pub(crate) step: Box<dyn Step>,
 }
 
