@@ -210,9 +210,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::common::datadog::{
-        sketch_shadow::site_allowed, test_util::datadog_metrics_configuration, METRICS_SKETCHES_PATH,
-    };
+    use crate::common::datadog::{test_util::datadog_metrics_configuration, METRICS_SKETCHES_PATH};
 
     fn configuration() -> DatadogMetricsConfiguration {
         let mut config = datadog_metrics_configuration();
@@ -227,19 +225,6 @@ mod tests {
     #[test]
     fn shadow_eligibility_matches_resolved_destinations_and_routing() {
         // Core #54581: site-gated V2 destinations, with one decision across a resolver's API keys.
-        for (url, expected) in [
-            ("https://app.datadoghq.com", true),
-            ("https://APP.DATADOGHQ.COM./", true),
-            ("https://app.us3.datadoghq.com", false),
-            ("https://notdatadoghq.com", false),
-            ("https://app.datadoghq.com.example.org", false),
-        ] {
-            assert_eq!(
-                site_allowed(&Url::parse(url).unwrap(), &["datadoghq.com".into()]),
-                expected,
-                "{url}"
-            );
-        }
         let mut config = configuration();
         config
             .additional_endpoints

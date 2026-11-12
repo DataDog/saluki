@@ -18,9 +18,13 @@ use super::api_key::ApiKeyCell;
 use super::protocol::{MetricsPayloadInfo, MetricsProtocolVersion, UseV3ApiSeriesConfig, V3SeriesMode};
 use super::routing::RoutingTargetId;
 
-static DD_URL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^app(\.mrf)?\.([a-z]{2,}\d{1,2}\.)?(datad(?:oghq|0g)\.(?:com|eu)|ddog-gov\.com)$").unwrap()
-});
+const DD_SITE_PATTERN: &str = r"(?:[a-z]{2,}\d{1,2}\.)?(?:datad(?:oghq|0g)\.(?:com|eu)|ddog-gov\.com)";
+
+static DD_URL_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(&format!(r"^app(\.mrf)?\.{DD_SITE_PATTERN}$")).unwrap());
+
+static DD_SITE_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(&format!(r"(?:^|\.)(?P<site>{DD_SITE_PATTERN})$")).unwrap());
 
 /// Per-endpoint V3 protocol settings.
 ///
@@ -162,6 +166,15 @@ fn is_datadog_host(host: &str) -> bool {
 
 pub(crate) fn is_datadog_url(url: &Url) -> bool {
     url.host_str().is_some_and(is_datadog_host)
+}
+
+/// Extracts the Datadog site from configured or version-prefixed endpoint URLs.
+pub(crate) fn extract_datadog_site(url: &Url) -> Option<String> {
+    let host = url.host_str()?.trim_end_matches('.').to_ascii_lowercase();
+    DD_SITE_REGEX
+        .captures(&host)?
+        .name("site")
+        .map(|site| site.as_str().to_owned())
 }
 
 /// Error type for invalid endpoints.
@@ -627,6 +640,26 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    #[test]
+    fn extracts_datadog_sites_from_endpoint_urls() {
+        for (url, expected) in [
+            ("https://app.datadoghq.com", Some("datadoghq.com")),
+            ("https://APP.DATADOGHQ.COM./", Some("datadoghq.com")),
+            ("https://agent.datad0g.com.", Some("datad0g.com")),
+            ("https://1-9-0-adp.agent.us3.datadoghq.com", Some("us3.datadoghq.com")),
+            ("https://app.datadoghq.eu", Some("datadoghq.eu")),
+            ("https://app.ddog-gov.com", Some("ddog-gov.com")),
+            ("https://notdatadoghq.com", None),
+            ("https://app.datadoghq.com.example.org", None),
+        ] {
+            assert_eq!(
+                extract_datadog_site(&Url::parse(url).unwrap()).as_deref(),
+                expected,
+                "{url}"
+            );
+        }
     }
 
     #[test]
