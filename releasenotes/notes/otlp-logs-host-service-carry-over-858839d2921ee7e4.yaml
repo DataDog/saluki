@@ -1,0 +1,7 @@
+---
+fixes:
+  - |
+    When an OTLP logs resource has no hostname or service, the first log record that provides one now sets it for the
+    resource's later log records too, across instrumentation scopes, matching the Datadog Agent. The record-level
+    hostname now uses the same resolution as resource attributes, such as ``datadog.host.name`` and Kubernetes node
+    names, and an empty resource ``service.name`` no longer prevents the record-level fallback.

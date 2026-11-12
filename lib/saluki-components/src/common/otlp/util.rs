@@ -2,7 +2,7 @@
 //!
 //! This module contains helpers used by both the OTLP source (translator) and the Datadog trace encoder.
 
-use std::sync::LazyLock;
+use std::{borrow::Cow, sync::LazyLock};
 
 use opentelemetry_semantic_conventions::resource::*;
 use otlp_protos::opentelemetry::proto::common::v1::{self as otlp_common, any_value::Value};
@@ -406,12 +406,12 @@ fn get_non_empty_attribute_str<'a>(attributes: &'a [otlp_common::KeyValue], key:
 ///
 /// Doubles, bytes, arrays, and maps return `None` because their `AsString` formatting isn't
 /// implemented yet, so resolution falls through to the next hostname source for them.
-fn literal_host_as_string(value: Option<&Value>) -> Option<String> {
+fn literal_host_as_string(value: Option<&Value>) -> Option<Cow<'_, str>> {
     match value {
-        None => Some(String::new()),
-        Some(Value::StringValue(s_val)) => Some(s_val.clone()),
-        Some(Value::BoolValue(b_val)) => Some(b_val.to_string()),
-        Some(Value::IntValue(i_val)) => Some(i_val.to_string()),
+        None => Some(Cow::Borrowed("")),
+        Some(Value::StringValue(s_val)) => Some(Cow::Borrowed(s_val)),
+        Some(Value::BoolValue(b_val)) => Some(Cow::Borrowed(if *b_val { "true" } else { "false" })),
+        Some(Value::IntValue(i_val)) => Some(Cow::Owned(i_val.to_string())),
         Some(_) => None,
     }
 }
@@ -488,13 +488,13 @@ fn kubernetes_hostname(attributes: &[otlp_common::KeyValue]) -> Option<String> {
 ///
 /// Checks, in order: the literal `host` attribute, `datadog.host.name`, ECS Fargate (which has no
 /// hostname), the cloud provider's hostname, the Kubernetes node name, `host.id`, and `host.name`.
-fn unsanitized_hostname_from_attributes(attributes: &[otlp_common::KeyValue]) -> Option<String> {
+fn unsanitized_hostname_from_attributes(attributes: &[otlp_common::KeyValue]) -> Option<Cow<'_, str>> {
     if let Some(hostname) = get_attribute(attributes, ATTRIBUTE_HOST).and_then(literal_host_as_string) {
         return Some(hostname);
     }
 
     if let Some(hostname) = get_attribute_str(attributes, ATTRIBUTE_DATADOG_HOSTNAME) {
-        return Some(hostname.to_string());
+        return Some(Cow::Borrowed(hostname));
     }
 
     if get_attribute_str(attributes, AWS_ECS_LAUNCHTYPE) == Some("fargate") {
@@ -502,41 +502,61 @@ fn unsanitized_hostname_from_attributes(attributes: &[otlp_common::KeyValue]) ->
     }
 
     match get_attribute_str(attributes, CLOUD_PROVIDER) {
-        Some("aws") => return ec2_hostname(attributes).map(str::to_owned),
-        Some("gcp") => return gcp_hostname(attributes),
-        Some("azure") => return azure_hostname(attributes).map(str::to_owned),
+        Some("aws") => return ec2_hostname(attributes).map(Cow::Borrowed),
+        Some("gcp") => return gcp_hostname(attributes).map(Cow::Owned),
+        Some("azure") => return azure_hostname(attributes).map(Cow::Borrowed),
         _ => {}
     }
 
     kubernetes_hostname(attributes)
-        .or_else(|| get_attribute_str(attributes, HOST_ID).map(str::to_owned))
-        .or_else(|| get_attribute_str(attributes, HOST_NAME).map(str::to_owned))
+        .map(Cow::Owned)
+        .or_else(|| get_attribute_str(attributes, HOST_ID).map(Cow::Borrowed))
+        .or_else(|| get_attribute_str(attributes, HOST_NAME).map(Cow::Borrowed))
 }
 
 /// Resolves a valid hostname from resource attributes.
 ///
 /// The hostname can be empty, for example when `datadog.host.name` isn't a string.
-fn hostname_from_attributes(attributes: &[otlp_common::KeyValue]) -> Option<String> {
+fn hostname_from_attributes(attributes: &[otlp_common::KeyValue]) -> Option<Cow<'_, str>> {
     let hostname = unsanitized_hostname_from_attributes(attributes)?;
-    (!INVALID_HOSTNAMES.contains(&hostname.as_str())).then_some(hostname)
+    (!INVALID_HOSTNAMES.contains(&hostname.as_ref())).then_some(hostname)
 }
 
-fn hostname_source(attributes: &[otlp_common::KeyValue]) -> Option<Source> {
-    hostname_from_attributes(attributes).map(|identifier| Source {
-        kind: SourceKind::Hostname,
-        identifier,
-    })
+/// A resolved source whose identifier borrows from the attributes where it can.
+enum SourceRef<'a> {
+    Host(Cow<'a, str>),
+    Other(SourceKind, &'a str),
 }
 
-fn aws_ecs_fargate_source(attributes: &[otlp_common::KeyValue]) -> Option<Source> {
+impl SourceRef<'_> {
+    fn into_source(self) -> Source {
+        match self {
+            SourceRef::Host(identifier) => Source {
+                kind: SourceKind::Hostname,
+                identifier: identifier.into_owned(),
+            },
+            SourceRef::Other(kind, identifier) => Source {
+                kind,
+                identifier: identifier.to_string(),
+            },
+        }
+    }
+}
+
+fn aws_ecs_fargate_task_arn(attributes: &[otlp_common::KeyValue]) -> Option<&str> {
     if get_attribute_str(attributes, AWS_ECS_LAUNCHTYPE) != Some("fargate") {
         return None;
     }
 
-    get_attribute_str(attributes, AWS_ECS_TASK_ARN).map(|task_arn| Source {
-        kind: SourceKind::AwsEcsFargate,
-        identifier: task_arn.to_string(),
-    })
+    get_attribute_str(attributes, AWS_ECS_TASK_ARN)
+}
+
+/// Resolves an ECS Fargate task, or else a hostname.
+fn fargate_or_host_source(attributes: &[otlp_common::KeyValue]) -> Option<SourceRef<'_>> {
+    match aws_ecs_fargate_task_arn(attributes) {
+        Some(task_arn) => Some(SourceRef::Other(SourceKind::AwsEcsFargate, task_arn)),
+        None => hostname_from_attributes(attributes).map(SourceRef::Host),
+    }
 }
 
 /// An Azure App Service or Azure Functions app identity.
@@ -570,7 +590,7 @@ fn azure_resource_id_name(resource_id: &str) -> Option<&str> {
 ///
 /// Any resource on the Container Apps platform is a Container Apps source, even when the identifier
 /// resolves to an empty string.
-fn azure_container_apps_identifier(attributes: &[otlp_common::KeyValue]) -> Option<String> {
+fn azure_container_apps_identifier(attributes: &[otlp_common::KeyValue]) -> Option<&str> {
     let platform = get_attribute_str(attributes, CLOUD_PLATFORM)?;
     if !AZURE_CONTAINER_APPS_PLATFORMS.contains(&platform) {
         return None;
@@ -586,7 +606,7 @@ fn azure_container_apps_identifier(attributes: &[otlp_common::KeyValue]) -> Opti
         })
     };
 
-    Some(replica.or_else(name).unwrap_or_default().to_string())
+    Some(replica.or_else(name).unwrap_or_default())
 }
 
 /// A Cloud Run or Cloud Functions identity, with the dimensions that are also emitted as tags.
@@ -669,11 +689,22 @@ pub fn extract_serverless_tags_from_resource_attributes(attributes: &[otlp_commo
     }
 }
 
-/// Resolves the source metadata from OTLP metric resource attributes with [`source_from_attributes`].
+/// Resolves the source metadata from OTLP metric resource attributes.
 pub fn resource_to_metric_source(
     resource: &otlp_protos::opentelemetry::proto::resource::v1::Resource,
 ) -> Option<Source> {
-    source_from_attributes(&resource.attributes)
+    resolve_source(&resource.attributes).map(SourceRef::into_source)
+}
+
+/// Resolves the hostname of telemetry from attributes, when its source is a host.
+///
+/// Serverless platforms and ECS Fargate tasks take precedence over the hostname and resolve to
+/// `None`. Only a hostname that has to be built is allocated.
+pub fn hostname_from_source_attributes(attributes: &[otlp_common::KeyValue]) -> Option<Cow<'_, str>> {
+    match resolve_source(attributes)? {
+        SourceRef::Host(hostname) => Some(hostname),
+        SourceRef::Other(..) => None,
+    }
 }
 
 /// Resolves the source of telemetry from attributes.
@@ -681,41 +712,24 @@ pub fn resource_to_metric_source(
 /// Checks, in order: Azure Functions, Cloud Run and Cloud Functions, Azure App Service, Azure
 /// Container Apps, ECS Fargate, and the hostname. A resource on a Cloud Run or Cloud Functions
 /// platform never falls back to a host, even when its identity is incomplete.
-pub fn source_from_attributes(attributes: &[otlp_common::KeyValue]) -> Option<Source> {
+fn resolve_source(attributes: &[otlp_common::KeyValue]) -> Option<SourceRef<'_>> {
     if let Some(app) = azure_app_identity(attributes, &AZURE_FUNCTIONS_PLATFORMS) {
-        return Some(Source {
-            kind: SourceKind::AzureFunctions,
-            identifier: app.name.to_string(),
-        });
+        return Some(SourceRef::Other(SourceKind::AzureFunctions, app.name));
     }
 
     if is_gcp_serverless(attributes) {
-        return gcp_serverless_identity(attributes).map(|identity| Source {
-            kind: identity.kind,
-            identifier: identity.instance.to_string(),
-        });
+        return gcp_serverless_identity(attributes).map(|identity| SourceRef::Other(identity.kind, identity.instance));
     }
 
     if let Some(app) = azure_app_identity(attributes, &AZURE_APP_SERVICE_PLATFORMS) {
-        return Some(Source {
-            kind: SourceKind::AzureAppService,
-            identifier: app.name.to_string(),
-        });
+        return Some(SourceRef::Other(SourceKind::AzureAppService, app.name));
     }
 
     if let Some(identifier) = azure_container_apps_identifier(attributes) {
-        return Some(Source {
-            kind: SourceKind::AzureContainerApps,
-            identifier,
-        });
+        return Some(SourceRef::Other(SourceKind::AzureContainerApps, identifier));
     }
 
-    aws_ecs_fargate_source(attributes).or_else(|| hostname_source(attributes))
-}
-
-/// Resolves the source metadata from OTLP resource attributes with [`source_from_attributes`].
-pub fn resource_to_source(resource: &otlp_protos::opentelemetry::proto::resource::v1::Resource) -> Option<Source> {
-    source_from_attributes(&resource.attributes)
+    fargate_or_host_source(attributes)
 }
 
 /// Resolves the source metadata from a typed attributes map.
@@ -1337,7 +1351,9 @@ mod tests {
     type SourceCase = (&'static str, Vec<KeyValue>, Option<(SourceKind, String)>);
 
     fn resolved_source(attributes: Vec<KeyValue>) -> Option<(SourceKind, String)> {
-        source_from_attributes(&attributes).map(|source| (source.kind, source.identifier))
+        resolve_source(&attributes)
+            .map(SourceRef::into_source)
+            .map(|source| (source.kind, source.identifier))
     }
 
     fn host(identifier: &str) -> Option<(SourceKind, String)> {
@@ -1345,7 +1361,7 @@ mod tests {
     }
 
     #[test]
-    fn source_from_attributes_resolves_hostnames_in_agent_order() {
+    fn resolve_source_checks_hostnames_in_order() {
         let s = string_attribute;
         let cases: Vec<SourceCase> = vec![
             (
@@ -1512,7 +1528,7 @@ mod tests {
     }
 
     #[test]
-    fn source_from_attributes_resolves_serverless_platforms() {
+    fn resolve_source_checks_serverless_platforms() {
         let s = string_attribute;
         let azure = |platform: &str| {
             vec![
@@ -1652,6 +1668,33 @@ mod tests {
         for (name, attributes, expected) in cases {
             assert_eq!(resolved_source(attributes), expected, "{name}");
         }
+    }
+
+    #[test]
+    fn hostname_from_source_attributes_borrows_and_skips_other_sources() {
+        let s = string_attribute;
+
+        assert!(matches!(
+            hostname_from_source_attributes(&[s(HOST_NAME, "name")]),
+            Some(Cow::Borrowed("name"))
+        ));
+        assert_eq!(
+            hostname_from_source_attributes(&[s(K8S_NODE_NAME, "node"), s(K8S_CLUSTER_NAME, "cluster")]).as_deref(),
+            Some("node-cluster")
+        );
+        assert_eq!(
+            hostname_from_source_attributes(&[
+                s(AWS_ECS_LAUNCHTYPE, "fargate"),
+                s(AWS_ECS_TASK_ARN, "arn"),
+                s(HOST_NAME, "name")
+            ]),
+            None
+        );
+        assert_eq!(
+            hostname_from_source_attributes(&[s(CLOUD_PLATFORM, "azure.container_apps"), s(HOST_NAME, "name")]),
+            None
+        );
+        assert_eq!(hostname_from_source_attributes(&[s(HOST_NAME, "localhost")]), None);
     }
 
     #[test]
