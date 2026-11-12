@@ -15,7 +15,6 @@ pub(super) mod test_support;
 pub(super) mod writer;
 
 pub use self::capture::DogStatsDCaptureControl;
-pub(crate) use self::capture::TrafficCapture;
 pub use self::capture_api::{
     CaptureTriggerBody, CaptureTriggerResponseBody, DogStatsDCaptureAPIHandler, CAPTURE_TRIGGER_ROUTE,
 };
