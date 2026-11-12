@@ -1,10 +1,10 @@
-use std::time::{SystemTime, UNIX_EPOCH};
 use std::vec::IntoIter;
 
 use opentelemetry_semantic_conventions::resource::{HOST_NAME, SERVICE_NAME};
 use otlp_protos::opentelemetry::proto::common::v1::InstrumentationScope;
 use otlp_protos::opentelemetry::proto::logs::v1::{LogRecord, ResourceLogs as OtlpResourceLogs, ScopeLogs};
 use otlp_protos::opentelemetry::proto::resource::v1::Resource;
+use saluki_common::time::get_unix_timestamp_nanos;
 use saluki_core::data_model::{
     event::log::Log,
     origin::OriginTagsResolver,
@@ -123,7 +123,7 @@ impl ResourceLogsIter {
                         record_service,
                         self.attribute_tags.clone(),
                     )
-                    .with_ingestion_timestamp(unix_nanos_now());
+                    .with_ingestion_timestamp(get_unix_timestamp_nanos());
 
                     return Some(log);
                 }
@@ -133,14 +133,6 @@ impl ResourceLogsIter {
             }
         }
     }
-}
-
-/// Returns the current time, in nanoseconds since the Unix epoch.
-fn unix_nanos_now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_nanos() as u64)
-        .unwrap_or_default()
 }
 
 impl Iterator for ResourceLogsIter {
