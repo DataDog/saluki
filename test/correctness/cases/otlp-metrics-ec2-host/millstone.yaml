@@ -5,4 +5,6 @@ volume: 1
 corpus:
   size: 1
   payload:
+    # Built by bin/correctness/otlp-fixtures. Regenerate it with `make generate-correctness-fixtures` rather than
+    # editing it here.
     static_base64: "CrMBCoUBChsKDHNlcnZpY2UubmFtZRILCglvdGxwLXRlc3QKFwoOY2xvdWQucHJvdmlkZXISBQoDYXdzCiAKB2hvc3QuaWQSFQoTaS0xMjM0NTY3ODkwYWJjZGVmMAorCglob3N0Lm5hbWUSHgocZWMyLTEtMi0zLTQuY29tcHV0ZS5pbnRlcm5hbBIpEicKD290bHAuZWMyLm1ldHJpYyoUChIZAMqaOwAAAAAhAAAAAAAA8D8="

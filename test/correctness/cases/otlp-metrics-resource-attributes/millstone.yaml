@@ -6,4 +6,6 @@ corpus:
   size: 1
   payload:
     # One gauge with a semantic-convention and a custom resource attribute.
+    # Built by bin/correctness/otlp-fixtures. Regenerate it with `make generate-correctness-fixtures` rather than
+    # editing it here.
     static_base64: "CnYKRQobCgxzZXJ2aWNlLm5hbWUSCwoJb3RscC10ZXN0CiYKGWN1c3RvbS5yZXNvdXJjZS5hdHRyaWJ1dGUSCQoHcHJlc2VudBItEisKE290bHByZXNvdXJjZS5tZXRyaWMqFAoSGQDKmjsAAAAAIQAAAAAAAPA/"
