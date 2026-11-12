@@ -340,8 +340,8 @@ pub fn transform_log_record(
         );
     }
 
-    // Fall back to the observed timestamp when the timestamp isn't set. Like the Agent, read nanoseconds as signed,
-    // so a timestamp past `i64::MAX` wraps to before 1970.
+    // Fall back to the observed timestamp when the timestamp isn't set. Nanoseconds are read as signed, so a timestamp
+    // past `i64::MAX` wraps to before 1970.
     let timestamp = if lr.time_unix_nano != 0 {
         lr.time_unix_nano
     } else {
