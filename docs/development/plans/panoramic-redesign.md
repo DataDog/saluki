@@ -984,7 +984,10 @@ runner. The way depends on what is done as well as on the protocol and the serve
 
 Two limits are plan errors: a send to a pod, and a request through the courier to an endpoint with
 `tls`. For `agent-adp`'s `otlp_http`, the participant type sets `tls` when the case sets the
-receiver's certificate and key.
+receiver's certificate and key. Until a case needs them, two more are plan errors: a request to a
+`grpc` endpoint, because the only request is an HTTP `GET`, and a request to an endpoint with `tls`,
+which `linuxrest` builds for `otlp-tls`. A send to an `http` or `grpc` endpoint writes its bytes over
+TCP.
 
 **Runner-host ports.** Every http and grpc endpoint of a Linux container is published on the
 runner's loopback address. Docker chooses each published port and the harness reads it back after
@@ -1987,6 +1990,8 @@ host-process subject with containerized helpers.
 - Comparison loads no longer wait for every container's health check.
 - A Linux container no longer gets `/proc`, the cgroup tree and the Docker socket unless the case
   asks for the host view.
+- A Linux container no longer shares the runner's PID namespace. Legacy gave every one the host's,
+  for origin detection; a case that needs it gets an option with that case.
 - `exec` quotes a command's output on failure, which the legacy CLI actions did not.
 - A load error exits 2 with no `run.json`, and a run where every case is skipped exits 3.
 - The merged traffic manifest may go, once retention is data.
