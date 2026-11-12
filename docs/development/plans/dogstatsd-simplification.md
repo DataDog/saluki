@@ -39,7 +39,8 @@ abstraction would have one caller.
   redundant: it logs a different, once-per-build warning and passes `None` streams on non-Linux).
 - [x] **4. Bug fixes 1, 2, 4,** each with a regression test. Most of bug 1 landed upstream first (#3071 and #3073);
   the remaining service check gap is fixed here. Bug 4 landed with the step 3 `file_header` change.
-- [ ] **5. Inline connected-stream reads** and the context-struct collapse, with an SMP benchmark comparison.
+- [x] **5. Inline connected-stream reads** and the context-struct collapse (one `ListenerState` per listener). The SMP
+  benchmark comparison runs in this pull request's CI.
 - [ ] **6. Capture/replay:** eager controls, marker-bit removal, typed errors, `EntityId` conversions, then relocation
   out of `sources/dogstatsd`.
 - [ ] **7. Codec:** `ClientOrigin` and field helpers; tag-limit removal only if approved.
