@@ -37,10 +37,11 @@ use saluki_io::{
 use stringtheory::MetaString;
 
 use super::{
-    build_io_buffer_pool, filters::EnablePayloadsConfiguration, metrics::build_metrics,
-    replay::test_support::wait_until_inactive, BufferDecodeContext, ContextResolvers, DecodeOutcome, DecoderContext,
-    DogStatsDCaptureControl, DogStatsDConfiguration, DogStatsDDecoder, ListenerState, TrafficCaptureReader,
+    build_io_buffer_pool, filters::EnablePayloadsConfiguration, metrics::build_metrics, BufferDecodeContext,
+    ContextResolvers, DecodeOutcome, DecoderContext, DogStatsDCaptureControl, DogStatsDConfiguration, DogStatsDDecoder,
+    ListenerState,
 };
+use crate::common::dogstatsd_capture::{test_support::wait_until_inactive, TrafficCaptureReader};
 
 const TEST_WINDOWS_PIPE_SECURITY_DESCRIPTOR: &str = "D:AI(A;;GA;;;WD)";
 

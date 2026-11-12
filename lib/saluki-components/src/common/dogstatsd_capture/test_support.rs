@@ -14,7 +14,7 @@ use super::writer::{CaptureRecord, CaptureTargetDir, TrafficCaptureWriter};
 ///
 /// The capture writer and the capture control both expose an "is ongoing" predicate, but with different receiver
 /// types, so this takes the predicate as a closure rather than a concrete handle.
-pub(in crate::sources::dogstatsd) fn wait_until_inactive(is_ongoing: impl Fn() -> bool) {
+pub(crate) fn wait_until_inactive(is_ongoing: impl Fn() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(2);
     while is_ongoing() && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(10));
