@@ -13,6 +13,9 @@ pub(crate) mod case;
 // TODO: remove the dead_code allowance once participant cases run.
 #[allow(dead_code)]
 pub(crate) mod container;
+// TODO: remove the dead_code allowance once participant cases run.
+#[allow(dead_code)]
+pub(crate) mod courier;
 pub(crate) mod deadline;
 pub(crate) mod ledger;
 mod order;
