@@ -7,6 +7,8 @@ use saluki_common::sync::work_queue::{self, WorkQueueReceiver};
 use saluki_core::accounting::MemoryLimiter;
 #[cfg(target_os = "linux")]
 use saluki_env::workload::providers::TestWorkloadProvider;
+#[cfg(target_os = "linux")]
+use saluki_io::net::listener::Listener;
 #[cfg(unix)]
 use saluki_io::net::Stream;
 #[cfg(unix)]
@@ -28,7 +30,7 @@ use crate::sources::dogstatsd::{
 };
 #[cfg(target_os = "linux")]
 use crate::sources::dogstatsd::{
-    handle_metric_packet, DogStatsDOriginTagResolver, Listener, OriginEnrichmentConfiguration, ProcessOrigin,
+    handle_metric_packet, DogStatsDOriginTagResolver, OriginEnrichmentConfiguration, ProcessOrigin,
 };
 
 #[cfg(unix)]
