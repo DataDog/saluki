@@ -6,6 +6,4 @@ corpus:
   size: 1
   payload:
     # One valid delta histogram with two explicit bounds and three bucket counts.
-    # Built by bin/correctness/otlp-fixtures. Regenerate it with `make generate-correctness-fixtures` rather than
-    # editing it here.
     static_base64: "CmoSaBJmCg5vdGxwLmhpc3RvZ3JhbUpUClARAMqaOwAAAAAZAJQ1dwAAAAAhBgAAAAAAAAApAAAAAACAN0AyGAEAAAAAAAAAAgAAAAAAAAADAAAAAAAAADoQAAAAAAAA8D8AAAAAAAAkQBAB"
