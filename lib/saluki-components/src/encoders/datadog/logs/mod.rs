@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use http::{uri::PathAndQuery, HeaderName, HeaderValue, Method, Uri};
+use http::{uri::PathAndQuery, HeaderMap, HeaderName, HeaderValue, Method, Uri};
 use saluki_common::iter::ReusableDeduplicator;
 use saluki_core::{
     accounting::{MemoryBounds, MemoryBoundsBuilder},
@@ -355,17 +355,13 @@ impl EndpointEncoder for LogsEndpointEncoder {
         &self.headers
     }
 
-    fn input_headers(&self, inputs: &[Self::Input]) -> Vec<(HeaderName, HeaderValue)> {
+    fn add_input_headers(&self, inputs: &[Self::Input], headers: &mut HeaderMap) {
         // `dd-message-timestamp` is when the last log of the request entered the pipeline, in milliseconds. It's left
         // out when that log's source didn't record it.
-        inputs
-            .last()
-            .and_then(Log::ingestion_timestamp)
-            .map(|timestamp_ns| {
-                let timestamp_ms = timestamp_ns / 1_000_000;
-                vec![(DD_MESSAGE_TIMESTAMP_HEADER.clone(), HeaderValue::from(timestamp_ms))]
-            })
-            .unwrap_or_default()
+        if let Some(timestamp_ns) = inputs.last().and_then(Log::ingestion_timestamp) {
+            let timestamp_ms = timestamp_ns / 1_000_000;
+            headers.insert(DD_MESSAGE_TIMESTAMP_HEADER.clone(), HeaderValue::from(timestamp_ms));
+        }
     }
 }
 
