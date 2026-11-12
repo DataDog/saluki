@@ -15,7 +15,7 @@ use saluki_core::{
         BuildContext,
     },
     data_model::{
-        event::{Event, EventType},
+        event::{metric::Metric, EventType},
         tags::TagSet,
     },
 };
@@ -161,22 +161,18 @@ impl Destination for DogStatsDStats {
                     Some(events) => {
                         if let Some(stats) = current_stats.as_mut() {
                             // We're actively collecting, so process the metrics.
-                            for event in events {
-                                if let Event::Metric(metric) = event {
+                            for metric in events.into_events::<Metric>() {
+                                let context = metric.context();
+                                let new_context = ContextNoOrigin {
+                                    name: context.name().clone(),
+                                    tags: context.tags().clone(),
+                                };
 
-                                    let context = metric.context();
-                                    let new_context = ContextNoOrigin {
-                                        name: context.name().clone(),
-                                        tags: context.tags().clone(),
-                                    };
-
-                                    let timestamp = get_coarse_unix_timestamp();
-                                    let sample = stats.entry(new_context).or_default();
-                                    sample.count += 1;
-                                    sample.last_seen = timestamp;
-
+                                let timestamp = get_coarse_unix_timestamp();
+                                let sample = stats.entry(new_context).or_default();
+                                sample.count += 1;
+                                sample.last_seen = timestamp;
                             }
-                        }
                      }},
                      None => break,
                 },
@@ -336,7 +332,7 @@ impl MemoryBounds for DogStatsDStatisticsConfiguration {
 mod tests {
     use std::collections::BTreeSet;
 
-    use saluki_core::data_model::tags::Tag;
+    use saluki_core::data_model::{event::Event, tags::Tag};
     use serde_json::json;
 
     use super::*;
@@ -408,7 +404,6 @@ mod tests {
     #[tokio::test]
     async fn collection_request_accumulates_metrics_then_responds_on_timeout() {
         use saluki_core::components::test_util::TestComponentDriver;
-        use saluki_core::data_model::event::metric::Metric;
         use tokio::time::timeout;
 
         // Grab the request sender the API handler would normally use, then build and run the destination.

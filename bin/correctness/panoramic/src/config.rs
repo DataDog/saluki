@@ -437,7 +437,7 @@ pub enum AssertionConfig {
         stream: LogStream,
     },
 
-    /// Probe an HTTP/HTTPS endpoint and assert on the response status code.
+    /// Probe an HTTP/HTTPS endpoint and assert on the response status code, and optionally its body.
     ///
     /// HTTPS endpoints are supported with optional certificate verification skipping. The status
     /// matcher accepts either "must equal" or "must not equal" semantics; the latter is useful for
@@ -448,6 +448,9 @@ pub enum AssertionConfig {
         endpoint: String,
         /// Matcher applied to the response status code.
         status: HttpStatusMatcher,
+        /// Optional matcher applied to the response body. If omitted, the body is not checked.
+        #[serde(default)]
+        body: Option<HttpBodyMatcher>,
         /// Whether to skip TLS certificate verification for `https://` endpoints.
         ///
         /// Defaults to `false`. Set to `true` when probing endpoints that serve self-signed
@@ -565,6 +568,14 @@ pub enum HttpStatusMatcher {
     Equal(u16),
     /// Assertion passes when the response status code is anything other than this value.
     NotEqual(u16),
+}
+
+/// Matcher for the response body of an [`AssertionConfig::HttpCheck`].
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HttpBodyMatcher {
+    /// Assertion passes when the response body equals this value exactly.
+    Equal(String),
 }
 
 impl CaseConfig for IntegrationConfig {
@@ -1515,6 +1526,7 @@ procedure:
         let mut http = AssertionConfig::HttpCheck {
             endpoint: "http://{{PANORAMIC_DYNAMIC_IP}}:{{PANORAMIC_DYNAMIC_PORT}}/health".to_string(),
             status: HttpStatusMatcher::Equal(200),
+            body: None,
             insecure_skip_verify: false,
             timeout: HumanDuration(Duration::from_secs(1)),
         };

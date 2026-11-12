@@ -298,6 +298,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::RawString,
     },
     EnvKey {
+        env_vars: &["DD_CMD_HOST"],
+        path: &["cmd_host"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
         env_vars: &["DD_CMD_PORT"],
         path: &["cmd_port"],
         decode: EnvDecode::Integer,
@@ -773,6 +778,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
     EnvKey {
         env_vars: &["DD_HOSTNAME"],
         path: &["hostname"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
+        env_vars: &["DD_IPC_ADDRESS"],
+        path: &["ipc_address"],
         decode: EnvDecode::RawString,
     },
     EnvKey {

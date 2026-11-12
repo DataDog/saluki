@@ -117,6 +117,23 @@ impl AgentVersion {
         }
     }
 
+    /// Returns the major version number.
+    ///
+    /// This is `0` for a development build that carries no version number, such as `nightly`.
+    pub const fn major(&self) -> u64 {
+        self.major
+    }
+
+    /// Returns the minor version number.
+    pub const fn minor(&self) -> u64 {
+        self.minor
+    }
+
+    /// Returns the patch version number.
+    pub const fn patch(&self) -> u64 {
+        self.patch
+    }
+
     /// Returns `true` if this version is at least `major.minor.patch`.
     ///
     /// Development/pre-release builds always satisfy the check, as they track behavior ahead of any numbered release.

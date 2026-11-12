@@ -125,8 +125,9 @@ pub struct EventD {
     title: MetaString,
     text: MetaString,
     timestamp: Option<NonZeroU64>,
-    #[serde(skip_serializing_if = "MetaString::is_empty")]
-    hostname: MetaString,
+    /// `None` if no hostname was set, or `Some` with the hostname, which may be explicitly empty.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hostname: Option<MetaString>,
     #[serde(skip_serializing_if = "MetaString::is_empty")]
     aggregation_key: MetaString,
     priority: Option<Priority>,
@@ -149,12 +150,11 @@ impl EventD {
     }
 
     /// Returns the host where the event originated from.
+    ///
+    /// Returns `None` if no hostname was set. An explicitly empty hostname is returned as `Some("")`, which is
+    /// distinct from no hostname: for example, it shouldn't be replaced with a default hostname.
     pub fn hostname(&self) -> Option<&str> {
-        if self.hostname.is_empty() {
-            None
-        } else {
-            Some(&self.hostname)
-        }
+        self.hostname.as_deref()
     }
 
     /// Returns the aggregation key of the event.
@@ -221,21 +221,19 @@ impl EventD {
 
     /// Set the hostname where the event originated from.
     ///
+    /// `None` clears the hostname. `Some("")` sets an explicitly empty hostname, which is distinct from no hostname.
+    ///
     /// This variant is specifically for use in builder-style APIs.
     pub fn with_hostname(mut self, hostname: impl Into<Option<MetaString>>) -> Self {
-        self.hostname = match hostname.into() {
-            Some(s) => s,
-            None => MetaString::empty(),
-        };
+        self.hostname = hostname.into();
         self
     }
 
     /// Set the hostname where the event originated from.
+    ///
+    /// `None` clears the hostname. `Some("")` sets an explicitly empty hostname, which is distinct from no hostname.
     pub fn set_hostname(&mut self, hostname: impl Into<Option<MetaString>>) {
-        self.hostname = match hostname.into() {
-            Some(s) => s,
-            None => MetaString::empty(),
-        };
+        self.hostname = hostname.into();
     }
 
     /// Set the aggregation key of the event.
@@ -335,7 +333,7 @@ impl EventD {
             title: title.into(),
             text: text.into(),
             timestamp: None,
-            hostname: MetaString::empty(),
+            hostname: None,
             aggregation_key: MetaString::empty(),
             priority: Some(Priority::Normal),
             source_type_name: MetaString::empty(),
@@ -343,5 +341,24 @@ impl EventD {
             tags: TagSet::default(),
             origin_tags: TagSet::default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use stringtheory::MetaString;
+
+    use super::EventD;
+
+    #[test]
+    fn unset_and_explicitly_empty_hostnames_are_distinct() {
+        let unset = EventD::new("title", "text");
+        assert_eq!(unset.hostname(), None);
+
+        let empty = EventD::new("title", "text").with_hostname(MetaString::empty());
+        assert_eq!(empty.hostname(), Some(""));
+
+        let cleared = empty.with_hostname(None);
+        assert_eq!(cleared.hostname(), None);
     }
 }

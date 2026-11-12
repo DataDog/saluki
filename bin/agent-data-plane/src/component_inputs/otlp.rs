@@ -1,6 +1,6 @@
 //! Inputs of the OTLP source, relay, decoder, and forwarder.
 
-use agent_data_plane_config::domains::otlp;
+use agent_data_plane_config::domains::{otlp, traces::ApmFeature};
 use saluki_components::sources::{
     ContainerTagPromotion, CorsConfiguration, CumulativeMonotonicMode, GrpcTransport, HistogramMode,
     InitialCumulativeMonotonicValue, OtlpContextSettings, OtlpGrpcReceiver, OtlpHttpReceiver, OtlpKeepalive,
@@ -48,8 +48,8 @@ pub(crate) fn otlp_receiver(receiver: &otlp::Receiver) -> OtlpReceiver {
     }
 }
 
-/// Builds the OTLP trace translation settings.
-pub(crate) fn otlp_traces_settings(traces: &otlp::Traces) -> OtlpTracesSettings {
+/// Builds the OTLP trace translation settings from the OTLP trace settings and the APM features.
+pub(crate) fn otlp_traces_settings(traces: &otlp::Traces, features: &[ApmFeature]) -> OtlpTracesSettings {
     OtlpTracesSettings {
         string_interner_size: traces.string_interner_size,
         probabilistic_sampler_sampling_percentage: traces.probabilistic_sampler_sampling_percentage,
@@ -63,6 +63,10 @@ pub(crate) fn otlp_traces_settings(traces: &otlp::Traces) -> OtlpTracesSettings 
         },
         span_name_as_resource_name: traces.span_name_as_resource_name,
         span_name_remappings: traces.span_name_remappings.clone(),
+        disable_operation_and_resource_name_logic_v2: features
+            .contains(&ApmFeature::DisableOperationAndResourceNameLogicV2),
+        disable_receive_resource_spans_v2: features.contains(&ApmFeature::DisableReceiveResourceSpansV2),
+        disable_otel_scope_convention: features.contains(&ApmFeature::DisableOtelScopeConvention),
     }
 }
 
@@ -244,8 +248,41 @@ mod tests {
                 container_tag_promotion: ContainerTagPromotion::Duplicate,
                 span_name_as_resource_name: true,
                 span_name_remappings: HashMap::from([("old.name".to_string(), "new.name".to_string())]),
+                disable_operation_and_resource_name_logic_v2: false,
+                disable_receive_resource_spans_v2: false,
+                disable_otel_scope_convention: false,
             },
-            otlp_traces_settings(&traces)
+            otlp_traces_settings(&traces, &[])
+        );
+    }
+
+    #[test]
+    fn otlp_traces_settings_take_each_disable_feature_from_its_apm_feature() {
+        let traces = otlp::Traces::default();
+        let settings = |features: &[ApmFeature]| {
+            let settings = otlp_traces_settings(&traces, features);
+            (
+                settings.disable_operation_and_resource_name_logic_v2,
+                settings.disable_receive_resource_spans_v2,
+                settings.disable_otel_scope_convention,
+            )
+        };
+
+        assert_eq!(
+            settings(&[ApmFeature::Other("table_names".to_owned())]),
+            (false, false, false)
+        );
+        assert_eq!(
+            settings(&[ApmFeature::DisableOperationAndResourceNameLogicV2]),
+            (true, false, false)
+        );
+        assert_eq!(
+            settings(&[ApmFeature::DisableReceiveResourceSpansV2]),
+            (false, true, false)
+        );
+        assert_eq!(
+            settings(&[ApmFeature::DisableOtelScopeConvention]),
+            (false, false, true)
         );
     }
 

@@ -50,6 +50,9 @@ pub struct SharedConfiguration {
 
     /// Verbosity of the internal telemetry emitted about the runtime itself. (not in Datadog Agent
     /// config schema)
+    ///
+    /// ADP raises a level less verbose than `info`, such as `warn`, to `info`, since its status page
+    /// relies on metrics at that level.
     pub metrics_level: String,
 
     /// Base directory for runtime-state files.

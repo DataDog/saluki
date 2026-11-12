@@ -251,12 +251,7 @@ impl Transform for DogStatsDPrefixFilter {
                 _ = health.live() => continue,
                 maybe_events = context.events().next() => match maybe_events {
                     Some(mut events) => {
-                        events.remove_if(|event| match event.try_as_metric_mut() {
-                            // `process_metric` returns `true` if the metric should be kept, so we have to invert that
-                            // here to match the predicate structure, which will _remove_ the event if `true` is returned.
-                            Some(metric) => !self.process_metric(metric),
-                            None => true,
-                        });
+                        events.retain_events::<Metric, _>(|metric| self.process_metric(metric));
 
                         if let Err(e) = context.dispatcher().dispatch(events).await {
                             error!(error = %e, "Failed to dispatch events.");
