@@ -2195,9 +2195,9 @@ mod tests {
 
     #[tokio::test]
     async fn telemetry() {
-        // TODO: We don't check `component_events_dropped_total` here as it's set directly in the aggregate
-        // component future rather than `AggregationState`, which is harder to drive overall and would have
-        // required even more boilerplate.
+        // TODO: We don't check that `component_events_dropped_total` increments when a context limit is hit,
+        // since that increment happens in the aggregate component future rather than `AggregationState`,
+        // which is harder to drive overall and would have required even more boilerplate.
         //
         // Leaving that as a future improvement.
 
