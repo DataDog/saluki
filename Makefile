@@ -869,7 +869,7 @@ endif
 
 .PHONY: generate-correctness-fixtures
 generate-correctness-fixtures: check-rust-build-tools
-generate-correctness-fixtures: ## Regenerates the static payloads of the OTLP logs correctness cases
+generate-correctness-fixtures: ## Regenerates the static payloads of the OTLP correctness cases
 	@echo "[*] Regenerating correctness case fixtures..."
 	@cargo run --profile devel --package otlp-fixtures
 

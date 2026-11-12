@@ -6,4 +6,6 @@ corpus:
   size: 1
   payload:
     # One gauge with the core mappings and both environment convention forms.
+    # Built by bin/correctness/otlp-fixtures. Regenerate it with `make generate-correctness-fixtures` rather than
+    # editing it here.
     static_base64: "Cu4BCrwBChsKDHNlcnZpY2UubmFtZRILCglvdGxwLXRlc3QKJAoTc2VydmljZS5pbnN0YW5jZS5pZBINCgtpbnN0YW5jZS00MgorChtkZXBsb3ltZW50LmVudmlyb25tZW50Lm5hbWUSDAoKcHJvZHVjdGlvbgoiChZkZXBsb3ltZW50LmVudmlyb25tZW50EggKBmxlZ2FjeQomChljdXN0b20ucmVzb3VyY2UuYXR0cmlidXRlEgkKB3ByZXNlbnQSLRIrChNvdGxwcmVzb3VyY2UubWV0cmljKhQKEhkAypo7AAAAACEAAAAAAADwPw=="
