@@ -110,19 +110,33 @@ fn info_configuration(config: &SalukiConfiguration, containerized: bool) -> Info
         telemetry_enabled: apm.telemetry_enabled,
         remote_configuration_enabled: config.domains.remote_configuration.enabled,
         obfuscation: info_obfuscation(&traces.obfuscation),
-        replace_tags: traces
-            .replace_tags
-            .iter()
-            .map(|rule| InfoReplaceRule {
-                name: rule.name.clone(),
-                pattern: rule.pattern.clone(),
-                repl: rule.repl.clone(),
-            })
-            .collect(),
+        replace_tags: info_replace_rules(traces),
         filter_tags: info_tag_filters(&traces.filter_tags),
         filter_tags_regex: info_tag_filters(&traces.filter_tags_regex),
         ignore_resources: traces.ignore_resources.clone(),
     }
+}
+
+/// Tags whose values the trace-agent replaces when `apm_config.obfuscation.remove_stack_traces` is set.
+const STACK_TRACE_TAGS: &[&str] = &["error.stack", "exception.stacktrace"];
+
+/// Returns the tag replacement rules as the trace-agent holds them: the configured rules, then, when stack traces are
+/// removed, a rule replacing each stack trace tag's whole value.
+fn info_replace_rules(traces: &traces::Domain) -> Vec<InfoReplaceRule> {
+    let configured = traces.replace_tags.iter().map(|rule| InfoReplaceRule {
+        name: rule.name.clone(),
+        pattern: rule.pattern.clone(),
+        repl: rule.repl.clone(),
+    });
+    let stack_traces = STACK_TRACE_TAGS
+        .iter()
+        .filter(|_| traces.obfuscation.remove_stack_traces)
+        .map(|tag| InfoReplaceRule {
+            name: tag.to_string(),
+            pattern: "(?s).*".to_string(),
+            repl: "?".to_string(),
+        });
+    configured.chain(stack_traces).collect()
 }
 
 fn info_obfuscation(obfuscation: &traces::Obfuscation) -> InfoObfuscation {
@@ -319,13 +333,14 @@ mod tests {
         assert_eq!(info.custom_peer_tags, ["custom.peer"]);
         assert!(info.telemetry_enabled);
         assert!(info.remote_configuration_enabled);
+        // Removing stack traces appends a rule for each stack trace tag after the configured rules.
         assert_eq!(
-            (
-                info.replace_tags[0].name.as_str(),
-                info.replace_tags[0].pattern.as_str(),
-                info.replace_tags[0].repl.as_str()
-            ),
-            ("*", "secret", "?")
+            replace_rules(&info),
+            [
+                ("*", "secret", "?"),
+                ("error.stack", "(?s).*", "?"),
+                ("exception.stacktrace", "(?s).*", "?"),
+            ]
         );
         assert_eq!(info.filter_tags.require[0].key, "env");
         assert_eq!(info.filter_tags.require[0].value.as_deref(), Some("prod"));
@@ -354,6 +369,26 @@ mod tests {
         assert!(!obfuscation.credit_cards_enabled);
         assert!(obfuscation.credit_cards_luhn);
         assert_eq!(obfuscation.credit_cards_keep_values, ["card"]);
+    }
+
+    fn replace_rules(info: &InfoConfiguration) -> Vec<(&str, &str, &str)> {
+        info.replace_tags
+            .iter()
+            .map(|rule| (rule.name.as_str(), rule.pattern.as_str(), rule.repl.as_str()))
+            .collect()
+    }
+
+    #[test]
+    fn info_configuration_reports_only_configured_replace_rules_when_stack_traces_are_kept() {
+        let mut config = SalukiConfiguration::default();
+        config.domains.traces.replace_tags = vec![ReplaceRule {
+            name: "http.url".to_string(),
+            pattern: "token/(.*)".to_string(),
+            repl: "?".to_string(),
+        }];
+
+        let info = relay_configuration(&config, false).info;
+        assert_eq!(replace_rules(&info), [("http.url", "token/(.*)", "?")]);
     }
 
     #[test]
