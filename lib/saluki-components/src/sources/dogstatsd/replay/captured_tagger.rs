@@ -111,7 +111,7 @@ impl CapturedTaggerStore {
 /// Shared atomic slot holding the currently active captured tagger store, if any.
 ///
 /// Cloned freely between the replay control surface (which sets the current store as sessions start and finish) and
-/// the DSD origin tag resolver (which loads it on every replay-flagged packet). Reads are lock-free; writes are
+/// the DSD origin tag resolver (which loads it on every replayed packet). Reads are lock-free; writes are
 /// infrequent (per replay start/end), so `ArcSwapOption` is the right primitive: it gives readers a cheap `.load()`
 /// while writers swap atomically.
 #[derive(Clone, Default)]
@@ -120,11 +120,6 @@ pub(crate) struct CapturedTaggerHandle {
 }
 
 impl CapturedTaggerHandle {
-    /// Creates a new, empty handle.
-    pub(crate) fn new() -> Self {
-        Self::default()
-    }
-
     /// Sets the current captured store for replay-origin resolution.
     ///
     /// `None` means the active replay session has no captured tagger snapshot, so replay-origin lookups return no

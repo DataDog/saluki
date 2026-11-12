@@ -11,9 +11,9 @@ use crate::sources::dogstatsd::{
 };
 
 /// Starts a capture written to a fresh temporary directory, returned alongside it to keep it alive.
-fn start_capture() -> (tempfile::TempDir, TrafficCapture, PathBuf) {
+fn start_capture() -> (tempfile::TempDir, DogStatsDCaptureControl, PathBuf) {
     let capture_directory = tempfile::tempdir().expect("temporary capture directory should be created");
-    let capture = TrafficCapture::new(capture_directory.path().to_path_buf(), 1);
+    let capture = DogStatsDCaptureControl::new(capture_directory.path().to_path_buf(), 1);
     let capture_path = capture
         .start_capture(None, Duration::from_secs(30), false)
         .expect("capture should start");
@@ -59,7 +59,7 @@ async fn feed_connected_stream(
 }
 
 /// A decoder for a UDS stream listener that writes to `capture`.
-fn capturing_stream_decoder(capture: &TrafficCapture) -> (ListenerState, DecoderFixture) {
+fn capturing_stream_decoder(capture: &DogStatsDCaptureControl) -> (ListenerState, DecoderFixture) {
     let listener = test_listener_state(ListenAddress::Unix("/tmp/dsd.socket".into()));
     // The metrics output holds more buffers than the test dispatches, so nothing needs to drain it.
     let fixture = DecoderFixture::new(DecoderContext {
@@ -103,7 +103,7 @@ async fn uds_stream_capture_records_every_outer_frame_across_reads() {
 async fn uds_stream_capture_starting_mid_frame_captures_from_next_whole_frame_and_stops_cleanly() {
     let peer_addr = ConnectionAddress::ProcessLike(ProcessIdentity::Unavailable);
     let capture_directory = tempfile::tempdir().expect("temporary capture directory should be created");
-    let capture = TrafficCapture::new(capture_directory.path().to_path_buf(), 1);
+    let capture = DogStatsDCaptureControl::new(capture_directory.path().to_path_buf(), 1);
     let (listener, mut fixture) = capturing_stream_decoder(&capture);
     let mut context = BufferDecodeContext::new(&listener, BufferDecodeMode::Connected);
 
@@ -225,7 +225,7 @@ fn resolve_process_origin_pins_live_entity() {
 #[test]
 fn resolve_process_origin_skips_live_lookup_when_unused() {
     let capture_entity_resolver = pid_container_resolver();
-    let traffic_capture = TrafficCapture::new(PathBuf::new(), 1);
+    let traffic_capture = DogStatsDCaptureControl::new(PathBuf::new(), 1);
 
     assert_eq!(
         resolve_process_origin_if_needed(

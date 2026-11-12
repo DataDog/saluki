@@ -26,8 +26,8 @@ use crate::sources::dogstatsd::{
 };
 #[cfg(target_os = "linux")]
 use crate::sources::dogstatsd::{
-    handle_metric_packet, CapturedTaggerHandle, DogStatsDOriginTagResolver, Listener, OriginEnrichmentConfiguration,
-    ProcessOrigin,
+    handle_metric_packet, replay::CapturedTaggerHandle, DogStatsDOriginTagResolver, Listener,
+    OriginEnrichmentConfiguration, ProcessOrigin,
 };
 
 #[cfg(unix)]
@@ -168,8 +168,11 @@ async fn uds_datagram_reader_pins_origin_before_decode() {
         enabled: true,
         ..OriginEnrichmentConfiguration::for_test()
     };
-    let origin_resolver =
-        DogStatsDOriginTagResolver::new(origin_config, Arc::new(workload_provider), CapturedTaggerHandle::new());
+    let origin_resolver = DogStatsDOriginTagResolver::new(
+        origin_config,
+        Arc::new(workload_provider),
+        CapturedTaggerHandle::default(),
+    );
     let mut context_resolvers = ContextResolvers::for_tests(true, Some(origin_resolver));
     let metric = handle_metric_packet(
         parse_metric(b"test.metric:1|c"),
