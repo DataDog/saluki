@@ -24,24 +24,22 @@ pub const KEY_DATADOG_CONTAINER_TAGS: &str = "datadog.container_tags";
 pub const DEPLOYMENT_ENVIRONMENT_KEY: &str = "deployment.environment";
 
 /// The kind of source that produced telemetry data.
-// Every variant ends in `Kind` to keep the existing naming.
-#[allow(clippy::enum_variant_names)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum SourceKind {
     /// Hostname-based source.
-    HostnameKind,
+    Hostname,
     /// AWS ECS Fargate source.
-    AwsEcsFargateKind,
+    AwsEcsFargate,
     /// Azure Container Apps source.
-    AzureContainerAppsKind,
+    AzureContainerApps,
     /// Azure App Service source.
-    AzureAppServiceKind,
+    AzureAppService,
     /// Azure Functions source.
-    AzureFunctionsKind,
+    AzureFunctions,
     /// Cloud Run service source.
-    GcpCloudRunKind,
+    GcpCloudRun,
     /// Cloud Functions source.
-    GcpCloudFunctionsKind,
+    GcpCloudFunctions,
 }
 
 /// Represents the source of telemetry data.
@@ -63,13 +61,13 @@ impl Source {
 impl SourceKind {
     fn as_str(&self) -> &'static str {
         match self {
-            SourceKind::HostnameKind => "host",
-            SourceKind::AwsEcsFargateKind => "task_arn",
-            SourceKind::AzureContainerAppsKind => "azure_container_apps",
-            SourceKind::AzureAppServiceKind => "azure_app_service",
-            SourceKind::AzureFunctionsKind => "azure_functions",
-            SourceKind::GcpCloudRunKind => "gcp_cloud_run",
-            SourceKind::GcpCloudFunctionsKind => "gcp_cloud_functions",
+            SourceKind::Hostname => "host",
+            SourceKind::AwsEcsFargate => "task_arn",
+            SourceKind::AzureContainerApps => "azure_container_apps",
+            SourceKind::AzureAppService => "azure_app_service",
+            SourceKind::AzureFunctions => "azure_functions",
+            SourceKind::GcpCloudRun => "gcp_cloud_run",
+            SourceKind::GcpCloudFunctions => "gcp_cloud_functions",
         }
     }
 }
@@ -525,7 +523,7 @@ fn hostname_from_attributes(attributes: &[otlp_common::KeyValue]) -> Option<Stri
 
 fn hostname_source(attributes: &[otlp_common::KeyValue]) -> Option<Source> {
     hostname_from_attributes(attributes).map(|identifier| Source {
-        kind: SourceKind::HostnameKind,
+        kind: SourceKind::Hostname,
         identifier,
     })
 }
@@ -536,7 +534,7 @@ fn aws_ecs_fargate_source(attributes: &[otlp_common::KeyValue]) -> Option<Source
     }
 
     get_attribute_str(attributes, AWS_ECS_TASK_ARN).map(|task_arn| Source {
-        kind: SourceKind::AwsEcsFargateKind,
+        kind: SourceKind::AwsEcsFargate,
         identifier: task_arn.to_string(),
     })
 }
@@ -622,8 +620,8 @@ pub fn is_gcp_serverless(attributes: &[otlp_common::KeyValue]) -> bool {
 /// Cloud Run jobs and incomplete identities resolve to `None`.
 fn gcp_serverless_identity(attributes: &[otlp_common::KeyValue]) -> Option<GcpServerlessIdentity<'_>> {
     let kind = match get_attribute_str(attributes, CLOUD_PLATFORM)? {
-        GCP_CLOUD_FUNCTIONS_PLATFORM => SourceKind::GcpCloudFunctionsKind,
-        GCP_CLOUD_RUN_PLATFORM => SourceKind::GcpCloudRunKind,
+        GCP_CLOUD_FUNCTIONS_PLATFORM => SourceKind::GcpCloudFunctions,
+        GCP_CLOUD_RUN_PLATFORM => SourceKind::GcpCloudRun,
         _ => return None,
     };
 
@@ -686,7 +684,7 @@ pub fn resource_to_metric_source(
 pub fn source_from_attributes(attributes: &[otlp_common::KeyValue]) -> Option<Source> {
     if let Some(app) = azure_app_identity(attributes, &AZURE_FUNCTIONS_PLATFORMS) {
         return Some(Source {
-            kind: SourceKind::AzureFunctionsKind,
+            kind: SourceKind::AzureFunctions,
             identifier: app.name.to_string(),
         });
     }
@@ -700,14 +698,14 @@ pub fn source_from_attributes(attributes: &[otlp_common::KeyValue]) -> Option<So
 
     if let Some(app) = azure_app_identity(attributes, &AZURE_APP_SERVICE_PLATFORMS) {
         return Some(Source {
-            kind: SourceKind::AzureAppServiceKind,
+            kind: SourceKind::AzureAppService,
             identifier: app.name.to_string(),
         });
     }
 
     if let Some(identifier) = azure_container_apps_identifier(attributes) {
         return Some(Source {
-            kind: SourceKind::AzureContainerAppsKind,
+            kind: SourceKind::AzureContainerApps,
             identifier,
         });
     }
@@ -738,7 +736,7 @@ pub fn attributes_to_source(attributes: &FastHashMap<MetaString, AttributeValue>
     {
         if let Some(task_arn) = get(AWS_ECS_TASK_ARN) {
             return Some(Source {
-                kind: SourceKind::AwsEcsFargateKind,
+                kind: SourceKind::AwsEcsFargate,
                 identifier: task_arn.to_string(),
             });
         }
@@ -747,7 +745,7 @@ pub fn attributes_to_source(attributes: &FastHashMap<MetaString, AttributeValue>
     // Hostname from attributes
     if let Some(host_name) = get(opentelemetry_semantic_conventions::resource::HOST_NAME) {
         return Some(Source {
-            kind: SourceKind::HostnameKind,
+            kind: SourceKind::Hostname,
             identifier: host_name.to_string(),
         });
     }
@@ -783,7 +781,7 @@ mod tests {
 
     fn assert_hostname(attributes: Vec<KeyValue>, expected: &str) {
         let source = metric_source(attributes).expect("hostname source should resolve");
-        assert_eq!(source.kind, SourceKind::HostnameKind);
+        assert_eq!(source.kind, SourceKind::Hostname);
         assert_eq!(source.identifier, expected);
     }
 
@@ -1221,7 +1219,7 @@ mod tests {
         ])
         .expect("Fargate source should resolve");
 
-        assert_eq!(source.kind, SourceKind::AwsEcsFargateKind);
+        assert_eq!(source.kind, SourceKind::AwsEcsFargate);
         assert_eq!(source.identifier, "task-arn");
     }
 
@@ -1343,7 +1341,7 @@ mod tests {
     }
 
     fn host(identifier: &str) -> Option<(SourceKind, String)> {
-        Some((SourceKind::HostnameKind, identifier.to_string()))
+        Some((SourceKind::Hostname, identifier.to_string()))
     }
 
     #[test]
@@ -1411,7 +1409,7 @@ mod tests {
                     s(AWS_ECS_TASK_ARN, "arn"),
                     s(HOST_NAME, "name"),
                 ],
-                Some((SourceKind::AwsEcsFargateKind, "arn".to_string())),
+                Some((SourceKind::AwsEcsFargate, "arn".to_string())),
             ),
             (
                 "Fargate without a task ARN has no host",
@@ -1549,12 +1547,12 @@ mod tests {
             (
                 "Azure Functions",
                 azure("azure.functions"),
-                kind(SourceKind::AzureFunctionsKind, "app"),
+                kind(SourceKind::AzureFunctions, "app"),
             ),
             (
                 "legacy Azure Functions platform",
                 azure("azure_functions"),
-                kind(SourceKind::AzureFunctionsKind, "app"),
+                kind(SourceKind::AzureFunctions, "app"),
             ),
             (
                 "incomplete Azure Functions falls back to the host",
@@ -1564,12 +1562,12 @@ mod tests {
             (
                 "Azure App Service",
                 azure("azure.app_service"),
-                kind(SourceKind::AzureAppServiceKind, "app"),
+                kind(SourceKind::AzureAppService, "app"),
             ),
             (
                 "legacy Azure App Service platform",
                 azure("azure_app_service"),
-                kind(SourceKind::AzureAppServiceKind, "app"),
+                kind(SourceKind::AzureAppService, "app"),
             ),
             (
                 "Azure App Service with an empty subscription falls back to the host",
@@ -1585,17 +1583,17 @@ mod tests {
                     azure("azure.container_apps"),
                     s("azure.container_app.instance.id", "replica"),
                 ),
-                kind(SourceKind::AzureContainerAppsKind, "replica"),
+                kind(SourceKind::AzureContainerApps, "replica"),
             ),
             (
                 "Azure Container Apps replica from service.instance.id",
                 with(azure("azure_container_apps"), s(SERVICE_INSTANCE_ID, "instance")),
-                kind(SourceKind::AzureContainerAppsKind, "instance"),
+                kind(SourceKind::AzureContainerApps, "instance"),
             ),
             (
                 "Azure Container Apps without a replica uses the app name",
                 azure("azure.container_apps"),
-                kind(SourceKind::AzureContainerAppsKind, "app"),
+                kind(SourceKind::AzureContainerApps, "app"),
             ),
             (
                 "Azure Container Apps name from the resource ID",
@@ -1606,22 +1604,22 @@ mod tests {
                         "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.App/containerApps/from-id",
                     ),
                 ],
-                kind(SourceKind::AzureContainerAppsKind, "from-id"),
+                kind(SourceKind::AzureContainerApps, "from-id"),
             ),
             (
                 "Azure Container Apps without an identity still has no host",
                 vec![s(CLOUD_PLATFORM, "azure.container_apps"), s(HOST_NAME, "name")],
-                kind(SourceKind::AzureContainerAppsKind, ""),
+                kind(SourceKind::AzureContainerApps, ""),
             ),
             (
                 "Cloud Run service",
                 gcp("gcp_cloud_run"),
-                kind(SourceKind::GcpCloudRunKind, "instance-1"),
+                kind(SourceKind::GcpCloudRun, "instance-1"),
             ),
             (
                 "Cloud Functions",
                 gcp("gcp_cloud_functions"),
-                kind(SourceKind::GcpCloudFunctionsKind, "instance-1"),
+                kind(SourceKind::GcpCloudFunctions, "instance-1"),
             ),
             (
                 "incomplete Cloud Run identity has no host",
@@ -1647,7 +1645,7 @@ mod tests {
                     with(azure("azure.functions"), s(AWS_ECS_LAUNCHTYPE, "fargate")),
                     s(AWS_ECS_TASK_ARN, "arn"),
                 ),
-                kind(SourceKind::AzureFunctionsKind, "app"),
+                kind(SourceKind::AzureFunctions, "app"),
             ),
         ];
 

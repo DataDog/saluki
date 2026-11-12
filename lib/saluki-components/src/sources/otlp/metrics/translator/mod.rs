@@ -181,7 +181,7 @@ impl OtlpMetricsTranslator {
 
         let host = match source {
             Some(Source {
-                kind: SourceKind::HostnameKind,
+                kind: SourceKind::Hostname,
                 identifier,
             }) => Some(MetaString::from(identifier)),
             Some(_) => None,

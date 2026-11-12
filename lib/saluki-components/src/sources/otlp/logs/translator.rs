@@ -35,7 +35,7 @@ impl OtlpLogsTranslator {
         let source = resource_to_source(&resource);
         // An empty host counts as missing, so the record fallback still applies.
         let host = match &source {
-            Some(src) if matches!(src.kind, SourceKind::HostnameKind) && !src.identifier.is_empty() => {
+            Some(src) if matches!(src.kind, SourceKind::Hostname) && !src.identifier.is_empty() => {
                 Some(MetaString::from(src.identifier.as_str()))
             }
             _ => None,
