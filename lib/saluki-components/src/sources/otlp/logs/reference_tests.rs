@@ -892,6 +892,12 @@ fn status_attribute_override_cases() -> Vec<Case> {
             item(OTEL_SOURCE_TAG, json!({"status": "debug", "otel.severity_number": "5"})),
         )
         .scope("", "", [("status", string("scope-status"))]),
+        case(
+            "resource status attribute is dropped when no status is derived",
+            record(),
+            item(OTEL_SOURCE_TAG, json!({"status": ""})),
+        )
+        .resource([("status", string("resource-status"))]),
     ]
 }
 
@@ -899,6 +905,7 @@ fn status_attribute_override_cases() -> Vec<Case> {
 fn translator() {
     let mut cases = translator_cases();
     cases.extend(derive_status_cases());
+    cases.extend(status_attribute_override_cases());
     check(cases);
 }
 
@@ -924,10 +931,4 @@ fn target_scope_metadata() {
 #[ignore = "target for `gap/array-attributes`"]
 fn target_array_attributes() {
     check(array_attributes_cases());
-}
-
-#[test]
-#[ignore = "target for `gap/status-attribute-override`"]
-fn target_status_attribute_override() {
-    check(status_attribute_override_cases());
 }
