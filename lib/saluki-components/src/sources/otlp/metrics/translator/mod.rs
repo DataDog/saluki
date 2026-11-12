@@ -630,6 +630,9 @@ mod tests {
         assert_eq!(metric.context().host(), Some("resource-host"));
     }
 
+    /// A named host resolution case: the resource attributes and the expected metric host.
+    type HostCase = (&'static str, Vec<(&'static str, String)>, Option<&'static str>);
+
     #[test]
     fn translate_metrics_resolves_the_host_of_serverless_resources() {
         let azure = |platform: &str| {
@@ -641,7 +644,7 @@ mod tests {
                 ("host.name", "resource-host".to_string()),
             ]
         };
-        let cases: Vec<(&str, Vec<(&str, String)>, Option<&str>)> = vec![
+        let cases: Vec<HostCase> = vec![
             ("Azure App Service", azure("azure.app_service"), None),
             ("Azure Functions", azure("azure.functions"), None),
             (
