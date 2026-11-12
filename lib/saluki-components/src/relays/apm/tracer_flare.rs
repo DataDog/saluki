@@ -4,23 +4,22 @@
 //! `/tracer_flare/v1`. Like the trace-agent, the relay forwards them as they are to the Datadog serverless flare
 //! endpoint, adding the API key.
 
-use std::sync::LazyLock;
-
 use axum::extract::{ConnectInfo, Request as AxumRequest};
 use axum::response::{IntoResponse, Response};
+use datadog_agent_commons::agent_version::{self, AgentVersion};
 use http::header::{self, HeaderMap, HeaderName};
 use http::{HeaderValue, StatusCode, Uri, Version};
-use regex::Regex;
 use saluki_common::sync::live::Live;
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::client::http::HttpClientBuilder;
 use saluki_io::net::ConnectionAddress;
 use tracing::{debug, warn};
+use url::Url;
 
 use super::forwarding::{strip_hop_by_hop_headers, UpstreamClient};
 use crate::common::datadog::api_key::ApiKeyCell;
 use crate::common::datadog::config::ForwarderConfiguration;
-use crate::common::datadog::endpoints::is_datadog_host;
+use crate::common::datadog::endpoints::{add_version_prefix, endpoint_with_default_scheme, is_datadog_site};
 use crate::common::datadog::io::intake_http_client_builder;
 
 /// Path of the Datadog endpoint flares are forwarded to.
@@ -37,15 +36,6 @@ const FORWARDED_HEADER: HeaderName = HeaderName::from_static("forwarded");
 const X_FORWARDED_FOR_HEADER: HeaderName = HeaderName::from_static("x-forwarded-for");
 const X_FORWARDED_HOST_HEADER: HeaderName = HeaderName::from_static("x-forwarded-host");
 const X_FORWARDED_PROTO_HEADER: HeaderName = HeaderName::from_static("x-forwarded-proto");
-
-/// An official Datadog site with no subdomain, such as `datadoghq.com`.
-static DD_BARE_SITE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(datad(oghq|0g)\.(com|eu)|ddog-gov\.com)$").expect("bare site regex should compile")
-});
-
-/// The `MAJOR.MINOR.PATCH` part of a version string.
-static VERSION_NUMBERS_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(\d+)\.(\d+)\.(\d+)").expect("version regex should compile"));
 
 /// Settings of the tracer flare proxy.
 #[derive(Clone)]
@@ -100,7 +90,7 @@ impl TracerFlareProxy {
             "" => DEFAULT_SITE,
             site => site,
         };
-        let endpoint = flare_endpoint(site, &flare_version_label(agent_version_string()))?;
+        let endpoint = flare_endpoint(site, &flare_version_label(agent_version::version()))?;
         let client_builder =
             intake_http_client_builder(&config.forwarder, config.forwarder.effective_min_tls_version())?;
         Self::new(client_builder, endpoint, config.api_key.as_str())
@@ -206,24 +196,20 @@ fn set_upstream_headers(
     }
 }
 
-/// Returns the version string of the Agent ADP runs alongside, if it was known at build time.
-fn agent_version_string() -> Option<&'static str> {
-    datadog_agent_commons::agent_version::version_string()
-}
-
 /// Returns the version label of the flare host, such as `7-50-0-flare`.
 ///
-/// The trace-agent uses its own version. When the Agent version wasn't known at build time, or carries no
-/// `MAJOR.MINOR.PATCH`, ADP's version is used instead.
-fn flare_version_label(agent_version: Option<&str>) -> String {
-    let numbers = agent_version
-        .and_then(|version| VERSION_NUMBERS_REGEX.captures(version))
-        .map(|captures| format!("{}-{}-{}", &captures[1], &captures[2], &captures[3]))
-        .unwrap_or_else(|| {
+/// The trace-agent uses its own version. When the Agent version wasn't known at build time, or carries no version
+/// number, ADP's version is used instead.
+fn flare_version_label(agent_version: Option<AgentVersion>) -> String {
+    // A development build with no version number, such as `nightly`, has a major version of `0`.
+    let (major, minor, patch) = match agent_version.filter(|version| version.major() != 0) {
+        Some(version) => (version.major(), version.minor(), version.patch()),
+        None => {
             let version = saluki_metadata::get_app_details().version();
-            format!("{}-{}-{}", version.major(), version.minor(), version.patch())
-        });
-    format!("{numbers}-flare")
+            (version.major().into(), version.minor().into(), version.patch().into())
+        }
+    };
+    format!("{major}-{minor}-{patch}-flare")
 }
 
 /// Returns the flare endpoint of `site`, a Datadog site such as `datadoghq.com` or a URL.
@@ -241,40 +227,33 @@ fn flare_version_label(agent_version: Option<&str>) -> String {
 ///
 /// # Errors
 ///
-/// If `site` isn't a valid URI with a host, an error is returned.
+/// If `site` isn't a valid URL with a host, an error is returned.
 fn flare_endpoint(site: &str, version_label: &str) -> Result<Uri, GenericError> {
     let site = site.trim();
-    // A bare site such as `datadoghq.com` parses as a URI with only an authority, and a URL as a URI with a scheme.
-    let uri: Uri = site
-        .parse()
-        .map_err(|e| generic_error!("Datadog site `{site}` is not a valid host to send tracer flares to: {e}"))?;
-    let Some(host) = uri.host().filter(|host| !host.is_empty()) else {
-        return Err(generic_error!(
-            "Datadog site `{site}` has no host to send tracer flares to."
-        ));
+    let invalid = |e: &dyn std::fmt::Display| {
+        generic_error!("Datadog site `{site}` is not a valid host to send tracer flares to: {e}")
     };
 
-    let mut host = host.to_ascii_lowercase();
-    if DD_BARE_SITE_REGEX.is_match(&host) {
-        host = format!("app.{host}");
+    let mut url = Url::parse(&endpoint_with_default_scheme(site)).map_err(|e| invalid(&e))?;
+    if let Some(app_host) = url
+        .host_str()
+        .filter(|host| is_datadog_site(host))
+        .map(|host| format!("app.{host}"))
+    {
+        url.set_host(Some(&app_host)).map_err(|e| invalid(&e))?;
     }
-    if is_datadog_host(&host) {
-        let (_, domain) = host
-            .split_once('.')
-            .expect("an app host has a domain after its first label");
-        host = format!("{version_label}.{domain}");
-    }
-    let authority = match uri.port_u16() {
-        Some(port) => format!("{host}:{port}"),
-        None => host,
-    };
+    let mut url = add_version_prefix(url, version_label).map_err(|e| invalid(&e))?;
 
-    Uri::builder()
-        .scheme("https")
-        .authority(authority)
-        .path_and_query(FLARE_ENDPOINT_PATH)
-        .build()
-        .map_err(|e| generic_error!("Datadog site `{site}` is not a valid host to send tracer flares to: {e}"))
+    // `http` and `https` are both special schemes, so switching between them can't fail.
+    let _ = url.set_scheme("https");
+    // The URL has a host, so it can carry neither credentials nor a fragment that would fail to clear.
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
+    url.set_path(FLARE_ENDPOINT_PATH);
+    url.set_query(None);
+    url.set_fragment(None);
+
+    url.as_str().parse().map_err(|e| invalid(&e))
 }
 
 /// A proxy forwarding to `base` over plain HTTP, standing in for the flare endpoint, as the trace-agent's test does.
@@ -391,10 +370,10 @@ mod tests {
     #[test]
     fn flare_version_label_uses_the_agent_version() {
         assert_eq!(
-            flare_version_label(Some("7.50.0-devel+git.488.be5861b")),
+            flare_version_label(AgentVersion::parse("7.50.0-devel+git.488.be5861b")),
             "7-50-0-flare"
         );
-        assert_eq!(flare_version_label(Some("7.81.2-full")), "7-81-2-flare");
+        assert_eq!(flare_version_label(AgentVersion::parse("7.81.2-full")), "7-81-2-flare");
     }
 
     #[test]
@@ -403,7 +382,7 @@ mod tests {
         let expected = format!("{}-{}-{}-flare", version.major(), version.minor(), version.patch());
 
         assert_eq!(flare_version_label(None), expected);
-        assert_eq!(flare_version_label(Some("nightly")), expected);
+        assert_eq!(flare_version_label(AgentVersion::parse("nightly")), expected);
     }
 
     /// What the fake intake saw of the last request it received.
