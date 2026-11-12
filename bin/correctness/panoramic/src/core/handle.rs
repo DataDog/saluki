@@ -457,7 +457,7 @@ procedure: []
         std::fs::write(dir.join(CASE_FILE), config).unwrap();
         let registry = Registry::default();
         let case = case::load(&dir, &registry).unwrap();
-        plan(&case, Os::Linux, &registry).unwrap()
+        plan(&case, Os::Linux, &registry, &BTreeMap::new()).unwrap()
     }
 
     #[tokio::test]

@@ -30,6 +30,7 @@ use std::time::Duration;
 
 use airlock::container::{Output, OutputStream};
 use futures::StreamExt as _;
+use serde::Serialize;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::sync::watch;
 use tokio::time::Instant;
@@ -51,7 +52,7 @@ const COLLECTED_DIR: &str = "collected";
 const LAST_READ_TIME: Duration = Duration::from_secs(5);
 
 /// How a process exited.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub(crate) struct ExitStatus {
     /// The exit code. A container reports death by signal `n` as 128 + `n`, and an exit record as 256.
     pub(crate) code: i64,
@@ -70,7 +71,8 @@ impl fmt::Display for ExitStatus {
 }
 
 /// What is known of a process's exit.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum ProcessExit {
     Running,
     Exited(ExitStatus),
@@ -333,7 +335,7 @@ impl Sink {
 }
 
 /// A file copied out of a participant after the procedure.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub(crate) struct Collected {
     pub(crate) participant: String,
     /// Where the copy is on the runner host.

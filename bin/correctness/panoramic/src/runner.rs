@@ -306,7 +306,7 @@ impl Runner {
             )
             .await;
 
-            if !result.outcome.is_passed() {
+            if result.outcome.is_failure() {
                 break;
             }
         }
@@ -485,8 +485,11 @@ impl Runner {
         result.log_dir = Some(log_dir.clone());
 
         write_result_log(&result, &log_dir);
-        // Traffic retention runs before the report, so `result.json` lists the artifacts that are on disk.
-        crate::traffic::finalize(&log_dir, result.outcome);
+        // Traffic retention runs before the report, so `result.json` lists the artifacts that are on disk. A
+        // participant case's lifecycle applies what it keeps: retention is data.
+        if test.participant_case().is_none() {
+            crate::traffic::finalize(&log_dir, result.outcome);
+        }
         crate::machine_output::write_test_report(&result, &log_dir);
 
         let _ = event_sender.send(TestEvent::TestCompleted {
@@ -1437,6 +1440,7 @@ pub(crate) mod test_support {
             adp_binary_path: PathBuf::new(),
             core_agent_binary_path: PathBuf::new(),
             alpine_image: airlock::driver::DEFAULT_ALPINE_IMAGE.to_string(),
+            containers: None,
         }
     }
 }

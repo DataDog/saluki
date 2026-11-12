@@ -162,6 +162,15 @@ the same plan in a format for people. It plans the case for every OS in its `sub
 honored on any of them is an error on any host. The rejected case files under
 `bin/correctness/panoramic/testdata/bad/` show a few of these errors.
 
+`panoramic list` and `panoramic run` read participant cases beside legacy ones, telling them apart by the top-level
+`type:` key. A run selects one subject OS with `--subject-os`, or `--runtime`, which names the same OS (`mac` is
+`macos`); both default to the host's. A participant case that doesn't declare that OS is reported as `skipped`, with
+its reason. `--set <name>=<image>`, or `PANORAMIC_SET` as a comma-separated list, runs `<image>` wherever a case
+names `<name>`; `plan` takes it too and shows both. Before the first case, the run checks once that the selected
+participant cases can run: a Docker daemon for their Linux containers, every image they run, which it pulls if the
+daemon lacks it, and the courier, which `make build-courier` builds. A participant case that doesn't pass writes its
+plan as `plan.json` in its log directory.
+
 The `panoramic` skill walks LLM agents through choosing and running a suite non-interactively.
 
 ### Reading panoramic results
@@ -178,7 +187,7 @@ Exit codes distinguish the run-level result:
 | 0 | Every test passed; run completed |
 | 1 | Assertion failure, unless code 2 applies |
 | 2 | Harness error, `timed_out` test, or interrupted run |
-| 3 | Empty selection or unmatched test name |
+| 3 | Empty selection, unmatched test name, or every test skipped |
 
 An `errored` step couldn't be evaluated. Inspect test `error`, `timeout`, `cause`, and step `message` fields.
 

@@ -22,6 +22,7 @@
 //! Errors are collected, not returned at the first. Their order is not a contract.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 
 use serde::Serialize;
 
@@ -89,7 +90,7 @@ pub(crate) struct PlannedParticipant {
 pub(crate) enum Launch {
     /// An image, with the command and arguments that replace its own when set.
     Image {
-        image: String,
+        image: Replaceable,
         command: Option<Vec<Template>>,
         args: Option<Vec<Template>>,
     },
@@ -110,6 +111,59 @@ pub(crate) struct PlannedFile {
     pub(crate) contents: Contents,
 }
 
+/// A reference to an image as written, and the reference the run uses in its place when it replaces it.
+///
+/// Serializes as the reference as written, or, when the run replaces it, as `{"written": ..., "replaced": ...}`.
+#[derive(Clone, Debug)]
+pub(crate) struct Replaceable {
+    pub(crate) written: String,
+    pub(crate) replaced: Option<String>,
+}
+
+impl Replaceable {
+    /// `written`, with the replacement `set` holds for it, if any.
+    fn new(written: String, set: &BTreeMap<String, String>) -> Self {
+        let replaced = set.get(&written).cloned();
+        Self { written, replaced }
+    }
+
+    /// The reference the run uses.
+    pub(crate) fn used(&self) -> &str {
+        self.replaced.as_deref().unwrap_or(&self.written)
+    }
+}
+
+impl fmt::Display for Replaceable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.replaced {
+            Some(replaced) => write!(f, "{} -> {}", self.written, replaced),
+            None => f.write_str(&self.written),
+        }
+    }
+}
+
+impl Serialize for Replaceable {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        #[derive(Serialize)]
+        struct Replaced<'a> {
+            written: &'a str,
+            replaced: &'a str,
+        }
+
+        match &self.replaced {
+            Some(replaced) => Replaced {
+                written: &self.written,
+                replaced,
+            }
+            .serialize(serializer),
+            None => serializer.serialize_str(&self.written),
+        }
+    }
+}
+
 /// A step built for this plan.
 #[derive(Debug, Serialize)]
 pub(crate) struct PlannedStep {
@@ -119,16 +173,19 @@ pub(crate) struct PlannedStep {
     pub(crate) step: Box<dyn Step>,
 }
 
-/// Plans `case` for every OS in its `subject_os`.
+/// Plans `case` for every OS in its `subject_os`. `set` holds the run's replacements: each image written as a key runs
+/// the image it maps to.
 ///
 /// # Errors
 ///
 /// Returns every problem found, on every OS.
-pub(crate) fn plan_all(case: &LoadedCase, registry: &Registry) -> Result<BTreeMap<Os, CasePlan>, Vec<CaseError>> {
+pub(crate) fn plan_all(
+    case: &LoadedCase, registry: &Registry, set: &BTreeMap<String, String>,
+) -> Result<BTreeMap<Os, CasePlan>, Vec<CaseError>> {
     let mut plans = BTreeMap::new();
     let mut errors = Vec::new();
     for &os in &case.subject_os {
-        match plan(case, os, registry) {
+        match plan(case, os, registry, set) {
             Ok(plan) => {
                 plans.insert(os, plan);
             }
@@ -142,12 +199,14 @@ pub(crate) fn plan_all(case: &LoadedCase, registry: &Registry) -> Result<BTreeMa
     }
 }
 
-/// Plans `case` for one subject OS.
+/// Plans `case` for one subject OS, with the run's replacements `set`.
 ///
 /// # Errors
 ///
 /// Returns every problem found.
-pub(crate) fn plan(case: &LoadedCase, os: Os, registry: &Registry) -> Result<CasePlan, Vec<CaseError>> {
+pub(crate) fn plan(
+    case: &LoadedCase, os: Os, registry: &Registry, set: &BTreeMap<String, String>,
+) -> Result<CasePlan, Vec<CaseError>> {
     let mut problems = Problems {
         case,
         os,
@@ -178,6 +237,7 @@ pub(crate) fn plan(case: &LoadedCase, os: Os, registry: &Registry) -> Result<Cas
             participant,
             realization,
             case,
+            set,
             at: &mut at,
         };
         if let Some((planned, known)) = planner.plan(registry, &connected) {
@@ -351,6 +411,8 @@ struct Planner<'c, 'p, 'a> {
     participant: &'c LoadedParticipant,
     realization: Realization,
     case: &'c LoadedCase,
+    /// The run's replacements.
+    set: &'c BTreeMap<String, String>,
     at: &'c mut At<'p, 'a>,
 }
 
@@ -650,7 +712,11 @@ impl Planner<'_, '_, '_> {
                     .push(format!("a {} needs an 'image', and nothing sets one", enclosure));
                 return None;
             };
-            Launch::Image { image, command, args }
+            Launch::Image {
+                image: Replaceable::new(image, self.set),
+                command,
+                args,
+            }
         } else {
             for (field, set) in [
                 ("image", image.is_some()),
@@ -1077,7 +1143,7 @@ procedure: []
         let registry = Registry::default();
 
         let case = case::load(&dir, &registry).unwrap();
-        let plan = plan(&case, Os::Linux, &registry).unwrap();
+        let plan = plan(&case, Os::Linux, &registry, &BTreeMap::new()).unwrap();
         drop((case, registry, suite));
 
         let files: Vec<(&str, &Contents)> = plan.participants["app"]
