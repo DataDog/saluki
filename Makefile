@@ -655,13 +655,13 @@ build-courier: ## Builds the static courier binary that panoramic runs inside co
 		--config 'target.$(COURIER_TARGET).linker="rust-lld"' --config 'profile.release.strip="symbols"'
 
 .PHONY: test-integration
-test-integration: build-panoramic build-datadog-agent-image build-correctness-tools-image
+test-integration: build-panoramic build-courier build-datadog-agent-image build-correctness-tools-image
 test-integration: ## Runs all ADP integration tests
 	@echo "[*] Running ADP integration tests..."
 	@target/release/panoramic run -d $(shell pwd)/test/integration/cases $(if $(PANORAMIC_LOG_DIR),-l $(PANORAMIC_LOG_DIR))
 
 .PHONY: test-integration-quick
-test-integration-quick: build-panoramic
+test-integration-quick: build-panoramic build-courier
 test-integration-quick: ## Runs ADP integration tests (assumes images already built)
 	@echo "[*] Running ADP integration tests (quick mode)..."
 	@target/release/panoramic run -d $(shell pwd)/test/integration/cases $(if $(PANORAMIC_LOG_DIR),-l $(PANORAMIC_LOG_DIR))
