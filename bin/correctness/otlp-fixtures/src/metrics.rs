@@ -254,6 +254,9 @@ pub fn cumulative_monotonic_fixture() -> Vec<u8> {
 }
 
 /// One valid delta histogram with two explicit bounds and three bucket counts.
+///
+/// Shared by the `otlp-metrics-histogram-counters` and `otlp-metrics-histogram-nobuckets` cases, which differ only in
+/// histogram mode.
 pub fn histogram_fixture() -> Vec<u8> {
     let histogram = Histogram {
         data_points: vec![HistogramDataPoint {
