@@ -314,120 +314,123 @@
 <a href=#314 id=314 data-nosnippet>314</a>
 <a href=#315 id=315 data-nosnippet>315</a>    <span class="comment">// Derive status once using attribute-provided status, severity text and number
 <a href=#316 id=316 data-nosnippet>316</a>    </span><span class="kw">let </span>status = derive_status(status_text_from_attrs, lr.severity_text.as_str(), lr.severity_number);
-<a href=#317 id=317 data-nosnippet>317</a>
-<a href=#318 id=318 data-nosnippet>318</a>    <span class="kw">if </span>!lr.severity_text.is_empty() {
-<a href=#319 id=319 data-nosnippet>319</a>        additional_properties.insert(
-<a href=#320 id=320 data-nosnippet>320</a>            MetaString::from_static(<span class="string">"otel.severity_text"</span>),
-<a href=#321 id=321 data-nosnippet>321</a>            JsonValue::String(lr.severity_text.clone()),
-<a href=#322 id=322 data-nosnippet>322</a>        );
-<a href=#323 id=323 data-nosnippet>323</a>    }
-<a href=#324 id=324 data-nosnippet>324</a>    <span class="kw">if </span>lr.severity_number != <span class="number">0 </span>{
-<a href=#325 id=325 data-nosnippet>325</a>        additional_properties.insert(
-<a href=#326 id=326 data-nosnippet>326</a>            MetaString::from_static(<span class="string">"otel.severity_number"</span>),
-<a href=#327 id=327 data-nosnippet>327</a>            JsonValue::String(lr.severity_number.to_string()),
-<a href=#328 id=328 data-nosnippet>328</a>        );
-<a href=#329 id=329 data-nosnippet>329</a>    }
-<a href=#330 id=330 data-nosnippet>330</a>
-<a href=#331 id=331 data-nosnippet>331</a>    <span class="kw">if </span>lr.time_unix_nano != <span class="number">0 </span>{
-<a href=#332 id=332 data-nosnippet>332</a>        additional_properties.insert(
-<a href=#333 id=333 data-nosnippet>333</a>            MetaString::from_static(<span class="string">"otel.timestamp"</span>),
-<a href=#334 id=334 data-nosnippet>334</a>            JsonValue::String(lr.time_unix_nano.to_string()),
-<a href=#335 id=335 data-nosnippet>335</a>        );
-<a href=#336 id=336 data-nosnippet>336</a>
-<a href=#337 id=337 data-nosnippet>337</a>        <span class="kw">let </span>secs = (lr.time_unix_nano / <span class="number">1_000_000_000</span>) <span class="kw">as </span>i64;
-<a href=#338 id=338 data-nosnippet>338</a>        <span class="kw">let </span>subnsec = (lr.time_unix_nano % <span class="number">1_000_000_000</span>) <span class="kw">as </span>u32;
-<a href=#339 id=339 data-nosnippet>339</a>        <span class="kw">if let </span><span class="prelude-val">Some</span>(dt) = DateTime::from_timestamp(secs, subnsec) {
-<a href=#340 id=340 data-nosnippet>340</a>            <span class="comment">// Match pattern 2006-01-02T15:04:05.000Z
-<a href=#341 id=341 data-nosnippet>341</a>            </span><span class="kw">let </span>formatted = dt.format(<span class="string">"%Y-%m-%dT%H:%M:%S%.3fZ"</span>).to_string();
-<a href=#342 id=342 data-nosnippet>342</a>            additional_properties.insert(MetaString::from_static(<span class="string">"@timestamp"</span>), JsonValue::String(formatted));
-<a href=#343 id=343 data-nosnippet>343</a>        }
-<a href=#344 id=344 data-nosnippet>344</a>    }
-<a href=#345 id=345 data-nosnippet>345</a>
-<a href=#346 id=346 data-nosnippet>346</a>    <span class="comment">// Message: prefer attributes, else body
-<a href=#347 id=347 data-nosnippet>347</a>    </span><span class="kw">let </span>message = <span class="kw">match </span>msg_from_attrs {
-<a href=#348 id=348 data-nosnippet>348</a>        <span class="prelude-val">Some</span>(m) =&gt; m,
-<a href=#349 id=349 data-nosnippet>349</a>        <span class="prelude-val">None </span>=&gt; lr.body.as_ref().map(any_value_to_message_string).unwrap_or_default(),
-<a href=#350 id=350 data-nosnippet>350</a>    };
-<a href=#351 id=351 data-nosnippet>351</a>
-<a href=#352 id=352 data-nosnippet>352</a>    <span class="comment">// Build Log
-<a href=#353 id=353 data-nosnippet>353</a>    </span>Log::new(message)
-<a href=#354 id=354 data-nosnippet>354</a>        .with_status(status)
-<a href=#355 id=355 data-nosnippet>355</a>        .with_source(DEFAULT_SOURCE.clone())
-<a href=#356 id=356 data-nosnippet>356</a>        .with_hostname(record_host)
-<a href=#357 id=357 data-nosnippet>357</a>        .with_service(record_service)
-<a href=#358 id=358 data-nosnippet>358</a>        .with_tags(tags)
-<a href=#359 id=359 data-nosnippet>359</a>        .with_additional_properties(additional_properties)
-<a href=#360 id=360 data-nosnippet>360</a>}
-<a href=#361 id=361 data-nosnippet>361</a>
-<a href=#362 id=362 data-nosnippet>362</a><span class="attr">#[cfg(test)]
-<a href=#363 id=363 data-nosnippet>363</a></span><span class="kw">mod </span>tests {
-<a href=#364 id=364 data-nosnippet>364</a>    <span class="kw">use </span>super::{derive_status, status_from_severity_number};
-<a href=#365 id=365 data-nosnippet>365</a>
-<a href=#366 id=366 data-nosnippet>366</a>    <span class="attr">#[test]
-<a href=#367 id=367 data-nosnippet>367</a>    </span><span class="kw">fn </span>derive_status_follows_the_reference_precedence() {
-<a href=#368 id=368 data-nosnippet>368</a>        <span class="comment">// (status attribute, severity text, severity number, status)
-<a href=#369 id=369 data-nosnippet>369</a>        </span><span class="kw">let </span>cases = [
-<a href=#370 id=370 data-nosnippet>370</a>            <span class="comment">// The status attribute comes first, then the severity text, then the severity number.
-<a href=#371 id=371 data-nosnippet>371</a>            </span>(<span class="prelude-val">Some</span>(<span class="string">"error"</span>), <span class="string">"alert"</span>, <span class="number">5</span>, <span class="string">"error"</span>),
-<a href=#372 id=372 data-nosnippet>372</a>            (<span class="prelude-val">None</span>, <span class="string">"alert"</span>, <span class="number">5</span>, <span class="string">"alert"</span>),
-<a href=#373 id=373 data-nosnippet>373</a>            (<span class="prelude-val">None</span>, <span class="string">""</span>, <span class="number">5</span>, <span class="string">"debug"</span>),
-<a href=#374 id=374 data-nosnippet>374</a>            <span class="comment">// Attribute and severity text are kept as they are, even when they aren't a known status.
-<a href=#375 id=375 data-nosnippet>375</a>            </span>(<span class="prelude-val">Some</span>(<span class="string">"Not A Status"</span>), <span class="string">""</span>, <span class="number">0</span>, <span class="string">"Not A Status"</span>),
-<a href=#376 id=376 data-nosnippet>376</a>            (<span class="prelude-val">None</span>, <span class="string">"Information"</span>, <span class="number">9</span>, <span class="string">"Information"</span>),
-<a href=#377 id=377 data-nosnippet>377</a>            (<span class="prelude-val">None</span>, <span class="string">"WARN"</span>, <span class="number">0</span>, <span class="string">"WARN"</span>),
-<a href=#378 id=378 data-nosnippet>378</a>            <span class="comment">// An empty attribute or severity text falls through to the next source.
-<a href=#379 id=379 data-nosnippet>379</a>            </span>(<span class="prelude-val">Some</span>(<span class="string">""</span>), <span class="string">"notice"</span>, <span class="number">13</span>, <span class="string">"notice"</span>),
-<a href=#380 id=380 data-nosnippet>380</a>            (<span class="prelude-val">Some</span>(<span class="string">""</span>), <span class="string">""</span>, <span class="number">13</span>, <span class="string">"warn"</span>),
-<a href=#381 id=381 data-nosnippet>381</a>            <span class="comment">// Severity number 0 has no name, so a log with nothing else has no status.
-<a href=#382 id=382 data-nosnippet>382</a>            </span>(<span class="prelude-val">None</span>, <span class="string">""</span>, <span class="number">0</span>, <span class="string">""</span>),
-<a href=#383 id=383 data-nosnippet>383</a>            (<span class="prelude-val">Some</span>(<span class="string">""</span>), <span class="string">""</span>, <span class="number">0</span>, <span class="string">""</span>),
-<a href=#384 id=384 data-nosnippet>384</a>        ];
-<a href=#385 id=385 data-nosnippet>385</a>
-<a href=#386 id=386 data-nosnippet>386</a>        <span class="kw">for </span>(status, severity_text, severity_number, expected) <span class="kw">in </span>cases {
-<a href=#387 id=387 data-nosnippet>387</a>            <span class="macro">assert_eq!</span>(
-<a href=#388 id=388 data-nosnippet>388</a>                derive_status(status.map(String::from), severity_text, severity_number),
-<a href=#389 id=389 data-nosnippet>389</a>                expected,
-<a href=#390 id=390 data-nosnippet>390</a>                <span class="string">"derive_status({:?}, {:?}, {})"</span>,
-<a href=#391 id=391 data-nosnippet>391</a>                status,
-<a href=#392 id=392 data-nosnippet>392</a>                severity_text,
-<a href=#393 id=393 data-nosnippet>393</a>                severity_number
-<a href=#394 id=394 data-nosnippet>394</a>            );
-<a href=#395 id=395 data-nosnippet>395</a>        }
-<a href=#396 id=396 data-nosnippet>396</a>    }
-<a href=#397 id=397 data-nosnippet>397</a>
-<a href=#398 id=398 data-nosnippet>398</a>    <span class="attr">#[test]
-<a href=#399 id=399 data-nosnippet>399</a>    </span><span class="kw">fn </span>status_from_severity_number_matches_the_reference() {
-<a href=#400 id=400 data-nosnippet>400</a>        <span class="comment">// Ported from `TestDeriveStatus` in the reference implementation:
-<a href=#401 id=401 data-nosnippet>401</a>        // https://github.com/DataDog/datadog-agent/blob/e0c8d8d93befb6864f13e2d88acbe13fb2d380b7/pkg/opentelemetry-mapping-go/otlp/logs/transform_test.go
-<a href=#402 id=402 data-nosnippet>402</a>        // with the boundaries of every range, and negative numbers, which the reference implementation treats as trace.
-<a href=#403 id=403 data-nosnippet>403</a>        </span><span class="kw">let </span>cases = [
-<a href=#404 id=404 data-nosnippet>404</a>            (-<span class="number">1</span>, <span class="string">"trace"</span>),
-<a href=#405 id=405 data-nosnippet>405</a>            (<span class="number">1</span>, <span class="string">"trace"</span>),
-<a href=#406 id=406 data-nosnippet>406</a>            (<span class="number">3</span>, <span class="string">"trace"</span>),
-<a href=#407 id=407 data-nosnippet>407</a>            (<span class="number">4</span>, <span class="string">"trace"</span>),
-<a href=#408 id=408 data-nosnippet>408</a>            (<span class="number">5</span>, <span class="string">"debug"</span>),
-<a href=#409 id=409 data-nosnippet>409</a>            (<span class="number">7</span>, <span class="string">"debug"</span>),
-<a href=#410 id=410 data-nosnippet>410</a>            (<span class="number">8</span>, <span class="string">"debug"</span>),
-<a href=#411 id=411 data-nosnippet>411</a>            (<span class="number">9</span>, <span class="string">"info"</span>),
-<a href=#412 id=412 data-nosnippet>412</a>            (<span class="number">12</span>, <span class="string">"info"</span>),
-<a href=#413 id=413 data-nosnippet>413</a>            (<span class="number">13</span>, <span class="string">"warn"</span>),
-<a href=#414 id=414 data-nosnippet>414</a>            (<span class="number">16</span>, <span class="string">"warn"</span>),
-<a href=#415 id=415 data-nosnippet>415</a>            (<span class="number">17</span>, <span class="string">"error"</span>),
-<a href=#416 id=416 data-nosnippet>416</a>            (<span class="number">20</span>, <span class="string">"error"</span>),
-<a href=#417 id=417 data-nosnippet>417</a>            (<span class="number">21</span>, <span class="string">"fatal"</span>),
-<a href=#418 id=418 data-nosnippet>418</a>            (<span class="number">24</span>, <span class="string">"fatal"</span>),
-<a href=#419 id=419 data-nosnippet>419</a>            (<span class="number">25</span>, <span class="string">"error"</span>),
-<a href=#420 id=420 data-nosnippet>420</a>            (<span class="number">50</span>, <span class="string">"error"</span>),
-<a href=#421 id=421 data-nosnippet>421</a>        ];
-<a href=#422 id=422 data-nosnippet>422</a>
-<a href=#423 id=423 data-nosnippet>423</a>        <span class="kw">for </span>(severity_number, expected) <span class="kw">in </span>cases {
-<a href=#424 id=424 data-nosnippet>424</a>            <span class="macro">assert_eq!</span>(
-<a href=#425 id=425 data-nosnippet>425</a>                status_from_severity_number(severity_number),
-<a href=#426 id=426 data-nosnippet>426</a>                expected,
-<a href=#427 id=427 data-nosnippet>427</a>                <span class="string">"status_from_severity_number({})"</span>,
-<a href=#428 id=428 data-nosnippet>428</a>                severity_number
-<a href=#429 id=429 data-nosnippet>429</a>            );
-<a href=#430 id=430 data-nosnippet>430</a>        }
-<a href=#431 id=431 data-nosnippet>431</a>    }
-<a href=#432 id=432 data-nosnippet>432</a>}
+<a href=#317 id=317 data-nosnippet>317</a>    <span class="comment">// The Agent sends the derived status in place of any resource or scope attribute named `status`. The encoder
+<a href=#318 id=318 data-nosnippet>318</a>    // writes additional properties over the status, so the attribute must not be among them.
+<a href=#319 id=319 data-nosnippet>319</a>    </span>additional_properties.remove(<span class="string">"status"</span>);
+<a href=#320 id=320 data-nosnippet>320</a>
+<a href=#321 id=321 data-nosnippet>321</a>    <span class="kw">if </span>!lr.severity_text.is_empty() {
+<a href=#322 id=322 data-nosnippet>322</a>        additional_properties.insert(
+<a href=#323 id=323 data-nosnippet>323</a>            MetaString::from_static(<span class="string">"otel.severity_text"</span>),
+<a href=#324 id=324 data-nosnippet>324</a>            JsonValue::String(lr.severity_text.clone()),
+<a href=#325 id=325 data-nosnippet>325</a>        );
+<a href=#326 id=326 data-nosnippet>326</a>    }
+<a href=#327 id=327 data-nosnippet>327</a>    <span class="kw">if </span>lr.severity_number != <span class="number">0 </span>{
+<a href=#328 id=328 data-nosnippet>328</a>        additional_properties.insert(
+<a href=#329 id=329 data-nosnippet>329</a>            MetaString::from_static(<span class="string">"otel.severity_number"</span>),
+<a href=#330 id=330 data-nosnippet>330</a>            JsonValue::String(lr.severity_number.to_string()),
+<a href=#331 id=331 data-nosnippet>331</a>        );
+<a href=#332 id=332 data-nosnippet>332</a>    }
+<a href=#333 id=333 data-nosnippet>333</a>
+<a href=#334 id=334 data-nosnippet>334</a>    <span class="kw">if </span>lr.time_unix_nano != <span class="number">0 </span>{
+<a href=#335 id=335 data-nosnippet>335</a>        additional_properties.insert(
+<a href=#336 id=336 data-nosnippet>336</a>            MetaString::from_static(<span class="string">"otel.timestamp"</span>),
+<a href=#337 id=337 data-nosnippet>337</a>            JsonValue::String(lr.time_unix_nano.to_string()),
+<a href=#338 id=338 data-nosnippet>338</a>        );
+<a href=#339 id=339 data-nosnippet>339</a>
+<a href=#340 id=340 data-nosnippet>340</a>        <span class="kw">let </span>secs = (lr.time_unix_nano / <span class="number">1_000_000_000</span>) <span class="kw">as </span>i64;
+<a href=#341 id=341 data-nosnippet>341</a>        <span class="kw">let </span>subnsec = (lr.time_unix_nano % <span class="number">1_000_000_000</span>) <span class="kw">as </span>u32;
+<a href=#342 id=342 data-nosnippet>342</a>        <span class="kw">if let </span><span class="prelude-val">Some</span>(dt) = DateTime::from_timestamp(secs, subnsec) {
+<a href=#343 id=343 data-nosnippet>343</a>            <span class="comment">// Match pattern 2006-01-02T15:04:05.000Z
+<a href=#344 id=344 data-nosnippet>344</a>            </span><span class="kw">let </span>formatted = dt.format(<span class="string">"%Y-%m-%dT%H:%M:%S%.3fZ"</span>).to_string();
+<a href=#345 id=345 data-nosnippet>345</a>            additional_properties.insert(MetaString::from_static(<span class="string">"@timestamp"</span>), JsonValue::String(formatted));
+<a href=#346 id=346 data-nosnippet>346</a>        }
+<a href=#347 id=347 data-nosnippet>347</a>    }
+<a href=#348 id=348 data-nosnippet>348</a>
+<a href=#349 id=349 data-nosnippet>349</a>    <span class="comment">// Message: prefer attributes, else body
+<a href=#350 id=350 data-nosnippet>350</a>    </span><span class="kw">let </span>message = <span class="kw">match </span>msg_from_attrs {
+<a href=#351 id=351 data-nosnippet>351</a>        <span class="prelude-val">Some</span>(m) =&gt; m,
+<a href=#352 id=352 data-nosnippet>352</a>        <span class="prelude-val">None </span>=&gt; lr.body.as_ref().map(any_value_to_message_string).unwrap_or_default(),
+<a href=#353 id=353 data-nosnippet>353</a>    };
+<a href=#354 id=354 data-nosnippet>354</a>
+<a href=#355 id=355 data-nosnippet>355</a>    <span class="comment">// Build Log
+<a href=#356 id=356 data-nosnippet>356</a>    </span>Log::new(message)
+<a href=#357 id=357 data-nosnippet>357</a>        .with_status(status)
+<a href=#358 id=358 data-nosnippet>358</a>        .with_source(DEFAULT_SOURCE.clone())
+<a href=#359 id=359 data-nosnippet>359</a>        .with_hostname(record_host)
+<a href=#360 id=360 data-nosnippet>360</a>        .with_service(record_service)
+<a href=#361 id=361 data-nosnippet>361</a>        .with_tags(tags)
+<a href=#362 id=362 data-nosnippet>362</a>        .with_additional_properties(additional_properties)
+<a href=#363 id=363 data-nosnippet>363</a>}
+<a href=#364 id=364 data-nosnippet>364</a>
+<a href=#365 id=365 data-nosnippet>365</a><span class="attr">#[cfg(test)]
+<a href=#366 id=366 data-nosnippet>366</a></span><span class="kw">mod </span>tests {
+<a href=#367 id=367 data-nosnippet>367</a>    <span class="kw">use </span>super::{derive_status, status_from_severity_number};
+<a href=#368 id=368 data-nosnippet>368</a>
+<a href=#369 id=369 data-nosnippet>369</a>    <span class="attr">#[test]
+<a href=#370 id=370 data-nosnippet>370</a>    </span><span class="kw">fn </span>derive_status_follows_the_reference_precedence() {
+<a href=#371 id=371 data-nosnippet>371</a>        <span class="comment">// (status attribute, severity text, severity number, status)
+<a href=#372 id=372 data-nosnippet>372</a>        </span><span class="kw">let </span>cases = [
+<a href=#373 id=373 data-nosnippet>373</a>            <span class="comment">// The status attribute comes first, then the severity text, then the severity number.
+<a href=#374 id=374 data-nosnippet>374</a>            </span>(<span class="prelude-val">Some</span>(<span class="string">"error"</span>), <span class="string">"alert"</span>, <span class="number">5</span>, <span class="string">"error"</span>),
+<a href=#375 id=375 data-nosnippet>375</a>            (<span class="prelude-val">None</span>, <span class="string">"alert"</span>, <span class="number">5</span>, <span class="string">"alert"</span>),
+<a href=#376 id=376 data-nosnippet>376</a>            (<span class="prelude-val">None</span>, <span class="string">""</span>, <span class="number">5</span>, <span class="string">"debug"</span>),
+<a href=#377 id=377 data-nosnippet>377</a>            <span class="comment">// Attribute and severity text are kept as they are, even when they aren't a known status.
+<a href=#378 id=378 data-nosnippet>378</a>            </span>(<span class="prelude-val">Some</span>(<span class="string">"Not A Status"</span>), <span class="string">""</span>, <span class="number">0</span>, <span class="string">"Not A Status"</span>),
+<a href=#379 id=379 data-nosnippet>379</a>            (<span class="prelude-val">None</span>, <span class="string">"Information"</span>, <span class="number">9</span>, <span class="string">"Information"</span>),
+<a href=#380 id=380 data-nosnippet>380</a>            (<span class="prelude-val">None</span>, <span class="string">"WARN"</span>, <span class="number">0</span>, <span class="string">"WARN"</span>),
+<a href=#381 id=381 data-nosnippet>381</a>            <span class="comment">// An empty attribute or severity text falls through to the next source.
+<a href=#382 id=382 data-nosnippet>382</a>            </span>(<span class="prelude-val">Some</span>(<span class="string">""</span>), <span class="string">"notice"</span>, <span class="number">13</span>, <span class="string">"notice"</span>),
+<a href=#383 id=383 data-nosnippet>383</a>            (<span class="prelude-val">Some</span>(<span class="string">""</span>), <span class="string">""</span>, <span class="number">13</span>, <span class="string">"warn"</span>),
+<a href=#384 id=384 data-nosnippet>384</a>            <span class="comment">// Severity number 0 has no name, so a log with nothing else has no status.
+<a href=#385 id=385 data-nosnippet>385</a>            </span>(<span class="prelude-val">None</span>, <span class="string">""</span>, <span class="number">0</span>, <span class="string">""</span>),
+<a href=#386 id=386 data-nosnippet>386</a>            (<span class="prelude-val">Some</span>(<span class="string">""</span>), <span class="string">""</span>, <span class="number">0</span>, <span class="string">""</span>),
+<a href=#387 id=387 data-nosnippet>387</a>        ];
+<a href=#388 id=388 data-nosnippet>388</a>
+<a href=#389 id=389 data-nosnippet>389</a>        <span class="kw">for </span>(status, severity_text, severity_number, expected) <span class="kw">in </span>cases {
+<a href=#390 id=390 data-nosnippet>390</a>            <span class="macro">assert_eq!</span>(
+<a href=#391 id=391 data-nosnippet>391</a>                derive_status(status.map(String::from), severity_text, severity_number),
+<a href=#392 id=392 data-nosnippet>392</a>                expected,
+<a href=#393 id=393 data-nosnippet>393</a>                <span class="string">"derive_status({:?}, {:?}, {})"</span>,
+<a href=#394 id=394 data-nosnippet>394</a>                status,
+<a href=#395 id=395 data-nosnippet>395</a>                severity_text,
+<a href=#396 id=396 data-nosnippet>396</a>                severity_number
+<a href=#397 id=397 data-nosnippet>397</a>            );
+<a href=#398 id=398 data-nosnippet>398</a>        }
+<a href=#399 id=399 data-nosnippet>399</a>    }
+<a href=#400 id=400 data-nosnippet>400</a>
+<a href=#401 id=401 data-nosnippet>401</a>    <span class="attr">#[test]
+<a href=#402 id=402 data-nosnippet>402</a>    </span><span class="kw">fn </span>status_from_severity_number_matches_the_reference() {
+<a href=#403 id=403 data-nosnippet>403</a>        <span class="comment">// Ported from `TestDeriveStatus` in the reference implementation:
+<a href=#404 id=404 data-nosnippet>404</a>        // https://github.com/DataDog/datadog-agent/blob/e0c8d8d93befb6864f13e2d88acbe13fb2d380b7/pkg/opentelemetry-mapping-go/otlp/logs/transform_test.go
+<a href=#405 id=405 data-nosnippet>405</a>        // with the boundaries of every range, and negative numbers, which the reference implementation treats as trace.
+<a href=#406 id=406 data-nosnippet>406</a>        </span><span class="kw">let </span>cases = [
+<a href=#407 id=407 data-nosnippet>407</a>            (-<span class="number">1</span>, <span class="string">"trace"</span>),
+<a href=#408 id=408 data-nosnippet>408</a>            (<span class="number">1</span>, <span class="string">"trace"</span>),
+<a href=#409 id=409 data-nosnippet>409</a>            (<span class="number">3</span>, <span class="string">"trace"</span>),
+<a href=#410 id=410 data-nosnippet>410</a>            (<span class="number">4</span>, <span class="string">"trace"</span>),
+<a href=#411 id=411 data-nosnippet>411</a>            (<span class="number">5</span>, <span class="string">"debug"</span>),
+<a href=#412 id=412 data-nosnippet>412</a>            (<span class="number">7</span>, <span class="string">"debug"</span>),
+<a href=#413 id=413 data-nosnippet>413</a>            (<span class="number">8</span>, <span class="string">"debug"</span>),
+<a href=#414 id=414 data-nosnippet>414</a>            (<span class="number">9</span>, <span class="string">"info"</span>),
+<a href=#415 id=415 data-nosnippet>415</a>            (<span class="number">12</span>, <span class="string">"info"</span>),
+<a href=#416 id=416 data-nosnippet>416</a>            (<span class="number">13</span>, <span class="string">"warn"</span>),
+<a href=#417 id=417 data-nosnippet>417</a>            (<span class="number">16</span>, <span class="string">"warn"</span>),
+<a href=#418 id=418 data-nosnippet>418</a>            (<span class="number">17</span>, <span class="string">"error"</span>),
+<a href=#419 id=419 data-nosnippet>419</a>            (<span class="number">20</span>, <span class="string">"error"</span>),
+<a href=#420 id=420 data-nosnippet>420</a>            (<span class="number">21</span>, <span class="string">"fatal"</span>),
+<a href=#421 id=421 data-nosnippet>421</a>            (<span class="number">24</span>, <span class="string">"fatal"</span>),
+<a href=#422 id=422 data-nosnippet>422</a>            (<span class="number">25</span>, <span class="string">"error"</span>),
+<a href=#423 id=423 data-nosnippet>423</a>            (<span class="number">50</span>, <span class="string">"error"</span>),
+<a href=#424 id=424 data-nosnippet>424</a>        ];
+<a href=#425 id=425 data-nosnippet>425</a>
+<a href=#426 id=426 data-nosnippet>426</a>        <span class="kw">for </span>(severity_number, expected) <span class="kw">in </span>cases {
+<a href=#427 id=427 data-nosnippet>427</a>            <span class="macro">assert_eq!</span>(
+<a href=#428 id=428 data-nosnippet>428</a>                status_from_severity_number(severity_number),
+<a href=#429 id=429 data-nosnippet>429</a>                expected,
+<a href=#430 id=430 data-nosnippet>430</a>                <span class="string">"status_from_severity_number({})"</span>,
+<a href=#431 id=431 data-nosnippet>431</a>                severity_number
+<a href=#432 id=432 data-nosnippet>432</a>            );
+<a href=#433 id=433 data-nosnippet>433</a>        }
+<a href=#434 id=434 data-nosnippet>434</a>    }
+<a href=#435 id=435 data-nosnippet>435</a>}
 </code></pre></div></section></main></body></html>
