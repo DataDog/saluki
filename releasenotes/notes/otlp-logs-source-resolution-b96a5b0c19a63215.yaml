@@ -10,3 +10,7 @@ fixes:
     OTLP metrics and logs from Azure App Service, Cloud Run, and Cloud Functions resources now get the serverless
     identity tags that the Datadog Agent adds, such as ``subscription_id``, ``resource_group``, ``project_id``, and
     ``location``.
+  - |
+    OTLP metrics from Azure Functions, Azure App Service, Azure Container Apps, Cloud Run, and Cloud Functions
+    resources no longer have a hostname, matching the Datadog Agent. Cloud Run and Cloud Functions metrics without a
+    complete identity no longer fall back to the Agent's hostname either.

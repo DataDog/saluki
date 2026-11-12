@@ -608,7 +608,9 @@ impl<'a> GcpServerlessIdentity<'a> {
     }
 }
 
-fn is_gcp_serverless(attributes: &[otlp_common::KeyValue]) -> bool {
+/// Returns whether the resource is on a Cloud Run or Cloud Functions platform, even with an incomplete
+/// identity. Such a resource must not fall back to a default hostname.
+pub fn is_gcp_serverless(attributes: &[otlp_common::KeyValue]) -> bool {
     matches!(
         get_attribute_str(attributes, CLOUD_PLATFORM),
         Some(GCP_CLOUD_FUNCTIONS_PLATFORM | GCP_CLOUD_RUN_PLATFORM)
@@ -669,14 +671,11 @@ pub fn extract_serverless_tags_from_resource_attributes(attributes: &[otlp_commo
     }
 }
 
-/// Resolves the source metadata from OTLP metric resource attributes.
-///
-/// Metrics only distinguish AWS ECS Fargate tasks from hosts.
+/// Resolves the source metadata from OTLP metric resource attributes with [`source_from_attributes`].
 pub fn resource_to_metric_source(
     resource: &otlp_protos::opentelemetry::proto::resource::v1::Resource,
 ) -> Option<Source> {
-    let attributes = &resource.attributes;
-    aws_ecs_fargate_source(attributes).or_else(|| hostname_source(attributes))
+    source_from_attributes(&resource.attributes)
 }
 
 /// Resolves the source of telemetry from attributes.
@@ -1320,27 +1319,6 @@ mod tests {
                 "{hostname}"
             );
         }
-    }
-
-    #[test]
-    fn metric_source_resolution_ignores_serverless_platforms() {
-        let resource = Resource {
-            attributes: vec![
-                string_attribute(CLOUD_PLATFORM, "azure.app_service"),
-                string_attribute(SERVICE_NAME, "app"),
-                string_attribute(CLOUD_ACCOUNT_ID, "sub"),
-                string_attribute("azure.resource_group.name", "rg"),
-                string_attribute(HOST_NAME, "host-name"),
-            ],
-            ..Default::default()
-        };
-
-        let source = resource_to_source(&resource).expect("source should resolve");
-        assert_eq!(source.kind, SourceKind::AzureAppServiceKind);
-
-        let metric_source = resource_to_metric_source(&resource).expect("metric source should resolve");
-        assert_eq!(metric_source.kind, SourceKind::HostnameKind);
-        assert_eq!(metric_source.identifier, "host-name");
     }
 
     fn attribute_value(key: &str, value: Value) -> KeyValue {
