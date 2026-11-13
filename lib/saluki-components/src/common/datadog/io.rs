@@ -987,6 +987,9 @@ async fn run_endpoint_io_loop<B>(
             // next the next available pending transaction.
             svc = service.ready(), if !done && !pending_txns.is_empty() => match svc {
                 Ok(svc) => {
+                    // Dequeuing can read from disk, and requests can finish while it does, so dequeue first.
+                    let pending_txn = pending_txns.pop().await;
+
                     // A finished request releases its concurrency permit before its task is joined, so collect
                     // finished tasks before dispatching, or the in-flight count would include them.
                     while let Some(task_result) = in_flight.try_join_next() {
@@ -1000,7 +1003,7 @@ async fn run_endpoint_io_loop<B>(
                     }
                     in_flight_telemetry.record_in_flight_requests(&queue_domain, in_flight.len());
 
-                    if let Some(pending_txn) = pending_txns.pop().await {
+                    if let Some(pending_txn) = pending_txn {
                         let (metadata, request, retry_counters) = prepare_transaction_for_dispatch(
                             pending_txn,
                             &mut retry_telemetry,
