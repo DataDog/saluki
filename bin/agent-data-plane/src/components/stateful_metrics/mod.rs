@@ -36,7 +36,7 @@ use foldspace_core::{
     ZstdBatchCompressor,
 };
 use futures::{future::BoxFuture, stream::FuturesUnordered, FutureExt as _, StreamExt as _};
-use saluki_common::{sync::live::Live, task::JoinSetExt as _};
+use saluki_common::sync::live::Live;
 use saluki_components::queue::{DeliveryQueueConfiguration, PendingTransaction};
 use saluki_core::{
     accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr},
@@ -46,6 +46,7 @@ use saluki_core::{
     },
     data_model::event::{Event, EventType},
     observability::ComponentMetricsExt as _,
+    runtime,
 };
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_metrics::MetricsBuilder;
@@ -53,7 +54,6 @@ use stringtheory::MetaString;
 use tokio::{
     select,
     sync::mpsc,
-    task::JoinSet,
     time::{sleep, sleep_until, Instant},
 };
 use tonic::{
@@ -222,43 +222,30 @@ impl Destination for StatefulMetrics {
     async fn run(self: Box<Self>, mut context: DestinationContext) -> Result<(), GenericError> {
         let mut health = context.take_health_handle();
         let (tx, rx) = mpsc::channel(SENDER_INPUT_CAPACITY);
-        let mut tasks = JoinSet::new();
-        tasks.spawn_traced_named(
+        runtime::worker(
             "stateful-metrics-single-sender",
             self.client.run(rx, self.api_key, self.delivery_shutdown_timeout),
-        );
+        )
+        // Let the component's deadline cover delivery and persistence, rather than a shorter child deadline.
+        .with_shutdown_timeout(Duration::MAX)
+        .needed()
+        .spawn();
         health.mark_ready();
-        let mut result = Ok(());
         loop {
             select! {
                 _ = health.live() => {},
-                completed = tasks.join_next() => {
-                    result = match completed {
-                        Some(Ok(Err(error))) => Err(error),
-                        Some(Err(error)) => Err(error.into()),
-                        _ => Err(generic_error!("stateful metrics sender stopped before input closed")),
-                    };
-                    break;
-                },
                 events = context.events().next() => {
                     let Some(events) = events else { break };
                     let batch = StatefulMetricsWorker::convert_batch(events);
-                    if !batch.is_empty() && tx.send(batch).await.is_err() {
-                        result = Err(generic_error!("stateful metrics sender input closed"));
-                        break;
+                    if !batch.is_empty() {
+                        tx.send(batch).await.map_err(|_| generic_error!("stateful metrics sender input closed"))?;
                     }
                 },
             }
         }
+        // Closing input lets the scoped sender drain; the component cannot finish until it does.
         drop(tx);
-        while let Some(completed) = tasks.join_next().await {
-            match completed {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => result = Err(error),
-                Err(error) => result = Err(error.into()),
-            }
-        }
-        result
+        Ok(())
     }
 }
 

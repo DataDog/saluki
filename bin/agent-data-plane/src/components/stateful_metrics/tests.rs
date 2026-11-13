@@ -26,6 +26,7 @@ use saluki_core::data_model::{event::metric::context::Context, tags::TagSet};
 use saluki_core::{
     accounting::{ComponentRegistry, MemoryLimiter},
     components::{
+        test_util::{ComponentControl, TestComponentDriver},
         transforms::{TransformBuilder, TransformContext},
         ComponentContext,
     },
@@ -870,7 +871,7 @@ async fn grpc_capability_failure_retains_logical_work_without_http_fallback() {
 
 async fn start_destination(
     endpoint: MetaString, flush_timeout: Duration, settings: &SharedConfiguration,
-) -> (mpsc::Sender<EventsBuffer>, JoinHandle<Result<(), GenericError>>) {
+) -> ComponentControl<EventsBuffer> {
     let configuration = StatefulMetricsConfiguration {
         endpoints: vec![endpoint],
 
@@ -889,41 +890,21 @@ async fn start_destination(
     start_configured_destination(configuration).await
 }
 
-async fn start_configured_destination(
-    configuration: StatefulMetricsConfiguration,
-) -> (mpsc::Sender<EventsBuffer>, JoinHandle<Result<(), GenericError>>) {
-    let component = ComponentContext::test_destination("dd_stateful_metrics_out");
-    let destination = configuration
-        .build(BuildContext::new(component.clone(), ResourceRegistry::new()))
+async fn start_configured_destination(configuration: StatefulMetricsConfiguration) -> ComponentControl<EventsBuffer> {
+    TestComponentDriver::options()
+        .with_component_id("dd_stateful_metrics_out")
+        .with_interconnect_capacity(NonZeroUsize::new(4).unwrap())
+        .with_shutdown_timeout(TEST_TIMEOUT)
+        .destination(configuration)
         .await
-        .unwrap();
-    let (in_tx, in_rx) = mpsc::channel(4);
-    let health_registry = HealthRegistry::new();
-    let health = health_registry
-        .register_component(&SubsystemIdentifier::from_dotted("test"))
-        .unwrap();
-    let topology = TopologyContext::new(
-        Arc::from("test"),
-        MemoryLimiter::noop(),
-        health_registry,
-        Handle::current(),
-        DataspaceRegistry::new(),
-    );
-    let context = DestinationContext::new(
-        &topology,
-        &component,
-        ComponentRegistry::default(),
-        health,
-        Consumer::new(component.clone(), in_rx),
-    );
-    (in_tx, tokio::spawn(destination.run(context)))
+        .unwrap()
 }
 
 #[tokio::test]
 async fn destination_flushes_sparse_input_and_waits_for_ack_on_shutdown() {
     let mut harness = Harness::new().await;
     harness.worker.transports[0] = None;
-    let (in_tx, task) = start_destination(
+    let mut control = start_destination(
         harness.worker.endpoints[0].address.uri().to_string().into(),
         Duration::from_millis(20),
         &shared(),
@@ -933,11 +914,20 @@ async fn destination_flushes_sparse_input_and_waits_for_ack_on_shutdown() {
     assert!(events
         .try_push(Event::Metric(Metric::gauge("sparse", (123, 1.0))))
         .is_none());
-    in_tx.send(events).await.unwrap();
+    control.send(events).await;
     let batch = harness.receive().await;
     assert!(has_name(&sequence(&batch)));
-    drop(in_tx);
-    assert!(!task.is_finished());
+    control.supervisor().wait_for_running_descendants(2).await;
+    let tree = control.supervisor().tree_handle().snapshot();
+    assert_eq!(tree.root.children[0].children[0].name, "stateful-metrics-single-sender");
+    control.signal_shutdown();
+    control
+        .wait_until(
+            || control.is_finished(),
+            || "destination to close the sender input".to_owned(),
+        )
+        .await;
+    assert!(!control.supervisor().is_finished());
     harness
         .replies
         .send(Ok(BatchStatus {
@@ -946,7 +936,7 @@ async fn destination_flushes_sparse_input_and_waits_for_ack_on_shutdown() {
         }))
         .await
         .unwrap();
-    timeout(TEST_TIMEOUT, task).await.unwrap().unwrap().unwrap();
+    control.wait().await.unwrap();
 }
 
 #[tokio::test]
@@ -1069,16 +1059,16 @@ async fn destination_shutdown_timeout_persists_missing_ack() {
     let mut harness = Harness::new().await;
     harness.worker.transports[0] = None;
     let endpoint: MetaString = harness.worker.endpoints[0].address.uri().to_string().into();
-    let (in_tx, task) = start_destination(endpoint.clone(), Duration::from_millis(10), &settings).await;
+    let mut control = start_destination(endpoint.clone(), Duration::from_millis(10), &settings).await;
     let mut events = EventsBuffer::default();
     assert!(events
         .try_push(Event::Metric(Metric::gauge("unacknowledged", (123, 1.0))))
         .is_none());
-    in_tx.send(events).await.unwrap();
+    control.send(events).await;
     harness.receive().await;
-    drop(in_tx);
+    control.signal_shutdown();
     // The intake deliberately never acknowledges this payload.
-    timeout(TEST_TIMEOUT, task).await.unwrap().unwrap().unwrap();
+    control.wait().await.unwrap();
     let mut queue = queue_for(&settings, &[endpoint]).await;
     let Some(PendingTransaction::LowPriority(batch)) = queue.pop_shared().await else {
         panic!("shutdown lost unacknowledged data")
@@ -1194,9 +1184,7 @@ impl EndpointHarness {
         timeout(TEST_TIMEOUT, self.sessions.recv()).await.unwrap().unwrap()
     }
 
-    async fn start(
-        &self, settings: &SharedConfiguration, key: Live<String>,
-    ) -> (mpsc::Sender<EventsBuffer>, JoinHandle<Result<(), GenericError>>) {
+    async fn start(&self, settings: &SharedConfiguration, key: Live<String>) -> ComponentControl<EventsBuffer> {
         start_configured_destination(StatefulMetricsConfiguration {
             endpoints: vec![self.endpoint.clone()],
 
@@ -1612,7 +1600,7 @@ async fn series_larger_than_the_chunk_limit_is_queued_alone() {
 async fn destination_sends_every_payload_to_every_endpoint_and_replays_only_to_the_failed_one() {
     let mut healthy = EndpointHarness::new().await;
     let mut flaky = EndpointHarness::new().await;
-    let (input, task) = start_configured_destination(StatefulMetricsConfiguration {
+    let mut control = start_configured_destination(StatefulMetricsConfiguration {
         endpoints: vec![healthy.endpoint.clone(), flaky.endpoint.clone()],
 
         api_key: Live::new_fixed("test-key".to_owned()),
@@ -1630,7 +1618,7 @@ async fn destination_sends_every_payload_to_every_endpoint_and_replays_only_to_t
     .await;
     let mut healthy_session = healthy.session().await;
     let mut flaky_session = flaky.session().await;
-    send_metrics(&input, 123).await;
+    send_metrics(&control, 123).await;
     let first = healthy_session.receive().await;
     let copy = flaky_session.receive().await;
     assert_eq!(first.batch_id, 1);
@@ -1646,8 +1634,8 @@ async fn destination_sends_every_payload_to_every_endpoint_and_replays_only_to_t
     assert_eq!(replay.batch_id, 1);
     assert_eq!(sequence(&replay), sequence(&copy));
     reconnected.acknowledge(&replay).await;
-    drop(input);
-    timeout(TEST_TIMEOUT, task).await.unwrap().unwrap().unwrap();
+    control.signal_shutdown();
+    control.wait().await.unwrap();
     assert!(healthy_session.received.try_recv().is_err());
 }
 
@@ -1763,14 +1751,14 @@ mod memory_accounting {
     }
 }
 
-async fn send_metrics(input: &mpsc::Sender<EventsBuffer>, timestamp: u64) {
+async fn send_metrics(input: &ComponentControl<EventsBuffer>, timestamp: u64) {
     let mut events = EventsBuffer::default();
     for name in ["first", "second"] {
         assert!(events
             .try_push(Event::Metric(Metric::gauge(name, (timestamp, 1.0))))
             .is_none());
     }
-    input.send(events).await.unwrap();
+    input.send(events).await;
 }
 
 #[tokio::test]
@@ -1778,9 +1766,9 @@ async fn destination_shutdown_and_restart_preserves_unacknowledged_metrics() {
     let mut harness = EndpointHarness::new().await;
     let dir = TempDir::new().unwrap();
     let settings = persisted_settings(&dir, 1024 * 1024);
-    let (input, task) = harness.start(&settings, Live::new_fixed("test-key".to_owned())).await;
+    let mut control = harness.start(&settings, Live::new_fixed("test-key".to_owned())).await;
     let mut session = harness.session().await;
-    send_metrics(&input, 123).await;
+    send_metrics(&control, 123).await;
     let original = sequence(&session.receive().await);
     let mut names: Vec<_> = original
         .data
@@ -1792,15 +1780,15 @@ async fn destination_shutdown_and_restart_preserves_unacknowledged_metrics() {
         .collect();
     names.sort_unstable();
     assert_eq!(names, ["first", "second"]);
-    drop(input);
-    timeout(TEST_TIMEOUT, task).await.unwrap().unwrap().unwrap();
-    let (input, task) = harness.start(&settings, Live::new_fixed("test-key".to_owned())).await;
+    control.signal_shutdown();
+    control.wait().await.unwrap();
+    let mut control = harness.start(&settings, Live::new_fixed("test-key".to_owned())).await;
     let mut replay_session = harness.session().await;
     let batch = replay_session.receive().await;
     assert_eq!(sequence(&batch), original);
     replay_session.acknowledge(&batch).await;
-    drop(input);
-    timeout(TEST_TIMEOUT, task).await.unwrap().unwrap().unwrap();
+    control.signal_shutdown();
+    control.wait().await.unwrap();
 }
 
 #[tokio::test]
@@ -1809,10 +1797,10 @@ async fn destination_refreshes_credentials_and_resumes_suspended_delivery() {
     let _local = metrics::set_default_local_recorder(&recorder);
     let mut harness = EndpointHarness::new().await;
     let (mut publisher, source) = channel("test-key".to_owned());
-    let (input, task) = harness.start(&shared(), source.live(|key| key)).await;
+    let mut control = harness.start(&shared(), source.live(|key| key)).await;
     let mut session = harness.session().await;
     assert_eq!(session.key, "test-key");
-    send_metrics(&input, 123).await;
+    send_metrics(&control, 123).await;
     session.receive().await;
     session
         .replies
@@ -1841,7 +1829,7 @@ async fn destination_refreshes_credentials_and_resumes_suspended_delivery() {
     assert!(events
         .try_push(Event::Metric(Metric::gauge("after-refresh", (124, 1.0))))
         .is_none());
-    input.send(events).await.unwrap();
+    control.send(events).await;
     timeout(TEST_TIMEOUT, async {
         loop {
             let batch = updated.receive().await;
@@ -1858,8 +1846,8 @@ async fn destination_refreshes_credentials_and_resumes_suspended_delivery() {
     })
     .await
     .unwrap();
-    drop(input);
-    timeout(TEST_TIMEOUT, task).await.unwrap().unwrap().unwrap();
+    control.signal_shutdown();
+    control.wait().await.unwrap();
 }
 
 #[tokio::test]
@@ -1886,13 +1874,13 @@ async fn destination_shutdown_preserves_all_buffered_input_without_acks() {
     let harness = EndpointHarness::new().await;
     let dir = TempDir::new().unwrap();
     let settings = persisted_settings(&dir, 1024 * 1024);
-    let (input, task) = harness.start(&settings, Live::new_fixed("test-key".to_owned())).await;
+    let mut control = harness.start(&settings, Live::new_fixed("test-key".to_owned())).await;
     // Exceed both the destination's four-entry input channel and the one-entry sender channel.
     for timestamp in 123..135 {
-        send_metrics(&input, timestamp).await;
+        send_metrics(&control, timestamp).await;
     }
-    drop(input);
-    timeout(TEST_TIMEOUT, task).await.unwrap().unwrap().unwrap();
+    control.signal_shutdown();
+    control.wait().await.unwrap();
     let mut queue = queue_for(&settings, std::slice::from_ref(&harness.endpoint)).await;
     let mut recovered = Vec::new();
     while let Some(batch) = queue.pop_shared().await {
