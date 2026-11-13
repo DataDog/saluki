@@ -136,6 +136,27 @@ struct Edge {
     to: ComponentId,
 }
 
+/// Effective event types for the components in a [`Graph`].
+///
+/// See [`Graph::effective_event_types`] for details.
+#[derive(Debug, Default)]
+pub struct EffectiveEventTypes {
+    inputs: HashMap<ComponentId, EventType>,
+    outputs: HashMap<ComponentId, EventType>,
+}
+
+impl EffectiveEventTypes {
+    /// Returns the event types the given component can receive, if it receives events.
+    pub fn input(&self, id: &ComponentId) -> Option<EventType> {
+        self.inputs.get(id).copied()
+    }
+
+    /// Returns the event types the given component can emit across all of its outputs, if it emits events.
+    pub fn output(&self, id: &ComponentId) -> Option<EventType> {
+        self.outputs.get(id).copied()
+    }
+}
+
 /// A directed graph of components.
 ///
 /// `Graph` holds both the nodes (components) that represent the topology, as well as the edges (connections) between
@@ -468,6 +489,112 @@ impl Graph {
                 }
             }
             Node::Destination { .. } | Node::Forwarder { .. } => panic!("no outputs on destinations/forwarders"),
+        }
+    }
+
+    /// Returns the event types that each component can actually receive and emit, given the current edges.
+    ///
+    /// Components declare the event types they accept and emit, but those declarations are often broader than what
+    /// flows through them in a given topology: a generic transform might accept every event type but only ever be
+    /// connected to a metrics source. This narrows each component's declared types by what its upstream components
+    /// can emit, so that per-edge costs (such as the size of the event buffers sent over an edge) can be estimated more
+    /// precisely.
+    ///
+    /// A transform whose declared output type is identical to its declared input type is assumed to only emit the
+    /// event types it receives. Components without inbound edges are assumed to receive their full declared input type.
+    ///
+    /// Only components that handle events are included. Event types for inputs are keyed by the component, and event
+    /// types for outputs are keyed by the component and combined across all of its outputs.
+    pub fn effective_event_types(&self) -> EffectiveEventTypes {
+        let mut output_types: HashMap<ComponentOutputId, EventType> = HashMap::new();
+        for node in self.nodes.values() {
+            match node {
+                Node::Source { outputs } => {
+                    for output in outputs {
+                        if let DataType::Event(ty) = output.output_ty() {
+                            output_types.insert(output.component_output().clone(), ty);
+                        }
+                    }
+                }
+                Node::Transform { outputs, .. } => {
+                    for output in outputs {
+                        output_types.insert(output.component_output().clone(), EventType::none());
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Narrowed types only ever grow from their initial state, and are bounded by the declared types, so this
+        // converges even if the graph contains a cycle.
+        let mut input_types: HashMap<ComponentId, EventType> = HashMap::new();
+        loop {
+            let mut changed = false;
+
+            for (id, node) in &self.nodes {
+                let declared_input = match node {
+                    Node::Transform { input_ty, .. }
+                    | Node::Encoder { input_ty, .. }
+                    | Node::Destination { input_ty } => *input_ty,
+                    _ => continue,
+                };
+
+                let mut has_inbound = false;
+                let mut upstream = EventType::none();
+                for edge in self.edges.iter().filter(|edge| &edge.to == id) {
+                    has_inbound = true;
+                    upstream |= match output_types.get(&edge.from) {
+                        Some(ty) => *ty,
+                        None => match self.nodes.get(&edge.from.component_id()) {
+                            Some(Node::Decoder { output_ty, .. }) => *output_ty,
+                            _ => EventType::none(),
+                        },
+                    };
+                }
+                let effective_input = if has_inbound {
+                    declared_input & upstream
+                } else {
+                    declared_input
+                };
+                input_types.insert(id.clone(), effective_input);
+
+                if let Node::Transform { outputs, .. } = node {
+                    for output in outputs {
+                        let DataType::Event(declared_output) = output.output_ty() else {
+                            continue;
+                        };
+                        let effective_output = if declared_output == declared_input {
+                            declared_output & effective_input
+                        } else {
+                            declared_output
+                        };
+                        let current = output_types.entry(output.component_output().clone()).or_default();
+                        if *current != effective_output {
+                            *current = effective_output;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+
+            if !changed {
+                break;
+            }
+        }
+
+        let mut combined_output_types: HashMap<ComponentId, EventType> = HashMap::new();
+        for (output_id, ty) in output_types {
+            *combined_output_types.entry(output_id.component_id()).or_default() |= ty;
+        }
+        for (id, node) in &self.nodes {
+            if let Node::Decoder { output_ty, .. } = node {
+                combined_output_types.insert(id.clone(), *output_ty);
+            }
+        }
+
+        EffectiveEventTypes {
+            inputs: input_types,
+            outputs: combined_output_types,
         }
     }
 
