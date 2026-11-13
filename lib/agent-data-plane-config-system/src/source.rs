@@ -16,6 +16,7 @@ use std::collections::HashSet;
 use std::sync::OnceLock;
 
 use agent_data_plane_config::Provenance;
+use datadog_agent_config::classifier::ConfigClassifier;
 use saluki_config::dynamic::{ConfigSetting, Provenance as StreamProvenance};
 use serde_json::Value;
 
@@ -174,9 +175,10 @@ impl SourceTree {
     /// deserializing a model: they need every key present, including the ones no model describes.
     ///
     /// An object-valued leaf is descended into, so a key nested inside a value the models do not
-    /// describe is still reported under its full path. A leaf that a model does describe, such as the
-    /// map `otlp_config.traces.span_name_remappings`, is also reported under its own key, so it can
-    /// still be looked up as the setting it is. Every key that comes out of one leaf carries that
+    /// describe is still reported under its full path. An object that is a setting in its own right is
+    /// also reported under its own key, so it can still be looked up as the setting it is: a setting a
+    /// model describes, such as the map `otlp_config.traces.span_name_remappings`, or one the
+    /// compatibility classifier has an entry for, such as an unsupported `logs_config.tag_filters`. Every key that comes out of one leaf carries that
     /// leaf's provenance, because one input supplied the whole value. A leaf holding an array or a
     /// scalar is reported as it stands.
     pub(crate) fn flattened_keys(&self) -> Vec<(String, &Value, Provenance)> {
@@ -289,12 +291,7 @@ impl Node {
                     prefix.truncate(prefix_len);
                 }
             }
-            Node::Leaf { value, provenance } => {
-                if value.as_object().is_some_and(|entries| !entries.is_empty()) && is_modeled_leaf(prefix) {
-                    keys.push((prefix.clone(), value, *provenance));
-                }
-                flatten_value(value, *provenance, prefix, keys);
-            }
+            Node::Leaf { value, provenance } => flatten_value(value, *provenance, prefix, keys),
         }
     }
 
@@ -314,7 +311,8 @@ impl Node {
 
 /// Collects the dotted key of every value at and beneath one leaf's value, all under `provenance`.
 ///
-/// Object entries are descended into; anything else is a value in its own right.
+/// Object entries are descended into; anything else is a value in its own right. A non-empty object
+/// that is itself a setting is reported under its own key too.
 fn flatten_value<'a>(
     value: &'a Value, provenance: Provenance, prefix: &mut String, keys: &mut Vec<(String, &'a Value, Provenance)>,
 ) {
@@ -322,6 +320,9 @@ fn flatten_value<'a>(
         keys.push((prefix.clone(), value, provenance));
         return;
     };
+    if !entries.is_empty() && is_object_setting(prefix) {
+        keys.push((prefix.clone(), value, provenance));
+    }
 
     for (key, entry) in entries {
         let prefix_len = prefix.len();
@@ -332,6 +333,13 @@ fn flatten_value<'a>(
         flatten_value(entry, provenance, prefix, keys);
         prefix.truncate(prefix_len);
     }
+}
+
+/// Returns whether the dotted `key` is a setting whose value can be an object: a leaf a model describes,
+/// or a key the compatibility classifier has an entry for, which no model describes.
+fn is_object_setting(key: &str) -> bool {
+    static CLASSIFIER: OnceLock<ConfigClassifier> = OnceLock::new();
+    is_modeled_leaf(key) || CLASSIFIER.get_or_init(ConfigClassifier::new).contains(key)
 }
 
 /// Returns whether the dotted `key` is a leaf path of either source model: a setting a model describes,
@@ -631,6 +639,32 @@ mod tests {
                 ("not_a_datadog_key.b.c".to_string(), &json!(2), Provenance::Explicit),
             ]
         );
+    }
+
+    #[test]
+    fn flattened_keys_report_a_classified_object_setting_under_its_own_key() {
+        // A setting no model describes can still have a classifier entry, and then the compatibility check
+        // must find it under its own key, not only under the keys inside it. This holds whether the object
+        // arrives inside an unmodeled section from a file, or as one streamed setting.
+        let endpoints = json!({ "https://example.test": ["api-key"] });
+        let file = SourceTree::all_explicit(json!({ "use_v3_api": { "distributions": { "endpoints": endpoints } } }));
+        let streamed = SourceTree::from_settings(&[ConfigSetting::new(
+            "use_v3_api.distributions.endpoints",
+            endpoints.clone(),
+            StreamProvenance::Explicit,
+        )]);
+
+        for tree in [file, streamed] {
+            let keys = tree.flattened_keys();
+            assert!(
+                keys.contains(&(
+                    "use_v3_api.distributions.endpoints".to_string(),
+                    &endpoints,
+                    Provenance::Explicit
+                )),
+                "{keys:?}"
+            );
+        }
     }
 
     #[test]
