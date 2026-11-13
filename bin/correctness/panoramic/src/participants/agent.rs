@@ -17,6 +17,10 @@ use crate::core::template::Template;
 /// The endpoint of the Agent's embedded collector, which its own `otel-config.yaml` sets.
 const OTEL_OTLP_GRPC: &str = "otel_otlp_grpc";
 
+/// The name a case writes for the embedded collector's configuration file, and its destination.
+const OTEL_CONFIG_YAML: &str = "otel-config.yaml";
+const OTEL_CONFIG_YAML_PATH: &str = "/etc/datadog-agent/otel-config.yaml";
+
 const LISTENERS: &[Listener] = &[
     Listener {
         name: "dogstatsd_udp",
@@ -105,7 +109,10 @@ impl ParticipantType for Agent {
             files: datadog_agent::s6_overlay(&["agent"]),
             ready: BTreeMap::from([("dogstatsd_udp".to_string(), ready)]),
             processes: Some(vec![datadog_agent::s6_process("agent", "agent", "agent.log")?]),
-            aliases: BTreeMap::from([(DATADOG_YAML, DATADOG_YAML_PATH)]),
+            aliases: BTreeMap::from([
+                (DATADOG_YAML, DATADOG_YAML_PATH),
+                (OTEL_CONFIG_YAML, OTEL_CONFIG_YAML_PATH),
+            ]),
             consumes: BTreeMap::from([("intake", INTAKE), ("dogstatsd_forward", DOGSTATSD_FORWARD)]),
             ..ParticipantSpec::default()
         };
@@ -113,7 +120,7 @@ impl ParticipantType for Agent {
         let wiring = Wiring {
             withdrawn: None,
             write: "endpoint: \"0.0.0.0:{{ self.endpoints.otel_otlp_grpc.port }}\" under \
-                    receivers.otlp.protocols.grpc in /etc/datadog-agent/otel-config.yaml, placed with template: true"
+                    receivers.otlp.protocols.grpc in otel-config.yaml, placed with template: true"
                 .to_string(),
             overridden: None,
         };
