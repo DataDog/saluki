@@ -530,6 +530,11 @@ impl TopologyBuildState {
             .keys()
             .filter(|id| !self.prunable_components.contains_key(*id))
             .count();
+        let live_encoders = self
+            .encoders
+            .keys()
+            .filter(|id| !self.prunable_components.contains_key(*id))
+            .count();
 
         // Event buffers store each event type separately, so how large a buffer can get depends on which event types can
         // actually reach it. Work that out on the graph as it will be once pruned components are removed, so that a
@@ -549,8 +554,8 @@ impl TopologyBuildState {
         // Adjust the bounds related to interconnects.
         //
         // This deals with the minimum size of the interconnects themselves, since they're bounded and thus allocated
-        // up-front. Every non-source component has an interconnect.
-        let total_interconnect_capacity = interconnect_capacity * (live_transforms + live_destinations);
+        // up-front. Every component that consumes events (transforms, destinations, and encoders) has an interconnect.
+        let total_interconnect_capacity = interconnect_capacity * (live_transforms + live_destinations + live_encoders);
         bounds_builder
             .minimum()
             .with_array::<EventsBuffer>("events", total_interconnect_capacity);
@@ -559,7 +564,7 @@ impl TopologyBuildState {
 
         // Adjust the bounds related to event buffers themselves.
         //
-        // We calculate the maximum number of event buffers by adding up the total capacity of all non-source components, plus the count
+        // We calculate the maximum number of event buffers by adding up the total capacity of all event-consuming components, plus the count
         // of non-destination components. This is the effective upper bound because once all component channels are full, sending
         // components can only allocate one more event buffer before being blocked on sending, which is then the effective upper bound.
         //
@@ -570,7 +575,13 @@ impl TopologyBuildState {
         // TODO: Add a firm subitem for payloads when we have payload interconnects.
         let is_live = |id: &&ComponentId| !self.prunable_components.contains_key(*id);
         let mut firm = bounds_builder.firm();
-        for component_id in self.transforms.keys().chain(self.destinations.keys()).filter(is_live) {
+        for component_id in self
+            .transforms
+            .keys()
+            .chain(self.destinations.keys())
+            .chain(self.encoders.keys())
+            .filter(is_live)
+        {
             let input_types = event_types.input(component_id).unwrap_or_else(EventType::all_bits);
             firm.with_expr(UsageExpr::product(
                 "events",
@@ -1183,7 +1194,8 @@ mod tests {
         support::SubsystemIdentifier,
         topology::{
             test_util::{
-                TestDecoderBuilder, TestDestinationBuilder, TestRelayBuilder, TestSourceBuilder, TestTransformBuilder,
+                TestDecoderBuilder, TestDestinationBuilder, TestEncoderBuilder, TestRelayBuilder, TestSourceBuilder,
+                TestTransformBuilder,
             },
             EdgeCondition, OutputDefinition,
         },
@@ -2248,6 +2260,44 @@ mod tests {
             expected_firm,
             "firm bytes should add the max in-flight event-buffer memory on top of the minimum"
         );
+    }
+
+    #[test]
+    fn recalculate_bounds_accounts_for_encoder_interconnects() {
+        // Encoders consume event buffers through an interconnect just like transforms and destinations do, so their
+        // interconnects count towards both the minimum and the firm bounds.
+        let interconnect_capacity = 4usize;
+        let component_registry = ComponentRegistry::default();
+        let mut blueprint = TopologyBlueprint::new("test", &component_registry);
+        blueprint
+            .with_interconnect_capacity(NonZeroUsize::new(interconnect_capacity).unwrap())
+            .add_source("source", TestSourceBuilder::default_output(EventType::Metric))
+            .unwrap()
+            .add_encoder(
+                "encoder",
+                TestEncoderBuilder::with_input_and_output_type(EventType::Metric, PayloadType::Raw),
+            )
+            .unwrap()
+            .connect_components_in_order(["source", "encoder"])
+            .unwrap();
+
+        let metrics_buffer =
+            std::mem::size_of::<EventsBuffer>() + (std::mem::size_of::<Metric>() * DEFAULT_EVENTS_BUFFER_CAPACITY);
+        let expected_min = interconnect_capacity * std::mem::size_of::<EventsBuffer>();
+        // The encoder's interconnect, plus one outbound buffer for the source.
+        let expected_firm = expected_min + (interconnect_capacity + 1) * metrics_buffer;
+
+        let bounds = {
+            let guard = blueprint.build_state.lock().expect("topology blueprint mutex poisoned");
+            guard
+                .as_ref()
+                .expect("topology blueprint already initialized")
+                .component_registry
+                .as_bounds()
+        };
+
+        assert_eq!(bounds.total_minimum_required_bytes(), expected_min);
+        assert_eq!(bounds.total_firm_limit_bytes(), expected_firm);
     }
 
     #[test]
