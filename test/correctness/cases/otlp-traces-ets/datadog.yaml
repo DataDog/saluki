@@ -17,9 +17,6 @@ process_config:
   container_collection:
     enabled: false
 
-# Point ourselves at the datadog-intake service at the global level.
-dd_url: "http://datadog-intake:2049"
-
 # Enable Error Tracking Standalone mode so that only error traces are kept.
 # Non-error traces will be forwarded with DroppedTrace=true.
 #
@@ -27,18 +24,17 @@ dd_url: "http://datadog-intake:2049"
 # the error sampler's TPS limit from being a variable in the comparison.
 apm_config:
   enabled: true
-  apm_dd_url: "http://datadog-intake:2049"
   target_traces_per_second: 1000000
   errors_per_second: 1000000
   features: ["enable_otlp_compute_top_level_by_span_kind"]
   error_tracking_standalone:
     enabled: true
 
-# Enable OTLP receiver on gRPC port 4317
+# Enable OTLP receiver on gRPC
 otlp_config:
   receiver:
     protocols:
       grpc:
-        endpoint: "0.0.0.0:4317"
+        endpoint: "0.0.0.0:{{ self.endpoints.agent_otlp_grpc.port }}"
   traces:
     enable_otlp_compute_top_level_by_span_kind: true

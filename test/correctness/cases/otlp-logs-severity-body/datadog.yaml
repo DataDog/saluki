@@ -8,9 +8,6 @@ api_key: dummy-api-key-correctness-testing
 # We have to specifically configure the health port to use.
 health_port: 5555
 
-# Point ourselves at the datadog-intake service.
-dd_url: "http://datadog-intake:2049"
-
 # The Agent only builds its OTLP logs pipeline when both the logs agent and OTLP logs are enabled. Set both
 # explicitly on both sides rather than relying on defaults.
 logs_enabled: true
@@ -18,7 +15,7 @@ logs_enabled: true
 # Send the Agent's logs to the datadog-intake service over HTTP. The logs agent collects nothing else, since no log
 # sources are configured.
 logs_config:
-  logs_dd_url: "datadog-intake:2049"
+  logs_dd_url: "{{ self.connections.intake.host }}:{{ self.connections.intake.port }}"
   logs_no_ssl: true
   force_use_http: true
 
@@ -26,7 +23,7 @@ otlp_config:
   receiver:
     protocols:
       grpc:
-        endpoint: "0.0.0.0:54317"
+        endpoint: "0.0.0.0:{{ self.endpoints.agent_otlp_grpc.port }}"
         max_recv_msg_size_mib: 4
   logs:
     enabled: true
