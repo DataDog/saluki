@@ -247,7 +247,7 @@ pub(super) fn normalize_tag_value_append_unchecked<I>(value: &str, out: &mut Str
     normalize_unchecked(value, false, out);
 }
 
-pub(super) fn is_normalized_tag_value(value: &str) -> bool {
+pub(crate) fn is_normalized_tag_value(value: &str) -> bool {
     is_normalized_ascii_tag(value, false)
 }
 

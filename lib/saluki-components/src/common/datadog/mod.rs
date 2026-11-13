@@ -15,6 +15,7 @@ pub mod telemetry;
 pub(crate) mod test_util;
 pub mod transaction;
 pub mod validation;
+pub(crate) mod version_data;
 
 use saluki_common::collections::FastHashMap;
 use saluki_core::data_model::event::trace::{AttributeValue, Span, Trace};
