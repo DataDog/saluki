@@ -1,7 +1,4 @@
-//! Main benchmarking binary.
-//!
-//! This binary emulates the standalone DogStatsD binary, listening for DogStatsD over UDS, aggregating metrics over a
-//! 10 second window, and shipping those metrics to the Datadog Platform.
+//! Agent Data Plane binary.
 
 #![deny(warnings)]
 #![deny(missing_docs)]
@@ -110,6 +107,7 @@ async fn async_main(started: Instant) -> Result<(), GenericError> {
     let bootstrapper = AppBootstrapper::new()
         .with_metrics_prefix("adp")
         .with_metrics_default_level(metrics_default_level)
+        .with_metrics_minimum_level(MINIMUM_METRICS_LEVEL)
         .with_logging_configuration(bootstrap_logging_config);
     let Bootstrap {
         supervisor: bootstrap_supervisor,
@@ -202,6 +200,14 @@ async fn load_bootstrap_config(bootstrap_config_path: &Path) -> Result<LoadedCon
 fn parse_metrics_level(level: &str) -> Result<Level, GenericError> {
     Level::try_from(level).map_err(|e| generic_error!("Failed to parse `metrics_level`: {}", e))
 }
+
+/// The least verbose metrics level that ADP runs with.
+///
+/// ADP's status sections, such as `DogStatsD` and `Forwarder`, are built from internal metrics emitted at `info`. A
+/// less verbose level would filter those metrics out and leave the status page showing zeros, so the bootstrapper
+/// raises a less verbose `metrics_level` to this, and rejects runtime overrides through `/metrics/override` that are
+/// less verbose than this.
+const MINIMUM_METRICS_LEVEL: Level = Level::INFO;
 
 async fn run_inner(
     action: Action, started: Instant, local_config: LoadedConfiguration, bootstrap_guard: &mut BootstrapGuard,

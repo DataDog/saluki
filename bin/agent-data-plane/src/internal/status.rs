@@ -1,6 +1,6 @@
 //! ADP-specific sections of the status details reported to the Datadog Agent.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, time::Duration};
 
 use datadog_agent_runtime::remote_agent::{StatusBuilder, StatusSectionProvider, StatusSectionWriter};
 use saluki_core::observability::metrics::{
@@ -32,6 +32,10 @@ const ERROR_TYPE_CLIENT: &str = "client_error";
 const ERROR_TYPE_CANT_SEND: &str = "cant_send";
 const ERROR_TYPE_GT_400: &str = "gt_400";
 const ERROR_TYPE_SENT_REQUEST: &str = "sent_request_error";
+
+const MEMORY_LIMITER_CURRENT_BACKOFF: &str = "adp.memory_limiter.current_backoff_secs";
+const MEMORY_LIMITER_THROTTLED_CALLS: &str = "adp.memory_limiter.throttled_calls_total";
+const MEMORY_LIMITER_THROTTLED_NANOS: &str = "adp.memory_limiter.throttled_nanoseconds_total";
 
 // ADP error types and the legacy `ErrorsByType` buckets the Core Agent maps them to. `cant_send` is deliberately not
 // listed: like the Core Agent, it counts toward the `Errors` total only.
@@ -86,6 +90,62 @@ impl StatusSectionProvider for ForwarderStatusSection {
     fn write_status(&self, builder: &mut StatusBuilder) {
         write_forwarder_section(builder, self.internal_metrics.state());
     }
+}
+
+/// The `Memory Limiter` status section, which shows whether the global memory limiter is throttling ingestion.
+///
+/// The Core Agent has no equivalent section. Throttling slows down every source that cooperates with the limiter, such
+/// as DogStatsD and OTLP, so it's surfaced here rather than only through logs and internal metrics.
+pub struct MemoryLimiterStatusSection {
+    internal_metrics: Reflector<AggregatedMetricsProcessor>,
+}
+
+impl MemoryLimiterStatusSection {
+    /// Creates a new `MemoryLimiterStatusSection` backed by the process-wide internal metrics.
+    pub fn new() -> Self {
+        Self {
+            internal_metrics: get_shared_metrics_state(),
+        }
+    }
+}
+
+impl StatusSectionProvider for MemoryLimiterStatusSection {
+    fn write_status(&self, builder: &mut StatusBuilder) {
+        write_memory_limiter_section(builder, self.internal_metrics.state());
+    }
+}
+
+fn write_memory_limiter_section(builder: &mut StatusBuilder, metrics: &AggregatedMetricsState) {
+    // Only the limiter's checker thread sets the backoff gauge, and it does so on every check, so the gauge is missing
+    // exactly when no limiter is running: memory limiting is disabled, or no memory limit is in effect.
+    //
+    // Without a running limiter, the other fields would only ever be zero, so they're left out.
+    let mut section = builder.named_section("Memory Limiter");
+    let Some(backoff_secs) = metrics.find_single_with_tags(MEMORY_LIMITER_CURRENT_BACKOFF, &[]) else {
+        section.set_field("State", "Not enabled");
+        return;
+    };
+
+    let state = if backoff_secs > 0.0 {
+        "Throttling"
+    } else {
+        "Not throttling"
+    };
+    let throttled_calls = metrics.get_aggregated_with_tags(MEMORY_LIMITER_THROTTLED_CALLS, &[]);
+    let throttled_nanos = metrics.get_aggregated_with_tags(MEMORY_LIMITER_THROTTLED_NANOS, &[]);
+
+    // The backoff gauge never exceeds the limiter's maximum backoff, but a status request must not panic on a value
+    // `Duration` can't represent.
+    let current_backoff = Duration::try_from_secs_f64(backoff_secs).unwrap_or_default();
+
+    section
+        .set_field("State", state)
+        .set_field("Current Backoff", format!("{:?}", current_backoff))
+        .set_field("Throttled Calls", throttled_calls.to_string())
+        .set_field(
+            "Throttled Time",
+            format!("{:?}", Duration::from_nanos(throttled_nanos.max(0.0) as u64)),
+        );
 }
 
 fn write_dogstatsd_section(builder: &mut StatusBuilder, metrics: &AggregatedMetricsState) {
@@ -314,6 +374,51 @@ mod tests {
             ]
         );
         assert!(fields.iter().all(|(_, value)| value == "0"), "{fields:?}");
+    }
+
+    #[test]
+    fn memory_limiter_section_reports_throttling() {
+        let memory_limiter_fields =
+            |metrics: Vec<Event>| status_fields(metrics, "Memory Limiter", write_memory_limiter_section);
+        let expected = |fields: &[(&str, &str)]| {
+            fields
+                .iter()
+                .map(|(name, value)| (name.to_string(), value.to_string()))
+                .collect::<Vec<_>>()
+        };
+
+        // Without the backoff gauge, no limiter is running, so only the state is reported. All-zero fields would read
+        // like "running, but not throttling".
+        assert_eq!(memory_limiter_fields(Vec::new()), expected(&[("State", "Not enabled")]));
+
+        // A running limiter that throttled earlier keeps reporting its totals after throttling stops.
+        assert_eq!(
+            memory_limiter_fields(vec![
+                gauge(MEMORY_LIMITER_CURRENT_BACKOFF, &[], 0.0),
+                counter(MEMORY_LIMITER_THROTTLED_CALLS, &[], 40.0),
+                counter(MEMORY_LIMITER_THROTTLED_NANOS, &[], 1_500_000_000.0),
+            ]),
+            expected(&[
+                ("Current Backoff", "0ns"),
+                ("State", "Not throttling"),
+                ("Throttled Calls", "40"),
+                ("Throttled Time", "1.5s"),
+            ])
+        );
+
+        assert_eq!(
+            memory_limiter_fields(vec![
+                gauge(MEMORY_LIMITER_CURRENT_BACKOFF, &[], 0.0125),
+                counter(MEMORY_LIMITER_THROTTLED_CALLS, &[], 40.0),
+                counter(MEMORY_LIMITER_THROTTLED_NANOS, &[], 1_500_000_000.0),
+            ]),
+            expected(&[
+                ("Current Backoff", "12.5ms"),
+                ("State", "Throttling"),
+                ("Throttled Calls", "40"),
+                ("Throttled Time", "1.5s"),
+            ])
+        );
     }
 
     #[test]

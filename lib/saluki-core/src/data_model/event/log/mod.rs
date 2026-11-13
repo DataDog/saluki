@@ -42,6 +42,12 @@ impl Log {
         }
     }
 
+    /// Sets the log message.
+    pub fn with_message(mut self, message: impl Into<MetaString>) -> Self {
+        self.message = message.into();
+        self
+    }
+
     /// Sets the log status.
     ///
     /// The status is kept as it is given, without normalization. An empty status means the log has none.

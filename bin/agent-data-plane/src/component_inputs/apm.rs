@@ -3,13 +3,17 @@
 use std::sync::Arc;
 
 use agent_data_plane_config::{domains::apm, shared::SharedConfiguration};
-use saluki_components::relays::apm::ApmRelayConfiguration;
+use saluki_common::sync::live::Live;
+use saluki_components::relays::apm::{ApmRelayConfiguration, TracerFlareConfiguration};
 use saluki_env::workload::CaptureEntityResolver;
 
-/// Builds the relay inputs with the effective listen host and the tracer container resolver.
+use super::forwarder_configuration;
+
+/// Builds the relay inputs with the effective listen host, the tracer container resolver, and the API key tracer flares
+/// are sent with.
 pub(crate) fn apm_relay_configuration(
     apm: &apm::Domain, shared: &SharedConfiguration, containerized: bool,
-    capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
+    capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>, api_key: Live<String>,
 ) -> ApmRelayConfiguration {
     let (bind_host, non_local_traffic) = apm.listen_host(&shared.bind_host, containerized);
 
@@ -20,6 +24,11 @@ pub(crate) fn apm_relay_configuration(
         bind_host,
         non_local_traffic,
         receiver_port: apm.receiver_port,
+        tracer_flare: TracerFlareConfiguration {
+            site: shared.endpoints.site.value.clone(),
+            api_key,
+            forwarder: forwarder_configuration(shared),
+        },
     }
 }
 
@@ -46,12 +55,19 @@ mod tests {
             proxy_destination: "unix:///tmp/destination.sock".to_string(),
             non_local_traffic: ConfigValue::explicit(true),
         };
-        let shared = SharedConfiguration {
+        let mut shared = SharedConfiguration {
             bind_host: ConfigValue::explicit(Some("192.0.2.1".to_string())),
             ..Default::default()
         };
+        shared.endpoints.site = ConfigValue::explicit("datadoghq.eu".to_string());
         let resolver: Arc<dyn CaptureEntityResolver + Send + Sync> = Arc::new(NoContainerResolver);
-        let config = apm_relay_configuration(&apm, &shared, false, Some(resolver.clone()));
+        let config = apm_relay_configuration(
+            &apm,
+            &shared,
+            false,
+            Some(resolver.clone()),
+            Live::new_fixed("api-key".to_string()),
+        );
 
         assert_eq!(config.receiver_port, 9126);
         assert_eq!(config.receiver_socket, "/tmp/receiver.sock");
@@ -59,6 +75,8 @@ mod tests {
         assert_eq!(config.bind_host.as_deref(), Some("192.0.2.1"));
         assert!(config.non_local_traffic);
         assert!(Arc::ptr_eq(config.capture_entity_resolver.as_ref().unwrap(), &resolver));
+        assert_eq!(config.tracer_flare.site, "datadoghq.eu");
+        assert_eq!(config.tracer_flare.api_key.as_str(), "api-key");
     }
 
     #[test]
@@ -69,7 +87,7 @@ mod tests {
             ..Default::default()
         };
         for containerized in [false, true] {
-            let config = apm_relay_configuration(&apm, &shared, containerized, None);
+            let config = apm_relay_configuration(&apm, &shared, containerized, None, Live::new_fixed(String::new()));
             assert_eq!(config.non_local_traffic, containerized);
             assert_eq!(config.bind_host, None);
             assert!(config.receiver_socket.is_empty());

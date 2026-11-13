@@ -317,11 +317,7 @@ async fn run_request_builder(
     loop {
         select! {
             Some(event_buffer) = events_rx.recv() => {
-                for event in event_buffer {
-                    let trace = match event.try_into_trace() {
-                        Some(trace) => trace,
-                        None => continue,
-                    };
+                for trace in event_buffer.into_events::<Trace>() {
                     // Encode the trace. If we get it back, that means the current request is full, and we need to
                     // flush it before we can try to encode the trace again.
                     let trace_to_retry = match trace_request_builder.encode(trace).await {

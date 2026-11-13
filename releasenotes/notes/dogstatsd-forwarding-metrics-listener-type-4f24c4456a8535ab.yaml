@@ -1,0 +1,5 @@
+---
+other:
+  - |
+    The DogStatsD source's ``component_packets_forwarded_total`` and ``component_bytes_forwarded_total`` metrics no
+    longer have a ``listener_type`` tag, since packets from all listeners are now forwarded together.

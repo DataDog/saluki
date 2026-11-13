@@ -220,13 +220,20 @@ inventory:
     documentation: |-
       The core Agent uses `apm_config.features` to toggle beta APM behaviors.
 
-      ADP recognizes a single value, `probabilistic_sampler_full_trace_id`, which switches the
-      probabilistic sampler from hashing the low 64 bits of the trace ID to hashing the full
-      128-bit ID, aligning its keep decisions with samplers that decide on 128-bit IDs. Every
-      other value is ignored, without a warning: the flag inventory is not stable across agent
-      versions, so unrecognized entries are inert rather than errors. Operators running multiple
-      probabilistic samplers in one ingestion path should enable the flag consistently on every
-      sampler that supports it.
+      ADP recognizes these values:
+
+      - `probabilistic_sampler_full_trace_id` switches the probabilistic sampler from hashing the
+        low 64 bits of the trace ID to hashing the full 128-bit ID, aligning its keep decisions with
+        samplers that decide on 128-bit IDs. Operators running multiple probabilistic samplers in
+        one ingestion path should enable the flag consistently on every sampler that supports it.
+      - `disable_operation_and_resource_name_logic_v2` derives OTLP operation and resource names
+        with the Agent's V1 logic.
+      - `disable_receive_resource_spans_v2` converts OTLP spans the way the Agent's V1 receive path
+        does.
+      - `disable_otel_scope_convention` stops emitting the `otel.scope.*` tags on OTLP spans.
+
+      Every other value is ignored, without a warning: the flag inventory is not stable across agent
+      versions, so unrecognized entries are inert rather than errors.
 
   apm_config.max_catalog_entries:
     support: full
@@ -332,6 +339,11 @@ inventory:
     support: full
     pipelines: [traces]
     description: "apm_config.obfuscation.redis.remove_all_args"
+
+  apm_config.obfuscation.remove_stack_traces:
+    support: full
+    pipelines: [traces]
+    description: "Replace stack trace tags with ?"
 
   apm_config.obfuscation.valkey.enabled:
     support: full
@@ -455,6 +467,11 @@ inventory:
     support: full
     pipelines: [dogstatsd, otlp]
     description: "EKS Fargate cluster name static tag"
+
+  cmd_host:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Core Agent CMD API host for ADP gRPC IPC"
 
   cmd_port:
     support: full
@@ -1092,12 +1109,13 @@ inventory:
     description: "UDP listen port"
 
   dogstatsd_queue_size:
-    support: none
-    severity: low
-    planned: false
+    support: partial
     pipelines: [dogstatsd]
     description: "Packet channel buffer size"
-    documentation: "ADP bounds datagram queues with `dogstatsd_buffer_count_max`."
+    documentation: |
+      ADP sizes the queue of packets waiting to be forwarded to `statsd_forward_host` from this setting: the queue
+      holds a quarter of `dogstatsd_queue_size` packets, and at least 64. ADP bounds its queues of received datagrams
+      with `dogstatsd_buffer_count_max` instead.
 
   dogstatsd_require_listener:
     support: full
@@ -1749,6 +1767,11 @@ inventory:
     pipelines: [otlp]
     description: "Intake routing startup grace period"
     documentation: "ADP does not query intake routing. See `intake_routing.enabled`."
+
+  ipc_address:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Deprecated `cmd_host`; takes precedence when set"
 
   ipc_cert_file_path:
     support: full
@@ -2799,31 +2822,22 @@ inventory:
     description: "OTLP trace sampling percentage"
 
   otlp_config.traces.span_name_as_resource_name:
-    support: partial
-    warn: true
-    issue: "#2332"
+    support: full
     pipelines: [traces]
-    description: "Use the OTLP span name as the resource name"
+    description: "Use the OTLP span name as the operation name"
     documentation: |-
-      The core Agent uses `otlp_config.traces.span_name_as_resource_name` to select its V1 naming for OTLP
-      spans: with the key set, the span name becomes the Datadog resource name, and without it the
-      resource name is built from the instrumentation library name and span kind.
-
-      ADP reads this key but does not act on it yet. It always derives span names and resource names with the
-      V2 logic, so setting the key has no effect on the spans ADP emits.
+      Setting `otlp_config.traces.span_name_as_resource_name` selects the Agent's V1 operation and
+      resource naming for OTLP spans. Despite its name, the key changes the operation name: a span
+      without an `operation.name` attribute takes its OTLP span name as the operation name, instead of
+      the instrumentation library name and span kind.
 
   otlp_config.traces.span_name_remappings:
-    support: partial
-    warn: true
-    issue: "#2332"
+    support: full
     pipelines: [traces]
     description: "Remap OTLP span names to preferred names"
     documentation: |-
-      The core Agent uses `otlp_config.traces.span_name_remappings`, a map of span names to preferred
-      names, to rename the operation names of OTLP spans. A non-empty map also selects the Agent's V1 naming.
-
-      ADP reads this key but does not act on it yet. It always derives span names and resource names with the
-      V2 logic, so setting the key has no effect on the spans ADP emits.
+      A non-empty `otlp_config.traces.span_name_remappings` selects the Agent's V1 operation and
+      resource naming for OTLP spans, and renames each operation name it lists.
 
   provider_kind:
     support: full
@@ -2921,50 +2935,26 @@ inventory:
 
   serializer_experimental_use_v3_api.sketches.endpoints:
     support: full
-    pipelines: [dogstatsd]
+    pipelines: [checks, dogstatsd]
     description: "Endpoints enabling v3 sketches API"
 
   serializer_experimental_use_v3_api.sketches.max_compressed_payload_size:
-    support: none
-    severity: low
-    planned: true
-    issue: "#3091"
-    pipelines: [dogstatsd]
-    description: "V3 sketches max compressed payload size"
-    documentation: |-
-      The Agent limits V3 sketches payloads with the `serializer_experimental_use_v3_api.sketches.max_*`
-      settings, falling back to `serializer_max_payload_size` and `serializer_max_uncompressed_payload_size`,
-      with no point limit by default. ADP limits V3 sketches payloads with the series limits:
-      `serializer_max_series_payload_size`, `serializer_max_series_uncompressed_payload_size` and
-      `serializer_max_series_points_per_payload`.
+    support: full
+    pipelines: [checks, dogstatsd]
+    description: "Max compressed V3 sketch payload size"
+    documentation: "Defaults to `0`. Zero or negative values use `serializer_max_payload_size`."
 
   serializer_experimental_use_v3_api.sketches.max_points_per_payload:
-    support: none
-    severity: low
-    planned: true
-    issue: "#3091"
-    pipelines: [dogstatsd]
-    description: "V3 sketches max points per payload"
-    documentation: |-
-      The Agent limits V3 sketches payloads with the `serializer_experimental_use_v3_api.sketches.max_*`
-      settings, falling back to `serializer_max_payload_size` and `serializer_max_uncompressed_payload_size`,
-      with no point limit by default. ADP limits V3 sketches payloads with the series limits:
-      `serializer_max_series_payload_size`, `serializer_max_series_uncompressed_payload_size` and
-      `serializer_max_series_points_per_payload`.
+    support: full
+    pipelines: [checks, dogstatsd]
+    description: "Max data points per V3 sketch payload"
+    documentation: "Defaults to `0`. Zero or negative values disable the sketch point limit."
 
   serializer_experimental_use_v3_api.sketches.max_uncompressed_payload_size:
-    support: none
-    severity: low
-    planned: true
-    issue: "#3091"
-    pipelines: [dogstatsd]
-    description: "V3 sketches max uncompressed payload size"
-    documentation: |-
-      The Agent limits V3 sketches payloads with the `serializer_experimental_use_v3_api.sketches.max_*`
-      settings, falling back to `serializer_max_payload_size` and `serializer_max_uncompressed_payload_size`,
-      with no point limit by default. ADP limits V3 sketches payloads with the series limits:
-      `serializer_max_series_payload_size`, `serializer_max_series_uncompressed_payload_size` and
-      `serializer_max_series_points_per_payload`.
+    support: full
+    pipelines: [checks, dogstatsd]
+    description: "Max uncompressed V3 sketch payload size"
+    documentation: "Defaults to `0`. Zero or negative values use `serializer_max_uncompressed_payload_size`."
 
   serializer_experimental_use_v3_api.sketches.shadow_sample_rate:
     support: none
@@ -3499,7 +3489,6 @@ excluded:
   apm_config.mode: "ignored in initial audit 2026-04-23"
   apm_config.obfuscation.cache.enabled: "ignored in initial audit 2026-04-23"
   apm_config.obfuscation.cache.max_size: "ignored in initial audit 2026-04-23"
-  apm_config.obfuscation.remove_stack_traces: "ignored in initial audit 2026-04-23"
   apm_config.obfuscation.sql_exec_plan.enabled: "ignored in initial audit 2026-04-23"
   apm_config.obfuscation.sql_exec_plan.keep_values: "ignored in initial audit 2026-04-23"
   apm_config.obfuscation.sql_exec_plan.obfuscate_sql_values: "ignored in initial audit 2026-04-23"
@@ -3699,7 +3688,6 @@ excluded:
   cluster_trust_chain.ca_key_file_path: "ignored in initial audit 2026-04-23"
   cluster_trust_chain.enable_tls_verification: "ignored in initial audit 2026-04-23"
   cmd.check.fullsketches: "ignored in initial audit 2026-04-23"
-  cmd_host: "ignored in initial audit 2026-04-23"
   collect_ccrid: "ignored in initial audit 2026-04-23"
   collect_ec2_instance_info: "ignored in initial audit 2026-04-23"
   collect_ec2_tags: "ignored in initial audit 2026-04-23"
@@ -4221,7 +4209,6 @@ excluded:
   inventories_max_interval: "ignored in initial audit 2026-04-23"
   inventories_min_interval: "ignored in initial audit 2026-04-23"
   iot_host: "ignored in initial audit 2026-04-23"
-  ipc_address: "ignored in initial audit 2026-04-23"
   jmx_check_period: "ignored in initial audit 2026-04-23"
   jmx_collection_timeout: "ignored in initial audit 2026-04-23"
   jmx_custom_jars: "ignored in initial audit 2026-04-23"

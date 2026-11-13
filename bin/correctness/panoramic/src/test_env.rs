@@ -18,7 +18,8 @@ use std::collections::HashMap;
 /// macOS runner runs tests as host processes, and macOS refuses a non-root `bind` to a port that a
 /// different non-root user already holds, even with `SO_REUSEADDR`. Any port in the ephemeral
 /// range can be the source port of a system daemon's outbound connection, so a listener there
-/// fails intermittently with `EADDRINUSE`.
+/// fails intermittently with `EADDRINUSE`. Linux containers avoid the same problem because
+/// `airlock` moves their ephemeral port range above every shifted port.
 ///
 /// Environment variables use the Agent's canonical `DD_` form, with `_` replacing configuration
 /// path separators. The typed configuration system does not read the nested `__` form.

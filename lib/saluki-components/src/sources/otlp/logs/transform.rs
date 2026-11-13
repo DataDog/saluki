@@ -314,6 +314,9 @@ pub fn transform_log_record(
 
     // Derive status once using attribute-provided status, severity text and number
     let status = derive_status(status_text_from_attrs, lr.severity_text.as_str(), lr.severity_number);
+    // The Agent sends the derived status in place of any resource or scope attribute named `status`. The encoder
+    // writes additional properties over the status, so the attribute must not be among them.
+    additional_properties.remove("status");
 
     if !lr.severity_text.is_empty() {
         additional_properties.insert(

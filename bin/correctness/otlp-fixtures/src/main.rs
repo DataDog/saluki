@@ -487,6 +487,32 @@ fn resource_host_fixture() -> Vec<u8> {
         ));
     }
 
+    // The derived status replaces resource and scope attributes named `status`.
+    resources.push(resource_logs(
+        vec![
+            kv("service.name", string("fixture-status-attribute")),
+            kv("host.name", string("resource-host")),
+            kv("status", string("resource-status")),
+        ],
+        vec![scope_logs(
+            no_scope(),
+            vec![record(15, "status-resource-attribute", vec![])],
+        )],
+    ));
+    resources.push(resource_logs(
+        vec![
+            kv("service.name", string("fixture-status-attribute")),
+            kv("host.name", string("resource-host")),
+        ],
+        vec![scope_logs(
+            InstrumentationScope {
+                attributes: vec![kv("status", string("scope-status"))],
+                ..Default::default()
+            },
+            vec![record(16, "status-scope-attribute", vec![])],
+        )],
+    ));
+
     ExportLogsServiceRequest {
         resource_logs: resources,
     }

@@ -1,0 +1,11 @@
+---
+upgrade:
+  - |
+    Check logs are now sent with the check's message as the log message. Previously, the message was wrapped in a
+    JSON object with a single ``message`` key, and each log carried an ``@timestamp`` attribute with the time it was
+    sent. Logs now carry the send time in the ``timestamp`` field, as the Datadog Agent sends it.
+  - |
+    OTLP logs handled natively are now sent in the same shape as the Datadog Agent sends them: the log's attributes
+    and its message are rendered into a JSON object that becomes the log message, rather than being sent as separate
+    top-level fields. The log carries the send time in the ``timestamp`` field, and a log record without a timestamp
+    no longer gets an ``@timestamp`` attribute with the send time.

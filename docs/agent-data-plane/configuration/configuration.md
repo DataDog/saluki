@@ -25,50 +25,47 @@ If you find an error on this page, please [open an issue].
 The following settings are not yet supported in ADP but are planned with GitHub issue links for
 tracking.
 
-| Config Key                                                                  | Description                                       | Issue   |
-| --------------------------------------------------------------------------- | ------------------------------------------------- | ------- |
-| `apm_config.apm_dd_url`                                                     | APM intake URL override                           | [#2419] |
-| `apm_config.traces_send_to_main_endpoint`                                   | Send traces and stats to the main endpoint        | [#2419] |
-| `dogstatsd_client_drop_detection.dropped_ratio_threshold`                   | Client drop ratio that marks a client unhealthy   | [#3088] |
-| `dogstatsd_client_drop_detection.enabled`                                   | DogStatsD client drop detection                   | [#3088] |
-| `dogstatsd_client_drop_detection.recovery_confirmation_window`              | Time below threshold before a client recovers     | [#3088] |
-| `dogstatsd_client_drop_detection.unhealthy_confirmation_window`             | Time above threshold before a client is unhealthy | [#3088] |
-| `dogstatsd_experimental_http.max_concurrent_requests`                       | DogStatsD HTTP concurrent request limit           | [#1682] |
-| `dogstatsd_experimental_http.max_payload_size`                              | DogStatsD HTTP request body size limit            | [#1682] |
-| `dogstatsd_experimental_http.read_timeout`                                  | DogStatsD HTTP request read timeout               | [#1682] |
-| `forwarder.dynamic_concurrency.decrease_threshold`                          | Dynamic concurrency decrease threshold            | [#3089] |
-| `forwarder.dynamic_concurrency.eval_interval`                               | Dynamic concurrency evaluation interval           | [#3089] |
-| `forwarder.dynamic_concurrency.increase_cooldown`                           | Dynamic concurrency increase cooldown             | [#3089] |
-| `forwarder.dynamic_concurrency.increase_step`                               | Dynamic concurrency increase step                 | [#3089] |
-| `forwarder.dynamic_concurrency.increase_threshold`                          | Dynamic concurrency increase threshold            | [#3089] |
-| `forwarder.dynamic_concurrency.initial_limit`                               | Dynamic concurrency initial limit                 | [#3089] |
-| `forwarder.dynamic_concurrency.max_concurrent_requests`                     | Dynamic concurrency request ceiling               | [#3089] |
-| `forwarder.dynamic_concurrency.min_decrease_interval`                       | Dynamic concurrency minimum decrease interval     | [#3089] |
-| `forwarder.dynamic_concurrency.num_workers`                                 | Dynamic concurrency worker count                  | [#3089] |
-| `forwarder_concurrency_policy`                                              | Forwarder concurrency policy                      | [#3089] |
-| `intake_routing.enabled`                                                    | Pre-intake endpoint routing                       | [#3090] |
-| `intake_routing.refresh_interval`                                           | Intake routing refresh interval                   | [#3090] |
-| `intake_routing.startup_grace_period`                                       | Intake routing startup grace period               | [#3090] |
-| `metric_lookback.capacity`                                                  | Metric lookback ring capacity                     | [#2558] |
-| `metric_lookback.dogstatsd.metric_names`                                    | DogStatsD metric lookback selection               | [#2558] |
-| `metric_lookback.egress.post_recovery_window`                               | Lookback post-recovery replay window              | [#2558] |
-| `metric_lookback.egress.pre_trigger_window`                                 | Lookback pre-trigger replay window                | [#2558] |
-| `metric_lookback.enabled`                                                   | Enable metric lookback                            | [#2558] |
-| `metric_lookback.monitor.evaluation_interval`                               | Lookback monitor evaluation window                | [#2558] |
-| `metric_lookback.monitor.metric_name`                                       | Metric watched by lookback monitor                | [#2558] |
-| `metric_lookback.monitor.mode`                                              | Metric lookback monitor mode                      | [#2558] |
-| `metric_lookback.monitor.partition_tags`                                    | Lookback monitor tag partitions                   | [#2558] |
-| `metric_lookback.monitor.range_epsilon`                                     | Lookback monitor range threshold                  | [#2558] |
-| `metric_lookback.shard_count`                                               | Metric lookback ring shards                       | [#2558] |
-| `otlp_config.metrics.infra_attributes.as_tags`                              | Promote infrastructure attributes to tags         | [#2559] |
-| `serializer_experimental_use_v3_api.sketches.beta_route`                    | V3 sketches beta intake route                     | [#2555] |
-| `serializer_experimental_use_v3_api.sketches.max_compressed_payload_size`   | V3 sketches max compressed payload size           | [#3091] |
-| `serializer_experimental_use_v3_api.sketches.max_points_per_payload`        | V3 sketches max points per payload                | [#3091] |
-| `serializer_experimental_use_v3_api.sketches.max_uncompressed_payload_size` | V3 sketches max uncompressed payload size         | [#3091] |
-| `serializer_experimental_use_v3_api.sketches.shadow_sample_rate`            | V3 sketches shadow sample rate                    | [#2555] |
-| `serializer_experimental_use_v3_api.sketches.shadow_sites`                  | V3 sketches shadow sites                          | [#2555] |
-| `use_v3_api.distributions.enabled`                                          | Send sketches using the V3 API                    | [#3091] |
-| `use_v3_api.distributions.endpoints`                                        | Per-endpoint V3 sketches mode                     | [#3091] |
+| Config Key                                                       | Description                                       | Issue   |
+| ---------------------------------------------------------------- | ------------------------------------------------- | ------- |
+| `apm_config.apm_dd_url`                                          | APM intake URL override                           | [#2419] |
+| `apm_config.traces_send_to_main_endpoint`                        | Send traces and stats to the main endpoint        | [#2419] |
+| `dogstatsd_client_drop_detection.dropped_ratio_threshold`        | Client drop ratio that marks a client unhealthy   | [#3088] |
+| `dogstatsd_client_drop_detection.enabled`                        | DogStatsD client drop detection                   | [#3088] |
+| `dogstatsd_client_drop_detection.recovery_confirmation_window`   | Time below threshold before a client recovers     | [#3088] |
+| `dogstatsd_client_drop_detection.unhealthy_confirmation_window`  | Time above threshold before a client is unhealthy | [#3088] |
+| `dogstatsd_experimental_http.max_concurrent_requests`            | DogStatsD HTTP concurrent request limit           | [#1682] |
+| `dogstatsd_experimental_http.max_payload_size`                   | DogStatsD HTTP request body size limit            | [#1682] |
+| `dogstatsd_experimental_http.read_timeout`                       | DogStatsD HTTP request read timeout               | [#1682] |
+| `forwarder.dynamic_concurrency.decrease_threshold`               | Dynamic concurrency decrease threshold            | [#3089] |
+| `forwarder.dynamic_concurrency.eval_interval`                    | Dynamic concurrency evaluation interval           | [#3089] |
+| `forwarder.dynamic_concurrency.increase_cooldown`                | Dynamic concurrency increase cooldown             | [#3089] |
+| `forwarder.dynamic_concurrency.increase_step`                    | Dynamic concurrency increase step                 | [#3089] |
+| `forwarder.dynamic_concurrency.increase_threshold`               | Dynamic concurrency increase threshold            | [#3089] |
+| `forwarder.dynamic_concurrency.initial_limit`                    | Dynamic concurrency initial limit                 | [#3089] |
+| `forwarder.dynamic_concurrency.max_concurrent_requests`          | Dynamic concurrency request ceiling               | [#3089] |
+| `forwarder.dynamic_concurrency.min_decrease_interval`            | Dynamic concurrency minimum decrease interval     | [#3089] |
+| `forwarder.dynamic_concurrency.num_workers`                      | Dynamic concurrency worker count                  | [#3089] |
+| `forwarder_concurrency_policy`                                   | Forwarder concurrency policy                      | [#3089] |
+| `intake_routing.enabled`                                         | Pre-intake endpoint routing                       | [#3090] |
+| `intake_routing.refresh_interval`                                | Intake routing refresh interval                   | [#3090] |
+| `intake_routing.startup_grace_period`                            | Intake routing startup grace period               | [#3090] |
+| `metric_lookback.capacity`                                       | Metric lookback ring capacity                     | [#2558] |
+| `metric_lookback.dogstatsd.metric_names`                         | DogStatsD metric lookback selection               | [#2558] |
+| `metric_lookback.egress.post_recovery_window`                    | Lookback post-recovery replay window              | [#2558] |
+| `metric_lookback.egress.pre_trigger_window`                      | Lookback pre-trigger replay window                | [#2558] |
+| `metric_lookback.enabled`                                        | Enable metric lookback                            | [#2558] |
+| `metric_lookback.monitor.evaluation_interval`                    | Lookback monitor evaluation window                | [#2558] |
+| `metric_lookback.monitor.metric_name`                            | Metric watched by lookback monitor                | [#2558] |
+| `metric_lookback.monitor.mode`                                   | Metric lookback monitor mode                      | [#2558] |
+| `metric_lookback.monitor.partition_tags`                         | Lookback monitor tag partitions                   | [#2558] |
+| `metric_lookback.monitor.range_epsilon`                          | Lookback monitor range threshold                  | [#2558] |
+| `metric_lookback.shard_count`                                    | Metric lookback ring shards                       | [#2558] |
+| `otlp_config.metrics.infra_attributes.as_tags`                   | Promote infrastructure attributes to tags         | [#2559] |
+| `serializer_experimental_use_v3_api.sketches.beta_route`         | V3 sketches beta intake route                     | [#2555] |
+| `serializer_experimental_use_v3_api.sketches.shadow_sample_rate` | V3 sketches shadow sample rate                    | [#2555] |
+| `serializer_experimental_use_v3_api.sketches.shadow_sites`       | V3 sketches shadow sites                          | [#2555] |
+| `use_v3_api.distributions.enabled`                               | Send sketches using the V3 API                    | [#3091] |
+| `use_v3_api.distributions.endpoints`                             | Per-endpoint V3 sketches mode                     | [#3091] |
 
 <!-- section:unsupported-not-planned -->
 ### Not Planned
@@ -103,7 +100,6 @@ architecture is fundamentally different or the feature is platform-specific.
 | `dogstatsd_packet_buffer_size`                                                           | Datagrams per packet buffer                        | ADP queues individual datagrams in its bounded I/O buffer pool.                                                                                                                                                                                                           |
 | `dogstatsd_pipeline_autoadjust`                                                          | Auto-adjust pipeline workers                       | ADP uses async tasks.                                                                                                                                                                                                                                                     |
 | `dogstatsd_pipeline_count`                                                               | Parallel processing pipelines                      | ADP uses async tasks.                                                                                                                                                                                                                                                     |
-| `dogstatsd_queue_size`                                                                   | Packet channel buffer size                         | ADP bounds datagram queues with `dogstatsd_buffer_count_max`.                                                                                                                                                                                                             |
 | `dogstatsd_stats_buffer`                                                                 | Internal stats buffer size                         | ADP does not expose the core agent's packet-per-second expvar endpoint, so there is no persistent stats endpoint buffer to configure.                                                                                                                                     |
 | `dogstatsd_stats_enable`                                                                 | Enable internal stats endpoint                     | See below                                                                                                                                                                                                                                                                 |
 | `dogstatsd_stats_port`                                                                   | Internal stats endpoint port                       | ADP does not expose the core agent's packet-per-second expvar endpoint, so `dogstatsd_stats_port` has no effect.                                                                                                                                                          |
@@ -446,6 +442,7 @@ default values.
 | `cri_socket_path`                                               | containerd/CRI socket path                      |
 | `dogstatsd_mapper_cache_size`                                   | Mapper result LRU cache size                    |
 | `dogstatsd_metrics_stats_enable`                                | Enable per-metric debug stats                   |
+| `dogstatsd_queue_size`                                          | Packet channel buffer size                      |
 | `dogstatsd_workers_count`                                       | Number of DSD processing workers                |
 | `env`                                                           | Agent environment name                          |
 | `experimental.metrics_endpoint_routing.metric_allowlist`        | Per-endpoint metric allow lists                 |
@@ -457,8 +454,6 @@ default values.
 | `log_level`                                                     | Log verbosity directives                        |
 | `min_tls_version`                                               | Minimum TLS version for HTTPS connections       |
 | `multi_region_failover.enabled`                                 | Enable multi-region failover mode               |
-| `otlp_config.traces.span_name_as_resource_name`                 | Use the OTLP span name as the resource name     |
-| `otlp_config.traces.span_name_remappings`                       | Remap OTLP span names to preferred names        |
 | `secret_backend_command`                                        | Path to the Agent secret-fetch executable       |
 | `secret_refresh_on_api_key_failure_interval`                    | Minutes between secret refreshes after a 403    |
 | `serializer_zstd_compressor_level`                              | Zstd compression level (Agent)                  |
@@ -487,13 +482,20 @@ aggregation windows are included is controlled by `dogstatsd_flush_incomplete_bu
 
 The core Agent uses `apm_config.features` to toggle beta APM behaviors.
 
-ADP recognizes a single value, `probabilistic_sampler_full_trace_id`, which switches the
-probabilistic sampler from hashing the low 64 bits of the trace ID to hashing the full
-128-bit ID, aligning its keep decisions with samplers that decide on 128-bit IDs. Every
-other value is ignored, without a warning: the flag inventory is not stable across agent
-versions, so unrecognized entries are inert rather than errors. Operators running multiple
-probabilistic samplers in one ingestion path should enable the flag consistently on every
-sampler that supports it.
+ADP recognizes these values:
+
+- `probabilistic_sampler_full_trace_id` switches the probabilistic sampler from hashing the
+  low 64 bits of the trace ID to hashing the full 128-bit ID, aligning its keep decisions with
+  samplers that decide on 128-bit IDs. Operators running multiple probabilistic samplers in
+  one ingestion path should enable the flag consistently on every sampler that supports it.
+- `disable_operation_and_resource_name_logic_v2` derives OTLP operation and resource names
+  with the Agent's V1 logic.
+- `disable_receive_resource_spans_v2` converts OTLP spans the way the Agent's V1 receive path
+  does.
+- `disable_otel_scope_convention` stops emitting the `otel.scope.*` tags on OTLP spans.
+
+Every other value is ignored, without a warning: the flag inventory is not stable across agent
+versions, so unrecognized entries are inert rather than errors.
 
 ### `cri_socket_path`
 
@@ -530,6 +532,12 @@ mapper, clear `dogstatsd_mapper_profiles` instead when running ADP.
 ### `dogstatsd_metrics_stats_enable`
 
 See `dogstatsd_stats_enable`
+
+### `dogstatsd_queue_size`
+
+ADP sizes the queue of packets waiting to be forwarded to `statsd_forward_host` from this setting: the queue
+holds a quarter of `dogstatsd_queue_size` packets, and at least 64. ADP bounds its queues of received datagrams
+with `dogstatsd_buffer_count_max` instead.
 
 ### `dogstatsd_workers_count`
 
@@ -758,23 +766,6 @@ is enabled.
 | `multi_region_failover.site`             | Datadog site for the failover region, used as `https://app.mrf.<site>`.    | unset   |
 | `multi_region_failover.dd_url`           | Explicit failover intake URL. Takes precedence over `site` when set.       | unset   |
 
-### `otlp_config.traces.span_name_as_resource_name`
-
-The core Agent uses `otlp_config.traces.span_name_as_resource_name` to select its V1 naming for OTLP
-spans: with the key set, the span name becomes the Datadog resource name, and without it the
-resource name is built from the instrumentation library name and span kind.
-
-ADP reads this key but does not act on it yet. It always derives span names and resource names with the
-V2 logic, so setting the key has no effect on the spans ADP emits.
-
-### `otlp_config.traces.span_name_remappings`
-
-The core Agent uses `otlp_config.traces.span_name_remappings`, a map of span names to preferred
-names, to rename the operation names of OTLP spans. A non-empty map also selects the Agent's V1 naming.
-
-ADP reads this key but does not act on it yet. It always derives span names and resource names with the
-V2 logic, so setting the key has no effect on the spans ADP emits.
-
 ### `secret_backend_command`
 
 ADP resolves no secrets of its own. The core Agent runs `secret_backend_command` to resolve `ENC[...]`
@@ -925,7 +916,7 @@ The following settings are specific to ADP and have no equivalent in the core ag
 
 ### `data_plane.experimental.apm.*`
 
-With `data_plane.experimental.apm.enabled` set, ADP takes over the trace-agent's receiver. It listens where the trace-agent normally does (`apm_config.receiver_port`, `apm_config.receiver_socket`, `apm_config.apm_non_local_traffic`, and `bind_host`) and forwards every request to the trace-agent at `data_plane.experimental.apm.proxy_destination`. The Datadog Agent moves the trace-agent's receiver to that address.
+With `data_plane.experimental.apm.enabled` set, ADP takes over the trace-agent's receiver. It listens where the trace-agent normally does (`apm_config.receiver_port`, `apm_config.receiver_socket`, `apm_config.apm_non_local_traffic`, and `bind_host`) and forwards requests for endpoints it does not handle itself to the trace-agent at `data_plane.experimental.apm.proxy_destination`. The Datadog Agent moves the trace-agent's receiver to that address.
 
 `data_plane.experimental.apm.proxy_destination` accepts either an HTTP endpoint (`http://host:port`, such as the default `http://127.0.0.1:8127`) or a Unix domain socket (`unix:///path/to/socket`, such as `unix:///var/run/datadog/trace-agent.socket`).
 
@@ -1039,6 +1030,7 @@ The following settings work in ADP with the same behavior as the core agent.
 | `apm_config.obfuscation.opensearch.obfuscate_sql_values`                                   | Obfuscate SQL values in OpenSearch queries         |
 | `apm_config.obfuscation.redis.enabled`                                                     | apm_config.obfuscation.redis.enabled               |
 | `apm_config.obfuscation.redis.remove_all_args`                                             | apm_config.obfuscation.redis.remove_all_args       |
+| `apm_config.obfuscation.remove_stack_traces`                                               | Replace stack trace tags with ?                    |
 | `apm_config.obfuscation.valkey.enabled`                                                    | apm_config.obfuscation.valkey.enabled              |
 | `apm_config.obfuscation.valkey.remove_all_args`                                            | apm_config.obfuscation.valkey.remove_all_args      |
 | `apm_config.peer_tags`                                                                     | Extra peer tags for stats aggregation              |
@@ -1060,6 +1052,7 @@ The following settings work in ADP with the same behavior as the core agent.
 | `cluster_agent.kubernetes_service_name`                                                    | Cluster Agent Kubernetes service name              |
 | `cluster_agent.url`                                                                        | Cluster Agent HTTPS endpoint                       |
 | `cluster_name`                                                                             | EKS Fargate cluster name static tag                |
+| `cmd_host`                                                                                 | Core Agent CMD API host for ADP gRPC IPC           |
 | `cmd_port`                                                                                 | Core Agent CMD API port for ADP gRPC IPC           |
 | `container_cgroup_root`                                                                    | cgroupfs root for container metadata               |
 | `container_proc_root`                                                                      | procfs root for container metadata                 |
@@ -1143,6 +1136,7 @@ The following settings work in ADP with the same behavior as the core agent.
 | `histogram_copy_to_distribution_prefix`                                                    | Prefix for hist-to-dist copies                     |
 | `histogram_percentiles`                                                                    | Histogram percentile aggregates                    |
 | `hostname`                                                                                 | Forced hostname for emitted data                   |
+| `ipc_address`                                                                              | Deprecated `cmd_host`; takes precedence when set   |
 | `ipc_cert_file_path`                                                                       | Agent IPC certificate file path                    |
 | `kubernetes_kubelet_nodename`                                                              | Kubernetes node name for EKS Fargate static tags   |
 | `log_file_max_rolls`                                                                       | Max rolled log files to retain                     |
@@ -1203,6 +1197,8 @@ The following settings work in ADP with the same behavior as the core agent.
 | `otlp_config.traces.infra_attributes.enabled`                                              | OTLP trace infrastructure-attribute enrichment     |
 | `otlp_config.traces.internal_port`                                                         | otlp_config.traces.internal_port                   |
 | `otlp_config.traces.probabilistic_sampler.sampling_percentage`                             | OTLP trace sampling percentage                     |
+| `otlp_config.traces.span_name_as_resource_name`                                            | Use the OTLP span name as the operation name       |
+| `otlp_config.traces.span_name_remappings`                                                  | Remap OTLP span names to preferred names           |
 | `provider_kind`                                                                            | Provider kind static tag                           |
 | `proxy.http`                                                                               | HTTP proxy URL                                     |
 | `proxy.https`                                                                              | HTTPS proxy URL                                    |
@@ -1214,6 +1210,9 @@ The following settings work in ADP with the same behavior as the core agent.
 | `serializer_compressor_kind`                                                               | Payload compression algorithm                      |
 | `serializer_experimental_use_v3_api.compression_level`                                     | V3 API zstd compression level                      |
 | `serializer_experimental_use_v3_api.sketches.endpoints`                                    | Endpoints enabling v3 sketches API                 |
+| `serializer_experimental_use_v3_api.sketches.max_compressed_payload_size`                  | Max compressed V3 sketch payload size              |
+| `serializer_experimental_use_v3_api.sketches.max_points_per_payload`                       | Max data points per V3 sketch payload              |
+| `serializer_experimental_use_v3_api.sketches.max_uncompressed_payload_size`                | Max uncompressed V3 sketch payload size            |
 | `serializer_max_payload_size`                                                              | Max compressed payload size (generic)              |
 | `serializer_max_series_payload_size`                                                       | Max compressed V2 series payload size              |
 | `serializer_max_series_points_per_payload`                                                 | Max data points per series payload                 |
@@ -1521,6 +1520,30 @@ Controls whether entity and global tags from the workload metadata store are enr
 The default `true` attaches the tags the local metadata store holds for the resource's container. When
 `false`, traces carry only the resource attributes the sender provided.
 
+### `otlp_config.traces.span_name_as_resource_name`
+
+Setting `otlp_config.traces.span_name_as_resource_name` selects the Agent's V1 operation and
+resource naming for OTLP spans. Despite its name, the key changes the operation name: a span
+without an `operation.name` attribute takes its OTLP span name as the operation name, instead of
+the instrumentation library name and span kind.
+
+### `otlp_config.traces.span_name_remappings`
+
+A non-empty `otlp_config.traces.span_name_remappings` selects the Agent's V1 operation and
+resource naming for OTLP spans, and renames each operation name it lists.
+
+### `serializer_experimental_use_v3_api.sketches.max_compressed_payload_size`
+
+Defaults to `0`. Zero or negative values use `serializer_max_payload_size`.
+
+### `serializer_experimental_use_v3_api.sketches.max_points_per_payload`
+
+Defaults to `0`. Zero or negative values disable the sketch point limit.
+
+### `serializer_experimental_use_v3_api.sketches.max_uncompressed_payload_size`
+
+Defaults to `0`. Zero or negative values use `serializer_max_uncompressed_payload_size`.
+
 ### `sslkeylogfile`
 
 To write TLS session secrets in NSS key log format, set `sslkeylogfile` to a file path or
@@ -1576,7 +1599,6 @@ Both commands scrub recognized secret values before writing JSON to standard out
 [#1754]: https://github.com/DataDog/saluki/issues/1754
 [#1755]: https://github.com/DataDog/saluki/issues/1755
 [#2079]: https://github.com/DataDog/saluki/issues/2079
-[#2332]: https://github.com/DataDog/saluki/issues/2332
 [#2419]: https://github.com/DataDog/saluki/issues/2419
 [#2555]: https://github.com/DataDog/saluki/issues/2555
 [#2557]: https://github.com/DataDog/saluki/issues/2557

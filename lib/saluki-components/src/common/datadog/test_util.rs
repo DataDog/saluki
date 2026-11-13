@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use http_body_util::BodyExt as _;
@@ -15,14 +16,36 @@ use rand::{
 };
 use saluki_common::sync::live::{self, LivePublisher, LiveSource};
 use saluki_core::data_model::payload::Payload;
+use tracing::debug;
 
 use super::api_key::{ApiKeyView, LiveApiKeys};
 use super::config::{ForwarderConfiguration, ForwarderHttpProtocol, OpwMetricsConfiguration};
 use super::endpoints::EndpointConfiguration;
-use super::protocol::{UseV3ApiConfig, UseV3ApiSeriesConfig, V3ApiConfig, V3SeriesMode};
+use super::protocol::{UseV3ApiConfig, UseV3ApiSeriesConfig, V3ApiConfig, V3ApiSettings, V3SeriesMode};
 use super::proxy::ProxyConfiguration;
 use super::retry::RetryConfiguration;
 use crate::encoders::DatadogMetricsConfiguration;
+
+/// Initializes the process-wide TLS state that HTTPS clients are built with: the default crypto provider and the
+/// platform root certificates.
+///
+/// Both can be initialized only once per process, so every test that builds an HTTPS client calls this rather than
+/// initializing them itself.
+pub(crate) fn init_tls() {
+    static INIT: OnceLock<()> = OnceLock::new();
+    INIT.get_or_init(|| {
+        if rustls::crypto::CryptoProvider::get_default().is_none() {
+            match saluki_tls::initialize_default_crypto_provider() {
+                Ok(()) => {}
+                Err(e) if rustls::crypto::CryptoProvider::get_default().is_some() => {
+                    debug!(error = %e, "TLS crypto provider was initialized by another test.");
+                }
+                Err(e) => panic!("failed to initialize TLS crypto provider: {e}"),
+            }
+        }
+        saluki_tls::load_platform_root_certificates().expect("failed to load platform root certificates");
+    });
+}
 
 /// Test API key, distinct from any endpoint-specific key a test configures.
 pub(crate) const TEST_API_KEY: &str = "test-api-key";
@@ -81,7 +104,15 @@ pub(crate) fn forwarder_configuration() -> ForwarderConfiguration {
         http_protocol: ForwarderHttpProtocol::Auto,
         connection_reset_interval_secs: 0,
         stop_wait_for_inflight: false,
-        v3_api: V3ApiConfig::default(),
+        v3_api: V3ApiConfig {
+            sketches: V3ApiSettings {
+                endpoints: Vec::new(),
+                max_compressed_payload_size: 2_621_440,
+                max_uncompressed_payload_size: 4_194_304,
+                max_points_per_payload: usize::MAX,
+            },
+            compression_level: 0,
+        },
         use_v3_api: UseV3ApiConfig {
             series: default_series_config(),
         },
@@ -111,7 +142,15 @@ pub(crate) fn datadog_metrics_configuration() -> DatadogMetricsConfiguration {
         use_v2_series_api: true,
         log_payloads: false,
         additional_tags: None,
-        v3_api: V3ApiConfig::default(),
+        v3_api: V3ApiConfig {
+            sketches: V3ApiSettings {
+                endpoints: Vec::new(),
+                max_compressed_payload_size: 2_621_440,
+                max_uncompressed_payload_size: 4_194_304,
+                max_points_per_payload: usize::MAX,
+            },
+            compression_level: 0,
+        },
         use_v3_api: UseV3ApiConfig {
             series: default_series_config(),
         },

@@ -18,9 +18,15 @@ use super::api_key::ApiKeyCell;
 use super::protocol::{MetricsPayloadInfo, MetricsProtocolVersion, UseV3ApiSeriesConfig, V3SeriesMode};
 use super::routing::RoutingTargetId;
 
-static DD_URL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^app(\.mrf)?\.([a-z]{2,}\d{1,2}\.)?(datad(?:oghq|0g)\.(?:com|eu)|ddog-gov\.com)$").unwrap()
-});
+/// The official Datadog sites with no subdomain, such as `datadoghq.com`, as a regex alternation.
+const DD_SITE_PATTERN: &str = r"datad(?:oghq|0g)\.(?:com|eu)|ddog-gov\.com";
+
+/// An official Datadog application host, such as `app.datadoghq.com` or `app.us5.datadoghq.com`.
+static DD_URL_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(&format!(r"^app(\.mrf)?\.([a-z]{{2,}}\d{{1,2}}\.)?({DD_SITE_PATTERN})$")).unwrap());
+
+/// An official Datadog site with no subdomain, such as `datadoghq.com`.
+static DD_SITE_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!("^({DD_SITE_PATTERN})$")).unwrap());
 
 /// Per-endpoint V3 protocol settings.
 ///
@@ -151,12 +157,27 @@ pub(crate) fn series_v3_config_can_enable_v3(series_config: &UseV3ApiSeriesConfi
     }
 }
 
-fn is_datadog_host(host: &str) -> bool {
+/// Returns `true` if `host` is an official Datadog application host, such as `app.datadoghq.com`,
+/// `app.us5.datadoghq.com`, or the Multi-Region Failover host `app.mrf.datadoghq.com`.
+///
+/// The match ignores case and a trailing dot.
+pub(crate) fn is_datadog_host(host: &str) -> bool {
+    host_matches(&DD_URL_REGEX, host)
+}
+
+/// Returns `true` if `host` is an official Datadog site with no subdomain, such as `datadoghq.com` or `ddog-gov.com`.
+///
+/// The match ignores case and a trailing dot.
+pub(crate) fn is_datadog_site(host: &str) -> bool {
+    host_matches(&DD_SITE_REGEX, host)
+}
+
+fn host_matches(regex: &Regex, host: &str) -> bool {
     let host = host.trim_end_matches('.');
     if host.bytes().any(|byte| byte.is_ascii_uppercase()) {
-        DD_URL_REGEX.is_match(&host.to_ascii_lowercase())
+        regex.is_match(&host.to_ascii_lowercase())
     } else {
-        DD_URL_REGEX.is_match(host)
+        regex.is_match(host)
     }
 }
 
@@ -493,7 +514,8 @@ impl ResolvedEndpoint {
     }
 }
 
-fn endpoint_with_default_scheme(raw_endpoint: &str) -> String {
+/// Returns `raw_endpoint` with the `https` scheme if it has neither `http` nor `https`.
+pub(crate) fn endpoint_with_default_scheme(raw_endpoint: &str) -> String {
     if !raw_endpoint.starts_with("http://") && !raw_endpoint.starts_with("https://") {
         format!("https://{}", raw_endpoint)
     } else {
@@ -534,13 +556,24 @@ fn get_data_plane_version_prefix() -> String {
 
 /// Prefixes the given API endpoint with the version of the data plane process.
 ///
-/// If the given API endpoint doesn't include a scheme, `https` is assumed. As well, if the endpoint doesn't represent
-/// an official Datadog API endpoint, it won't be modified.
+/// If the endpoint doesn't represent an official Datadog API endpoint, it won't be modified.
 ///
 /// # Errors
 ///
-/// If the given API endpoint can't be parsed as a valid URL, an error will be returned.
-fn add_data_plane_version_prefix(mut endpoint: Url) -> Result<Url, EndpointError> {
+/// If the given API endpoint has no host, an error will be returned.
+fn add_data_plane_version_prefix(endpoint: Url) -> Result<Url, EndpointError> {
+    add_version_prefix(endpoint, &get_data_plane_version_prefix())
+}
+
+/// Replaces the leftmost label of the host of `endpoint` with `prefix`, if it is an official Datadog application host.
+///
+/// This differentiates traffic between versions of the sending application: `app.datadoghq.com` becomes
+/// `{prefix}.datadoghq.com`. Any other endpoint is returned unmodified.
+///
+/// # Errors
+///
+/// If `endpoint` has no host, or the prefixed host is invalid, an error will be returned.
+pub(crate) fn add_version_prefix(mut endpoint: Url, prefix: &str) -> Result<Url, EndpointError> {
     let new_host = match endpoint.host_str() {
         Some(host) => {
             // Do not update non-official Datadog URLs.
@@ -552,8 +585,7 @@ fn add_data_plane_version_prefix(mut endpoint: Url) -> Result<Url, EndpointError
             // We expect to be getting a domain that has at least one subdomain portion (i.e., `app.datadoghq.com`) if
             // not more. We're aiming to simply replace the leftmost subdomain portion with the version prefix.
             let leftmost_segment = host.split('.').next().unwrap_or("");
-            let versioned_segment = get_data_plane_version_prefix();
-            host.replacen(leftmost_segment, &versioned_segment, 1)
+            host.replacen(leftmost_segment, prefix, 1)
         }
         None => {
             return Err(EndpointError::Parse {
@@ -721,6 +753,28 @@ mod tests {
                 expected_host,
                 resolved.endpoint().host_str().expect("error getting host")
             );
+        }
+    }
+
+    #[test]
+    fn datadog_sites_have_no_subdomain() {
+        for site in [
+            "datadoghq.com",
+            "datadoghq.eu",
+            "datad0g.com",
+            "ddog-gov.com",
+            "DATADOGHQ.COM",
+            "datadoghq.com.",
+        ] {
+            assert!(is_datadog_site(site), "{site}");
+        }
+        for host in [
+            "app.datadoghq.com",
+            "us3.datadoghq.com",
+            "datadoghq.internal",
+            "example.com",
+        ] {
+            assert!(!is_datadog_site(host), "{host}");
         }
     }
 

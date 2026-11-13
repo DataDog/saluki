@@ -188,6 +188,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Bool,
     },
     EnvKey {
+        env_vars: &["DD_APM_OBFUSCATION_REMOVE_STACK_TRACES"],
+        path: &["apm_config", "obfuscation", "remove_stack_traces"],
+        decode: EnvDecode::Bool,
+    },
+    EnvKey {
         env_vars: &["DD_APM_OBFUSCATION_VALKEY_ENABLED"],
         path: &["apm_config", "obfuscation", "valkey", "enabled"],
         decode: EnvDecode::Bool,
@@ -290,6 +295,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
     EnvKey {
         env_vars: &["DD_CLUSTER_NAME"],
         path: &["cluster_name"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
+        env_vars: &["DD_CMD_HOST"],
+        path: &["cmd_host"],
         decode: EnvDecode::RawString,
     },
     EnvKey {
@@ -536,6 +546,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Integer,
     },
     EnvKey {
+        env_vars: &["DD_DOGSTATSD_QUEUE_SIZE"],
+        path: &["dogstatsd_queue_size"],
+        decode: EnvDecode::Integer,
+    },
+    EnvKey {
         env_vars: &["DD_DOGSTATSD_REQUIRE_LISTENER"],
         path: &["dogstatsd_require_listener"],
         decode: EnvDecode::Bool,
@@ -768,6 +783,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
     EnvKey {
         env_vars: &["DD_HOSTNAME"],
         path: &["hostname"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
+        env_vars: &["DD_IPC_ADDRESS"],
+        path: &["ipc_address"],
         decode: EnvDecode::RawString,
     },
     EnvKey {
@@ -1215,6 +1235,33 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         env_vars: &["DD_SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_ENDPOINTS"],
         path: &["serializer_experimental_use_v3_api", "sketches", "endpoints"],
         decode: EnvDecode::StringList,
+    },
+    EnvKey {
+        env_vars: &["DD_SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_MAX_COMPRESSED_PAYLOAD_SIZE"],
+        path: &[
+            "serializer_experimental_use_v3_api",
+            "sketches",
+            "max_compressed_payload_size",
+        ],
+        decode: EnvDecode::Integer,
+    },
+    EnvKey {
+        env_vars: &["DD_SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_MAX_POINTS_PER_PAYLOAD"],
+        path: &[
+            "serializer_experimental_use_v3_api",
+            "sketches",
+            "max_points_per_payload",
+        ],
+        decode: EnvDecode::Integer,
+    },
+    EnvKey {
+        env_vars: &["DD_SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_MAX_UNCOMPRESSED_PAYLOAD_SIZE"],
+        path: &[
+            "serializer_experimental_use_v3_api",
+            "sketches",
+            "max_uncompressed_payload_size",
+        ],
+        decode: EnvDecode::Integer,
     },
     EnvKey {
         env_vars: &["DD_SERIALIZER_MAX_PAYLOAD_SIZE"],
