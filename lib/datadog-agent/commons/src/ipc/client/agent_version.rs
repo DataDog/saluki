@@ -94,17 +94,23 @@ pub async fn fetch_agent_version(config: &RemoteAgentClientConfiguration) -> Res
     let mut client = builder.build()?;
 
     let request = version_request(&config.endpoint(), token.trim())?;
-    let response = client
-        .send(request)
-        .await
-        .error_context("Failed to query the Agent version.")?;
-    let status = response.status();
-    let body = response
-        .into_body()
-        .collect()
-        .await
-        .error_context("Failed to read the Agent version response.")?
-        .to_bytes();
+    // The client's timeout ends once the headers arrive, so the body needs its own bound.
+    let (status, body) = tokio::time::timeout(REQUEST_TIMEOUT, async {
+        let response = client
+            .send(request)
+            .await
+            .error_context("Failed to query the Agent version.")?;
+        let status = response.status();
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .error_context("Failed to read the Agent version response.")?
+            .to_bytes();
+        Ok::<_, GenericError>((status, body))
+    })
+    .await
+    .map_err(|_| generic_error!("Timed out querying the Agent version after {REQUEST_TIMEOUT:?}."))??;
     parse_version_response(status, &body)
 }
 

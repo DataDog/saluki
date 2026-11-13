@@ -21,7 +21,7 @@ saluki-metadata = { workspace = true }
 saluki-tls = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-tokio = { workspace = true, features = ["fs"] }
+tokio = { workspace = true, features = ["fs", "time"] }
 tonic = { workspace = true, features = ["transport"] }
 tracing = { workspace = true }
 

@@ -30,12 +30,14 @@ pub(super) struct OrgPropagationMarkerFetcher {
     client: HttpClient,
     endpoint: String,
     api_key: ApiKeyCell,
+    request_timeout: Duration,
 }
 
 impl OrgPropagationMarkerFetcher {
     /// Creates a fetcher that queries `endpoint`, the URL of `/api/v2/validate`, with the current key of `api_key`.
     ///
-    /// The HTTP client uses the forwarder's settings, as the trace-agent's client does.
+    /// The HTTP client uses the forwarder's settings, as the trace-agent's client does, and the forwarder's request
+    /// timeout bounds each attempt, response body included.
     ///
     /// # Errors
     ///
@@ -44,14 +46,20 @@ impl OrgPropagationMarkerFetcher {
         forwarder: &ForwarderConfiguration, endpoint: String, api_key: ApiKeyCell,
     ) -> Result<Self, GenericError> {
         let client = intake_http_client_builder(forwarder, forwarder.effective_min_tls_version())?.build()?;
-        Ok(Self::with_client(client, endpoint, api_key))
+        Ok(Self::with_client(
+            client,
+            endpoint,
+            api_key,
+            forwarder.request_timeout(),
+        ))
     }
 
-    fn with_client(client: HttpClient, endpoint: String, api_key: ApiKeyCell) -> Self {
+    fn with_client(client: HttpClient, endpoint: String, api_key: ApiKeyCell, request_timeout: Duration) -> Self {
         Self {
             client,
             endpoint,
             api_key,
+            request_timeout,
         }
     }
 
@@ -94,14 +102,21 @@ impl OrgPropagationMarkerFetcher {
             .body(Empty::<Bytes>::new())
             .error_context("Failed to build the validate request.")?;
 
-        let response = self.client.send(request).await?;
-        let status = response.status();
-        let body = response
-            .into_body()
-            .collect()
-            .await
-            .error_context("Failed to read the validate response.")?
-            .to_bytes();
+        // The client's timeout ends once the headers arrive, whereas the trace-agent's also bounds the body.
+        let client = &mut self.client;
+        let (status, body) = tokio::time::timeout(self.request_timeout, async move {
+            let response = client.send(request).await?;
+            let status = response.status();
+            let body = response
+                .into_body()
+                .collect()
+                .await
+                .error_context("Failed to read the validate response.")?
+                .to_bytes();
+            Ok::<_, GenericError>((status, body))
+        })
+        .await
+        .map_err(|_| generic_error!("timed out after {:?}", self.request_timeout))??;
         let org_uuid = parse_validate_response(status, &body)?;
         Ok(compute_marker(&org_uuid))
     }
@@ -196,9 +211,44 @@ mod tests {
         (format!("http://{addr}/api/v2/validate"), seen)
     }
 
-    fn fetcher(endpoint: String, api_key: &ApiKeyCell) -> OrgPropagationMarkerFetcher {
+    fn fetcher(endpoint: String, api_key: &ApiKeyCell, request_timeout: Duration) -> OrgPropagationMarkerFetcher {
         let client = HttpClient::builder().build().unwrap();
-        OrgPropagationMarkerFetcher::with_client(client, endpoint, api_key.clone())
+        OrgPropagationMarkerFetcher::with_client(client, endpoint, api_key.clone(), request_timeout)
+    }
+
+    #[tokio::test]
+    async fn a_stalled_response_body_fails_the_attempt() {
+        crate::common::datadog::test_util::init_tls();
+        let attempts = Arc::new(Mutex::new(0));
+        let router = Router::new()
+            .route(
+                "/api/v2/validate",
+                get(move |State(attempts): State<Arc<Mutex<usize>>>| async move {
+                    *attempts.lock().unwrap() += 1;
+                    // Headers go out, but the body never completes.
+                    axum::body::Body::from_stream(futures::stream::pending::<Result<Bytes, std::io::Error>>())
+                }),
+            )
+            .with_state(Arc::clone(&attempts));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, router).await });
+        let api_key = ApiKeyCell::new("key").unwrap();
+
+        let marker = tokio::time::timeout(
+            Duration::from_secs(10),
+            fetcher(
+                format!("http://{addr}/api/v2/validate"),
+                &api_key,
+                Duration::from_millis(50),
+            )
+            .fetch_with_retries(Duration::from_millis(1)),
+        )
+        .await
+        .expect("each attempt should time out");
+
+        assert_eq!(marker, None);
+        assert_eq!(*attempts.lock().unwrap(), 4);
     }
 
     #[tokio::test]
@@ -208,7 +258,7 @@ mod tests {
         let api_key = ApiKeyCell::new("first-key").unwrap();
         api_key.refresh("test", "rotated-key");
 
-        let marker = fetcher(endpoint, &api_key)
+        let marker = fetcher(endpoint, &api_key, Duration::from_secs(5))
             .fetch_with_retries(Duration::from_millis(1))
             .await;
 
@@ -222,7 +272,7 @@ mod tests {
         let (endpoint, seen) = spawn_validate_endpoint(usize::MAX).await;
         let api_key = ApiKeyCell::new("key").unwrap();
 
-        let marker = fetcher(endpoint, &api_key)
+        let marker = fetcher(endpoint, &api_key, Duration::from_secs(5))
             .fetch_with_retries(Duration::from_millis(1))
             .await;
 
