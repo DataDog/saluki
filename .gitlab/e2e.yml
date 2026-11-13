@@ -111,6 +111,7 @@ test-integration:
   needs:
     - build-bundled-agent-adp-image
     - build-correctness-tools-image
+    - build-panoramic-binary
   retry: 2
   timeout: 15m
   image: "${SALUKI_BUILD_CI_IMAGE}"
@@ -133,7 +134,8 @@ test-integration:
     - docker tag ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}-${CI_PIPELINE_ID} saluki-images/datadog-agent:testing-devel
     - docker pull ${SALUKI_IMAGE_REPO_BASE}/correctness-tools:${CI_COMMIT_SHA}
     - docker tag ${SALUKI_IMAGE_REPO_BASE}/correctness-tools:${CI_COMMIT_SHA} saluki-images/correctness-tools:latest
-    - make test-integration-quick
+    # Run the panoramic binary and the courier that build-panoramic-binary published, from the repository root.
+    - target/release/panoramic run -d $(pwd)/test/integration/cases
 
 # Runs the subset of integration tests that have opted in to the `mac` runtime
 # directly on a bare-metal macOS runner. No Docker, no virtualization: panoramic spawns ADP

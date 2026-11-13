@@ -36,7 +36,7 @@ use super::participant::Enclosure;
 use super::plan::{CasePlan, PlannedStep};
 use super::record::{CaseRecord, RunningStep, StepResult, StepStatus, Verdict};
 use super::reference::Values;
-use super::result::{ErrorKind, PhaseTracker, TestResult};
+use super::result::{ErrorKind, ParticipantRun, PhaseTracker, ProcessRun, TestResult};
 use super::spec::{Evidence, OutputChannel, ProcessSpec};
 use super::step::{ProcedureNode, StepContext};
 use super::tasks::CaseTasks;
@@ -74,24 +74,9 @@ pub(crate) struct CaseRun<'a> {
     pub(crate) record: &'a CaseRecord,
 }
 
-/// How one case ran.
-pub(crate) struct Ran {
-    pub(crate) result: TestResult,
-    /// For each participant that started, by process: how it exited by the end of the case, and its output.
-    pub(crate) processes: BTreeMap<String, BTreeMap<String, ProcessRun>>,
-    /// The collected files the outcome keeps.
-    pub(crate) collected: Vec<Collected>,
-}
-
-/// How one process of a started participant ran.
-pub(crate) struct ProcessRun {
-    pub(crate) exit: ProcessExit,
-    /// Where its captured output is on the runner host.
-    pub(crate) output: PathBuf,
-}
-
-/// Runs the case `plan` describes, with what `run` gives.
-pub(crate) async fn run(plan: &CasePlan, run: &CaseRun<'_>) -> Ran {
+/// Runs the case `plan` describes, with what `run` gives. The result says how each participant ran: its realization,
+/// and, once it started, each process's exit and output; and the collected files the outcome keeps.
+pub(crate) async fn run(plan: &CasePlan, run: &CaseRun<'_>) -> TestResult {
     let started = Instant::now();
     let mut case = Case {
         plan,
@@ -113,16 +98,24 @@ pub(crate) async fn run(plan: &CasePlan, run: &CaseRun<'_>) -> Ran {
             run.record.decide(Verdict::SetupFailed(Box::new(result)));
         }
     }
-    let (processes, collected) = case.observe().await;
-    let result = run
+    let (mut processes, collected) = case.observe().await;
+    let mut result = run
         .record
         .result(&plan.case.name, started.elapsed(), run.phases.completed());
-    let collected = observe::retain(collected, result.outcome.is_passed()).await;
-    Ran {
-        result,
-        processes,
-        collected,
-    }
+    result.subject_os = Some(plan.subject_os);
+    result.participants = plan
+        .participants
+        .iter()
+        .map(|(name, planned)| {
+            let participant = ParticipantRun {
+                realization: planned.realization,
+                processes: processes.remove(name).unwrap_or_default(),
+            };
+            (name.clone(), participant)
+        })
+        .collect();
+    result.collected = observe::retain(collected, result.outcome.is_passed()).await;
+    result
 }
 
 /// One case as it runs.
@@ -501,7 +494,7 @@ impl Case<'_> {
         };
         self.run.record.start(slot, running);
 
-        let cx = StepContext::new(handles, deadline.at);
+        let cx = StepContext::new(handles, &self.values, deadline.at);
         let cancel = self.run.cancel;
         let result = tokio::select! {
             biased;

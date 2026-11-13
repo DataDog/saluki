@@ -31,7 +31,7 @@ use super::wiring::{reach, PlannedEndpoint, Reach};
 const EXIT_POLL: Duration = Duration::from_millis(250);
 
 /// How long [`Handle::wait_for_exit`] gives each read of an exit record.
-const RECORD_READ_TIME: Duration = Duration::from_secs(5);
+pub(crate) const RECORD_READ_TIME: Duration = Duration::from_secs(5);
 
 /// Why a handle operation failed.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -51,6 +51,8 @@ impl fmt::Display for HandleError {
 }
 
 /// How a command run in a participant ended.
+// TODO: remove the dead_code allowance once a step runs a command.
+#[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Exited {
     pub(crate) code: i64,
@@ -64,6 +66,8 @@ pub(crate) struct Handle<'a> {
     planned: &'a PlannedParticipant,
     realized: &'a dyn Realized,
     /// What fills the references of named commands when they run.
+    // TODO: remove the dead_code allowance once a step runs a command.
+    #[allow(dead_code)]
     values: &'a Values,
     observation: &'a Observation,
 }
@@ -80,6 +84,11 @@ impl<'a> Handle<'a> {
             values,
             observation,
         }
+    }
+
+    /// The names of the participant's processes.
+    pub(crate) fn processes(&self) -> Vec<&'a str> {
+        self.planned.processes.iter().map(ProcessSpec::name).collect()
     }
 
     /// The output `process` has written so far, line by line, which grows as more is captured.
@@ -174,6 +183,8 @@ impl<'a> Handle<'a> {
     ///
     /// Returns a software error if the participant has exited, and a harness error if the command cannot be run
     /// otherwise, or does not exit within `limit`.
+    // TODO: remove the dead_code allowance once a step runs a command.
+    #[allow(dead_code)]
     pub(crate) async fn exec(
         &self, argv: Vec<String>, env: BTreeMap<String, String>, limit: Duration,
     ) -> Result<Exited, HandleError> {
@@ -193,6 +204,8 @@ impl<'a> Handle<'a> {
     ///
     /// Returns a harness error if the participant has no such command or a reference in it has no value yet, and the
     /// errors of [`Self::exec`].
+    // TODO: remove the dead_code allowance once a step runs a command.
+    #[allow(dead_code)]
     pub(crate) async fn command(
         &self, name: &str, args: &[String], env: &BTreeMap<String, String>, limit: Duration,
     ) -> Result<Exited, HandleError> {
@@ -227,6 +240,8 @@ impl<'a> Handle<'a> {
     /// # Errors
     ///
     /// Returns a harness error if the participant offers no such operation, or the operation's own error.
+    // TODO: remove the dead_code allowance once a step calls an operation.
+    #[allow(dead_code)]
     pub(crate) async fn op(&self, name: &str, args: Value, limit: Duration) -> Result<Value, HandleError> {
         let operation = self.planned.operations.get(name).ok_or_else(|| {
             HandleError::Harness(format!("participant '{}' offers no operation '{}'", self.name, name))
@@ -257,6 +272,8 @@ impl<'a> Handle<'a> {
     ///
     /// Returns a software error if the endpoint refuses the bytes within `limit`, and a harness error if nothing can be
     /// sent to it.
+    // TODO: remove the dead_code allowance once a step sends to an endpoint.
+    #[allow(dead_code)]
     pub(crate) async fn send(&self, endpoint: &str, payload: Bytes, limit: Duration) -> Result<(), HandleError> {
         let (planned, route) = self.route(endpoint, EndpointOperation::Send)?;
         match route {
@@ -457,7 +474,7 @@ procedure: []
         std::fs::write(dir.join(CASE_FILE), config).unwrap();
         let registry = Registry::default();
         let case = case::load(&dir, &registry).unwrap();
-        plan(&case, Os::Linux, &registry).unwrap()
+        plan(&case, Os::Linux, &registry, &BTreeMap::new()).unwrap()
     }
 
     #[tokio::test]

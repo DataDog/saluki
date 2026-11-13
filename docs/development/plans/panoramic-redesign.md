@@ -179,14 +179,16 @@ because a probe from outside cannot tell whether anything is listening.
 
 What runs, and where, follows from the case files. `panoramic run -d <dir>` selects every case in
 the directory for one subject OS, which defaults to the host's. A case whose `subject_os` leaves
-that OS out is reported as skipped. `panoramic plan <case> --subject-os <os>` prints, as JSON,
-everything a case would do on that OS, without running anything.
+that OS out is reported as skipped, and `panoramic list` leaves it out for that OS.
+`panoramic plan <case> --subject-os <os>` prints, as JSON, everything a case would do on that OS,
+without running anything.
 
 A case or a participant type names each image and host program by reference, and a run can replace
 any of them, which is how CI points cases at the images a pipeline built. Before any case starts,
-panoramic checks that each one exists and pulls an image the Docker daemon lacks. A case whose
-realization the host cannot provide, such as pods without a kind cluster (Kubernetes in Docker), is
-reported as errored before the run starts.
+panoramic checks that each one exists and pulls an image the Docker daemon lacks. A selected case
+whose realization the host cannot provide, such as pods without a kind cluster (Kubernetes in
+Docker), is a harness error that names the case, and the run stops with exit code 2 before any case
+starts.
 
 Cases in containers and pods run in parallel. Cases whose participants are host processes run one at
 a time, because they share the host's ports.
@@ -1997,6 +1999,8 @@ host-process subject with containerized helpers.
   asks for the host view.
 - A Linux container no longer shares the runner's PID namespace. Legacy gave every one the host's,
   for origin detection; a case that needs it gets an option with that case.
+- `panoramic`'s mounts directory, whose init script resolves the legacy dynamic variables, is not
+  mounted into participant containers. A value known only at run time is a reference.
 - `exec` quotes a command's output on failure, which the legacy CLI actions did not.
 - A load error exits 2 with no `run.json`, and a run where every case is skipped exits 3.
 - The merged traffic manifest may go, once retention is data.

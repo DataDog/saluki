@@ -1,33 +1,27 @@
-type: integration
-name: "adp-logging-ignores-core-agent-log-file"
 description: "Verifies ADP ignores the Core Agent's `log_file` setting and continues to use its own per-subagent log file path"
 timeout: 120s
-runtimes: [linux]
+subject_os: [linux]
 
-env:
-  DD_API_KEY: "00000000000000000000000000000000"
-  DD_HOSTNAME: "integration-test-ignore-core-log-file"
-  DD_DATA_PLANE_ENABLED: "true"
-  DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
-  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-  DD_LOG_FILE: "/tmp/coreagent-only.log"
-
-container:
-  exposed_ports:
-    - "48125/udp"
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    env:
+      DD_API_KEY: "00000000000000000000000000000000"
+      DD_HOSTNAME: "integration-test-ignore-core-log-file"
+      DD_DATA_PLANE_ENABLED: "true"
+      DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
+      DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+      DD_LOG_FILE: "/tmp/coreagent-only.log"
 
 procedure:
   # Wait for ADP to receive its initial configuration from the Core Agent and reload logging.
-  - assertion: log_contains
-    pattern: "Initial configuration received."
-    timeout: 30s
+  - {step: log_contains, on: adp, pattern: "Initial configuration received.", timeout: 30s}
   # The Core Agent honored DD_LOG_FILE; its own log file has CORE entries.
-  - assertion: file_contains
-    path: "/tmp/coreagent-only.log"
-    pattern: "CORE"
-    timeout: 30s
+  - {step: file_contains, on: adp, path: /tmp/coreagent-only.log, pattern: CORE, timeout: 30s}
   # ADP did NOT honor DD_LOG_FILE; it still wrote to its per-subagent default path.
-  - assertion: file_contains
-    path: "/var/log/datadog/agent-data-plane.log"
-    pattern: "DATAPLANE"
+  - step: file_contains
+    on: adp
+    path: /var/log/datadog/agent-data-plane.log
+    pattern: DATAPLANE
     timeout: 30s

@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -12,9 +12,11 @@ use serde::{
 };
 use serde_json::Value;
 
+use crate::core::participant::Os;
 use crate::correctness::{case::CorrectnessTestCase, config::Config as CorrectnessConfig};
 use crate::image_override::ImageOverrides;
 use crate::integration::{IntegrationSettings, IntegrationTestCase};
+use crate::participant_case::ParticipantCase;
 use crate::test::Test;
 
 /// A duration that can be parsed from human-readable strings like `10s`, `1m`, `500ms`.
@@ -160,6 +162,22 @@ pub const LINUX_RUNTIME: &str = "linux";
 
 /// Runtime identifier for integration tests that run inside a Windows container.
 pub const WINDOWS_RUNTIME: &str = "windows";
+
+/// The runtime name of the subject OS `os`.
+pub(crate) fn runtime_of(os: Os) -> &'static str {
+    match os {
+        Os::Linux => LINUX_RUNTIME,
+        Os::Macos => MAC_RUNTIME,
+        Os::Windows => WINDOWS_RUNTIME,
+    }
+}
+
+/// The subject OS a runtime name selects, or `None` for a name that is not a runtime.
+pub(crate) fn os_of_runtime(runtime: &str) -> Option<Os> {
+    [Os::Linux, Os::Macos, Os::Windows]
+        .into_iter()
+        .find(|&os| runtime_of(os) == runtime)
+}
 
 /// Default container image used by `linux`-runtime integration tests.
 pub const DEFAULT_LINUX_TARGET_IMAGE: &str = "saluki-images/datadog-agent:testing-devel";
@@ -700,24 +718,33 @@ where
 
 /// Discover all test cases across one or more directories.
 ///
-/// Each `config.yaml` found in a direct subdirectory must have a top-level `type` field set to
-/// `"integration"`, `"correctness"`, or `"correctness_matrix"`. Files with a missing or unknown
-/// `type` cause a panic. Multiple test types may coexist freely within the same directory.
+/// A `config.yaml` found in a direct subdirectory is routed by its shape. One with a top-level `type` field is a
+/// legacy case: `type` must be `"integration"`, `"correctness"`, or `"correctness_matrix"`, and a legacy file with an
+/// unknown `type` causes a panic. One without it is a participant case, loaded and planned for every OS it declares.
+/// Multiple test types may coexist freely within the same directory.
 ///
 /// `integration_runtime` scopes integration-test discovery to a single runtime: an integration
 /// test is included if and only if its `runtimes:` list contains this value. Correctness tests
 /// are unaffected by runtime scoping, but cases marked `disabled: true` are omitted. Image
 /// overrides apply across this entire scope, before the caller selects tests by name.
 ///
+/// Every participant case is included, for `subject_os`: a case that does not declare it is skipped when it runs. `set`
+/// holds the run's replacements of the images participant cases name.
+///
 /// # Errors
 ///
-/// Returns an error if a test directory cannot be read or an image override is duplicate or unmatched.
+/// Returns an error if a test directory cannot be read, an image override is duplicate or unmatched, a participant
+/// case does not load or plan, or `set` replaces an image no participant case uses.
 pub fn discover_tests(
     dirs: &[PathBuf], integration_runtime: &str, image_overrides: &[crate::image_override::ImageOverride],
+    subject_os: Os, set: &BTreeMap<String, String>,
 ) -> Result<Vec<Box<dyn Test>>, GenericError> {
     let overrides = ImageOverrides::new(image_overrides);
     let settings = IntegrationSettings::new(integration_runtime, &overrides);
+    let registry = crate::registry();
     let mut tests: Vec<Box<dyn Test>> = Vec::new();
+    let mut case_errors = Vec::new();
+    let mut replaced = BTreeSet::new();
 
     for base_path in dirs {
         if !base_path.is_dir() {
@@ -733,7 +760,15 @@ pub fn discover_tests(
 
             if path.is_dir() {
                 let config_path = path.join("config.yaml");
-                if config_path.exists() {
+                if config_path.exists() && !is_legacy_case(&config_path)? {
+                    match ParticipantCase::load(&path, subject_os, set, &registry) {
+                        Ok((case, images)) => {
+                            replaced.extend(images.into_iter().filter(|image| set.contains_key(image)));
+                            tests.push(Box::new(case));
+                        }
+                        Err(errors) => case_errors.extend(errors.iter().map(ToString::to_string)),
+                    }
+                } else if config_path.exists() {
                     match try_load_test(&config_path, &path, integration_runtime, &settings, &overrides) {
                         Ok(loaded) => tests.extend(loaded),
                         Err(e) => {
@@ -748,11 +783,32 @@ pub fn discover_tests(
         }
     }
 
+    case_errors.extend(set.keys().filter(|name| !replaced.contains(*name)).map(|name| {
+        format!(
+            "--set names image '{}', which no discovered participant case uses.",
+            name
+        )
+    }));
+    if !case_errors.is_empty() {
+        return Err(generic_error!("{}", case_errors.join("\n")));
+    }
+
     // Sort by name for deterministic ordering.
     tests.sort_by_key(|a| a.name());
 
     overrides.validate(&tests)?;
     Ok(tests)
+}
+
+/// Whether the case file at `config_path` is a legacy case: one with a top-level `type`.
+pub(crate) fn is_legacy_case(config_path: &Path) -> Result<bool, GenericError> {
+    let content = std::fs::read_to_string(config_path)
+        .error_context(format!("Failed to read config file: {}", config_path.display()))?;
+    let shape: Value = serde_saphyr::from_str(&content).error_context(format!(
+        "Failed to parse config file as YAML: {}",
+        config_path.display()
+    ))?;
+    Ok(shape.get("type").is_some())
 }
 
 /// Load one or more test cases from a config file, dispatching on the top-level `type` field.
@@ -1048,7 +1104,14 @@ procedure: []
 "#,
         );
 
-        let tests = discover_tests(&[base_dir.path().to_path_buf()], "windows", &[]).unwrap();
+        let tests = discover_tests(
+            &[base_dir.path().to_path_buf()],
+            "windows",
+            &[],
+            Os::Linux,
+            &BTreeMap::new(),
+        )
+        .unwrap();
 
         assert_eq!(tests.len(), 1);
         assert_eq!(tests[0].name(), "windows-smoke");
@@ -1068,7 +1131,14 @@ procedure: []
 "#,
         );
 
-        let tests = discover_tests(&[base_dir.path().to_path_buf()], "windows", &[]).unwrap();
+        let tests = discover_tests(
+            &[base_dir.path().to_path_buf()],
+            "windows",
+            &[],
+            Os::Linux,
+            &BTreeMap::new(),
+        )
+        .unwrap();
         let images = tests[0].images();
 
         assert_eq!(images.get("container"), Some(&DEFAULT_WINDOWS_TARGET_IMAGE.to_string()));
@@ -1087,7 +1157,14 @@ procedure: []
 "#,
         );
 
-        let tests = discover_tests(&[base_dir.path().to_path_buf()], "linux", &[]).unwrap();
+        let tests = discover_tests(
+            &[base_dir.path().to_path_buf()],
+            "linux",
+            &[],
+            Os::Linux,
+            &BTreeMap::new(),
+        )
+        .unwrap();
         let images = tests[0].images();
 
         assert_eq!(images.get("container"), Some(&DEFAULT_LINUX_TARGET_IMAGE.to_string()));
@@ -1115,7 +1192,14 @@ variants:
 "#,
         );
 
-        let tests = discover_tests(&[base_dir.path().to_path_buf()], "linux", &[]).unwrap();
+        let tests = discover_tests(
+            &[base_dir.path().to_path_buf()],
+            "linux",
+            &[],
+            Os::Linux,
+            &BTreeMap::new(),
+        )
+        .unwrap();
 
         assert_eq!(tests.len(), 2);
         // Canonicalized, because the loader canonicalizes the config path it derives this from.
@@ -1789,7 +1873,14 @@ variants: [{name: one, env: {QUOTED: "true"}}]
         let ordinary: CorrectnessConfig = load_case(&path).unwrap();
         let matrix: MatrixVariants = serde_saphyr::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         let expanded = matrix.expand(&ordinary, "scalars");
-        let cases = discover_tests(&[dir.path().to_path_buf()], LINUX_RUNTIME, &[]).unwrap();
+        let cases = discover_tests(
+            &[dir.path().to_path_buf()],
+            LINUX_RUNTIME,
+            &[],
+            Os::Linux,
+            &BTreeMap::new(),
+        )
+        .unwrap();
         assert_eq!(cases.len(), 1);
         assert_eq!(cases[0].name(), "scalars/one");
         for config in [&ordinary, &expanded[0].1] {
@@ -1904,7 +1995,7 @@ comparison: {image: comp}
             (MAC_RUNTIME, None),
             ("unknown", None),
         ] {
-            let cases = discover_tests(&dirs, runtime, &[]).unwrap();
+            let cases = discover_tests(&dirs, runtime, &[], Os::Linux, &BTreeMap::new()).unwrap();
             assert_eq!(cases[0].name(), "correctness");
             assert_eq!(cases[0].runtime(), "docker");
             assert_eq!(cases.len(), if runtime == "unknown" { 1 } else { 2 });
@@ -1919,7 +2010,7 @@ comparison: {image: comp}
         }
         let override_entry = ["container=target:override".parse().unwrap()];
         for runtime in [MAC_RUNTIME, "unknown"] {
-            let error = discover_tests(&dirs, runtime, &override_entry)
+            let error = discover_tests(&dirs, runtime, &override_entry, Os::Linux, &BTreeMap::new())
                 .err()
                 .expect("no eligible target image");
             assert!(error
@@ -1976,7 +2067,14 @@ comparison: {{image: comp}}
                 let config: CorrectnessConfig = load_case(dir.path().join("case/config.yaml")).unwrap();
                 assert_eq!(config.disabled, disabled, "{kind} with {setting}");
 
-                let cases = discover_tests(&[dir.path().to_path_buf()], LINUX_RUNTIME, &[]).unwrap();
+                let cases = discover_tests(
+                    &[dir.path().to_path_buf()],
+                    LINUX_RUNTIME,
+                    &[],
+                    Os::Linux,
+                    &BTreeMap::new(),
+                )
+                .unwrap();
                 assert_eq!(
                     cases.len(),
                     if disabled { 0 } else { enabled_count },
@@ -2012,7 +2110,14 @@ comparison: {{image: comp}}
 "#
                 ),
             );
-            let cases = discover_tests(&[dir.path().to_path_buf()], LINUX_RUNTIME, &entries).unwrap();
+            let cases = discover_tests(
+                &[dir.path().to_path_buf()],
+                LINUX_RUNTIME,
+                &entries,
+                Os::Linux,
+                &BTreeMap::new(),
+            )
+            .unwrap();
             assert_eq!(cases.len(), count);
             for case in cases {
                 let images = case.images();

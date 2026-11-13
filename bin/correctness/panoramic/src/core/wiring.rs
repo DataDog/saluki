@@ -478,15 +478,19 @@ fn refers_to_own_endpoint(template: &Template, participant: &str, endpoint: &str
     })
 }
 
-/// Plans every connection of the case: checks it, gives it its route and its address, and reports each endpoint
-/// that connections use but its participant does not wire. `consumes` holds, by participant, the connection names its
-/// participant type knows.
+/// Endpoints that something uses and their participant does not wire, by participant and endpoint, with each use.
+pub(super) type UnwiredUses = BTreeMap<(String, String), Vec<String>>;
+
+/// Plans every connection of the case: checks it and gives it its route and its address. `consumes` holds, by
+/// participant, the connection names its participant type knows.
+///
+/// Returns each endpoint that connections use but its participant does not wire, for [`report_unwired`].
 pub(super) fn plan_connections(
     case: &LoadedCase, participants: &mut BTreeMap<String, PlannedParticipant>,
     consumes: &BTreeMap<String, BTreeMap<&'static str, Consumed>>, problems: &mut Problems<'_>,
-) {
+) -> UnwiredUses {
     let mut planned = Vec::new();
-    let mut unwired: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
+    let mut unwired = UnwiredUses::new();
     for (consumer_name, consumer) in participants.iter() {
         for (name, target) in &case.participants[consumer_name].placement.connect {
             // A server that failed to plan has reported its own problems.
@@ -518,7 +522,14 @@ pub(super) fn plan_connections(
             participant.connections.insert(name, connection);
         }
     }
+    unwired
+}
 
+/// Reports each endpoint that connections or steps use but its participant does not wire: why, the line that would
+/// wire it, and every use.
+pub(super) fn report_unwired(
+    participants: &BTreeMap<String, PlannedParticipant>, unwired: UnwiredUses, problems: &mut Problems<'_>,
+) {
     for ((server_name, endpoint), uses) in unwired {
         let server = &participants[&server_name];
         let Some(unwired) = &server.endpoints[&endpoint].unwired else {
