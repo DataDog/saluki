@@ -327,7 +327,7 @@ pub(crate) async fn capture_intake(dir: &Path, client: &IntakeClient, cancel: &C
         )
     } else {
         tokio::select! {
-            result = tokio::time::timeout(budget, CollectedData::collect(client)) => match result {
+            result = tokio::time::timeout(budget, client.collect()) => match result {
                 Ok(Ok(data)) => Ok(data),
                 Ok(Err(e)) => Err(format!("Failed to collect the post-assertion intake capture: {:#}", e)),
                 Err(_) => Err(format!(

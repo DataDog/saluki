@@ -4,6 +4,8 @@ use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use stele::{ClientStatisticsAggregator, Event, LogsRequest, Metric, ServiceCheck, Span};
 use tracing::{debug, error};
 
+use super::CollectedData;
+
 /// Maximum wait for response headers or between body reads.
 const INTAKE_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -33,6 +35,26 @@ impl IntakeClient {
             // `localhost` can try IPv6 first, which delays each connection on Windows.
             base_url: format!("http://127.0.0.1:{}", port),
         }
+    }
+
+    /// Collects every telemetry kind from the server.
+    ///
+    /// Endpoints are fetched one at a time, and the collection is all or nothing: the first failing endpoint discards
+    /// whatever was already fetched.
+    ///
+    /// # Errors
+    ///
+    /// If any endpoint's data can't be retrieved from the `datadog-intake` server, an error is returned.
+    pub async fn collect(&self) -> Result<CollectedData, GenericError> {
+        Ok(CollectedData {
+            events: self.events().await?,
+            log_requests: self.logs().await?,
+            metrics: self.metrics().await?,
+            service_checks: self.service_checks().await?,
+            spans: self.spans().await?,
+            trace_stats: self.trace_stats().await?,
+            dogstatsd_forwarded_packets: self.dogstatsd_forwarded_packets().await?,
+        })
     }
 
     /// Fetches the captured events.
@@ -190,5 +212,40 @@ impl IntakeClient {
         debug!("Forwarded DogStatsD packets dumped successfully.");
 
         Ok(packets)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use tokio::time::Instant;
+
+    use super::*;
+    use crate::intake::test_server::MockIntake;
+
+    #[tokio::test(start_paused = true)]
+    async fn collection_from_a_stalled_intake_fails_within_the_read_timeout() {
+        let intake = MockIntake::unresponsive().await;
+        let started = Instant::now();
+
+        let collected = tokio::time::timeout(Duration::from_secs(120), IntakeClient::new(intake.port()).collect())
+            .await
+            .expect("collection should give up on a stalled intake within the bound");
+
+        let Err(error) = collected else {
+            panic!("collection from a stalled intake should fail");
+        };
+        assert_eq!(started.elapsed(), Duration::from_secs(30));
+        assert!(
+            format!("{error:#}").starts_with("Failed to call events dump endpoint on datadog-intake server.: "),
+            "{error:#}"
+        );
+        assert!(
+            error.chain().any(|cause| cause
+                .downcast_ref::<reqwest::Error>()
+                .is_some_and(reqwest::Error::is_timeout)),
+            "{error:#}"
+        );
     }
 }
