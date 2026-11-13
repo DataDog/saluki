@@ -1,0 +1,18 @@
+seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
+target: "unixgram:///$GROUP-airlock/metrics.sock"
+aggregation_bucket_width_secs: 10
+volume: 1000
+corpus:
+  size: 1
+  payload:
+    # The Core Agent only rejects an event with an empty title, takes `h:`, `k:` and `s:` values as raw strings, and
+    # keeps an event with an invalid optional field (logging a warning and ignoring that field).
+    static: |
+      _e{7,4}:control|text|#env:prod
+      _e{10,0}:empty.text|
+      _e{10,4}:host.colon|text|h:host:1|#env:prod
+      _e{9,4}:agg.slash|text|k:key/1|#env:prod
+      _e{12,4}:source.slash|text|s:my/source|#env:prod
+      _e{12,4}:prio.unknown|text|p:urgent|#env:prod
+      _e{13,4}:alert.unknown|text|t:fatal|#env:prod
+      _e{13,4}:bad.timestamp|text|d:notanumber|#env:prod

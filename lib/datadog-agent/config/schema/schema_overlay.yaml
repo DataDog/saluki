@@ -1138,12 +1138,13 @@ inventory:
     description: "UDP listen port"
 
   dogstatsd_queue_size:
-    support: none
-    severity: low
-    planned: false
+    support: partial
     pipelines: [dogstatsd]
     description: "Packet channel buffer size"
-    documentation: "ADP bounds datagram queues with `dogstatsd_buffer_count_max`."
+    documentation: |
+      ADP sizes the queue of packets waiting to be forwarded to `statsd_forward_host` from this setting: the queue
+      holds a quarter of `dogstatsd_queue_size` packets, and at least 64. ADP bounds its queues of received datagrams
+      with `dogstatsd_buffer_count_max` instead.
 
   dogstatsd_require_listener:
     support: full

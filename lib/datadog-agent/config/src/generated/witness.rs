@@ -118,6 +118,7 @@ pub trait DatadogConfigWitness {
     fn consume_dogstatsd_origin_optout_enabled(&mut self, value: bool);
     fn consume_dogstatsd_pipe_name(&mut self, value: String);
     fn consume_dogstatsd_port(&mut self, value: i64);
+    fn consume_dogstatsd_queue_size(&mut self, value: i64);
     fn consume_dogstatsd_require_listener(&mut self, value: bool);
     fn consume_dogstatsd_set_timing_unit(&mut self, value: bool);
     fn consume_dogstatsd_so_rcvbuf(&mut self, value: i64);
@@ -449,6 +450,7 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_dogstatsd_origin_optout_enabled(config.dogstatsd_origin_optout_enabled.clone());
     consumer.consume_dogstatsd_pipe_name(config.dogstatsd_pipe_name.clone());
     consumer.consume_dogstatsd_port(config.dogstatsd_port.clone());
+    consumer.consume_dogstatsd_queue_size(config.dogstatsd_queue_size.clone());
     consumer.consume_dogstatsd_require_listener(config.dogstatsd_require_listener.clone());
     consumer.consume_dogstatsd_set_timing_unit(config.dogstatsd_set_timing_unit.clone());
     consumer.consume_dogstatsd_so_rcvbuf(config.dogstatsd_so_rcvbuf.clone());

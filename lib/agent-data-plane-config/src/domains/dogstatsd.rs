@@ -144,6 +144,9 @@ pub struct Listeners {
 
     /// Port that received metrics are additionally forwarded to.
     pub forward_port: u16,
+
+    /// Size of the Agent's DogStatsD packet queue, from which the forwarding queue is sized.
+    pub queue_size: usize,
 }
 
 impl Default for Listeners {
@@ -173,6 +176,7 @@ impl Default for Listeners {
             set_timing_unit: false,
             forward_host: None,
             forward_port: 0,
+            queue_size: 0,
         }
     }
 }
