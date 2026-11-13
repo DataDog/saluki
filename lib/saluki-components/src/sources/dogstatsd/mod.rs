@@ -44,10 +44,7 @@ use saluki_env::{workload::CaptureEntityResolver, WorkloadProvider};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::{
     buf::{BytesBuffer, ClearableIoBuffer as _, CollapsibleReadWriteIoBuffer as _, FixedSizeVec, ReadIoBuffer as _},
-    deser::{
-        codec::dogstatsd::*,
-        framing::{Framer as _, FramingError},
-    },
+    deser::{codec::dogstatsd::*, framing::FramingError},
     net::{
         dns::{resolve_host, ResolveHostError},
         listener::Listener,
@@ -67,7 +64,7 @@ mod forwarder;
 use self::forwarder::{PacketForwarder, PacketForwarderTarget};
 
 mod framer;
-use self::framer::{get_framer, DsdFramer};
+use self::framer::{get_framer, DsdFramer, Frame};
 use crate::sources::dogstatsd::tags::WellKnownTags;
 
 mod filters;
@@ -1624,7 +1621,6 @@ impl DogStatsDDecoder {
         if capture_stream_frames {
             context.stream_capture.update_peer_metadata(peer_addr);
         }
-        context.framer.set_retain_outer_frames(capture_stream_frames);
 
         metrics.bytes_received().increment(bytes_read as u64);
         metrics.bytes_received_size().record(bytes_read as f64);
@@ -1657,16 +1653,10 @@ impl DogStatsDDecoder {
             return DecodeOutcome::Continue;
         }
 
+        let mut frames = context.framer.frames(io_buffer.cursor(), eof, capture_stream_frames);
         loop {
-            let frame_result = context.framer.next_frame(io_buffer, eof);
-            for outer_frame in context.framer.drain_outer_frames() {
-                let _ = self.traffic_capture.enqueue(build_capture_record(
-                    context.stream_capture.last_pid,
-                    process_origin,
-                    &outer_frame,
-                ));
-            }
-            let completed_outer_frames = context.framer.take_completed_outer_frames();
+            let frame_result = frames.next();
+            let completed_outer_frames = frames.take_completed_outer_frames();
             if completed_outer_frames > 0 {
                 metrics
                     .packet_receive_success()
@@ -1677,22 +1667,29 @@ impl DogStatsDDecoder {
             }
 
             match frame_result {
-                Ok(Some(frame)) => {
+                Some(Ok(Frame::Outer(payload))) => {
+                    let _ = self.traffic_capture.enqueue(build_capture_record(
+                        context.stream_capture.last_pid,
+                        process_origin,
+                        payload,
+                    ));
+                }
+                Some(Ok(Frame::Message(frame))) => {
                     if matches!(listen_addr, ListenAddress::NamedPipe { .. }) {
-                        capture_named_pipe_frame(&self.traffic_capture, &frame);
+                        capture_named_pipe_frame(&self.traffic_capture, frame);
                         metrics.packet_receive_success().increment(1);
                     }
                     self.decode_frame(frame, listen_addr, peer_addr, process_origin, metrics, packet_forwarder)
                         .await;
                 }
-                Ok(None) => {
+                None => {
                     if mode.should_stop_on_eof(eof) {
                         debug!(%listen_addr, %peer_addr, "Stream received EOF. Shutting down handler.");
                         return DecodeOutcome::Stop;
                     }
                     return DecodeOutcome::Continue;
                 }
-                Err(error) => {
+                Some(Err(error)) => {
                     metrics.framing_errors().increment(1);
                     if should_warn_stream_log_too_big(listen_addr, &error, self.stream_log_too_big) {
                         warn!(
@@ -1716,16 +1713,16 @@ impl DogStatsDDecoder {
     }
 
     async fn decode_frame(
-        &mut self, frame: Bytes, listen_addr: &ListenAddress, peer_addr: &ConnectionAddress,
+        &mut self, frame: &[u8], listen_addr: &ListenAddress, peer_addr: &ConnectionAddress,
         process_origin: Option<&ProcessOrigin>, metrics: &Metrics, packet_forwarder: Option<&PacketForwarder>,
     ) {
-        trace!(%listen_addr, %peer_addr, ?frame, "Decoded frame.");
+        trace!(%listen_addr, %peer_addr, frame = %frame.escape_ascii(), "Decoded frame.");
         if let Some(forwarder) = packet_forwarder {
-            forwarder.forward(frame.clone()).await;
+            forwarder.forward(Bytes::copy_from_slice(frame)).await;
         }
 
         match handle_frame(
-            &frame[..],
+            frame,
             &self.codec,
             &mut self.context_resolvers,
             metrics,
@@ -1743,7 +1740,7 @@ impl DogStatsDDecoder {
             }
             Ok(None) => {}
             Err(error) => {
-                log_parse_failure(self.disable_verbose_logs, listen_addr, peer_addr, &frame, &error);
+                log_parse_failure(self.disable_verbose_logs, listen_addr, peer_addr, frame, &error);
             }
         }
     }
@@ -2595,13 +2592,11 @@ mod tests {
         assert_eq!(io_buffer.remaining(), 0);
         let full_buffer = metrics_rx.next().await.expect("metrics output should remain connected");
         assert_eq!(full_buffer.len(), event_buffer_capacity);
-        assert!(
-            timeout(Duration::from_secs(1), packets_rx.recv())
-                .await
-                .expect("forwarded packet should not time out")
-                .is_some(),
-            "forwarded packet should be queued"
-        );
+        let forwarded = timeout(Duration::from_secs(1), packets_rx.recv())
+            .await
+            .expect("forwarded packet should not time out")
+            .expect("forwarded packet should be queued");
+        assert_eq!(&forwarded[..], b"decoder.metric:1|c");
         assert_eq!(packets_rx.len(), event_buffer_capacity);
 
         decoder.flush_events().await;
@@ -2710,13 +2705,11 @@ mod tests {
             .await
             .expect("connected decoder should return the consumed I/O buffer");
         assert_eq!(io_buffer.remaining(), 0);
-        assert!(
-            timeout(Duration::from_secs(1), packets_rx.recv())
-                .await
-                .expect("forwarded stream packet should not time out")
-                .is_some(),
-            "complete outer frame should be forwarded"
-        );
+        let forwarded = timeout(Duration::from_secs(1), packets_rx.recv())
+            .await
+            .expect("forwarded stream packet should not time out")
+            .expect("complete outer frame should be forwarded");
+        assert_eq!(&forwarded[..], b"stream.metric:1|c");
 
         let (received, returned_buffer) = ReceivedBuffer::with_return(io_buffer, 0, peer_addr, None);
         let eof_outcome = decoder.decode_buffer(&mut buffer_decode_context, received).await;
@@ -2901,11 +2894,10 @@ mod tests {
             assert_eq!(payload, expected);
         }
 
-        // Once capture has stopped, the connection keeps decoding without retaining any frames for capture.
+        // Once capture has stopped, the connection keeps decoding.
         let more = length_delimited(&payloads[0]);
         let io_buffer = feed_connected_stream(&mut decoder, &mut context, io_buffer, &more, &peer_addr).await;
         assert_eq!(io_buffer.remaining(), 0);
-        assert_eq!(context.framer.drain_outer_frames().count(), 0);
     }
 
     #[tokio::test]

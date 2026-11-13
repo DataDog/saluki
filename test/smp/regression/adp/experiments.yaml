@@ -540,12 +540,14 @@ experiments:
             bytes_per_second: "500 MiB"
 
   # ============================================================================
-  # DogStatsD: packet forwarding (throughput)
+  # DogStatsD: packet forwarding (CPU, memory, throughput)
   # ============================================================================
 
   - name: dsd_uds_1mb_3k_contexts_forwarding
     extends: dsd_forwarding_base
     optimization_goals:
+      - cpu
+      - memory
       - ingress_throughput
     lading:
       generator:
@@ -555,6 +557,8 @@ experiments:
   - name: dsd_uds_10mb_3k_contexts_forwarding
     extends: dsd_forwarding_base
     optimization_goals:
+      - cpu
+      - memory
       - ingress_throughput
     lading:
       generator:
@@ -564,6 +568,8 @@ experiments:
   - name: dsd_uds_100mb_3k_contexts_forwarding
     extends: dsd_forwarding_base
     optimization_goals:
+      - cpu
+      - memory
       - ingress_throughput
     lading:
       generator:

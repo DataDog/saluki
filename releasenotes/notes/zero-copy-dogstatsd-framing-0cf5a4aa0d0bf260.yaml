@@ -1,0 +1,4 @@
+---
+enhancements:
+  - |
+    Reduce CPU and memory usage when parsing DogStatsD metrics.
