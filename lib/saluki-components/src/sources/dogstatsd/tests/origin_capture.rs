@@ -4,9 +4,9 @@ use saluki_io::net::ProcessCredentialsError;
 use saluki_metrics::test::TestRecorder;
 
 use super::*;
-use crate::sources::dogstatsd::{build_capture_record, StreamCaptureState, REPLAY_CREDENTIALS_GID};
+use crate::sources::dogstatsd::{build_capture_record, REPLAY_CREDENTIALS_GID};
 use crate::sources::dogstatsd::{
-    capture_named_pipe_frame, handle_frame, origin_detection_error_for_telemetry, resolve_process_origin,
+    capture_named_pipe_frame, origin_detection_error_for_telemetry, resolve_process_origin,
     resolve_process_origin_if_needed, BufferDecodeMode, DecodeOutcome, ProcessOrigin,
 };
 
@@ -144,8 +144,32 @@ async fn uds_stream_capture_starting_mid_frame_captures_from_next_whole_frame_an
     assert_eq!(io_buffer.remaining(), 0);
 }
 
-#[test]
-fn origin_telemetry_records_resolved_origin_only_when_origin_detection_is_enabled() {
+#[tokio::test]
+async fn uds_stream_capture_keeps_last_pid_for_reads_without_credentials() {
+    let (_capture_directory, capture, capture_path) = start_capture();
+    let (listener, mut fixture) = capturing_stream_decoder(&capture);
+    let mut context = listener.decode_context(false, None, BufferDecodeMode::Connected);
+
+    // The first read carries the sender's credentials, and the second carries none.
+    let payloads = stream_test_payloads(2);
+    let unavailable = ConnectionAddress::ProcessLike(ProcessIdentity::Unavailable);
+    let mut io_buffer = test_io_buffer(&[], TEST_BUFFER_SIZE);
+    for (payload, peer_addr) in payloads.iter().zip([creds_peer(TEST_PID), unavailable]) {
+        let frame = length_delimited(payload);
+        io_buffer = feed_connected_stream(&mut fixture, &mut context, io_buffer, &frame, &peer_addr).await;
+    }
+    assert_eq!(io_buffer.remaining(), 0);
+
+    stop_capture(&capture);
+    let pids = read_capture_records(&capture_path)
+        .into_iter()
+        .map(|(_, pid)| pid)
+        .collect::<Vec<_>>();
+    assert_eq!(pids, [TEST_PID, TEST_PID]);
+}
+
+#[tokio::test]
+async fn origin_telemetry_records_resolved_origin_only_when_origin_detection_is_enabled() {
     // Counts of processed metrics with the resolved origin, and with the empty origin.
     let cases = [(false, None, Some(1)), (true, Some(1), Some(0))];
 
@@ -154,22 +178,13 @@ fn origin_telemetry_records_resolved_origin_only_when_origin_detection_is_enable
         let _recorder_guard = metrics::set_default_local_recorder(&recorder);
         let listen_addr = ListenAddress::Unixgram("/tmp/dsd.sock".into());
         let metrics = build_metrics(&listen_addr, &test_component_context(), true);
-        let codec = DogStatsDCodec::from_configuration(DogStatsDCodecConfiguration::default());
-        let mut context_resolvers = ContextResolvers::for_tests(true, None);
+        let mut fixture = DecoderFixture::new(test_decoder_context(origin_detection_enabled));
         let process_origin = resolve_process_origin(Some(&pid_container_resolver()), &creds_peer(TEST_PID));
 
-        let event = handle_frame(
-            b"test_metric:1|c",
-            &codec,
-            &mut context_resolvers,
-            &metrics,
-            origin_detection_enabled,
-            process_origin.as_ref(),
-            EnablePayloadsFilter::default(),
-            &[],
-            &MetaString::from_static("default-host"),
-        )
-        .expect("frame should parse");
+        let event = fixture
+            .decoder
+            .handle_frame(b"test_metric:1|c", &metrics, process_origin.as_ref())
+            .expect("frame should parse");
 
         assert!(event.is_some(), "origin detection enabled: {origin_detection_enabled}");
         assert_eq!(
@@ -255,22 +270,6 @@ fn build_capture_record_ignores_payload_local_data() {
 
     assert_eq!(record.container_id, None);
     assert!(record.ancillary.is_empty());
-}
-
-#[test]
-fn stream_capture_state_preserves_last_pid_without_new_creds() {
-    let mut stream_capture = StreamCaptureState::new();
-
-    stream_capture.update_peer_metadata(&ConnectionAddress::ProcessLike(ProcessIdentity::Credentials(
-        ProcessCredentials {
-            pid: 42,
-            uid: 0,
-            gid: 0,
-        },
-    )));
-    stream_capture.update_peer_metadata(&ConnectionAddress::ProcessLike(ProcessIdentity::Unavailable));
-
-    assert_eq!(stream_capture.last_pid, Some(42));
 }
 
 #[test]

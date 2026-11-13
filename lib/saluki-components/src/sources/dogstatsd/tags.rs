@@ -25,6 +25,7 @@ fn is_well_known_tag(tag: &str) -> bool {
 ///
 /// Well-known tags are tags which are generally set by the DogStatsD client to convey structured information
 /// about the source of the metric, event, or service check.
+#[derive(Default)]
 pub struct WellKnownTags<'a> {
     pub hostname: Option<&'a str>,
     pub pod_uid: Option<&'a str>,
@@ -41,12 +42,7 @@ impl<'a> WellKnownTags<'a> {
     /// The raw tags are walked exactly once, so callers can iterate over the regular tags as many times as needed
     /// (such as for both hashing and building a context) without re-parsing the raw tags.
     pub fn split_raw_tags(tags: &'a RawTags<'_>) -> (Self, RegularTags<'a>) {
-        let mut well_known_tags = Self {
-            hostname: None,
-            pod_uid: None,
-            jmx_check_name: None,
-            cardinality: None,
-        };
+        let mut well_known_tags = Self::default();
         let mut regular_tags = RegularTags::new();
 
         for tag in tags.iter() {

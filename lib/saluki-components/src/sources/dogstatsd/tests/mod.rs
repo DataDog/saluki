@@ -37,9 +37,10 @@ use saluki_io::{
 use stringtheory::MetaString;
 
 use super::{
-    filters::EnablePayloadsFilter, metrics::build_metrics, metrics::Metrics, replay::test_support::wait_until_inactive,
-    BufferDecodeContext, BufferDecodeMode, ContextResolvers, DecodeOutcome, DecoderContext, DogStatsDConfiguration,
-    DogStatsDDecoder, PacketForwarder, ReceivedBuffer, TrafficCapture, TrafficCaptureReader,
+    filters::EnablePayloadsConfiguration, metrics::build_metrics, metrics::Metrics,
+    replay::test_support::wait_until_inactive, BufferDecodeContext, BufferDecodeMode, ContextResolvers, DecodeOutcome,
+    DecoderContext, DogStatsDConfiguration, DogStatsDDecoder, PacketForwarder, ReceivedBuffer, TrafficCapture,
+    TrafficCaptureReader,
 };
 
 const TEST_WINDOWS_PIPE_SECURITY_DESCRIPTOR: &str = "D:AI(A;;GA;;;WD)";
@@ -148,7 +149,7 @@ fn test_decoder_context(origin_detection_enabled: bool) -> DecoderContext {
         codec: DogStatsDCodec::from_configuration(DogStatsDCodecConfiguration::default()),
         context_resolvers: ContextResolvers::for_tests(true, None),
         default_hostname: MetaString::from_static("default-hostname"),
-        enabled_filter: EnablePayloadsFilter::default(),
+        enable_payloads: EnablePayloadsConfiguration::for_test(),
         origin_detection_enabled,
         stream_log_too_big: false,
         disable_verbose_logs: false,

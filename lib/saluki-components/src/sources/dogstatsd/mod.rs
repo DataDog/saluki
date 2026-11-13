@@ -8,11 +8,11 @@
 
 use std::{
     future::Future,
-    io, mem,
+    io,
     num::NonZeroUsize,
     path::PathBuf,
     pin::Pin,
-    sync::{Arc, LazyLock, Mutex as StdMutex},
+    sync::{Arc, LazyLock},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -26,19 +26,23 @@ use saluki_common::sync::{
 use saluki_core::{
     accounting::{MemoryBounds, MemoryBoundsBuilder, MemoryLimiter, UsageExpr},
     components::{sources::*, BuildContext},
-    data_model::event::{
-        eventd::EventD,
-        metric::{Metric, MetricMetadata, MetricOrigin},
-        service_check::ServiceCheck,
-        Event, EventType,
+    data_model::{
+        event::{
+            eventd::EventD,
+            metric::{Metric, MetricMetadata, MetricOrigin},
+            service_check::ServiceCheck,
+            Event, EventType,
+        },
+        origin::OriginTagCardinality,
+        tags::{RawTags, SharedTagSet},
     },
     pooling::{ElasticObjectPool, ObjectPool as _},
     runtime::{
         self,
         state::{AcquireError, ResourceLease},
-        InitializationError, ShutdownStrategy, Supervisable, SupervisorFuture,
+        ShutdownStrategy,
     },
-    topology::{EventsBuffer, OutputDefinition},
+    topology::{interconnect::EventBufferManager, EventsBuffer, OutputDefinition, DEFAULT_EVENTS_BUFFER_CAPACITY},
 };
 use saluki_env::{workload::CaptureEntityResolver, WorkloadProvider};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
@@ -68,7 +72,7 @@ use self::framer::{get_framer, DsdFramer, Frame};
 use crate::sources::dogstatsd::tags::WellKnownTags;
 
 mod filters;
-use self::filters::EnablePayloadsFilter;
+pub use self::filters::EnablePayloadsConfiguration;
 
 mod metrics;
 use self::metrics::{build_metrics, ForwarderMetrics, Metrics};
@@ -82,10 +86,7 @@ pub use self::replay::{
 
 mod origin;
 pub use self::origin::OriginEnrichmentConfiguration;
-use self::origin::{
-    origin_from_event_packet, origin_from_metric_packet, origin_from_service_check_packet, DogStatsDOriginTagResolver,
-    ProcessOrigin,
-};
+use self::origin::{origin_from_packet, DogStatsDOriginTagResolver, ProcessOrigin};
 
 mod resolver;
 use self::resolver::ContextResolvers;
@@ -121,21 +122,6 @@ fn default_decoder_worker_count(vcpus: usize) -> usize {
     vcpus
         .saturating_sub(DOGSTATSD_LISTENER_WORKER_COUNT + DOGSTATSD_PIPELINE_COUNT)
         .max(MIN_DOGSTATSD_WORKER_COUNT)
-}
-
-/// Controls which payload types are forwarded to the backend.
-pub struct EnablePayloadsConfiguration {
-    /// Whether or not to enable sending series (counter/gauge/rate) payloads.
-    pub series: bool,
-
-    /// Whether or not to enable sending sketch (distribution) payloads.
-    pub sketches: bool,
-
-    /// Whether or not to enable sending event payloads.
-    pub events: bool,
-
-    /// Whether or not to enable sending service check payloads.
-    pub service_checks: bool,
 }
 
 const MIN_CAPTURE_DEPTH: usize = 1024;
@@ -511,12 +497,7 @@ impl DogStatsDConfiguration {
             context_expiry_seconds: 20,
             permissive_decoding: true,
             minimum_sample_rate: 0.000000003845,
-            enable_payloads: EnablePayloadsConfiguration {
-                series: true,
-                sketches: true,
-                events: true,
-                service_checks: true,
-            },
+            enable_payloads: EnablePayloadsConfiguration::for_test(),
             origin_enrichment: OriginEnrichmentConfiguration::for_test(),
             origin_telemetry_enabled: false,
             workload_provider: None,
@@ -801,7 +782,6 @@ impl SourceBuilder for DogStatsDConfiguration {
             ));
         }
 
-        let origin_detection_enabled = self.origin_enrichment.enabled;
         // Single CapturedTaggerHandle is cloned to both the resolver (reader of the captured store) and the replay
         // control surface (writer). Both sides reference the same atomic slot.
         let captured_tagger = CapturedTaggerHandle::new();
@@ -818,23 +798,25 @@ impl SourceBuilder for DogStatsDConfiguration {
             .with_minimum_sample_rate(self.minimum_sample_rate)
             .with_client_origin_detection(self.origin_enrichment.origin_detection_client);
 
-        let codec = DogStatsDCodec::from_configuration(codec_config);
-        let eol_required = self.eol_required();
-
-        let enable_payloads_filter = EnablePayloadsFilter::default()
-            .with_allow_series(self.enable_payloads.series)
-            .with_allow_sketches(self.enable_payloads.sketches)
-            .with_allow_events(self.enable_payloads.events)
-            .with_allow_service_checks(self.enable_payloads.service_checks);
         let traffic_capture = TrafficCapture::with_workload_provider(
             self.capture_path.clone(),
             self.capture_depth,
             self.workload_provider.clone(),
         );
         self.capture_control.bind(traffic_capture.clone());
-        let packet_forwarder_target = self.packet_forwarder_target();
-
         self.replay_control.bind(captured_tagger);
+
+        let decoder_context = DecoderContext {
+            codec: DogStatsDCodec::from_configuration(codec_config),
+            context_resolvers,
+            default_hostname: self.default_hostname.clone(),
+            enable_payloads: self.enable_payloads,
+            origin_detection_enabled: self.origin_enrichment.enabled,
+            stream_log_too_big: self.stream_log_too_big,
+            disable_verbose_logs: self.disable_verbose_logs,
+            additional_tags: self.additional_tags().into(),
+            traffic_capture,
+        };
 
         // The pool allocates `buffer_count` buffers up front and may grow on demand up to `max_buffers`. The effective
         // maximum is never below the baseline, so configs that only raise `dogstatsd_buffer_count` keep their full
@@ -847,19 +829,11 @@ impl SourceBuilder for DogStatsDConfiguration {
             io_buffer_pool,
             io_buffer_queue_capacity: max_buffers,
             io_buffer_pool_shrinker: Box::pin(io_buffer_pool_shrinker),
-            codec,
-            context_resolvers,
-            default_hostname: self.default_hostname.clone(),
-            enabled_filter: enable_payloads_filter,
-            origin_detection_enabled,
+            decoder_context,
             origin_telemetry_enabled: self.origin_telemetry_enabled,
-            stream_log_too_big: self.stream_log_too_big,
-            disable_verbose_logs: self.disable_verbose_logs,
-            eol_required,
-            additional_tags: self.additional_tags().into(),
+            eol_required: self.eol_required(),
             capture_entity_resolver: self.capture_entity_resolver.clone(),
-            traffic_capture,
-            packet_forwarder_target,
+            packet_forwarder_target: self.packet_forwarder_target(),
         }))
     }
 
@@ -923,18 +897,10 @@ pub struct DogStatsD {
     io_buffer_pool: ElasticObjectPool<BytesBuffer>,
     io_buffer_queue_capacity: usize,
     io_buffer_pool_shrinker: Pin<Box<dyn Future<Output = ()> + Send>>,
-    codec: DogStatsDCodec,
-    context_resolvers: ContextResolvers,
-    default_hostname: MetaString,
-    enabled_filter: EnablePayloadsFilter,
-    origin_detection_enabled: bool,
+    decoder_context: DecoderContext,
     origin_telemetry_enabled: bool,
-    stream_log_too_big: bool,
-    disable_verbose_logs: bool,
     eol_required: EolRequired,
-    additional_tags: Arc<[String]>,
     capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
-    traffic_capture: TrafficCapture,
     packet_forwarder_target: Option<PacketForwarderTarget>,
 }
 
@@ -967,7 +933,7 @@ struct DecoderContext {
     codec: DogStatsDCodec,
     context_resolvers: ContextResolvers,
     default_hostname: MetaString,
-    enabled_filter: EnablePayloadsFilter,
+    enable_payloads: EnablePayloadsConfiguration,
     origin_detection_enabled: bool,
     stream_log_too_big: bool,
     disable_verbose_logs: bool,
@@ -989,16 +955,8 @@ struct QueuedDatagram {
 
 struct DogStatsDDecoder {
     source_context: SourceContext,
-    codec: DogStatsDCodec,
-    context_resolvers: ContextResolvers,
-    default_hostname: MetaString,
-    enabled_filter: EnablePayloadsFilter,
-    origin_detection_enabled: bool,
-    stream_log_too_big: bool,
-    disable_verbose_logs: bool,
-    additional_tags: Arc<[String]>,
-    traffic_capture: TrafficCapture,
-    event_buffer: Option<EventsBuffer>,
+    context: DecoderContext,
+    event_buffer: EventBufferManager<DEFAULT_EVENTS_BUFFER_CAPACITY>,
 }
 
 #[derive(Clone, Copy)]
@@ -1030,7 +988,9 @@ struct BufferDecodeContext<'a> {
     packet_forwarder: Option<&'a PacketForwarder>,
     mode: BufferDecodeMode,
     framer: DsdFramer,
-    stream_capture: StreamCaptureState,
+
+    /// The last PID seen on this connection, so that captured frames keep it on reads that carry no credentials.
+    last_pid: Option<i32>,
 }
 
 impl<'a> BufferDecodeContext<'a> {
@@ -1044,7 +1004,7 @@ impl<'a> BufferDecodeContext<'a> {
             packet_forwarder,
             mode,
             framer: get_framer(listen_addr, eol_required),
-            stream_capture: StreamCaptureState::new(),
+            last_pid: None,
         }
     }
 }
@@ -1076,17 +1036,7 @@ impl Source for DogStatsD {
         // receiver to the next decoder puts it behind the previous decoder's decode work on the same runtime thread.
         let (datagram_sender, datagram_receivers) =
             work_queue::bounded(self.decoder_worker_count, self.io_buffer_queue_capacity);
-        let decoder_context = DecoderContext {
-            codec: self.codec.clone(),
-            context_resolvers: self.context_resolvers.clone(),
-            default_hostname: self.default_hostname.clone(),
-            enabled_filter: self.enabled_filter,
-            origin_detection_enabled: self.origin_detection_enabled,
-            stream_log_too_big: self.stream_log_too_big,
-            disable_verbose_logs: self.disable_verbose_logs,
-            additional_tags: self.additional_tags.clone(),
-            traffic_capture: self.traffic_capture.clone(),
-        };
+        let decoder_context = self.decoder_context;
 
         // Decoders must drain their queue to completion, so they deliberately ignore the shutdown signal and stop only
         // once their queue closes -- which happens when every listener and stream handler has dropped its datagram
@@ -1103,7 +1053,7 @@ impl Source for DogStatsD {
 
             runtime::worker(
                 format!("datagram_decoder_{worker_id}"),
-                process_datagram_decoder(datagram_receiver, decoder_source_context, decoder_context),
+                drive_datagram_decoder(datagram_receiver, decoder_source_context, decoder_context),
             )
             .with_shutdown_timeout(Duration::MAX)
             .spawn();
@@ -1142,13 +1092,15 @@ impl Source for DogStatsD {
                 packet_forwarder: packet_forwarder.clone(),
             };
 
+            // An accept loop has no terminal condition of its own, so the listener needs the shutdown signal. It has no
+            // shutdown timeout of its own: the topology shutdown timeout applies to the source and everything it spawned.
+            //
             // Each listener is needed. A fatal accept error stops a listener without a request to stop. Then the source
             // has nothing to listen on, so the listener stops the source. The source does not continue to run.
-            runtime::supervisable(ListenerWorker::new(
-                task_name,
-                listener_source_context,
-                listener_context,
-            ))
+            runtime::worker_with_shutdown(task_name, move |process_shutdown| {
+                process_listener(listener_source_context, listener_context, process_shutdown)
+            })
+            .with_shutdown_timeout(Duration::MAX)
             .needed()
             .spawn();
         }
@@ -1201,57 +1153,6 @@ fn is_connectionless_listen_address(listen_addr: &ListenAddress) -> bool {
         #[cfg(unix)]
         ListenAddress::Unixgram(_) => true,
         _ => false,
-    }
-}
-
-/// A DogStatsD listener, as a [`Supervisable`].
-///
-/// An accept loop has no terminal condition of its own -- it runs until something tells it to stop -- so unlike the
-/// other children this source spawns, it genuinely needs the supervisor's shutdown signal. That is what makes it a
-/// `Supervisable` rather than a plain worker. See [`process_listener`] for the two paths that end the loop.
-struct ListenerWorker {
-    name: String,
-    inner: StdMutex<Option<(SourceContext, ListenerContext)>>,
-}
-
-impl ListenerWorker {
-    fn new(name: String, source_context: SourceContext, listener_context: ListenerContext) -> Self {
-        Self {
-            name,
-            inner: StdMutex::new(Some((source_context, listener_context))),
-        }
-    }
-}
-
-#[async_trait]
-impl Supervisable for ListenerWorker {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn shutdown_strategy(&self) -> ShutdownStrategy {
-        // The listener has no shutdown timeout of its own. The topology shutdown timeout applies to the source and to
-        // everything that the source spawned.
-        ShutdownStrategy::Graceful(Duration::MAX)
-    }
-
-    fn can_restart(&self) -> bool {
-        // The first start takes the listener, so there is nothing left to listen on a second time.
-        false
-    }
-
-    async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
-        let (source_context, listener_context) = self
-            .inner
-            .lock()
-            .expect("listener worker mutex poisoned")
-            .take()
-            .ok_or_else(|| InitializationError::from(generic_error!("listener worker already initialized")))?;
-
-        Ok(Box::pin(async move {
-            process_listener(source_context, listener_context, process_shutdown).await;
-            Ok(())
-        }))
     }
 }
 
@@ -1557,7 +1458,6 @@ async fn receive_connectionless_stream(
             Err(error) => Err(error),
         };
 
-        let receive_failed = result.is_err();
         let queued = QueuedDatagram {
             result,
             socket_context: socket_context.clone(),
@@ -1568,9 +1468,6 @@ async fn receive_connectionless_stream(
                 "Failed to enqueue DogStatsD packet for decoding: receiver dropped."
             );
             break;
-        }
-        if receive_failed {
-            continue;
         }
     }
 
@@ -1587,40 +1484,12 @@ async fn acquire_io_buffer(io_buffer_pool: &ElasticObjectPool<BytesBuffer>) -> B
     buffer
 }
 
-async fn process_datagram_decoder(
-    datagram_receiver: WorkQueueReceiver<QueuedDatagram>, source_context: SourceContext,
-    decoder_context: DecoderContext,
-) {
-    drive_datagram_decoder(datagram_receiver, source_context, decoder_context).await;
-    debug!("Datagram decoder drained its queue.");
-}
-
 impl DogStatsDDecoder {
-    fn new(source_context: SourceContext, decoder_context: DecoderContext) -> Self {
-        let DecoderContext {
-            codec,
-            context_resolvers,
-            default_hostname,
-            enabled_filter,
-            origin_detection_enabled,
-            stream_log_too_big,
-            disable_verbose_logs,
-            additional_tags,
-            traffic_capture,
-        } = decoder_context;
-
+    fn new(source_context: SourceContext, context: DecoderContext) -> Self {
         Self {
             source_context,
-            codec,
-            context_resolvers,
-            default_hostname,
-            enabled_filter,
-            origin_detection_enabled,
-            stream_log_too_big,
-            disable_verbose_logs,
-            additional_tags,
-            traffic_capture,
-            event_buffer: None,
+            context,
+            event_buffer: EventBufferManager::default(),
         }
     }
 
@@ -1642,17 +1511,20 @@ impl DogStatsDDecoder {
         let mode = context.mode;
 
         let payload = received_payload(io_buffer, bytes_read);
-        capture_unixgram_traffic(listen_addr, &self.traffic_capture, peer_addr, process_origin, payload);
+        let traffic_capture = &self.context.traffic_capture;
+        capture_unixgram_traffic(listen_addr, traffic_capture, peer_addr, process_origin, payload);
 
-        let capture_stream_frames = matches!(listen_addr, ListenAddress::Unix(_)) && self.traffic_capture.is_ongoing();
+        let capture_stream_frames = matches!(listen_addr, ListenAddress::Unix(_)) && traffic_capture.is_ongoing();
         if capture_stream_frames {
-            context.stream_capture.update_peer_metadata(peer_addr);
+            if let Some(process_id) = process_id_from_peer_addr(peer_addr) {
+                context.last_pid = Some(process_id);
+            }
         }
 
         metrics.bytes_received().increment(bytes_read as u64);
         metrics.bytes_received_size().record(bytes_read as f64);
         let origin_detection_errors =
-            origin_detection_error_for_telemetry(self.origin_detection_enabled, bytes_read, peer_addr)
+            origin_detection_error_for_telemetry(self.context.origin_detection_enabled, bytes_read, peer_addr)
                 .and_then(|error| metrics.origin_detection_errors(error));
 
         if matches!(mode, BufferDecodeMode::Connectionless) {
@@ -1695,15 +1567,15 @@ impl DogStatsDDecoder {
 
             match frame_result {
                 Some(Ok(Frame::Outer(payload))) => {
-                    let _ = self.traffic_capture.enqueue(build_capture_record(
-                        context.stream_capture.last_pid,
+                    let _ = self.context.traffic_capture.enqueue(build_capture_record(
+                        context.last_pid,
                         process_origin,
                         payload,
                     ));
                 }
                 Some(Ok(Frame::Message(frame))) => {
                     if matches!(listen_addr, ListenAddress::NamedPipe { .. }) {
-                        capture_named_pipe_frame(&self.traffic_capture, frame);
+                        capture_named_pipe_frame(&self.context.traffic_capture, frame);
                         metrics.packet_receive_success().increment(1);
                     }
                     self.decode_frame(frame, listen_addr, peer_addr, process_origin, metrics, packet_forwarder)
@@ -1718,7 +1590,7 @@ impl DogStatsDDecoder {
                 }
                 Some(Err(error)) => {
                     metrics.framing_errors().increment(1);
-                    if should_warn_stream_log_too_big(listen_addr, &error, self.stream_log_too_big) {
+                    if should_warn_stream_log_too_big(listen_addr, &error, self.context.stream_log_too_big) {
                         warn!(
                             %listen_addr,
                             %peer_addr,
@@ -1748,49 +1620,135 @@ impl DogStatsDDecoder {
             forwarder.forward(frame).await;
         }
 
-        match handle_frame(
-            frame,
-            &self.codec,
-            &mut self.context_resolvers,
-            metrics,
-            self.origin_detection_enabled,
-            process_origin,
-            self.enabled_filter,
-            &self.additional_tags,
-            &self.default_hostname,
-        ) {
+        match self.handle_frame(frame, metrics, process_origin) {
             Ok(Some(event)) => {
-                if let Some(event_buffer) = self.buffer_event(event) {
+                if let Some(event_buffer) = self.event_buffer.try_push(event) {
                     debug!(%listen_addr, %peer_addr, "Event buffer is full. Forwarding events.");
                     dispatch_events(event_buffer, &self.source_context).await;
                 }
             }
             Ok(None) => {}
             Err(error) => {
-                log_parse_failure(self.disable_verbose_logs, listen_addr, peer_addr, frame, &error);
+                log_parse_failure(self.context.disable_verbose_logs, listen_addr, peer_addr, frame, &error);
             }
-        }
-    }
-
-    fn buffer_event(&mut self, event: Event) -> Option<EventsBuffer> {
-        let event_buffer = self.event_buffer.get_or_insert_default();
-        match event_buffer.try_push(event) {
-            Some(event) => {
-                let full_event_buffer = mem::take(event_buffer);
-                assert!(
-                    event_buffer.try_push(event).is_none(),
-                    "New event buffer is unexpectedly full."
-                );
-                Some(full_event_buffer)
-            }
-            None => None,
         }
     }
 
     async fn flush_events(&mut self) {
-        if let Some(event_buffer) = self.event_buffer.take() {
+        if let Some(event_buffer) = self.event_buffer.consume() {
             dispatch_events(event_buffer, &self.source_context).await;
         }
+    }
+
+    fn handle_frame(
+        &mut self, frame: &[u8], source_metrics: &Metrics, process_origin: Option<&ProcessOrigin>,
+    ) -> Result<Option<Event>, ParseError> {
+        let DecoderContext {
+            codec,
+            context_resolvers,
+            default_hostname,
+            enable_payloads,
+            origin_detection_enabled,
+            additional_tags,
+            ..
+        } = &mut self.context;
+
+        let resolve_telemetry_origin = || {
+            (source_metrics.origin_telemetry_enabled() && *origin_detection_enabled)
+                .then(|| {
+                    process_origin
+                        .and_then(ProcessOrigin::container_entity_id)
+                        .map(ToString::to_string)
+                })
+                .flatten()
+        };
+
+        let parsed = match codec.decode_packet(frame) {
+            Ok(parsed) => parsed,
+            Err(e) => {
+                // Try and determine what the message type was, if possible, to increment the correct error counter.
+                match parse_message_type(frame) {
+                    MessageType::MetricSample => {
+                        source_metrics.record_metric_parse_failed(resolve_telemetry_origin().as_deref())
+                    }
+                    MessageType::Event => source_metrics.event_decode_failed().increment(1),
+                    MessageType::ServiceCheck => source_metrics.service_check_decode_failed().increment(1),
+                }
+
+                return Err(e);
+            }
+        };
+
+        let event = match parsed {
+            ParsedPacket::Metric(metric_packet) => {
+                if metric_packet.num_points == 0 {
+                    return Ok(None);
+                }
+                let events_len = metric_packet.num_points;
+                if !enable_payloads.allow_metric(&metric_packet) {
+                    trace!(
+                        metric.name = metric_packet.metric_name,
+                        "Skipping metric due to filter configuration."
+                    );
+                    return Ok(None);
+                }
+
+                match handle_metric_packet(
+                    metric_packet,
+                    context_resolvers,
+                    process_origin,
+                    additional_tags,
+                    default_hostname,
+                ) {
+                    Some(metric) => {
+                        source_metrics.record_metrics_received(events_len, resolve_telemetry_origin().as_deref());
+                        Event::Metric(metric)
+                    }
+                    None => {
+                        // We can only fail to get a metric back if we failed to resolve the context.
+                        source_metrics.failed_context_resolve_total().increment(1);
+                        return Ok(None);
+                    }
+                }
+            }
+            ParsedPacket::Event(event) => {
+                if !enable_payloads.allow_event(&event) {
+                    trace!("Skipping event {} due to filter configuration.", event.title);
+                    return Ok(None);
+                }
+                match handle_event_packet(event, context_resolvers, process_origin, additional_tags) {
+                    Some(event) => {
+                        source_metrics.events_received().increment(1);
+                        Event::EventD(event)
+                    }
+                    None => {
+                        source_metrics.failed_context_resolve_total().increment(1);
+                        return Ok(None);
+                    }
+                }
+            }
+            ParsedPacket::ServiceCheck(service_check) => {
+                if !enable_payloads.allow_service_check(&service_check) {
+                    trace!(
+                        "Skipping service check {} due to filter configuration.",
+                        service_check.name
+                    );
+                    return Ok(None);
+                }
+                match handle_service_check_packet(service_check, context_resolvers, process_origin, additional_tags) {
+                    Some(service_check) => {
+                        source_metrics.service_checks_received().increment(1);
+                        Event::ServiceCheck(service_check)
+                    }
+                    None => {
+                        source_metrics.failed_context_resolve_total().increment(1);
+                        return Ok(None);
+                    }
+                }
+            }
+        };
+
+        Ok(Some(event))
     }
 }
 
@@ -1808,33 +1766,31 @@ async fn drive_datagram_decoder(
                 let Some(QueuedDatagram { result, socket_context }) = maybe_datagram else {
                     break;
                 };
-                {
-                    let DatagramSocketContext {
-                        listen_addr,
-                        eol_required,
-                        metrics,
-                        packet_forwarder,
-                    } = socket_context.as_ref();
+                let DatagramSocketContext {
+                    listen_addr,
+                    eol_required,
+                    metrics,
+                    packet_forwarder,
+                } = socket_context.as_ref();
 
-                    let received = match result {
-                        Ok(received) => received,
-                        Err(error) => {
-                            metrics.packet_receive_failure().increment(1);
-                            warn!(%listen_addr, %error, "I/O error while reading datagram. Continuing listener.");
-                            continue;
-                        }
-                    };
+                let received = match result {
+                    Ok(received) => received,
+                    Err(error) => {
+                        metrics.packet_receive_failure().increment(1);
+                        warn!(%listen_addr, %error, "I/O error while reading datagram. Continuing listener.");
+                        continue;
+                    }
+                };
 
-                    let mut buffer_decode_context = BufferDecodeContext::new(
-                        listen_addr,
-                        *eol_required,
-                        metrics,
-                        packet_forwarder.as_ref(),
-                        BufferDecodeMode::Connectionless,
-                    );
-                    let outcome = decoder.decode_buffer(&mut buffer_decode_context, received).await;
-                    debug_assert_eq!(outcome, DecodeOutcome::Continue);
-                }
+                let mut buffer_decode_context = BufferDecodeContext::new(
+                    listen_addr,
+                    *eol_required,
+                    metrics,
+                    packet_forwarder.as_ref(),
+                    BufferDecodeMode::Connectionless,
+                );
+                let outcome = decoder.decode_buffer(&mut buffer_decode_context, received).await;
+                debug_assert_eq!(outcome, DecodeOutcome::Continue);
             }
             _ = buffer_flush.tick() => {
                 decoder.flush_events().await;
@@ -1843,6 +1799,7 @@ async fn drive_datagram_decoder(
     }
 
     decoder.flush_events().await;
+    debug!("Datagram decoder drained its queue.");
 }
 
 async fn drive_stream(stream: Stream, source_context: SourceContext, handler_context: HandlerContext) {
@@ -1993,23 +1950,6 @@ fn capture_unixgram_traffic(
     ));
 }
 
-/// Per-connection metadata used when capturing Unix stream traffic.
-struct StreamCaptureState {
-    last_pid: Option<i32>,
-}
-
-impl StreamCaptureState {
-    fn new() -> Self {
-        Self { last_pid: None }
-    }
-
-    fn update_peer_metadata(&mut self, peer_addr: &ConnectionAddress) {
-        if let Some(process_id) = process_id_from_peer_addr(peer_addr) {
-            self.last_pid = Some(process_id);
-        }
-    }
-}
-
 fn build_capture_record(
     process_id: Option<i32>, process_origin: Option<&ProcessOrigin>, payload: &[u8],
 ) -> CaptureRecord {
@@ -2070,110 +2010,6 @@ fn capture_timestamp_ns() -> i64 {
         .unwrap_or_default()
 }
 
-#[allow(clippy::too_many_arguments)]
-fn handle_frame(
-    frame: &[u8], codec: &DogStatsDCodec, context_resolvers: &mut ContextResolvers, source_metrics: &Metrics,
-    origin_detection_enabled: bool, process_origin: Option<&ProcessOrigin>, enabled_filter: EnablePayloadsFilter,
-    additional_tags: &[String], default_hostname: &MetaString,
-) -> Result<Option<Event>, ParseError> {
-    let resolve_telemetry_origin = || {
-        (source_metrics.origin_telemetry_enabled() && origin_detection_enabled)
-            .then(|| {
-                process_origin
-                    .and_then(ProcessOrigin::container_entity_id)
-                    .map(ToString::to_string)
-            })
-            .flatten()
-    };
-
-    let parsed = match codec.decode_packet(frame) {
-        Ok(parsed) => parsed,
-        Err(e) => {
-            // Try and determine what the message type was, if possible, to increment the correct error counter.
-            match parse_message_type(frame) {
-                MessageType::MetricSample => {
-                    source_metrics.record_metric_parse_failed(resolve_telemetry_origin().as_deref())
-                }
-                MessageType::Event => source_metrics.event_decode_failed().increment(1),
-                MessageType::ServiceCheck => source_metrics.service_check_decode_failed().increment(1),
-            }
-
-            return Err(e);
-        }
-    };
-
-    let event = match parsed {
-        ParsedPacket::Metric(metric_packet) => {
-            if metric_packet.num_points == 0 {
-                return Ok(None);
-            }
-            let events_len = metric_packet.num_points;
-            if !enabled_filter.allow_metric(&metric_packet) {
-                trace!(
-                    metric.name = metric_packet.metric_name,
-                    "Skipping metric due to filter configuration."
-                );
-                return Ok(None);
-            }
-
-            match handle_metric_packet(
-                metric_packet,
-                context_resolvers,
-                process_origin,
-                additional_tags,
-                default_hostname,
-            ) {
-                Some(metric) => {
-                    source_metrics.record_metrics_received(events_len, resolve_telemetry_origin().as_deref());
-                    Event::Metric(metric)
-                }
-                None => {
-                    // We can only fail to get a metric back if we failed to resolve the context.
-                    source_metrics.failed_context_resolve_total().increment(1);
-                    return Ok(None);
-                }
-            }
-        }
-        ParsedPacket::Event(event) => {
-            if !enabled_filter.allow_event(&event) {
-                trace!("Skipping event {} due to filter configuration.", event.title);
-                return Ok(None);
-            }
-            match handle_event_packet(event, context_resolvers, process_origin, additional_tags) {
-                Some(event) => {
-                    source_metrics.events_received().increment(1);
-                    Event::EventD(event)
-                }
-                None => {
-                    source_metrics.failed_context_resolve_total().increment(1);
-                    return Ok(None);
-                }
-            }
-        }
-        ParsedPacket::ServiceCheck(service_check) => {
-            if !enabled_filter.allow_service_check(&service_check) {
-                trace!(
-                    "Skipping service check {} due to filter configuration.",
-                    service_check.name
-                );
-                return Ok(None);
-            }
-            match handle_service_check_packet(service_check, context_resolvers, process_origin, additional_tags) {
-                Some(service_check) => {
-                    source_metrics.service_checks_received().increment(1);
-                    Event::ServiceCheck(service_check)
-                }
-                None => {
-                    source_metrics.failed_context_resolve_total().increment(1);
-                    return Ok(None);
-                }
-            }
-        }
-    };
-
-    Ok(Some(event))
-}
-
 fn handle_metric_packet(
     packet: MetricPacket, context_resolvers: &mut ContextResolvers, process_origin: Option<&ProcessOrigin>,
     additional_tags: &[String], default_hostname: &MetaString,
@@ -2181,7 +2017,12 @@ fn handle_metric_packet(
     let (well_known_tags, mut tags) = WellKnownTags::split_raw_tags(&packet.tags);
     tags.extend(additional_tags.iter().map(String::as_str));
 
-    let origin = origin_from_metric_packet(&packet, &well_known_tags);
+    let origin = origin_from_packet(
+        packet.local_data,
+        packet.external_data,
+        packet.cardinality,
+        &well_known_tags,
+    );
     let origin_tags = context_resolvers.resolve_origin_tags(origin, process_origin);
 
     // Choose the right context resolver based on whether or not this metric is pre-aggregated.
@@ -2193,39 +2034,52 @@ fn handle_metric_packet(
 
     let hostname = well_known_tags.hostname.unwrap_or(default_hostname);
 
-    // Try to resolve the context for this metric.
-    let maybe_context =
-        context_resolver.resolve_with_host_and_origin_tags(packet.metric_name, hostname, &tags, origin_tags);
+    // Try to resolve the context for this metric. This fails if the interner is out of capacity.
+    let context =
+        context_resolver.resolve_with_host_and_origin_tags(packet.metric_name, hostname, &tags, origin_tags)?;
 
-    match maybe_context {
-        Some(context) => {
-            let metric_origin = well_known_tags
-                .jmx_check_name
-                .map(MetricOrigin::jmx_check)
-                .unwrap_or_else(MetricOrigin::dogstatsd);
-            let metadata = MetricMetadata::default()
-                .with_origin(metric_origin)
-                .with_unit(packet.unit.map_or_else(MetaString::empty, MetaString::from_static));
+    let metric_origin = well_known_tags
+        .jmx_check_name
+        .map(MetricOrigin::jmx_check)
+        .unwrap_or_else(MetricOrigin::dogstatsd);
+    let metadata = MetricMetadata::default()
+        .with_origin(metric_origin)
+        .with_unit(packet.unit.map_or_else(MetaString::empty, MetaString::from_static));
 
-            Some(Metric::from_parts(context, packet.values, metadata))
-        }
-        // We failed to resolve the context, likely due to not having enough interner capacity.
-        None => None,
-    }
+    Some(Metric::from_parts(context, packet.values, metadata))
+}
+
+/// Resolves the tags and origin tags of an event or service check, along with the value of any `host:` tag.
+///
+/// Returns `None` if the tags can't be resolved.
+fn resolve_tags_and_origin_tags<'a>(
+    context_resolvers: &mut ContextResolvers, raw_tags: &'a RawTags<'_>, local_data: Option<&str>,
+    external_data: Option<&str>, cardinality: Option<OriginTagCardinality>, process_origin: Option<&ProcessOrigin>,
+    additional_tags: &'a [String],
+) -> Option<(SharedTagSet, SharedTagSet, Option<&'a str>)> {
+    let (well_known_tags, mut tags) = WellKnownTags::split_raw_tags(raw_tags);
+    tags.extend(additional_tags.iter().map(String::as_str));
+
+    let origin = origin_from_packet(local_data, external_data, cardinality, &well_known_tags);
+    let origin_tags = context_resolvers.resolve_origin_tags(origin, process_origin);
+
+    let tags = context_resolvers.tags().create_tag_set(&tags)?;
+    Some((tags, origin_tags, well_known_tags.hostname))
 }
 
 fn handle_event_packet(
     packet: EventPacket, context_resolvers: &mut ContextResolvers, process_origin: Option<&ProcessOrigin>,
     additional_tags: &[String],
 ) -> Option<EventD> {
-    let (well_known_tags, mut tags) = WellKnownTags::split_raw_tags(&packet.tags);
-    tags.extend(additional_tags.iter().map(String::as_str));
-
-    let origin = origin_from_event_packet(&packet, &well_known_tags);
-    let origin_tags = context_resolvers.resolve_origin_tags(origin, process_origin);
-
-    let tags_resolver = context_resolvers.tags();
-    let tags = tags_resolver.create_tag_set(&tags)?;
+    let (tags, origin_tags, tagged_hostname) = resolve_tags_and_origin_tags(
+        context_resolvers,
+        &packet.tags,
+        packet.local_data,
+        packet.external_data,
+        packet.cardinality,
+        process_origin,
+        additional_tags,
+    )?;
 
     // When no d: field is present, backfill the current time—matching the stock Datadog Agent's
     // behavior in pkg/aggregator/aggregator.go (addEvent), which sets e.Ts = time.Now().Unix()
@@ -2239,7 +2093,7 @@ fn handle_event_packet(
         // An `h:` field takes precedence; otherwise, fall back to a `host:` tag, matching the reference DogStatsD
         // server. An empty `host:` tag gives an explicitly empty hostname, which host enrichment leaves alone, as
         // the reference DogStatsD server does.
-        .with_hostname(packet.hostname.or(well_known_tags.hostname).map(|s| s.into()))
+        .with_hostname(packet.hostname.or(tagged_hostname).map(|s| s.into()))
         .with_aggregation_key(packet.aggregation_key.map(|s| s.into()))
         .with_alert_type(packet.alert_type)
         .with_priority(packet.priority)
@@ -2253,7 +2107,6 @@ fn handle_event_packet(
                 .map(|s| s.into())
                 .unwrap_or_else(|| "api".into()),
         ))
-        .with_alert_type(packet.alert_type)
         .with_tags(tags)
         .with_origin_tags(origin_tags);
 
@@ -2264,14 +2117,15 @@ fn handle_service_check_packet(
     packet: ServiceCheckPacket, context_resolvers: &mut ContextResolvers, process_origin: Option<&ProcessOrigin>,
     additional_tags: &[String],
 ) -> Option<ServiceCheck> {
-    let (well_known_tags, mut tags) = WellKnownTags::split_raw_tags(&packet.tags);
-    tags.extend(additional_tags.iter().map(String::as_str));
-
-    let origin = origin_from_service_check_packet(&packet, &well_known_tags);
-    let origin_tags = context_resolvers.resolve_origin_tags(origin, process_origin);
-
-    let tags_resolver = context_resolvers.tags();
-    let tags = tags_resolver.create_tag_set(&tags)?;
+    let (tags, origin_tags, tagged_hostname) = resolve_tags_and_origin_tags(
+        context_resolvers,
+        &packet.tags,
+        packet.local_data,
+        packet.external_data,
+        packet.cardinality,
+        process_origin,
+        additional_tags,
+    )?;
 
     // When no d: field is present, backfill the current time—matching the stock Datadog Agent's
     // behavior, which sets the timestamp to time.Now().Unix() for any service check with a zero
@@ -2285,7 +2139,7 @@ fn handle_service_check_packet(
         // An `h:` field takes precedence; otherwise, fall back to a `host:` tag, matching the reference DogStatsD
         // server. An empty `host:` tag gives an explicitly empty hostname, which host enrichment leaves alone, as
         // the reference DogStatsD server does.
-        .with_hostname(packet.hostname.or(well_known_tags.hostname).map(|s| s.into()))
+        .with_hostname(packet.hostname.or(tagged_hostname).map(|s| s.into()))
         .with_tags(tags)
         .with_origin_tags(origin_tags)
         .with_message(packet.message.map(|s| s.into()));
