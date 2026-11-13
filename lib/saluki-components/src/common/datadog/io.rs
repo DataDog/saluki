@@ -986,22 +986,37 @@ async fn run_endpoint_io_loop<B>(
             // While we're not done and there are pending transactions, wait for the service to become ready and then
             // next the next available pending transaction.
             svc = service.ready(), if !done && !pending_txns.is_empty() => match svc {
-                Ok(svc) => if let Some(pending_txn) = pending_txns.pop().await {
-                    let (metadata, request, retry_counters) = prepare_transaction_for_dispatch(
-                        pending_txn,
-                        &mut retry_telemetry,
-                        endpoint_name.as_ref(),
-                    );
-                    let body_size = request.body().remaining() as u64;
-                    in_flight.spawn(svc.call(request).map(move |result| InFlightTransaction {
-                        metadata,
-                        body_size,
-                        retry_counters,
-                        result,
-                    }));
+                Ok(svc) => {
+                    // A finished request releases its concurrency permit before its task is joined, so collect
+                    // finished tasks before dispatching, or the in-flight count would include them.
+                    while let Some(task_result) = in_flight.try_join_next() {
+                        handle_in_flight_transaction_result(
+                            task_result,
+                            &mut pending_txns,
+                            &telemetry,
+                            &endpoint_url,
+                            &endpoint_domain,
+                        ).await;
+                    }
                     in_flight_telemetry.record_in_flight_requests(&queue_domain, in_flight.len());
 
-                    debug!(endpoint_url, "Request sent.");
+                    if let Some(pending_txn) = pending_txns.pop().await {
+                        let (metadata, request, retry_counters) = prepare_transaction_for_dispatch(
+                            pending_txn,
+                            &mut retry_telemetry,
+                            endpoint_name.as_ref(),
+                        );
+                        let body_size = request.body().remaining() as u64;
+                        in_flight.spawn(svc.call(request).map(move |result| InFlightTransaction {
+                            metadata,
+                            body_size,
+                            retry_counters,
+                            result,
+                        }));
+                        in_flight_telemetry.record_in_flight_requests(&queue_domain, in_flight.len());
+
+                        debug!(endpoint_url, "Request sent.");
+                    }
                 },
                 Err(e) => match e {
                     RetryCircuitBreakerError::Service(e) => {
