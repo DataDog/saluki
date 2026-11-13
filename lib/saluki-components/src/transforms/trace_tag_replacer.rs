@@ -73,6 +73,11 @@ impl TraceTagReplacerConfiguration {
         }
         Self { rules }
     }
+
+    /// Returns the rules the replacer runs, in order, including any stack trace rules.
+    pub fn rules(&self) -> &[ReplaceRule] {
+        &self.rules
+    }
 }
 
 #[async_trait]

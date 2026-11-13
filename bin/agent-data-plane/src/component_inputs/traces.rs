@@ -11,7 +11,8 @@ use saluki_components::{
     transforms::{
         ApmStatsTransformConfiguration, CreditCardObfuscationConfig, EsObfuscationConfig, HttpObfuscationConfig,
         MemcachedObfuscationConfig, MongoObfuscationConfig, ObfuscationConfig, OpenSearchObfuscationConfig,
-        RedisObfuscationConfig, SqlObfuscationConfig, TraceSamplerConfiguration, ValkeyObfuscationConfig,
+        RedisObfuscationConfig, ReplaceRule, SqlObfuscationConfig, TraceSamplerConfiguration,
+        TraceTagReplacerConfiguration, ValkeyObfuscationConfig,
     },
 };
 use stringtheory::MetaString;
@@ -81,6 +82,21 @@ pub(crate) fn apm_stats_configuration(
         workload_provider: None,
         semantic_registry,
     }
+}
+
+/// Builds the trace tag replacer settings: the configured `replace_tags` rules, then the stack trace rules when
+/// `apm_config.obfuscation.remove_stack_traces` is set.
+pub(crate) fn trace_tag_replacer_configuration(traces: &traces::Domain) -> TraceTagReplacerConfiguration {
+    let rules = traces
+        .replace_tags
+        .iter()
+        .map(|rule| ReplaceRule {
+            name: rule.name.clone(),
+            pattern: rule.pattern.clone(),
+            repl: rule.repl.clone(),
+        })
+        .collect();
+    TraceTagReplacerConfiguration::new(rules, traces.obfuscation.remove_stack_traces)
 }
 
 /// Builds the obfuscator settings.

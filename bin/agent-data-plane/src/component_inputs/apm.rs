@@ -16,7 +16,7 @@ use saluki_components::relays::apm::{
 use saluki_env::workload::CaptureEntityResolver;
 use saluki_env::WorkloadProvider;
 
-use super::forwarder_configuration;
+use super::{forwarder_configuration, trace_tag_replacer_configuration};
 
 /// The Datadog site when none is configured.
 const DEFAULT_SITE: &str = "datadoghq.com";
@@ -117,26 +117,18 @@ fn info_configuration(config: &SalukiConfiguration, containerized: bool) -> Info
     }
 }
 
-/// Tags whose values the trace-agent replaces when `apm_config.obfuscation.remove_stack_traces` is set.
-const STACK_TRACE_TAGS: &[&str] = &["error.stack", "exception.stacktrace"];
-
-/// Returns the tag replacement rules as the trace-agent holds them: the configured rules, then, when stack traces are
-/// removed, a rule replacing each stack trace tag's whole value.
+/// Returns the tag replacement rules the trace tag replacer runs, which match the trace-agent's: the configured rules,
+/// then, when stack traces are removed, a rule replacing each stack trace tag's whole value.
 fn info_replace_rules(traces: &traces::Domain) -> Vec<InfoReplaceRule> {
-    let configured = traces.replace_tags.iter().map(|rule| InfoReplaceRule {
-        name: rule.name.clone(),
-        pattern: rule.pattern.clone(),
-        repl: rule.repl.clone(),
-    });
-    let stack_traces = STACK_TRACE_TAGS
+    trace_tag_replacer_configuration(traces)
+        .rules()
         .iter()
-        .filter(|_| traces.obfuscation.remove_stack_traces)
-        .map(|tag| InfoReplaceRule {
-            name: tag.to_string(),
-            pattern: "(?s).*".to_string(),
-            repl: "?".to_string(),
-        });
-    configured.chain(stack_traces).collect()
+        .map(|rule| InfoReplaceRule {
+            name: rule.name.clone(),
+            pattern: rule.pattern.clone(),
+            repl: rule.repl.clone(),
+        })
+        .collect()
 }
 
 fn info_obfuscation(obfuscation: &traces::Obfuscation) -> InfoObfuscation {
