@@ -1,0 +1,13 @@
+timeout: 1m
+subject_os: [linux]
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    files:
+      datadog.yaml: datadog.yaml
+  load:
+    image: alpine:3.20
+    command: [sh, -c, "echo {{ self.connections.target.url }}"]
+    connect: {target: adp.apm_tcp}
+procedure: []

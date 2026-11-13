@@ -141,8 +141,6 @@ pub(crate) enum FileSource {
     /// references the harness resolves.
     Case { from: PathBuf, template: bool },
     /// Bytes a participant type supplies, with a label for the printed plan.
-    // TODO: remove the dead_code allowance once files are placed.
-    #[allow(dead_code)]
     Bytes { label: &'static str, bytes: &'static [u8] },
     /// Text a participant type supplies, with a label for the printed plan.
     // TODO: remove the dead_code allowance once a participant type builds a file from the case's text.

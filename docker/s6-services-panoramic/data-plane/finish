@@ -1,0 +1,20 @@
+#!/bin/sh
+
+# Records each exit of ADP for the harness, then does what the image's own finish script does: disables ADP if it
+# exited with code 0, and otherwise restarts it after 2 seconds.
+#
+# s6 passes the exit code, or 256 and the signal number when a signal killed ADP.
+code=$1
+signal=0
+if [ "$code" -eq 256 ]; then
+    signal=$2
+fi
+echo "$code $signal $(date +%s.%N)" >> "$PANORAMIC_EXIT_DIR/data-plane"
+
+if [ "$code" -eq 0 ]; then
+    /initlog.sh "agent-data-plane exited with code $code, disabling"
+    /bin/s6-svc -d /var/run/s6/services/data-plane/
+else
+    /initlog.sh "agent-data-plane exited with code $code, signal $signal, restarting in 2 seconds"
+    sleep 2
+fi

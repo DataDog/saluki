@@ -172,21 +172,21 @@ pub(crate) trait ParticipantType: Send + Sync {
 }
 
 /// What a participant type may read while it fills in a spec.
-// TODO: remove the dead_code allowance once a participant type reads its context.
-#[allow(dead_code)]
 pub(crate) struct SpecContext<'a> {
     pub(crate) realization: Realization,
     /// The realization options the case set.
+    // TODO: remove the dead_code allowance once a participant type reads an option.
+    #[allow(dead_code)]
     pub(crate) options: &'a BTreeMap<String, bool>,
     /// What the case wrote for this OS, with references unresolved.
     pub(crate) case: &'a ParticipantSpec,
+    // TODO: remove the dead_code allowance once a participant type reads the case's connections.
+    #[allow(dead_code)]
     pub(crate) connect: &'a BTreeMap<String, ConnectionTarget>,
     pub(super) with: &'a BTreeMap<String, serde_json::Value>,
     pub(super) sources: &'a CaseSources,
 }
 
-// TODO: remove the dead_code allowance once a participant type reads its context.
-#[allow(dead_code)]
 impl SpecContext<'_> {
     /// Decodes `with` into the participant type's own struct, which should deny unknown fields.
     ///
