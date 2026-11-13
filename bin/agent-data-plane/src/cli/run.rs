@@ -678,11 +678,10 @@ fn dogstatsd_capture_path(capture_path: &Path, run_path: &Option<PathBuf>) -> Pa
 
 /// Builds the DogStatsD source configuration from the typed model and the running environment.
 ///
-/// The caller creates `capture_control` and `replay_control` so that it keeps the handles the source binds to, which is
-/// how the capture and replay API surfaces reach the running source.
+/// The configuration carries the capture and replay control handles, which the caller clones to serve the capture
+/// and replay APIs.
 fn dogstatsd_source_configuration(
     config: &SalukiConfiguration, env_provider: &RemoteAgentEnvironmentProvider, default_hostname: MetaString,
-    capture_control: DogStatsDCaptureControl, replay_control: DogStatsDReplayControl,
 ) -> DogStatsDConfiguration {
     let dogstatsd = &config.domains.dogstatsd;
     let listeners = &dogstatsd.listeners;
@@ -754,12 +753,14 @@ fn dogstatsd_source_configuration(
         },
         origin_telemetry_enabled: dogstatsd.telemetry.origin_breakdown,
         workload_provider: Some(workload_provider.clone()),
-        capture_entity_resolver: Some(workload_provider),
+        capture_entity_resolver: Some(workload_provider.clone()),
         additional_tags,
-        capture_path: dogstatsd_capture_path(&listeners.capture_path, &config.shared.run_path),
-        capture_depth: listeners.capture_depth,
-        capture_control,
-        replay_control,
+        capture_control: DogStatsDCaptureControl::with_workload_provider(
+            dogstatsd_capture_path(&listeners.capture_path, &config.shared.run_path),
+            listeners.capture_depth,
+            Some(workload_provider),
+        ),
+        replay_control: DogStatsDReplayControl::new(),
     }
 }
 
@@ -808,15 +809,7 @@ async fn add_dsd_pipeline_to_blueprint(
         .await
         .error_context("Failed to get default hostname for DogStatsD source.")?;
     let typed = config_system.config();
-    let dsd_capture_control = DogStatsDCaptureControl::default();
-    let dsd_replay_control = DogStatsDReplayControl::default();
-    let dsd_config = dogstatsd_source_configuration(
-        &typed,
-        env_provider,
-        default_hostname.into(),
-        dsd_capture_control.clone(),
-        dsd_replay_control.clone(),
-    );
+    let dsd_config = dogstatsd_source_configuration(&typed, env_provider, default_hostname.into());
     let prefix_filter = &typed.domains.dogstatsd.prefix_filter;
     let dsd_prefix_filter_configuration = DogStatsDPrefixFilterConfiguration::new(
         prefix_filter.metric_namespace.clone(),
@@ -914,8 +907,8 @@ async fn add_dsd_pipeline_to_blueprint(
 
     let stats_api_handler = dsd_stats_config.api_handler();
     let dsd_stats_collection_active = dsd_stats_config.collection_active();
-    let capture_api_handler = DogStatsDCaptureAPIHandler::new(dsd_capture_control);
-    let replay_api_handler = DogStatsDReplayAPIHandler::new(dsd_replay_control);
+    let capture_api_handler = DogStatsDCaptureAPIHandler::new(dsd_config.capture_control.clone());
+    let replay_api_handler = DogStatsDReplayAPIHandler::new(dsd_config.replay_control.clone());
     let context_dump_api_handler = DogStatsDContextDumpAPIHandler::new(
         vec![dsd_context_snapshot_handle],
         typed.shared.run_path.clone().unwrap_or_default(),

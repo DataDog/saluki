@@ -10,7 +10,6 @@ use std::{
     future::Future,
     io,
     num::NonZeroUsize,
-    path::PathBuf,
     pin::Pin,
     sync::{Arc, LazyLock},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -77,7 +76,7 @@ mod metrics;
 use self::metrics::{build_metrics, ForwarderMetrics, Metrics};
 
 mod replay;
-use self::replay::{CaptureRecord, CapturedTaggerHandle, TrafficCapture};
+use self::replay::CaptureRecord;
 pub use self::replay::{
     CaptureTriggerBody, CaptureTriggerResponseBody, DogStatsDCaptureAPIHandler, DogStatsDCaptureControl,
     DogStatsDReplayAPIHandler, DogStatsDReplayControl, ReplayControlError, ReplaySession, ReplaySessionResponseBody,
@@ -397,28 +396,16 @@ pub struct DogStatsDConfiguration {
     /// These are sorted and deduplicated before use, so callers may append tags required by the running environment.
     pub additional_tags: Vec<String>,
 
-    /// The directory where DogStatsD capture files are written by default.
-    ///
-    /// When set to an empty path, callers must provide an explicit capture path when starting a capture session.
-    pub capture_path: PathBuf,
-
-    /// The maximum number of captured packets that can be queued for persistence.
-    ///
-    /// This controls the depth of the in-process capture queue. Values below `1024` are raised to `1024` before the
-    /// capture writer starts, preventing a zero-depth rendezvous channel from serializing DogStatsD stream handlers
-    /// behind capture persistence.
-    pub capture_depth: usize,
-
     /// Control surface that starts and stops DogStatsD traffic capture.
     ///
-    /// This is runtime wiring rather than configuration: the source binds the capture it creates to this handle, so
-    /// the caller creates the handle and keeps a clone to serve the capture API.
+    /// This is runtime wiring rather than configuration: the caller keeps a clone to serve the capture API, and the
+    /// source writes the traffic it receives to it.
     pub capture_control: DogStatsDCaptureControl,
 
     /// Control surface that starts and stops DogStatsD traffic replay.
     ///
-    /// This is runtime wiring rather than configuration: the source binds the captured tagger to this handle, so the
-    /// caller creates the handle and keeps a clone to serve the replay API.
+    /// This is runtime wiring rather than configuration: the caller keeps a clone to serve the replay API, and the
+    /// source resolves the origin of replayed traffic from the captured tagger state it holds.
     pub replay_control: DogStatsDReplayControl,
 }
 
@@ -463,8 +450,7 @@ impl DogStatsDConfiguration {
     /// Creates a fixture configuration, for tests that exercise source behavior rather than configuration.
     ///
     /// Values match the effective defaults the configuration system resolves, so a test only states the settings it
-    /// cares about. `capture_depth` is the exception: a default configuration leaves it at `0`, which the capture
-    /// writer raises to its minimum, so the fixture states that minimum directly.
+    /// cares about.
     fn for_test() -> Self {
         Self {
             default_hostname: MetaString::default(),
@@ -504,9 +490,7 @@ impl DogStatsDConfiguration {
             workload_provider: None,
             capture_entity_resolver: None,
             additional_tags: Vec::new(),
-            capture_path: PathBuf::new(),
-            capture_depth: MIN_CAPTURE_DEPTH,
-            capture_control: DogStatsDCaptureControl::default(),
+            capture_control: DogStatsDCaptureControl::new(std::path::PathBuf::new(), MIN_CAPTURE_DEPTH),
             replay_control: DogStatsDReplayControl::default(),
         }
     }
@@ -783,10 +767,8 @@ impl SourceBuilder for DogStatsDConfiguration {
             ));
         }
 
-        // Single CapturedTaggerHandle is cloned to both the resolver (reader of the captured store) and the replay
-        // control surface (writer). Both sides reference the same atomic slot.
-        let captured_tagger = CapturedTaggerHandle::new();
-
+        // The resolver reads the captured tagger state that the replay control's active session sets.
+        let captured_tagger = self.replay_control.captured_tagger();
         let maybe_origin_tags_resolver = self.workload_provider.clone().map(|provider| {
             DogStatsDOriginTagResolver::new(self.origin_enrichment.clone(), provider, captured_tagger.clone())
         });
@@ -799,14 +781,6 @@ impl SourceBuilder for DogStatsDConfiguration {
             .with_minimum_sample_rate(self.minimum_sample_rate)
             .with_client_origin_detection(self.origin_enrichment.origin_detection_client);
 
-        let traffic_capture = TrafficCapture::with_workload_provider(
-            self.capture_path.clone(),
-            self.capture_depth,
-            self.workload_provider.clone(),
-        );
-        self.capture_control.bind(traffic_capture.clone());
-        self.replay_control.bind(captured_tagger);
-
         let decoder_context = DecoderContext {
             codec: DogStatsDCodec::from_configuration(codec_config),
             context_resolvers,
@@ -816,7 +790,7 @@ impl SourceBuilder for DogStatsDConfiguration {
             stream_log_too_big: self.stream_log_too_big,
             disable_verbose_logs: self.disable_verbose_logs,
             additional_tags: self.additional_tags().into(),
-            traffic_capture,
+            traffic_capture: self.capture_control.clone(),
         };
 
         // The pool allocates `buffer_count` buffers up front and may grow on demand up to `max_buffers`. The effective
@@ -926,7 +900,7 @@ struct DecoderContext {
     stream_log_too_big: bool,
     disable_verbose_logs: bool,
     additional_tags: Arc<[String]>,
-    traffic_capture: TrafficCapture,
+    traffic_capture: DogStatsDCaptureControl,
 }
 
 /// A datagram read by a listener, along with the origin pinned at read time.
@@ -1702,14 +1676,14 @@ fn log_parse_failure(
     }
 }
 
-fn capture_named_pipe_frame(traffic_capture: &TrafficCapture, frame: &[u8]) {
+fn capture_named_pipe_frame(traffic_capture: &DogStatsDCaptureControl, frame: &[u8]) {
     if !frame.is_empty() && traffic_capture.is_ongoing() {
         let _ = traffic_capture.enqueue(build_capture_record(None, None, frame));
     }
 }
 
 fn capture_unixgram_traffic(
-    listen_addr: &ListenAddress, traffic_capture: &TrafficCapture, peer_addr: &ConnectionAddress,
+    listen_addr: &ListenAddress, traffic_capture: &DogStatsDCaptureControl, peer_addr: &ConnectionAddress,
     process_origin: Option<&ProcessOrigin>, payload: &[u8],
 ) {
     if payload.is_empty() || !matches!(listen_addr, ListenAddress::Unixgram(_)) || !traffic_capture.is_ongoing() {
@@ -1759,7 +1733,7 @@ fn resolve_process_origin(
 }
 
 fn resolve_process_origin_if_needed(
-    origin_detection_enabled: bool, traffic_capture: &TrafficCapture,
+    origin_detection_enabled: bool, traffic_capture: &DogStatsDCaptureControl,
     capture_entity_resolver: Option<&(dyn CaptureEntityResolver + Send + Sync)>, peer_addr: &ConnectionAddress,
 ) -> Option<ProcessOrigin> {
     if !origin_detection_enabled && !traffic_capture.is_ongoing() {

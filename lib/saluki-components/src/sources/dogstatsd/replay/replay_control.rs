@@ -14,10 +14,6 @@ use super::{CapturedTaggerHandle, CapturedTaggerStore};
 /// Error returned by [`DogStatsDReplayControl`] operations.
 #[derive(Debug, Eq, PartialEq, Snafu)]
 pub enum ReplayControlError {
-    /// The DogStatsD source hasn't been built and bound to the control handle yet.
-    #[snafu(display("DogStatsD replay control is unavailable because the source is not running."))]
-    Unavailable,
-
     /// Another replay session is already active.
     #[snafu(display("DogStatsD replay already in progress."))]
     AlreadyInProgress,
@@ -47,44 +43,36 @@ pub struct ReplaySession {
     pub id: String,
 }
 
-/// Shared control handle for DogStatsD replay sessions.
+/// Control handle for DogStatsD replay sessions.
 ///
-/// Created before the source is built and bound to the live captured tagger handle during source construction. The
-/// HTTP API handler holds a clone of this handle so a replay client can acquire and release the single active session.
+/// The caller creates this handle, passes it to the source configuration, and keeps a clone to serve the replay API,
+/// through which a replay client acquires and releases the single active session. The source resolves the origin of
+/// replayed traffic from the captured tagger state that the active session sets.
 #[derive(Clone, Default)]
 pub struct DogStatsDReplayControl {
-    inner: Arc<Mutex<ReplayControlState>>,
-}
-
-#[derive(Default)]
-struct ReplayControlState {
-    captured_tagger: Option<CapturedTaggerHandle>,
-    active_session_id: Option<String>,
+    captured_tagger: CapturedTaggerHandle,
+    active_session_id: Arc<Mutex<Option<String>>>,
 }
 
 impl DogStatsDReplayControl {
-    /// Creates a new, unbound replay control handle.
+    /// Creates a replay control handle with no active session.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Binds the control handle to the captured tagger store used by the running DogStatsD source.
-    pub(crate) fn bind(&self, captured_tagger: CapturedTaggerHandle) {
-        let mut state = self.inner.lock().expect("replay control mutex poisoned");
-        state.captured_tagger = Some(captured_tagger);
+    /// Returns the captured tagger handle that replay sessions write to.
+    pub(crate) fn captured_tagger(&self) -> &CapturedTaggerHandle {
+        &self.captured_tagger
     }
 
     /// Starts a replay session and sets the captured tagger state for replay-origin resolution.
     ///
     /// # Errors
     ///
-    /// Returns an error if the DogStatsD source hasn't been built and bound to this control handle yet, or if another
-    /// replay session is already active.
+    /// Returns an error if another replay session is already active.
     pub fn start_session(&self, tagger_state: Option<TaggerState>) -> Result<ReplaySession, ReplayControlError> {
-        let mut state = self.inner.lock().expect("replay control mutex poisoned");
-        let captured_tagger = state.captured_tagger.clone().ok_or(ReplayControlError::Unavailable)?;
-
-        if state.active_session_id.is_some() {
+        let mut active_session_id = self.active_session_id.lock().expect("replay control mutex poisoned");
+        if active_session_id.is_some() {
             return Err(ReplayControlError::AlreadyInProgress);
         }
 
@@ -93,8 +81,8 @@ impl DogStatsDReplayControl {
         };
 
         let captured_store = tagger_state.map(CapturedTaggerStore::from_tagger_state);
-        captured_tagger.set_current(captured_store);
-        state.active_session_id = Some(session.id.clone());
+        self.captured_tagger.set_current(captured_store);
+        *active_session_id = Some(session.id.clone());
 
         Ok(session)
     }
@@ -103,21 +91,18 @@ impl DogStatsDReplayControl {
     ///
     /// # Errors
     ///
-    /// Returns an error if the DogStatsD source hasn't been built and bound to this control handle yet, or if the given
-    /// session does not own the active replay.
+    /// Returns an error if the given session does not own the active replay.
     pub fn finish_session(&self, session_id: &str) -> Result<(), ReplayControlError> {
-        let mut state = self.inner.lock().expect("replay control mutex poisoned");
-        let captured_tagger = state.captured_tagger.clone().ok_or(ReplayControlError::Unavailable)?;
-
-        match state.active_session_id.as_deref() {
-            Some(active_session_id) if active_session_id == session_id => {
-                captured_tagger.set_current(None);
-                state.active_session_id = None;
+        let mut active_session_id = self.active_session_id.lock().expect("replay control mutex poisoned");
+        match active_session_id.as_deref() {
+            Some(active) if active == session_id => {
+                self.captured_tagger.set_current(None);
+                *active_session_id = None;
                 Ok(())
             }
-            Some(active_session_id) => Err(ReplayControlError::NotOwner {
+            Some(active) => Err(ReplayControlError::NotOwner {
                 session_id: session_id.to_string(),
-                active_session_id: active_session_id.to_string(),
+                active_session_id: active.to_string(),
             }),
             None => Ok(()),
         }
@@ -157,26 +142,9 @@ mod tests {
     }
 
     #[test]
-    fn control_requires_bound_store() {
+    fn session_start_and_finish_update_the_captured_tagger() {
         let control = DogStatsDReplayControl::new();
-        let err = control
-            .start_session(Some(make_state()))
-            .expect_err("unbound control should fail");
-        assert_eq!(err, ReplayControlError::Unavailable);
-        assert_eq!(
-            err.to_string(),
-            "DogStatsD replay control is unavailable because the source is not running."
-        );
-
-        let err = control.finish_session("any").expect_err("unbound control should fail");
-        assert_eq!(err, ReplayControlError::Unavailable);
-    }
-
-    #[test]
-    fn session_start_and_finish_update_bound_store() {
-        let captured_tagger = CapturedTaggerHandle::new();
-        let control = DogStatsDReplayControl::new();
-        control.bind(captured_tagger.clone());
+        let captured_tagger = control.captured_tagger();
 
         let session = control.start_session(Some(make_state())).expect("session should start");
         let store = captured_tagger.current().expect("state should be set");
@@ -190,9 +158,7 @@ mod tests {
 
     #[test]
     fn session_rejects_concurrent_start() {
-        let captured_tagger = CapturedTaggerHandle::new();
         let control = DogStatsDReplayControl::new();
-        control.bind(captured_tagger);
 
         let _session = control
             .start_session(Some(make_state()))
@@ -206,9 +172,7 @@ mod tests {
 
     #[test]
     fn finish_session_rejects_non_owner() {
-        let captured_tagger = CapturedTaggerHandle::new();
         let control = DogStatsDReplayControl::new();
-        control.bind(captured_tagger.clone());
 
         let session = control.start_session(Some(make_state())).expect("session should start");
         let err = control
@@ -229,10 +193,10 @@ mod tests {
             )
         );
 
-        assert!(captured_tagger.current().is_some());
+        assert!(control.captured_tagger().current().is_some());
         control
             .finish_session(&session.id)
             .expect("matching session should finish");
-        assert!(captured_tagger.current().is_none());
+        assert!(control.captured_tagger().current().is_none());
     }
 }

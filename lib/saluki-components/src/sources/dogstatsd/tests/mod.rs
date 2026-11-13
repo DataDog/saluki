@@ -39,7 +39,7 @@ use stringtheory::MetaString;
 use super::{
     build_io_buffer_pool, filters::EnablePayloadsConfiguration, metrics::build_metrics,
     replay::test_support::wait_until_inactive, BufferDecodeContext, ContextResolvers, DecodeOutcome, DecoderContext,
-    DogStatsDConfiguration, DogStatsDDecoder, ListenerState, TrafficCapture, TrafficCaptureReader,
+    DogStatsDCaptureControl, DogStatsDConfiguration, DogStatsDDecoder, ListenerState, TrafficCaptureReader,
 };
 
 const TEST_WINDOWS_PIPE_SECURITY_DESCRIPTOR: &str = "D:AI(A;;GA;;;WD)";
@@ -153,7 +153,7 @@ fn test_decoder_context(origin_detection_enabled: bool) -> DecoderContext {
         stream_log_too_big: false,
         disable_verbose_logs: false,
         additional_tags: Vec::<String>::new().into(),
-        traffic_capture: TrafficCapture::new(PathBuf::new(), 1),
+        traffic_capture: DogStatsDCaptureControl::new(PathBuf::new(), 1),
     }
 }
 
@@ -222,7 +222,7 @@ impl DecoderFixture {
 }
 
 /// Stops `capture` and waits for its writer to finish.
-fn stop_capture(capture: &TrafficCapture) {
+fn stop_capture(capture: &DogStatsDCaptureControl) {
     capture.stop_capture();
     wait_until_inactive(|| capture.is_ongoing());
 }
