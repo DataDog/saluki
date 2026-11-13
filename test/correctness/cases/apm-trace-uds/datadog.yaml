@@ -17,15 +17,10 @@ process_config:
   container_collection:
     enabled: false
 
-# Point ourselves at the datadog-intake service at the global level.
-dd_url: "http://datadog-intake:2049"
-
 # Adjust our APM configuration to ensure we don't do any sampling of traces.
 #
-# We also have to set an APM-specific override here to send traces to the datadog-intake service. The receiver socket is
-# set per side in `config.yaml`, since the baseline and comparison sides need different paths.
+# The receiver socket is set per side in `config.yaml`, since the baseline and comparison sides need different keys.
 apm_config:
   enabled: true
-  apm_dd_url: "http://datadog-intake:2049"
   target_traces_per_second: 1000000
   errors_per_second: 1000000

@@ -752,6 +752,8 @@ pub fn discover_tests(
                 let config_path = path.join("config.yaml");
                 if config_path.exists() && !is_legacy_case(&config_path)? {
                     match ParticipantCase::load(&path, subject_os, set, &registry) {
+                        // Loaded and planned all the same, so a disabled case cannot rot.
+                        Ok((case, _)) if case.disabled => {}
                         Ok((case, images)) => {
                             replaced.extend(images.into_iter().filter(|image| set.contains_key(image)));
                             tests.push(Box::new(case));

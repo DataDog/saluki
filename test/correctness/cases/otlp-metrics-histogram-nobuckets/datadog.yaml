@@ -1,8 +1,6 @@
 hostname: "correctness-testing"
 api_key: dummy-api-key-correctness-testing
 health_port: 5555
-dd_url: "http://datadog-intake:2049"
-
 otlp_config:
   metrics:
     histograms:
@@ -11,4 +9,4 @@ otlp_config:
   receiver:
     protocols:
       grpc:
-        endpoint: "0.0.0.0:4317"
+        endpoint: "0.0.0.0:{{ self.endpoints.agent_otlp_grpc.port }}"

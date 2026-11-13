@@ -1,5 +1,6 @@
 //! What the participant types that run the Datadog Agent share: its default environment and the rules that withdraw
-//! it, its configuration file, its connection to an intake, the host view, and its s6 services.
+//! it, its configuration file, its connections to an intake and to a server it forwards DogStatsD packets to, the host
+//! view, and its s6 services.
 //!
 //! Both sides of a comparison run the Agent, so they take one default environment from here and cannot drift apart.
 //! The default environment moves every listener of the software off its own default port, as the harness has always
@@ -170,6 +171,22 @@ pub(super) const INTAKE: Consumed = Consumed {
     env: &[
         ("DD_DD_URL", "{{ self.connections.intake.url }}"),
         ("DD_APM_DD_URL", "{{ self.connections.intake.url }}"),
+    ],
+};
+
+/// The connection to a DogStatsD server the Agent and ADP forward every packet they receive to.
+pub(super) const DOGSTATSD_FORWARD: Consumed = Consumed {
+    accepts: &[Protocol::Udp],
+    required: false,
+    env: &[
+        (
+            "DD_STATSD_FORWARD_HOST",
+            "{{ self.connections.dogstatsd_forward.host }}",
+        ),
+        (
+            "DD_STATSD_FORWARD_PORT",
+            "{{ self.connections.dogstatsd_forward.port }}",
+        ),
     ],
 };
 

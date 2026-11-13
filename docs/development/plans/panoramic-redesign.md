@@ -228,6 +228,7 @@ does not know is an error before anything starts.
 ```yaml
 description: <text>                    # optional
 timeout: <duration>                    # required, with a unit: 20m, 180s
+disabled: true                         # optional: planned, but no run includes the case
 subject_os: [linux, macos, windows]    # required, at least one
 participants:
   <name>: <participant>                # exactly one has subject: true
@@ -272,7 +273,7 @@ otherwise. A bare name is a host requirement.
 ```yaml
 realization: {enclosure: kubernetes-pod, options: {host_pid: true, cri_socket: true}}
 # enclosures: linux-container, windows-container, kubernetes-pod, host-process-group
-# options: host_cgroup_namespace on a Linux container; host_pid and cri_socket on a pod
+# options: host_pid and host_cgroup_namespace on a Linux container; host_pid and cri_socket on a pod
 
 with: {host_view: true}       # agent-adp, agent: mount the host's /proc, cgroup tree and container
                               # runtime socket, and point the Agent at them. This is the host view.
@@ -879,8 +880,8 @@ the common path in the comparison cases, and the wired check's message covers it
 **Readiness evidence** belongs to an endpoint, and only a consumer waits for it, within 60 seconds
 by default. Participant types override the protocol's default in four places. `datadog-intake` answers
 HTTP 200 at `/ready` on `api`, and its `dogstatsd_forward` waits for the intake's own log line that
-its DogStatsD listener is bound. The intake is a harness tool, so the line is ours to keep; `cmprest`,
-the first PR with a forwarding connection, adds it with the consumer. `agent-adp`'s `dogstatsd_udp` waits for ADP's "DogStatsD listener started"
+its DogStatsD listener is bound ("DogStatsD forwarding capture started: listening on", printed after the bind).
+The intake is a harness tool, so the line is ours to keep. `agent-adp`'s `dogstatsd_udp` waits for ADP's "DogStatsD listener started"
 line for that port. `agent`'s `dogstatsd_udp` waits for the Agent's "dogstatsd-udp: starting to
 listen on" line, which the Agent prints once the listener is bound, in the releases the cases use
 (7.85.2 and the nightly `agent-dev` image). The line names the address with an interface the
@@ -1816,8 +1817,8 @@ Why this order:
   - Traces and logs: `compare` of `traces` and `logs`, the APM endpoints over TCP and a Unix
     socket, and the embedded collector's receiver endpoint on `agent` for the OTTL cases. Migrates
     the trace and log cases.
-  - The new schema has no `disabled` key, so a disabled case migrates with its family and moves to
-    `test/correctness/disabled`, which no job runs.
+  - A disabled case migrates with its family and keeps `disabled: true`, which the schema gains here.
+    Discovery still loads and plans it, so it cannot rot, and leaves it out of every run.
 - **Watch out:** most of this PR is case files. Keep one commit per family, so a family with a flaky
   case can be split off and the others can merge.
   - DogStatsD: `dsd-origin-detection` keeps the container environment it tests today. `dsd-udp`,
@@ -1832,8 +1833,10 @@ Why this order:
     the trace-agent and another key for ADP; it is the case the wiring rule was shaped around.
     `apm-trace-uds` needs the host view. Some trace cases name a `datadog_intake.config_path` file
     that does not exist and that legacy ignores. The strict loader rejects it, so the migration
-    drops it and says so. Consider delivering the logs intake keys through the `intake` connection
-    here, so the log cases stop wiring them by hand.
+    drops it and says so. The log cases write `logs_config.logs_dd_url` by reference to their
+    `intake` connection; delivering it through the connection would add a key to every case that
+    connects an intake. `apm-trace-uds` also keeps the host PID namespace: the trace-agent finds a
+    tracer's container from its socket peer's PID.
 
 **11. `pod`: the pod backend and the matrix**
 
@@ -2001,7 +2004,8 @@ host-process subject with containerized helpers.
 - A Linux container no longer gets `/proc`, the cgroup tree and the Docker socket unless the case
   asks for the host view.
 - A Linux container no longer shares the runner's PID namespace. Legacy gave every one the host's,
-  for origin detection; a case that needs it gets an option with that case.
+  for origin detection; a case that needs it sets the realization option `host_pid`, as
+  `dsd-origin-detection` and `apm-trace-uds` do on each of their containers.
 - `panoramic`'s mounts directory, whose init script resolves the legacy dynamic variables, is not
   mounted into participant containers. A value known only at run time is a reference.
 - `exec` quotes a command's output on failure, which the legacy CLI actions did not.

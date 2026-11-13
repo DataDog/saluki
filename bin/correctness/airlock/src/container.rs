@@ -47,6 +47,7 @@ pub struct ContainerSpec {
     published_ports: Vec<u16>,
     mounts: Vec<Mount>,
     sysctls: HashMap<String, String>,
+    host_pid: bool,
 }
 
 impl ContainerSpec {
@@ -97,6 +98,12 @@ impl ContainerSpec {
     /// Sets a kernel parameter in the container's namespaces, such as `net.ipv4.ip_local_port_range`.
     pub fn with_sysctl(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.sysctls.insert(key.into(), value.into());
+        self
+    }
+
+    /// Runs the container in the host's PID namespace.
+    pub fn with_host_pid(mut self) -> Self {
+        self.host_pid = true;
         self
     }
 }
@@ -206,6 +213,7 @@ impl CaseScope {
                 network_mode: Some(network.clone()),
                 port_bindings: Some(port_bindings),
                 sysctls: (!spec.sysctls.is_empty()).then_some(spec.sysctls),
+                pid_mode: spec.host_pid.then(|| "host".to_string()),
                 ..Default::default()
             }),
             networking_config: Some(networking_config),
