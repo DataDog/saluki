@@ -28,6 +28,8 @@ use crate::translators::DatadogTranslator;
 // update stream in the first place.
 const INITIAL_CONFIG_SNAPSHOT_TIMEOUT_SECS: u64 = 15;
 const INITIAL_CONFIG_SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(INITIAL_CONFIG_SNAPSHOT_TIMEOUT_SECS);
+const HTTP_DEFAULT_PORT: u16 = 80;
+const HTTPS_DEFAULT_PORT: u16 = 443;
 
 /// An error building the translated configuration from the merged sources.
 #[derive(Debug, Snafu)]
@@ -446,14 +448,20 @@ pub(crate) fn validate(config: &SalukiConfiguration) -> Result<()> {
         let Some(authority) = uri.authority().filter(|authority| !authority.as_str().contains('@')) else {
             return Err(Error::InvalidStatefulMetricsEndpoint);
         };
-        if !matches!(uri.scheme_str(), Some("http" | "https"))
-            || uri.host().is_none()
-            || uri.path() != "/"
-            || uri.query().is_some()
-        {
+        let (scheme, default_port) = match uri.scheme_str() {
+            Some("http") => ("http", HTTP_DEFAULT_PORT),
+            Some("https") => ("https", HTTPS_DEFAULT_PORT),
+            _ => return Err(Error::InvalidStatefulMetricsEndpoint),
+        };
+        if uri.host().is_none() || uri.path() != "/" || uri.query().is_some() {
             return Err(Error::InvalidStatefulMetricsEndpoint);
         }
-        if !origins.insert(authority.as_str().to_ascii_lowercase()) {
+        let origin = (
+            scheme,
+            authority.host().to_ascii_lowercase(),
+            authority.port_u16().unwrap_or(default_port),
+        );
+        if !origins.insert(origin) {
             return Err(Error::DuplicateStatefulMetricsEndpoint {
                 endpoint: endpoint.clone(),
             });
@@ -826,6 +834,59 @@ data_plane:
                         | Error::DuplicateStatefulMetricsEndpoint { .. }
                 ),
                 "{additional:?}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn stateful_metrics_rejects_equivalent_origins() {
+        for (first, second) in [
+            ("http://host", "http://host:80"),
+            ("http://host:80", "http://host"),
+            ("https://host", "https://host:443"),
+            ("https://host:443", "https://host"),
+            ("https://HOST", "https://host:443/"),
+            ("https://host:0443", "https://host:443"),
+            ("https://[::1]", "https://[::1]:443"),
+        ] {
+            // Check aliases between primary/additional endpoints and between two additional endpoints.
+            for endpoints in [vec![first, second], vec!["https://other-host", first, second]] {
+                let system = standalone_system(json!({
+                    "api_key": TEST_API_KEY,
+                    "data_plane": { "experimental": { "stateful_metrics": {
+                        "endpoint": endpoints[0],
+                        "additional_endpoints": &endpoints[1..],
+                    } } },
+                }))
+                .unwrap();
+                assert!(
+                    matches!(super::validate(&system.config()), Err(Error::DuplicateStatefulMetricsEndpoint { endpoint }) if endpoint == second),
+                    "{endpoints:?} should reject the equivalent origin",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn stateful_metrics_accepts_distinct_origins_on_the_same_host() {
+        for (primary, additional) in [
+            ("http://host", "https://host"),
+            ("http://host:8080", "https://host:8443"),
+            ("http://host:8080", "https://host:8080"),
+            ("https://host", "https://host:8443"),
+            ("http://[::1]", "https://[::1]"),
+        ] {
+            let system = standalone_system(json!({
+                "api_key": TEST_API_KEY,
+                "data_plane": { "experimental": { "stateful_metrics": {
+                    "endpoint": primary,
+                    "additional_endpoints": [additional],
+                } } },
+            }))
+            .unwrap();
+            assert!(
+                super::validate(&system.config()).is_ok(),
+                "{primary} and {additional} are distinct origins"
             );
         }
     }
