@@ -356,6 +356,21 @@ mod tests {
         }
     }
 
+    /// `text` with each `{{ ... }}` reference, which panoramic fills when it places the file as a template, replaced
+    /// by a target address.
+    fn filled(text: &str) -> String {
+        let mut filled = String::new();
+        let mut rest = text;
+        while let Some((before, after)) = rest.split_once("{{") {
+            let (_, after) = after.split_once("}}").expect("a reference ends with }}");
+            filled.push_str(before);
+            filled.push_str("unixgram:///panoramic/reference.sock");
+            rest = after;
+        }
+        filled.push_str(rest);
+        filled
+    }
+
     #[test]
     fn every_test_case_config_parses() {
         let test_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../test");
@@ -368,7 +383,12 @@ mod tests {
         );
 
         for path in configs {
-            let config = Config::try_from_file(&path).unwrap_or_else(|e| panic!("{}: {e:?}", path.display()));
+            let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e:?}", path.display()));
+            let config: Config =
+                serde_saphyr::from_str(&filled(&text)).unwrap_or_else(|e| panic!("{}: {e:?}", path.display()));
+            config
+                .validate()
+                .unwrap_or_else(|e| panic!("{}: {e:?}", path.display()));
             config
                 .corpus
                 .validate()
