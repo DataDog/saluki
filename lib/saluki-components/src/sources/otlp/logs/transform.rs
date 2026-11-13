@@ -25,7 +25,7 @@ static DEFAULT_SOURCE: MetaString = MetaString::from_static("otlp_log_ingestion"
 /// text, then the name of the severity number's range, taking the first that isn't empty. Attribute and severity
 /// text are used as they are, without normalization. A severity number of 0 has no name, so a log with nothing else
 /// gets an empty status.
-pub fn derive_status(status: Option<String>, severity_text: &str, severity_number: i32) -> MetaString {
+pub fn derive_status(status: Option<&str>, severity_text: &str, severity_number: i32) -> MetaString {
     match status {
         Some(status) if !status.is_empty() => MetaString::from(status),
         _ if !severity_text.is_empty() => MetaString::from(severity_text),
@@ -173,6 +173,10 @@ fn is_reserved(key: &str, reserved: &[&str]) -> bool {
 }
 
 /// Returns an attribute's string value, or an empty string for any other value.
+///
+/// Converting other values to strings, as `pcommon.Value.AsString` does, is still missing. Until then, a non-string
+/// message, status, or `ddtags` attribute counts as empty, and so does a non-string duplicate that comes after a string
+/// one.
 fn string_value_or_empty(kv: &otlp_common::KeyValue) -> &str {
     match kv.value.as_ref().and_then(|av| av.value.as_ref()) {
         Some(OtlpStringValue(s)) => s,
@@ -318,11 +322,7 @@ pub fn transform_log_record(
     }
 
     // Derive status once using attribute-provided status, severity text and number
-    let status = derive_status(
-        status_from_attrs.map(String::from),
-        lr.severity_text.as_str(),
-        lr.severity_number,
-    );
+    let status = derive_status(status_from_attrs, lr.severity_text.as_str(), lr.severity_number);
     // The Agent sends the derived status in place of any resource or scope attribute named `status`. The encoder
     // writes additional properties over the status, so the attribute must not be among them.
     additional_properties.remove("status");
@@ -357,8 +357,13 @@ pub fn transform_log_record(
 
     // Message: prefer attributes, else body. An empty message attribute also falls back to the body.
     let message = match msg_from_attrs {
-        Some(m) if !m.is_empty() => m.to_string(),
-        _ => lr.body.as_ref().map(any_value_to_message_string).unwrap_or_default(),
+        Some(m) if !m.is_empty() => MetaString::from(m),
+        _ => lr
+            .body
+            .as_ref()
+            .map(any_value_to_message_string)
+            .map(MetaString::from)
+            .unwrap_or_default(),
     };
 
     // Build Log
@@ -666,7 +671,7 @@ mod tests {
 
         for (status, severity_text, severity_number, expected) in cases {
             assert_eq!(
-                derive_status(status.map(String::from), severity_text, severity_number),
+                derive_status(status, severity_text, severity_number),
                 expected,
                 "derive_status({:?}, {:?}, {})",
                 status,
