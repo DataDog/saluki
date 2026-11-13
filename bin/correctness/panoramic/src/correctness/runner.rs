@@ -23,7 +23,8 @@ use crate::{
     core::ledger::ResourceLedger,
     core::result::{ErrorKind, PhaseTiming, TestResult},
     core::tasks::CaseTasks,
-    intake::{CollectedData, IntakeClient},
+    intake::IntakeClient,
+    steps::intake::CollectedData,
     test::TestContext,
     traffic::{self, Side},
 };

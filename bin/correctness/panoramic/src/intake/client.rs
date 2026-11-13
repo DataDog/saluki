@@ -4,7 +4,7 @@ use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use stele::{ClientStatisticsAggregator, Event, LogsRequest, Metric, ServiceCheck, Span};
 use tracing::{debug, error};
 
-use super::CollectedData;
+use crate::steps::intake::CollectedData;
 
 /// Maximum wait for response headers or between body reads.
 const INTAKE_READ_TIMEOUT: Duration = Duration::from_secs(30);

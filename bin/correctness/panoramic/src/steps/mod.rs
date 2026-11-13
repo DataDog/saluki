@@ -12,6 +12,7 @@ use crate::core::registry::Registry;
 use crate::core::step::StepReport;
 
 mod file_contains;
+pub(crate) mod intake;
 mod log;
 mod process_stable_for;
 
