@@ -41,5 +41,8 @@ pub use crate::common::datadog::obfuscation::{
     MongoObfuscationConfig, ObfuscationConfig, OpenSearchObfuscationConfig, RedisObfuscationConfig,
     SqlObfuscationConfig, ValkeyObfuscationConfig,
 };
+mod dd_trace_normalizer;
+pub use self::dd_trace_normalizer::DatadogTraceNormalizerConfiguration;
+
 mod trace_tag_replacer;
 pub use self::trace_tag_replacer::{ReplaceRule, TraceTagReplacerConfiguration};
