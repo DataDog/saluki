@@ -15,8 +15,10 @@ use serde_json::Value;
 use tokio::time::Instant;
 
 use super::handle::{Handle, HandleError};
+use super::observe::Kept;
 use super::record::StepStatus;
 use super::reference::Values;
+use super::spec::Keep;
 use super::template::Template;
 
 /// What a step does to the case.
@@ -115,21 +117,30 @@ pub(crate) enum Uses {
 }
 
 /// What a running step can reach: a handle to each of the case's started participants, the values its template fields
-/// refer to, and when it must be done.
+/// refer to, where it keeps files, and when it must be done.
 pub(crate) struct StepContext<'a> {
     handles: &'a BTreeMap<String, Handle<'a>>,
     values: &'a Values,
+    kept: &'a Kept,
     /// When the step's own budget, or the case's deadline, runs out.
     pub(crate) deadline: Instant,
 }
 
 impl<'a> StepContext<'a> {
-    pub(crate) fn new(handles: &'a BTreeMap<String, Handle<'a>>, values: &'a Values, deadline: Instant) -> Self {
+    pub(crate) fn new(
+        handles: &'a BTreeMap<String, Handle<'a>>, values: &'a Values, kept: &'a Kept, deadline: Instant,
+    ) -> Self {
         Self {
             handles,
             values,
+            kept,
             deadline,
         }
+    }
+
+    /// Keeps `contents` as the collected file `name` of participant `on`, by `keep`, with the files collected from it.
+    pub(crate) async fn keep(&self, on: &str, name: &str, contents: &[u8], keep: Keep) {
+        self.kept.write(on, name, contents, keep).await;
     }
 
     /// The text of `template`, one of the step's template fields, with every reference filled in. Each value is
