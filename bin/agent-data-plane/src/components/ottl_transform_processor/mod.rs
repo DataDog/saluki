@@ -765,13 +765,16 @@ mod tests {
         let span = make_span(1, 1, HashMap::new());
         let trace = make_trace(vec![span], None);
 
-        let mut buffer = EventsBuffer::default();
-        assert!(buffer.try_push(Event::ServiceCheck(sc)).is_none());
-        assert!(buffer.try_push(Event::Trace(trace)).is_none());
-        transform.transform_buffer(&mut buffer);
+        // An event buffer only holds a single event type, so the service check and the trace go in separate buffers.
+        let mut service_checks = EventsBuffer::default();
+        assert!(service_checks.try_push(Event::ServiceCheck(sc.clone())).is_none());
+        transform.transform_buffer(&mut service_checks);
+        let saw_service_check = service_checks.events::<ServiceCheck>().eq([&sc]);
 
-        let saw_service_check = buffer.events::<ServiceCheck>().next().is_some();
-        let trace_span_x = buffer
+        let mut traces = EventsBuffer::default();
+        assert!(traces.try_push(Event::Trace(trace)).is_none());
+        transform.transform_buffer(&mut traces);
+        let trace_span_x = traces
             .events::<Trace>()
             .next()
             .and_then(|t| t.spans().first())

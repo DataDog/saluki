@@ -152,20 +152,22 @@ mod tests {
         ];
 
         for (hostname, expected) in cases {
+            // An event buffer only holds a single event type, so events and service checks go in separate buffers.
             let mut events = EventsBuffer::default();
             let eventd = EventD::new("title", "text").with_hostname(hostname.clone());
-            let service_check = ServiceCheck::new("check", CheckStatus::Ok).with_hostname(hostname.clone());
             assert!(events.try_push(Event::EventD(eventd)).is_none());
-            assert!(events.try_push(Event::ServiceCheck(service_check)).is_none());
-
             host_enrichment().transform_buffer(&mut events);
+            let eventd = events.into_events::<EventD>().next().expect("event");
 
-            let mut events = events.into_iter();
-            let eventd = events.next().and_then(Event::try_into_eventd).expect("event");
-            let service_check = events
+            let mut service_checks = EventsBuffer::default();
+            let service_check = ServiceCheck::new("check", CheckStatus::Ok).with_hostname(hostname.clone());
+            assert!(service_checks.try_push(Event::ServiceCheck(service_check)).is_none());
+            host_enrichment().transform_buffer(&mut service_checks);
+            let service_check = service_checks
+                .into_events::<ServiceCheck>()
                 .next()
-                .and_then(Event::try_into_service_check)
                 .expect("service check");
+
             assert_eq!(eventd.hostname(), expected, "event hostname for {hostname:?}");
             assert_eq!(
                 service_check.hostname(),

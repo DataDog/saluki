@@ -536,8 +536,8 @@ impl TopologyBuildState {
             .filter(|id| !self.prunable_components.contains_key(*id))
             .count();
 
-        // Event buffers store each event type separately, so how large a buffer can get depends on which event types can
-        // actually reach it. Work that out on the graph as it will be once pruned components are removed, so that a
+        // Event buffers store events by type, so how large a buffer can get depends on which event types can actually
+        // reach it. Work that out on the graph as it will be once pruned components are removed, so that a
         // component about to be pruned doesn't widen the event types its downstream components can receive.
         let event_types = {
             let mut graph = self.graph.clone();
@@ -570,9 +570,14 @@ impl TopologyBuildState {
         // because once all component channels are full, sending components can only allocate one more event buffer before
         // being blocked on sending.
         //
-        // Buffers in a component's interconnect, and the buffer it's processing, hold the event types that component can
-        // receive. The extra buffer held by a sending component holds the event types it can emit. A transform that
-        // forwards the buffer it's processing is counted twice, which overestimates its usage by one buffer.
+        // An event buffer only ever holds a single event type, so each buffer is sized for the largest event type it
+        // could hold. Buffers in a component's interconnect, and the buffer it's processing, hold the event types that
+        // component can receive. A sending component can hold one extra buffer per output, holding the event types that
+        // output can emit. A transform that forwards the buffer it's processing is counted twice, which overestimates
+        // its usage by one buffer.
+        //
+        // Components with internal concurrency, such as a source that decodes on several tasks at once, can hold more
+        // than one buffer per output. That isn't accounted for here.
         //
         // TODO: Somewhat fragile. Need to revisit this.
         // TODO: Add a firm subitem for payloads when we have payload interconnects.
@@ -602,8 +607,17 @@ impl TopologyBuildState {
             .chain(self.transforms.keys())
             .filter(is_live)
         {
-            let output_types = event_types.output(component_id).unwrap_or_else(EventType::all_bits);
-            firm.with_expr(event_buffer_usage(output_types));
+            // A sending component can hold one buffer per output, and each output has its own event types.
+            match event_types.outputs(component_id) {
+                Some(outputs) => {
+                    for output_types in outputs {
+                        firm.with_expr(event_buffer_usage(*output_types));
+                    }
+                }
+                None => {
+                    firm.with_expr(event_buffer_usage(EventType::all_bits()));
+                }
+            }
         }
     }
 
@@ -1162,7 +1176,7 @@ fn event_buffer_usage(event_types: EventType) -> UsageExpr {
         UsageExpr::struct_size::<EventsBuffer>("events buffer"),
         UsageExpr::product(
             "",
-            UsageExpr::constant("event item size", event_types.combined_item_size()),
+            UsageExpr::constant("event item size", event_types.max_item_size()),
             UsageExpr::constant("default event buffer capacity", DEFAULT_EVENTS_BUFFER_CAPACITY),
         ),
     )
@@ -2356,6 +2370,92 @@ mod tests {
 
         assert_eq!(bounds.total_minimum_required_bytes(), expected_min);
         assert_eq!(bounds.total_firm_limit_bytes(), expected_firm);
+    }
+
+    /// Returns the firm and minimum bounds currently registered for the blueprint.
+    fn firm_and_minimum_bytes(blueprint: &TopologyBlueprint) -> (usize, usize) {
+        let guard = blueprint.build_state.lock().expect("topology blueprint mutex poisoned");
+        let bounds = guard
+            .as_ref()
+            .expect("topology blueprint already initialized")
+            .component_registry
+            .as_bounds();
+        (bounds.total_firm_limit_bytes(), bounds.total_minimum_required_bytes())
+    }
+
+    fn full_buffer_of<T>() -> usize {
+        std::mem::size_of::<EventsBuffer>() + (std::mem::size_of::<T>() * DEFAULT_EVENTS_BUFFER_CAPACITY)
+    }
+
+    #[test]
+    fn recalculate_bounds_sizes_buffers_for_the_largest_event_type_they_can_hold() {
+        // An event buffer only ever holds a single event type, so a buffer on an edge that carries both metrics and
+        // traces is sized for traces alone, the larger of the two, rather than for both.
+        let interconnect_capacity = 4usize;
+        let component_registry = ComponentRegistry::default();
+        let mut blueprint = TopologyBlueprint::new("test", &component_registry);
+        blueprint
+            .with_interconnect_capacity(NonZeroUsize::new(interconnect_capacity).unwrap())
+            .add_source(
+                "source",
+                TestSourceBuilder::default_output(EventType::Metric | EventType::Trace),
+            )
+            .unwrap()
+            .add_destination(
+                "destination",
+                TestDestinationBuilder::with_input_type(EventType::all_bits()),
+            )
+            .unwrap()
+            .connect_components_in_order(["source", "destination"])
+            .unwrap();
+
+        let expected_min = interconnect_capacity * std::mem::size_of::<EventsBuffer>();
+        // The destination's interconnect and the buffer it's processing, plus the source's outbound buffer.
+        let expected_firm = expected_min + ((interconnect_capacity + 1) + 1) * full_buffer_of::<Trace>();
+        assert_eq!(firm_and_minimum_bytes(&blueprint), (expected_firm, expected_min));
+    }
+
+    #[test]
+    fn recalculate_bounds_counts_one_outbound_buffer_per_output() {
+        // A transform with a trace output and a metrics output can hold an outbound buffer for each at the same time.
+        let interconnect_capacity = 4usize;
+        let component_registry = ComponentRegistry::default();
+        let mut blueprint = TopologyBlueprint::new("test", &component_registry);
+        blueprint
+            .with_interconnect_capacity(NonZeroUsize::new(interconnect_capacity).unwrap())
+            .add_source("source", TestSourceBuilder::default_output(EventType::Trace))
+            .unwrap()
+            .add_transform(
+                "sampler",
+                TestTransformBuilder::multiple_outputs(
+                    EventType::Trace,
+                    [(None, EventType::Trace), (Some("metrics"), EventType::Metric)].iter(),
+                ),
+            )
+            .unwrap()
+            .add_destination("traces_out", TestDestinationBuilder::with_input_type(EventType::Trace))
+            .unwrap()
+            .add_destination(
+                "metrics_out",
+                TestDestinationBuilder::with_input_type(EventType::Metric),
+            )
+            .unwrap()
+            .connect_components_in_order(["source", "sampler", "traces_out"])
+            .unwrap()
+            .connect_components("sampler.metrics", "metrics_out")
+            .unwrap();
+
+        let traces = full_buffer_of::<Trace>();
+        let metrics = full_buffer_of::<Metric>();
+        let expected_min = interconnect_capacity * 3 * std::mem::size_of::<EventsBuffer>();
+        let expected_firm = expected_min
+            // The sampler's and the trace destination's interconnects, each plus the buffer being processed.
+            + 2 * (interconnect_capacity + 1) * traces
+            // The metrics destination's interconnect, plus the buffer being processed.
+            + (interconnect_capacity + 1) * metrics
+            // Outbound buffers: one for the source, and one per output for the sampler.
+            + traces + traces + metrics;
+        assert_eq!(firm_and_minimum_bytes(&blueprint), (expected_firm, expected_min));
     }
 
     #[test]

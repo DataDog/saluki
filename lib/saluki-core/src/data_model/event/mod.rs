@@ -89,31 +89,24 @@ impl fmt::Display for EventType {
 }
 
 impl EventType {
-    /// Returns the combined in-memory size, in bytes, of one item of each event type in this set.
+    /// Returns the in-memory size, in bytes, of the largest event type in this set.
     ///
-    /// Event buffers store each event type in its own collection, so this is the per-item cost of a buffer that may
-    /// hold every event type in this set. For a single event type, this is the size of that event type alone.
-    pub fn combined_item_size(self) -> usize {
-        let mut size = 0;
-        if self.contains(Self::Metric) {
-            size += std::mem::size_of::<Metric>();
-        }
-        if self.contains(Self::EventD) {
-            size += std::mem::size_of::<EventD>();
-        }
-        if self.contains(Self::ServiceCheck) {
-            size += std::mem::size_of::<ServiceCheck>();
-        }
-        if self.contains(Self::Log) {
-            size += std::mem::size_of::<Log>();
-        }
-        if self.contains(Self::Trace) {
-            size += std::mem::size_of::<Trace>();
-        }
-        if self.contains(Self::TraceStats) {
-            size += std::mem::size_of::<TraceStats>();
-        }
-        size
+    /// An event buffer only ever holds a single event type, so this is the per-item cost of a buffer that may hold any
+    /// of the event types in this set. For a single event type, this is the size of that event type alone.
+    pub fn max_item_size(self) -> usize {
+        [
+            (Self::Metric, std::mem::size_of::<Metric>()),
+            (Self::EventD, std::mem::size_of::<EventD>()),
+            (Self::ServiceCheck, std::mem::size_of::<ServiceCheck>()),
+            (Self::Log, std::mem::size_of::<Log>()),
+            (Self::Trace, std::mem::size_of::<Trace>()),
+            (Self::TraceStats, std::mem::size_of::<TraceStats>()),
+        ]
+        .into_iter()
+        .filter(|(ty, _)| self.contains(*ty))
+        .map(|(_, size)| size)
+        .max()
+        .unwrap_or(0)
     }
 }
 

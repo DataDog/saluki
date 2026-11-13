@@ -50,7 +50,8 @@ pub trait DispatchBuffer: Dispatchable + Default {
 
     /// Attempts to push an item into the buffer.
     ///
-    /// Returns `Some(item)` if the buffer is full and the item couldn't be pushed.
+    /// Returns `Some(item)` if the buffer couldn't accept the item, such as when it's full. A default-constructed
+    /// buffer must accept any single item.
     fn try_push(&mut self, item: Self::Item) -> Option<Self::Item>;
 }
 
@@ -211,18 +212,18 @@ where
     /// If there is an error flushing items to the output, or if there is an error acquiring a new buffer, an error
     /// is returned.
     pub async fn push(&mut self, item: T::Item) -> Result<(), GenericError> {
-        // If our current buffer is full, flush it before acquiring a new one.
-        if let Some(old_buffer) = self.buffer.take_if(|b| b.is_full()) {
-            self.try_flush_buffer(old_buffer).await?;
-        }
-
-        // Add the item to our current buffer.
+        // Add the item to our current buffer, creating one first if we don't have one.
         //
-        // If our current buffer is empty, create a new one first. If the current buffer is full, return an error
-        // because it should be impossible to get a new buffer that is full.
-        let buffer = self.buffer.get_or_insert_default();
-        if buffer.try_push(item).is_some() {
-            return Err(generic_error!("Dispatch buffer already full after acquisition."));
+        // If the current buffer can't accept the item, because it's full or (for event buffers) because it holds items
+        // of a different type, flush it and push the item into a new buffer instead. A new buffer must accept any
+        // single item, so return an error if it doesn't.
+        if let Some(item) = self.buffer.get_or_insert_default().try_push(item) {
+            if let Some(old_buffer) = self.buffer.take() {
+                self.try_flush_buffer(old_buffer).await?;
+            }
+            if self.buffer.get_or_insert_default().try_push(item).is_some() {
+                return Err(generic_error!("New dispatch buffer rejected an item."));
+            }
         }
 
         self.flushed_len += 1;
@@ -801,6 +802,44 @@ mod tests {
             let second = rx.try_recv().expect("second buffer should have been dispatched");
             assert_eq!(second.len(), 2);
             assert_eq!(second[0..2], input_items[4..6]);
+        }
+    }
+
+    #[tokio::test]
+    async fn buffered_dispatch_flushes_when_the_event_type_changes() {
+        // An event buffer only holds a single event type, so pushing a different event type flushes the current buffer
+        // and starts a new one, rather than failing.
+        use crate::data_model::event::{eventd::EventD, metric::Metric, Event};
+        use crate::topology::interconnect::FixedSizeEventBuffer;
+
+        for case in output_cases() {
+            let mut dispatcher = buffered_dispatcher::<FixedSizeEventBuffer<4>>();
+            let (tx, mut rx) = mpsc::channel(3);
+            add_output_with_senders(&mut dispatcher, &case.output, [tx]);
+
+            let input_events = [
+                Event::Metric(Metric::counter("a", 1.0)),
+                Event::Metric(Metric::counter("b", 1.0)),
+                Event::EventD(EventD::new("c", "c")),
+                Event::Metric(Metric::counter("d", 1.0)),
+            ];
+            let mut buffered = buffered_for(&dispatcher, &case.output).unwrap();
+            for event in input_events.iter().cloned() {
+                buffered.push(event).await.unwrap();
+            }
+            assert_eq!(buffered.flush().await.unwrap(), input_events.len());
+
+            let received: Vec<Vec<Event>> = std::iter::from_fn(|| rx.try_recv().ok())
+                .map(|buffer| buffer.into_iter().collect())
+                .collect();
+            assert_eq!(
+                received,
+                [
+                    input_events[0..2].to_vec(),
+                    input_events[2..3].to_vec(),
+                    input_events[3..4].to_vec(),
+                ]
+            );
         }
     }
 

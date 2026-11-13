@@ -142,7 +142,7 @@ struct Edge {
 #[derive(Debug, Default)]
 pub struct EffectiveEventTypes {
     inputs: HashMap<ComponentId, EventType>,
-    outputs: HashMap<ComponentId, EventType>,
+    outputs: HashMap<ComponentId, Vec<EventType>>,
 }
 
 impl EffectiveEventTypes {
@@ -154,9 +154,9 @@ impl EffectiveEventTypes {
         self.inputs.get(id).copied()
     }
 
-    /// Returns the event types the given component can emit across all of its outputs, if it emits events.
-    pub fn output(&self, id: &ComponentId) -> Option<EventType> {
-        self.outputs.get(id).copied()
+    /// Returns the event types the given component can emit on each of its outputs, if it emits events.
+    pub fn outputs(&self, id: &ComponentId) -> Option<&[EventType]> {
+        self.outputs.get(id).map(Vec::as_slice)
     }
 }
 
@@ -508,7 +508,7 @@ impl Graph {
     /// Components without inbound edges are assumed to receive their full declared input type.
     ///
     /// Only components that handle events are included. Event types for inputs are keyed by the component, and event
-    /// types for outputs are keyed by the component and combined across all of its outputs.
+    /// types for outputs are keyed by the component, with one entry per output.
     pub fn effective_event_types(&self) -> EffectiveEventTypes {
         let mut output_types: HashMap<ComponentOutputId, EventType> = HashMap::new();
         for node in self.nodes.values() {
@@ -584,19 +584,22 @@ impl Graph {
             }
         }
 
-        let mut combined_output_types: HashMap<ComponentId, EventType> = HashMap::new();
+        let mut per_component_output_types: HashMap<ComponentId, Vec<EventType>> = HashMap::new();
         for (output_id, ty) in output_types {
-            *combined_output_types.entry(output_id.component_id()).or_default() |= ty;
+            per_component_output_types
+                .entry(output_id.component_id())
+                .or_default()
+                .push(ty);
         }
         for (id, node) in &self.nodes {
             if let Node::Decoder { output_ty, .. } = node {
-                combined_output_types.insert(id.clone(), *output_ty);
+                per_component_output_types.insert(id.clone(), vec![*output_ty]);
             }
         }
 
         EffectiveEventTypes {
             inputs: input_types,
-            outputs: combined_output_types,
+            outputs: per_component_output_types,
         }
     }
 
@@ -1012,7 +1015,7 @@ mod tests {
 
         let types = graph.effective_event_types();
         assert_eq!(types.input(&id("chain")), Some(EventType::Metric));
-        assert_eq!(types.output(&id("chain")), Some(EventType::Metric));
+        assert_eq!(types.outputs(&id("chain")), Some(&[EventType::Metric][..]));
         assert_eq!(types.input(&id("out")), Some(EventType::Metric));
     }
 
@@ -1031,7 +1034,7 @@ mod tests {
         let types = graph.effective_event_types();
         let both = EventType::Metric | EventType::Trace;
         assert_eq!(types.input(&id("filter")), Some(both));
-        assert_eq!(types.output(&id("filter")), Some(both));
+        assert_eq!(types.outputs(&id("filter")), Some(&[both][..]));
         assert_eq!(types.input(&id("out")), Some(both));
     }
 
@@ -1048,7 +1051,7 @@ mod tests {
 
         let types = graph.effective_event_types();
         assert_eq!(types.input(&id("stats")), Some(EventType::Trace));
-        assert_eq!(types.output(&id("stats")), Some(EventType::TraceStats));
+        assert_eq!(types.outputs(&id("stats")), Some(&[EventType::TraceStats][..]));
         assert_eq!(types.input(&id("out")), Some(EventType::TraceStats));
     }
 

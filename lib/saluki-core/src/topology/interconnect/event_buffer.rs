@@ -10,24 +10,17 @@ use crate::{
 
 /// A fixed-size event buffer.
 ///
-/// Events are stored in a separate collection per event type, rather than as a single collection of [`Event`]. `Event`
-/// is as large as its largest variant, so storing events by type means each event only takes up as much space as its
-/// own type, and code that handles a single event type can work on that collection directly.
+/// An event buffer only ever holds events of a single type, stored as a collection of that type rather than as a
+/// collection of [`Event`]. `Event` is as large as its largest variant, so storing events by type means each event only
+/// takes up as much space as its own type, and code that handles a single event type can work on that collection
+/// directly.
 ///
-/// The buffer holds at most `N` events in total, across all event types. Each per-type collection is allocated the
-/// first time an event of that type is pushed, with room for the remaining capacity of the buffer, so a buffer that
-/// holds a single event type makes exactly one allocation.
-///
-/// Iterating over the buffer yields events grouped by type, in a fixed type order, and in insertion order within each
-/// type. Relative order between events of different types isn't preserved.
+/// An empty buffer can accept an event of any type, and the first event pushed into it decides which type it holds,
+/// allocating room for `N` events of that type. Once the buffer holds events, it rejects events of any other type in the
+/// same way it rejects events when full. The buffer never grows beyond `N` events.
 #[derive(Clone)]
 pub struct FixedSizeEventBuffer<const N: usize> {
-    metrics: Vec<Metric>,
-    eventds: Vec<EventD>,
-    service_checks: Vec<ServiceCheck>,
-    logs: Vec<Log>,
-    traces: Vec<Trace>,
-    trace_stats: Vec<TraceStats>,
+    storage: BufferStorage,
 }
 
 impl<const N: usize> FixedSizeEventBuffer<N> {
@@ -39,12 +32,7 @@ impl<const N: usize> FixedSizeEventBuffer<N> {
     /// Returns the number of events in the event buffer.
     #[inline]
     pub fn len(&self) -> usize {
-        self.metrics.len()
-            + self.eventds.len()
-            + self.service_checks.len()
-            + self.logs.len()
-            + self.traces.len()
-            + self.trace_stats.len()
+        self.storage.len()
     }
 
     /// Returns `true` if the event buffer contains no events.
@@ -58,83 +46,89 @@ impl<const N: usize> FixedSizeEventBuffer<N> {
         self.len() == self.capacity()
     }
 
-    /// Returns the set of event types currently present in the event buffer.
-    pub fn event_types(&self) -> EventType {
-        let mut event_types = EventType::none();
-        if !self.metrics.is_empty() {
-            event_types |= EventType::Metric;
+    /// Returns the type of the events in the event buffer, or `None` if it's empty.
+    pub fn event_type(&self) -> Option<EventType> {
+        if self.is_empty() {
+            return None;
         }
-        if !self.eventds.is_empty() {
-            event_types |= EventType::EventD;
-        }
-        if !self.service_checks.is_empty() {
-            event_types |= EventType::ServiceCheck;
-        }
-        if !self.logs.is_empty() {
-            event_types |= EventType::Log;
-        }
-        if !self.traces.is_empty() {
-            event_types |= EventType::Trace;
-        }
-        if !self.trace_stats.is_empty() {
-            event_types |= EventType::TraceStats;
-        }
-        event_types
+
+        Some(match &self.storage {
+            BufferStorage::Empty => return None,
+            BufferStorage::Metrics(_) => EventType::Metric,
+            BufferStorage::EventDs(_) => EventType::EventD,
+            BufferStorage::ServiceChecks(_) => EventType::ServiceCheck,
+            BufferStorage::Logs(_) => EventType::Log,
+            BufferStorage::Traces(_) => EventType::Trace,
+            BufferStorage::TraceStats(_) => EventType::TraceStats,
+        })
     }
 
     /// Returns `true` if this event buffer contains one or more events of the given event type.
     pub fn has_event_type(&self, event_type: EventType) -> bool {
-        self.event_types().intersects(event_type)
+        self.event_type().is_some_and(|ty| ty.intersects(event_type))
     }
 
     /// Clears the event buffer, removing all events.
     ///
-    /// Allocated capacity is retained.
+    /// Allocated capacity is retained, and the buffer can accept events of any type again.
     pub fn clear(&mut self) {
-        self.metrics.clear();
-        self.eventds.clear();
-        self.service_checks.clear();
-        self.logs.clear();
-        self.traces.clear();
-        self.trace_stats.clear();
+        self.storage.clear();
     }
 
     /// Attempts to append an event to the event buffer.
     ///
-    /// If the event buffer is full, `Some` is returned with the original event.
+    /// If the event buffer is full, or already holds events of a different type, `Some` is returned with the original
+    /// event.
     #[inline]
     pub fn try_push(&mut self, event: Event) -> Option<Event> {
-        if self.is_full() {
-            return Some(event);
+        match event {
+            Event::Metric(metric) => self.try_push_event(metric),
+            Event::EventD(eventd) => self.try_push_event(eventd),
+            Event::ServiceCheck(service_check) => self.try_push_event(service_check),
+            Event::Log(log) => self.try_push_event(log),
+            Event::Trace(trace) => self.try_push_event(trace),
+            Event::TraceStats(stats) => self.try_push_event(stats),
+        }
+    }
+
+    /// The only way events are added to the buffer, which upholds its invariants: the buffer only ever holds events of
+    /// a single type, and never holds, or allocates room for, more than `N` events.
+    #[inline]
+    fn try_push_event<T: EventKind>(&mut self, value: T) -> Option<Event> {
+        // An empty buffer can accept any event type, even if it previously held a different one.
+        if self.is_empty() && T::items(&self.storage).is_none() {
+            self.storage = T::wrap(Vec::with_capacity(N));
         }
 
-        let remaining = N - self.len();
-        match event {
-            Event::Metric(metric) => push_reserving(&mut self.metrics, remaining, metric),
-            Event::EventD(eventd) => push_reserving(&mut self.eventds, remaining, eventd),
-            Event::ServiceCheck(service_check) => push_reserving(&mut self.service_checks, remaining, service_check),
-            Event::Log(log) => push_reserving(&mut self.logs, remaining, log),
-            Event::Trace(trace) => push_reserving(&mut self.traces, remaining, trace),
-            Event::TraceStats(stats) => push_reserving(&mut self.trace_stats, remaining, stats),
+        match T::items_mut(&mut self.storage) {
+            Some(items) if items.len() < N => {
+                // Collections are allocated with room for exactly `N` events, but guard against a collection that has
+                // less, so that pushing never grows it past `N`.
+                if items.len() == items.capacity() {
+                    items.reserve_exact(N - items.len());
+                }
+                items.push(value);
+                None
+            }
+            _ => Some(value.into_event()),
         }
-        None
     }
 
     /// Returns an iterator over the events of type `T` in the event buffer.
     pub fn events<T: EventKind>(&self) -> impl Iterator<Item = &T> {
-        T::storage(self).iter()
+        T::items(&self.storage).into_iter().flatten()
     }
 
     /// Returns an iterator over mutable references to the events of type `T` in the event buffer.
     pub fn events_mut<T: EventKind>(&mut self) -> impl Iterator<Item = &mut T> {
-        T::storage_mut(self).iter_mut()
+        T::items_mut(&mut self.storage).into_iter().flatten()
     }
 
     /// Consumes the event buffer, returning an iterator over the events of type `T` it held.
     ///
     /// Events of other types are dropped.
     pub fn into_events<T: EventKind>(mut self) -> impl Iterator<Item = T> {
-        std::mem::take(T::storage_mut(&mut self)).into_iter()
+        self.take_events()
     }
 
     /// Retains only the events of type `T` for which `predicate` returns `true`.
@@ -145,14 +139,16 @@ impl<const N: usize> FixedSizeEventBuffer<N> {
         T: EventKind,
         F: FnMut(&mut T) -> bool,
     {
-        T::storage_mut(self).retain_mut(predicate);
+        if let Some(items) = T::items_mut(&mut self.storage) {
+            items.retain_mut(predicate);
+        }
     }
 
     /// Removes all events of type `T` from the event buffer, returning them.
     ///
     /// Events of other types are kept. Event order isn't preserved.
     pub fn take_events<T: EventKind>(&mut self) -> impl Iterator<Item = T> {
-        std::mem::take(T::storage_mut(self)).into_iter()
+        T::take(&mut self.storage).unwrap_or_default().into_iter()
     }
 
     /// Removes the events of type `T` for which `predicate` returns `true`, returning them.
@@ -163,62 +159,116 @@ impl<const N: usize> FixedSizeEventBuffer<N> {
         T: EventKind,
         F: FnMut(&T) -> bool,
     {
-        let extracted: Vec<T> = T::storage_mut(self).extract_if(.., |value| predicate(value)).collect();
+        let extracted: Vec<T> = match T::items_mut(&mut self.storage) {
+            Some(items) => items.extract_if(.., |value| predicate(value)).collect(),
+            None => Vec::new(),
+        };
         extracted.into_iter()
     }
 }
 
-/// Selects the collection that holds an event type in a [`FixedSizeEventBuffer`].
-///
-/// Every [`EventKind`] implements this trait, which lets the buffer's typed views go straight to the right
-/// collection. As it can't be named outside of this crate, it also keeps `EventKind` from being implemented elsewhere.
-pub trait EventStorage: Sized {
-    /// Returns the collection of this event type in the given event buffer.
-    fn storage<const N: usize>(buffer: &FixedSizeEventBuffer<N>) -> &Vec<Self>;
+/// The events held by a [`FixedSizeEventBuffer`]: a collection of a single event type.
+#[derive(Clone)]
+pub enum BufferStorage {
+    /// No events have been pushed yet, or the events were taken out.
+    Empty,
+    Metrics(Vec<Metric>),
+    EventDs(Vec<EventD>),
+    ServiceChecks(Vec<ServiceCheck>),
+    Logs(Vec<Log>),
+    Traces(Vec<Trace>),
+    TraceStats(Vec<TraceStats>),
+}
 
-    /// Returns the collection of this event type in the given event buffer, mutably.
-    fn storage_mut<const N: usize>(buffer: &mut FixedSizeEventBuffer<N>) -> &mut Vec<Self>;
+impl BufferStorage {
+    fn len(&self) -> usize {
+        match self {
+            Self::Empty => 0,
+            Self::Metrics(items) => items.len(),
+            Self::EventDs(items) => items.len(),
+            Self::ServiceChecks(items) => items.len(),
+            Self::Logs(items) => items.len(),
+            Self::Traces(items) => items.len(),
+            Self::TraceStats(items) => items.len(),
+        }
+    }
+
+    fn clear(&mut self) {
+        match self {
+            Self::Empty => {}
+            Self::Metrics(items) => items.clear(),
+            Self::EventDs(items) => items.clear(),
+            Self::ServiceChecks(items) => items.clear(),
+            Self::Logs(items) => items.clear(),
+            Self::Traces(items) => items.clear(),
+            Self::TraceStats(items) => items.clear(),
+        }
+    }
+}
+
+/// Selects the [`BufferStorage`] variant that holds an event type.
+///
+/// Every [`EventKind`] implements this trait, which lets the buffer's typed views go straight to the right collection.
+/// As it can't be named outside of this crate, it also keeps `EventKind` from being implemented elsewhere.
+pub trait EventStorage: Sized {
+    /// Returns the events in the given storage, if it holds this event type.
+    fn items(storage: &BufferStorage) -> Option<&Vec<Self>>;
+
+    /// Returns the events in the given storage mutably, if it holds this event type.
+    fn items_mut(storage: &mut BufferStorage) -> Option<&mut Vec<Self>>;
+
+    /// Wraps a collection of this event type as storage.
+    fn wrap(items: Vec<Self>) -> BufferStorage;
+
+    /// Takes the events out of the given storage, leaving it empty, if it holds this event type.
+    fn take(storage: &mut BufferStorage) -> Option<Vec<Self>>;
 }
 
 macro_rules! impl_event_storage {
-    ($ty:ty, $field:ident) => {
+    ($ty:ty, $variant:ident) => {
         impl EventStorage for $ty {
-            fn storage<const N: usize>(buffer: &FixedSizeEventBuffer<N>) -> &Vec<Self> {
-                &buffer.$field
+            fn items(storage: &BufferStorage) -> Option<&Vec<Self>> {
+                match storage {
+                    BufferStorage::$variant(items) => Some(items),
+                    _ => None,
+                }
             }
 
-            fn storage_mut<const N: usize>(buffer: &mut FixedSizeEventBuffer<N>) -> &mut Vec<Self> {
-                &mut buffer.$field
+            fn items_mut(storage: &mut BufferStorage) -> Option<&mut Vec<Self>> {
+                match storage {
+                    BufferStorage::$variant(items) => Some(items),
+                    _ => None,
+                }
+            }
+
+            fn wrap(items: Vec<Self>) -> BufferStorage {
+                BufferStorage::$variant(items)
+            }
+
+            fn take(storage: &mut BufferStorage) -> Option<Vec<Self>> {
+                match std::mem::replace(storage, BufferStorage::Empty) {
+                    BufferStorage::$variant(items) => Some(items),
+                    other => {
+                        *storage = other;
+                        None
+                    }
+                }
             }
         }
     };
 }
 
-impl_event_storage!(Metric, metrics);
-impl_event_storage!(EventD, eventds);
-impl_event_storage!(ServiceCheck, service_checks);
-impl_event_storage!(Log, logs);
-impl_event_storage!(Trace, traces);
-impl_event_storage!(TraceStats, trace_stats);
-
-/// Pushes `item` onto `items`, reserving room for `remaining` items if this is the first allocation.
-#[inline]
-fn push_reserving<T>(items: &mut Vec<T>, remaining: usize, item: T) {
-    if items.capacity() == 0 {
-        items.reserve_exact(remaining);
-    }
-    items.push(item);
-}
+impl_event_storage!(Metric, Metrics);
+impl_event_storage!(EventD, EventDs);
+impl_event_storage!(ServiceCheck, ServiceChecks);
+impl_event_storage!(Log, Logs);
+impl_event_storage!(Trace, Traces);
+impl_event_storage!(TraceStats, TraceStats);
 
 impl<const N: usize> Default for FixedSizeEventBuffer<N> {
     fn default() -> Self {
         Self {
-            metrics: Vec::new(),
-            eventds: Vec::new(),
-            service_checks: Vec::new(),
-            logs: Vec::new(),
-            traces: Vec::new(),
-            trace_stats: Vec::new(),
+            storage: BufferStorage::Empty,
         }
     }
 }
@@ -250,19 +300,24 @@ impl<const N: usize> fmt::Debug for FixedSizeEventBuffer<N> {
         f.debug_struct("FixedSizeEventBuffer")
             .field("cap", &N)
             .field("len", &self.len())
-            .field("event_types", &self.event_types())
+            .field("event_type", &self.event_type())
             .finish()
     }
 }
 
 /// An owning iterator over the events in a [`FixedSizeEventBuffer`].
 pub struct EventBufferIntoIter {
-    metrics: std::vec::IntoIter<Metric>,
-    eventds: std::vec::IntoIter<EventD>,
-    service_checks: std::vec::IntoIter<ServiceCheck>,
-    logs: std::vec::IntoIter<Log>,
-    traces: std::vec::IntoIter<Trace>,
-    trace_stats: std::vec::IntoIter<TraceStats>,
+    inner: IntoIterInner,
+}
+
+enum IntoIterInner {
+    Empty,
+    Metrics(std::vec::IntoIter<Metric>),
+    EventDs(std::vec::IntoIter<EventD>),
+    ServiceChecks(std::vec::IntoIter<ServiceCheck>),
+    Logs(std::vec::IntoIter<Log>),
+    Traces(std::vec::IntoIter<Trace>),
+    TraceStats(std::vec::IntoIter<TraceStats>),
 }
 
 impl Iterator for EventBufferIntoIter {
@@ -270,33 +325,27 @@ impl Iterator for EventBufferIntoIter {
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
-        // Events are yielded type by type, so build each event directly from the first non-empty collection rather
-        // than chaining iterators, which would move each event through every level of the chain.
-        if let Some(metric) = self.metrics.next() {
-            return Some(Event::Metric(metric));
+        match &mut self.inner {
+            IntoIterInner::Empty => None,
+            IntoIterInner::Metrics(items) => items.next().map(Event::Metric),
+            IntoIterInner::EventDs(items) => items.next().map(Event::EventD),
+            IntoIterInner::ServiceChecks(items) => items.next().map(Event::ServiceCheck),
+            IntoIterInner::Logs(items) => items.next().map(Event::Log),
+            IntoIterInner::Traces(items) => items.next().map(Event::Trace),
+            IntoIterInner::TraceStats(items) => items.next().map(Event::TraceStats),
         }
-        if let Some(eventd) = self.eventds.next() {
-            return Some(Event::EventD(eventd));
-        }
-        if let Some(service_check) = self.service_checks.next() {
-            return Some(Event::ServiceCheck(service_check));
-        }
-        if let Some(log) = self.logs.next() {
-            return Some(Event::Log(log));
-        }
-        if let Some(trace) = self.traces.next() {
-            return Some(Event::Trace(trace));
-        }
-        self.trace_stats.next().map(Event::TraceStats)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let len = self.metrics.len()
-            + self.eventds.len()
-            + self.service_checks.len()
-            + self.logs.len()
-            + self.traces.len()
-            + self.trace_stats.len();
+        let len = match &self.inner {
+            IntoIterInner::Empty => 0,
+            IntoIterInner::Metrics(items) => items.len(),
+            IntoIterInner::EventDs(items) => items.len(),
+            IntoIterInner::ServiceChecks(items) => items.len(),
+            IntoIterInner::Logs(items) => items.len(),
+            IntoIterInner::Traces(items) => items.len(),
+            IntoIterInner::TraceStats(items) => items.len(),
+        };
         (len, Some(len))
     }
 }
@@ -308,14 +357,16 @@ impl<const N: usize> IntoIterator for FixedSizeEventBuffer<N> {
     type IntoIter = EventBufferIntoIter;
 
     fn into_iter(self) -> Self::IntoIter {
-        EventBufferIntoIter {
-            metrics: self.metrics.into_iter(),
-            eventds: self.eventds.into_iter(),
-            service_checks: self.service_checks.into_iter(),
-            logs: self.logs.into_iter(),
-            traces: self.traces.into_iter(),
-            trace_stats: self.trace_stats.into_iter(),
-        }
+        let inner = match self.storage {
+            BufferStorage::Empty => IntoIterInner::Empty,
+            BufferStorage::Metrics(items) => IntoIterInner::Metrics(items.into_iter()),
+            BufferStorage::EventDs(items) => IntoIterInner::EventDs(items.into_iter()),
+            BufferStorage::ServiceChecks(items) => IntoIterInner::ServiceChecks(items.into_iter()),
+            BufferStorage::Logs(items) => IntoIterInner::Logs(items.into_iter()),
+            BufferStorage::Traces(items) => IntoIterInner::Traces(items.into_iter()),
+            BufferStorage::TraceStats(items) => IntoIterInner::TraceStats(items.into_iter()),
+        };
+        EventBufferIntoIter { inner }
     }
 }
 
@@ -336,15 +387,15 @@ pub struct EventBufferManager<const N: usize> {
 impl<const N: usize> EventBufferManager<N> {
     /// Attempts to push an event into the current event buffer.
     ///
-    /// If the event buffer is full, it's replaced with a new event buffer before pushing the event, and `Some(buffer)`
-    /// is returned containing the old event buffer. Otherwise, `None` is returned.
+    /// If the event buffer is full, or holds events of a different type, it's replaced with a new event buffer before
+    /// pushing the event, and `Some(buffer)` is returned containing the old event buffer. Otherwise, `None` is returned.
     pub fn try_push(&mut self, event: Event) -> Option<FixedSizeEventBuffer<N>> {
         let buffer = self.current.get_or_insert_default();
 
         match buffer.try_push(event) {
             Some(event) => {
-                // Our current buffer is full, so replace it with a new buffer before trying to write the event
-                // into it again, and return the old buffer to the caller.
+                // Our current buffer can't take the event, so replace it with a new buffer before trying to write the
+                // event into it again, and return the old buffer to the caller.
                 let old_buffer = std::mem::take(buffer);
 
                 if buffer.try_push(event).is_some() {
@@ -375,16 +426,15 @@ mod tests {
         Event, EventType,
     };
 
-    /// Builds a buffer holding metrics `a` and `c`, and events `b` and `d`, interleaved in that order.
-    fn mixed_buffer() -> FixedSizeEventBuffer<8> {
+    fn counter(name: &'static str) -> Event {
+        Event::Metric(Metric::counter(name, 1.0))
+    }
+
+    /// Builds a buffer holding the metrics `a`, `b`, and `c`, in that order.
+    fn metrics_buffer() -> FixedSizeEventBuffer<8> {
         let mut buffer = FixedSizeEventBuffer::<8>::default();
-        for event in [
-            Event::Metric(Metric::counter("a", 1.0)),
-            Event::EventD(EventD::new("b", "b")),
-            Event::Metric(Metric::counter("c", 1.0)),
-            Event::EventD(EventD::new("d", "d")),
-        ] {
-            assert!(buffer.try_push(event).is_none());
+        for name in ["a", "b", "c"] {
+            assert!(buffer.try_push(counter(name)).is_none());
         }
         buffer
     }
@@ -398,18 +448,25 @@ mod tests {
         names
     }
 
+    /// Returns the capacity of the collection backing the buffer.
+    fn allocated_capacity<const N: usize>(buffer: &FixedSizeEventBuffer<N>) -> usize {
+        match &buffer.storage {
+            BufferStorage::Empty => 0,
+            BufferStorage::Metrics(items) => items.capacity(),
+            BufferStorage::EventDs(items) => items.capacity(),
+            BufferStorage::ServiceChecks(items) => items.capacity(),
+            BufferStorage::Logs(items) => items.capacity(),
+            BufferStorage::Traces(items) => items.capacity(),
+            BufferStorage::TraceStats(items) => items.capacity(),
+        }
+    }
+
     #[test]
     fn typed_views_only_see_events_of_their_type() {
-        let mut buffer = mixed_buffer();
-        assert_eq!(metric_names(buffer.events::<Metric>()), ["a", "c"]);
-        assert_eq!(
-            buffer
-                .events::<EventD>()
-                .map(|eventd| eventd.title())
-                .collect::<Vec<_>>(),
-            ["b", "d"]
-        );
-        assert_eq!(buffer.events::<ServiceCheck>().count(), 0);
+        let mut buffer = metrics_buffer();
+        assert_eq!(metric_names(buffer.events::<Metric>()), ["a", "b", "c"]);
+        assert_eq!(buffer.events::<EventD>().count(), 0);
+        assert_eq!(buffer.events_mut::<ServiceCheck>().count(), 0);
 
         for metric in buffer.events_mut::<Metric>() {
             metric.metadata_mut().set_unit("seconds");
@@ -417,47 +474,107 @@ mod tests {
         assert!(buffer
             .events::<Metric>()
             .all(|metric| metric.metadata().unit() == Some("seconds")));
-        assert_eq!(buffer.len(), 4);
+        assert_eq!(buffer.len(), 3);
     }
 
     #[test]
-    fn into_events_drops_other_types() {
-        let names: Vec<_> = mixed_buffer()
+    fn into_events_yields_nothing_for_other_types() {
+        assert_eq!(metrics_buffer().into_events::<EventD>().count(), 0);
+        let names: Vec<_> = metrics_buffer()
             .into_events::<Metric>()
             .map(|metric| metric.context().name().to_string())
             .collect();
-        assert_eq!(names, ["a", "c"]);
+        assert_eq!(names, ["a", "b", "c"]);
     }
 
     #[test]
     fn retain_events_filters_only_its_type() {
-        let mut buffer = mixed_buffer();
-        buffer.retain_events::<Metric, _>(|metric| metric.context().name() == "c");
-
+        let mut buffer = metrics_buffer();
+        buffer.retain_events::<EventD, _>(|_| false);
         assert_eq!(buffer.len(), 3);
-        assert_eq!(metric_names(buffer.events::<Metric>()), ["c"]);
-        assert_eq!(buffer.events::<EventD>().count(), 2);
+
+        buffer.retain_events::<Metric, _>(|metric| metric.context().name() != "b");
+        assert_eq!(metric_names(buffer.events::<Metric>()), ["a", "c"]);
         assert!(buffer.has_event_type(EventType::Metric));
 
         buffer.retain_events::<Metric, _>(|_| false);
-        assert!(!buffer.has_event_type(EventType::Metric));
-        assert!(buffer.has_event_type(EventType::EventD));
+        assert!(buffer.is_empty());
+        assert_eq!(buffer.event_type(), None);
     }
 
     #[test]
-    fn take_events_removes_its_type() {
-        let mut buffer = mixed_buffer();
-        let mut taken: Vec<_> = buffer
-            .take_events::<EventD>()
-            .map(|eventd| eventd.title().to_string())
-            .collect();
-        taken.sort();
+    fn take_events_empties_the_buffer() {
+        let mut buffer = metrics_buffer();
+        assert_eq!(buffer.take_events::<EventD>().count(), 0);
+        assert_eq!(buffer.len(), 3);
 
-        assert_eq!(taken, ["b", "d"]);
-        assert_eq!(buffer.len(), 2);
-        assert_eq!(sorted(metric_names(buffer.events::<Metric>())), ["a", "c"]);
-        assert!(!buffer.has_event_type(EventType::EventD));
+        let taken: Vec<_> = buffer
+            .take_events::<Metric>()
+            .map(|metric| metric.context().name().to_string())
+            .collect();
+        assert_eq!(sorted(taken), ["a", "b", "c"]);
+        assert!(buffer.is_empty());
+        assert_eq!(buffer.event_type(), None);
+    }
+
+    #[test]
+    fn extract_events_removes_matching_events() {
+        let mut buffer = metrics_buffer();
+        assert_eq!(buffer.extract_events::<EventD, _>(|_| true).count(), 0);
+
+        let extracted: Vec<_> = buffer
+            .extract_events::<Metric, _>(|metric| metric.context().name() != "b")
+            .map(|metric| metric.context().name().to_string())
+            .collect();
+        assert_eq!(sorted(extracted), ["a", "c"]);
+        assert_eq!(metric_names(buffer.events::<Metric>()), ["b"]);
         assert!(buffer.has_event_type(EventType::Metric));
+    }
+
+    #[test]
+    fn rejects_events_of_a_different_type() {
+        let mut buffer = metrics_buffer();
+        let eventd = Event::EventD(EventD::new("title", "text"));
+        assert_eq!(buffer.try_push(eventd.clone()), Some(eventd));
+        assert_eq!(buffer.len(), 3);
+        assert_eq!(buffer.event_type(), Some(EventType::Metric));
+        assert!(!buffer.has_event_type(EventType::EventD));
+    }
+
+    #[test]
+    fn an_empty_buffer_accepts_any_type() {
+        let mut buffer = metrics_buffer();
+        buffer.clear();
+        assert!(buffer
+            .try_push(Event::ServiceCheck(ServiceCheck::new("check", CheckStatus::Ok)))
+            .is_none());
+        assert_eq!(buffer.event_type(), Some(EventType::ServiceCheck));
+
+        assert_eq!(buffer.take_events::<ServiceCheck>().count(), 1);
+        assert!(buffer.try_push(Event::EventD(EventD::new("title", "text"))).is_none());
+        assert_eq!(buffer.event_type(), Some(EventType::EventD));
+    }
+
+    #[test]
+    fn allocates_room_for_exactly_n_events_and_never_grows() {
+        let mut buffer = FixedSizeEventBuffer::<8>::default();
+        assert_eq!(allocated_capacity(&buffer), 0);
+
+        assert!(buffer.try_push(counter("first")).is_none());
+        assert_eq!(allocated_capacity(&buffer), 8);
+
+        while !buffer.is_full() {
+            assert!(buffer.try_push(counter("more")).is_none());
+        }
+        assert!(buffer.try_push(counter("overflow")).is_some());
+        assert_eq!(allocated_capacity(&buffer), 8);
+
+        // Clearing keeps the allocation, and refilling the buffer doesn't grow it.
+        buffer.clear();
+        while !buffer.is_full() {
+            assert!(buffer.try_push(counter("again")).is_none());
+        }
+        assert_eq!(allocated_capacity(&buffer), 8);
     }
 
     #[test]
@@ -472,247 +589,76 @@ mod tests {
 
     #[test]
     fn clear() {
-        // Create an empty event buffer and assert that it's empty and has no seen data types:
         let mut buffer = FixedSizeEventBuffer::<2>::default();
         assert!(buffer.is_empty());
-        assert!(!buffer.has_event_type(EventType::Metric));
-        assert!(!buffer.has_event_type(EventType::EventD));
-        assert!(!buffer.has_event_type(EventType::ServiceCheck));
+        assert_eq!(buffer.event_type(), None);
 
-        // Now write a metric, and make sure that's reflected:
         assert!(buffer.try_push(Event::Metric(Metric::counter("foo", 42.0))).is_none());
         assert!(!buffer.is_empty());
         assert!(buffer.has_event_type(EventType::Metric));
-        assert!(!buffer.has_event_type(EventType::EventD));
-        assert!(!buffer.has_event_type(EventType::ServiceCheck));
 
-        // Finally, clear the buffer and ensure it's empty and has no seen data types:
         buffer.clear();
         assert!(buffer.is_empty());
+        assert_eq!(buffer.event_type(), None);
         assert!(!buffer.has_event_type(EventType::Metric));
-        assert!(!buffer.has_event_type(EventType::EventD));
-        assert!(!buffer.has_event_type(EventType::ServiceCheck));
     }
 
     #[test]
-    fn has_event_type() {
-        let mut buffer = FixedSizeEventBuffer::<2>::default();
-        assert!(!buffer.has_event_type(EventType::Metric));
-        assert!(!buffer.has_event_type(EventType::EventD));
-        assert!(!buffer.has_event_type(EventType::ServiceCheck));
-
-        assert!(buffer.try_push(Event::Metric(Metric::counter("foo", 42.0))).is_none());
-        assert!(buffer.has_event_type(EventType::Metric));
-        assert!(!buffer.has_event_type(EventType::EventD));
-        assert!(!buffer.has_event_type(EventType::ServiceCheck));
-
-        assert!(buffer.try_push(Event::EventD(EventD::new("title", "text"))).is_none());
-        assert!(buffer.has_event_type(EventType::Metric));
-        assert!(buffer.has_event_type(EventType::EventD));
-        assert!(!buffer.has_event_type(EventType::ServiceCheck));
-    }
-
-    #[test]
-    fn take_events_tracks_event_types() {
-        let mut buffer = FixedSizeEventBuffer::<10>::default();
-        assert!(buffer.try_push(Event::Metric(Metric::counter("foo", 42.0))).is_none());
-        assert!(buffer.try_push(Event::Metric(Metric::counter("foo", 43.0))).is_none());
-        assert!(buffer.try_push(Event::EventD(EventD::new("foo1", "bar1"))).is_none());
-        assert!(buffer.try_push(Event::EventD(EventD::new("foo2", "bar2"))).is_none());
-        assert!(buffer.try_push(Event::EventD(EventD::new("foo3", "bar3"))).is_none());
-        assert!(buffer
-            .try_push(Event::ServiceCheck(ServiceCheck::new("foo4", CheckStatus::Ok)))
-            .is_none());
-        assert!(buffer
-            .try_push(Event::ServiceCheck(ServiceCheck::new("foo5", CheckStatus::Ok)))
-            .is_none());
-
-        assert_eq!(buffer.len(), 7);
-        assert!(buffer.has_event_type(EventType::Metric));
-        assert!(buffer.has_event_type(EventType::EventD));
-        assert!(buffer.has_event_type(EventType::ServiceCheck));
-
-        assert_eq!(buffer.take_events::<EventD>().count(), 3);
-        assert_eq!(buffer.len(), 4);
-        assert!(buffer.has_event_type(EventType::Metric));
-        assert!(!buffer.has_event_type(EventType::EventD));
-        assert!(buffer.has_event_type(EventType::ServiceCheck));
-
-        assert_eq!(buffer.take_events::<ServiceCheck>().count(), 2);
-        assert_eq!(buffer.len(), 2);
-        assert!(buffer.has_event_type(EventType::Metric));
-        assert!(!buffer.has_event_type(EventType::EventD));
-        assert!(!buffer.has_event_type(EventType::ServiceCheck));
-
-        assert_eq!(buffer.take_events::<Metric>().count(), 2);
-        assert_eq!(buffer.len(), 0);
-        assert!(!buffer.has_event_type(EventType::Metric));
-        assert!(!buffer.has_event_type(EventType::EventD));
-        assert!(!buffer.has_event_type(EventType::ServiceCheck));
-    }
-
-    #[test]
-    fn extract_events_removes_matching_events() {
-        let mut buffer = mixed_buffer();
-        assert!(buffer.try_push(Event::Metric(Metric::counter("e", 1.0))).is_none());
-
-        let extracted: Vec<_> = buffer
-            .extract_events::<Metric, _>(|metric| metric.context().name() != "c")
-            .map(|metric| metric.context().name().to_string())
-            .collect();
-        assert_eq!(sorted(extracted), ["a", "e"]);
-        assert_eq!(buffer.len(), 3);
-        assert!(buffer.has_event_type(EventType::Metric));
-        assert_eq!(metric_names(buffer.events::<Metric>()), ["c"]);
-
-        let mut eventd_titles: Vec<_> = buffer.events::<EventD>().map(|eventd| eventd.title()).collect();
-        eventd_titles.sort();
-        assert_eq!(eventd_titles, ["b", "d"]);
-    }
-
-    #[test]
-    fn extract_events_tracks_event_types() {
-        let mut buffer = mixed_buffer();
-        assert_eq!(buffer.extract_events::<Metric, _>(|_| true).count(), 2);
-        assert!(!buffer.has_event_type(EventType::Metric));
-        assert!(buffer.has_event_type(EventType::EventD));
-
-        assert_eq!(buffer.extract_events::<EventD, _>(|_| false).count(), 0);
-        assert!(buffer.has_event_type(EventType::EventD));
-    }
-
-    #[test]
-    fn retain_events_keeps_other_types_in_order() {
-        let event1 = Event::Metric(Metric::counter("foo", 42.0));
-        let event2 = Event::EventD(EventD::new("foo1", "bar1"));
-        let event3 = Event::EventD(EventD::new("foo2", "bar2"));
-        let event4 = Event::ServiceCheck(ServiceCheck::new("foo5", CheckStatus::Ok));
-
-        let mut buffer = FixedSizeEventBuffer::<10>::default();
-        for event in [&event1, &event2, &event3, &event4] {
-            assert!(buffer.try_push(event.clone()).is_none());
-        }
-        assert_eq!(buffer.len(), 4);
-
-        buffer.retain_events::<EventD, _>(|_| false);
-        assert_eq!(buffer.len(), 2);
-        assert!(buffer.has_event_type(EventType::Metric));
-        assert!(!buffer.has_event_type(EventType::EventD));
-        assert!(buffer.has_event_type(EventType::ServiceCheck));
-
-        let remaining: Vec<_> = buffer.into_iter().collect();
-        assert_eq!(remaining, [event1, event4]);
-    }
-
-    #[test]
-    fn allocates_each_event_type_once_with_remaining_capacity() {
-        let mut buffer = FixedSizeEventBuffer::<8>::default();
-        assert_eq!(buffer.metrics.capacity(), 0);
-        assert_eq!(buffer.eventds.capacity(), 0);
-
-        // The first event of a type reserves room for the rest of the buffer, so a buffer holding a single event type
-        // makes exactly one allocation.
-        assert!(buffer.try_push(Event::Metric(Metric::counter("foo", 1.0))).is_none());
-        assert_eq!(buffer.metrics.capacity(), 8);
-
-        // A second event type only reserves what's left.
-        assert!(buffer.try_push(Event::Metric(Metric::counter("foo", 2.0))).is_none());
-        assert!(buffer.try_push(Event::EventD(EventD::new("title", "text"))).is_none());
-        assert_eq!(buffer.eventds.capacity(), 6);
-
-        // Filling the rest of the buffer with metrics doesn't reallocate.
-        for i in 0..5 {
-            assert!(buffer
-                .try_push(Event::Metric(Metric::counter("foo", i as f64)))
-                .is_none());
-        }
-        assert!(buffer.is_full());
-        assert_eq!(buffer.metrics.capacity(), 8);
-        assert_eq!(buffer.eventds.capacity(), 6);
-    }
-
-    #[test]
-    fn iterates_grouped_by_event_type_in_insertion_order() {
-        let mut buffer = FixedSizeEventBuffer::<8>::default();
-        let events = [
-            Event::EventD(EventD::new("a", "a")),
-            Event::Metric(Metric::counter("b", 1.0)),
-            Event::ServiceCheck(ServiceCheck::new("c", CheckStatus::Ok)),
-            Event::Metric(Metric::counter("d", 1.0)),
-            Event::EventD(EventD::new("e", "e")),
-        ];
-        for event in events.iter().cloned() {
-            assert!(buffer.try_push(event).is_none());
-        }
-
-        let expected = vec![
-            events[1].clone(),
-            events[3].clone(),
-            events[0].clone(),
-            events[4].clone(),
-            events[2].clone(),
-        ];
-        let owned: Vec<Event> = buffer.into_iter().collect();
-        assert_eq!(owned, expected);
+    fn iterates_in_insertion_order() {
+        let events: Vec<Event> = metrics_buffer().into_iter().collect();
+        assert_eq!(events, [counter("a"), counter("b"), counter("c")]);
+        assert_eq!(FixedSizeEventBuffer::<8>::default().into_iter().count(), 0);
     }
 
     #[test]
     fn event_buffer_manager_try_push_not_full() {
         let mut manager = EventBufferManager::<4>::default();
 
-        let event1 = Event::Metric(Metric::counter("foo", 42.0));
-        let event2 = Event::EventD(EventD::new("foo1", "bar1"));
-        let event3 = Event::EventD(EventD::new("foo2", "bar2"));
-        let event4 = Event::ServiceCheck(ServiceCheck::new("foo5", CheckStatus::Ok));
+        let events = [counter("a"), counter("b"), counter("c"), counter("d")];
+        for event in events.iter().cloned() {
+            assert!(manager.try_push(event).is_none());
+        }
 
-        // Add the four events.
-        assert!(manager.try_push(event1.clone()).is_none());
-        assert!(manager.try_push(event2.clone()).is_none());
-        assert!(manager.try_push(event3.clone()).is_none());
-        assert!(manager.try_push(event4.clone()).is_none());
-
-        // Consume the current buffer and ensure all of the events match the expected events.
-        let mut buffered_events = manager.consume().expect("manager should have buffer").into_iter();
-
-        assert_eq!(Some(event1), buffered_events.next());
-        assert_eq!(Some(event2), buffered_events.next());
-        assert_eq!(Some(event3), buffered_events.next());
-        assert_eq!(Some(event4), buffered_events.next());
-        assert_eq!(None, buffered_events.next());
+        let buffered: Vec<_> = manager
+            .consume()
+            .expect("manager should have buffer")
+            .into_iter()
+            .collect();
+        assert_eq!(buffered, events);
     }
 
     #[test]
     fn event_buffer_manager_try_push_full() {
         let mut manager = EventBufferManager::<3>::default();
 
-        let event1 = Event::Metric(Metric::counter("foo", 42.0));
-        let event2 = Event::EventD(EventD::new("foo1", "bar1"));
-        let event3 = Event::EventD(EventD::new("foo2", "bar2"));
-        let event4 = Event::ServiceCheck(ServiceCheck::new("foo5", CheckStatus::Ok));
-
-        // Add the four events.
-        //
         // We should only be able to add three events before getting a buffer back, since we have a capacity of three.
-        assert!(manager.try_push(event1.clone()).is_none());
-        assert!(manager.try_push(event2.clone()).is_none());
-        assert!(manager.try_push(event3.clone()).is_none());
+        assert!(manager.try_push(counter("a")).is_none());
+        assert!(manager.try_push(counter("b")).is_none());
+        assert!(manager.try_push(counter("c")).is_none());
 
-        let first_buffer = manager.try_push(event4.clone());
-        assert!(first_buffer.is_some());
+        let first_buffer = manager.try_push(counter("d")).expect("first buffer should be full");
+        assert_eq!(
+            first_buffer.into_iter().collect::<Vec<_>>(),
+            [counter("a"), counter("b"), counter("c")]
+        );
 
-        let mut buffered_events1 = first_buffer.unwrap().into_iter();
-        assert_eq!(Some(event1), buffered_events1.next());
-        assert_eq!(Some(event2), buffered_events1.next());
-        assert_eq!(Some(event3), buffered_events1.next());
-        assert_eq!(None, buffered_events1.next());
+        let second_buffer = manager.consume().expect("manager should have second buffer");
+        assert_eq!(second_buffer.into_iter().collect::<Vec<_>>(), [counter("d")]);
+    }
 
-        // Consume the buffer from the manager, which should have the fourth event.
-        let mut buffered_events2 = manager
-            .consume()
-            .expect("manager should have second buffer")
-            .into_iter();
-        assert_eq!(Some(event4), buffered_events2.next());
-        assert_eq!(None, buffered_events2.next());
+    #[test]
+    fn event_buffer_manager_swaps_buffers_when_the_event_type_changes() {
+        let mut manager = EventBufferManager::<4>::default();
+        assert!(manager.try_push(counter("a")).is_none());
+
+        let eventd = Event::EventD(EventD::new("title", "text"));
+        let metrics = manager
+            .try_push(eventd.clone())
+            .expect("a different event type needs a new buffer");
+        assert_eq!(metrics.into_iter().collect::<Vec<_>>(), [counter("a")]);
+
+        let eventds = manager.consume().expect("manager should have second buffer");
+        assert_eq!(eventds.into_iter().collect::<Vec<_>>(), [eventd]);
     }
 
     #[test]

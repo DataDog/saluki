@@ -979,7 +979,82 @@ struct DogStatsDDecoder {
     disable_verbose_logs: bool,
     additional_tags: Arc<[String]>,
     traffic_capture: TrafficCapture,
-    event_buffer: Option<EventsBuffer>,
+    event_buffers: DecoderEventBuffers,
+}
+
+/// The outputs that the DogStatsD source dispatches events to.
+#[derive(Clone, Copy, Debug)]
+enum DogStatsDOutput {
+    Metrics,
+    Events,
+    ServiceChecks,
+}
+
+impl DogStatsDOutput {
+    /// Returns the output that the given event is dispatched to.
+    fn for_event(event: &Event) -> Self {
+        match event {
+            Event::EventD(_) => Self::Events,
+            Event::ServiceCheck(_) => Self::ServiceChecks,
+            // DogStatsD only decodes metrics, events, and service checks, so everything else is a metric.
+            _ => Self::Metrics,
+        }
+    }
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Metrics => "metrics",
+            Self::Events => "events",
+            Self::ServiceChecks => "service_checks",
+        }
+    }
+}
+
+/// The event buffers a decoder fills, one per output.
+///
+/// An event buffer only holds a single event type, so each output gets its own buffer.
+#[derive(Default)]
+struct DecoderEventBuffers {
+    metrics: Option<EventsBuffer>,
+    events: Option<EventsBuffer>,
+    service_checks: Option<EventsBuffer>,
+}
+
+impl DecoderEventBuffers {
+    fn buffer_mut(&mut self, output: DogStatsDOutput) -> &mut Option<EventsBuffer> {
+        match output {
+            DogStatsDOutput::Metrics => &mut self.metrics,
+            DogStatsDOutput::Events => &mut self.events,
+            DogStatsDOutput::ServiceChecks => &mut self.service_checks,
+        }
+    }
+
+    /// Adds an event to the buffer for its output.
+    ///
+    /// If that buffer is full, it's replaced with a new buffer holding the event, and the full buffer is returned along
+    /// with the output it should be dispatched to.
+    fn push(&mut self, event: Event) -> Option<(DogStatsDOutput, EventsBuffer)> {
+        let output = DogStatsDOutput::for_event(&event);
+        let event_buffer = self.buffer_mut(output).get_or_insert_default();
+        let event = event_buffer.try_push(event)?;
+        let full_event_buffer = mem::take(event_buffer);
+        assert!(
+            event_buffer.try_push(event).is_none(),
+            "New event buffer is unexpectedly full."
+        );
+        Some((output, full_event_buffer))
+    }
+
+    /// Takes every non-empty buffer, along with the output it should be dispatched to.
+    fn take_all(&mut self) -> impl Iterator<Item = (DogStatsDOutput, EventsBuffer)> {
+        [
+            (DogStatsDOutput::Metrics, self.metrics.take()),
+            (DogStatsDOutput::Events, self.events.take()),
+            (DogStatsDOutput::ServiceChecks, self.service_checks.take()),
+        ]
+        .into_iter()
+        .filter_map(|(output, buffer)| buffer.map(|buffer| (output, buffer)))
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1596,7 +1671,7 @@ impl DogStatsDDecoder {
             disable_verbose_logs,
             additional_tags,
             traffic_capture,
-            event_buffer: None,
+            event_buffers: DecoderEventBuffers::default(),
         }
     }
 
@@ -1736,9 +1811,9 @@ impl DogStatsDDecoder {
             &self.default_hostname,
         ) {
             Ok(Some(event)) => {
-                if let Some(event_buffer) = self.buffer_event(event) {
+                if let Some((output, event_buffer)) = self.event_buffers.push(event) {
                     debug!(%listen_addr, %peer_addr, "Event buffer is full. Forwarding events.");
-                    dispatch_events(event_buffer, &self.source_context).await;
+                    dispatch_events(output, event_buffer, &self.source_context).await;
                 }
             }
             Ok(None) => {}
@@ -1748,24 +1823,9 @@ impl DogStatsDDecoder {
         }
     }
 
-    fn buffer_event(&mut self, event: Event) -> Option<EventsBuffer> {
-        let event_buffer = self.event_buffer.get_or_insert_default();
-        match event_buffer.try_push(event) {
-            Some(event) => {
-                let full_event_buffer = mem::take(event_buffer);
-                assert!(
-                    event_buffer.try_push(event).is_none(),
-                    "New event buffer is unexpectedly full."
-                );
-                Some(full_event_buffer)
-            }
-            None => None,
-        }
-    }
-
     async fn flush_events(&mut self) {
-        if let Some(event_buffer) = self.event_buffer.take() {
-            dispatch_events(event_buffer, &self.source_context).await;
+        for (output, event_buffer) in self.event_buffers.take_all() {
+            dispatch_events(output, event_buffer, &self.source_context).await;
         }
     }
 }
@@ -2269,70 +2329,35 @@ fn handle_service_check_packet(
     Some(service_check)
 }
 
-async fn dispatch_events(mut event_buffer: EventsBuffer, source_context: &SourceContext) {
-    debug!(events_len = event_buffer.len(), "Forwarding events.");
+async fn dispatch_events(output: DogStatsDOutput, event_buffer: EventsBuffer, source_context: &SourceContext) {
+    debug!(
+        output = output.name(),
+        events_len = event_buffer.len(),
+        "Forwarding events."
+    );
 
-    // TODO: This is maybe a little dicey because if we fail to dispatch the events, we may not have iterated over all of
-    // them, so there might still be eventd events when get to the service checks point, and eventd events and/or service
-    // check events when we get to the metrics point, and so on.
-    //
-    // There's probably something to be said for erroring out fully if this happens, since we should only fail to
-    // dispatch if the downstream component fails entirely... and unless we have a way to restart the component, then
-    // we're going to continue to fail to dispatch any more events until the process is restarted anyways.
-
-    // Dispatch any eventd events, if present.
-    if event_buffer.has_event_type(EventType::EventD) {
-        let eventd_events = event_buffer.take_events::<EventD>().map(Event::EventD);
-        let events_output = source_context.dispatcher().buffered_named("events");
-
-        // The `events` output is always wired in the DSD topology, so a missing output is an invariant violation that
-        // crashes this component.
-        if events_output.is_err() {
+    // Every output is always wired in the DSD topology, so a missing output is an invariant violation.
+    match output {
+        DogStatsDOutput::Events if source_context.dispatcher().buffered_named(output.name()).is_err() => {
             saluki_antithesis::unreachable!("dsd 'events' output missing at dispatch");
         }
-
-        if let Err(e) = events_output
-            .expect("events output should always exist")
-            .send_all(eventd_events)
-            .await
-        {
-            error!(error = %e, "Failed to dispatch eventd events.");
-
-            saluki_antithesis::unreachable!("dsd dispatch failed mid-buffer", { "stream": "events" });
-        }
-    }
-
-    // Dispatch any service check events, if present.
-    if event_buffer.has_event_type(EventType::ServiceCheck) {
-        let service_check_events = event_buffer.take_events::<ServiceCheck>().map(Event::ServiceCheck);
-        let service_checks_output = source_context.dispatcher().buffered_named("service_checks");
-
-        if service_checks_output.is_err() {
+        DogStatsDOutput::ServiceChecks if source_context.dispatcher().buffered_named(output.name()).is_err() => {
             saluki_antithesis::unreachable!("dsd 'service_checks' output missing at dispatch");
         }
-
-        if let Err(e) = service_checks_output
-            .expect("service checks output should always exist")
-            .send_all(service_check_events)
-            .await
-        {
-            error!(error = %e, "Failed to dispatch service check events.");
-
-            saluki_antithesis::unreachable!("dsd dispatch failed mid-buffer", { "stream": "service_checks" });
-        }
+        _ => {}
     }
 
-    // Finally, if there are events left, they'll be metrics, so dispatch them.
-    if !event_buffer.is_empty() {
-        if let Err(e) = source_context
-            .dispatcher()
-            .dispatch_named("metrics", event_buffer)
-            .await
-        {
-            error!(error = %e, "Failed to dispatch metric events.");
+    // There's probably something to be said for erroring out fully if this fails, since we should only fail to dispatch
+    // if the downstream component fails entirely... and unless we have a way to restart the component, then we're going
+    // to continue to fail to dispatch any more events until the process is restarted anyways.
+    if let Err(e) = source_context
+        .dispatcher()
+        .dispatch_named(output.name(), event_buffer)
+        .await
+    {
+        error!(output = output.name(), error = %e, "Failed to dispatch events.");
 
-            saluki_antithesis::unreachable!("dsd dispatch failed mid-buffer", { "stream": "metrics" });
-        }
+        saluki_antithesis::unreachable!("dsd dispatch failed mid-buffer", { "stream": output.name() });
     }
 }
 
@@ -4394,6 +4419,60 @@ mod tests {
             resolve_process_origin(None, &peer_addr),
             Some(ProcessOrigin::Replay(captured_pid))
         );
+    }
+
+    #[test]
+    fn decoder_event_buffers_keep_one_buffer_per_output() {
+        use saluki_core::data_model::event::{
+            eventd::EventD,
+            metric::Metric,
+            service_check::{CheckStatus, ServiceCheck},
+            Event,
+        };
+
+        use super::DecoderEventBuffers;
+
+        // Events and service checks go into their own buffers, so they don't cut a metrics buffer short.
+        let mut buffers = DecoderEventBuffers::default();
+        let metric = || Event::Metric(Metric::counter("metric", 1.0));
+        assert!(buffers.push(metric()).is_none());
+        assert!(buffers.push(Event::EventD(EventD::new("title", "text"))).is_none());
+        assert!(buffers
+            .push(Event::ServiceCheck(ServiceCheck::new("check", CheckStatus::Ok)))
+            .is_none());
+        assert!(buffers.push(metric()).is_none());
+
+        let flushed: Vec<_> = buffers
+            .take_all()
+            .map(|(output, buffer)| (output.name(), buffer.len()))
+            .collect();
+        assert_eq!(flushed, [("metrics", 2), ("events", 1), ("service_checks", 1)]);
+        assert_eq!(buffers.take_all().count(), 0);
+    }
+
+    #[test]
+    fn decoder_event_buffers_return_full_buffers_with_their_output() {
+        use saluki_core::data_model::event::{eventd::EventD, Event};
+
+        use super::DecoderEventBuffers;
+
+        let mut buffers = DecoderEventBuffers::default();
+        let capacity = EventsBuffer::default().capacity();
+        for _ in 0..capacity {
+            assert!(buffers.push(Event::EventD(EventD::new("title", "text"))).is_none());
+        }
+
+        let (output, full) = buffers
+            .push(Event::EventD(EventD::new("title", "text")))
+            .expect("the events buffer should be full");
+        assert_eq!(output.name(), "events");
+        assert_eq!(full.len(), capacity);
+
+        let flushed: Vec<_> = buffers
+            .take_all()
+            .map(|(output, buffer)| (output.name(), buffer.len()))
+            .collect();
+        assert_eq!(flushed, [("events", 1)]);
     }
 }
 
