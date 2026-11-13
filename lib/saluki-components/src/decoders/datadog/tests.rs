@@ -13,13 +13,16 @@ use base64::{engine::general_purpose, Engine as _};
 use proptest::prelude::*;
 use rmp::encode;
 use saluki_common::collections::FastHashMap;
-use saluki_core::data_model::event::trace::{AttributeValue, TraceIngestInfo};
+use saluki_core::data_model::event::trace::{AttributeValue, Span, Trace, TraceIngestInfo};
 use serde::Deserialize;
 use stringtheory::MetaString;
 
 use super::error::DecodeError;
 use super::string_table::StringTable;
-use super::{decode_span, decode_v1_payload, read, split_trace_id, value};
+use super::{
+    decode_span, decode_v1_payload, first_span, read, resolve_process_tags, resolve_sdk_otlp_export, split_trace_id,
+    value,
+};
 
 /// Fixture cases, each pairing a base64-encoded payload with the value it must decode to.
 const FIXTURE_CASES_JSON: &str = include_str!("testdata/v1_decoder_cases.json");
@@ -723,6 +726,62 @@ fn trailing_bytes_after_payload_rejected_valid_value() {
 
     let err = decode_v1_payload(&buf).unwrap_err();
     assert!(matches!(err, DecodeError::TrailingBytes { len: 1 }));
+}
+
+fn attrs(key: &str, value: &str) -> FastHashMap<MetaString, AttributeValue> {
+    let mut map = FastHashMap::default();
+    map.insert(ms(key), AttributeValue::String(ms(value)));
+    map
+}
+
+#[test]
+fn first_span_skips_empty_traces() {
+    let traces = vec![
+        Trace::new(Vec::new(), TraceIngestInfo::Datadog),
+        Trace::new(vec![Span::default().with_span_id(7)], TraceIngestInfo::Datadog),
+    ];
+    assert_eq!(first_span(&traces).map(Span::span_id), Some(7));
+    assert!(first_span(&[]).is_none());
+}
+
+#[test]
+fn process_tags_resolve_payload_then_first_span_then_header() {
+    let none = FastHashMap::default();
+    let span = Span::default().with_attributes(attrs("_dd.tags.process", "from-span"));
+    let payload = attrs("_dd.tags.process", "from-payload");
+
+    assert_eq!(
+        resolve_process_tags(&payload, Some(&span), Some("from-header")),
+        "from-payload"
+    );
+    assert_eq!(
+        resolve_process_tags(&none, Some(&span), Some("from-header")),
+        "from-span"
+    );
+    assert_eq!(resolve_process_tags(&none, None, Some("from-header")), "from-header");
+    assert_eq!(resolve_process_tags(&none, None, None), "");
+
+    // A present but empty attribute still wins over the header, as in the reference.
+    let empty = attrs("_dd.tags.process", "");
+    assert_eq!(resolve_process_tags(&empty, Some(&span), Some("from-header")), "");
+}
+
+#[test]
+fn sdk_otlp_export_resolves_payload_then_first_span() {
+    let none = FastHashMap::default();
+    let span = Span::default().with_attributes(attrs("_dd.sdk.otlp_export", "false"));
+
+    assert_eq!(
+        resolve_sdk_otlp_export(&attrs("_dd.sdk.otlp_export", "true"), Some(&span)),
+        "true"
+    );
+    assert_eq!(resolve_sdk_otlp_export(&none, Some(&span)), "false");
+    assert_eq!(resolve_sdk_otlp_export(&none, None), "");
+
+    // Non-string attributes render as the reference's `AsString` does.
+    let mut bool_attr = FastHashMap::default();
+    bool_attr.insert(ms("_dd.sdk.otlp_export"), AttributeValue::Bool(true));
+    assert_eq!(resolve_sdk_otlp_export(&bool_attr, None), "true");
 }
 
 proptest! {

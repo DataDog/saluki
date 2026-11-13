@@ -154,25 +154,38 @@ impl ReasonCounts {
 pub(super) struct TracerTags {
     lang: MetaString,
     lang_version: MetaString,
+    lang_vendor: MetaString,
+    interpreter: MetaString,
     tracer_version: MetaString,
+    endpoint_version: MetaString,
+    connection_type: MetaString,
 }
 
 impl TracerTags {
     fn from_payload(payload: &PayloadFields) -> Self {
+        let receiver = payload.receiver();
         Self {
             lang: payload.language_name.clone(),
             lang_version: payload.language_version.clone(),
+            lang_vendor: receiver.lang_vendor.clone(),
+            interpreter: receiver.interpreter.clone(),
             tracer_version: payload.tracer_version.clone(),
+            endpoint_version: receiver.endpoint_version.clone(),
+            connection_type: receiver.connection_type.clone(),
         }
     }
 
-    /// Assembles the tag set with the given reason, omitting empty tags as the reference does.
+    /// Assembles the tag set with the given reason, omitting empty tags as the reference's `Tags.toArray` does.
     fn tag_set(&self, reason: &str) -> TagSet {
-        let mut tag_set = TagSet::with_capacity(4);
+        let mut tag_set = TagSet::with_capacity(8);
         for (name, value) in [
             ("lang", &self.lang),
             ("lang_version", &self.lang_version),
+            ("lang_vendor", &self.lang_vendor),
+            ("interpreter", &self.interpreter),
             ("tracer_version", &self.tracer_version),
+            ("endpoint_version", &self.endpoint_version),
+            ("connection_type", &self.connection_type),
         ] {
             if !value.is_empty() {
                 tag_set.insert_tag(MetaString::from(format!("{}:{}", name, value)));
@@ -235,7 +248,9 @@ fn counter_event(name: &'static str, tags: TagSet, count: u64) -> Event {
 
 #[cfg(test)]
 mod tests {
-    use saluki_core::data_model::event::metric::MetricValues;
+    use std::sync::Arc;
+
+    use saluki_core::data_model::event::{metric::MetricValues, trace::ReceiverMetadata};
 
     use super::*;
 
@@ -267,6 +282,12 @@ mod tests {
         let payload = PayloadFields {
             language_name: MetaString::from("python"),
             tracer_version: MetaString::from("2.0.0"),
+            receiver: Some(Arc::new(ReceiverMetadata {
+                interpreter: MetaString::from("CPython"),
+                endpoint_version: MetaString::from("v0.4"),
+                connection_type: MetaString::from("uds"),
+                ..ReceiverMetadata::new()
+            })),
             ..PayloadFields::default()
         };
         let mut counts = ReasonCounts::default();
@@ -283,13 +304,27 @@ mod tests {
         assert!(has_counter(
             &events,
             METRIC_TRACES_DROPPED,
-            &["lang:python", "tracer_version:2.0.0", "reason:trace_id_zero"],
+            &[
+                "lang:python",
+                "interpreter:CPython",
+                "tracer_version:2.0.0",
+                "endpoint_version:v0.4",
+                "connection_type:uds",
+                "reason:trace_id_zero"
+            ],
             1.0
         ));
         assert!(has_counter(
             &events,
             METRIC_SPANS_MALFORMED,
-            &["lang:python", "tracer_version:2.0.0", "reason:service_empty"],
+            &[
+                "lang:python",
+                "interpreter:CPython",
+                "tracer_version:2.0.0",
+                "endpoint_version:v0.4",
+                "connection_type:uds",
+                "reason:service_empty"
+            ],
             2.0
         ));
         assert!(window.take_window_events().is_empty(), "the window resets");

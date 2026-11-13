@@ -112,8 +112,70 @@ pub struct PayloadFields {
     pub hostname: MetaString,
     /// Application version string.
     pub app_version: MetaString,
-    /// Per-chunk weight from `Datadog-Client-Dropped-P0-Traces` header. Zero if absent.
+    /// Metadata the receiver supplied alongside the payload. `None` means every field has its default.
+    ///
+    /// Shared by every trace of a payload, so it costs one pointer per trace. Read it through
+    /// [`receiver`][Self::receiver].
+    pub receiver: Option<Arc<ReceiverMetadata>>,
+}
+
+impl PayloadFields {
+    /// Returns the receiver-supplied metadata, or the defaults when there is none.
+    pub fn receiver(&self) -> &ReceiverMetadata {
+        static DEFAULT: ReceiverMetadata = ReceiverMetadata::new();
+        self.receiver.as_deref().unwrap_or(&DEFAULT)
+    }
+}
+
+/// Payload metadata that the receiver supplies from request headers, the connection, and the tagger, rather than
+/// decoding it from spans.
+///
+/// The reference receiver carries these on its `Payload` (`pkg/trace/api/payload.go`) or, for the tags, sets them as
+/// tracer payload attributes in `handleTracesV1` (`pkg/trace/api/api.go`).
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct ReceiverMetadata {
+    /// Per-chunk weight from the `Datadog-Client-Dropped-P0-Traces` header. Zero if absent.
     pub client_dropped_p0s_weight: f64,
+    /// Whether the client already computed APM stats for this payload, so the agent must not.
+    pub client_computed_stats: bool,
+    /// Whether the client already marked top-level spans, so the agent must not compute them.
+    pub client_computed_top_level: bool,
+    /// Comma-separated container tags (`_dd.tags.container`) resolved for the payload's container ID.
+    ///
+    /// Only Datadog traces use this field. For OTLP traces, the encoder derives container tags from the resource
+    /// attributes instead.
+    pub container_tags: MetaString,
+    /// Comma-separated process tags (`_dd.tags.process`) describing the instrumented process.
+    pub process_tags: MetaString,
+    /// Whether the SDK exports its telemetry through OTLP (`_dd.sdk.otlp_export`), hoisted from the payload or its
+    /// first span. Empty when the tracer didn't send it.
+    pub sdk_otlp_export: MetaString,
+    /// Tracer language interpreter, reported in receiver telemetry.
+    pub interpreter: MetaString,
+    /// Tracer language interpreter vendor, reported in receiver telemetry.
+    pub lang_vendor: MetaString,
+    /// Intake endpoint version the payload arrived on (for example, `"v0.4"`), reported in receiver telemetry.
+    pub endpoint_version: MetaString,
+    /// Connection type the payload arrived over (for example, `"uds"`), reported in receiver telemetry.
+    pub connection_type: MetaString,
+}
+
+impl ReceiverMetadata {
+    /// Creates metadata with every field at its default.
+    pub const fn new() -> Self {
+        Self {
+            client_dropped_p0s_weight: 0.0,
+            client_computed_stats: false,
+            client_computed_top_level: false,
+            container_tags: MetaString::empty(),
+            process_tags: MetaString::empty(),
+            sdk_otlp_export: MetaString::empty(),
+            interpreter: MetaString::empty(),
+            lang_vendor: MetaString::empty(),
+            endpoint_version: MetaString::empty(),
+            connection_type: MetaString::empty(),
+        }
+    }
 }
 
 /// The protocol a trace chunk was ingested through.
