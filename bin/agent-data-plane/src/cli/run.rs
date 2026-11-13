@@ -6,7 +6,10 @@ use std::{
 
 use agent_data_plane_config::{
     defaults::DEFAULT_ENCODER_FLUSH_TIMEOUT,
-    domains::multi_region_failover,
+    domains::{
+        multi_region_failover,
+        traces::{ApmFeature, Domain as TracesDomain},
+    },
     shared::{Secrets, SharedConfiguration},
     SalukiConfiguration,
 };
@@ -47,8 +50,9 @@ use saluki_components::{
     },
     transforms::{
         aggregate_context_snapshot_channel, AggregateConfiguration, AutoscalingFailoverGatewayConfiguration,
-        ChainedConfiguration, DogStatsDMapperConfiguration, DogStatsDMapperProfile, DogStatsDMetricMapping,
-        HistogramConfiguration, HostEnrichmentConfiguration, TraceObfuscationConfiguration,
+        ChainedConfiguration, DatadogTraceNormalizerConfiguration, DogStatsDMapperConfiguration,
+        DogStatsDMapperProfile, DogStatsDMetricMapping, HistogramConfiguration, HostEnrichmentConfiguration,
+        TraceObfuscationConfiguration,
     },
 };
 use saluki_core::{
@@ -63,7 +67,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::{
     component_inputs::{
-        apm_relay_configuration, apm_stats_configuration, datadog_metrics_configuration, forwarder_configuration,
+        apm_source_configuration, apm_stats_configuration, datadog_metrics_configuration, forwarder_configuration,
         metric_mirroring, metric_name_filter, mrf_configuration, obfuscation_configuration, origin_tag_cardinality,
         otlp_context_settings, otlp_metrics_settings, otlp_receiver, otlp_traces_settings, ottl_error_mode,
         resolve_static_tags, tag_filter_entries, tag_value_allowlist, trace_configuration, trace_sampler_configuration,
@@ -602,21 +606,8 @@ async fn add_baseline_traces_pipeline_to_blueprint(
     };
     let trace_tag_replacer_config = trace_tag_replacer_configuration(&config.domains.traces);
 
-    let ottl_filter = &config.domains.traces.ottl_filter;
-    let ottl_filter_config = OttlFilterConfiguration::new(
-        ottl_error_mode(ottl_filter.error_mode),
-        ottl_filter.span_conditions.clone(),
-    );
-
-    let ottl_transform = &config.domains.traces.ottl_transform;
-    let ottl_transform_config = OttlTransformConfiguration::new(
-        ottl_error_mode(ottl_transform.error_mode),
-        ottl_transform.trace_statements.clone(),
-    );
-
-    let dd_traces_enrich_config = ChainedConfiguration::default()
-        .with_transform_builder("ottl_filter", ottl_filter_config)
-        .with_transform_builder("ottl_transform", ottl_transform_config)
+    // Both trace branches, OTLP and Datadog, merge here.
+    let traces_process_config = ChainedConfiguration::default()
         .with_transform_builder("trace_obfuscation", trace_obfuscation_config)
         .with_transform_builder("trace_tag_replacer", trace_tag_replacer_config);
     let apm_onboarding_config =
@@ -632,14 +623,14 @@ async fn add_baseline_traces_pipeline_to_blueprint(
             .await?;
 
     blueprint
-        .add_transform("traces_enrich", dd_traces_enrich_config)?
+        .add_transform("traces_process", traces_process_config)?
         .add_transform("trace_sampler", trace_sampler_config)?
         .add_transform("apm_onboarding", apm_onboarding_config)?
         .add_transform("dd_apm_stats", apm_stats_transform_config)?
         .add_encoder("dd_stats_encode", dd_apm_stats_encoder)?
         .add_encoder("dd_traces_encode", dd_traces_config)?
         // Onboarding runs after sampling, so a service is only recorded as seen once one of its traces is kept.
-        .connect_components_in_order(["traces_enrich", "trace_sampler", "apm_onboarding"])?
+        .connect_components_in_order(["traces_process", "trace_sampler", "apm_onboarding"])?
         .connect_components("apm_onboarding", ["dd_apm_stats", "dd_traces_encode"])?
         // The sampler reports its sampling telemetry as metric events through this dedicated
         // output, delivering the metrics through the metrics pipeline to the backend.
@@ -1005,10 +996,10 @@ async fn add_apm_pipeline_to_blueprint(
     semantic_registry: SemanticRegistryProvider,
 ) -> Result<(), GenericError> {
     let config = config_system.config();
-    // In standalone mode there is no workload provider, so the resolver finds nothing and the relay forwards requests
+    // In standalone mode there is no workload provider, so the resolver finds nothing and the source forwards requests
     // without a container ID
     let workload = Arc::new(env_provider.workload().clone());
-    let dd_traces_relay = apm_relay_configuration(
+    let dd_traces_in = apm_source_configuration(
         &config,
         datadog_agent_config::is_containerized(),
         Some(workload.clone()),
@@ -1017,15 +1008,46 @@ async fn add_apm_pipeline_to_blueprint(
         agent_client.cloned(),
         semantic_registry,
     );
-    // The source keeps its relay component ID, which labels its telemetry.
-    //
-    // shortcut: the source emits no traces yet, but a topology can't hold a component with no connections, so its
-    // traces output goes to a blackhole; connect it to the traces pipeline once the source decodes traces.
-    blueprint
-        .add_source("dd_traces_relay", dd_traces_relay)?
-        .add_destination("dd_traces_relay_blackhole", BlackholeConfiguration)?
-        .connect_components("dd_traces_relay.traces", "dd_traces_relay_blackhole")?;
+    blueprint.add_source("dd_traces_in", dd_traces_in)?;
+
+    if DataPlaneConfiguration::from_configuration(&config).native_trace_intake_enabled() {
+        // Datadog traces are normalized, then join the shared trace pipeline that OTLP traces also feed.
+        let traces = &config.domains.traces;
+        let dd_traces_normalize_config = DatadogTraceNormalizerConfiguration::new()
+            .with_component2name(traces.features.contains(&ApmFeature::Component2Name));
+        blueprint
+            .add_transform("dd_traces_normalize", dd_traces_normalize_config)?
+            .connect_components_in_order(["dd_traces_in.traces", "dd_traces_normalize", "traces_process"])?
+            // The normalizer reports its telemetry as metric events, as the sampler does.
+            .connect_components("dd_traces_normalize.metrics", "metrics_enrich")?;
+    } else {
+        // Without native intake the source proxies trace payloads and emits nothing on its traces output. A topology
+        // can't hold an unconnected output, and the trace pipeline may not exist, so the output goes to a blackhole.
+        blueprint
+            .add_destination("dd_traces_in_blackhole", BlackholeConfiguration)?
+            .connect_components("dd_traces_in.traces", "dd_traces_in_blackhole")?;
+    }
     Ok(())
+}
+
+/// Builds the transforms that only OTLP traces go through before they join the shared trace pipeline at
+/// `traces_process`.
+fn otlp_traces_enrich_configuration(traces: &TracesDomain) -> ChainedConfiguration {
+    let ottl_filter = &traces.ottl_filter;
+    let ottl_filter_config = OttlFilterConfiguration::new(
+        ottl_error_mode(ottl_filter.error_mode),
+        ottl_filter.span_conditions.clone(),
+    );
+
+    let ottl_transform = &traces.ottl_transform;
+    let ottl_transform_config = OttlTransformConfiguration::new(
+        ottl_error_mode(ottl_transform.error_mode),
+        ottl_transform.trace_statements.clone(),
+    );
+
+    ChainedConfiguration::default()
+        .with_transform_builder("ottl_filter", ottl_filter_config)
+        .with_transform_builder("ottl_transform", ottl_transform_config)
 }
 
 async fn add_otlp_pipeline_to_blueprint(
@@ -1079,8 +1101,18 @@ async fn add_otlp_pipeline_to_blueprint(
 
             blueprint
                 .add_decoder("otlp_traces_decode", otlp_decoder_config)?
-                // Traces to decoder, then to the trace pipeline: obfuscation, enrichment, encoding, stats, forwarding.
-                .connect_components_in_order(["otlp_relay_in.traces", "otlp_traces_decode", "traces_enrich"])?;
+                .add_transform(
+                    "otlp_traces_enrich",
+                    otlp_traces_enrich_configuration(&config.domains.traces),
+                )?
+                // Traces to decoder and OTTL processing, then to the shared trace pipeline: obfuscation, sampling,
+                // stats, encoding, forwarding.
+                .connect_components_in_order([
+                    "otlp_relay_in.traces",
+                    "otlp_traces_decode",
+                    "otlp_traces_enrich",
+                    "traces_process",
+                ])?;
         }
     } else {
         info!("OTLP proxy mode disabled. OTLP signals will be handled natively.");
@@ -1119,7 +1151,11 @@ async fn add_otlp_pipeline_to_blueprint(
             // to avoid transforming counters into rates.
             .connect_components("otlp_in.metrics", "metrics_enrich")?
             .connect_components("otlp_in.logs", "dd_logs_encode")?
-            .connect_components("otlp_in.traces", "traces_enrich")?;
+            .add_transform(
+                "otlp_traces_enrich",
+                otlp_traces_enrich_configuration(&config.domains.traces),
+            )?
+            .connect_components_in_order(["otlp_in.traces", "otlp_traces_enrich", "traces_process"])?;
     }
     Ok(())
 }

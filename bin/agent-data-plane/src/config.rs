@@ -218,14 +218,21 @@ impl<'a> DataPlaneConfiguration<'a> {
         self.checks_enabled() || self.dogstatsd_enabled() || (!self.standalone_mode() && self.data_pipelines_enabled())
     }
 
+    /// Returns `true` if the APM source serves the trace intake endpoints itself.
+    pub const fn native_trace_intake_enabled(&self) -> bool {
+        self.apm_enabled() && self.config.domains.apm.native_trace_intake
+    }
+
     /// Returns `true` if the traces pipeline is required.
     ///
-    /// This indicates that the "baseline" traces pipeline (encoding, forwarding) is required by higher-level data
-    /// pipelines, such as OTLP.
+    /// This indicates that the "baseline" traces pipeline (processing, sampling, encoding, forwarding) is required by
+    /// higher-level data pipelines, such as OTLP or native APM trace intake.
     pub const fn traces_pipeline_required(&self) -> bool {
         // We consider the traces pipeline to be enabled if:
         // - OTLP is enabled and not in proxy mode or proxy mode is enabled and proxy traces are disabled
-        self.otlp_enabled() && (!self.otlp_proxy_enabled() || !self.otlp_proxy_traces_enabled())
+        // - APM is enabled with native trace intake
+        (self.otlp_enabled() && (!self.otlp_proxy_enabled() || !self.otlp_proxy_traces_enabled()))
+            || self.native_trace_intake_enabled()
     }
 
     /// Returns the set of [`Pipeline`] variants that are active based on our configuration.
@@ -575,8 +582,9 @@ mod tests {
 
     #[test]
     fn connected_apm_only_requires_liveness_baseline_pipelines() {
-        // The APM relay forwards to the trace-agent what it does not handle itself, so it needs no baseline pipeline of
-        // its own, but connected mode still forwards the liveness metric and service check.
+        // Without native trace intake, the APM source forwards to the trace-agent what it does not handle itself, so
+        // it needs no baseline pipeline of its own, but connected mode still forwards the liveness metric and service
+        // check.
         let mut config = pipeline_configuration(false, false, false, Proxy::default());
         config.control.apm = true;
         let dp = DataPlaneConfiguration::from_configuration(&config);
@@ -591,7 +599,7 @@ mod tests {
 
     #[test]
     fn standalone_apm_only_requires_no_baseline_pipelines() {
-        // The APM source emits no traces yet, so it needs no baseline pipeline to feed.
+        // Without native trace intake the APM source emits no traces, so it needs no baseline pipeline to feed.
         let mut config = pipeline_configuration(false, false, false, Proxy::default());
         config.control.apm = true;
         config.control.standalone_mode = true;
@@ -602,6 +610,50 @@ mod tests {
         assert!(!dp.logs_pipeline_required());
         assert!(!dp.events_pipeline_required());
         assert!(!dp.service_checks_pipeline_required());
+        assert!(!dp.traces_pipeline_required());
+    }
+
+    #[test]
+    fn standalone_apm_native_intake_requires_traces_and_metrics_pipelines() {
+        // Native intake feeds Datadog traces into the traces pipeline, whose normalizer and sampler report telemetry
+        // through the metrics pipeline, even in standalone mode.
+        let mut config = pipeline_configuration(false, false, false, Proxy::default());
+        config.control.apm = true;
+        config.control.standalone_mode = true;
+        config.domains.apm.native_trace_intake = true;
+        let dp = DataPlaneConfiguration::from_configuration(&config);
+
+        assert!(dp.native_trace_intake_enabled());
+        assert!(dp.data_pipelines_enabled());
+        assert!(dp.metrics_pipeline_required());
+        assert!(!dp.logs_pipeline_required());
+        assert!(!dp.events_pipeline_required());
+        assert!(!dp.service_checks_pipeline_required());
+        assert!(dp.traces_pipeline_required());
+    }
+
+    #[test]
+    fn connected_otlp_trace_proxy_with_apm_native_intake_requires_traces_pipeline() {
+        // OTLP traces are proxied to the Core Agent, but Datadog traces are handled locally.
+        let mut config = pipeline_configuration(false, false, true, proxy(false, false, true));
+        config.control.apm = true;
+        config.domains.apm.native_trace_intake = true;
+        let dp = DataPlaneConfiguration::from_configuration(&config);
+
+        assert!(dp.metrics_pipeline_required());
+        assert!(dp.service_checks_pipeline_required());
+        assert!(dp.traces_pipeline_required());
+    }
+
+    #[test]
+    fn native_trace_intake_without_apm_requires_no_traces_pipeline() {
+        // The intake flag only takes effect when APM itself is enabled.
+        let mut config = pipeline_configuration(false, false, false, Proxy::default());
+        config.domains.apm.native_trace_intake = true;
+        let dp = DataPlaneConfiguration::from_configuration(&config);
+
+        assert!(!dp.native_trace_intake_enabled());
+        assert!(!dp.data_pipelines_enabled());
         assert!(!dp.traces_pipeline_required());
     }
 

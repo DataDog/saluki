@@ -664,7 +664,7 @@ mod tests {
             info: test_info(),
             container_tags: ContainerTagsHasher::default(),
             capture_entity_resolver: None,
-            metrics: Metrics::new("dd_traces_relay", "sources"),
+            metrics: Metrics::new("dd_traces_in", "sources"),
         })
     }
 
@@ -747,7 +747,7 @@ mod tests {
             metrics::Key::from_parts(
                 name,
                 vec![
-                    metrics::Label::new("component_id", "dd_traces_relay"),
+                    metrics::Label::new("component_id", "dd_traces_in"),
                     metrics::Label::new("component_type", "sources"),
                 ],
             )
@@ -796,7 +796,7 @@ mod tests {
             metrics::Key::from_parts(
                 name,
                 vec![
-                    metrics::Label::new("component_id", "dd_traces_relay"),
+                    metrics::Label::new("component_id", "dd_traces_in"),
                     metrics::Label::new("component_type", "sources"),
                 ],
             )
@@ -878,7 +878,7 @@ mod tests {
             info: info.clone(),
             container_tags: ContainerTagsHasher::default(),
             capture_entity_resolver: None,
-            metrics: Metrics::new("dd_traces_relay", "sources"),
+            metrics: Metrics::new("dd_traces_in", "sources"),
         });
 
         // `/info` answers any method, without the state header, as in the trace-agent.
@@ -934,7 +934,7 @@ mod tests {
             metrics::Key::from_parts(
                 name,
                 vec![
-                    metrics::Label::new("component_id", "dd_traces_relay"),
+                    metrics::Label::new("component_id", "dd_traces_in"),
                     metrics::Label::new("component_type", "sources"),
                 ],
             )
@@ -974,7 +974,7 @@ mod tests {
             metrics::Key::from_parts(
                 name,
                 vec![
-                    metrics::Label::new("component_id", "dd_traces_relay"),
+                    metrics::Label::new("component_id", "dd_traces_in"),
                     metrics::Label::new("component_type", "sources"),
                 ],
             )
@@ -1097,7 +1097,7 @@ mod tests {
                 info: test_info(),
                 container_tags: ContainerTagsHasher::default(),
                 capture_entity_resolver: None,
-                metrics: Metrics::new("dd_traces_relay", "sources"),
+                metrics: Metrics::new("dd_traces_in", "sources"),
             }))
             .expect("the relay router should be set only once");
 
