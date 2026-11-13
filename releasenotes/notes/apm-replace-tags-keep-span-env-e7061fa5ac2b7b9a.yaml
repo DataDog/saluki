@@ -1,0 +1,7 @@
+---
+upgrade:
+  - |
+    ``apm_config.replace_tags`` rules no longer change the ``env`` of a span, which trace stats and sampling use.
+    Rules named ``env`` are ignored, with an error logged at startup, and ``*`` rules skip the span ``env`` while
+    still rewriting other tags, the resource, and span event attributes. An ``env`` rule with an invalid pattern still
+    fails startup. If you set or renamed the env with a replace rule, set the env in the tracer instead.

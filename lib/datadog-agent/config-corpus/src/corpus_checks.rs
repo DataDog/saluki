@@ -23,7 +23,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{Case, Corpus, Group, Inputs, KeyLine, Outcome, Source, REVIEWED_AT_AGENT_COMMIT};
 
-const SIZE_CAP: usize = 512_000;
+const SIZE_CAP: usize = 560_000;
 
 /// The most bytes of corpus lines the `depth` group may take, summed over its case and key lines.
 const DEPTH_BUDGET: usize = 80_000;
