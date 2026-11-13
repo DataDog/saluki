@@ -402,7 +402,7 @@ impl CorrectnessRunner {
 
         // Phase 6: Collect data from both datadog-intake containers.
         info!("Collecting data from baseline and comparison intake containers...");
-        let collect = |port| async move { CollectedData::collect(&IntakeClient::new(port)).await };
+        let collect = |port| async move { IntakeClient::new(port).collect().await };
         tokio::try_join!(
             run_in_background(
                 tasks,
@@ -649,9 +649,11 @@ mod tests {
         let test_token = CancellationToken::new();
         let tasks = CaseTasks::new(&test_token);
         let port = intake.port();
-        let collected = run_in_background(&tasks, &Span::none(), async move {
-            CollectedData::collect(&IntakeClient::new(port)).await
-        });
+        let collected = run_in_background(
+            &tasks,
+            &Span::none(),
+            async move { IntakeClient::new(port).collect().await },
+        );
         // A timed sleep could cancel before collection reached the intake. Wait for an accepted connection instead.
         timeout(BOUND, connected)
             .await
