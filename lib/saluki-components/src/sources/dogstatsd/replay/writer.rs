@@ -552,16 +552,13 @@ pub(super) fn parse_entity_id_str(value: &str) -> Option<EntityId> {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, io::Cursor, sync::Arc, time::Duration};
+    use std::{fs, sync::Arc, time::Duration};
 
-    use prost::Message;
     use saluki_env::workload::{providers::TestWorkloadProvider, EntityId};
 
-    use super::super::test_support::{unique_dir, unique_path, wait_until_inactive};
-    use super::{
-        CaptureRecord, CaptureTargetDir, TaggerState, TrafficCaptureWriter, UnixDogstatsdMsg, MIN_CAPTURE_DEPTH,
-    };
-    use crate::sources::dogstatsd::replay::file_header::valid_header;
+    use super::super::test_support::{run_capture, temp_dir, wait_until_inactive};
+    use super::{CaptureRecord, CaptureTargetDir, TrafficCaptureWriter, MIN_CAPTURE_DEPTH};
+    use crate::sources::dogstatsd::replay::{file_header::valid_header, TrafficCaptureReader};
 
     #[test]
     fn queue_depth_is_raised_to_minimum() {
@@ -578,7 +575,8 @@ mod tests {
     #[test]
     fn explicit_missing_directory_fails() {
         let writer = TrafficCaptureWriter::new(1);
-        let missing_dir = unique_path("explicit-missing");
+        let parent = temp_dir();
+        let missing_dir = parent.path().join("explicit-missing");
 
         let error = writer
             .start_capture(
@@ -599,7 +597,8 @@ mod tests {
     #[test]
     fn implicit_missing_directory_is_created() {
         let writer = TrafficCaptureWriter::new(1);
-        let implicit_dir = unique_path("implicit-created");
+        let parent = temp_dir();
+        let implicit_dir = parent.path().join("implicit-created");
 
         let capture_path = writer
             .start_capture(
@@ -613,54 +612,50 @@ mod tests {
 
         assert!(implicit_dir.is_dir());
         assert!(capture_path.exists());
-
-        let _ = fs::remove_dir_all(implicit_dir);
     }
 
     #[test]
-    fn uncompressed_capture_writes_header_record_and_state() {
-        let writer = TrafficCaptureWriter::new(1);
-        let target_dir = unique_dir("writer-uncompressed");
+    fn capture_writes_header_record_and_state() {
+        for compressed in [false, true] {
+            let (_dir, path) = run_capture(&TrafficCaptureWriter::new(1), compressed, [sample_record()]);
 
-        let capture_path = writer
-            .start_capture(
-                CaptureTargetDir::Explicit(target_dir.clone()),
-                Duration::from_millis(250),
-                false,
-            )
-            .expect("capture should start");
-        assert!(writer.enqueue(sample_record()));
-        writer.stop_capture();
-        wait_until_inactive(|| writer.is_ongoing());
+            // A compressed capture must not start with the plain header; the reader then only opens it via zstd.
+            let raw = fs::read(&path).expect("capture should be readable");
+            assert_eq!(valid_header(&raw), !compressed, "compressed={compressed}");
 
-        let bytes = fs::read(&capture_path).expect("capture should be readable");
-        assert_capture_contents(&bytes);
+            let mut reader = TrafficCaptureReader::from_path(&path).expect("capture should open");
+            let record = reader
+                .read_next()
+                .expect("record should decode")
+                .unwrap_or_else(|| panic!("record present (compressed={compressed})"));
+            assert_eq!(record.timestamp, 123, "compressed={compressed}");
+            assert_eq!(record.payload, b"test", "compressed={compressed}");
+            assert_eq!(record.payload_size, 4, "compressed={compressed}");
+            assert_eq!(record.pid, 42, "compressed={compressed}");
+            assert!(record.ancillary.is_empty(), "compressed={compressed}");
+            assert_eq!(record.ancillary_size, 0, "compressed={compressed}");
 
-        let _ = fs::remove_dir_all(target_dir);
-    }
+            assert!(
+                reader.read_next().expect("separator should read").is_none(),
+                "compressed={compressed}"
+            );
+            assert!(reader.stopped_at_state_separator(), "compressed={compressed}");
 
-    #[test]
-    fn compressed_capture_writes_same_logical_contents() {
-        let writer = TrafficCaptureWriter::new(1);
-        let target_dir = unique_dir("writer-compressed");
-
-        let capture_path = writer
-            .start_capture(
-                CaptureTargetDir::Explicit(target_dir.clone()),
-                Duration::from_millis(250),
-                true,
-            )
-            .expect("capture should start");
-        assert!(writer.enqueue(sample_record()));
-        writer.stop_capture();
-        wait_until_inactive(|| writer.is_ongoing());
-
-        let compressed_bytes = fs::read(&capture_path).expect("capture should be readable");
-        let decoded_bytes =
-            zstd::stream::decode_all(Cursor::new(compressed_bytes)).expect("compressed capture should decode");
-        assert_capture_contents(&decoded_bytes);
-
-        let _ = fs::remove_dir_all(target_dir);
+            let state = reader
+                .read_state()
+                .expect("state should decode")
+                .unwrap_or_else(|| panic!("state present (compressed={compressed})"));
+            assert!(
+                state.state.is_empty(),
+                "captures without a workload provider should not include entity state (compressed={compressed})"
+            );
+            assert_eq!(
+                state.pid_map.get(&42).map(String::as_str),
+                Some("container_id://container-123"),
+                "compressed={compressed}"
+            );
+            assert!(!state.duration.is_negative(), "compressed={compressed}");
+        }
     }
 
     #[test]
@@ -674,21 +669,13 @@ mod tests {
                 &["container_name:api"],
             ))),
         );
-        let target_dir = unique_dir("writer-state");
+        let (_dir, path) = run_capture(&writer, false, [sample_record()]);
 
-        let capture_path = writer
-            .start_capture(
-                CaptureTargetDir::Explicit(target_dir.clone()),
-                Duration::from_millis(250),
-                false,
-            )
-            .expect("capture should start");
-        assert!(writer.enqueue(sample_record()));
-        writer.stop_capture();
-        wait_until_inactive(|| writer.is_ongoing());
-
-        let bytes = fs::read(&capture_path).expect("capture should be readable");
-        let state = decode_capture_state(&bytes);
+        let state = TrafficCaptureReader::from_path(&path)
+            .expect("capture should open")
+            .read_state()
+            .expect("state should decode")
+            .expect("state present");
         let entity = state
             .state
             .get("container_id://container-123")
@@ -707,18 +694,16 @@ mod tests {
             state.pid_map.get(&42).map(String::as_str),
             Some("container_id://container-123")
         );
-
-        let _ = fs::remove_dir_all(target_dir);
     }
 
     #[test]
     fn capture_stops_after_requested_duration() {
         let writer = TrafficCaptureWriter::new(1);
-        let target_dir = unique_dir("writer-autostop");
+        let target_dir = temp_dir();
 
         let capture_path = writer
             .start_capture(
-                CaptureTargetDir::Explicit(target_dir.clone()),
+                CaptureTargetDir::Explicit(target_dir.path().to_path_buf()),
                 Duration::from_millis(30),
                 false,
             )
@@ -728,40 +713,6 @@ mod tests {
 
         assert!(!writer.is_ongoing());
         assert!(capture_path.exists());
-
-        let _ = fs::remove_dir_all(target_dir);
-    }
-
-    fn assert_capture_contents(bytes: &[u8]) {
-        assert!(valid_header(bytes));
-
-        let header_len = 8;
-        let record_size =
-            u32::from_le_bytes(bytes[header_len..header_len + 4].try_into().expect("record size")) as usize;
-        let record_start = header_len + 4;
-        let record_end = record_start + record_size;
-        let record = UnixDogstatsdMsg::decode(&bytes[record_start..record_end]).expect("record should decode");
-
-        assert_eq!(record.timestamp, 123);
-        assert_eq!(record.payload, b"test");
-        assert_eq!(record.payload_size, 4);
-        assert_eq!(record.pid, 42);
-        assert!(record.ancillary.is_empty());
-        assert_eq!(record.ancillary_size, 0);
-
-        assert_eq!(&bytes[record_end..record_end + 4], &[0, 0, 0, 0]);
-
-        let state = decode_capture_state(bytes);
-
-        assert!(
-            state.state.is_empty(),
-            "captures without a workload provider should not include entity state"
-        );
-        assert_eq!(
-            state.pid_map.get(&42).map(String::as_str),
-            Some("container_id://container-123")
-        );
-        assert!(!state.duration.is_negative());
     }
 
     fn sample_record() -> CaptureRecord {
@@ -772,12 +723,5 @@ mod tests {
             ancillary: Vec::new(),
             container_id: Some("container_id://container-123".to_string()),
         }
-    }
-
-    fn decode_capture_state(bytes: &[u8]) -> TaggerState {
-        let state_size_offset = bytes.len() - 4;
-        let state_size = u32::from_le_bytes(bytes[state_size_offset..].try_into().expect("state size")) as usize;
-        let state_start = state_size_offset - state_size;
-        TaggerState::decode(&bytes[state_start..state_size_offset]).expect("state should decode")
     }
 }
