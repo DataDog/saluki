@@ -30,8 +30,8 @@ use super::participant::{Enclosure, Os, Realization, SpecContext};
 use super::reference::Later;
 use super::registry::Registry;
 use super::spec::{
-    CollectFile, CommandSpec, Consumed, Contents, Evidence, FileSource, HostMount, ParticipantSpec, ProcessSpec,
-    Program, DEFAULT_PROCESS,
+    is_file_name, CollectFile, CommandSpec, Consumed, Contents, Evidence, ExitChannel, FileSource, HostMount,
+    OutputChannel, ParticipantSpec, ProcessSpec, Program, DEFAULT_PROCESS,
 };
 use super::step::{Operation, ProcedureNode, Step, StepFields, StepPurpose};
 use super::template::Template;
@@ -708,6 +708,29 @@ impl Planner<'_, '_, '_> {
                 "'mounts' apply to Linux containers and pods, and this participant is a {}",
                 enclosure
             ));
+        } else {
+            for mount in &mounts {
+                for (which, path) in [("host path", &mount.host), ("path", &mount.path)] {
+                    if !path.starts_with('/') {
+                        self.at
+                            .push(format!("mounts: the {} '{}' is not an absolute path", which, path));
+                    }
+                }
+            }
+        }
+        let collect = collect.unwrap_or_default();
+        let mut collected = BTreeSet::new();
+        for file in &collect {
+            if !is_file_name(&file.name) {
+                self.at.push(format!(
+                    "collect: the name '{}' must be a plain file name, with no directory",
+                    file.name
+                ));
+            }
+            if !collected.insert(file.name.as_str()) {
+                self.at
+                    .push(format!("collect: two files are collected as '{}'", file.name));
+            }
         }
         let files = self.place_files(files, &names, type_name);
         let processes = self.processes(processes, &program_names, &launch);
@@ -771,7 +794,7 @@ impl Planner<'_, '_, '_> {
             connections: BTreeMap::new(),
             processes,
             commands,
-            collect: collect.unwrap_or_default(),
+            collect,
             operations: by_name,
             later: BTreeMap::new(),
         };
@@ -912,6 +935,22 @@ impl Planner<'_, '_, '_> {
         for process in &processes {
             if !seen.insert(process.name()) {
                 self.at.push(format!("two processes are named '{}'", process.name()));
+            }
+        }
+        if self.realization.enclosure.runs_an_image() {
+            let through: Vec<&str> = processes
+                .iter()
+                .filter(|process| {
+                    *process.exit() == ExitChannel::Container || *process.output() == OutputChannel::Container
+                })
+                .map(ProcessSpec::name)
+                .collect();
+            if through.len() > 1 {
+                self.at.push(format!(
+                    "processes {} are observed through the container, which reports on its only process; observe all \
+                     but one through an exit record and a log file",
+                    super::case::join(&through)
+                ));
             }
         }
         processes
