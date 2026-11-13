@@ -40,13 +40,14 @@ inventory:
     pipelines: [cross_cutting]
     description: "Dual-ship to extra endpoints"
     documentation: |-
-      ADP dual-ships to `additional_endpoints` as the core Agent does for metrics, events, service
-      checks, and traces.
+      ADP dual-ships metrics, events, and service checks to `additional_endpoints` as the core Agent
+      does.
 
       ADP also sends native OTLP logs to these endpoints, which the core Agent never does: the Agent
       sends logs only to the endpoints configured under `logs_config`, including
       `logs_config.additional_endpoints`. Logs are only affected when ADP handles OTLP logs itself
-      rather than relaying them to the core Agent.
+      rather than relaying them to the core Agent. ADP sends native traces to these endpoints
+      too, where the core Agent uses `apm_config.additional_endpoints`.
     issue: "#2973"
 
   agent_ipc.grpc_max_message_size:
@@ -2338,9 +2339,11 @@ inventory:
     pipelines: [logs]
     description: "Disable TLS for logs intake"
     documentation: |-
-      In the core Agent's OTLP logs path: sets the default useSSL=false for the main and MRF endpoints
-      and for URL-less hosts; an https:// URL with `logs_no_ssl` set only logs a conflict warning and
-      stays TLS.
+      In the core Agent's OTLP logs path: disables TLS for a `logs_dd_url`, Observability Pipelines
+      Worker, or multi-region failover endpoint written without a scheme, and for TCP endpoints. An
+      `https://` URL stays TLS, with a warning about the conflict. It doesn't affect the default
+      endpoint derived from `site` or `logs_config.dd_url`, which `logs_config.dev_mode_no_ssl`
+      controls.
 
       ADP ignores this key: it sends native OTLP logs through its shared forwarder, to the logs intake
       derived from `site` or `dd_url`. This only matters when ADP handles OTLP logs itself: in proxy

@@ -695,13 +695,14 @@ default values.
 
 ### `additional_endpoints`
 
-ADP dual-ships to `additional_endpoints` as the core Agent does for metrics, events, service
-checks, and traces.
+ADP dual-ships metrics, events, and service checks to `additional_endpoints` as the core Agent
+does.
 
 ADP also sends native OTLP logs to these endpoints, which the core Agent never does: the Agent
 sends logs only to the endpoints configured under `logs_config`, including
 `logs_config.additional_endpoints`. Logs are only affected when ADP handles OTLP logs itself
-rather than relaying them to the core Agent.
+rather than relaying them to the core Agent. ADP sends native traces to these endpoints
+too, where the core Agent uses `apm_config.additional_endpoints`.
 
 ### `aggregator_stop_timeout`
 
