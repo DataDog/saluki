@@ -33,6 +33,11 @@ impl ConfigClassifier {
         Self { lookup }
     }
 
+    /// Returns `true` if `key` has a compatibility-warning entry.
+    pub fn contains(&self, key: &str) -> bool {
+        self.lookup.contains_key(key)
+    }
+
     /// Classifies a key/value pair, returning `None` if the key has no compatibility-warning entry.
     pub fn classify(&self, key: &str, value: &Value) -> Option<Classification> {
         let entry = self.lookup.get(key)?;
@@ -81,7 +86,7 @@ fn duration_value_as_nanos(value: &Value) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::classifier::Severity;
+    use crate::classifier::{Pipeline, Severity};
 
     fn classifier() -> ConfigClassifier {
         ConfigClassifier::new()
@@ -122,6 +127,39 @@ mod tests {
         let result = c.classify("config_id", &Value::String("".into())).unwrap();
         assert!(matches!(result.support_level, SupportLevel::Incompatible(_)));
         assert!(result.is_default);
+    }
+
+    #[test]
+    fn otlp_logs_keys_are_classified_by_how_they_affect_native_logs() {
+        let c = classifier();
+
+        // A key that only affects the logs path is checked only when ADP handles OTLP logs itself.
+        let processing_rules = c
+            .classify("logs_config.processing_rules", &Value::Array(vec![]))
+            .unwrap();
+        assert!(matches!(processing_rules.support_level, SupportLevel::Incompatible(_)));
+        assert_eq!(
+            processing_rules.pipeline_affinity,
+            PipelineAffinity::Pipelines(&[Pipeline::Logs])
+        );
+
+        // A key that gates the OTLP receiver matters in proxy mode too.
+        let logs_enabled = c.classify("otlp_config.logs.enabled", &Value::Bool(true)).unwrap();
+        assert_eq!(logs_enabled.support_level, SupportLevel::Partial);
+        assert_eq!(
+            logs_enabled.pipeline_affinity,
+            PipelineAffinity::Pipelines(&[Pipeline::Otlp])
+        );
+
+        // A shared key whose logs difference is documented without a warning has no entry.
+        assert!(c
+            .classify("additional_endpoints", &Value::Object(Default::default()))
+            .is_none());
+
+        // A logs key that doesn't affect the OTLP logs path stays excluded.
+        assert!(c
+            .classify("logs_config.container_collect_all", &Value::Bool(true))
+            .is_none());
     }
 
     #[test]
