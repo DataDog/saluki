@@ -839,6 +839,16 @@ impl Planner<'_, '_, '_> {
         } = spec;
 
         let connect = &self.participant.placement.connect;
+        for (name, _) in consumes
+            .iter()
+            .filter(|(name, consumed)| consumed.required && !connect.contains_key(**name))
+        {
+            self.at.push(format!(
+                "participant type '{}' requires connection '{}', and the case does not make it",
+                type_name.unwrap_or_default(),
+                name
+            ));
+        }
         for consumed in connect.keys().filter_map(|name| consumes.get(name.as_str())) {
             for (key, value) in consumed.env {
                 match Template::parse(*value) {
@@ -1054,7 +1064,14 @@ impl Planner<'_, '_, '_> {
                     (from.display().to_string(), self.case.sources.placed(&from, template))
                 }
                 FileSource::Bytes { label, bytes } => (labelled(label), Ok(Source::File(Contents::of(bytes.to_vec())))),
-                FileSource::Text { label, text } => (labelled(label), Ok(Source::File(Contents::Text(text)))),
+                FileSource::Text { label, text, template } => {
+                    let contents = if template {
+                        Template::parse(&text).map(Contents::Template)
+                    } else {
+                        Ok(Contents::Text(text))
+                    };
+                    (labelled(label), contents.map(Source::File))
+                }
             };
             let targets = match (contents, is_dir) {
                 (Ok(Source::File(contents)), false) => vec![(destination.clone(), source, contents)],

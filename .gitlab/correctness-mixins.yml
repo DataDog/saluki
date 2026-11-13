@@ -31,6 +31,10 @@
     # comma-separated list of <container>=<image>; the container names are the ones
     # `panoramic list --json` reports per test.
     PANORAMIC_IMAGE_OVERRIDES: "millstone=${SALUKI_IMAGE_REPO_BASE}/correctness-tools:${CI_COMMIT_SHA},datadog-intake=${SALUKI_IMAGE_REPO_BASE}/correctness-tools:${CI_COMMIT_SHA},comparison=${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}-${PARENT_PIPELINE_ID}"
+    # The same images for participant cases, which name them by reference and
+    # take the replacements with --set. Comparison cases name the Agent image on
+    # both sides, so one entry replaces the baseline and the comparison.
+    PANORAMIC_SET: "saluki-images/datadog-agent:testing-release=${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}-${PARENT_PIPELINE_ID},saluki-images/correctness-tools:latest=${SALUKI_IMAGE_REPO_BASE}/correctness-tools:${CI_COMMIT_SHA}"
   script:
     - target/release/panoramic run -d $(pwd)/test/correctness/cases -t ${CORRECTNESS_TEST_CASE} --no-tui
 

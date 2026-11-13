@@ -142,10 +142,13 @@ pub(crate) enum FileSource {
     Case { from: PathBuf, template: bool },
     /// Bytes a participant type supplies, with a label for the printed plan.
     Bytes { label: &'static str, bytes: &'static [u8] },
-    /// Text a participant type supplies, with a label for the printed plan.
-    // TODO: remove the dead_code allowance once a participant type builds a file from the case's text.
-    #[allow(dead_code)]
-    Text { label: &'static str, text: String },
+    /// Text a participant type supplies, such as a file it builds from one of the case's, with a label for the
+    /// printed plan. A template's references are resolved like those of a case's template.
+    Text {
+        label: &'static str,
+        text: String,
+        template: bool,
+    },
 }
 
 /// The contents of a placed file.
@@ -581,8 +584,7 @@ pub(crate) enum Keep {
 #[derive(Clone, Debug)]
 pub(crate) struct Consumed {
     pub(crate) accepts: &'static [Protocol],
-    // TODO: check required connections with the first participant type that requires one.
-    #[allow(dead_code)]
+    /// Whether a case must make the connection.
     pub(crate) required: bool,
     /// Environment added when the case makes the connection, as template text.
     pub(crate) env: &'static [(&'static str, &'static str)],

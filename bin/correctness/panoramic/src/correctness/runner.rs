@@ -13,17 +13,14 @@ use tokio::{select, time::sleep};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, info_span, warn, Instrument as _, Span};
 
-use crate::correctness::{
-    analysis::{AnalysisMode, AnalysisRunner, TracesAnalysisOptions},
-    case::CorrectnessTestCase,
-    config::Runtime,
-};
+use crate::correctness::{case::CorrectnessTestCase, config::Runtime};
 use crate::{
     assertions::{AssertionResult, AssertionStatus},
     core::ledger::ResourceLedger,
     core::result::{ErrorKind, PhaseTiming, TestResult},
     core::tasks::CaseTasks,
     intake::IntakeClient,
+    steps::analysis::{AnalysisMode, AnalysisRunner, TracesAnalysisOptions},
     steps::intake::CollectedData,
     test::TestContext,
     traffic::{self, Side},

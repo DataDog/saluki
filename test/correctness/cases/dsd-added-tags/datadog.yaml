@@ -7,12 +7,9 @@ api_key: dummy-api-key-correctness-testing
 # We have to specifically configure the health port to use.
 health_port: 5555
 
-# Point ourselves at the datadog-intake service.
-dd_url: "http://datadog-intake:2049"
-
 # Turn off UDP and listen on a UDS socket instead.
 dogstatsd_port: 0
-dogstatsd_socket: /airlock/metrics.sock
+dogstatsd_socket: "{{ self.endpoints.dogstatsd_uds.path }}"
 
 dogstatsd_origin_detection: false
 
