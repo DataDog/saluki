@@ -113,6 +113,7 @@ mod tests {
         let fields = "{on: app, path: /var/log/app.log, pattern: DATAPLANE, timeout: 2s}";
         let other = Scripted {
             files: [("/var/log/app.log", Ok(b"CORE started\n".to_vec()))].into(),
+            ..Scripted::default()
         };
         let report = run(&FileContainsFactory, fields, &other, &observation()).await;
         assert_eq!(report.status, StepStatus::Failed, "{}", report.message);
@@ -123,6 +124,7 @@ mod tests {
                 Err(HandleError::Harness("Docker refused the copy".to_string())),
             )]
             .into(),
+            ..Scripted::default()
         };
         let report = run(&FileContainsFactory, fields, &unreadable, &observation()).await;
         assert_eq!(report.status, StepStatus::Errored, "{}", report.message);

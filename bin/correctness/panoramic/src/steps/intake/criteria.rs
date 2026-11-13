@@ -27,6 +27,7 @@ pub enum Mismatch {
 /// A name, tags, and optionally a type and a value, that one normalized metric context must meet by itself.
 ///
 /// Contexts are never combined: a criterion met by one context and another met by a second do not add up.
+#[derive(Debug)]
 pub struct MetricCriteria {
     /// Expected name and tags, normalized like an observed context.
     expected: NormalizedMetricContext,

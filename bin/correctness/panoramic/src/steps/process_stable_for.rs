@@ -121,6 +121,7 @@ mod tests {
                 Ok(b"{\"code\":1,\"signal\":0,\"time\":\"1794511601.5\"}\n".to_vec()),
             )]
             .into(),
+            ..Scripted::default()
         };
         let report = run(&ProcessStableForFactory, fields, &exited, &observation()).await;
         assert_eq!(report.status, StepStatus::Failed, "{}", report.message);
