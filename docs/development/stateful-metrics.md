@@ -1,5 +1,8 @@
 # Testing stateful metrics delivery
 
+Each stateful metrics stream starts at batch ID `0`. Definitions travel with payloads; batch `0` can
+contain metric data and is not a reserved snapshot. Reconnects and rotations restart numbering at `0`.
+
 ADP embeds `foldspace-core` through a pinned Cargo dependency from the
 [Foldspace metrics stack](https://github.com/DataDog/foldspace/pull/143). You do not copy Foldspace
 source into Saluki or run a separate client binary.

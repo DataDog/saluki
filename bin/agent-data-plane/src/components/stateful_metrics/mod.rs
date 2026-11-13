@@ -135,6 +135,7 @@ impl StatefulMetricsConfiguration {
         CoreConfig {
             batch_capacity: self.batch_capacity,
             sender: SenderConfig {
+                first_payload_batch_id: 0,
                 max_inflight_payloads: MAX_INFLIGHT_BATCHES,
                 ..SenderConfig::default()
             },
