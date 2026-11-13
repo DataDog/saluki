@@ -227,12 +227,6 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         default: DefaultValue::Json("1"),
     },
     ClassifierEntry {
-        yaml_path: "dogstatsd_queue_size",
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-        default: DefaultValue::Json("1024"),
-    },
-    ClassifierEntry {
         yaml_path: "dogstatsd_stats_buffer",
         support_level: SupportLevel::Incompatible(Severity::Medium),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),

@@ -326,6 +326,7 @@ mod tests {
                 enabled: true,
                 remove_all_args: false,
             },
+            remove_stack_traces: true,
             valkey: traces::CacheObfuscation {
                 enabled: false,
                 remove_all_args: true,

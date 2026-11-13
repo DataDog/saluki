@@ -57,6 +57,9 @@
 .build-adp-multi-arch-definition:
   stage: build
   image: ${SALUKI_GENERAL_CI_IMAGE}
+  id_tokens:
+    DDSIGN_ID_TOKEN:
+      aud: image-integrity
   script:
     # Collect the manifest list digests for our AMD64 and ARM64 images, and then build a multi-arch manifest from them.
     - export AMD64_DIGEST=$(jq -r '."containerimage.digest"' build-metadata.amd64)
@@ -64,6 +67,10 @@
     - docker buildx imagetools create --tag ${IMAGE_TAG}
       ${ADP_IMAGE_REPO_BASE}@${AMD64_DIGEST}
       ${ADP_IMAGE_REPO_BASE}@${ARM64_DIGEST}
+    # Sign the multi-arch index we publish. The digest lookup is its own
+    # command, so its failure fails the job.
+    - DIGEST=$(crane digest ${IMAGE_TAG})
+    - ddsign sign ${IMAGE_TAG}@${DIGEST}
 
 calculate-build-metadata:
   stage: build

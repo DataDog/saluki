@@ -216,6 +216,10 @@ pub struct DatadogConfiguration {
     #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub dogstatsd_port: i64,
 
+    #[serde(default = "defaults::default_u64::<i64, 1024>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
+    pub dogstatsd_queue_size: i64,
+
     #[serde(default)]
     #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub dogstatsd_require_listener: bool,
@@ -647,6 +651,7 @@ impl Default for DatadogConfiguration {
             dogstatsd_origin_optout_enabled: defaults::default_bool::<true>(),
             dogstatsd_pipe_name: Default::default(),
             dogstatsd_port: defaults::default_u64::<i64, 8125>(),
+            dogstatsd_queue_size: defaults::default_u64::<i64, 1024>(),
             dogstatsd_require_listener: Default::default(),
             dogstatsd_so_rcvbuf: Default::default(),
             dogstatsd_socket: platform_defaults::dogstatsd_socket(),
@@ -933,6 +938,10 @@ pub struct ApmConfigObfuscation {
     pub redis: ApmConfigObfuscationRedis,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
+    pub remove_stack_traces: bool,
+
+    #[serde(default)]
     pub valkey: ApmConfigObfuscationValkey,
 }
 
@@ -946,6 +955,7 @@ impl Default for ApmConfigObfuscation {
             mongodb: Default::default(),
             opensearch: Default::default(),
             redis: Default::default(),
+            remove_stack_traces: Default::default(),
             valkey: Default::default(),
         }
     }

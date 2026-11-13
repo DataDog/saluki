@@ -59,7 +59,8 @@ for links in $(links_values tikv-jemalloc-sys); do
 done
 
 # The profile matches what `build-adp-aix.sh` builds with, so code gated on `debug_assertions` is checked the same way.
+# Selecting the package keeps other workspace members' dependency features out of the check, as they are in that build.
 cargo "+${RUST_AIX_NIGHTLY_VERSION}" check --locked \
     --target "${AIX_TARGET}" -Zbuild-std=std \
-    --profile aix-optimized-release --bin agent-data-plane \
+    --profile aix-optimized-release --package agent-data-plane --bin agent-data-plane \
     "${config_args[@]}"

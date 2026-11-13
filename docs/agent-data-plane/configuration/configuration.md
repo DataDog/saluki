@@ -97,7 +97,6 @@ architecture is fundamentally different or the feature is platform-specific.
 | `dogstatsd_packet_buffer_size`                                                           | Datagrams per packet buffer                        | ADP queues individual datagrams in its bounded I/O buffer pool.                                                                                                                                                                                                           |
 | `dogstatsd_pipeline_autoadjust`                                                          | Auto-adjust pipeline workers                       | ADP uses async tasks.                                                                                                                                                                                                                                                     |
 | `dogstatsd_pipeline_count`                                                               | Parallel processing pipelines                      | ADP uses async tasks.                                                                                                                                                                                                                                                     |
-| `dogstatsd_queue_size`                                                                   | Packet channel buffer size                         | ADP bounds datagram queues with `dogstatsd_buffer_count_max`.                                                                                                                                                                                                             |
 | `dogstatsd_stats_buffer`                                                                 | Internal stats buffer size                         | ADP does not expose the core agent's packet-per-second expvar endpoint, so there is no persistent stats endpoint buffer to configure.                                                                                                                                     |
 | `dogstatsd_stats_enable`                                                                 | Enable internal stats endpoint                     | See below                                                                                                                                                                                                                                                                 |
 | `dogstatsd_stats_port`                                                                   | Internal stats endpoint port                       | ADP does not expose the core agent's packet-per-second expvar endpoint, so `dogstatsd_stats_port` has no effect.                                                                                                                                                          |
@@ -440,6 +439,7 @@ default values.
 | `cri_socket_path`                                               | containerd/CRI socket path                      |
 | `dogstatsd_mapper_cache_size`                                   | Mapper result LRU cache size                    |
 | `dogstatsd_metrics_stats_enable`                                | Enable per-metric debug stats                   |
+| `dogstatsd_queue_size`                                          | Packet channel buffer size                      |
 | `dogstatsd_workers_count`                                       | Number of DSD processing workers                |
 | `env`                                                           | Agent environment name                          |
 | `experimental.metrics_endpoint_routing.metric_allowlist`        | Per-endpoint metric allow lists                 |
@@ -529,6 +529,12 @@ mapper, clear `dogstatsd_mapper_profiles` instead when running ADP.
 ### `dogstatsd_metrics_stats_enable`
 
 See `dogstatsd_stats_enable`
+
+### `dogstatsd_queue_size`
+
+ADP sizes the queue of packets waiting to be forwarded to `statsd_forward_host` from this setting: the queue
+holds a quarter of `dogstatsd_queue_size` packets, and at least 64. ADP bounds its queues of received datagrams
+with `dogstatsd_buffer_count_max` instead.
 
 ### `dogstatsd_workers_count`
 
@@ -907,7 +913,7 @@ The following settings are specific to ADP and have no equivalent in the core ag
 
 ### `data_plane.experimental.apm.*`
 
-With `data_plane.experimental.apm.enabled` set, ADP takes over the trace-agent's receiver. It listens where the trace-agent normally does (`apm_config.receiver_port`, `apm_config.receiver_socket`, `apm_config.apm_non_local_traffic`, and `bind_host`) and forwards every request to the trace-agent at `data_plane.experimental.apm.proxy_destination`. The Datadog Agent moves the trace-agent's receiver to that address.
+With `data_plane.experimental.apm.enabled` set, ADP takes over the trace-agent's receiver. It listens where the trace-agent normally does (`apm_config.receiver_port`, `apm_config.receiver_socket`, `apm_config.apm_non_local_traffic`, and `bind_host`) and forwards requests for endpoints it does not handle itself to the trace-agent at `data_plane.experimental.apm.proxy_destination`. The Datadog Agent moves the trace-agent's receiver to that address.
 
 `data_plane.experimental.apm.proxy_destination` accepts either an HTTP endpoint (`http://host:port`, such as the default `http://127.0.0.1:8127`) or a Unix domain socket (`unix:///path/to/socket`, such as `unix:///var/run/datadog/trace-agent.socket`).
 
@@ -1021,6 +1027,7 @@ The following settings work in ADP with the same behavior as the core agent.
 | `apm_config.obfuscation.opensearch.obfuscate_sql_values`                                   | Obfuscate SQL values in OpenSearch queries         |
 | `apm_config.obfuscation.redis.enabled`                                                     | apm_config.obfuscation.redis.enabled               |
 | `apm_config.obfuscation.redis.remove_all_args`                                             | apm_config.obfuscation.redis.remove_all_args       |
+| `apm_config.obfuscation.remove_stack_traces`                                               | Replace stack trace tags with ?                    |
 | `apm_config.obfuscation.valkey.enabled`                                                    | apm_config.obfuscation.valkey.enabled              |
 | `apm_config.obfuscation.valkey.remove_all_args`                                            | apm_config.obfuscation.valkey.remove_all_args      |
 | `apm_config.peer_tags`                                                                     | Extra peer tags for stats aggregation              |

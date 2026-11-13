@@ -524,8 +524,8 @@ mod tests {
 
     #[test]
     fn connected_apm_only_requires_liveness_baseline_pipelines() {
-        // The APM relay forwards every request to the trace-agent, so it needs no baseline pipeline of its own, but
-        // connected mode still forwards the liveness metric and service check.
+        // The APM relay forwards to the trace-agent what it does not handle itself, so it needs no baseline pipeline of
+        // its own, but connected mode still forwards the liveness metric and service check.
         let mut config = pipeline_configuration(false, false, false, false, false);
         config.control.apm = true;
         let dp = DataPlaneConfiguration::from_configuration(&config);

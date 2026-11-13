@@ -1,0 +1,6 @@
+---
+fixes:
+  - |
+    Logs without a hostname, such as check logs and OTLP logs whose resource has no host, are now sent with the
+    host's hostname, as the Datadog Agent sends them. The hostname is only set on the log, not added to the log's
+    message.

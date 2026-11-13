@@ -225,7 +225,7 @@ async fn create_topology(
     }
 
     if dp.logs_pipeline_required() {
-        add_baseline_logs_pipeline_to_blueprint(&mut blueprint, &shared)?;
+        add_baseline_logs_pipeline_to_blueprint(&mut blueprint, &shared, env_provider).await?;
     }
 
     if dp.events_pipeline_required() {
@@ -484,14 +484,22 @@ fn add_autoscaling_failover_metrics_pipeline_to_blueprint(
     Ok(())
 }
 
-fn add_baseline_logs_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, shared: &SharedConfiguration,
+async fn add_baseline_logs_pipeline_to_blueprint(
+    blueprint: &mut TopologyBlueprint, shared: &SharedConfiguration, env_provider: &RemoteAgentEnvironmentProvider,
 ) -> Result<(), GenericError> {
     // Create the back half of the logs processing pipeline.
+    //
+    // Like the Agent's logs processor, the encoder sends a log without a hostname with the Agent's hostname.
+    let default_hostname = env_provider
+        .host()
+        .get_hostname()
+        .await
+        .error_context("Failed to get default hostname for logs.")?;
     let compression = &shared.endpoints.compression;
     // TODO(#3001): pass `shared.metrics_encoding.flush_timeout`; the default preserves existing behavior.
     let dd_logs_config = BufferedIncrementalConfiguration::new(
-        DatadogLogsConfiguration::new(&compression.compressor_kind, compression.effective_zstd_level()),
+        DatadogLogsConfiguration::new(&compression.compressor_kind, compression.effective_zstd_level())
+            .with_default_hostname(default_hostname),
         DEFAULT_ENCODER_FLUSH_TIMEOUT,
     );
 
@@ -595,6 +603,7 @@ async fn add_baseline_traces_pipeline_to_blueprint(
                 repl: rule.repl,
             })
             .collect(),
+        config.domains.traces.obfuscation.remove_stack_traces,
     );
 
     let ottl_filter = &config.domains.traces.ottl_filter;
@@ -612,9 +621,10 @@ async fn add_baseline_traces_pipeline_to_blueprint(
     let dd_traces_enrich_config = ChainedConfiguration::default()
         .with_transform_builder("ottl_filter", ottl_filter_config)
         .with_transform_builder("ottl_transform", ottl_transform_config)
-        .with_transform_builder("apm_onboarding", ApmOnboardingConfiguration)
         .with_transform_builder("trace_obfuscation", trace_obfuscation_config)
         .with_transform_builder("trace_tag_replacer", trace_tag_replacer_config);
+    let apm_onboarding_config =
+        ChainedConfiguration::default().with_transform_builder("apm_onboarding", ApmOnboardingConfiguration);
     let apm_stats_transform_config =
         apm_stats_configuration(&config.domains.traces, agent_env.clone(), semantic_registry)
             .with_environment_provider(env_provider.clone())
@@ -627,11 +637,13 @@ async fn add_baseline_traces_pipeline_to_blueprint(
     blueprint
         .add_transform("traces_enrich", dd_traces_enrich_config)?
         .add_transform("trace_sampler", trace_sampler_config)?
+        .add_transform("apm_onboarding", apm_onboarding_config)?
         .add_transform("dd_apm_stats", apm_stats_transform_config)?
         .add_encoder("dd_stats_encode", dd_apm_stats_encoder)?
         .add_encoder("dd_traces_encode", dd_traces_config)?
-        .connect_components("traces_enrich", "trace_sampler")?
-        .connect_components("trace_sampler", ["dd_apm_stats", "dd_traces_encode"])?
+        // Onboarding runs after sampling, so a service is only recorded as seen once one of its traces is kept.
+        .connect_components_in_order(["traces_enrich", "trace_sampler", "apm_onboarding"])?
+        .connect_components("apm_onboarding", ["dd_apm_stats", "dd_traces_encode"])?
         // The sampler reports its sampling telemetry as metric events through this dedicated
         // output, delivering the metrics through the metrics pipeline to the backend.
         .connect_components("trace_sampler.metrics", "metrics_enrich")?
@@ -699,6 +711,7 @@ fn dogstatsd_source_configuration(
         tcp_port: listeners.tcp_port,
         statsd_forward_host: listeners.forward_host.as_deref().map(MetaString::from),
         statsd_forward_port: listeners.forward_port,
+        queue_size: listeners.queue_size,
         socket_path: listeners.socket.clone(),
         socket_stream_path: listeners.stream_socket.clone(),
         stream_log_too_big: listeners.stream_log_too_big,
@@ -1000,6 +1013,7 @@ async fn add_apm_pipeline_to_blueprint(
         &config.shared,
         datadog_agent_config::is_containerized(),
         Some(Arc::new(env_provider.workload().clone())),
+        config_system.live(|config| &config.shared.endpoints.api_key),
     );
     blueprint
         .add_relay("dd_traces_relay", dd_traces_relay)?

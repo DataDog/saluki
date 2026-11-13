@@ -3,40 +3,25 @@
 //! Every request the APM relay does not handle itself is forwarded, unchanged apart from hop-by-hop headers, to the
 //! trace-agent at the configured destination, and the trace-agent's response is streamed back to the client.
 
-use std::pin::Pin;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc, Mutex,
+    Arc,
 };
-use std::task::{Context, Poll};
 #[cfg(unix)]
 use std::{ffi::OsStr, os::unix::ffi::OsStrExt as _, path::PathBuf};
 
-use axum::body::Body;
 use axum::extract::Request as AxumRequest;
 use axum::response::{IntoResponse, Response};
-use http::header::{self, HeaderMap, HeaderName};
+use http::header::{self, HeaderMap};
 use http::uri::{PathAndQuery, Uri};
 use http::{HeaderValue, StatusCode, Version};
-use http_body::{Body as HttpBody, Frame, SizeHint};
 use rustls::RootCertStore;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::net::client::http::{HttpClient, HttpProtocol};
 use tracing::{debug, info, warn};
 use url::Url;
 
-/// Headers that describe a single connection rather than the request, and so must not be forwarded across a proxy
-/// hop. See RFC 9110, section 7.6.1.
-const HOP_BY_HOP_HEADERS: [HeaderName; 8] = [
-    header::CONNECTION,
-    HeaderName::from_static("keep-alive"),
-    header::PROXY_AUTHENTICATE,
-    header::PROXY_AUTHORIZATION,
-    header::TE,
-    header::TRAILER,
-    header::TRANSFER_ENCODING,
-    header::UPGRADE,
-];
+use super::forwarding::{strip_hop_by_hop_headers, UpstreamClient};
 
 /// Name the relay adds itself to the `Via` header under, so that a request proxied back to the relay is recognized.
 /// See RFC 9110, section 7.6.3.
@@ -48,9 +33,7 @@ const VIA_ENTRY: HeaderValue = HeaderValue::from_static("1.1 agent-data-plane");
 /// Forwards requests to the trace-agent.
 #[derive(Clone)]
 pub(super) struct TraceAgentProxy {
-    /// The client is not `Sync`, and the proxy is shared by every request handler, so each request clones a handle
-    /// out from behind the lock. Cloning is cheap, and the lock is held only for the clone.
-    client: Arc<Mutex<HttpClient>>,
+    client: UpstreamClient,
 
     /// Scheme and authority requests are rewritten to. For a Unix domain socket destination the client ignores the
     /// authority and connects to the socket, but a request URI still needs one.
@@ -182,7 +165,7 @@ impl TraceAgentProxy {
         };
 
         Ok(Self {
-            client: Arc::new(Mutex::new(builder.build()?)),
+            client: UpstreamClient::new(builder.build()?),
             base_uri,
             destination,
             unreachable: Arc::new(AtomicBool::new(false)),
@@ -234,21 +217,12 @@ impl TraceAgentProxy {
         parts.version = Version::HTTP_11;
         parts.headers.append(header::VIA, VIA_ENTRY);
 
-        let upstream_request = http::Request::from_parts(parts, SyncBody::new(body));
-
-        let mut client = self
-            .client
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone();
-        match client.send(upstream_request).await {
+        match self.client.send(http::Request::from_parts(parts, body)).await {
             Ok(response) => {
                 if self.unreachable.swap(false, Ordering::Relaxed) {
                     info!("The trace-agent is reachable again; APM requests are being relayed.");
                 }
-                let (mut parts, body) = response.into_parts();
-                strip_hop_by_hop_headers(&mut parts.headers);
-                Ok(Response::from_parts(parts, Body::new(body)))
+                Ok(response)
             }
             Err(e) => {
                 if self.unreachable.swap(true, Ordering::Relaxed) {
@@ -283,62 +257,9 @@ fn was_forwarded_by_relay(headers: &HeaderMap) -> bool {
         .any(|entry| entry.split_whitespace().nth(1) == Some(VIA_PSEUDONYM))
 }
 
-/// Removes hop-by-hop headers, including any the `Connection` header names.
-fn strip_hop_by_hop_headers(headers: &mut HeaderMap) {
-    let named: Vec<HeaderName> = headers
-        .get_all(header::CONNECTION)
-        .iter()
-        .filter_map(|value| value.to_str().ok())
-        .flat_map(|value| value.split(','))
-        .filter_map(|name| HeaderName::try_from(name.trim()).ok())
-        .collect();
-
-    for name in HOP_BY_HOP_HEADERS.iter().chain(named.iter()) {
-        headers.remove(name);
-    }
-}
-
-/// Adapts an incoming request body to the `Sync` bound the HTTP client requires, so it can be streamed upstream
-/// without buffering.
-///
-/// The body is only ever polled through `&mut self`, so the mutex is never contended: it exists only to make the
-/// wrapper `Sync`.
-struct SyncBody {
-    inner: Mutex<Body>,
-    size_hint: SizeHint,
-}
-
-impl SyncBody {
-    fn new(body: Body) -> Self {
-        let size_hint = body.size_hint();
-        Self {
-            inner: Mutex::new(body),
-            size_hint,
-        }
-    }
-}
-
-impl HttpBody for SyncBody {
-    type Data = axum::body::Bytes;
-    type Error = axum::Error;
-
-    fn poll_frame(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        let body = self
-            .get_mut()
-            .inner
-            .get_mut()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        Pin::new(body).poll_frame(cx)
-    }
-
-    fn size_hint(&self) -> SizeHint {
-        self.size_hint
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use axum::body::to_bytes;
+    use axum::body::{to_bytes, Body};
     use axum::routing::any;
     use axum::Router;
     use tokio::net::TcpListener;

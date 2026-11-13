@@ -5,37 +5,73 @@ use std::{
     time::Duration,
 };
 
-use bytes::Bytes;
 use saluki_core::runtime::{self, Scope, ShutdownStrategy};
 use stringtheory::MetaString;
-use tokio::{net::UdpSocket, sync::mpsc, time::timeout};
+use thingbuf::{mpsc, recycling::WithCapacity};
+use tokio::{net::UdpSocket, time::timeout};
 use tracing::{debug, info, warn};
 
-use super::metrics::Metrics;
+use super::metrics::ForwarderMetrics;
 
 const FORWARDER_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const IPV4_ANY_ADDR: SocketAddr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0));
 const IPV6_ANY_ADDR: SocketAddr = SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, 0, 0, 0));
-pub(super) const FORWARDER_QUEUE_CAPACITY: usize = 1024;
+/// The smallest forwarding queue, in packets.
+const MIN_FORWARDER_QUEUE_CAPACITY: usize = 64;
+
+/// Returns how many packets the forwarding queue holds for a DogStatsD queue size of `queue_size`.
+///
+/// Any slot can grow to the size of a receive buffer, so the queue holds only a quarter of `queue_size` packets to keep
+/// the worst case small.
+pub(super) fn forwarder_queue_capacity(queue_size: usize) -> usize {
+    (queue_size / 4).max(MIN_FORWARDER_QUEUE_CAPACITY)
+}
+
+/// Sends packets to the forwarding loop, through a queue of reusable packet buffers.
+pub(super) type PacketSender = mpsc::Sender<Vec<u8>, WithCapacity>;
+
+/// Receives packets in the forwarding loop.
+pub(super) type PacketReceiver = mpsc::Receiver<Vec<u8>, WithCapacity>;
+
+/// Creates the packet queue.
+///
+/// Each slot holds one packet. A slot's buffer grows to the largest packet it has carried and is reused from then on,
+/// so steady-state forwarding doesn't allocate. A buffer that grows past `packet_capacity` shrinks back to it when the
+/// slot is next used.
+fn packet_queue(queue_capacity: usize, packet_capacity: usize) -> (PacketSender, PacketReceiver) {
+    mpsc::with_recycle(queue_capacity, WithCapacity::new().with_max_capacity(packet_capacity))
+}
 
 #[derive(Clone)]
 pub(super) struct PacketForwarderTarget {
     target_host: MetaString,
     target_port: u16,
+    queue_capacity: usize,
+    packet_capacity: usize,
 }
 
 impl PacketForwarderTarget {
-    pub(super) fn new(target_host: MetaString, target_port: u16) -> Self {
+    /// Creates a forwarding target.
+    ///
+    /// The forwarding queue holds `queue_capacity` packets. `packet_capacity` is the most a queue slot keeps allocated
+    /// between packets. Larger packets are still forwarded.
+    pub(super) fn new(
+        target_host: MetaString, target_port: u16, queue_capacity: usize, packet_capacity: usize,
+    ) -> Self {
         Self {
             target_host,
             target_port,
+            queue_capacity,
+            packet_capacity,
         }
     }
 
-    pub(super) fn to_forwarder(&self, metrics: Metrics) -> PacketForwarder {
+    pub(super) fn to_forwarder(&self, metrics: ForwarderMetrics) -> PacketForwarder {
         PacketForwarder {
             target_host: self.target_host.clone(),
             target_port: self.target_port,
+            queue_capacity: self.queue_capacity,
+            packet_capacity: self.packet_capacity,
             metrics,
             connected: Arc::new(OnceLock::new()),
         }
@@ -46,14 +82,17 @@ impl PacketForwarderTarget {
 pub(super) struct PacketForwarder {
     target_host: MetaString,
     target_port: u16,
-    metrics: Metrics,
-    pub(super) connected: Arc<OnceLock<mpsc::Sender<Bytes>>>,
+    queue_capacity: usize,
+    packet_capacity: usize,
+    metrics: ForwarderMetrics,
+    pub(super) connected: Arc<OnceLock<PacketSender>>,
 }
 
 impl PacketForwarder {
     #[cfg(test)]
-    pub(super) fn for_tests(channel_size: usize) -> (Self, mpsc::Receiver<Bytes>) {
-        let (packets_tx, packets_rx) = mpsc::channel(channel_size);
+    pub(super) fn for_tests(channel_size: usize) -> (Self, PacketReceiver) {
+        const PACKET_CAPACITY: usize = 8196;
+        let (packets_tx, packets_rx) = packet_queue(channel_size, PACKET_CAPACITY);
 
         let connected = Arc::new(OnceLock::from(packets_tx));
 
@@ -61,7 +100,9 @@ impl PacketForwarder {
             Self {
                 target_host: MetaString::empty(),
                 target_port: 0,
-                metrics: Metrics::for_tests(),
+                queue_capacity: channel_size,
+                packet_capacity: PACKET_CAPACITY,
+                metrics: ForwarderMetrics::for_tests(),
                 connected,
             },
             packets_rx,
@@ -105,6 +146,8 @@ impl PacketForwarder {
         let Self {
             target_host: host,
             target_port: port,
+            queue_capacity,
+            packet_capacity,
             metrics,
             connected,
         } = self;
@@ -127,7 +170,7 @@ impl PacketForwarder {
         // available and ready to forward packets. If another invocation has beat us to this point, we just quietly
         // return.
         let forwarding = runtime::worker("packet_forwarder", async move {
-            let (packets_tx, mut packets_rx) = mpsc::channel(FORWARDER_QUEUE_CAPACITY);
+            let (packets_tx, packets_rx) = packet_queue(queue_capacity, packet_capacity);
 
             if connected.set(packets_tx).is_err() {
                 debug!("DogStatsD packet forwarding was already initialized.");
@@ -140,7 +183,7 @@ impl PacketForwarder {
             // channel is finished (empty + no senders), we don't want to inadvertantly hold on the channel.
             drop(connected);
 
-            while let Some(packet) = packets_rx.recv().await {
+            while let Some(packet) = packets_rx.recv_ref().await {
                 match socket.send(&packet).await {
                     Ok(bytes_sent) => {
                         metrics.packets_forwarded().increment(1);
@@ -153,21 +196,35 @@ impl PacketForwarder {
                 }
             }
         });
+        // The loop stops once every sender is gone, after sending what's still queued. The decoders hold senders and
+        // drain without a timeout of their own, so neither does the loop: the component's shutdown timeout bounds both.
+        let forwarding = forwarding.with_shutdown_timeout(Duration::MAX);
         match owner {
             Some(owner) => forwarding.spawn_in(&owner),
             None => forwarding.spawn(),
         };
     }
 
-    pub(super) async fn forward(&self, packet: Bytes) {
+    /// Queues a copy of `packet` for forwarding, waiting for room in the queue if it's full.
+    ///
+    /// Does nothing if forwarding isn't enabled.
+    pub(super) async fn forward(&self, packet: &[u8]) {
         if packet.is_empty() {
             return;
         }
 
         if let Some(packets_tx) = self.connected.get() {
-            if packets_tx.send(packet).await.is_err() {
-                self.metrics.packet_forwarding_errors().increment(1);
-                debug!("Failed to enqueue DogStatsD packet for forwarding: receiver dropped.");
+            match packets_tx.send_ref().await {
+                Ok(mut slot) => {
+                    slot.clear();
+                    // Exact, so a slot never keeps more than its largest packet and the memory bound stays a worst case.
+                    slot.reserve_exact(packet.len());
+                    slot.extend_from_slice(packet);
+                }
+                Err(_) => {
+                    self.metrics.packet_forwarding_errors().increment(1);
+                    debug!("Failed to enqueue DogStatsD packet for forwarding: receiver dropped.");
+                }
             }
         }
     }
@@ -207,22 +264,22 @@ mod tests {
     use std::io;
     use std::{net::SocketAddr, time::Duration};
 
-    use bytes::Bytes;
     use saluki_core::components::ComponentContext;
     use saluki_core::runtime::{test_util::TestSupervisor, Supervisor};
-    use saluki_io::net::ListenAddress;
     use saluki_metrics::test::TestRecorder;
     use tokio::{net::UdpSocket, time::timeout};
 
-    use super::super::metrics::build_metrics;
-    use super::{PacketForwarder, PacketForwarderTarget, FORWARDER_QUEUE_CAPACITY};
-    use crate::sources::dogstatsd::forwarder::IPV4_ANY_ADDR;
+    use super::super::metrics::ForwarderMetrics;
+    use super::{forwarder_queue_capacity, PacketForwarder, PacketForwarderTarget, PacketSender, IPV4_ANY_ADDR};
+
+    /// The forwarding queue capacity for the default DogStatsD queue size.
+    const QUEUE_CAPACITY: usize = 256;
 
     /// Waits for `forwarder` to publish its packet channel, which the forwarding loop does once it starts running.
     ///
     /// Spawning only queues the loop for the supervisor, so forwarding becomes available a moment after `connect`
     /// returns rather than synchronously with it.
-    async fn wait_for_forwarding(forwarder: &PacketForwarder) -> tokio::sync::mpsc::Sender<Bytes> {
+    async fn wait_for_forwarding(forwarder: &PacketForwarder) -> PacketSender {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         loop {
             if let Some(packets_tx) = forwarder.connected.get() {
@@ -249,9 +306,31 @@ mod tests {
 
     fn build_forwarder(target_addr: SocketAddr) -> PacketForwarder {
         let context = ComponentContext::test_source("dogstatsd_forwarder_test");
-        let listen_addr = ListenAddress::Udp(IPV4_ANY_ADDR);
-        let metrics = build_metrics(&listen_addr, &context, false);
-        PacketForwarderTarget::new(target_addr.ip().to_string().into(), target_addr.port()).to_forwarder(metrics)
+        PacketForwarderTarget::new(
+            target_addr.ip().to_string().into(),
+            target_addr.port(),
+            QUEUE_CAPACITY,
+            8196,
+        )
+        .to_forwarder(ForwarderMetrics::new(&context))
+    }
+
+    #[test]
+    fn queue_capacity_is_a_quarter_of_the_queue_size_and_at_least_64() {
+        for (queue_size, capacity) in [
+            (0, 64),
+            (255, 64),
+            (256, 64),
+            (260, 65),
+            (1024, QUEUE_CAPACITY),
+            (4096, 1024),
+        ] {
+            assert_eq!(
+                forwarder_queue_capacity(queue_size),
+                capacity,
+                "queue size {queue_size}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -271,7 +350,7 @@ mod tests {
 
         wait_for_forwarding(&forwarder).await;
 
-        forwarder.forward(Bytes::from_static(b"metric.name:1|c")).await;
+        forwarder.forward(b"metric.name:1|c").await;
 
         let mut buf = [0u8; 64];
         let received = timeout(Duration::from_secs(5), target.recv(&mut buf))
@@ -287,7 +366,6 @@ mod tests {
                 &[
                     ("component_id", "dogstatsd_forwarder_test"),
                     ("component_type", "source"),
-                    ("listener_type", "udp"),
                     ("state", "ok"),
                 ]
             )),
@@ -299,7 +377,6 @@ mod tests {
                 &[
                     ("component_id", "dogstatsd_forwarder_test"),
                     ("component_type", "source"),
-                    ("listener_type", "udp"),
                 ]
             )),
             Some(payload.len() as u64)
@@ -335,7 +412,7 @@ mod tests {
 
         wait_for_forwarding(&forwarder).await;
 
-        forwarder.forward(Bytes::from_static(b"metric.name:1|c")).await;
+        forwarder.forward(b"metric.name:1|c").await;
 
         let mut buf = [0u8; 64];
         let received = timeout(Duration::from_secs(5), target.recv(&mut buf))
@@ -351,7 +428,6 @@ mod tests {
                 &[
                     ("component_id", "dogstatsd_forwarder_test"),
                     ("component_type", "source"),
-                    ("listener_type", "udp"),
                     ("state", "ok"),
                 ]
             )),
@@ -363,7 +439,6 @@ mod tests {
                 &[
                     ("component_id", "dogstatsd_forwarder_test"),
                     ("component_type", "source"),
-                    ("listener_type", "udp"),
                 ]
             )),
             Some(payload.len() as u64)
@@ -394,16 +469,18 @@ mod tests {
         let forwarder_spawn = forwarder.clone();
         supervisor.scope(forwarder_spawn.connect()).await;
 
-        // No wait is needed for the second loop here: `OnceLock::set` can never replace an existing value, so whether
-        // the second loop has run yet or not, what `connected` holds is the first sender.
-        let second = forwarder
-            .connected
-            .get()
-            .expect("forwarding should stay enabled after a second connect");
-
+        // The second forwarding loop is only queued when `connect` returns, so it can't be observed here. A packet
+        // arriving exactly once is what shows the first sender wasn't replaced.
+        forwarder.forward(b"after.second.connect:1|c").await;
+        let mut buf = [0u8; 64];
+        let received = timeout(Duration::from_secs(5), target.recv(&mut buf))
+            .await
+            .expect("forwarded payload should arrive before the timeout")
+            .expect("recv should succeed");
+        assert_eq!(&buf[..received], b"after.second.connect:1|c");
         assert!(
-            second.same_channel(&first),
-            "a second connect must keep the original sender, not replace it"
+            timeout(RECEIVE_IDLE_TIMEOUT, target.recv(&mut buf)).await.is_err(),
+            "the packet must be forwarded only once"
         );
 
         // As above: drop every sender so the forwarding loop can finish.
@@ -433,7 +510,7 @@ mod tests {
         assert_eq!(supervisor.active_children(), 0);
 
         // Must not panic even though forwarding is disabled.
-        forwarder.forward(Bytes::from_static(b"metric.name:1|c")).await;
+        forwarder.forward(b"metric.name:1|c").await;
         assert!(supervisor.shutdown().await.is_ok());
     }
 
@@ -488,8 +565,8 @@ mod tests {
         // This goes on and on, such that we'd see two failures for four actual sends, three failures for six actual
         // sends, etc.
         drop(target);
-        forwarder.forward(Bytes::from_static(b"metric.name:1|c")).await;
-        forwarder.forward(Bytes::from_static(b"metric.name:1|c")).await;
+        forwarder.forward(b"metric.name:1|c").await;
+        forwarder.forward(b"metric.name:1|c").await;
 
         yield_now().await;
 
@@ -499,7 +576,6 @@ mod tests {
                 &[
                     ("component_id", "dogstatsd_forwarder_test"),
                     ("component_type", "source"),
-                    ("listener_type", "udp"),
                     ("state", "error"),
                 ],
             )),
@@ -510,50 +586,54 @@ mod tests {
     #[tokio::test]
     async fn queued_packets_are_forwarded_during_shutdown() {
         // Packets already queued when shutdown begins must still be sent. A forwarding loop that was aborted at
-        // shutdown would be dropped at its current await point and take the whole queue with it -- measured at 64 of
-        // 1024 delivered.
-        let target = UdpSocket::bind("127.0.0.1:0").await.expect("target should bind");
+        // shutdown would be dropped at its current await point and take the rest of the queue with it.
+        //
+        // Drain the target on its own thread, started before anything is forwarded. The forwarding loop can outrun a
+        // reader that has to wait its turn on the test's runtime, and a full socket receive buffer would lose packets
+        // in the harness rather than in the code under test.
+        let target = std::net::UdpSocket::bind("127.0.0.1:0").expect("target should bind");
         let target_addr = target.local_addr().expect("target should have an address");
+        let receiver = std::thread::spawn(move || {
+            let mut received = 0;
+            let mut buf = [0u8; 128];
+            target
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .expect("read timeout should be set");
+            while target.recv(&mut buf).is_ok() {
+                received += 1;
+                target
+                    .set_read_timeout(Some(RECEIVE_IDLE_TIMEOUT))
+                    .expect("read timeout should be set");
+            }
+            received
+        });
+
         let forwarder = build_forwarder(target_addr);
 
         let supervisor = TestSupervisor::start("dogstatsd").await;
         let forwarder_spawn = forwarder.clone();
         supervisor.scope(forwarder_spawn.connect()).await;
 
-        // Fill the queue via the sender directly. Going through `forward` would await `send`, which yields to the
+        // Fill the queue via the sender directly. Going through `forward` would await `send_ref`, which yields to the
         // loop on every call and paces it, so no backlog would ever build up.
         let packets_tx = wait_for_forwarding(&forwarder).await;
 
         let mut queued = 0;
-        for i in 0..FORWARDER_QUEUE_CAPACITY {
-            let packet = Bytes::from(format!("queued.metric.{i}:1|c"));
+        for i in 0..QUEUE_CAPACITY {
+            let packet = format!("queued.metric.{i}:1|c").into_bytes();
             if packets_tx.try_send(packet).is_err() {
                 break;
             }
             queued += 1;
         }
-        assert_eq!(
-            queued, FORWARDER_QUEUE_CAPACITY,
-            "the queue should have accepted a full batch"
-        );
-
-        // Drain the target concurrently: sending a full batch before reading any of it would overflow the socket's
-        // receive buffer and lose packets in the harness rather than in the code under test.
-        let receiver = tokio::spawn(async move {
-            let mut received = 0;
-            let mut buf = [0u8; 128];
-            while let Ok(Ok(_)) = timeout(RECEIVE_IDLE_TIMEOUT, target.recv(&mut buf)).await {
-                received += 1;
-            }
-            received
-        });
+        assert_eq!(queued, QUEUE_CAPACITY, "the queue should have accepted a full batch");
 
         // Close every sender, which is what lets the loop finish, and then shut down while it is still draining.
         drop(packets_tx);
         drop(forwarder);
         supervisor.shutdown().await.expect("supervisor should stop cleanly");
 
-        let received = receiver.await.expect("receiver should not panic");
+        let received = receiver.join().expect("receiver should not panic");
         assert_eq!(
             received, queued,
             "every queued packet should have been forwarded before the loop stopped"

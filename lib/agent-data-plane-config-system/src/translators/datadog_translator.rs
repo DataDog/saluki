@@ -595,6 +595,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.domains.traces.obfuscation.redis.remove_all_args = value;
     }
 
+    fn consume_apm_config_obfuscation_remove_stack_traces(&mut self, value: bool) {
+        self.config.domains.traces.obfuscation.remove_stack_traces = value;
+    }
+
     fn consume_apm_config_obfuscation_valkey_enabled(&mut self, value: bool) {
         self.config.domains.traces.obfuscation.valkey.enabled = value;
     }
@@ -1003,6 +1007,16 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     fn consume_dogstatsd_port(&mut self, value: i64) {
         if let Some(port) = self.parse_port("dogstatsd_port", value) {
             self.config.domains.dogstatsd.listeners.port = port;
+        }
+    }
+
+    fn consume_dogstatsd_queue_size(&mut self, value: i64) {
+        match usize::try_from(value) {
+            Ok(queue_size) => self.config.domains.dogstatsd.listeners.queue_size = queue_size,
+            Err(_) => self.record_error(TranslateError::new_with_message(
+                "dogstatsd_queue_size",
+                "queue size must be greater than or equal to 0",
+            )),
         }
     }
 
@@ -2042,6 +2056,18 @@ mod tests {
     }
 
     #[test]
+    fn apm_config_obfuscation_remove_stack_traces_translates() {
+        let (config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none(), "translation should succeed: {errors:?}");
+        assert!(!config.domains.traces.obfuscation.remove_stack_traces);
+
+        let (config, errors) =
+            translate_explicit(json!({ "apm_config": { "obfuscation": { "remove_stack_traces": true } } }));
+        assert!(errors.is_none(), "translation should succeed: {errors:?}");
+        assert!(config.domains.traces.obfuscation.remove_stack_traces);
+    }
+
+    #[test]
     fn remote_configuration_keys_translate() {
         // Exercise non-default values and distinguish every pair of keys to catch swapped translations.
         for (enabled, sampling, semantics) in [(false, false, true), (false, true, false)] {
@@ -2343,6 +2369,26 @@ mod tests {
 
         let errors = errors.expect("a negative context expiry should record a translation error");
         assert!(errors.to_string().contains("dogstatsd_context_expiry_seconds"));
+        assert!(errors.to_string().contains("greater than or equal to 0"));
+    }
+
+    #[test]
+    fn dogstatsd_queue_size_defaults_to_the_schema_default_and_can_be_set() {
+        let (config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none());
+        assert_eq!(config.domains.dogstatsd.listeners.queue_size, 1024);
+
+        let (config, errors) = translate_explicit(json!({ "dogstatsd_queue_size": 4096 }));
+        assert!(errors.is_none());
+        assert_eq!(config.domains.dogstatsd.listeners.queue_size, 4096);
+    }
+
+    #[test]
+    fn negative_dogstatsd_queue_size_records_translation_error() {
+        let (_, errors) = translate_explicit(json!({ "dogstatsd_queue_size": -1 }));
+
+        let errors = errors.expect("a negative queue size should record a translation error");
+        assert!(errors.to_string().contains("dogstatsd_queue_size"));
         assert!(errors.to_string().contains("greater than or equal to 0"));
     }
 

@@ -1,0 +1,8 @@
+---
+upgrade:
+  - |
+    ``metrics_level`` can no longer make ADP's internal metrics less verbose than ``info``. A ``metrics_level`` of
+    ``warn`` or ``error`` filtered out the metrics that ADP's status page is built from, so the ``DogStatsD`` and
+    ``Forwarder`` status sections showed zeros. ADP now runs with ``info`` instead, and logs a warning. Likewise, a
+    runtime override through the ``/metrics/override`` endpoint, such as ``agent-data-plane debug set-metric-level``,
+    is rejected if it's less verbose than ``info``.

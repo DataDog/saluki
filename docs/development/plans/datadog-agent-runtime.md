@@ -65,16 +65,16 @@ to the pull request), or merged.
   - Moves `internal/env/**` and the tagger prefix fixture, and adds `WorkloadSettings` and
     `RemoteAgentEnvironmentProvider`.
   - Updates `.github/workflows/update-agent-tagger-prefixes.yml` for the new paths.
-- [ ] **4. Control plane workers.** Status: in review (pull request not opened yet).
+- [x] **4. Control plane workers.** Status: merged ([#2844](https://github.com/DataDog/saluki/pull/2844)).
   - Moves the runtime configuration and configuration updates workers, and moves the internal telemetry worker into
     `saluki-core`, next to the internal metrics types. ADP still builds `ctrl-pln` itself, from these workers.
   - Adds `RemoteAgentServicesWorker`, which publishes the status, flare, and telemetry services as a dynamic gRPC route
     on the privileged API endpoint.
-- [ ] **5. Facade.** Status: in review (pull request not opened yet).
+- [x] **5. Facade.** Status: merged ([#2853](https://github.com/DataDog/saluki/pull/2853)).
   - Adds the `facade` module and rewrites ADP's `run` command on top of it. ADP still builds `ctrl-pln`, and adds to it
     the `remote-agent` supervisor from `RemoteAgent::create_remote_agent_supervisor`, which holds the supervision tree route
     and the remote agent workers.
-- [ ] **6. Documentation and example.** Status: in review (pull request not opened yet).
+- [x] **6. Documentation and example.** Status: merged ([#2893](https://github.com/DataDog/saluki/pull/2893)).
   - Adds the crate documentation, `examples/minimal_remote_agent.rs`, and the entry in the agent guide (`docs/development/agents.md`).
 
 ## Invariants
@@ -132,26 +132,22 @@ its item when it merges.
    ADP binds the privileged API to the address from its authoritative configuration
    (`bin/agent-data-plane/src/internal/control_plane.rs`). If the Datadog Agent supplies a different
    `data_plane.secure_api_listen_address`, the two disagree. Deferred because fixing it changes which value wins.
-3. **Gate autodiscovery on its first subscriber.** The autodiscovery broadcaster in
-   `lib/datadog-agent/runtime/src/env/autodiscovery.rs` starts streaming as soon as its worker starts, and drops
-   events while nothing has subscribed, so a late subscriber can miss the initial snapshot. ACR found this. Deferred
-   because it changes when events are delivered.
-4. **Make the default log file per binary.** `PlatformSettings::get_default_log_file_path` in
+3. **Make the default log file per binary.** `PlatformSettings::get_default_log_file_path` in
    `lib/datadog-agent/commons/src/platform/mod.rs` hard-codes `agent-data-plane.log`. Until then,
    `LoggingTranslator::new` takes the default log file from the binary, and ADP passes that function's result. Deferred
    because it changes a public API that other crates use.
-5. **Add the hooks ACR needs.** None of these exist yet, and ADP doesn't need them:
+4. **Add the hooks ACR needs.** None of these exist yet, and ADP doesn't need them:
    - host tags
    - a `LocalAutodiscoveryProvider` in standalone mode
    - workload provider toggles for a tagger-only setup, without the containerd and cgroups collectors
    - configurable tag store and external data store entity limits, which are hard-coded to 2000 in
      `lib/datadog-agent/runtime/src/env/workload/mod.rs`
    - a process start time for the status `Started` field, which today records when the services worker was created
-6. **Make the configuration system generic.** This gets its own plan.
-7. **Split `remote_agent/mod.rs` into submodules.** Registration, the configuration stream, the services, flare
+5. **Make the configuration system generic.** This gets its own plan.
+6. **Split `remote_agent/mod.rs` into submodules.** Registration, the configuration stream, the services, flare
    collection, and event reporting can each have their own module. Deferred so that the first pull request keeps rename
    detection in Git for the moved file.
-8. **Write an ACR migration guide.** ACR consumes Saluki 1.6.2, so moving to this crate also means adapting to these
+7. **Write an ACR migration guide.** ACR consumes Saluki 1.6.2, so moving to this crate also means adapting to these
    changes since then:
    - `saluki-context` was folded into `saluki-core`.
    - `AppBootstrapper::from_configuration` was replaced by `AppBootstrapper::new`, and the bootstrap supervisor it

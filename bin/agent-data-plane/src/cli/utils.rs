@@ -163,7 +163,8 @@ impl DataPlaneAPIClient {
 
     /// Temporarily overrides the metric level for the process.
     ///
-    /// Metric levels follow traditional log levels: `trace`, `debug`, `info`, `warn`, and `error`. The duration of the
+    /// Metric levels follow traditional log levels: `trace`, `debug`, `info`, `warn`, and `error`. ADP rejects an
+    /// override that's less verbose than `info`, since its status page relies on metrics at that level. The duration of the
     /// override is specified in seconds, and the override is reverted after that duration has passed. The same override
     /// can be set again while an override is active in under to "refresh" its override duration.
     ///

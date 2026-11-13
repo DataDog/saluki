@@ -63,6 +63,7 @@ const IMPLICIT_HEADERS: [HeaderName; 4] = [
 pub struct Metrics {
     metrics_received: Counter,
     logs_received: Counter,
+    logs_dropped_render_failure: Counter,
     bytes_received: Counter,
     spans_received: Counter,
     traces_dropped_span_id_zero: Counter,
@@ -85,6 +86,11 @@ impl Metrics {
 
     pub fn logs_received(&self) -> &Counter {
         &self.logs_received
+    }
+
+    /// Counter for logs dropped because their content couldn't be rendered.
+    pub fn logs_dropped_render_failure(&self) -> &Counter {
+        &self.logs_dropped_render_failure
     }
 
     pub fn spans_received(&self) -> &Counter {
@@ -151,6 +157,7 @@ impl Metrics {
         Metrics {
             metrics_received: Counter::noop(),
             logs_received: Counter::noop(),
+            logs_dropped_render_failure: Counter::noop(),
             bytes_received: Counter::noop(),
             spans_received: Counter::noop(),
             traces_dropped_span_id_zero: Counter::noop(),
@@ -177,6 +184,14 @@ pub fn build_metrics(component_context: &ComponentContext) -> Metrics {
             .register_counter_with_tags("component_events_received_total", [("message_type", "otlp_metrics")]),
         logs_received: builder
             .register_counter_with_tags("component_events_received_total", [("message_type", "otlp_logs")]),
+        logs_dropped_render_failure: builder.register_counter_with_tags(
+            "component_events_dropped_total",
+            [
+                "intentional:false",
+                "drop_reason:render_failure",
+                "message_type:otlp_logs",
+            ],
+        ),
         bytes_received: builder.register_counter_with_tags("component_bytes_received_total", [("source", "otlp")]),
         spans_received: builder
             .register_counter_with_tags("component_events_received_total", [("message_type", "otlp_spans")]),

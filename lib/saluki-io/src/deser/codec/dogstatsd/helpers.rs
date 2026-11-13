@@ -77,6 +77,22 @@ pub fn utf8(input: &[u8]) -> IResult<&[u8], &str> {
     }
 }
 
+/// A parser that maps an input slice to a UTF-8 string, such as [`ascii_alphanum_and_seps`] or [`non_empty_utf8`].
+pub type StrParser = fn(&[u8]) -> IResult<&[u8], &str>;
+
+/// Maps the entire input slice as a non-empty UTF-8 string.
+///
+/// # Errors
+///
+/// If the input slice is empty or isn't valid UTF-8, an error is returned.
+#[inline]
+pub fn non_empty_utf8(input: &[u8]) -> IResult<&[u8], &str> {
+    if input.is_empty() {
+        return Err(nom::Err::Error(Error::new(input, ErrorKind::NonEmpty)));
+    }
+    utf8(input)
+}
+
 /// Returns the longest input slice that contains only ASCII alphanumeric characters and "separators" as a UTF-8 string.
 ///
 /// Separators are defined as spaces, underscores, hyphens, and periods.

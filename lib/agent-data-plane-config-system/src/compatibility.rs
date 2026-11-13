@@ -185,7 +185,7 @@ mod tests {
 
     #[test]
     fn lower_severity_keys_pass_and_cross_cutting_keys_ignore_active_pipelines() {
-        let system = system_with(json!({ "dogstatsd_queue_size": 2048, "min_tls_version": "tlsv1.3" }));
+        let system = system_with(json!({ "dogstatsd_pipeline_count": 4, "min_tls_version": "tlsv1.3" }));
         system
             .check_compatibility(&pipelines(&[Pipeline::DogStatsD]))
             .expect("only high-severity incompatibilities fail the check");
