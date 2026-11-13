@@ -4640,6 +4640,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "panoramic-courier"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "snafu",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "papaya"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"

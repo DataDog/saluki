@@ -55,7 +55,7 @@ build-bundled-agent-adp-image:
       --push
       .
 
-# Compile panoramic once. The dynamically generated child pipeline below
+# Compile panoramic and the static courier once. The dynamically generated child pipeline below
 # pulls this artifact instead of rebuilding per test.
 build-panoramic-binary:
   extends: .build-common-variables
@@ -67,9 +67,10 @@ build-panoramic-binary:
   image: "${SALUKI_BUILD_CI_IMAGE}"
   artifacts:
     expire_in: 1 day
-    paths: [target/release/panoramic]
+    paths: [target/release/panoramic, target/x86_64-unknown-linux-musl/release/courier]
   script:
     - make build-panoramic
+    - make build-courier COURIER_TARGET=x86_64-unknown-linux-musl
 
 # Scan test/correctness/cases/ and emit a child-pipeline YAML with one job per test
 # directory. Each emitted job extends mixins from .gitlab/correctness-mixins.yml.

@@ -67,6 +67,7 @@ All binaries live under `bin/correctness/`:
 | **`otlp-fixtures`** | Builds the static OTLP payloads of some correctness cases.                              |
 | **datadog-intake** | Mock Datadog API: receives test output                                                   |
 | **airlock**        | Library for running containers in isolated groups.                                       |
+| **courier**        | Static probe, send, HTTP and file-follow tool that panoramic runs inside containers.     |
 
 Test case configs live in `test/correctness/cases/` (for example, `test/correctness/cases/dsd-plain/config.yaml`).
 
@@ -280,6 +281,7 @@ bin/correctness/
 ├── otlp-fixtures/         : static OTLP payload builder
 ├── datadog-intake/        : mock Datadog API
 ├── airlock/               : container isolation lib
+├── courier/               : in-container probe and send tool
 └── stele/                 : telemetry data types
 
 # actual test cases
