@@ -1832,8 +1832,10 @@ Why this order:
     the trace-agent and another key for ADP; it is the case the wiring rule was shaped around.
     `apm-trace-uds` needs the host view. Some trace cases name a `datadog_intake.config_path` file
     that does not exist and that legacy ignores. The strict loader rejects it, so the migration
-    drops it and says so. Consider delivering the logs intake keys through the `intake` connection
-    here, so the log cases stop wiring them by hand.
+    drops it and says so. The log cases write `logs_config.logs_dd_url` by reference to their
+    `intake` connection; delivering it through the connection would add a key to every case that
+    connects an intake. `apm-trace-uds` also keeps the host PID namespace: the trace-agent finds a
+    tracer's container from its socket peer's PID.
 
 **11. `pod`: the pod backend and the matrix**
 
@@ -2002,7 +2004,7 @@ host-process subject with containerized helpers.
   asks for the host view.
 - A Linux container no longer shares the runner's PID namespace. Legacy gave every one the host's,
   for origin detection; a case that needs it sets the realization option `host_pid`, as
-  `dsd-origin-detection` does on each of its containers.
+  `dsd-origin-detection` and `apm-trace-uds` do on each of their containers.
 - `panoramic`'s mounts directory, whose init script resolves the legacy dynamic variables, is not
   mounted into participant containers. A value known only at run time is a reference.
 - `exec` quotes a command's output on failure, which the legacy CLI actions did not.

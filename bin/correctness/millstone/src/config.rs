@@ -356,15 +356,24 @@ mod tests {
         }
     }
 
+    /// Target addresses of every kind panoramic delivers to millstone, one of which each reference stands for.
+    const ADDRESSES: [&str; 5] = [
+        "unixgram:///panoramic/reference.sock",
+        "unix:///panoramic/reference.sock",
+        "udp://reference:1",
+        "http://reference:1",
+        "grpc://reference:1",
+    ];
+
     /// `text` with each `{{ ... }}` reference, which panoramic fills when it places the file as a template, replaced
-    /// by a target address.
-    fn filled(text: &str) -> String {
+    /// by `address`.
+    fn filled(text: &str, address: &str) -> String {
         let mut filled = String::new();
         let mut rest = text;
         while let Some((before, after)) = rest.split_once("{{") {
             let (_, after) = after.split_once("}}").expect("a reference ends with }}");
             filled.push_str(before);
-            filled.push_str("unixgram:///panoramic/reference.sock");
+            filled.push_str(address);
             rest = after;
         }
         filled.push_str(rest);
@@ -384,15 +393,23 @@ mod tests {
 
         for path in configs {
             let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e:?}", path.display()));
-            let config: Config =
-                serde_saphyr::from_str(&filled(&text)).unwrap_or_else(|e| panic!("{}: {e:?}", path.display()));
-            config
-                .validate()
-                .unwrap_or_else(|e| panic!("{}: {e:?}", path.display()));
-            config
-                .corpus
-                .validate()
-                .unwrap_or_else(|e| panic!("{}: {e:?}", path.display()));
+            // A config without references parses the same with every address.
+            let errors: Vec<String> = ADDRESSES
+                .iter()
+                .map(|address| {
+                    let config: Config =
+                        serde_saphyr::from_str(&filled(&text, address)).map_err(|e| format!("{e:?}"))?;
+                    config.validate().map_err(|e| format!("{e:?}"))?;
+                    config.corpus.validate().map_err(|e| format!("{e:?}"))
+                })
+                .filter_map(Result::err)
+                .collect();
+            assert!(
+                errors.len() < ADDRESSES.len(),
+                "{}: {}",
+                path.display(),
+                errors.join("; ")
+            );
         }
     }
 
