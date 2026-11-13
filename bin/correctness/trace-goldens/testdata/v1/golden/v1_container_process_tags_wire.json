@@ -1,0 +1,160 @@
+{
+  "requests": [
+    {
+      "headers": {
+        "Content-Encoding": "gzip",
+        "Content-Type": "application/x-protobuf",
+        "DD-API-KEY": "test"
+      },
+      "path": "/api/v0.2/traces",
+      "payload": {
+        "agentVersion": "",
+        "env": "none",
+        "errorTPS": 10,
+        "hostName": "agent-host",
+        "idxTracerPayloads": [
+          {
+            "appVersionRef": 1,
+            "attributes": {
+              "5": {
+                "stringValueRef": 9
+              }
+            },
+            "chunks": [
+              {
+                "attributes": {},
+                "droppedTrace": false,
+                "originRef": 0,
+                "priority": 1,
+                "samplingMechanism": 0,
+                "spans": [
+                  {
+                    "attributes": {
+                      "6": {
+                        "doubleValue": 1
+                      },
+                      "7": {
+                        "doubleValue": 1
+                      }
+                    },
+                    "componentRef": 0,
+                    "duration": "30000000",
+                    "envRef": 0,
+                    "error": false,
+                    "events": [],
+                    "kind": "SPAN_KIND_UNSPECIFIED",
+                    "links": [],
+                    "nameRef": 13,
+                    "parentID": "0",
+                    "resourceRef": 4,
+                    "serviceRef": 12,
+                    "spanID": "1",
+                    "start": "\u003cstart:-1900000000\u003e",
+                    "typeRef": 12,
+                    "versionRef": 0
+                  }
+                ],
+                "traceID": "AAAAAAAAAAAAAAAAAAAAAA=="
+              }
+            ],
+            "containerDebug": null,
+            "containerIDRef": 8,
+            "envRef": 10,
+            "hostnameRef": 0,
+            "languageNameRef": 11,
+            "languageVersionRef": 3,
+            "runtimeIDRef": 0,
+            "strings": [
+              "",
+              "1.2.3",
+              "2.0.0",
+              "3.12.0",
+              "GET /container",
+              "_dd.tags.process",
+              "_sampling_priority_rate_v1",
+              "_top_level",
+              "abcdef0123456789abcdef0123456789",
+              "env:golden,team:apm",
+              "prod",
+              "python",
+              "web",
+              "web.request"
+            ],
+            "tracerVersionRef": 2
+          }
+        ],
+        "rareSamplerEnabled": false,
+        "tags": {},
+        "targetTPS": 10,
+        "tracerPayloads": []
+      }
+    },
+    {
+      "headers": {
+        "Content-Encoding": "gzip",
+        "Content-Type": "application/msgpack",
+        "DD-API-KEY": "test"
+      },
+      "path": "/api/v0.2/stats",
+      "payload": {
+        "agentEnv": "none",
+        "agentHostname": "agent-host",
+        "agentVersion": "",
+        "clientComputed": false,
+        "splitPayload": false,
+        "stats": [
+          {
+            "agentAggregation": "",
+            "containerID": "",
+            "env": "prod",
+            "gitCommitSha": "",
+            "hostname": "agent-host",
+            "imageTag": "",
+            "lang": "python",
+            "processTags": "env:golden,team:apm",
+            "processTagsHash": "6705135378666909054",
+            "runtimeID": "",
+            "sequence": "0",
+            "service": "",
+            "stats": [
+              {
+                "agentTimeShift": "0",
+                "duration": "10000000000",
+                "start": "\u003cbucket\u003e",
+                "stats": [
+                  {
+                    "DBType": "",
+                    "GRPCStatusCode": "",
+                    "HTTPEndpoint": "",
+                    "HTTPMethod": "",
+                    "HTTPStatusCode": 0,
+                    "additionalMetricTags": [],
+                    "duration": "30000000",
+                    "errorSummary": "CgkJ/UqBWr9S8D8SABoA",
+                    "errors": "0",
+                    "hits": "1",
+                    "isTraceRoot": "TRUE",
+                    "name": "web.request",
+                    "okSummary": "CgkJ/UqBWr9S8D8SDRIIAAAAAAAA8D8YuA0aAA==",
+                    "peerTags": [],
+                    "resource": "GET /container",
+                    "service": "web",
+                    "serviceSource": "",
+                    "spanDerivedPrimaryTags": [],
+                    "spanKind": "unknown",
+                    "synthetics": false,
+                    "topLevelHits": "1",
+                    "type": "web"
+                  }
+                ]
+              }
+            ],
+            "tags": [],
+            "tracerVersion": "",
+            "version": "1.2.3"
+          }
+        ]
+      }
+    }
+  ]
+}

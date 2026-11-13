@@ -1,0 +1,35 @@
+{
+  "comment": "Partial snapshot: spans carrying _dd.partial_version >= 0 (partial images of long-running spans) are excluded from concentrator stats. The normal sibling span pins the contrast.",
+  "payload": {
+    "chunks": [
+      {
+        "priority": 1,
+        "spans": [
+          {
+            "span_id": 1,
+            "parent_id": 0,
+            "service": "web",
+            "name": "web.request",
+            "resource": "GET /long-running",
+            "type": "web",
+            "start": "-2s",
+            "duration": "60ms"
+          },
+          {
+            "span_id": 2,
+            "parent_id": 1,
+            "service": "web",
+            "name": "long.task",
+            "resource": "long task",
+            "start": "-1.99s",
+            "duration": "30ms",
+            "attributes": {
+              "_dd.partial_version": 1
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "name": "partial_snapshot"
+}

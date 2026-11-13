@@ -1,0 +1,23 @@
+{
+  "comment": "User drop branch: priority -1 makes the priority sampler drop the trace (DroppedTrace=true). Pins what the concentrator records for dropped traces (they are still concentrated, but never written to the intake).",
+  "payload": {
+    "chunks": [
+      {
+        "priority": -1,
+        "spans": [
+          {
+            "span_id": 1,
+            "parent_id": 0,
+            "service": "web",
+            "name": "web.request",
+            "resource": "GET /dropped",
+            "type": "web",
+            "start": "-2s",
+            "duration": "20ms"
+          }
+        ]
+      }
+    ]
+  },
+  "name": "user_drop"
+}

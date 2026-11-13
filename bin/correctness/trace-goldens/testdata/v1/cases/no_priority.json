@@ -1,0 +1,22 @@
+{
+  "comment": "No-priority branch: chunk priority 0 so the NoPrioritySampler makes the keep decision. Kept deterministically at this volume (target_tps=10).",
+  "payload": {
+    "chunks": [
+      {
+        "spans": [
+          {
+            "span_id": 1,
+            "parent_id": 0,
+            "service": "web",
+            "name": "web.request",
+            "resource": "GET /nopriority",
+            "type": "web",
+            "start": "-2s",
+            "duration": "30ms"
+          }
+        ]
+      }
+    ]
+  },
+  "name": "no_priority"
+}

@@ -1,0 +1,65 @@
+{
+  "comment": "gRPC status code parsing: one span per parseGRPCStatusString branch (numeric string, 'StatusCode.'-prefixed alias, enum name, unrecognized). The status code is part of the aggregation key, so each value yields its own grouped stat despite identical service/name.",
+  "payload": {
+    "chunks": [
+      {
+        "priority": 1,
+        "spans": [
+          {
+            "span_id": 1,
+            "parent_id": 0,
+            "service": "grpc",
+            "name": "grpc.request",
+            "resource": "/pkg.Service/Method",
+            "type": "grpc",
+            "start": "-2s",
+            "duration": "20ms",
+            "attributes": {
+              "rpc.grpc.status_code": "13"
+            }
+          },
+          {
+            "span_id": 2,
+            "parent_id": 0,
+            "service": "grpc",
+            "name": "grpc.request",
+            "resource": "/pkg.Service/Method",
+            "type": "grpc",
+            "start": "-2s",
+            "duration": "20ms",
+            "attributes": {
+              "rpc.grpc.status_code": "StatusCode.Canceled"
+            }
+          },
+          {
+            "span_id": 3,
+            "parent_id": 0,
+            "service": "grpc",
+            "name": "grpc.request",
+            "resource": "/pkg.Service/Method",
+            "type": "grpc",
+            "start": "-2s",
+            "duration": "20ms",
+            "attributes": {
+              "rpc.grpc.status_code": "DEADLINE_EXCEEDED"
+            }
+          },
+          {
+            "span_id": 4,
+            "parent_id": 0,
+            "service": "grpc",
+            "name": "grpc.request",
+            "resource": "/pkg.Service/Method",
+            "type": "grpc",
+            "start": "-2s",
+            "duration": "20ms",
+            "attributes": {
+              "rpc.grpc.status_code": "bogus"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "name": "grpc_status_codes"
+}

@@ -1,0 +1,24 @@
+{
+  "comment": "Tracer pre-dropped trace: chunk DroppedTrace=true (e.g. dropped P0 traces). Pins the agent's dropped-trace sampling path (deterministic for fixed trace IDs).",
+  "payload": {
+    "chunks": [
+      {
+        "priority": 1,
+        "dropped_trace": true,
+        "spans": [
+          {
+            "span_id": 7,
+            "parent_id": 0,
+            "service": "web",
+            "name": "web.request",
+            "resource": "GET /p0-dropped",
+            "type": "web",
+            "start": "-2s",
+            "duration": "25ms"
+          }
+        ]
+      }
+    ]
+  },
+  "name": "dropped_trace"
+}

@@ -16,6 +16,8 @@ consists of the following components:
   the first place
 - `stele`: helper library that established a common, simplified represent for telemetry data, and their values, to be used
   between `datadog-intake` and `panoramic`
+- `trace-goldens`: helper library that loads the v1.0 traces golden payload specs recorded by the Go trace-agent
+  harness, and compares actual stats and trace output against the golden outputs semantically
 
 ## Building
 
