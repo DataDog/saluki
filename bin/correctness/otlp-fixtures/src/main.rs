@@ -247,6 +247,56 @@ fn attributes_fixture() -> Vec<u8> {
     let mut event = record(17, "event-name", vec![]);
     event.event_name = "fixture.event".to_string();
     records.push(event);
+    // gap/reserved-key-duplicates: when a reserved key repeats, in any case, the last message, status, and `ddtags`
+    // win, even when the last one is empty or has no value, and the first trace and span IDs that decode win.
+    records.extend([
+        record(
+            18,
+            "duplicate-message",
+            vec![kv("message", string("first")), kv("MESSAGE", string("second"))],
+        ),
+        record(
+            19,
+            "duplicate-message-empty-last",
+            vec![kv("msg", string("first")), kv("Message", string(""))],
+        ),
+        record(
+            20,
+            "duplicate-message-missing-last",
+            vec![kv("message", string("first")), kv("MESSAGE", empty())],
+        ),
+        record(
+            21,
+            "duplicate-status",
+            vec![kv("status", string("info")), kv("Level", string("error"))],
+        ),
+        record(
+            22,
+            "duplicate-status-missing-last",
+            vec![kv("severity", string("error")), kv("LEVEL", empty())],
+        ),
+        record(
+            23,
+            "duplicate-ddtags",
+            vec![kv("ddtags", string("team:a")), kv("DDTags", string("team:b"))],
+        ),
+        record(
+            24,
+            "duplicate-ddtags-missing-last",
+            vec![kv("ddtags", string("team:a")), kv("DDTAGS", empty())],
+        ),
+        record(
+            25,
+            "duplicate-trace-ids",
+            vec![
+                kv("trace_id", string("not-hex")),
+                kv("TraceID", string("0102030405060708090a0b0c0d0e0f10")),
+                kv("Trace_Id", string("1112131415161718191a1b1c1d1e1f20")),
+                kv("SpanID", string("0102030405060708")),
+                kv("span_id", string("1112131415161718")),
+            ],
+        ),
+    ]);
 
     request(
         vec![
