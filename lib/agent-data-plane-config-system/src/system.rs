@@ -1190,7 +1190,9 @@ mod tests {
 
     #[test]
     fn logs_agent_enablement_is_read_from_the_environment() {
-        let cases: [(&str, &[(&str, &str)], bool); 5] = [
+        // (case, environment, expected)
+        type Case<'a> = (&'a str, &'a [(&'a str, &'a str)], bool);
+        let cases: [Case; 5] = [
             ("DD_LOGS_ENABLED", &[("DD_LOGS_ENABLED", "true")], true),
             ("DD_LOG_ENABLED", &[("DD_LOG_ENABLED", "true")], true),
             (
