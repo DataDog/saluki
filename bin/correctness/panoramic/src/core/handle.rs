@@ -4,22 +4,34 @@
 //! commands and operations are the plan's data, so nothing looks up a participant type. An endpoint is reached by the
 //! route the plan's rule gives for what is done, the endpoint's protocol and the participant's realization: through the
 //! courier inside the participant, or from the runner through a published port, with the runner's own HTTP client.
+//! A process's exit and output come from what the lifecycle observes of the participant, through the process's own
+//! channels.
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::sync::OnceLock;
 use std::time::Duration;
 
 use bytes::Bytes;
 use saluki_error::GenericError;
 use serde_json::Value;
-use tokio::time::Instant;
+use tokio::sync::watch;
+use tokio::time::{timeout_at, Instant};
 
 use super::backend::{Exec, Realized};
 use super::courier::{Courier, HttpResponse};
+use super::observe::{first_exit, ExitStatus, Observation, ProcessExit};
 use super::plan::PlannedParticipant;
 use super::reference::Values;
+use super::spec::{ExitChannel, ProcessSpec};
 use super::step::EndpointOperation;
 use super::wiring::{reach, PlannedEndpoint, Reach};
+
+/// How often [`Handle::wait_for_exit`] reads an exit record again, unless the participant's exit wakes it first.
+const EXIT_POLL: Duration = Duration::from_millis(250);
+
+/// How long [`Handle::wait_for_exit`] gives each read of an exit record.
+const RECORD_READ_TIME: Duration = Duration::from_secs(5);
 
 /// Why a handle operation failed.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -28,6 +40,14 @@ pub(crate) enum HandleError {
     Harness(String),
     /// The mechanism worked and the software answered badly. The step is `failed`.
     Software(String),
+}
+
+impl fmt::Display for HandleError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Harness(message) | Self::Software(message) => f.write_str(message),
+        }
+    }
 }
 
 /// How a command run in a participant ended.
@@ -39,24 +59,103 @@ pub(crate) struct Exited {
 }
 
 /// What a step acts on one started participant through.
-// TODO: add `output`, `exit` and `wait_for_exit` with observation in the lifecycle.
 pub(crate) struct Handle<'a> {
     name: &'a str,
     planned: &'a PlannedParticipant,
     realized: &'a dyn Realized,
     /// What fills the references of named commands when they run.
     values: &'a Values,
+    observation: &'a Observation,
 }
 
 impl<'a> Handle<'a> {
     pub(crate) fn new(
         name: &'a str, planned: &'a PlannedParticipant, realized: &'a dyn Realized, values: &'a Values,
+        observation: &'a Observation,
     ) -> Self {
         Self {
             name,
             planned,
             realized,
             values,
+            observation,
+        }
+    }
+
+    /// The output `process` has written so far, line by line, which grows as more is captured.
+    ///
+    /// # Errors
+    ///
+    /// Returns a harness error if the participant has no such process.
+    pub(crate) fn output(&self, process: &str) -> Result<watch::Receiver<Vec<String>>, HandleError> {
+        self.observation.output(process).ok_or_else(|| self.no_process(process))
+    }
+
+    /// How `process` exited, or that it is still running, or why that cannot be determined.
+    ///
+    /// The only process of a container exits when the container does. A supervised process has exited once its exit
+    /// record holds a complete line, read within `limit`. Its status is undetermined when the record cannot be read or
+    /// does not parse, and when the participant has exited and the record holds no exit.
+    ///
+    /// # Errors
+    ///
+    /// Returns a harness error if the participant has no such process.
+    pub(crate) async fn exit(&self, process: &str, limit: Duration) -> Result<ProcessExit, HandleError> {
+        let spec = self.process(process)?;
+        // Taken before the record is read: an empty record read after the participant exited is final.
+        let reported = self.observation.exit();
+        let ExitChannel::Record { file } = spec.exit() else {
+            return Ok(match reported {
+                None => ProcessExit::Running,
+                Some(Ok(code)) => ProcessExit::Exited(ExitStatus { code, signal: None }),
+                Some(Err(why)) => ProcessExit::Undetermined(why),
+            });
+        };
+        let facts = self.planned.realization.enclosure.facts();
+        let Some(dir) = facts.exit_dir(self.name) else {
+            return Ok(ProcessExit::Undetermined(format!(
+                "a {} has no exit directory",
+                self.planned.realization.enclosure
+            )));
+        };
+        let path = format!("{}{}{}", dir, facts.separator, file);
+        let record = match self.realized.read_file(&path, Instant::now() + limit).await {
+            Ok(record) => record.unwrap_or_default(),
+            Err(e) => {
+                return Ok(ProcessExit::Undetermined(format!(
+                    "exit record {} cannot be read: {}",
+                    path, e
+                )))
+            }
+        };
+        Ok(match (first_exit(&record), reported) {
+            (Ok(Some(status)), _) => ProcessExit::Exited(status),
+            (Ok(None), None) => ProcessExit::Running,
+            (Ok(None), Some(_)) => ProcessExit::Undetermined(format!(
+                "the participant has exited and exit record {} holds no exit",
+                path
+            )),
+            (Err(e), _) => ProcessExit::Undetermined(format!("exit record {}: {}", path, e)),
+        })
+    }
+
+    /// Waits up to `limit` for `process` to exit, and returns what [`Self::exit`] says then: running, if it has not
+    /// exited by the end of `limit`. Each read of an exit record has a few seconds of its own, so the wait may end up
+    /// to that much after `limit`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a harness error if the participant has no such process.
+    pub(crate) async fn wait_for_exit(&self, process: &str, limit: Duration) -> Result<ProcessExit, HandleError> {
+        let deadline = Instant::now() + limit;
+        loop {
+            let exit = self.exit(process, RECORD_READ_TIME).await?;
+            if exit != ProcessExit::Running || Instant::now() >= deadline {
+                return Ok(exit);
+            }
+            // A record may gain its line at any time; the participant's exit ends the wait early.
+            let next = (Instant::now() + EXIT_POLL).min(deadline);
+            let _ = timeout_at(next, self.observation.wait_for_exit()).await;
         }
     }
 
@@ -217,6 +316,18 @@ impl<'a> Handle<'a> {
         Ok((endpoint, route))
     }
 
+    fn process(&self, process: &str) -> Result<&'a ProcessSpec, HandleError> {
+        self.planned
+            .processes
+            .iter()
+            .find(|candidate| candidate.name() == process)
+            .ok_or_else(|| self.no_process(process))
+    }
+
+    fn no_process(&self, process: &str) -> HandleError {
+        HandleError::Harness(format!("participant '{}' has no process '{}'", self.name, process))
+    }
+
     fn courier(&self) -> Result<Courier<'a>, HandleError> {
         let enclosure = self.planned.realization.enclosure;
         let path = enclosure
@@ -285,4 +396,120 @@ fn not_built(route: Reach) -> HandleError {
         "reaching an endpoint through {} is not built for this",
         through
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use async_trait::async_trait;
+    use tokio::io::AsyncWrite;
+
+    use super::*;
+    use crate::core::case::{self, CASE_FILE};
+    use crate::core::participant::Os;
+    use crate::core::plan::{plan, CasePlan};
+    use crate::core::registry::Registry;
+
+    /// A participant whose exit record reads as scripted.
+    #[derive(Debug)]
+    struct Scripted {
+        record: Result<Option<Vec<u8>>, HandleError>,
+    }
+
+    #[async_trait]
+    impl Realized for Scripted {
+        async fn exec(
+            &self, _exec: Exec, _stdout: &mut (dyn AsyncWrite + Send + Unpin),
+            _stderr: &mut (dyn AsyncWrite + Send + Unpin), _deadline: Instant,
+        ) -> Result<i64, HandleError> {
+            Err(HandleError::Harness("not scripted".to_string()))
+        }
+
+        async fn has_exited(&self) -> bool {
+            false
+        }
+
+        async fn read_file(&self, path: &str, _deadline: Instant) -> Result<Option<Vec<u8>>, HandleError> {
+            assert_eq!(path, "/airlock/app/exit/job");
+            self.record.clone()
+        }
+
+        fn host_port(&self, _endpoint: &str) -> Option<u16> {
+            None
+        }
+    }
+
+    fn planned() -> CasePlan {
+        let suite = tempfile::tempdir().unwrap();
+        let dir = suite.path().join("exits");
+        std::fs::create_dir(&dir).unwrap();
+        let config = r#"
+timeout: 1m
+subject_os: [linux]
+participants:
+  app:
+    subject: true
+    image: alpine:3.20
+    processes:
+      - {name: main, exit: container, output: container}
+      - {name: job, exit: {record: job}, output: {file: job.log}}
+procedure: []
+"#;
+        std::fs::write(dir.join(CASE_FILE), config).unwrap();
+        let registry = Registry::default();
+        let case = case::load(&dir, &registry).unwrap();
+        plan(&case, Os::Linux, &registry).unwrap()
+    }
+
+    #[tokio::test]
+    async fn an_exit_is_running_exited_or_undetermined_and_never_invented() {
+        let plan = planned();
+        let values = Values::of_plan(&plan.participants);
+        let exited = |code, signal| Ok(ProcessExit::Exited(ExitStatus { code, signal }));
+        let running = Ok(ProcessExit::Running);
+
+        // What the realization reports of the participant, the exit record as read, the process, and its exit: the
+        // state, or a part of why it is undetermined.
+        type Case<'a> = (
+            Option<Result<i64, &'a str>>,
+            Result<Option<&'a [u8]>, &'a str>,
+            &'a str,
+            Result<ProcessExit, &'a str>,
+        );
+        let cases: Vec<Case<'_>> = vec![
+            (None, Ok(None), "main", running.clone()),
+            (Some(Ok(137)), Ok(None), "main", exited(137, None)),
+            (Some(Err("Docker lost it")), Ok(None), "main", Err("Docker lost it")),
+            (None, Ok(None), "job", running.clone()),
+            (None, Ok(Some(b"")), "job", running.clone()),
+            (None, Ok(Some(b"3 0 1794511601.5\n")), "job", exited(3, None)),
+            (
+                Some(Ok(0)),
+                Ok(Some(b"256 9 1794511601.5\n")),
+                "job",
+                exited(256, Some(9)),
+            ),
+            (Some(Ok(0)), Ok(None), "job", Err("has exited and exit record")),
+            (None, Ok(Some(b"3 0\n")), "job", Err("is not '<code>")),
+            (None, Err("copy failed"), "job", Err("cannot be read: copy failed")),
+        ];
+        for (reported, record, process, expected) in cases {
+            let observation = Observation::new(["main", "job"]);
+            if let Some(reported) = reported {
+                observation.exited(reported.map_err(str::to_string));
+            }
+            let realized = Scripted {
+                record: record
+                    .map(|record| record.map(<[u8]>::to_vec))
+                    .map_err(|e| HandleError::Harness(e.to_string())),
+            };
+            let handle = Handle::new("app", &plan.participants["app"], &realized, &values, &observation);
+            let exit = handle.exit(process, Duration::from_secs(1)).await.unwrap();
+            let case = format!("{reported:?}, {record:?}, {process}: {exit:?}");
+            match (&exit, expected) {
+                (ProcessExit::Undetermined(why), Err(part)) => assert!(why.contains(part), "{case}"),
+                (exit, Ok(expected)) => assert_eq!(*exit, expected, "{case}"),
+                _ => panic!("{case}"),
+            }
+        }
+    }
 }

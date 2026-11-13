@@ -6,13 +6,13 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
-use std::marker::PhantomData;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
+use tokio::time::Instant;
 
 use super::handle::{Handle, HandleError};
 use super::record::StepStatus;
@@ -51,13 +51,13 @@ pub(crate) trait StepFactory: Send + Sync {
 }
 
 /// A step built for one case and one subject OS.
-// TODO: remove the dead_code allowance once the lifecycle runs steps.
-#[allow(dead_code)]
 #[async_trait]
 pub(crate) trait Step: fmt::Debug + Send + Sync {
     fn name(&self) -> &'static str;
 
     /// Everything of the case the step uses, so the plan can check it before anything starts.
+    // TODO: remove the dead_code allowance once the plan checks what steps need.
+    #[allow(dead_code)]
     fn needs(&self) -> Vec<Need>;
 
     fn budget(&self) -> Duration;
@@ -116,16 +116,35 @@ pub(crate) enum Uses {
     Request(&'static str),
 }
 
-/// What a running step can reach: handles to the case's started participants.
-// TODO: add the handles with the lifecycle.
-#[derive(Debug)]
+/// What a running step can reach: a handle to each of the case's started participants, and when it must be done.
+// TODO: remove the dead_code allowance once a step is registered.
+#[allow(dead_code)]
 pub(crate) struct StepContext<'a> {
-    _case: PhantomData<&'a ()>,
+    handles: &'a BTreeMap<String, Handle<'a>>,
+    /// When the step's own budget, or the case's deadline, runs out.
+    pub(crate) deadline: Instant,
+}
+
+impl<'a> StepContext<'a> {
+    pub(crate) fn new(handles: &'a BTreeMap<String, Handle<'a>>, deadline: Instant) -> Self {
+        Self { handles, deadline }
+    }
+
+    /// The handle to participant `name`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a harness error if the case has no started participant `name`.
+    // TODO: remove the dead_code allowance once a step is registered.
+    #[allow(dead_code)]
+    pub(crate) fn handle(&self, name: &str) -> Result<&Handle<'a>, HandleError> {
+        self.handles
+            .get(name)
+            .ok_or_else(|| HandleError::Harness(format!("the case has no started participant '{}'", name)))
+    }
 }
 
 /// How a step ended.
-// TODO: remove the dead_code allowance once the lifecycle runs steps.
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub(crate) struct StepReport {
     pub(crate) status: StepStatus,

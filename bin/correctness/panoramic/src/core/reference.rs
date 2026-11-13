@@ -186,8 +186,6 @@ impl Values {
     }
 
     /// Records the container ID `participant` got when it was created.
-    // TODO: remove the dead_code allowance once the lifecycle creates participants.
-    #[allow(dead_code)]
     pub(crate) fn created(&mut self, participant: &str, container_id: &str) {
         if let Some(known) = self.participants.get_mut(participant) {
             known.container_id = Some(container_id.to_string());
@@ -195,8 +193,6 @@ impl Values {
     }
 
     /// Records the address `participant` has on the case's network once it has started.
-    // TODO: remove the dead_code allowance once the lifecycle starts participants.
-    #[allow(dead_code)]
     pub(crate) fn started(&mut self, participant: &str, ip: &str) {
         if let Some(known) = self.participants.get_mut(participant) {
             known.ip = Some(ip.to_string());
