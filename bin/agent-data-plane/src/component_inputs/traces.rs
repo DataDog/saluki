@@ -338,6 +338,8 @@ mod tests {
                 replace_digits: true,
                 table_names: false,
             },
+            // The obfuscator doesn't implement these; they are only reported to tracers.
+            ..Default::default()
         };
         let config = obfuscation_configuration(&obfuscation);
 

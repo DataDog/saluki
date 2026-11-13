@@ -29,7 +29,7 @@ use agent_data_plane_config::domains::otlp::{
     ContainerTagPromotion, CumulativeMonotonicMode, GrpcTransport, HistogramMode, InitialCumulativeMonotonicValue,
     SummaryMode, DEFAULT_GRPC_KEEPALIVE_TIME, DEFAULT_GRPC_KEEPALIVE_TIMEOUT, DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB,
 };
-use agent_data_plane_config::domains::traces::{ApmFeature, ReplaceRule};
+use agent_data_plane_config::domains::traces::{ApmFeature, ReplaceRule, SqlObfuscationMode, TagFilter};
 use agent_data_plane_config::shared::{ForwarderHttpProtocol, V3SeriesMode};
 use agent_data_plane_config::{ConfigValue, Provenance, SalukiConfiguration};
 use bytesize::ByteSize;
@@ -78,6 +78,7 @@ impl<'a> DatadogTranslator<'a> {
         let datadog = self.datadog;
         let errors = drive(datadog, &mut self).err();
         self.apply_deprecated_max_tps_alias();
+        self.drop_regex_tag_filters_shadowed_by_exact_ones();
         (self.config, errors)
     }
 
@@ -91,6 +92,20 @@ impl<'a> DatadogTranslator<'a> {
             return;
         }
         self.config.domains.traces.target_traces_per_second = self.max_traces_per_second;
+    }
+
+    /// Drops each `filter_tags_regex` rule whose key a `filter_tags` rule in the same list already has.
+    ///
+    /// The trace-agent skips those rules when it reads `filter_tags_regex`, so the exact rule wins.
+    fn drop_regex_tag_filters_shadowed_by_exact_ones(&mut self) {
+        let traces = &mut self.config.domains.traces;
+        let (exact, regex) = (&traces.filter_tags, &mut traces.filter_tags_regex);
+        regex
+            .require
+            .retain(|rule| !exact.require.iter().any(|exact| exact.key == rule.key));
+        regex
+            .reject
+            .retain(|rule| !exact.reject.iter().any(|exact| exact.key == rule.key));
     }
 
     /// Records a translation error encountered while consuming.
@@ -124,6 +139,41 @@ impl<'a> DatadogTranslator<'a> {
                 None
             }
         }
+    }
+}
+
+/// Narrows a trace-agent count or duration for which `0` and negative values mean the same thing, such as no limit.
+///
+/// A negative value reads as `0`, with a warning, and a value above `u32::MAX` saturates.
+fn non_positive_as_zero(key: &'static str, value: i64) -> u32 {
+    if value < 0 {
+        warn!(config_key = key, "Negative value {value} reads as 0.");
+        return 0;
+    }
+    u32::try_from(value).unwrap_or(u32::MAX)
+}
+
+/// Splits a `filter_tags` rule as the trace-agent does: at the first `:`, trimming both sides, and reading an empty
+/// value as no value.
+fn split_tag(tag: &str) -> TagFilter {
+    let (key, value) = tag.split_once(':').unwrap_or((tag, ""));
+    let value = value.trim();
+    TagFilter {
+        key: key.trim().to_string(),
+        value: (!value.is_empty()).then(|| value.to_string()),
+    }
+}
+
+/// Splits a `filter_tags_regex` rule as the trace-agent does: like [`split_tag`], except that an empty value after a
+/// `:` is kept as an empty pattern.
+fn split_tag_regex(tag: &str) -> TagFilter {
+    let (key, value) = match tag.split_once(':') {
+        Some((key, value)) => (key, Some(value.trim().to_string())),
+        None => (tag, None),
+    };
+    TagFilter {
+        key: key.trim().to_string(),
+        value,
     }
 }
 
@@ -450,6 +500,16 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.domains.traces.compute_stats_by_span_kind = value;
     }
 
+    fn consume_apm_config_connection_limit(&mut self, value: i64) {
+        // The trace-agent reads the key only when it is set, so the schema default of 2000 never applies.
+        self.config.domains.apm.connection_limit =
+            if self.sources.provenance("apm_config.connection_limit") == Provenance::Explicit {
+                non_positive_as_zero("apm_config.connection_limit", value)
+            } else {
+                0
+            };
+    }
+
     fn consume_apm_config_enable_rare_sampler(&mut self, value: bool) {
         self.config.domains.traces.enable_rare_sampler = value;
     }
@@ -485,6 +545,26 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.domains.traces.features = value.iter().map(|feature| ApmFeature::from(feature.as_str())).collect();
     }
 
+    fn consume_apm_config_filter_tags_reject(&mut self, value: Vec<String>) {
+        self.config.domains.traces.filter_tags.reject = value.iter().map(|tag| split_tag(tag)).collect();
+    }
+
+    fn consume_apm_config_filter_tags_require(&mut self, value: Vec<String>) {
+        self.config.domains.traces.filter_tags.require = value.iter().map(|tag| split_tag(tag)).collect();
+    }
+
+    fn consume_apm_config_filter_tags_regex_reject(&mut self, value: Vec<String>) {
+        self.config.domains.traces.filter_tags_regex.reject = value.iter().map(|tag| split_tag_regex(tag)).collect();
+    }
+
+    fn consume_apm_config_filter_tags_regex_require(&mut self, value: Vec<String>) {
+        self.config.domains.traces.filter_tags_regex.require = value.iter().map(|tag| split_tag_regex(tag)).collect();
+    }
+
+    fn consume_apm_config_ignore_resources(&mut self, value: Vec<String>) {
+        self.config.domains.traces.ignore_resources = value;
+    }
+
     fn consume_apm_config_max_catalog_entries(&mut self, value: i64) {
         match usize::try_from(value) {
             Ok(entries) => self.config.domains.traces.max_catalog_entries = entries,
@@ -492,8 +572,28 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         }
     }
 
+    fn consume_apm_config_max_cpu_percent(&mut self, value: f64) {
+        let provenance = self.sources.provenance("apm_config.max_cpu_percent");
+        self.config.domains.apm.max_cpu_percent = ConfigValue::new(value, provenance);
+    }
+
     fn consume_apm_config_max_events_per_second(&mut self, value: f64) {
         self.config.domains.traces.max_events_per_second = value;
+    }
+
+    fn consume_apm_config_max_memory(&mut self, value: f64) {
+        let provenance = self.sources.provenance("apm_config.max_memory");
+        self.config.domains.apm.max_memory = ConfigValue::new(value, provenance);
+    }
+
+    fn consume_apm_config_max_payload_size(&mut self, value: i64) {
+        match u64::try_from(value) {
+            Ok(bytes) => self.config.domains.apm.max_payload_size = bytes,
+            Err(_) => self.record_error(TranslateError::new_with_message(
+                "apm_config.max_payload_size",
+                "size must not be negative",
+            )),
+        }
     }
 
     fn consume_apm_config_max_traces_per_second(&mut self, value: f64) {
@@ -583,6 +683,14 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.domains.traces.obfuscation.remove_stack_traces = value;
     }
 
+    fn consume_apm_config_obfuscation_sql_exec_plan_enabled(&mut self, value: bool) {
+        self.config.domains.traces.obfuscation.sql_exec_plan_enabled = value;
+    }
+
+    fn consume_apm_config_obfuscation_sql_exec_plan_normalize_enabled(&mut self, value: bool) {
+        self.config.domains.traces.obfuscation.sql_exec_plan_normalize_enabled = value;
+    }
+
     fn consume_apm_config_obfuscation_valkey_enabled(&mut self, value: bool) {
         self.config.domains.traces.obfuscation.valkey.enabled = value;
     }
@@ -626,6 +734,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.domains.apm.receiver_socket = non_empty(value);
     }
 
+    fn consume_apm_config_receiver_timeout(&mut self, value: i64) {
+        self.config.domains.apm.receiver_timeout = non_positive_as_zero("apm_config.receiver_timeout", value);
+    }
+
     fn consume_apm_config_replace_tags(&mut self, value: Vec<HashMap<String, String>>) {
         // The schema models each rule as a free string map; this gives it the typed
         // `name`/`pattern`/`repl` shape the replacer consumes.
@@ -660,8 +772,23 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.domains.traces.replace_tags = rules;
     }
 
+    fn consume_apm_config_sql_obfuscation_mode(&mut self, value: String) {
+        // The trace-agent defines the recovery: it warns and falls back to the default obfuscator.
+        self.config.domains.traces.obfuscation.sql_obfuscation_mode = value.parse().unwrap_or_else(|error| {
+            warn!(
+                config_key = "apm_config.sql_obfuscation_mode",
+                "{error}; falling back to the default obfuscator."
+            );
+            SqlObfuscationMode::Default
+        });
+    }
+
     fn consume_apm_config_target_traces_per_second(&mut self, value: f64) {
         self.config.domains.traces.target_traces_per_second = value;
+    }
+
+    fn consume_apm_config_telemetry_enabled(&mut self, value: bool) {
+        self.config.domains.apm.telemetry_enabled = value;
     }
 
     fn consume_auth_token_file_path(&mut self, value: String) {
@@ -1864,7 +1991,7 @@ mod tests {
             CumulativeMonotonicMode, InitialCumulativeMonotonicValue, SummaryMode, DEFAULT_DELTA_TTL,
             DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB,
         },
-        traces::ApmFeature,
+        traces::{ApmFeature, SqlObfuscationMode, TagFilter},
     };
     use agent_data_plane_config::shared::V3SeriesMode;
     use agent_data_plane_config::{ConfigValue, SalukiConfiguration};
@@ -2351,6 +2478,138 @@ mod tests {
         assert_eq!(apm.receiver_port, 9126);
         assert_eq!(apm.receiver_socket.as_deref(), Some("/tmp/apm.socket"));
         assert_explicit(&apm.non_local_traffic, true);
+    }
+
+    #[test]
+    fn trace_agent_reported_settings_default_as_the_trace_agent_reads_them() {
+        let (config, errors) = translate_explicit(json!({}));
+
+        assert!(errors.is_none());
+        let apm = &config.domains.apm;
+        // The trace-agent reads `connection_limit` only when it is set, so its schema default of 2000 never applies.
+        assert_eq!(apm.connection_limit, 0);
+        assert_eq!(apm.receiver_timeout, 0);
+        assert_eq!(apm.max_payload_size, 25 * 1024 * 1024);
+        assert_defaulted(&apm.max_memory, 5e8);
+        assert_defaulted(&apm.max_cpu_percent, 50.0);
+        assert!(apm.telemetry_enabled);
+
+        let traces = &config.domains.traces;
+        assert!(traces.filter_tags.require.is_empty() && traces.filter_tags.reject.is_empty());
+        assert!(traces.filter_tags_regex.require.is_empty() && traces.filter_tags_regex.reject.is_empty());
+        assert!(traces.ignore_resources.is_empty());
+        let obfuscation = &traces.obfuscation;
+        assert_eq!(obfuscation.sql_obfuscation_mode, SqlObfuscationMode::Default);
+        assert!(!obfuscation.sql_exec_plan_enabled);
+        assert!(!obfuscation.sql_exec_plan_normalize_enabled);
+        assert!(!obfuscation.remove_stack_traces);
+    }
+
+    #[test]
+    fn trace_agent_reported_settings_translate_when_set() {
+        let (config, errors) = translate_explicit(json!({
+            "apm_config": {
+                "connection_limit": 100,
+                "receiver_timeout": 7,
+                "max_payload_size": 1024,
+                "max_memory": 1e9,
+                "max_cpu_percent": 200,
+                "telemetry": { "enabled": false },
+                "ignore_resources": ["GET /ping"],
+                "sql_obfuscation_mode": "obfuscate_and_normalize",
+                "obfuscation": {
+                    "sql_exec_plan": { "enabled": true },
+                    "sql_exec_plan_normalize": { "enabled": true },
+                    "remove_stack_traces": true,
+                },
+            },
+        }));
+
+        assert!(errors.is_none());
+        let apm = &config.domains.apm;
+        assert_eq!(apm.connection_limit, 100);
+        assert_eq!(apm.receiver_timeout, 7);
+        assert_eq!(apm.max_payload_size, 1024);
+        assert_explicit(&apm.max_memory, 1e9);
+        assert_explicit(&apm.max_cpu_percent, 200.0);
+        assert!(!apm.telemetry_enabled);
+
+        let traces = &config.domains.traces;
+        assert_eq!(traces.ignore_resources, ["GET /ping"]);
+        let obfuscation = &traces.obfuscation;
+        assert_eq!(
+            obfuscation.sql_obfuscation_mode,
+            SqlObfuscationMode::ObfuscateAndNormalize
+        );
+        assert!(obfuscation.sql_exec_plan_enabled);
+        assert!(obfuscation.sql_exec_plan_normalize_enabled);
+        assert!(obfuscation.remove_stack_traces);
+    }
+
+    #[test]
+    fn negative_trace_agent_limits_recover_as_the_trace_agent_does() {
+        // The trace-agent applies no connection limit and its default timeout for any value up to 0.
+        let (config, errors) = translate_explicit(json!({
+            "apm_config": { "connection_limit": -1, "receiver_timeout": -5 },
+        }));
+        assert!(errors.is_none());
+        assert_eq!(config.domains.apm.connection_limit, 0);
+        assert_eq!(config.domains.apm.receiver_timeout, 0);
+
+        // A negative payload size has no recovery: the trace-agent would reject every request.
+        let (_, errors) = translate_explicit(json!({ "apm_config": { "max_payload_size": -1 } }));
+        let errors = errors.expect("a negative payload size should record a translation error");
+        assert!(errors.to_string().contains("apm_config.max_payload_size"));
+    }
+
+    #[test]
+    fn an_unknown_sql_obfuscation_mode_falls_back_to_the_default_obfuscator() {
+        let (config, errors) = translate_explicit(json!({ "apm_config": { "sql_obfuscation_mode": "obfuscate" } }));
+
+        assert!(errors.is_none());
+        assert_eq!(
+            config.domains.traces.obfuscation.sql_obfuscation_mode,
+            SqlObfuscationMode::Default
+        );
+    }
+
+    #[test]
+    fn filter_tags_split_as_the_trace_agent_does() {
+        let (config, errors) = translate_explicit(json!({
+            "apm_config": {
+                "filter_tags": {
+                    "require": [" env : prod ", "team", "empty:", "url:http://a:b"],
+                    "reject": ["debug:true"],
+                },
+                "filter_tags_regex": {
+                    "require": ["env:^staging$", "service: ^web.* ", "any:"],
+                    "reject": ["debug:^t", "key"],
+                },
+            },
+        }));
+
+        assert!(errors.is_none());
+        let rule = |key: &str, value: Option<&str>| TagFilter {
+            key: key.to_string(),
+            value: value.map(str::to_string),
+        };
+        let traces = &config.domains.traces;
+        assert_eq!(
+            traces.filter_tags.require,
+            [
+                rule("env", Some("prod")),
+                rule("team", None),
+                rule("empty", None),
+                rule("url", Some("http://a:b")),
+            ]
+        );
+        assert_eq!(traces.filter_tags.reject, [rule("debug", Some("true"))]);
+        // A regex rule for a key an exact rule in the same list has is dropped, and an empty pattern is kept.
+        assert_eq!(
+            traces.filter_tags_regex.require,
+            [rule("service", Some("^web.*")), rule("any", Some(""))]
+        );
+        assert_eq!(traces.filter_tags_regex.reject, [rule("key", None)]);
     }
 
     #[test]

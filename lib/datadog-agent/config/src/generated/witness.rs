@@ -22,14 +22,23 @@ pub trait DatadogConfigWitness {
     fn consume_apm_config_analyzed_spans(&mut self, value: ::serde_json::Map<String, ::serde_json::Value>);
     fn consume_apm_config_apm_non_local_traffic(&mut self, value: bool);
     fn consume_apm_config_compute_stats_by_span_kind(&mut self, value: bool);
+    fn consume_apm_config_connection_limit(&mut self, value: i64);
     fn consume_apm_config_enable_rare_sampler(&mut self, value: bool);
     fn consume_apm_config_env(&mut self, value: String);
     fn consume_apm_config_error_tracking_standalone_enabled(&mut self, value: bool);
     fn consume_apm_config_errors_per_second(&mut self, value: f64);
     fn consume_apm_config_extra_sample_rate(&mut self, value: f64);
     fn consume_apm_config_features(&mut self, value: Vec<String>);
+    fn consume_apm_config_filter_tags_reject(&mut self, value: Vec<String>);
+    fn consume_apm_config_filter_tags_require(&mut self, value: Vec<String>);
+    fn consume_apm_config_filter_tags_regex_reject(&mut self, value: Vec<String>);
+    fn consume_apm_config_filter_tags_regex_require(&mut self, value: Vec<String>);
+    fn consume_apm_config_ignore_resources(&mut self, value: Vec<String>);
     fn consume_apm_config_max_catalog_entries(&mut self, value: i64);
+    fn consume_apm_config_max_cpu_percent(&mut self, value: f64);
     fn consume_apm_config_max_events_per_second(&mut self, value: f64);
+    fn consume_apm_config_max_memory(&mut self, value: f64);
+    fn consume_apm_config_max_payload_size(&mut self, value: i64);
     fn consume_apm_config_max_traces_per_second(&mut self, value: f64);
     fn consume_apm_config_obfuscation_credit_cards_enabled(&mut self, value: bool);
     fn consume_apm_config_obfuscation_credit_cards_keep_values(&mut self, value: Vec<String>);
@@ -50,6 +59,8 @@ pub trait DatadogConfigWitness {
     fn consume_apm_config_obfuscation_redis_enabled(&mut self, value: bool);
     fn consume_apm_config_obfuscation_redis_remove_all_args(&mut self, value: bool);
     fn consume_apm_config_obfuscation_remove_stack_traces(&mut self, value: bool);
+    fn consume_apm_config_obfuscation_sql_exec_plan_enabled(&mut self, value: bool);
+    fn consume_apm_config_obfuscation_sql_exec_plan_normalize_enabled(&mut self, value: bool);
     fn consume_apm_config_obfuscation_valkey_enabled(&mut self, value: bool);
     fn consume_apm_config_obfuscation_valkey_remove_all_args(&mut self, value: bool);
     fn consume_apm_config_peer_tags(&mut self, value: Vec<String>);
@@ -59,8 +70,11 @@ pub trait DatadogConfigWitness {
     fn consume_apm_config_probabilistic_sampler_sampling_percentage(&mut self, value: f64);
     fn consume_apm_config_receiver_port(&mut self, value: i64);
     fn consume_apm_config_receiver_socket(&mut self, value: String);
+    fn consume_apm_config_receiver_timeout(&mut self, value: i64);
     fn consume_apm_config_replace_tags(&mut self, value: Vec<HashMap<String, String>>);
+    fn consume_apm_config_sql_obfuscation_mode(&mut self, value: String);
     fn consume_apm_config_target_traces_per_second(&mut self, value: f64);
+    fn consume_apm_config_telemetry_enabled(&mut self, value: bool);
     fn consume_auth_token_file_path(&mut self, value: String);
     fn consume_autoscaling_failover_enabled(&mut self, value: bool);
     fn consume_autoscaling_failover_metrics(&mut self, value: Vec<String>);
@@ -304,6 +318,7 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_apm_config_analyzed_spans(config.apm_config.analyzed_spans.clone());
     consumer.consume_apm_config_apm_non_local_traffic(config.apm_config.apm_non_local_traffic.clone());
     consumer.consume_apm_config_compute_stats_by_span_kind(config.apm_config.compute_stats_by_span_kind.clone());
+    consumer.consume_apm_config_connection_limit(config.apm_config.connection_limit.clone());
     consumer.consume_apm_config_enable_rare_sampler(config.apm_config.enable_rare_sampler.clone());
     consumer.consume_apm_config_env(config.apm_config.env.clone());
     consumer.consume_apm_config_error_tracking_standalone_enabled(
@@ -312,8 +327,16 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_apm_config_errors_per_second(config.apm_config.errors_per_second.clone());
     consumer.consume_apm_config_extra_sample_rate(config.apm_config.extra_sample_rate.clone());
     consumer.consume_apm_config_features(config.apm_config.features.clone());
+    consumer.consume_apm_config_filter_tags_reject(config.apm_config.filter_tags.reject.clone());
+    consumer.consume_apm_config_filter_tags_require(config.apm_config.filter_tags.require.clone());
+    consumer.consume_apm_config_filter_tags_regex_reject(config.apm_config.filter_tags_regex.reject.clone());
+    consumer.consume_apm_config_filter_tags_regex_require(config.apm_config.filter_tags_regex.require.clone());
+    consumer.consume_apm_config_ignore_resources(config.apm_config.ignore_resources.clone());
     consumer.consume_apm_config_max_catalog_entries(config.apm_config.max_catalog_entries.clone());
+    consumer.consume_apm_config_max_cpu_percent(config.apm_config.max_cpu_percent.clone());
     consumer.consume_apm_config_max_events_per_second(config.apm_config.max_events_per_second.clone());
+    consumer.consume_apm_config_max_memory(config.apm_config.max_memory.clone());
+    consumer.consume_apm_config_max_payload_size(config.apm_config.max_payload_size.clone());
     consumer.consume_apm_config_max_traces_per_second(config.apm_config.max_traces_per_second.clone());
     consumer.consume_apm_config_obfuscation_credit_cards_enabled(
         config.apm_config.obfuscation.credit_cards.enabled.clone(),
@@ -361,6 +384,12 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     );
     consumer
         .consume_apm_config_obfuscation_remove_stack_traces(config.apm_config.obfuscation.remove_stack_traces.clone());
+    consumer.consume_apm_config_obfuscation_sql_exec_plan_enabled(
+        config.apm_config.obfuscation.sql_exec_plan.enabled.clone(),
+    );
+    consumer.consume_apm_config_obfuscation_sql_exec_plan_normalize_enabled(
+        config.apm_config.obfuscation.sql_exec_plan_normalize.enabled.clone(),
+    );
     consumer.consume_apm_config_obfuscation_valkey_enabled(config.apm_config.obfuscation.valkey.enabled.clone());
     consumer.consume_apm_config_obfuscation_valkey_remove_all_args(
         config.apm_config.obfuscation.valkey.remove_all_args.clone(),
@@ -375,8 +404,11 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     );
     consumer.consume_apm_config_receiver_port(config.apm_config.receiver_port.clone());
     consumer.consume_apm_config_receiver_socket(config.apm_config.receiver_socket.clone());
+    consumer.consume_apm_config_receiver_timeout(config.apm_config.receiver_timeout.clone());
     consumer.consume_apm_config_replace_tags(config.apm_config.replace_tags.clone());
+    consumer.consume_apm_config_sql_obfuscation_mode(config.apm_config.sql_obfuscation_mode.clone());
     consumer.consume_apm_config_target_traces_per_second(config.apm_config.target_traces_per_second.clone());
+    consumer.consume_apm_config_telemetry_enabled(config.apm_config.telemetry.enabled.clone());
     consumer.consume_auth_token_file_path(config.auth_token_file_path.clone());
     consumer.consume_autoscaling_failover_enabled(config.autoscaling.failover.enabled.clone());
     consumer.consume_autoscaling_failover_metrics(config.autoscaling.failover.metrics.clone());

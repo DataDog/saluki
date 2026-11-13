@@ -65,7 +65,7 @@ pub fn generate(overlay: &SchemaOverlay, schema_map: &IndexMap<String, FieldInfo
         let info = schema_map.get(key.as_str());
 
         let env_vars = schema_gen::env_var_names(key, info);
-        let decode = decode_token(key, info);
+        let decode = decode_token(info);
 
         let env_vars_lit = env_vars
             .iter()
@@ -119,16 +119,12 @@ fn path_literal(key: &str) -> String {
 }
 
 /// The `EnvDecode` token for a field: its named `env_parser` if declared, else its declared type.
-///
-/// Panics when a modeled key uses an unsupported parser.
-fn decode_token(key: &str, info: Option<&FieldInfo>) -> &'static str {
+fn decode_token(info: Option<&FieldInfo>) -> &'static str {
     if let Some(parser) = info.and_then(|i| i.env_parser.as_ref()) {
         return match parser {
             EnvParser::Json => "EnvDecode::Json",
             EnvParser::CommaSeparated => "EnvDecode::CommaSeparated",
-            EnvParser::CsvCommaSeparated => panic!(
-                "modeled key `{key}` uses `csv_comma_separated`; implement a CSV parser before supporting this key"
-            ),
+            EnvParser::CsvCommaSeparated => "EnvDecode::CsvCommaSeparated",
             EnvParser::CommaAndSpaceSeparated => "EnvDecode::CommaAndSpaceSeparated",
             EnvParser::CommaThenSpaceSeparated => "EnvDecode::CommaThenSpaceSeparated",
             EnvParser::JsonListOrCommaSeparated => "EnvDecode::JsonListOrCommaSeparated",

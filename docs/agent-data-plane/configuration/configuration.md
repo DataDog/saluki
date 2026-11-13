@@ -442,7 +442,21 @@ default values.
 | Config Key                                                      | Description                                     |
 | --------------------------------------------------------------- | ----------------------------------------------- |
 | `aggregator_stop_timeout`                                       | Timeout (s) for aggregator flush on stop        |
+| `apm_config.connection_limit`                                   | APM receiver connection limit                   |
 | `apm_config.features`                                           | Beta APM feature flags                          |
+| `apm_config.filter_tags.reject`                                 | Tags that drop a trace                          |
+| `apm_config.filter_tags.require`                                | Tags a trace must have to be kept               |
+| `apm_config.filter_tags_regex.reject`                           | Tag patterns that drop a trace                  |
+| `apm_config.filter_tags_regex.require`                          | Tag patterns a trace must match to be kept      |
+| `apm_config.ignore_resources`                                   | Resource patterns whose traces are dropped      |
+| `apm_config.max_cpu_percent`                                    | trace-agent CPU target, in percent              |
+| `apm_config.max_memory`                                         | trace-agent memory target, in bytes             |
+| `apm_config.max_payload_size`                                   | Maximum trace payload size, in bytes            |
+| `apm_config.obfuscation.sql_exec_plan.enabled`                  | Obfuscate SQL execution plans                   |
+| `apm_config.obfuscation.sql_exec_plan_normalize.enabled`        | Normalize SQL execution plans                   |
+| `apm_config.receiver_timeout`                                   | APM receiver request timeout, in seconds        |
+| `apm_config.sql_obfuscation_mode`                               | SQL obfuscator mode                             |
+| `apm_config.telemetry.enabled`                                  | Enable the tracer telemetry proxy               |
 | `cri_socket_path`                                               | containerd/CRI socket path                      |
 | `dogstatsd_mapper_cache_size`                                   | Mapper result LRU cache size                    |
 | `dogstatsd_metrics_stats_enable`                                | Enable per-metric debug stats                   |
@@ -481,6 +495,13 @@ Shutdown is coordinated by the Saluki topology: sources stop first, downstream i
 and the aggregate transform performs its final flush when its input stream ends. Whether open
 aggregation windows are included is controlled by `dogstatsd_flush_incomplete_buckets`.
 
+### `apm_config.connection_limit`
+
+ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
+`/info` response. ADP doesn't limit the relay's own connections: the trace-agent behind the
+relay applies the limit to the connections it receives from ADP. As in the trace-agent,
+`/info` reports `0` unless the key is set.
+
 ### `apm_config.features`
 
 The core Agent uses `apm_config.features` to toggle beta APM behaviors.
@@ -499,6 +520,85 @@ ADP recognizes these values:
 
 Every other value is ignored, without a warning: the flag inventory is not stable across agent
 versions, so unrecognized entries are inert rather than errors.
+
+### `apm_config.filter_tags.reject`
+
+ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
+`/info` response. Traces received through the APM relay are filtered by the trace-agent behind
+it; ADP doesn't filter the traces it receives over OTLP.
+
+### `apm_config.filter_tags.require`
+
+ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
+`/info` response. Traces received through the APM relay are filtered by the trace-agent behind
+it; ADP doesn't filter the traces it receives over OTLP.
+
+### `apm_config.filter_tags_regex.reject`
+
+ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
+`/info` response. Traces received through the APM relay are filtered by the trace-agent behind
+it; ADP doesn't filter the traces it receives over OTLP. ADP doesn't validate the patterns.
+
+### `apm_config.filter_tags_regex.require`
+
+ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
+`/info` response. Traces received through the APM relay are filtered by the trace-agent behind
+it; ADP doesn't filter the traces it receives over OTLP. ADP doesn't validate the patterns.
+
+### `apm_config.ignore_resources`
+
+ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
+`/info` response. Traces received through the APM relay are filtered by the trace-agent behind
+it; ADP doesn't filter the traces it receives over OTLP. ADP doesn't validate the patterns.
+
+### `apm_config.max_cpu_percent`
+
+ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
+`/info` response. ADP doesn't rate limit the relay on its own CPU usage. As in the
+trace-agent, the limit defaults to `0` in a container when the key is unset.
+
+### `apm_config.max_memory`
+
+ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
+`/info` response. ADP doesn't rate limit the relay on its own memory usage. As in the
+trace-agent, the limit defaults to `0` in a container when the key is unset.
+
+### `apm_config.max_payload_size`
+
+ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
+`/info` response. The trace-agent behind the relay enforces the limit on the requests ADP
+forwards to it; ADP doesn't enforce it on the requests it handles itself.
+
+### `apm_config.obfuscation.sql_exec_plan.enabled`
+
+ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
+`/info` response. The trace-agent behind the relay applies it to traces received through the
+relay; ADP doesn't apply it to the traces it receives over OTLP.
+
+### `apm_config.obfuscation.sql_exec_plan_normalize.enabled`
+
+ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
+`/info` response. The trace-agent behind the relay applies it to traces received through the
+relay; ADP doesn't apply it to the traces it receives over OTLP.
+
+### `apm_config.receiver_timeout`
+
+ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
+`/info` response. ADP doesn't apply the timeout to the relay's listeners: the trace-agent
+behind the relay applies it to the requests ADP forwards to it.
+
+### `apm_config.sql_obfuscation_mode`
+
+ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
+`/info` response. The trace-agent behind the relay applies it to traces received through the
+relay; ADP doesn't apply it to the traces it receives over OTLP. As in the trace-agent, an
+invalid value logs a warning and falls back to the default obfuscator.
+
+### `apm_config.telemetry.enabled`
+
+ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
+`/info` response. The relay forwards `/telemetry/proxy/` to the trace-agent behind it, which
+proxies tracer telemetry when this key is enabled.
 
 ### `cri_socket_path`
 
