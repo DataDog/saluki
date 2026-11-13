@@ -32,10 +32,12 @@ abstraction would have one caller.
   with shared fixtures in `tests/mod.rs`. Pure move.
 - [x] **2. Tier 1 test cleanups:** tables, counter-key helper, fixtures, `tempfile`, deleting duplicate coverage. Three
   pull requests: source tests, replay/forwarder tests, codec tests.
-- [ ] **3. Tier 1 production cleanups:** `worker_with_shutdown`, `EventBufferManager`, `DecoderContext` embed,
+- [x] **3. Tier 1 production cleanups:** `worker_with_shutdown`, `EventBufferManager`, `DecoderContext` embed,
   `EnablePayloads` fold, `origin_from_*` collapse, `listener_type()` reuse, dead code, replay `WriterState`,
-  `file_header`.
-- [ ] **4. Bug fixes 1, 2, 4,** each with a regression test (codec parity first).
+  `file_header`. Three pull requests: source, replay, codec. Two rows were dropped: the `send_split` helper (the
+  per-stream Antithesis assertions need literal messages, so it came out net-neutral) and the SO_REUSEPORT gate (not
+  redundant: it logs a different, once-per-build warning and passes `None` streams on non-Linux).
+- [ ] **4. Bug fixes 1, 2, 4,** (4 already landed with the step 3 `file_header` change) each with a regression test (codec parity first).
 - [ ] **5. Inline connected-stream reads** and the context-struct collapse, with an SMP benchmark comparison.
 - [ ] **6. Capture/replay:** eager controls, marker-bit removal, typed errors, `EntityId` conversions, then relocation
   out of `sources/dogstatsd`.

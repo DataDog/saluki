@@ -211,28 +211,17 @@ impl DogStatsDCodec {
     ///
     /// If the raw data isn't a valid DogStatsD packet, an error is returned.
     pub fn decode_packet<'a>(&self, data: &'a [u8]) -> Result<ParsedPacket<'a>, ParseError> {
-        match parse_message_type(data) {
-            MessageType::Event => self.decode_event(data).map(ParsedPacket::Event),
-            MessageType::ServiceCheck => self.decode_service_check(data).map(ParsedPacket::ServiceCheck),
-            MessageType::MetricSample => self.decode_metric(data).map(ParsedPacket::Metric),
-        }
-    }
-
-    fn decode_metric<'a>(&self, data: &'a [u8]) -> Result<MetricPacket<'a>, ParseError> {
-        // Decode the payload and get the representative parts of the metric.
-        // TODO: Can probably assert remaining is empty now.
-        let (_remaining, metric) = self::metric::parse_dogstatsd_metric(data, &self.config)?;
-        Ok(metric)
-    }
-
-    fn decode_event<'a>(&self, data: &'a [u8]) -> Result<EventPacket<'a>, ParseError> {
-        let (_remaining, event) = self::event::parse_dogstatsd_event(data, &self.config)?;
-        Ok(event)
-    }
-
-    fn decode_service_check<'a>(&self, data: &'a [u8]) -> Result<ServiceCheckPacket<'a>, ParseError> {
-        let (_remaining, service_check) = self::service_check::parse_dogstatsd_service_check(data, &self.config)?;
-        Ok(service_check)
+        // TODO: Can probably assert the remaining input is empty now.
+        let packet = match parse_message_type(data) {
+            MessageType::Event => ParsedPacket::Event(self::event::parse_dogstatsd_event(data, &self.config)?.1),
+            MessageType::ServiceCheck => {
+                ParsedPacket::ServiceCheck(self::service_check::parse_dogstatsd_service_check(data, &self.config)?.1)
+            }
+            MessageType::MetricSample => {
+                ParsedPacket::Metric(self::metric::parse_dogstatsd_metric(data, &self.config)?.1)
+            }
+        };
+        Ok(packet)
     }
 }
 
