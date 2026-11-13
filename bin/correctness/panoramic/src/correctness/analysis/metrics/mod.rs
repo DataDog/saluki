@@ -4,10 +4,10 @@ use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use stele::MetricValue;
 use tracing::{error, info, warn};
 
-use crate::intake::metrics::{
+use crate::steps::intake::metrics::{
     get_formatted_metric_value, MetricType, NormalizedMetric, NormalizedMetricContext, NormalizedMetrics,
 };
-use crate::intake::CollectedData;
+use crate::steps::intake::CollectedData;
 
 /// A metric context and type pair, used for comparing metrics between different sets.
 type ContextTypePair<'a> = (&'a NormalizedMetricContext, MetricType);
@@ -250,7 +250,7 @@ mod tests {
     use stele::Metric;
 
     use super::compare_metric_contexts;
-    use crate::intake::metrics::NormalizedMetrics;
+    use crate::steps::intake::metrics::NormalizedMetrics;
 
     fn metrics(entries: &[(&str, &[&str], &str)]) -> NormalizedMetrics {
         let metrics = entries

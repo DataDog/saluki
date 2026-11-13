@@ -34,7 +34,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 use crate::core::result::TestOutcome;
-use crate::intake::{CollectedData, IntakeClient};
+use crate::intake::IntakeClient;
+use crate::steps::intake::CollectedData;
 
 const TRAFFIC_DIR_NAME: &str = "traffic";
 

@@ -10,11 +10,11 @@ use tracing::trace;
 use crate::assertions::{Assertion, AssertionContext, AssertionResult, AssertionStatus};
 use crate::config::{MetricTypeMatcher, TagMatch};
 use crate::core::probe::{probe, ProbeError, POLL_INTERVAL, PROBE_TIMEOUT};
-use crate::intake::metrics::{
+use crate::intake::IntakeClient;
+use crate::steps::intake::metrics::{
     get_formatted_metric_value, MetricType, NormalizationFailure, NormalizedMetric, NormalizedMetricContext,
     NormalizedMetrics,
 };
-use crate::intake::IntakeClient;
 
 /// Names the intake request in probe messages.
 const METRICS_DUMP: &str = "the intake sidecar's metrics dump";
