@@ -31,14 +31,6 @@ logs:
       when:
         fixture_id: [message-int, message-map]
       reason: ADP only honors string `message`/`log` attributes, and uses the body instead.
-    - gap: gap/scope-metadata
-      paths: ["content.otel.scope.name", "content.otel.scope.version"]
-      kinds: [missing]
-      reason: ADP doesn't set the scope name and version.
-    - gap: gap/scope-metadata
-      paths: ["content.otel.library.name", "content.otel.library.version"]
-      kinds: [extra]
-      reason: ADP keeps the `otel.library.*` aliases instead of mapping them to scope keys.
     - gap: gap/missing-headers
       paths:
         - headers.dd-protocol

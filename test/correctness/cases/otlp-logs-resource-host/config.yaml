@@ -44,12 +44,6 @@ logs:
       when:
         fixture_id: [service-name-int]
       reason: ADP only uses a string `service.name` as the service.
-    - gap: gap/scope-metadata
-      paths: ["content.otel.scope.name", "content.otel.scope.version"]
-      kinds: [missing]
-      when:
-        fixture_id: [resource-types]
-      reason: ADP doesn't set the scope name and version.
     - gap: gap/log-source-attribute
       paths: ["envelope.ddsource"]
       kinds: [value]
