@@ -1,0 +1,4 @@
+fixes:
+  - |
+    Reduce metric drops and delivery delays under sustained load when experimental
+    stateful metrics delivery is enabled.

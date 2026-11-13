@@ -19,6 +19,7 @@ use foldspace_core::{
     MetricSeriesType,
 };
 use futures::Stream;
+use metrics::{Key, Label};
 use prost::Message as _;
 use saluki_common::sync::live::{channel, Live};
 use saluki_core::data_model::{event::metric::context::Context, tags::TagSet};
@@ -1087,6 +1088,10 @@ async fn destination_shutdown_timeout_persists_missing_ack() {
 }
 
 impl StatefulMetricsWorker {
+    async fn accept(&mut self, events: impl IntoIterator<Item = Event>) {
+        self.enqueue(Self::convert_batch(events)).await;
+    }
+
     /// Returns retained work to the retry queue while keeping the queue open for inspection.
     async fn shutdown_into_queue(&mut self) {
         let effects = self.core.shutdown();
@@ -1777,6 +1782,16 @@ async fn destination_shutdown_and_restart_preserves_unacknowledged_metrics() {
     let mut session = harness.session().await;
     send_metrics(&input, 123).await;
     let original = sequence(&session.receive().await);
+    let mut names: Vec<_> = original
+        .data
+        .iter()
+        .filter_map(|datum| match &datum.data {
+            Some(metric_datum::Data::MetricNameDefine(name)) => Some(name.value.as_str()),
+            _ => None,
+        })
+        .collect();
+    names.sort_unstable();
+    assert_eq!(names, ["first", "second"]);
     drop(input);
     timeout(TEST_TIMEOUT, task).await.unwrap().unwrap().unwrap();
     let (input, task) = harness.start(&settings, Live::new_fixed("test-key".to_owned())).await;
@@ -1789,23 +1804,114 @@ async fn destination_shutdown_and_restart_preserves_unacknowledged_metrics() {
 }
 
 #[tokio::test]
-async fn destination_refreshes_credentials_and_resumes_delivery() {
+async fn destination_refreshes_credentials_and_resumes_suspended_delivery() {
+    let recorder = TestRecorder::default();
+    let _local = metrics::set_default_local_recorder(&recorder);
     let mut harness = EndpointHarness::new().await;
     let (mut publisher, source) = channel("test-key".to_owned());
     let (input, task) = harness.start(&shared(), source.live(|key| key)).await;
     let mut session = harness.session().await;
     assert_eq!(session.key, "test-key");
     send_metrics(&input, 123).await;
-    let batch = session.receive().await;
-    session.acknowledge(&batch).await;
+    session.receive().await;
+    session
+        .replies
+        .send(Err(Status::unauthenticated("rejected key")))
+        .await
+        .unwrap();
+    let failure = Key::from_parts(
+        "stateful_metrics_stream_failures_total",
+        vec![
+            Label::new("component_id", "dd_stateful_metrics_out"),
+            Label::new("component_type", "destination"),
+            Label::new("kind", "Unauthenticated"),
+        ],
+    );
+    timeout(TEST_TIMEOUT, async {
+        while recorder.counter(failure.clone()) != Some(1) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
     publisher.publish("new-key".to_owned());
     let mut updated = harness.session().await;
     assert_eq!(updated.key, "new-key");
-    send_metrics(&input, 124).await;
-    let batch = updated.receive().await;
-    updated.acknowledge(&batch).await;
+    let mut events = EventsBuffer::default();
+    assert!(events
+        .try_push(Event::Metric(Metric::gauge("after-refresh", (124, 1.0))))
+        .is_none());
+    input.send(events).await.unwrap();
+    timeout(TEST_TIMEOUT, async {
+        loop {
+            let batch = updated.receive().await;
+            let fresh = sequence(&batch).data.iter().any(|datum| {
+                matches!(
+                    &datum.data, Some(metric_datum::Data::MetricNameDefine(name)) if name.value == "after-refresh"
+                )
+            });
+            updated.acknowledge(&batch).await;
+            if fresh {
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
     drop(input);
     timeout(TEST_TIMEOUT, task).await.unwrap().unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn sender_drains_a_full_input_channel_when_input_closes() {
+    let dir = TempDir::new().unwrap();
+    let settings = persisted_settings(&dir, 1024 * 1024);
+    let mut client = worker().await;
+    client.queue = persisted_queue(&settings).await;
+    let (input, receiver) = mpsc::channel(SENDER_INPUT_CAPACITY);
+    input.try_send(logical("queued-before-start")).unwrap();
+    assert_eq!(input.capacity(), 0);
+    let task = tokio::spawn(client.run(receiver, Live::new_fixed("test-key".to_owned()), Duration::ZERO));
+    input.send(logical("waiting-for-capacity")).await.unwrap();
+    drop(input);
+    timeout(TEST_TIMEOUT, task).await.unwrap().unwrap().unwrap();
+    let mut queue = persisted_queue(&settings).await;
+    let mut names = shared_names(&mut queue).await;
+    names.sort_unstable();
+    assert_eq!(names, ["queued-before-start", "waiting-for-capacity"]);
+}
+
+#[tokio::test]
+async fn destination_shutdown_preserves_all_buffered_input_without_acks() {
+    let harness = EndpointHarness::new().await;
+    let dir = TempDir::new().unwrap();
+    let settings = persisted_settings(&dir, 1024 * 1024);
+    let (input, task) = harness.start(&settings, Live::new_fixed("test-key".to_owned())).await;
+    // Exceed both the destination's four-entry input channel and the one-entry sender channel.
+    for timestamp in 123..135 {
+        send_metrics(&input, timestamp).await;
+    }
+    drop(input);
+    timeout(TEST_TIMEOUT, task).await.unwrap().unwrap().unwrap();
+    let mut queue = queue_for(&settings, std::slice::from_ref(&harness.endpoint)).await;
+    let mut recovered = Vec::new();
+    while let Some(batch) = queue.pop_shared().await {
+        let batch = match batch {
+            PendingTransaction::HighPriority(batch) | PendingTransaction::LowPriority(batch) => batch,
+        };
+        for series in batch.0.series() {
+            for point in series.points() {
+                assert_eq!(point.value, 1.0);
+                recovered.push((series.name().to_owned(), point.timestamp));
+            }
+        }
+    }
+    recovered.sort_unstable();
+    let expected: Vec<_> = ["first", "second"]
+        .into_iter()
+        .flat_map(|name| (123..135).map(move |timestamp| (name.to_owned(), timestamp)))
+        .collect();
+    assert_eq!(recovered, expected);
 }
 
 #[test]

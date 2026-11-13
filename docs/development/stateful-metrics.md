@@ -34,7 +34,9 @@ flowchart TB
     Out -->|HTTP| HTTP[HTTP intake]
 ```
 
-One sender task owns one core and one stream per configured endpoint. The core sends every
+Conversion runs in the destination task and hands logical batches through a one-entry channel to a
+separately scheduled sender. A full channel applies backpressure to conversion. One sender task owns
+one core and one stream per configured endpoint. The core sends every
 payload to every endpoint, sharing one dictionary across them. The transport is internal to the
 destination, not a separate topology component, and never retries encoded payloads independently.
 
@@ -318,7 +320,8 @@ The sender reports its dictionary through these gauges:
 - `stateful_metrics_dictionary_frequency_sketch_bytes`: the current size of the frequency sketch,
   which grows with the dictionary up to the limit derived from the caps. It is not part of the estimate.
 
-Closing destination input starts the sender's bounded delivery window. It then recovers remaining
+Closing destination input closes the sender channel after the last converted batch is handed off.
+The sender consumes accepted channel input before starting its bounded delivery window. It then recovers remaining
 logical data and flushes its retry storage. The overall process deadline can interrupt persistence;
 disk flush time depends on the storage system. An event-loop error still attempts recovery and persistence.
 

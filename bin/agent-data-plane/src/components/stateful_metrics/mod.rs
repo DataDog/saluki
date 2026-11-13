@@ -7,6 +7,7 @@
 //! come back tagged with their endpoint and wait in that endpoint's retry lane; other logical
 //! batches wait in the shared ADP priority queue. Both can spill to disk. Batches from the retry
 //! queue are encoded against the current core state; original ADP metrics are not retained.
+//! Conversion hands batches through a one-entry channel to a separately scheduled sender task.
 //!
 //! # Memory accounting
 //!
@@ -35,7 +36,7 @@ use foldspace_core::{
     ZstdBatchCompressor,
 };
 use futures::{future::BoxFuture, stream::FuturesUnordered, FutureExt as _, StreamExt as _};
-use saluki_common::sync::live::Live;
+use saluki_common::{sync::live::Live, task::JoinSetExt as _};
 use saluki_components::queue::{DeliveryQueueConfiguration, PendingTransaction};
 use saluki_core::{
     accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr},
@@ -51,6 +52,8 @@ use saluki_metrics::MetricsBuilder;
 use stringtheory::MetaString;
 use tokio::{
     select,
+    sync::mpsc,
+    task::JoinSet,
     time::{sleep, sleep_until, Instant},
 };
 use tonic::{
@@ -75,6 +78,7 @@ use self::{
     transport::{next_transport_event, Transport, TransportEvent, TransportEventKind, TransportState},
 };
 
+const SENDER_INPUT_CAPACITY: usize = 1;
 const MIN_FLUSH_TIMEOUT: Duration = Duration::from_millis(10);
 const MAX_INFLIGHT_BATCHES: usize = 8;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -215,14 +219,46 @@ struct StatefulMetrics {
 
 #[async_trait]
 impl Destination for StatefulMetrics {
-    async fn run(mut self: Box<Self>, mut context: DestinationContext) -> Result<(), GenericError> {
-        let result = self
-            .client
-            .drive(&mut context, &mut self.api_key, self.delivery_shutdown_timeout)
-            .await;
-        // Recover accepted work even when the event loop returns an error.
-        let shutdown = self.client.shutdown().await;
-        result.and(shutdown)
+    async fn run(self: Box<Self>, mut context: DestinationContext) -> Result<(), GenericError> {
+        let mut health = context.take_health_handle();
+        let (tx, rx) = mpsc::channel(SENDER_INPUT_CAPACITY);
+        let mut tasks = JoinSet::new();
+        tasks.spawn_traced_named(
+            "stateful-metrics-single-sender",
+            self.client.run(rx, self.api_key, self.delivery_shutdown_timeout),
+        );
+        health.mark_ready();
+        let mut result = Ok(());
+        loop {
+            select! {
+                _ = health.live() => {},
+                completed = tasks.join_next() => {
+                    result = match completed {
+                        Some(Ok(Err(error))) => Err(error),
+                        Some(Err(error)) => Err(error.into()),
+                        _ => Err(generic_error!("stateful metrics sender stopped before input closed")),
+                    };
+                    break;
+                },
+                events = context.events().next() => {
+                    let Some(events) = events else { break };
+                    let batch = StatefulMetricsWorker::convert_batch(events);
+                    if !batch.is_empty() && tx.send(batch).await.is_err() {
+                        result = Err(generic_error!("stateful metrics sender input closed"));
+                        break;
+                    }
+                },
+            }
+        }
+        drop(tx);
+        while let Some(completed) = tasks.join_next().await {
+            match completed {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => result = Err(error),
+                Err(error) => result = Err(error.into()),
+            }
+        }
+        result
     }
 }
 
@@ -294,15 +330,28 @@ impl StatefulMetricsWorker {
         }
     }
 
-    async fn drive(
-        &mut self, context: &mut DestinationContext, api_key: &mut Live<String>, delivery_shutdown_timeout: Duration,
+    async fn run(
+        mut self, mut input: mpsc::Receiver<LogicalMetricBatch>, mut api_key: Live<String>,
+        delivery_shutdown_timeout: Duration,
     ) -> Result<(), GenericError> {
-        let mut health = context.take_health_handle();
+        let result = self.drive(&mut input, &mut api_key, delivery_shutdown_timeout).await;
+        // Recover accepted channel input before persisting, including after an event-loop error.
+        input.close();
+        while let Some(batch) = input.recv().await {
+            self.enqueue(batch).await;
+        }
+        let shutdown = self.shutdown().await;
+        result.and(shutdown)
+    }
+
+    async fn drive(
+        &mut self, input: &mut mpsc::Receiver<LogicalMetricBatch>, api_key: &mut Live<String>,
+        delivery_shutdown_timeout: Duration,
+    ) -> Result<(), GenericError> {
         let effects = self.core.start();
         self.apply(effects).await?;
         let mut input_closed = false;
         let mut shutdown_deadline = None;
-        health.mark_ready();
         loop {
             self.pump().await?;
             self.telemetry.record_dictionary(self.core.dictionary_stats());
@@ -318,7 +367,6 @@ impl StatefulMetricsWorker {
             let flush_deadline = self.flush_deadline();
             let (ack_endpoint, ack_deadline) = self.next_ack_deadline();
             select! {
-                _ = health.live() => {},
                 _ = tokio::task::yield_now(), if self.can_pump() => {},
                 key = api_key.changed() => { self.update_credentials(&key).await?; },
                 event = next_transport_event(&mut self.transports) => { self.on_transport(event).await?; },
@@ -331,9 +379,9 @@ impl StatefulMetricsWorker {
                     self.fail(ack_endpoint, MetricStreamFailureKind::DeadlineExceeded, "acknowledgement timed out").await?;
                 },
                 _ = wait_deadline(shutdown_deadline) => break,
-                events = context.events().next(), if !input_closed => {
-                    match events {
-                        Some(events) => self.accept(events).await,
+                batch = input.recv(), if !input_closed => {
+                    match batch {
+                        Some(batch) => self.enqueue(batch).await,
                         None => {
                             input_closed = true;
                             shutdown_deadline = Some(Instant::now() + delivery_shutdown_timeout);
@@ -345,7 +393,7 @@ impl StatefulMetricsWorker {
         Ok(())
     }
 
-    async fn accept(&mut self, events: impl IntoIterator<Item = Event>) {
+    fn convert_batch(events: impl IntoIterator<Item = Event>) -> LogicalMetricBatch {
         let events = events.into_iter();
         let mut series = Vec::with_capacity(events.size_hint().0);
         series.extend(events.filter_map(|event| match event {
@@ -354,7 +402,7 @@ impl StatefulMetricsWorker {
             }
             _ => None,
         }));
-        self.enqueue(LogicalMetricBatch::new(series)).await;
+        LogicalMetricBatch::new(series)
     }
 
     async fn enqueue(&mut self, batch: LogicalMetricBatch) {
