@@ -78,6 +78,7 @@ impl HttpCheckAssertion {
         match &self.body {
             None => true,
             Some(HttpBodyMatcher::Equal(expected)) => actual == expected,
+            Some(HttpBodyMatcher::Contains(expected)) => actual.contains(expected.as_str()),
         }
     }
 }
@@ -98,6 +99,12 @@ impl Assertion for HttpCheckAssertion {
             Some(HttpBodyMatcher::Equal(body)) => {
                 format!(
                     "HTTP endpoint '{}' returns {} with body {:?}.",
+                    self.endpoint, status, body
+                )
+            }
+            Some(HttpBodyMatcher::Contains(body)) => {
+                format!(
+                    "HTTP endpoint '{}' returns {} with a body containing {:?}.",
                     self.endpoint, status, body
                 )
             }
@@ -399,10 +406,15 @@ mod tests {
 
     /// Checks `endpoint` from the host for a status of 200 and `body`.
     async fn check_host_body(endpoint: String, body: Option<&str>) -> AssertionResult {
+        check_host(endpoint, body.map(|body| HttpBodyMatcher::Equal(body.to_string()))).await
+    }
+
+    /// Checks `endpoint` from the host for a status of 200 and a body matching `body`.
+    async fn check_host(endpoint: String, body: Option<HttpBodyMatcher>) -> AssertionResult {
         let assertion = HttpCheckAssertion::new(
             endpoint,
             HttpStatusMatcher::Equal(200),
-            body.map(|body| HttpBodyMatcher::Equal(body.to_string())),
+            body,
             false,
             Duration::from_secs(1),
         );
@@ -429,6 +441,17 @@ mod tests {
         assert_eq!(unchecked.status, AssertionStatus::Passed, "{}", unchecked.message);
         assert_eq!(checked.status, AssertionStatus::Failed, "{}", checked.message);
         assert!(checked.message.contains(r#"body "not OK""#), "{}", checked.message);
+    }
+
+    #[tokio::test]
+    async fn a_body_containing_the_value_passes_the_check() {
+        let endpoint = serve_body(r#"{"version": "7.81.0"}"#).await;
+
+        let contained = check_host(endpoint.clone(), Some(HttpBodyMatcher::Contains("7.81".to_string()))).await;
+        let missing = check_host(endpoint, Some(HttpBodyMatcher::Contains("7.82".to_string()))).await;
+
+        assert_eq!(contained.status, AssertionStatus::Passed, "{}", contained.message);
+        assert_eq!(missing.status, AssertionStatus::Failed, "{}", missing.message);
     }
 
     #[test]

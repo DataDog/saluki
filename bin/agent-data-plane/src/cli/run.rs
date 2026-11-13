@@ -47,8 +47,7 @@ use saluki_components::{
     transforms::{
         aggregate_context_snapshot_channel, AggregateConfiguration, AutoscalingFailoverGatewayConfiguration,
         ChainedConfiguration, DogStatsDMapperConfiguration, DogStatsDMapperProfile, DogStatsDMetricMapping,
-        HistogramConfiguration, HostEnrichmentConfiguration, ReplaceRule, TraceObfuscationConfiguration,
-        TraceTagReplacerConfiguration,
+        HistogramConfiguration, HostEnrichmentConfiguration, TraceObfuscationConfiguration,
     },
 };
 use saluki_core::{
@@ -67,6 +66,7 @@ use crate::{
         metric_mirroring, metric_name_filter, mrf_configuration, obfuscation_configuration, origin_tag_cardinality,
         otlp_context_settings, otlp_metrics_settings, otlp_receiver, otlp_traces_settings, ottl_error_mode,
         resolve_static_tags, tag_filter_entries, tag_value_allowlist, trace_configuration, trace_sampler_configuration,
+        trace_tag_replacer_configuration,
     },
     components::{
         apm_onboarding::ApmOnboardingConfiguration, dogstatsd_no_agg_split::DogStatsDNoAggSplitConfiguration,
@@ -266,11 +266,18 @@ async fn create_topology(
     };
 
     if dp.otlp_enabled() {
-        add_otlp_pipeline_to_blueprint(&mut blueprint, config_system, env_provider, semantic_registry).await?;
+        add_otlp_pipeline_to_blueprint(&mut blueprint, config_system, env_provider, semantic_registry.clone()).await?;
     }
 
     if dp.apm_enabled() {
-        add_apm_pipeline_to_blueprint(&mut blueprint, config_system, env_provider).await?;
+        add_apm_pipeline_to_blueprint(
+            &mut blueprint,
+            config_system,
+            env_provider,
+            remote_agent_client_config,
+            semantic_registry,
+        )
+        .await?;
     }
 
     Ok((blueprint, dogstatsd_api))
@@ -582,21 +589,7 @@ async fn add_baseline_traces_pipeline_to_blueprint(
     let trace_obfuscation_config = TraceObfuscationConfiguration {
         config: obfuscation_configuration(&config.domains.traces.obfuscation),
     };
-    let trace_tag_replacer_config = TraceTagReplacerConfiguration::new(
-        config
-            .domains
-            .traces
-            .replace_tags
-            .iter()
-            .cloned()
-            .map(|rule| ReplaceRule {
-                name: rule.name,
-                pattern: rule.pattern,
-                repl: rule.repl,
-            })
-            .collect(),
-        config.domains.traces.obfuscation.remove_stack_traces,
-    );
+    let trace_tag_replacer_config = trace_tag_replacer_configuration(&config.domains.traces);
 
     let ottl_filter = &config.domains.traces.ottl_filter;
     let ottl_filter_config = OttlFilterConfiguration::new(
@@ -994,17 +987,21 @@ async fn add_dsd_pipeline_to_blueprint(
 
 async fn add_apm_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem,
-    env_provider: &RemoteAgentEnvironmentProvider,
+    env_provider: &RemoteAgentEnvironmentProvider, agent_client: Option<&RemoteAgentClientConfiguration>,
+    semantic_registry: SemanticRegistryProvider,
 ) -> Result<(), GenericError> {
     let config = config_system.config();
     // In standalone mode there is no workload provider, so the resolver finds nothing and the relay forwards requests
     // without a container ID
+    let workload = Arc::new(env_provider.workload().clone());
     let dd_traces_relay = apm_relay_configuration(
-        &config.domains.apm,
-        &config.shared,
+        &config,
         datadog_agent_config::is_containerized(),
-        Some(Arc::new(env_provider.workload().clone())),
+        Some(workload.clone()),
+        Some(workload),
         config_system.live(|config| &config.shared.endpoints.api_key),
+        agent_client.cloned(),
+        semantic_registry,
     );
     blueprint
         .add_relay("dd_traces_relay", dd_traces_relay)?
