@@ -295,12 +295,12 @@ pub struct DataPlaneExperimental {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
 pub struct StatefulMetrics {
-    /// Plaintext gRPC intake origin for integration testing; unset by default, preserving HTTP delivery.
+    /// HTTP or HTTPS gRPC intake origin; unset by default, preserving HTTP delivery.
     ///
-    /// Set an `http://host:port` endpoint only for integration testing. Empty values, paths, queries,
+    /// Set an `http://host:port` or `https://host:port` origin. Empty values, paths, queries,
     /// and credentials are invalid. Changing this setting requires a restart.
     pub endpoint: Option<String>,
-    /// Further distinct plaintext gRPC origins that receive every payload; defaults to none.
+    /// Further distinct HTTP or HTTPS gRPC origins that receive every payload; defaults to none.
     /// Requires the primary endpoint and a restart. Use for sending to multiple experimental intakes.
     pub additional_endpoints: Vec<String>,
     /// Sender dictionary entry cap; defaults to 60000 and rejects zero.

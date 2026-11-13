@@ -16,7 +16,7 @@
 //!
 //! # Missing
 //!
-//! - TODO: Add TLS/proxy support before using this path beyond plaintext integration tests.
+//! - TODO: Add proxy support and shared TLS configuration overrides.
 //! - TODO: Add a byte budget for dictionary state beyond the eviction estimate.
 //! - TODO: Support per-endpoint API keys; every endpoint uses the primary API key.
 
@@ -49,7 +49,9 @@ use saluki_core::{
     runtime,
 };
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use saluki_io::net::client::http::HttpsCapableConnector;
 use saluki_metrics::MetricsBuilder;
+use saluki_tls::ClientTLSConfigBuilder;
 use stringtheory::MetaString;
 use tokio::{
     select,
@@ -75,7 +77,9 @@ pub use self::router::StatefulMetricsRouterConfiguration;
 use self::{
     retry::{prepare_storage, LanedRetryQueue},
     telemetry::Telemetry,
-    transport::{next_transport_event, Transport, TransportEvent, TransportEventKind, TransportState},
+    transport::{
+        build_https_connector, next_transport_event, Transport, TransportEvent, TransportEventKind, TransportState,
+    },
 };
 
 const SENDER_INPUT_CAPACITY: usize = 1;
@@ -90,7 +94,7 @@ const DICTIONARY_STALE_AFTER: Duration = Duration::from_secs(30 * 60);
 
 /// Opt-in destination for stateful series; delivery never switches automatically to HTTP.
 pub struct StatefulMetricsConfiguration {
-    /// Explicit plaintext test intake origins, primary first. There is no default endpoint.
+    /// Explicit HTTP or HTTPS intake origins, primary first. There is no default endpoint.
     ///
     /// Every payload goes to every endpoint. Retry storage is namespaced by the primary endpoint. The
     /// shared queue and one lane per endpoint share the retry memory budget and split the disk budget evenly.
@@ -176,7 +180,7 @@ impl DestinationBuilder for StatefulMetricsConfiguration {
             self.flush_timeout,
             queue,
             builder,
-        );
+        )?;
         Ok(Box::new(StatefulMetrics {
             client,
             api_key: self.api_key.clone(),
@@ -253,6 +257,7 @@ struct StatefulMetricsWorker {
     core: StatefulMetricsClient<ZstdBatchCompressor>,
     telemetry: Telemetry,
     api_key: MetadataValue<Ascii>,
+    https_connector: Option<HttpsCapableConnector>,
     queue: LanedRetryQueue,
     flush_timeout: Duration,
     buffered_deadline: Option<Instant>,
@@ -298,12 +303,18 @@ impl StatefulMetricsWorker {
     fn new(
         endpoints: Vec<Endpoint>, api_key: MetadataValue<Ascii>, config: CoreConfig, compression_level: i32,
         flush_timeout: Duration, queue: LanedRetryQueue, builder: MetricsBuilder,
-    ) -> Self {
+    ) -> Result<Self, GenericError> {
+        let https_connector = endpoints
+            .iter()
+            .any(|endpoint| endpoint.uri().scheme_str() == Some("https"))
+            .then(|| build_https_connector(ClientTLSConfigBuilder::new()))
+            .transpose()?;
         let stream_lifetime = config.sender.stream_lifetime;
-        Self {
+        Ok(Self {
             core: StatefulMetricsClient::new(config, ZstdBatchCompressor::new(compression_level)),
             telemetry: Telemetry::new(builder),
             api_key,
+            https_connector,
             queue,
             flush_timeout: if flush_timeout.is_zero() {
                 MIN_FLUSH_TIMEOUT
@@ -314,7 +325,7 @@ impl StatefulMetricsWorker {
             stream_lifetime,
             transports: endpoints.iter().map(|_| None).collect(),
             endpoints: endpoints.into_iter().map(EndpointState::new).collect(),
-        }
+        })
     }
 
     async fn run(
@@ -643,6 +654,7 @@ impl StatefulMetricsWorker {
                         stream_id,
                         state.address.clone(),
                         self.api_key.clone(),
+                        self.https_connector.clone(),
                     ));
                 }
                 MetricClientEffect::SendPayload { stream_id, payload } => {

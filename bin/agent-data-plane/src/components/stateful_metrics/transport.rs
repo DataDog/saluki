@@ -10,6 +10,9 @@ use futures::{
     future::{select_all, BoxFuture},
     FutureExt as _,
 };
+use saluki_error::GenericError;
+use saluki_io::net::client::http::{HttpsCapableConnector, HttpsCapableConnectorBuilder};
+use saluki_tls::ClientTLSConfigBuilder;
 use tokio::{
     select,
     sync::mpsc::{self, error::TrySendError},
@@ -25,6 +28,13 @@ use tonic::{
 use super::{CONNECT_TIMEOUT, MAX_INFLIGHT_BATCHES};
 
 const REQUESTED_STATE_BYTES: &str = "5242880";
+
+pub(super) fn build_https_connector(tls: ClientTLSConfigBuilder) -> Result<HttpsCapableConnector, GenericError> {
+    HttpsCapableConnectorBuilder::default()
+        .with_connect_timeout(CONNECT_TIMEOUT)
+        .with_tls_handshake_timeout(CONNECT_TIMEOUT)
+        .build(tls.build()?)
+}
 
 pub(super) struct Transport {
     pub endpoint: MetricEndpointId,
@@ -54,6 +64,7 @@ pub(super) enum TransportEventKind {
 impl Transport {
     pub fn open(
         endpoint_id: MetricEndpointId, stream_id: StreamId, endpoint: Endpoint, api_key: MetadataValue<Ascii>,
+        https_connector: Option<HttpsCapableConnector>,
     ) -> Self {
         // A replayed payload can be preceded by a definitions-only batch, so a full window can be
         // twice as many batches as payloads.
@@ -69,10 +80,11 @@ impl Transport {
         );
         let opening = async move {
             timeout(CONNECT_TIMEOUT, async move {
-                let channel = endpoint
-                    .connect()
-                    .await
-                    .map_err(|_| Status::unavailable("connection failed"))?;
+                let channel = match https_connector {
+                    Some(connector) => endpoint.connect_with_connector(connector).await,
+                    None => endpoint.connect().await,
+                }
+                .map_err(|error| Status::unavailable(format!("connection failed: {error:?}")))?;
                 StatefulIntakeClient::new(channel)
                     .stateful_stream(request)
                     .await

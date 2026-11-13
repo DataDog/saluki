@@ -16,14 +16,14 @@ use crate::defaults::{
 /// Configuration for the experimental stateful series client.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Domain {
-    /// Plaintext gRPC intake endpoint. Unset by default, preserving HTTP delivery.
+    /// HTTP or HTTPS gRPC intake endpoint. Unset by default, preserving HTTP delivery.
     ///
-    /// Set an `http://host:port` endpoint only for integration testing. An empty value is invalid.
+    /// Set an `http://host:port` or `https://host:port` origin. An empty value is invalid.
     /// Changing this startup-only setting requires a restart; sketches still use the HTTP intake.
     pub endpoint: Option<String>,
-    /// Further plaintext gRPC intake endpoints that receive every stateful payload. Empty by default.
+    /// Further HTTP or HTTPS gRPC intake endpoints that receive every stateful payload. Empty by default.
     ///
-    /// Each must be a distinct `http://host:port` origin and requires `endpoint`. All endpoints use
+    /// Each must be a distinct HTTP or HTTPS origin and requires `endpoint`. All endpoints use
     /// the primary API key and share the sender's dictionary. Requires a restart. Removing an
     /// additional endpoint discards its persisted retries at startup with a warning.
     pub additional_endpoints: Vec<String>,

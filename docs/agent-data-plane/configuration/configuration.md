@@ -802,11 +802,11 @@ Positive estimated-byte cap for the stateful metrics sender's dictionary, defaul
 
 ### `data_plane.experimental.stateful_metrics.additional_endpoints`
 
-List of distinct http://host:port endpoints that also receive every stateful metrics payload, using the primary API key. Requires data_plane.experimental.stateful_metrics.endpoint and a restart. Retry memory and disk budgets are split between a shared queue and one retry lane per endpoint. Removing an additional endpoint discards its persisted retries at startup with a warning.
+List of distinct HTTP or HTTPS origins that also receive every stateful metrics payload, using the primary API key. Requires data_plane.experimental.stateful_metrics.endpoint and a restart. Retry memory and disk budgets are split between a shared queue and one retry lane per endpoint. Removing an additional endpoint discards its persisted retries at startup with a warning.
 
 ### `data_plane.experimental.stateful_metrics.endpoint`
 
-Set an http://host:port endpoint for stateful metrics integration testing. Sketches continue over HTTP. Requires a restart; unset preserves existing delivery.
+Set an HTTP or HTTPS origin for stateful metrics delivery. HTTPS verifies server certificates using platform trust roots. Sketches continue over HTTP. Requires a restart; unset preserves existing delivery.
 
 ### `experimental.metrics_endpoint_routing.metric_allowlist`
 

@@ -74,10 +74,10 @@ pub enum Error {
     ))]
     MissingApiKey,
 
-    /// An experimental stateful metrics intake is not a plaintext HTTP origin.
+    /// An experimental stateful metrics intake is not an HTTP or HTTPS origin.
     #[snafu(display(
         "data_plane.experimental.stateful_metrics.endpoint and data_plane.experimental.stateful_metrics.additional_endpoints require \
-         http://host:port intake origins for testing"
+         http://host:port or https://host:port intake origins without paths, queries, or credentials"
     ))]
     InvalidStatefulMetricsEndpoint,
 
@@ -446,7 +446,11 @@ pub(crate) fn validate(config: &SalukiConfiguration) -> Result<()> {
         let Some(authority) = uri.authority().filter(|authority| !authority.as_str().contains('@')) else {
             return Err(Error::InvalidStatefulMetricsEndpoint);
         };
-        if uri.scheme_str() != Some("http") || uri.host().is_none() || uri.path() != "/" || uri.query().is_some() {
+        if !matches!(uri.scheme_str(), Some("http" | "https"))
+            || uri.host().is_none()
+            || uri.path() != "/"
+            || uri.query().is_some()
+        {
             return Err(Error::InvalidStatefulMetricsEndpoint);
         }
         if !origins.insert(authority.as_str().to_ascii_lowercase()) {
@@ -573,6 +577,51 @@ data_plane:
     }
 
     #[test]
+    fn stateful_metrics_accepts_https_from_yaml_and_environment() {
+        let yaml = r#"
+api_key: test-api-key
+data_plane:
+  experimental:
+    stateful_metrics:
+      endpoint: https://intake.example.com
+      additional_endpoints: [https://other.example.com:443, http://localhost:8080]
+"#;
+        let from_file = read_local(yaml, Path::new("stateful.yaml"), &[], EnvPrecedence::Disabled)
+            .unwrap()
+            .local
+            .unwrap();
+        super::validate(&from_file).unwrap();
+        assert_eq!(
+            from_file.domains.stateful_metrics.endpoint.as_deref(),
+            Some("https://intake.example.com")
+        );
+        let vars = [
+            ("DD_API_KEY".to_owned(), TEST_API_KEY.to_owned()),
+            (
+                "DD_DATA_PLANE_EXPERIMENTAL_STATEFUL_METRICS_ENDPOINT".to_owned(),
+                "https://intake.example.com:443".to_owned(),
+            ),
+            (
+                "DD_DATA_PLANE_EXPERIMENTAL_STATEFUL_METRICS_ADDITIONAL_ENDPOINTS".to_owned(),
+                "https://other.example.com:443 http://localhost:8080".to_owned(),
+            ),
+        ];
+        let from_env = read_local("{}", Path::new("stateful.yaml"), &vars, EnvPrecedence::AfterFile)
+            .unwrap()
+            .local
+            .unwrap();
+        super::validate(&from_env).unwrap();
+        assert_eq!(
+            from_env.domains.stateful_metrics.endpoint.as_deref(),
+            Some("https://intake.example.com:443")
+        );
+        assert_eq!(
+            from_env.domains.stateful_metrics.additional_endpoints,
+            from_file.domains.stateful_metrics.additional_endpoints
+        );
+    }
+
+    #[test]
     fn stateful_metrics_unshipped_flat_endpoint_is_not_an_alias() {
         let vars = [(
             "DD_DATA_PLANE_STATEFUL_METRICS_ENDPOINT".to_string(),
@@ -591,7 +640,10 @@ data_plane:
         for endpoint in [
             "",
             "localhost:8080",
-            "https://localhost:8080",
+            "ftp://localhost:8080",
+            "https://localhost:8080/path",
+            "https://key@localhost:8080",
+            "https://localhost:8080/?key=value",
             "http://key@localhost:8080",
             "http://localhost:8080/path",
             "http://localhost:8080/?key=value",
@@ -752,7 +804,7 @@ data_plane:
         let primary = "http://127.0.0.1:8080";
         for (endpoint, additional) in [
             (None, vec!["http://127.0.0.1:8081"]),
-            (Some(primary), vec!["https://127.0.0.1:8081"]),
+            (Some(primary), vec!["ftp://127.0.0.1:8081"]),
             (Some(primary), vec!["http://127.0.0.1:8081/path"]),
             (Some(primary), vec!["HTTP://127.0.0.1:8080"]),
             (Some(primary), vec!["http://127.0.0.1:8081", "http://127.0.0.1:8081"]),

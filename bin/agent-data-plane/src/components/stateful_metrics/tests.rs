@@ -1,4 +1,4 @@
-use std::{mem::replace, pin::Pin, sync::Arc};
+use std::{io, mem::replace, pin::Pin, sync::Arc};
 
 use agent_data_plane_config::{
     defaults::{
@@ -21,6 +21,7 @@ use foldspace_core::{
 use futures::Stream;
 use metrics::{Key, Label};
 use prost::Message as _;
+use rustls::{RootCertStore, ServerConfig};
 use saluki_common::sync::live::{channel, Live};
 use saluki_core::data_model::{event::metric::context::Context, tags::TagSet};
 use saluki_core::{
@@ -44,6 +45,7 @@ use saluki_core::{
 };
 use saluki_io::net::util::retry::{EventContainer, Retryable};
 use saluki_metrics::test::TestRecorder;
+use saluki_tls::{initialize_default_crypto_provider, load_platform_root_certificates, test_util::SelfSignedCert};
 use tempfile::TempDir;
 use tokio::{
     net::TcpListener,
@@ -52,6 +54,7 @@ use tokio::{
     task::JoinHandle,
     time::{advance, timeout},
 };
+use tokio_rustls::TlsAcceptor;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::{transport::Server, Request, Response, Status, Streaming};
 
@@ -127,6 +130,7 @@ async fn worker_for(configuration: StatefulMetricsConfiguration) -> StatefulMetr
         queue_for(&shared(), &addresses).await,
         MetricsBuilder::default(),
     )
+    .unwrap()
 }
 
 /// A worker whose core hands every payload waiting for an endpoint straight to the retry queue.
@@ -426,7 +430,8 @@ impl Harness {
             Duration::from_secs(2),
             queue_for(&shared(), &test_endpoints(1)).await,
             MetricsBuilder::default(),
-        );
+        )
+        .unwrap();
         let effects = worker.core.start();
         worker.apply(effects).await.unwrap();
         let mut harness = Self {
@@ -1170,6 +1175,39 @@ impl EndpointHarness {
             Server::builder()
                 .add_service(StatefulIntakeServer::new(SessionIntake { sessions }))
                 .serve_with_incoming(TcpListenerStream::new(listener))
+                .await
+                .unwrap();
+        });
+        Self {
+            endpoint,
+            sessions: sessions_rx,
+            server,
+        }
+    }
+
+    async fn tls(cert: &SelfSignedCert) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("https://{}", listener.local_addr().unwrap()).into();
+        let mut config = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(cert.cert_chain(), cert.private_key())
+            .unwrap();
+        config.alpn_protocols = vec![b"h2".to_vec()];
+        let acceptor = TlsAcceptor::from(Arc::new(config));
+        let (sessions, sessions_rx) = mpsc::channel(32);
+        let server = tokio::spawn(async move {
+            let incoming = async_stream::stream! {
+                loop {
+                    let (socket, _) = listener.accept().await.unwrap();
+                    if let Ok(stream) = acceptor.accept(socket).await {
+                        assert_eq!(stream.get_ref().1.alpn_protocol(), Some(b"h2".as_slice()));
+                        yield Ok::<_, io::Error>(stream);
+                    }
+                }
+            };
+            Server::builder()
+                .add_service(StatefulIntakeServer::new(SessionIntake { sessions }))
+                .serve_with_incoming(incoming)
                 .await
                 .unwrap();
         });
@@ -2006,4 +2044,122 @@ async fn retry_telemetry_reports_retention_replays_and_returns() {
         Some(0.0)
     );
     assert_eq!(queued_names(&mut worker).await, ["requests"]);
+}
+
+async fn tls_worker(harness: &EndpointHarness, trusted: &SelfSignedCert) -> StatefulMetricsWorker {
+    let mut roots = RootCertStore::empty();
+    roots.add(trusted.cert_chain().pop().unwrap()).unwrap();
+    let mut worker = worker().await;
+    worker.endpoints[0].address = Endpoint::from_shared(harness.endpoint.to_string()).unwrap();
+    worker.https_connector =
+        Some(build_https_connector(ClientTLSConfigBuilder::new().with_root_cert_store(roots)).unwrap());
+    let effects = worker.core.start();
+    worker.apply(effects).await.unwrap();
+    worker
+}
+
+#[tokio::test]
+async fn https_sends_compressed_metrics_and_reuses_acknowledged_dictionary() {
+    initialize_default_crypto_provider().unwrap();
+    let cert = SelfSignedCert::new(["127.0.0.1"]);
+    let mut harness = EndpointHarness::tls(&cert).await;
+    let mut worker = tls_worker(&harness, &cert).await;
+    let event = timeout(TEST_TIMEOUT, next_transport_event(&mut worker.transports))
+        .await
+        .unwrap();
+    assert!(matches!(event.kind, TransportEventKind::Opened(_)));
+    worker.on_transport(event).await.unwrap();
+    let mut session = harness.session().await;
+    assert_eq!(session.key, "test-key");
+    for expected_definition in [true, false] {
+        submit(&mut worker, "encrypted.requests").await;
+        let batch = session.receive().await;
+        assert_eq!(has_name(&sequence(&batch)), expected_definition);
+        session.acknowledge(&batch).await;
+        let event = timeout(TEST_TIMEOUT, next_transport_event(&mut worker.transports))
+            .await
+            .unwrap();
+        assert!(matches!(event.kind, TransportEventKind::Ack(_)));
+        worker.on_transport(event).await.unwrap();
+        assert!(worker.is_drained());
+    }
+}
+
+#[tokio::test]
+async fn https_rejects_untrusted_certificates() {
+    initialize_default_crypto_provider().unwrap();
+    let cert = SelfSignedCert::new(["127.0.0.1"]);
+    load_platform_root_certificates().unwrap();
+    let mut harness = EndpointHarness::tls(&cert).await;
+    let mut config = configuration(1, 512);
+    config.endpoints = vec![harness.endpoint.clone()];
+    let mut worker = worker_for(config).await;
+    let effects = worker.core.start();
+    worker.apply(effects).await.unwrap();
+    let event = timeout(TEST_TIMEOUT, next_transport_event(&mut worker.transports))
+        .await
+        .unwrap();
+    let TransportEventKind::Failed(status) = event.kind else {
+        panic!("untrusted server was accepted")
+    };
+    assert_eq!(status.code(), tonic::Code::Unavailable);
+    assert!(status.message().contains("UnknownIssuer"), "{status}");
+    assert!(harness.sessions.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn https_rejects_certificate_hostname_mismatches() {
+    initialize_default_crypto_provider().unwrap();
+    let cert = SelfSignedCert::localhost();
+    let mut harness = EndpointHarness::tls(&cert).await;
+    let mut worker = tls_worker(&harness, &cert).await;
+    let event = timeout(TEST_TIMEOUT, next_transport_event(&mut worker.transports))
+        .await
+        .unwrap();
+    let TransportEventKind::Failed(status) = event.kind else {
+        panic!("wrong server identity was accepted")
+    };
+    assert_eq!(status.code(), tonic::Code::Unavailable);
+    assert!(status.message().contains("NotValidForName"), "{status}");
+    assert!(harness.sessions.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn https_and_http_endpoints_receive_the_same_payload() {
+    initialize_default_crypto_provider().unwrap();
+    let cert = SelfSignedCert::new(["127.0.0.1"]);
+    let mut encrypted = EndpointHarness::tls(&cert).await;
+    let mut plaintext = EndpointHarness::new().await;
+    let mut roots = RootCertStore::empty();
+    roots.add(cert.cert_chain().pop().unwrap()).unwrap();
+    let mut worker = worker_with(2, 512).await;
+    worker.endpoints[0].address = Endpoint::from_shared(encrypted.endpoint.to_string()).unwrap();
+    worker.endpoints[1].address = Endpoint::from_shared(plaintext.endpoint.to_string()).unwrap();
+    worker.https_connector =
+        Some(build_https_connector(ClientTLSConfigBuilder::new().with_root_cert_store(roots)).unwrap());
+    let effects = worker.core.start();
+    worker.apply(effects).await.unwrap();
+    for _ in 0..2 {
+        let event = timeout(TEST_TIMEOUT, next_transport_event(&mut worker.transports))
+            .await
+            .unwrap();
+        assert!(matches!(event.kind, TransportEventKind::Opened(_)));
+        worker.on_transport(event).await.unwrap();
+    }
+    let mut encrypted_session = encrypted.session().await;
+    let mut plaintext_session = plaintext.session().await;
+    submit(&mut worker, "both.endpoints").await;
+    let encrypted_batch = encrypted_session.receive().await;
+    let plaintext_batch = plaintext_session.receive().await;
+    assert_eq!(sequence(&encrypted_batch), sequence(&plaintext_batch));
+    encrypted_session.acknowledge(&encrypted_batch).await;
+    plaintext_session.acknowledge(&plaintext_batch).await;
+    for _ in 0..2 {
+        let event = timeout(TEST_TIMEOUT, next_transport_event(&mut worker.transports))
+            .await
+            .unwrap();
+        assert!(matches!(event.kind, TransportEventKind::Ack(_)));
+        worker.on_transport(event).await.unwrap();
+    }
+    assert!(worker.is_drained());
 }

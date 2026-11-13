@@ -63,9 +63,24 @@ data_plane:
       endpoint: http://127.0.0.1:8080
 ```
 
-You can also set `DD_DATA_PLANE_EXPERIMENTAL_STATEFUL_METRICS_ENDPOINT`. The endpoint must be a plaintext HTTP
+You can also set `DD_DATA_PLANE_EXPERIMENTAL_STATEFUL_METRICS_ENDPOINT`. The endpoint must be an HTTP or HTTPS
 origin without a path, query, or embedded credentials. It is a startup-only setting: restart ADP to
 change it. Leaving it unset preserves the existing HTTP pipeline.
+
+For a TLS-enabled intake, configure its HTTPS origin, for example:
+
+```yaml
+data_plane:
+  experimental:
+    stateful_metrics:
+      endpoint: https://agent.datad0g.com:443
+```
+
+The client adds `/datadog.intake.stateful.StatefulIntake/StatefulStream` to the request automatically.
+HTTPS uses Saluki's TLS client and platform trust roots to verify the server certificate and hostname.
+TLS 1.2 or newer is required. A failed TLS handshake follows the existing connection retry policy;
+there is no downgrade to plaintext. Plaintext HTTP remains available for local integration tests.
+This transport does not yet apply shared TLS overrides or proxy settings.
 
 To send every stateful payload to further intakes as well, list them after the primary endpoint:
 
@@ -338,9 +353,9 @@ Foldspace itself reads no clock and creates no runtime task.
 
 ## Scope and validation
 
-This is an opt-in plaintext integration experiment with one or more stateful endpoints sharing the
+This is an opt-in integration experiment with one or more stateful endpoints sharing the
 primary API key. HTTP `additional_endpoints` or experimental metric endpoint-routing policies select the HTTP pipeline with a warning instead of stateful delivery. Existing MRF and autoscaling-failover branches remain separate
-from this primary path. TLS and proxy support remain future work.
+from this primary path. Proxy support and shared TLS configuration overrides remain future work.
 
 Run focused tests with:
 
@@ -350,7 +365,8 @@ cargo nextest run -p agent-data-plane -p agent-data-plane-config-system -E 'test
 
 Tests cover routing, conversion, priority scheduling, disk spill/reload, shutdown recovery, credential
 refresh, timer flushing, inflight limits, failure policies, per-endpoint retry lanes and
-acknowledgement deadlines, lane persistence across endpoint changes, and local gRPC exchanges. The gRPC tests
+acknowledgement deadlines, lane persistence across endpoint changes, and local plaintext and TLS gRPC
+exchanges. TLS tests also reject untrusted certificates and hostname mismatches. The gRPC tests
 verify compression, acknowledgements, dictionary reuse, and replay of retained payloads after reconnect. For decoded-output
 validation, run the separate intake process and inspect its JSONL journal.
 

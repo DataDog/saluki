@@ -1,0 +1,5 @@
+features:
+  - |
+    Experimental stateful metrics delivery now supports HTTPS endpoints. TLS verifies
+    the intake certificate and hostname using the platform's trusted certificate store.
+    Plaintext HTTP remains available for local integration testing.
