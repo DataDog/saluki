@@ -85,6 +85,10 @@ pub struct DatadogConfiguration {
     #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub cluster_name: String,
 
+    #[serde(default = "defaults::datadog_configuration_cmd_host")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
+    pub cmd_host: String,
+
     #[serde(default = "defaults::default_u64::<i64, 5001>")]
     #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub cmd_port: i64,
@@ -211,6 +215,10 @@ pub struct DatadogConfiguration {
     #[serde(default = "defaults::default_u64::<i64, 8125>")]
     #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub dogstatsd_port: i64,
+
+    #[serde(default = "defaults::default_u64::<i64, 1024>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
+    pub dogstatsd_queue_size: i64,
 
     #[serde(default)]
     #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
@@ -390,6 +398,10 @@ pub struct DatadogConfiguration {
     #[serde(default)]
     #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub hostname: String,
+
+    #[serde(default = "defaults::datadog_configuration_ipc_address")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
+    pub ipc_address: String,
 
     #[serde(default)]
     #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
@@ -606,6 +618,7 @@ impl Default for DatadogConfiguration {
             bind_host: Default::default(),
             cluster_agent: Default::default(),
             cluster_name: Default::default(),
+            cmd_host: defaults::datadog_configuration_cmd_host(),
             cmd_port: defaults::default_u64::<i64, 5001>(),
             container_cgroup_root: defaults::datadog_configuration_container_cgroup_root(),
             container_proc_root: defaults::datadog_configuration_container_proc_root(),
@@ -638,6 +651,7 @@ impl Default for DatadogConfiguration {
             dogstatsd_origin_optout_enabled: defaults::default_bool::<true>(),
             dogstatsd_pipe_name: Default::default(),
             dogstatsd_port: defaults::default_u64::<i64, 8125>(),
+            dogstatsd_queue_size: defaults::default_u64::<i64, 1024>(),
             dogstatsd_require_listener: Default::default(),
             dogstatsd_so_rcvbuf: Default::default(),
             dogstatsd_socket: platform_defaults::dogstatsd_socket(),
@@ -687,6 +701,7 @@ impl Default for DatadogConfiguration {
             histogram_copy_to_distribution_prefix: Default::default(),
             histogram_percentiles: defaults::datadog_configuration_histogram_percentiles(),
             hostname: Default::default(),
+            ipc_address: defaults::datadog_configuration_ipc_address(),
             ipc_cert_file_path: Default::default(),
             kubernetes_kubelet_nodename: Default::default(),
             log_file_max_rolls: defaults::default_u64::<i64, 1>(),
@@ -923,6 +938,10 @@ pub struct ApmConfigObfuscation {
     pub redis: ApmConfigObfuscationRedis,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
+    pub remove_stack_traces: bool,
+
+    #[serde(default)]
     pub valkey: ApmConfigObfuscationValkey,
 }
 
@@ -936,6 +955,7 @@ impl Default for ApmConfigObfuscation {
             mongodb: Default::default(),
             opensearch: Default::default(),
             redis: Default::default(),
+            remove_stack_traces: Default::default(),
             valkey: Default::default(),
         }
     }
@@ -2164,12 +2184,27 @@ pub struct SerializerExperimentalUseV3ApiSketches {
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
     #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub endpoints: Vec<String>,
+
+    #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
+    pub max_compressed_payload_size: i64,
+
+    #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
+    pub max_points_per_payload: i64,
+
+    #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
+    pub max_uncompressed_payload_size: i64,
 }
 
 impl Default for SerializerExperimentalUseV3ApiSketches {
     fn default() -> Self {
         Self {
             endpoints: Default::default(),
+            max_compressed_payload_size: Default::default(),
+            max_points_per_payload: Default::default(),
+            max_uncompressed_payload_size: Default::default(),
         }
     }
 }
@@ -2306,6 +2341,9 @@ pub mod defaults {
     {
         T::try_from(V).unwrap()
     }
+    pub(super) fn datadog_configuration_cmd_host() -> String {
+        "localhost".to_string()
+    }
     pub(super) fn datadog_configuration_container_cgroup_root() -> String {
         "/host/sys/fs/cgroup/".to_string()
     }
@@ -2358,6 +2396,9 @@ pub mod defaults {
     }
     pub(super) fn datadog_configuration_histogram_percentiles() -> Vec<String> {
         vec!["0.95".to_string()]
+    }
+    pub(super) fn datadog_configuration_ipc_address() -> String {
+        "localhost".to_string()
     }
     pub(super) fn datadog_configuration_log_file_max_size() -> String {
         "10Mb".to_string()

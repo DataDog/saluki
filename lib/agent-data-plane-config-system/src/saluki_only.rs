@@ -139,7 +139,7 @@ impl ValidateJsonSequence for MetricTagValueAllowlistEntry {
 #[serde(default)]
 pub struct SalukiOnly {
     // ── top-level scalar keys ────────────────────────────────────────────────
-    /// Internal-telemetry verbosity (`metrics_level`).
+    /// Internal-telemetry verbosity (`metrics_level`). Levels less verbose than `info` are raised to `info`.
     pub metrics_level: Option<String>,
     /// Remote-agent IPC string interner byte budget (`remote_agent_string_interner_size_bytes`).
     /// An explicit `0` fails the load: the interner cannot be built with no capacity.

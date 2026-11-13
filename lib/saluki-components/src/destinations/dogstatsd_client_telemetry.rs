@@ -4,7 +4,7 @@ use saluki_core::{
     components::{destinations::*, BuildContext, ComponentContext},
     data_model::event::{
         metric::{Metric, MetricValues},
-        Event, EventType,
+        EventType,
     },
 };
 use saluki_error::GenericError;
@@ -168,10 +168,8 @@ impl Destination for DogStatsDClientTelemetry {
                 _ = health.live() => continue,
                 maybe_events = context.events().next() => match maybe_events {
                     Some(events) => {
-                        for event in events {
-                            if let Event::Metric(metric) = event {
-                                self.record_metric(&metric);
-                            }
+                        for metric in events.into_events::<Metric>() {
+                            self.record_metric(&metric);
                         }
                     },
                     None => break,

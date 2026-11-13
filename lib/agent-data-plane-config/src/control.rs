@@ -208,6 +208,14 @@ pub struct ControlIpc {
     /// Defaults to an empty path, which selects `ipc_cert.pem` beside the resolved authentication token path.
     pub ipc_cert_file_path: PathBuf,
 
+    /// Host the command API listens on.
+    ///
+    /// This is the effective host: like the Datadog Agent, the deprecated `ipc_address` takes precedence when it's
+    /// explicitly set, and `cmd_host` is used otherwise.
+    ///
+    /// Defaults to `localhost`.
+    pub cmd_host: String,
+
     /// TCP port the command API listens on.
     ///
     /// Defaults to `5001`.
@@ -215,7 +223,7 @@ pub struct ControlIpc {
 
     /// vsock address used for guest/host IPC.
     ///
-    /// Defaults to empty, which reaches the Core Agent over TCP on localhost at `cmd_port`.
+    /// Defaults to empty, which reaches the Core Agent over TCP at `cmd_host` and `cmd_port`.
     pub vsock_addr: String,
 
     /// Maximum gRPC message size, in bytes, accepted over the remote-agent IPC channel.
@@ -241,6 +249,7 @@ impl Default for ControlIpc {
             // Written by the Datadog witness driver.
             auth_token_file_path: PathBuf::new(),
             ipc_cert_file_path: PathBuf::new(),
+            cmd_host: String::new(),
             cmd_port: 0,
             vsock_addr: String::new(),
             grpc_max_message_size: 0,

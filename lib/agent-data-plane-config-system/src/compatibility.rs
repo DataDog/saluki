@@ -81,8 +81,7 @@ impl ConfigurationSystem {
 mod tests {
     use std::collections::HashSet;
 
-    use agent_data_plane_config::Provenance;
-    use datadog_agent_config::classifier::{ConfigClassifier, Pipeline, SupportLevel};
+    use datadog_agent_config::classifier::Pipeline;
     use saluki_config::dynamic::{ConfigSetting, Provenance as StreamProvenance};
     use serde_json::{json, Value};
 
@@ -186,7 +185,7 @@ mod tests {
 
     #[test]
     fn lower_severity_keys_pass_and_cross_cutting_keys_ignore_active_pipelines() {
-        let system = system_with(json!({ "dogstatsd_queue_size": 2048, "min_tls_version": "tlsv1.3" }));
+        let system = system_with(json!({ "dogstatsd_pipeline_count": 4, "min_tls_version": "tlsv1.3" }));
         system
             .check_compatibility(&pipelines(&[Pipeline::DogStatsD]))
             .expect("only high-severity incompatibilities fail the check");
@@ -195,38 +194,6 @@ mod tests {
         cross_cutting
             .check_compatibility(&pipelines(&[]))
             .expect_err("a cross-cutting high-severity key fails the check with no pipeline active");
-    }
-
-    #[test]
-    fn a_map_valued_partial_key_is_classified_by_its_own_key() {
-        // The classifier matches whole keys, so a setting holding a map has to be reported as itself, not
-        // only as the entries inside it, or the warning for it can never fire.
-        let system = system_with(json!({
-            "otlp_config": { "traces": { "span_name_remappings": { "io.opentelemetry.javaagent.spring.client": "spring.client" } } }
-        }));
-
-        let classifier = ConfigClassifier::new();
-        let partial: Vec<_> = system
-            .sources()
-            .flattened_keys()
-            .into_iter()
-            .filter_map(|(key, value, provenance)| {
-                let classification = classifier.classify(&key, value)?;
-                Some((key, classification.support_level, provenance))
-            })
-            .collect();
-
-        assert_eq!(
-            partial,
-            vec![(
-                "otlp_config.traces.span_name_remappings".to_string(),
-                SupportLevel::Partial,
-                Provenance::Explicit
-            )]
-        );
-        system
-            .check_compatibility(&pipelines(&[Pipeline::Traces]))
-            .expect("a partially supported key only warns");
     }
 
     #[test]

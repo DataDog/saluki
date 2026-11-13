@@ -11,7 +11,7 @@ use saluki_core::{
         BuildContext,
     },
     data_model::{
-        event::{metric::Metric, Event, EventType},
+        event::{metric::Metric, EventType},
         tags::TagSet,
     },
 };
@@ -162,11 +162,9 @@ impl Destination for DogStatsDDebugLog {
                 _ = health.live() => continue,
                 maybe_events = context.events().next() => match maybe_events {
                     Some(events) => {
-                        for event in events {
-                            if let Event::Metric(metric) = event {
-                                if let Err(error) = self.process_metric(&metric) {
-                                    warn!(error = %error, "Failed to write DogStatsD debug log line; continuing.");
-                                }
+                        for metric in events.into_events::<Metric>() {
+                            if let Err(error) = self.process_metric(&metric) {
+                                warn!(error = %error, "Failed to write DogStatsD debug log line; continuing.");
                             }
                         }
                     },

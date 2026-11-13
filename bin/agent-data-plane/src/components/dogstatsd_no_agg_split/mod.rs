@@ -105,8 +105,7 @@ impl MemoryBounds for DogStatsDNoAggSplitConfiguration {
 
 fn has_timestamped_metrics(events: &EventsBuffer) -> bool {
     events
-        .into_iter()
-        .filter_map(|event| event.try_as_metric())
+        .events::<Metric>()
         .any(|metric| metric.values().any_timestamped())
 }
 
@@ -320,24 +319,22 @@ impl Transform for DogStatsDNoAggSplit {
                             .expect("default output should always exist");
 
                         let mut buffered_any = false;
-                        for event in events {
-                            if let Some(metric) = event.try_into_metric() {
-                                let (maybe_timestamped, maybe_remainder) = try_split_timestamped_values(metric);
+                        for metric in events.into_events::<Metric>() {
+                            let (maybe_timestamped, maybe_remainder) = try_split_timestamped_values(metric);
 
-                                if let Some(timestamped_metric) = maybe_timestamped {
-                                    buffered_any |= self
-                                        .passthrough_batcher
-                                        .push_metric(timestamped_metric, context.dispatcher())
-                                        .await;
-                                }
+                            if let Some(timestamped_metric) = maybe_timestamped {
+                                buffered_any |= self
+                                    .passthrough_batcher
+                                    .push_metric(timestamped_metric, context.dispatcher())
+                                    .await;
+                            }
 
-                                if let Some(remainder) = maybe_remainder {
-                                    // A push only fails when the downstream output can no longer be sent to, which
-                                    // means the buffered events it was flushing are gone along with this one. There's
-                                    // nowhere left to put them, so log and keep draining our input.
-                                    if let Err(e) = default_dispatcher.push(Event::Metric(remainder)).await {
-                                        error!(error = %e, "Failed to dispatch non-timestamped events.");
-                                    }
+                            if let Some(remainder) = maybe_remainder {
+                                // A push only fails when the downstream output can no longer be sent to, which
+                                // means the buffered events it was flushing are gone along with this one. There's
+                                // nowhere left to put them, so log and keep draining our input.
+                                if let Err(e) = default_dispatcher.push(Event::Metric(remainder)).await {
+                                    error!(error = %e, "Failed to dispatch non-timestamped events.");
                                 }
                             }
                         }
@@ -375,7 +372,7 @@ mod tests {
 
     use http_body_util::BodyExt as _;
     use saluki_components::encoders::{
-        DatadogMetricsConfiguration, UseV3ApiConfig, UseV3ApiSeriesConfig, V3ApiConfig, V3SeriesMode,
+        DatadogMetricsConfiguration, UseV3ApiConfig, UseV3ApiSeriesConfig, V3ApiConfig, V3ApiSettings, V3SeriesMode,
     };
     use saluki_components::forwarders::OpwMetricsConfiguration;
     use saluki_core::{
@@ -402,7 +399,15 @@ mod tests {
             use_v2_series_api: false,
             log_payloads: false,
             additional_tags: None,
-            v3_api: V3ApiConfig::default(),
+            v3_api: V3ApiConfig {
+                sketches: V3ApiSettings {
+                    endpoints: Vec::new(),
+                    max_compressed_payload_size: 64 * 1024,
+                    max_uncompressed_payload_size: 64 * 1024,
+                    max_points_per_payload: usize::MAX,
+                },
+                compression_level: 0,
+            },
             use_v3_api: UseV3ApiConfig {
                 series: UseV3ApiSeriesConfig {
                     enabled: V3SeriesMode::DatadogOnly,

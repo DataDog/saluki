@@ -78,7 +78,23 @@ impl<'a> DatadogTranslator<'a> {
         let datadog = self.datadog;
         let errors = drive(datadog, &mut self).err();
         self.apply_deprecated_max_tps_alias();
+        self.resolve_v3_sketch_payload_limits();
         (self.config, errors)
+    }
+
+    // Resolve after the witness has supplied both generic limits and sketch overrides.
+    fn resolve_v3_sketch_payload_limits(&mut self) {
+        let metrics = &mut self.config.shared.metrics_encoding;
+        let sketches = &mut metrics.v3_api.sketches;
+        if sketches.max_compressed_payload_size == 0 {
+            sketches.max_compressed_payload_size = metrics.max_payload_size;
+        }
+        if sketches.max_uncompressed_payload_size == 0 {
+            sketches.max_uncompressed_payload_size = metrics.max_uncompressed_payload_size;
+        }
+        if sketches.max_points_per_payload == 0 {
+            sketches.max_points_per_payload = usize::MAX;
+        }
     }
 
     /// Applies the deprecated `max_traces_per_second` alias to the target rate.
@@ -579,6 +595,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.domains.traces.obfuscation.redis.remove_all_args = value;
     }
 
+    fn consume_apm_config_obfuscation_remove_stack_traces(&mut self, value: bool) {
+        self.config.domains.traces.obfuscation.remove_stack_traces = value;
+    }
+
     fn consume_apm_config_obfuscation_valkey_enabled(&mut self, value: bool) {
         self.config.domains.traces.obfuscation.valkey.enabled = value;
     }
@@ -701,6 +721,15 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
 
     fn consume_cluster_name(&mut self, value: String) {
         self.config.shared.static_tags.cluster_name = value;
+    }
+
+    fn consume_cmd_host(&mut self, value: String) {
+        // Like the Datadog Agent, an explicitly set `ipc_address` (the deprecated name for `cmd_host`) takes
+        // precedence; `consume_ipc_address` writes the host in that case. Checking provenance on both sides, rather
+        // than relying on the order the two keys are consumed in, keeps the result the same either way.
+        if self.sources.provenance("ipc_address") != Provenance::Explicit {
+            self.config.control.ipc.cmd_host = value;
+        }
     }
 
     fn consume_cmd_port(&mut self, value: i64) {
@@ -935,7 +964,11 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
             match parse_mapper_profile("dogstatsd_mapper_profiles", raw) {
                 Ok(profile) => profiles.push(profile),
                 Err(error) => {
-                    self.record_error(error);
+                    // Like the Datadog Agent, profiles that can't be parsed disable metric mapping, rather than
+                    // failing the configuration: DogStatsD keeps running, with metrics passing through unmapped.
+                    // https://github.com/DataDog/datadog-agent/blob/e02f16838240688a60db91d6b99cd8fbecbd9750/comp/dogstatsd/server/impl/server.go#L915-L924
+                    warn!("Could not parse dogstatsd_mapper_profiles: {}", error);
+                    self.config.domains.dogstatsd.mapper.profiles = Vec::new();
                     return;
                 }
             }
@@ -974,6 +1007,16 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     fn consume_dogstatsd_port(&mut self, value: i64) {
         if let Some(port) = self.parse_port("dogstatsd_port", value) {
             self.config.domains.dogstatsd.listeners.port = port;
+        }
+    }
+
+    fn consume_dogstatsd_queue_size(&mut self, value: i64) {
+        match usize::try_from(value) {
+            Ok(queue_size) => self.config.domains.dogstatsd.listeners.queue_size = queue_size,
+            Err(_) => self.record_error(TranslateError::new_with_message(
+                "dogstatsd_queue_size",
+                "queue size must be greater than or equal to 0",
+            )),
         }
     }
 
@@ -1248,6 +1291,16 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     fn consume_hostname(&mut self, value: String) {
         let provenance = self.sources.provenance("hostname");
         self.config.shared.environment.hostname = ConfigValue::new(value, provenance);
+    }
+
+    fn consume_ipc_address(&mut self, value: String) {
+        // The deprecated `ipc_address` only takes precedence over `cmd_host` when it's explicitly set: the Core Agent
+        // streams it at its default even when only `cmd_host` is configured. See `consume_cmd_host`.
+        if self.sources.provenance("ipc_address") == Provenance::Explicit {
+            // Matches the warning the Datadog Agent logs when it uses `ipc_address`.
+            warn!("ipc_address is deprecated, use cmd_host instead");
+            self.config.control.ipc.cmd_host = value;
+        }
     }
 
     fn consume_ipc_cert_file_path(&mut self, value: String) {
@@ -1699,6 +1752,33 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.shared.metrics_encoding.v3_api.sketches.endpoints = value;
     }
 
+    fn consume_serializer_experimental_use_v3_api_sketches_max_compressed_payload_size(&mut self, value: i64) {
+        self.config
+            .shared
+            .metrics_encoding
+            .v3_api
+            .sketches
+            .max_compressed_payload_size = value.max(0) as usize;
+    }
+
+    fn consume_serializer_experimental_use_v3_api_sketches_max_points_per_payload(&mut self, value: i64) {
+        self.config
+            .shared
+            .metrics_encoding
+            .v3_api
+            .sketches
+            .max_points_per_payload = value.max(0) as usize;
+    }
+
+    fn consume_serializer_experimental_use_v3_api_sketches_max_uncompressed_payload_size(&mut self, value: i64) {
+        self.config
+            .shared
+            .metrics_encoding
+            .v3_api
+            .sketches
+            .max_uncompressed_payload_size = value.max(0) as usize;
+    }
+
     fn consume_serializer_max_payload_size(&mut self, value: i64) {
         self.config.shared.metrics_encoding.max_payload_size = value.max(0) as usize;
     }
@@ -1961,6 +2041,18 @@ mod tests {
                 "{rules} should apply no rules"
             );
         }
+    }
+
+    #[test]
+    fn apm_config_obfuscation_remove_stack_traces_translates() {
+        let (config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none(), "translation should succeed: {errors:?}");
+        assert!(!config.domains.traces.obfuscation.remove_stack_traces);
+
+        let (config, errors) =
+            translate_explicit(json!({ "apm_config": { "obfuscation": { "remove_stack_traces": true } } }));
+        assert!(errors.is_none(), "translation should succeed: {errors:?}");
+        assert!(config.domains.traces.obfuscation.remove_stack_traces);
     }
 
     #[test]
@@ -2269,6 +2361,26 @@ mod tests {
     }
 
     #[test]
+    fn dogstatsd_queue_size_defaults_to_the_schema_default_and_can_be_set() {
+        let (config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none());
+        assert_eq!(config.domains.dogstatsd.listeners.queue_size, 1024);
+
+        let (config, errors) = translate_explicit(json!({ "dogstatsd_queue_size": 4096 }));
+        assert!(errors.is_none());
+        assert_eq!(config.domains.dogstatsd.listeners.queue_size, 4096);
+    }
+
+    #[test]
+    fn negative_dogstatsd_queue_size_records_translation_error() {
+        let (_, errors) = translate_explicit(json!({ "dogstatsd_queue_size": -1 }));
+
+        let errors = errors.expect("a negative queue size should record a translation error");
+        assert!(errors.to_string().contains("dogstatsd_queue_size"));
+        assert!(errors.to_string().contains("greater than or equal to 0"));
+    }
+
+    #[test]
     fn negative_dogstatsd_so_rcvbuf_records_translation_error() {
         let (config, errors) = translate_explicit(json!({
             "dogstatsd_so_rcvbuf": -1,
@@ -2474,8 +2586,11 @@ mod tests {
     }
 
     #[test]
-    fn malformed_dogstatsd_mapper_profiles_record_translation_errors() {
-        for profile in [
+    fn malformed_dogstatsd_mapper_profiles_disable_mapping_without_failing() {
+        // Like the Datadog Agent, profiles that can't be parsed disable metric mapping, rather than failing the
+        // configuration. A valid profile configured alongside a malformed one doesn't apply either.
+        let valid = json!({ "name": "valid", "prefix": "valid.", "mappings": [] });
+        for malformed in [
             json!({ "prefix": "worker.", "mappings": [] }),
             json!({ "name": "workers", "mappings": [] }),
             json!({
@@ -2484,11 +2599,14 @@ mod tests {
                 "mappings": [{ "match": "worker.*" }]
             }),
         ] {
-            let (config, errors) = translate_explicit(json!({ "dogstatsd_mapper_profiles": [profile] }));
+            let (config, errors) =
+                translate_explicit(json!({ "dogstatsd_mapper_profiles": [valid.clone(), malformed.clone()] }));
 
+            assert!(
+                errors.is_none(),
+                "a malformed mapper profile should not fail the configuration: {malformed}"
+            );
             assert!(config.domains.dogstatsd.mapper.profiles.is_empty());
-            let error = errors.expect("a malformed mapper profile should record an error");
-            assert!(error.to_string().contains("dogstatsd_mapper_profiles"));
         }
     }
 
@@ -2776,6 +2894,48 @@ mod tests {
         assert!(errors.is_none());
         assert_defaulted(&config.shared.endpoints.site, "");
         assert_defaulted(&config.shared.endpoints.dd_url, "");
+    }
+
+    #[test]
+    fn v3_sketch_payload_limits_resolve_fallbacks_and_overrides() {
+        for (compressed, uncompressed, points, expected) in [
+            (0, 0, 0, (100_000, 300_000, usize::MAX)),
+            (-1, -2, -3, (100_000, 300_000, usize::MAX)),
+            (110_000, 330_000, 43, (110_000, 330_000, 43)),
+            (110_000, 0, 0, (110_000, 300_000, usize::MAX)),
+        ] {
+            let (config, errors) = translate_explicit(json!({
+                "serializer_max_payload_size": 100_000,
+                "serializer_max_uncompressed_payload_size": 300_000,
+                "serializer_experimental_use_v3_api": {"sketches": {
+                    "max_compressed_payload_size": compressed,
+                    "max_uncompressed_payload_size": uncompressed,
+                    "max_points_per_payload": points,
+                }},
+            }));
+            assert!(errors.is_none(), "{errors:?}");
+            let sketches = &config.shared.metrics_encoding.v3_api.sketches;
+            assert_eq!(
+                (
+                    sketches.max_compressed_payload_size,
+                    sketches.max_uncompressed_payload_size,
+                    sketches.max_points_per_payload
+                ),
+                expected
+            );
+        }
+
+        let (config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none(), "{errors:?}");
+        let sketches = &config.shared.metrics_encoding.v3_api.sketches;
+        assert_eq!(
+            (
+                sketches.max_compressed_payload_size,
+                sketches.max_uncompressed_payload_size,
+                sketches.max_points_per_payload
+            ),
+            (2_621_440, 4_194_304, usize::MAX)
+        );
     }
 
     // The Agent streams `serializer_zstd_compressor_level` at its schema default of 1 even when the
@@ -3465,6 +3625,43 @@ mod tests {
             config.control.ipc.ipc_cert_file_path,
             PathBuf::from("/secret/ipc_cert.pem")
         );
+    }
+
+    #[test]
+    fn ipc_host_defaults_to_localhost() {
+        let (config, errors) = translate_explicit(json!({}));
+
+        assert!(errors.is_none());
+        assert_eq!(config.control.ipc.cmd_host, "localhost");
+    }
+
+    #[test]
+    fn ipc_host_uses_cmd_host_unless_ipc_address_is_explicitly_set() {
+        #[track_caller]
+        fn assert_ipc_host(config: &SalukiConfiguration, errors: Option<TranslateErrors>, expected: &str) {
+            assert!(errors.is_none());
+            assert_eq!(config.control.ipc.cmd_host, expected);
+        }
+
+        // `cmd_host` alone.
+        let (config, errors) = translate_explicit(json!({ "cmd_host": "::1" }));
+        assert_ipc_host(&config, errors, "::1");
+
+        // `ipc_address` alone.
+        let (config, errors) = translate_explicit(json!({ "ipc_address": "127.0.0.2" }));
+        assert_ipc_host(&config, errors, "127.0.0.2");
+
+        // Like the Datadog Agent, an explicitly set `ipc_address` takes precedence over `cmd_host`.
+        let (config, errors) = translate_explicit(json!({ "cmd_host": "127.0.0.2", "ipc_address": "::1" }));
+        assert_ipc_host(&config, errors, "::1");
+
+        // The Core Agent streams `ipc_address` at its default even when only `cmd_host` is configured, and that
+        // default must not override `cmd_host`.
+        let (config, errors) = translate_stream(&[
+            ("cmd_host", json!("127.0.0.2"), StreamProvenance::Explicit),
+            ("ipc_address", json!("localhost"), StreamProvenance::Default),
+        ]);
+        assert_ipc_host(&config, errors, "127.0.0.2");
     }
 
     #[test]

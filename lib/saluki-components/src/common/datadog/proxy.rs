@@ -297,9 +297,8 @@ fn ip_in_cidr(network: IpAddr, prefix_len: u8, addr: IpAddr) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use tracing::debug;
-
     use super::*;
+    use crate::common::datadog::test_util::init_tls;
 
     fn unproxied() -> ProxyConfiguration {
         ProxyConfiguration {
@@ -553,22 +552,6 @@ mod tests {
     //
     // These tests spin up a mock HTTP server acting as a proxy and verify that the
     // HttpClient actually routes (or bypasses) traffic correctly based on ProxyConfiguration.
-
-    fn init_tls() {
-        static INIT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-        INIT.get_or_init(|| {
-            if rustls::crypto::CryptoProvider::get_default().is_none() {
-                match saluki_tls::initialize_default_crypto_provider() {
-                    Ok(()) => {}
-                    Err(e) if rustls::crypto::CryptoProvider::get_default().is_some() => {
-                        debug!(error = %e, "TLS crypto provider was initialized by another test.");
-                    }
-                    Err(e) => panic!("failed to initialize TLS crypto provider: {e}"),
-                }
-            }
-            saluki_tls::load_platform_root_certificates().expect("failed to load platform root certificates");
-        });
-    }
 
     async fn start_mock_http_server(status: http::StatusCode) -> u16 {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

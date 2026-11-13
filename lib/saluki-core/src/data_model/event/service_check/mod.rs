@@ -31,7 +31,8 @@ pub struct ServiceCheck {
     name: MetaString,
     status: CheckStatus,
     timestamp: Option<u64>,
-    hostname: MetaString,
+    /// `None` if no hostname was set, or `Some` with the hostname, which may be explicitly empty.
+    hostname: Option<MetaString>,
     message: MetaString,
     tags: TagSet,
     origin_tags: TagSet,
@@ -56,12 +57,11 @@ impl ServiceCheck {
     }
 
     /// Returns the host where the check originated from.
+    ///
+    /// Returns `None` if no hostname was set. An explicitly empty hostname is returned as `Some("")`, which is
+    /// distinct from no hostname: for example, it shouldn't be replaced with a default hostname.
     pub fn hostname(&self) -> Option<&str> {
-        if self.hostname.is_empty() {
-            None
-        } else {
-            Some(&self.hostname)
-        }
+        self.hostname.as_deref()
     }
 
     /// Returns the message associated with the check.
@@ -89,7 +89,7 @@ impl ServiceCheck {
             name: name.into(),
             status,
             timestamp: None,
-            hostname: MetaString::empty(),
+            hostname: None,
             message: MetaString::empty(),
             tags: TagSet::default(),
             origin_tags: TagSet::default(),
@@ -108,21 +108,19 @@ impl ServiceCheck {
 
     /// Set the hostname where the service check originated from.
     ///
+    /// `None` clears the hostname. `Some("")` sets an explicitly empty hostname, which is distinct from no hostname.
+    ///
     /// This variant is specifically for use in builder-style APIs.
     pub fn with_hostname(mut self, hostname: impl Into<Option<MetaString>>) -> Self {
-        self.hostname = match hostname.into() {
-            Some(hostname) => hostname,
-            None => MetaString::empty(),
-        };
+        self.hostname = hostname.into();
         self
     }
 
     /// Set the hostname where the service check originated from.
+    ///
+    /// `None` clears the hostname. `Some("")` sets an explicitly empty hostname, which is distinct from no hostname.
     pub fn set_hostname(&mut self, hostname: impl Into<Option<MetaString>>) {
-        self.hostname = match hostname.into() {
-            Some(hostname) => hostname,
-            None => MetaString::empty(),
-        };
+        self.hostname = hostname.into();
     }
 
     /// Set the tags of the service check
@@ -160,8 +158,9 @@ impl Serialize for ServiceCheck {
     {
         let mut map = serializer.serialize_map(None)?;
         map.serialize_entry("check", &self.name)?;
-        if !self.hostname.is_empty() {
-            map.serialize_entry("host_name", &self.hostname)?;
+        // An explicitly empty hostname is still written; only an unset hostname is omitted.
+        if let Some(hostname) = &self.hostname {
+            map.serialize_entry("host_name", hostname)?;
         }
         if !self.message.is_empty() {
             map.serialize_entry("message", &self.message)?;
@@ -244,5 +243,36 @@ impl<'a> Serialize for DeduplicatedTagsSerializable<'a> {
         let mut tags_deduplicator = ReusableDeduplicator::new();
         let deduplicated_tags = tags_deduplicator.deduplicated(chained_tags);
         serializer.collect_seq(deduplicated_tags)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use stringtheory::MetaString;
+
+    use super::{CheckStatus, ServiceCheck};
+
+    #[test]
+    fn unset_and_explicitly_empty_hostnames_are_distinct() {
+        let unset = ServiceCheck::new("check", CheckStatus::Ok);
+        assert_eq!(unset.hostname(), None);
+
+        let empty = ServiceCheck::new("check", CheckStatus::Ok).with_hostname(MetaString::empty());
+        assert_eq!(empty.hostname(), Some(""));
+
+        let cleared = empty.with_hostname(None);
+        assert_eq!(cleared.hostname(), None);
+    }
+
+    #[test]
+    fn serializes_explicitly_empty_hostname() {
+        // Like the Datadog Agent, an explicitly empty hostname is written as an empty `host_name`, while an unset
+        // hostname is omitted.
+        let unset = serde_json::to_value(ServiceCheck::new("check", CheckStatus::Ok)).expect("should serialize");
+        assert!(unset.get("host_name").is_none());
+
+        let empty = ServiceCheck::new("check", CheckStatus::Ok).with_hostname(MetaString::empty());
+        let empty = serde_json::to_value(empty).expect("should serialize");
+        assert_eq!(empty["host_name"], "");
     }
 }

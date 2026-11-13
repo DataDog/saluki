@@ -1,16 +1,19 @@
 use std::{
     sync::{
         atomic::{AtomicU64, Ordering::Relaxed},
-        Arc,
+        Arc, OnceLock,
     },
     time::Duration,
 };
 
-use metrics::gauge;
+use metrics::{counter, gauge, Counter};
 use process_memory::Querier;
-use tracing::debug;
+use tracing::{debug, info, warn};
 
 use super::MemoryGrant;
+
+/// How often the checker thread samples the process's memory usage.
+const CHECK_INTERVAL: Duration = Duration::from_millis(250);
 
 /// A process-wide memory limiter.
 ///
@@ -18,53 +21,78 @@ use super::MemoryGrant;
 /// be able to react that: clearing caches, temporarily blocking requests, and so on.
 ///
 /// `MemoryLimiter` watches the process's physical memory usage (Resident Set Size/Working Set) and keeps track of when
-/// the usage exceeds the configured limit. Cooperating tasks call `wait_for_capacity` to participate in accepting
+/// the usage approaches the configured limit. Cooperating tasks call `wait_for_capacity` to participate in accepting
 /// backpressure that can be used to throttle work that's responsible for allocating memory.
 ///
 /// The backpressure is scaled based on how close the memory usage is to the configured limit, with a minimum and
-/// maximum backoff duration that's applied. This means that until we're using a certain percentage of the configured
-/// limit, no backpressure is applied. Once that threshold is crossed, backpressure is applied proportionally to how
-/// close to the limit we're. Callers are never fully blocked even if the limit is reached.
+/// maximum backoff duration that's applied. Until usage crosses a starting threshold, no backpressure is applied. Past
+/// that threshold, backpressure grows proportionally until it reaches its maximum at a second, higher threshold. Once
+/// throttling has started, it continues at the minimum backoff until usage falls below a lower clearing threshold, so
+/// that usage hovering around the starting threshold doesn't flap between throttling and not throttling. Callers are
+/// never fully blocked, even if the limit is reached.
+///
+/// Throttling is logged when it starts and when it clears, and is reported through internal metrics: the current
+/// backoff, the number of throttled calls, and the total time callers were throttled.
 #[derive(Clone)]
 pub struct MemoryLimiter {
     active_backoff_nanos: Arc<AtomicU64>,
+    throttle_counters: Arc<OnceLock<ThrottleCounters>>,
+}
+
+/// Counters for the calls that the memory limiter throttles.
+///
+/// The handles are held for the limiter's lifetime. A counter whose handles are all dropped is evicted from internal
+/// metrics once it stops changing, which would reset the throttling totals shortly after throttling stops.
+struct ThrottleCounters {
+    calls: Counter,
+    nanoseconds: Counter,
+}
+
+impl ThrottleCounters {
+    fn new() -> Self {
+        Self {
+            calls: counter!("memory_limiter.throttled_calls_total"),
+            nanoseconds: counter!("memory_limiter.throttled_nanoseconds_total"),
+        }
+    }
 }
 
 impl MemoryLimiter {
     /// Creates a new `MemoryLimiter` based on the given `MemoryGrant`.
     ///
     /// A background task is spawned that frequently checks the used memory for the entire process, and callers of
-    /// `wait_for_capacity` will observe waiting once the memory usage exceeds the configured limit threshold. The
-    /// waiting time will scale progressively the closer the memory usage is to the configured limit.
+    /// `wait_for_capacity` will observe waiting once the memory usage approaches the grant's initial limit. The waiting
+    /// time will scale progressively the closer the memory usage is to the limit.
     ///
-    /// Defaults to a 95% threshold (that's, threshold begins at 95% of the limit), a minimum backoff duration of 1 ms, and
-    /// a maximum backoff duration of 25 ms. The effective limit of the grant is used as the memory limit.
+    /// The thresholds are measured against the grant's initial limit rather than its effective limit: the slop factor
+    /// is headroom for memory bounds verification, and applying it here as well would start throttling well before the
+    /// process is actually close to its limit. Throttling starts above 85% of the limit, reaches its maximum at 95%, and
+    /// clears once usage falls to 75% or below. The backoff ranges from 1 ms to 25 ms.
     pub fn new(grant: MemoryGrant) -> Option<Self> {
         // Smoke test to see if we can even collect memory stats on this system.
         Querier::default().resident_set_size()?;
 
-        let rss_limit = grant.effective_limit_bytes();
-        let backoff_threshold = 0.95;
-        let backoff_min = Duration::from_millis(1);
-        let backoff_max = Duration::from_millis(25);
+        let policy = BackoffPolicy {
+            rss_limit: grant.initial_limit_bytes(),
+            start_ratio: 0.85,
+            full_ratio: 0.95,
+            clear_ratio: 0.75,
+            backoff_min: Duration::from_millis(1),
+            backoff_max: Duration::from_millis(25),
+        };
 
         let active_backoff_nanos = Arc::new(AtomicU64::new(0));
         let active_backoff_nanos2 = Arc::clone(&active_backoff_nanos);
 
         std::thread::Builder::new()
             .name("memory-limiter-checker".to_string())
-            .spawn(move || {
-                check_memory_usage(
-                    active_backoff_nanos2,
-                    rss_limit,
-                    backoff_threshold,
-                    backoff_min,
-                    backoff_max,
-                )
-            })
+            .spawn(move || check_memory_usage(active_backoff_nanos2, policy))
             .unwrap();
 
-        Some(Self { active_backoff_nanos })
+        Some(Self {
+            active_backoff_nanos,
+            throttle_counters: Arc::new(OnceLock::new()),
+        })
     }
 
     /// Creates a no-op `MemoryLimiter` that doesn't perform any limiting.
@@ -73,6 +101,7 @@ impl MemoryLimiter {
     pub fn noop() -> Self {
         Self {
             active_backoff_nanos: Arc::new(AtomicU64::new(0)),
+            throttle_counters: Arc::new(OnceLock::new()),
         }
     }
 
@@ -83,113 +112,215 @@ impl MemoryLimiter {
     pub async fn wait_for_capacity(&self) {
         let active_backoff_nanos = self.active_backoff_nanos.load(Relaxed);
         if active_backoff_nanos > 0 {
+            // The counters are registered on the first throttled call rather than at construction, so that they're
+            // registered with the metrics recorder even if the limiter was created before the recorder was installed.
+            let counters = self.throttle_counters.get_or_init(ThrottleCounters::new);
+            counters.calls.increment(1);
+            counters.nanoseconds.increment(active_backoff_nanos);
+
             tokio::time::sleep(Duration::from_nanos(active_backoff_nanos)).await;
         }
     }
 }
 
-fn check_memory_usage(
-    active_backoff_nanos: Arc<AtomicU64>, rss_limit: usize, backoff_threshold: f64, backoff_min: Duration,
+/// When, and how hard, the memory limiter throttles callers.
+#[derive(Clone, Copy, Debug)]
+struct BackoffPolicy {
+    /// Memory limit, in bytes, that the ratios are measured against.
+    rss_limit: usize,
+
+    /// Fraction of the limit above which throttling starts, at the minimum backoff.
+    start_ratio: f64,
+
+    /// Fraction of the limit at which the backoff reaches its maximum.
+    full_ratio: f64,
+
+    /// Fraction of the limit at or below which active throttling clears.
+    clear_ratio: f64,
+
+    /// Backoff applied just above the starting threshold, and while throttling hasn't yet cleared.
+    backoff_min: Duration,
+
+    /// Backoff applied at or above the full threshold.
     backoff_max: Duration,
-) {
+}
+
+impl BackoffPolicy {
+    /// Calculates the backoff to apply for the given memory usage.
+    ///
+    /// `throttling` is whether a backoff was applied for the previous sample. While usage sits between the clearing and
+    /// starting thresholds, it keeps throttling active at the minimum backoff.
+    fn calculate_backoff(&self, actual_rss: usize, throttling: bool) -> Option<Duration> {
+        let limit = self.rss_limit as f64;
+        let actual = actual_rss as f64;
+        let start = limit * self.start_ratio;
+
+        if actual > start {
+            // Spread the backoff range across the band between the starting and full thresholds.
+            //
+            // For example, with minimum/maximum backoff durations of 100ms/1000ms, a 100MB limit, and a band of 85% to
+            // 95%, we back off by just over 100ms past 85MB, and by 1000ms at 95MB or above. At 90MB, halfway through
+            // the band, we back off by 100ms + (0.5 * 900ms) => 550ms.
+            let band = limit * (self.full_ratio - self.start_ratio);
+            let position = ((actual - start) / band).min(1.0);
+            let backoff_range = self.backoff_max - self.backoff_min;
+            Some(self.backoff_min + backoff_range.mul_f64(position))
+        } else if throttling && actual > limit * self.clear_ratio {
+            Some(self.backoff_min)
+        } else {
+            None
+        }
+    }
+}
+
+fn check_memory_usage(active_backoff_nanos: Arc<AtomicU64>, policy: BackoffPolicy) {
     debug!("Memory limiter checker started.");
 
     let mut querier = Querier::default();
+    let mut throttling = false;
 
     loop {
         let actual_rss = querier
             .resident_set_size()
             .expect("memory statistics should be available");
 
-        let maybe_backoff_duration =
-            calculate_backoff(rss_limit, actual_rss, backoff_threshold, backoff_min, backoff_max);
-        match maybe_backoff_duration {
-            Some(backoff_dur) => {
-                active_backoff_nanos.store(backoff_dur.as_nanos() as u64, Relaxed);
+        let maybe_backoff = policy.calculate_backoff(actual_rss, throttling);
+        log_transition(&policy, actual_rss, throttling, maybe_backoff);
+        throttling = maybe_backoff.is_some();
 
-                debug!(rss_limit, actual_rss, current_backoff = ?backoff_dur, "Enforcing backoff due to memory pressure.");
-                gauge!("memory_limiter.current_backoff_secs").set(backoff_dur.as_secs_f64());
-            }
-            None => {
-                active_backoff_nanos.store(0, Relaxed);
+        let backoff = maybe_backoff.unwrap_or_default();
+        active_backoff_nanos.store(backoff.as_nanos() as u64, Relaxed);
+        gauge!("memory_limiter.current_backoff_secs").set(backoff.as_secs_f64());
 
-                gauge!("memory_limiter.current_backoff_secs").set(0.0);
-            }
+        if throttling {
+            debug!(rss_limit = policy.rss_limit, actual_rss, current_backoff = ?backoff, "Enforcing backoff due to memory pressure.");
         }
 
-        std::thread::sleep(Duration::from_millis(250));
+        std::thread::sleep(CHECK_INTERVAL);
     }
 }
 
-fn calculate_backoff(
-    rss_limit: usize, actual_rss: usize, backoff_threshold: f64, backoff_min: Duration, backoff_max: Duration,
-) -> Option<Duration> {
-    if actual_rss as f64 > rss_limit as f64 * backoff_threshold {
-        // When we're over the threshold, we want to scale our backoff range across the remainder of the threshold.
-        //
-        // For example, if our minimum and maximum backoff durations are 100ms and 1000ms, respectively, and our limit
-        // is 100MB with a threshold of 95% (0.95), then we would start backing off by 100ms when we hit 95MB, and we
-        // would back off at a maximum of 1000ms at 100% (or greater) of our limit.
-        //
-        // Between those two points, we would spread the difference of the minimum/maximum backoff duration (1000ms -
-        // 100ms => 900ms) across that 5%. Thus, we would expect that at 97.5% of the limit, we would be backing off by
-        // 550ms. (0.5 * 900ms => 450ms, 100ms + 450ms => 550ms)
-        let rss_backoff_range = rss_limit as f64 - (rss_limit as f64 * backoff_threshold);
-        let backoff_duration_range = backoff_max - backoff_min;
-        let threshold_delta = actual_rss as f64 - (rss_limit as f64 * backoff_threshold);
-        let variable_backoff_duration = backoff_duration_range.as_secs_f64() * (threshold_delta / rss_backoff_range);
-
-        let backoff = backoff_min + Duration::from_secs_f64(variable_backoff_duration);
-        if backoff > backoff_max {
-            Some(backoff_max)
-        } else {
-            Some(backoff)
-        }
-    } else {
-        None
+/// Logs when throttling starts or clears.
+///
+/// Logging only on transitions keeps sustained memory pressure from flooding the logs while still surfacing it at the
+/// default log level. The clearing threshold keeps usage that hovers around the starting threshold from logging on
+/// every check.
+fn log_transition(policy: &BackoffPolicy, actual_rss: usize, was_throttling: bool, backoff: Option<Duration>) {
+    let usage_pct = actual_rss as f64 / policy.rss_limit as f64 * 100.0;
+    match (was_throttling, backoff) {
+        (false, Some(backoff)) => warn!(
+            rss_limit = policy.rss_limit,
+            actual_rss,
+            current_backoff = ?backoff,
+            "Memory usage is at {:.1}% of the memory limit. Throttling ingestion until it falls to {:.0}%.",
+            usage_pct,
+            policy.clear_ratio * 100.0,
+        ),
+        (true, None) => info!(
+            rss_limit = policy.rss_limit,
+            actual_rss, "Memory usage is at {:.1}% of the memory limit. No longer throttling ingestion.", usage_pct,
+        ),
+        _ => {}
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::Ordering::Relaxed;
     use std::time::Duration;
 
-    use super::calculate_backoff;
+    use super::{BackoffPolicy, MemoryLimiter};
 
-    // These cases reproduce the worked example from `calculate_backoff`'s own doc comment: minimum/maximum backoff
-    // durations of 100ms/1000ms, a 100MB limit, and a 95% threshold. The doc promises specific values at specific
-    // fractions of the limit, so we assert those exact durations rather than merely that a backoff was produced.
-    const LIMIT: usize = 100_000_000;
-    const THRESHOLD: f64 = 0.95;
+    // These cases reproduce the worked example from `calculate_backoff`'s own comment: minimum/maximum backoff durations
+    // of 100ms/1000ms, a 100MB limit, and a band of 85% to 95%, clearing at 75%. The comment promises specific values at
+    // specific fractions of the limit, so we assert those exact durations rather than merely that a backoff was
+    // produced.
     const MIN: Duration = Duration::from_millis(100);
     const MAX: Duration = Duration::from_millis(1000);
+    const POLICY: BackoffPolicy = BackoffPolicy {
+        rss_limit: 100_000_000,
+        start_ratio: 0.85,
+        full_ratio: 0.95,
+        clear_ratio: 0.75,
+        backoff_min: MIN,
+        backoff_max: MAX,
+    };
 
     fn backoff_at(actual_rss: usize) -> Option<Duration> {
-        calculate_backoff(LIMIT, actual_rss, THRESHOLD, MIN, MAX)
+        POLICY.calculate_backoff(actual_rss, false)
+    }
+
+    fn backoff_while_throttling_at(actual_rss: usize) -> Option<Duration> {
+        POLICY.calculate_backoff(actual_rss, true)
     }
 
     #[test]
-    fn no_backoff_below_or_at_threshold() {
+    fn no_backoff_below_or_at_starting_threshold() {
         // Well below the threshold: no backpressure at all.
-        assert_eq!(backoff_at(90_000_000), None);
+        assert_eq!(backoff_at(70_000_000), None);
 
-        // Exactly at the 95% threshold: the comparison is strictly greater-than, so still no backoff.
-        assert_eq!(backoff_at(95_000_000), None);
+        // Between the clearing and starting thresholds, throttling doesn't start.
+        assert_eq!(backoff_at(83_000_000), None);
+
+        // Exactly at the 85% threshold: the comparison is strictly greater-than, so still no backoff.
+        assert_eq!(backoff_at(85_000_000), None);
     }
 
     #[test]
-    fn backoff_scales_linearly_across_the_threshold_band() {
-        // The doc's worked example: at 97.5% of the limit we are halfway through the 95%..100% band, so the backoff is
-        // the minimum (100ms) plus half of the 900ms range (450ms) => 550ms.
-        assert_eq!(backoff_at(97_500_000), Some(Duration::from_millis(550)));
+    fn backoff_scales_linearly_across_the_band() {
+        // Halfway through the 85%..95% band, the backoff is the minimum (100ms) plus half of the 900ms range (450ms).
+        assert_eq!(backoff_at(90_000_000), Some(Duration::from_millis(550)));
     }
 
     #[test]
-    fn backoff_saturates_at_the_maximum() {
-        // At exactly 100% of the limit we reach the far end of the band, which is the maximum backoff (1000ms).
-        assert_eq!(backoff_at(100_000_000), Some(MAX));
+    fn backoff_saturates_at_the_full_threshold() {
+        // At exactly 95% of the limit we reach the far end of the band, which is the maximum backoff.
+        assert_eq!(backoff_at(95_000_000), Some(MAX));
 
-        // Beyond the limit the computed backoff would exceed the maximum, so it is clamped to the maximum.
+        // Beyond the full threshold, and beyond the limit itself, the backoff is clamped to the maximum.
+        assert_eq!(backoff_at(99_000_000), Some(MAX));
         assert_eq!(backoff_at(120_000_000), Some(MAX));
+    }
+
+    #[test]
+    fn active_throttling_holds_the_minimum_until_usage_clears() {
+        // Once throttling, falling back below the starting threshold keeps the minimum backoff, so that usage hovering
+        // around the starting threshold doesn't toggle throttling on every check.
+        assert_eq!(backoff_while_throttling_at(85_000_000), Some(MIN));
+        assert_eq!(backoff_while_throttling_at(76_000_000), Some(MIN));
+
+        // At or below the clearing threshold, throttling stops.
+        assert_eq!(backoff_while_throttling_at(75_000_000), None);
+        assert_eq!(backoff_while_throttling_at(50_000_000), None);
+
+        // Above the starting threshold, the backoff follows the band regardless of the previous state.
+        assert_eq!(
+            backoff_while_throttling_at(90_000_000),
+            Some(Duration::from_millis(550))
+        );
+    }
+
+    #[tokio::test]
+    async fn throttle_counter_handles_outlive_the_throttled_call() {
+        // Internal metrics evict a counter once none of its handles are alive and it stops changing, so the limiter
+        // must keep its throttling counters alive after a throttled call. Otherwise the totals reported on the status
+        // page would reset to zero shortly after throttling stops.
+        let limiter = MemoryLimiter::noop();
+        let clone = limiter.clone();
+
+        limiter.wait_for_capacity().await;
+        assert!(
+            limiter.throttle_counters.get().is_none(),
+            "an unthrottled call shouldn't register the counters"
+        );
+
+        limiter.active_backoff_nanos.store(1, Relaxed);
+        limiter.wait_for_capacity().await;
+
+        assert!(limiter.throttle_counters.get().is_some());
+        assert!(
+            clone.throttle_counters.get().is_some(),
+            "clones of a limiter share its counters"
+        );
     }
 }

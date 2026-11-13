@@ -555,18 +555,16 @@ impl Transform for Aggregate {
 
                         let current_time = get_unix_timestamp();
 
-                        for event in events {
-                            if let Some(metric) = event.try_into_metric() {
-                                let was_breached = self.state.context_limit_breached();
-                                if !self.state.insert(current_time, metric) {
-                                    trace!("Dropping metric due to context limit.");
-                                    if !was_breached {
-                                        // First drop since the last recovery — emit a single warning.
-                                        warn!(context_limit = self.state.context_limit, "Context limit reached, \
-                                        dropping metrics. Consider increasing `aggregate_context_limit`.");
-                                    }
-                                    self.telemetry.increment_events_dropped();
+                        for metric in events.into_events::<Metric>() {
+                            let was_breached = self.state.context_limit_breached();
+                            if !self.state.insert(current_time, metric) {
+                                trace!("Dropping metric due to context limit.");
+                                if !was_breached {
+                                    // First drop since the last recovery — emit a single warning.
+                                    warn!(context_limit = self.state.context_limit, "Context limit reached, \
+                                    dropping metrics. Consider increasing `aggregate_context_limit`.");
                                 }
+                                self.telemetry.increment_events_dropped();
                             }
                         }
                     },
@@ -2197,9 +2195,9 @@ mod tests {
 
     #[tokio::test]
     async fn telemetry() {
-        // TODO: We don't check `component_events_dropped_total` here as it's set directly in the aggregate
-        // component future rather than `AggregationState`, which is harder to drive overall and would have
-        // required even more boilerplate.
+        // TODO: We don't check that `component_events_dropped_total` increments when a context limit is hit,
+        // since that increment happens in the aggregate component future rather than `AggregationState`,
+        // which is harder to drive overall and would have required even more boilerplate.
         //
         // Leaving that as a future improvement.
 

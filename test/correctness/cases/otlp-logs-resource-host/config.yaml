@@ -4,22 +4,10 @@ analysis_mode: logs
 logs:
   # Every record carries a unique `fixture_id`, so records pair even when a gap changes their message or timestamp.
   identity_fields: ["fixture_id"]
-  min_count: 45
+  min_count: 51
   # Every difference ADP shows today, tagged with its gap from the OTLP logs parity plan (DataDog/saluki#2966). Remove
   # an entry in the change that fixes its gap.
   known_differences:
-    - gap: gap/content-in-message
-      paths: ["content.**"]
-      kinds: [location]
-      reason: ADP puts properties at the top level instead of in the `message` content.
-    - gap: gap/content-in-message
-      paths: ["content.status", "content.hostname"]
-      kinds: [missing]
-      reason: ADP's content holds only `message` and `service`.
-    - gap: gap/envelope-timestamp
-      paths: ["envelope.timestamp"]
-      kinds: [missing]
-      reason: ADP has no encode-time envelope `timestamp`.
     - gap: gap/as-string-coercion
       paths:
         - "content.res_int"
@@ -45,7 +33,13 @@ logs:
         fixture_id: [service-name-int]
       reason: ADP keeps a non-string `service.name` native instead of using `AsString`.
     - gap: gap/as-string-coercion
-      paths: ["envelope.service", "content.service"]
+      paths: ["envelope.service"]
+      kinds: [value]
+      when:
+        fixture_id: [service-name-int]
+      reason: ADP only uses a string `service.name` as the service, so it sends an empty service.
+    - gap: gap/as-string-coercion
+      paths: ["content.service"]
       kinds: [missing]
       when:
         fixture_id: [service-name-int]
@@ -63,7 +57,13 @@ logs:
         fixture_id: [log-source-record, log-source-resource]
       reason: ADP doesn't use `datadog.log.source` as the source.
     - gap: gap/host-resolution
-      paths: ["envelope.hostname", "envelope.service", "content.service"]
+      paths: ["envelope.hostname", "envelope.service"]
+      kinds: [value]
+      when:
+        fixture_id: [carry-over-second, carry-over-next-scope]
+      reason: ADP doesn't carry the record-level host and service fallbacks over to later records of the resource.
+    - gap: gap/host-resolution
+      paths: ["content.hostname", "content.service"]
       kinds: [missing]
       when:
         fixture_id: [carry-over-second, carry-over-next-scope]
@@ -75,23 +75,29 @@ logs:
         fixture_id: [host-datadog-over-host-name, host-aws-host-id, host-localhost]
       reason: ADP's logs host resolution only knows ECS Fargate and `host.name`, and doesn't filter `localhost`.
     - gap: gap/host-resolution
+      paths: ["content.hostname"]
+      kinds: [value]
+      when:
+        fixture_id: [host-datadog-over-host-name, host-aws-host-id]
+      reason: ADP's logs host resolution only knows ECS Fargate and `host.name`.
+    - gap: gap/host-resolution
+      paths: ["content.hostname"]
+      kinds: [extra]
+      when:
+        fixture_id: [host-localhost]
+      reason: ADP's logs host resolution doesn't filter `localhost`.
+    - gap: gap/host-resolution
       paths: ["envelope.hostname"]
+      kinds: [value]
+      when:
+        fixture_id: [host-k8s-node-and-cluster, host-id-only]
+      reason: ADP's logs host resolution doesn't know `k8s.node.name` or `host.id`.
+    - gap: gap/host-resolution
+      paths: ["content.hostname"]
       kinds: [missing]
       when:
         fixture_id: [host-k8s-node-and-cluster, host-id-only]
       reason: ADP's logs host resolution doesn't know `k8s.node.name` or `host.id`.
-    - gap: gap/default-hostname
-      paths: ["envelope.hostname"]
-      kinds: [missing]
-      when:
-        fixture_id: [no-host]
-      reason: ADP doesn't fall back to the Agent's hostname when the log has none.
-    - gap: gap/kube-node-tag
-      paths: ["envelope.ddtags"]
-      kinds: [missing]
-      when:
-        fixture_id: [host-k8s-node-and-cluster]
-      reason: ADP doesn't derive the `kube_node` tag from `k8s.node.name`.
     - gap: gap/missing-headers
       paths:
         - headers.dd-protocol

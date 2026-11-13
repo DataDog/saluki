@@ -367,8 +367,8 @@ mod tests {
     }
 
     #[test]
-    fn adp_payload_keeps_properties_at_top_level() {
-        // Shaped like ADP's current logs encoder output: properties are top-level keys.
+    fn legacy_adp_payload_keeps_properties_at_top_level() {
+        // Shaped like ADP's logs encoder output before it sent only the envelope: properties are top-level keys.
         let payload = br#"[{
             "message": "{\"message\":\"hello\",\"service\":\"svc\"}",
             "status": "Info",

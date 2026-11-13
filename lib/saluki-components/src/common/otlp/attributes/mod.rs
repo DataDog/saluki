@@ -410,6 +410,16 @@ mod tests {
     }
 
     #[test]
+    fn mapped_mode_maps_k8s_node_name_to_kube_node() {
+        let attributes = vec![attr(K8S_NODE_NAME, Value::StringValue("node-1".into()))];
+
+        let tags = tags_from_attributes(&attributes, ResourceAttributeTagMode::Mapped);
+
+        assert!(has(&tags, "kube_node:node-1"));
+        assert!(!has(&tags, "k8s.node.name:node-1"));
+    }
+
+    #[test]
     fn mapped_mode_skips_empty_core_mapping_values() {
         let attributes = vec![
             attr("service.name", Value::StringValue(String::new())),

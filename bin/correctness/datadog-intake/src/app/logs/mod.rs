@@ -37,8 +37,8 @@ mod tests {
     // Shaped like the Agent's logs agent output for an OTLP log.
     const AGENT_PAYLOAD: &[u8] = br#"[{"message":"{\"message\":\"hello\",\"status\":\"info\"}","status":"info","timestamp":1793268000123,"hostname":"host-a","service":"svc","ddsource":"otlp_log_ingestion","ddtags":"otel_source:datadog_agent"}]"#;
 
-    // Shaped like ADP's current logs encoder output.
-    const ADP_PAYLOAD: &[u8] = br#"[{"message":"{\"message\":\"hello\",\"service\":\"svc\"}","status":"Info","hostname":"host-a","service":"svc","ddsource":"otlp_log_ingestion","ddtags":"otel_source:datadog_agent","@timestamp":"2026-10-29T10:00:00.000Z"},{"message":"{\"message\":\"second\"}"}]"#;
+    // Shaped like ADP's logs encoder output before it sent only the envelope, with properties at the top level.
+    const LEGACY_ADP_PAYLOAD: &[u8] = br#"[{"message":"{\"message\":\"hello\",\"service\":\"svc\"}","status":"Info","hostname":"host-a","service":"svc","ddsource":"otlp_log_ingestion","ddtags":"otel_source:datadog_agent","@timestamp":"2026-10-29T10:00:00.000Z"},{"message":"{\"message\":\"second\"}"}]"#;
 
     async fn gzip(data: &[u8]) -> Vec<u8> {
         let mut encoder = GzipEncoder::new(Vec::new());
@@ -93,7 +93,7 @@ mod tests {
             StatusCode::ACCEPTED
         );
         assert_eq!(
-            post(&router, "/api/v2/logs", Some("zstd"), zstd(ADP_PAYLOAD).await).await,
+            post(&router, "/api/v2/logs", Some("zstd"), zstd(LEGACY_ADP_PAYLOAD).await).await,
             StatusCode::ACCEPTED
         );
 

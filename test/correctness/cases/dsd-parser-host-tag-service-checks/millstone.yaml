@@ -5,8 +5,10 @@ volume: 1000
 corpus:
   size: 1
   payload:
-    # The Core Agent uses a `host:` tag as the service check hostname when there's no `h:` field.
+    # The Core Agent uses a `host:` tag as the service check hostname when there's no `h:` field. An empty `host:` tag
+    # gives an empty hostname rather than the agent's hostname.
     static: |
       _sc|hosttag.control|0|#env:prod
       _sc|hosttag.tag|0|#host:tagged-host,env:prod
       _sc|hosttag.field_wins|0|h:field-host|#host:tagged-host,env:prod
+      _sc|hosttag.empty|0|#host:,env:prod

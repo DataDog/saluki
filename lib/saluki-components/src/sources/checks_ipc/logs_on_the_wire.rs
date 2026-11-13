@@ -7,9 +7,9 @@
 //! The tests stop at the request the encoder builds. Headers that the forwarder adds when it sends a request, and the
 //! transport itself, aren't covered here.
 //!
-//! Today, each entry wraps the check's message in a JSON-encoded `{"message": ...}` object, carries a lowercase
-//! status, and gets an `@timestamp` from the encoder's clock. Check logs have no hostname, service, or source, so
-//! those keys are absent.
+//! Today, each entry is the full logs envelope: the check's message as it is, a lowercase status, an encode-time
+//! `timestamp` in milliseconds from the encoder's clock, the encoder's default hostname, and an empty service, source,
+//! and tag list, since check logs have none of them.
 
 use std::time::Duration;
 
@@ -22,7 +22,7 @@ use stringtheory::MetaString;
 use super::check_data_to_event;
 use crate::encoders::{BufferedIncrementalConfiguration, DatadogLogsConfiguration};
 
-/// The encoder's clock in these tests, as it appears in `@timestamp`.
+/// The encoder's clock in these tests.
 const NOW: &str = "2026-01-02T03:04:05.678Z";
 
 fn fixed_clock() -> DateTime<Utc> {
@@ -31,11 +31,17 @@ fn fixed_clock() -> DateTime<Utc> {
         .with_timezone(&Utc)
 }
 
-/// Returns the entry for a check log, given its `message` value as a JSON string literal.
+/// The envelope `timestamp` of every entry, from the encoder's clock.
+const NOW_MS: i64 = 1_767_323_045_678;
+
+/// The default hostname, which the topology gives both the Checks IPC source and the logs encoder.
+const DEFAULT_HOSTNAME: &str = "default-host";
+
+/// Returns the entry for a check log, given its message as a JSON string literal.
 fn entry(message: &str, status: &str) -> String {
     format!(
-        r#"{{"@timestamp":"{}","message":{},"status":"{}"}}"#,
-        NOW, message, status
+        r#"{{"message":{},"status":"{}","timestamp":{},"hostname":"{}","service":"","ddsource":"","ddtags":""}}"#,
+        message, status, NOW_MS, DEFAULT_HOSTNAME
     )
 }
 
@@ -62,11 +68,13 @@ fn log_data(level: i32, message: &str) -> Data {
 async fn encode_check_data(data: impl IntoIterator<Item = Data>) -> Vec<WireRequest> {
     let events = data
         .into_iter()
-        .filter_map(|data| check_data_to_event(data, &MetaString::from_static("default-host")))
+        .filter_map(|data| check_data_to_event(data, &MetaString::from_static(DEFAULT_HOSTNAME)))
         .collect::<Vec<_>>();
 
     let encoder = BufferedIncrementalConfiguration::new(
-        DatadogLogsConfiguration::new("zstd", 3).with_clock(fixed_clock),
+        DatadogLogsConfiguration::new("zstd", 3)
+            .with_default_hostname(DEFAULT_HOSTNAME)
+            .with_clock(fixed_clock),
         Duration::from_secs(60),
     );
     let (control, mut payloads) = TestComponentDriver::encoder(encoder)
@@ -132,9 +140,9 @@ async fn request() {
         ],
         body: [
             "[",
-            &entry(r#""{\"message\":\"first\"}""#, "info"),
+            &entry(r#""first""#, "info"),
             ",",
-            &entry(r#""{\"message\":\"second\"}""#, "error"),
+            &entry(r#""second""#, "error"),
             "]",
         ]
         .concat(),
@@ -145,19 +153,13 @@ async fn request() {
 #[tokio::test]
 async fn levels() {
     let cases = [
-        (
-            LogLevel::Unspecified as i32,
-            entry(r#""{\"message\":\"hello\"}""#, "info"),
-        ),
-        (LogLevel::Trace as i32, entry(r#""{\"message\":\"hello\"}""#, "trace")),
-        (LogLevel::Debug as i32, entry(r#""{\"message\":\"hello\"}""#, "debug")),
-        (LogLevel::Info as i32, entry(r#""{\"message\":\"hello\"}""#, "info")),
-        (LogLevel::Warning as i32, entry(r#""{\"message\":\"hello\"}""#, "warn")),
-        (LogLevel::Error as i32, entry(r#""{\"message\":\"hello\"}""#, "error")),
-        (
-            LogLevel::Critical as i32,
-            entry(r#""{\"message\":\"hello\"}""#, "emergency"),
-        ),
+        (LogLevel::Unspecified as i32, entry(r#""hello""#, "info")),
+        (LogLevel::Trace as i32, entry(r#""hello""#, "trace")),
+        (LogLevel::Debug as i32, entry(r#""hello""#, "debug")),
+        (LogLevel::Info as i32, entry(r#""hello""#, "info")),
+        (LogLevel::Warning as i32, entry(r#""hello""#, "warn")),
+        (LogLevel::Error as i32, entry(r#""hello""#, "error")),
+        (LogLevel::Critical as i32, entry(r#""hello""#, "emergency")),
     ];
 
     for (level, expected) in cases {
@@ -167,28 +169,21 @@ async fn levels() {
 
 #[tokio::test]
 async fn messages() {
+    // The message is sent as it is, as a JSON string. Unlike Go, `serde_json` doesn't escape `<`, `>`, `&`, or U+2028
+    // (`gap/json-encoding`).
     let cases = [
-        ("", entry(r#""{\"message\":\"\"}""#, "info")),
+        ("", entry(r#""""#, "info")),
         (
             r#"{"key":"value","n":1}"#,
-            entry(r#""{\"message\":\"{\\\"key\\\":\\\"value\\\",\\\"n\\\":1}\"}""#, "info"),
+            entry(r#""{\"key\":\"value\",\"n\":1}""#, "info"),
         ),
-        (
-            r#"say "hi" \ bye"#,
-            entry(r#""{\"message\":\"say \\\"hi\\\" \\\\ bye\"}""#, "info"),
-        ),
+        (r#"say "hi" \ bye"#, entry(r#""say \"hi\" \\ bye""#, "info")),
         (
             "line one\nline two\ttabbed",
-            entry(r#""{\"message\":\"line one\\nline two\\ttabbed\"}""#, "info"),
+            entry(r#""line one\nline two\ttabbed""#, "info"),
         ),
-        (
-            "<a href=\"x\">&amp;</a>",
-            entry(r#""{\"message\":\"<a href=\\\"x\\\">&amp;</a>\"}""#, "info"),
-        ),
-        (
-            "café ☕ 日本語 \u{2028}",
-            entry("\"{\\\"message\\\":\\\"café ☕ 日本語 \u{2028}\\\"}\"", "info"),
-        ),
+        ("<a href=\"x\">&amp;</a>", entry(r#""<a href=\"x\">&amp;</a>""#, "info")),
+        ("café ☕ 日本語 \u{2028}", entry("\"café ☕ 日本語 \u{2028}\"", "info")),
     ];
 
     for (message, expected) in cases {

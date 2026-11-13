@@ -20,6 +20,15 @@ pub enum ApmFeature {
     /// the full 128-bit ID.
     ProbabilisticSamplerFullTraceId,
 
+    /// Derives OTLP operation and resource names with V1 naming instead of V2.
+    DisableOperationAndResourceNameLogicV2,
+
+    /// Converts OTLP spans on the V1 receive path instead of V2.
+    DisableReceiveResourceSpansV2,
+
+    /// Stops emitting the `otel.scope.*` tags on OTLP spans. The deprecated `otel.library.*` tags remain.
+    DisableOtelScopeConvention,
+
     /// An unrecognized feature ID, carried verbatim.
     Other(String),
 }
@@ -29,6 +38,9 @@ impl ApmFeature {
     pub fn as_str(&self) -> &str {
         match self {
             ApmFeature::ProbabilisticSamplerFullTraceId => "probabilistic_sampler_full_trace_id",
+            ApmFeature::DisableOperationAndResourceNameLogicV2 => "disable_operation_and_resource_name_logic_v2",
+            ApmFeature::DisableReceiveResourceSpansV2 => "disable_receive_resource_spans_v2",
+            ApmFeature::DisableOtelScopeConvention => "disable_otel_scope_convention",
             ApmFeature::Other(feature) => feature,
         }
     }
@@ -38,6 +50,9 @@ impl From<&str> for ApmFeature {
     fn from(feature: &str) -> Self {
         match feature {
             "probabilistic_sampler_full_trace_id" => ApmFeature::ProbabilisticSamplerFullTraceId,
+            "disable_operation_and_resource_name_logic_v2" => ApmFeature::DisableOperationAndResourceNameLogicV2,
+            "disable_receive_resource_spans_v2" => ApmFeature::DisableReceiveResourceSpansV2,
+            "disable_otel_scope_convention" => ApmFeature::DisableOtelScopeConvention,
             other => ApmFeature::Other(other.to_owned()),
         }
     }
@@ -148,7 +163,8 @@ pub struct Domain {
     /// Empty by default. Unrecognized values are carried as `ApmFeature::Other` and ignored
     /// without a warning: the flag inventory is not stable across versions. Enable
     /// `ApmFeature::ProbabilisticSamplerFullTraceId` on every probabilistic sampler in the
-    /// ingestion path so they keep the same traces.
+    /// ingestion path so they keep the same traces. The `Disable*` variants select the
+    /// older OTLP trace translation.
     pub features: Vec<ApmFeature>,
 
     /// Whether the rare-span sampler is enabled.
@@ -295,6 +311,9 @@ pub struct Obfuscation {
     /// Redis command obfuscation.
     pub redis: CacheObfuscation,
 
+    /// Whether the `error.stack` and `exception.stacktrace` tags are replaced with `?`.
+    pub remove_stack_traces: bool,
+
     /// Valkey command obfuscation.
     pub valkey: CacheObfuscation,
 
@@ -419,10 +438,23 @@ mod tests {
 
     #[test]
     fn known_feature_ids_map_to_their_variants() {
-        assert_eq!(
-            ApmFeature::from("probabilistic_sampler_full_trace_id"),
-            ApmFeature::ProbabilisticSamplerFullTraceId
-        );
+        for (id, feature) in [
+            (
+                "probabilistic_sampler_full_trace_id",
+                ApmFeature::ProbabilisticSamplerFullTraceId,
+            ),
+            (
+                "disable_operation_and_resource_name_logic_v2",
+                ApmFeature::DisableOperationAndResourceNameLogicV2,
+            ),
+            (
+                "disable_receive_resource_spans_v2",
+                ApmFeature::DisableReceiveResourceSpansV2,
+            ),
+            ("disable_otel_scope_convention", ApmFeature::DisableOtelScopeConvention),
+        ] {
+            assert_eq!(ApmFeature::from(id), feature, "{id}");
+        }
         assert_eq!(
             ApmFeature::from("error_rare_sample_tracer_drop"),
             ApmFeature::Other("error_rare_sample_tracer_drop".to_owned())
@@ -433,6 +465,9 @@ mod tests {
     fn feature_ids_round_trip_through_as_str() {
         for feature in [
             ApmFeature::ProbabilisticSamplerFullTraceId,
+            ApmFeature::DisableOperationAndResourceNameLogicV2,
+            ApmFeature::DisableReceiveResourceSpansV2,
+            ApmFeature::DisableOtelScopeConvention,
             ApmFeature::Other("table_names".to_owned()),
         ] {
             assert_eq!(ApmFeature::from(feature.as_str()), feature);
