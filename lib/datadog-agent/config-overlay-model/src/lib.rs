@@ -130,6 +130,7 @@ pub enum Pipeline {
     Checks,
     Otlp,
     Traces,
+    Logs,
 }
 
 /// Which pipelines a config key is associated with.
@@ -156,6 +157,7 @@ impl<'de> serde::Deserialize<'de> for PipelineAffinity {
             Checks,
             Otlp,
             Traces,
+            Logs,
         }
 
         let tokens: Vec<Token> = Vec::deserialize(d)?;
@@ -183,6 +185,7 @@ impl<'de> serde::Deserialize<'de> for PipelineAffinity {
                 Token::Checks => Pipeline::Checks,
                 Token::Otlp => Pipeline::Otlp,
                 Token::Traces => Pipeline::Traces,
+                Token::Logs => Pipeline::Logs,
                 Token::CrossCutting => unreachable!(),
             })
             .collect();
@@ -875,6 +878,22 @@ mod tests {
             assert_eq!(ps.len(), 2);
             assert!(matches!(ps[0], Pipeline::DogStatsD));
             assert!(matches!(ps[1], Pipeline::Traces));
+        } else {
+            panic!("expected Pipelines");
+        }
+    }
+
+    #[test]
+    fn pipeline_affinity_logs() {
+        let yaml = "pipelines: [logs]";
+        #[derive(Deserialize)]
+        struct W {
+            pipelines: PipelineAffinity,
+        }
+        let w: W = serde_saphyr::from_str(yaml).unwrap();
+        if let PipelineAffinity::Pipelines(ps) = w.pipelines {
+            assert_eq!(ps.len(), 1);
+            assert!(matches!(ps[0], Pipeline::Logs));
         } else {
             panic!("expected Pipelines");
         }

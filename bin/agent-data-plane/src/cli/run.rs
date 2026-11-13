@@ -1092,13 +1092,17 @@ async fn add_otlp_pipeline_to_blueprint(
         blueprint
             // Components.
             .add_source("otlp_in", otlp_config)?
-            // Metrics, logs, and traces.
+            // Metrics and traces.
             //
             // We send OTLP metrics directly to the enrichment stage of the metrics pipeline, skipping aggregation,
             // to avoid transforming counters into rates.
             .connect_components("otlp_in.metrics", "metrics_enrich")?
-            .connect_components("otlp_in.logs", "dd_logs_encode")?
             .connect_components("otlp_in.traces", "traces_enrich")?;
+
+        // Logs. The same check activates the compatibility classifier's `logs` pipeline.
+        if dp.otlp_logs_native() {
+            blueprint.connect_components("otlp_in.logs", "dd_logs_encode")?;
+        }
     }
     Ok(())
 }
