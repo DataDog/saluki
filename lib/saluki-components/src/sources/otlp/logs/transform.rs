@@ -167,25 +167,18 @@ pub fn flatten_attribute(base_key: &str, av: &otlp_common::AnyValue, depth: usiz
 /// The length of the longest reserved record attribute key, `contextmap.traceid`.
 const MAX_RESERVED_KEY_LEN: usize = 18;
 
-/// Converts an attribute key to lowercase the way Go's `strings.ToLower` does, for matching against reserved keys.
+/// Converts an attribute key to ASCII lowercase, for matching against reserved keys.
 ///
-/// Go maps each character to its simple lowercase, so unlike `str::to_lowercase`, `İ` (U+0130) becomes a plain `i`
-/// and a final `Σ` becomes `σ`. Reserved keys are short and ASCII, so this returns `None`, without converting the
-/// rest, as soon as the key can't be one.
+/// Reserved keys are short and ASCII, so this returns `None` for a key that's too long or isn't ASCII.
 fn lowercase_reserved_key<'a>(key: &str, buf: &'a mut [u8; MAX_RESERVED_KEY_LEN]) -> Option<&'a str> {
-    let mut len = 0;
-    for c in key.chars() {
-        let lower = match c {
-            '\u{130}' => 'i',
-            c => c.to_lowercase().next().unwrap_or(c),
-        };
-        if !lower.is_ascii() || len == buf.len() {
-            return None;
-        }
-        buf[len] = lower as u8;
-        len += 1;
+    let key = key.as_bytes();
+    if key.len() > buf.len() || !key.is_ascii() {
+        return None;
     }
-    simdutf8::basic::from_utf8(&buf[..len]).ok()
+    let buf = &mut buf[..key.len()];
+    buf.copy_from_slice(key);
+    buf.make_ascii_lowercase();
+    simdutf8::basic::from_utf8(buf).ok()
 }
 
 // Helper to insert safely avoid overwriting fields that are already set
@@ -419,19 +412,18 @@ mod tests {
     }
 
     #[test]
-    fn lowercase_reserved_key_matches_go_strings_to_lower() {
+    fn lowercase_reserved_key_lowercases_short_ascii_keys() {
         let cases = [
             ("message", Some("message")),
             ("Message", Some("message")),
             ("SYSLOG.Severity", Some("syslog.severity")),
             ("ContextMap.TraceID", Some("contextmap.traceid")),
-            // Go maps each character on its own: `İ` becomes a plain `i`, and the Kelvin sign an ASCII `k`.
-            ("TRACE\u{130}D", Some("traceid")),
-            ("\u{212a}ey", Some("key")),
             ("", Some("")),
-            // Keys that can't be reserved: too long, or not ASCII once lowercased.
+            // Keys that can't be reserved: too long, or not ASCII. Only ASCII letters are lowercased, so `İ` and the
+            // Kelvin sign don't match the `i` and `k` of a reserved key.
             ("ContextMap.TraceIDs", None),
-            ("\u{3a3}", None),
+            ("TRACE\u{130}D", None),
+            ("\u{212a}ey", None),
         ];
 
         for (key, expected) in cases {
@@ -484,7 +476,7 @@ mod tests {
         let log = transform_attributes(vec![
             key_value("MESSAGE", string("from attribute")),
             key_value("Level", string("warn")),
-            key_value("TRACE\u{130}D", string("0802030405060708000000000a000000")),
+            key_value("TraceID", string("0802030405060708000000000a000000")),
             key_value("Span_ID", string("000000000a000000")),
             key_value("DDTags", string("team:a,env:prod")),
         ]);
