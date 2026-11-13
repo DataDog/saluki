@@ -187,15 +187,20 @@ impl<'a> DataPlaneConfiguration<'a> {
             || self.traces_pipeline_required()
     }
 
+    /// Returns `true` if ADP handles OTLP logs itself, rather than relaying them to the Core Agent.
+    ///
+    /// This decides both whether the OTLP source's logs are wired into the logs pipeline and whether the classifier's
+    /// `logs` pipeline is active, so the startup compatibility check follows the topology.
+    pub const fn otlp_logs_native(&self) -> bool {
+        self.otlp_enabled() && !self.otlp_proxy_enabled()
+    }
+
     /// Returns `true` if the logs pipeline is required.
     ///
     /// This indicates that the "baseline" logs pipeline (encoding, forwarding) is required by higher-level data
     /// pipelines, such as Checks or OTLP.
     pub const fn logs_pipeline_required(&self) -> bool {
-        // We consider the logs pipeline to be enabled if:
-        // - Checks is enabled
-        // - OTLP is enabled and not in proxy mode
-        self.checks_enabled() || (self.otlp_enabled() && !self.otlp_proxy_enabled())
+        self.checks_enabled() || self.otlp_logs_native()
     }
 
     /// Returns `true` if the events pipeline is required.
@@ -239,6 +244,9 @@ impl<'a> DataPlaneConfiguration<'a> {
         }
         if self.traces_pipeline_required() {
             s.insert(Pipeline::Traces);
+        }
+        if self.otlp_logs_native() {
+            s.insert(Pipeline::Logs);
         }
         s
     }
@@ -565,6 +573,33 @@ mod tests {
         assert!(!dp.events_pipeline_required());
         assert!(!dp.service_checks_pipeline_required());
         assert!(!dp.traces_pipeline_required());
+    }
+
+    #[test]
+    fn logs_pipeline_is_active_only_when_otlp_logs_are_handled_natively() {
+        // (checks, dogstatsd, otlp, otlp proxy, otlp proxy traces, expected native OTLP logs)
+        let cases = [
+            ("OTLP native", (false, false, true, false, false), true),
+            ("OTLP native with checks", (true, false, true, false, false), true),
+            ("OTLP proxy", (false, false, true, true, true), false),
+            (
+                "OTLP proxy with native traces",
+                (false, false, true, true, false),
+                false,
+            ),
+            ("OTLP disabled", (false, true, false, false, false), false),
+            ("checks only", (true, false, false, false, false), false),
+        ];
+
+        for (name, (checks, dogstatsd, otlp, proxy, proxy_traces), native) in cases {
+            let config = pipeline_configuration(checks, dogstatsd, otlp, proxy, proxy_traces);
+            let dp = DataPlaneConfiguration::from_configuration(&config);
+
+            assert_eq!(dp.otlp_logs_native(), native, "{name}");
+            // The topology wires `otlp_in.logs` on `otlp_logs_native`, and the classifier follows the same check.
+            assert_eq!(dp.active_pipelines().contains(&Pipeline::Logs), native, "{name}");
+            assert_eq!(dp.logs_pipeline_required(), checks || native, "{name}");
+        }
     }
 
     #[test]
