@@ -13,8 +13,6 @@ pub(crate) mod case;
 pub(crate) mod container;
 pub(crate) mod courier;
 pub(crate) mod deadline;
-// TODO: remove the dead_code allowance once steps run.
-#[allow(dead_code)]
 pub(crate) mod handle;
 pub(crate) mod ledger;
 pub(crate) mod lifecycle;

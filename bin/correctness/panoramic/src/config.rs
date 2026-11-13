@@ -801,7 +801,7 @@ pub fn discover_tests(
 }
 
 /// Whether the case file at `config_path` is a legacy case: one with a top-level `type`.
-fn is_legacy_case(config_path: &Path) -> Result<bool, GenericError> {
+pub(crate) fn is_legacy_case(config_path: &Path) -> Result<bool, GenericError> {
     let content = std::fs::read_to_string(config_path)
         .error_context(format!("Failed to read config file: {}", config_path.display()))?;
     let shape: Value = serde_saphyr::from_str(&content).error_context(format!(

@@ -60,7 +60,7 @@ pub(crate) struct CaseInfo {
     pub(crate) timeout: Timeout,
 }
 
-/// A case's time budget, written with a unit: `20m`, `180s`.
+/// A time budget, written with a unit: `20m`, `180s`. A case's timeout and a step's durations are written this way.
 #[derive(Clone, Debug, Serialize)]
 #[serde(into = "String")]
 pub(crate) struct Timeout {

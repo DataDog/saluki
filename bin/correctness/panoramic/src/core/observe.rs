@@ -174,7 +174,8 @@ impl Observation {
         self.0.output.get(process).map(watch::Sender::subscribe)
     }
 
-    fn line(&self, process: &str, line: String) {
+    /// Adds `line` to the output of `process`.
+    pub(crate) fn line(&self, process: &str, line: String) {
         if let Some(output) = self.0.output.get(process) {
             output.send_modify(|lines| lines.push(line));
         }

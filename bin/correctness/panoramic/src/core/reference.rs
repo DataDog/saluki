@@ -25,7 +25,7 @@ use serde::Serialize;
 use super::participant::{Enclosure, Realization};
 use super::plan::{Launch, PlannedParticipant, Problems};
 use super::spec::{Contents, Evidence, Protocol};
-use super::template::{ConnectionPart, EndpointPart, IdentityPart, Reference, Template};
+use super::template::{ConnectionPart, EndpointPart, Holder, IdentityPart, Reference, Template};
 use super::wiring::{PlannedAddress, Reached};
 
 /// Where one template sits in a participant.
@@ -205,7 +205,21 @@ impl Values {
     ///
     /// Returns an error naming the first reference that has no value yet.
     pub(crate) fn fill(&self, holder: &str, template: &Template) -> Result<String, String> {
-        let filled = template.resolve(false, |reference| self.text(holder, reference));
+        self.fill_as(holder, template, false)
+    }
+
+    /// Fills in every reference of a step's `template`, escaping each value when the text is matched as a regex. A
+    /// step has no `self`: planning rejects a reference to one, so no participant holds the template.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error naming the first reference that has no value yet.
+    pub(crate) fn fill_step(&self, template: &Template, regex: bool) -> Result<String, String> {
+        self.fill_as("", template, regex)
+    }
+
+    fn fill_as(&self, holder: &str, template: &Template, regex: bool) -> Result<String, String> {
+        let filled = template.resolve(regex, |reference| self.text(holder, reference));
         if let Some(reference) = filled.references().next() {
             return Err(format!("'{}' has no value yet", reference));
         }
@@ -298,6 +312,32 @@ impl Values {
             }
         }
     }
+}
+
+/// Checks the references of a step's template: a step has no `self` and makes no connections, so each names a
+/// participant's endpoint or identity, which must have a value by the time the step runs. Every participant has
+/// started by then.
+///
+/// Returns the problems found.
+pub(super) fn check_step_template(values: &Values, template: &Template) -> Vec<String> {
+    template
+        .references()
+        .filter_map(|reference| {
+            let why = match reference {
+                Reference::Endpoint {
+                    holder: Holder::Own, ..
+                }
+                | Reference::Identity {
+                    holder: Holder::Own, ..
+                } => "names 'self', and a step has none: name the participant".to_string(),
+                Reference::Connection { .. } => {
+                    "names a connection, and a step makes none: name the participant's endpoint".to_string()
+                }
+                _ => values.lookup("", reference).err()?,
+            };
+            Some(format!("'{}' {}", reference, why))
+        })
+        .collect()
 }
 
 /// Checks every reference of every participant against its place, fills in what planning knows, and records the rest.

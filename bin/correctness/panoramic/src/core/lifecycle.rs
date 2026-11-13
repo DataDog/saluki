@@ -494,7 +494,7 @@ impl Case<'_> {
         };
         self.run.record.start(slot, running);
 
-        let cx = StepContext::new(handles, deadline.at);
+        let cx = StepContext::new(handles, &self.values, deadline.at);
         let cancel = self.run.cancel;
         let result = tokio::select! {
             biased;
