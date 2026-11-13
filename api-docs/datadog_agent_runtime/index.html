@@ -84,7 +84,7 @@ spawns the registration loop, and
 <a href="remote_agent/struct.RemoteAgentBootstrap.html#method.create_config_stream" title="method datadog_agent_runtime::remote_agent::RemoteAgentBootstrap::create_config_stream"><code>RemoteAgentBootstrap::create_config_stream</code></a> spawns the
 configuration stream loop. Neither task is supervised, and neither stops on shutdown.</p>
 <p>Each subsystem that talks to the Datadog Agent opens its own connection with
-<a href="../datadog_agent_commons/ipc/client/struct.RemoteAgentClient.html#method.connect" title="associated function datadog_agent_commons::ipc::client::RemoteAgentClient::connect"><code>RemoteAgentClient::connect</code></a>, rather than sharing a
+[<code>RemoteAgentClient::connect</code>][datadog_agent_commons::ipc::client::RemoteAgentClient::connect], rather than sharing a
 clone of another subsystem’s client.</p>
 <p>Code in this crate logs under the <code>datadog_agent_runtime</code> target, which the <code>datadog_agent</code> prefix in
 <a href="logging/constant.FIRST_PARTY_LOG_TARGETS.html" title="constant datadog_agent_runtime::logging::FIRST_PARTY_LOG_TARGETS"><code>FIRST_PARTY_LOG_TARGETS</code></a> covers.</p>
