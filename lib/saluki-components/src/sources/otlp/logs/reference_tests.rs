@@ -1,4 +1,4 @@
-//! Translator tests ported from the reference implementation.
+//! OTLP logs tests ported from the reference implementation.
 //!
 //! The reference tests compare the JSON of the `datadogV2.HTTPLogItem` that the reference translator returns for one
 //! log record. Each case here compares the same JSON for the translated log, with the log's status as the item's
@@ -6,13 +6,21 @@
 //! `otel_source:test`. This translator always tags logs with `otel_source:datadog_agent`, so the expected tags here
 //! use that instead.
 //!
-//! Cases that the translator doesn't match yet are in ignored `target_*` tests, one per gap. A change that closes a
-//! gap moves its cases into `translator_cases`, and removes the target test.
+//! Cases that don't match yet are in ignored `target_*` tests, one per gap. A change that closes a gap moves its cases
+//! into `translator_cases` or `exporter_cases`, and removes the target test.
+//!
+//! The exporter cases check the message content, the source, and the tags of each log that the exporter sends, which
+//! here are the rendered content, the source, and the tags of the translated log.
 
 // Ported from `TestTranslator` and `TestDeriveStatus` in
 // https://github.com/DataDog/datadog-agent/blob/e0c8d8d93befb6864f13e2d88acbe13fb2d380b7/pkg/opentelemetry-mapping-go/otlp/logs/transform_test.go
 //
 // `TestTranslatorWithRUMRouting` isn't ported: the logs exporter doesn't route RUM events.
+//
+// `TestLogsExporter` in
+// https://github.com/DataDog/datadog-agent/blob/e0c8d8d93befb6864f13e2d88acbe13fb2d380b7/comp/otelcol/otlp/components/exporter/logsagentexporter/logs_exporter_test.go
+// is ported too. Its case with different tags configures the OTel source `datadog_exporter` and an empty log source
+// name. Here it uses the translator's own OTel source `datadog_agent` and log source `otlp_log_ingestion`.
 
 use std::collections::BTreeSet;
 
@@ -21,11 +29,12 @@ use otlp_protos::opentelemetry::proto::common::v1::{
 };
 use otlp_protos::opentelemetry::proto::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
 use otlp_protos::opentelemetry::proto::resource::v1::Resource;
-use saluki_core::data_model::event::Event;
+use saluki_core::data_model::event::log::Log;
 use saluki_env::workload::providers::NoopWorkloadProvider;
 use serde_json::{json, Map, Value};
 
-use super::translator::OtlpLogsTranslator;
+use super::render::ContentRenderer;
+use super::translator::ResourceLogsIter;
 use crate::common::otlp::origin::OtlpOriginTagResolver;
 
 /// A translated log, as the reference tests compare it: the JSON of the `datadogV2.HTTPLogItem`.
@@ -87,23 +96,30 @@ impl Case {
     }
 }
 
-/// Translates the case's log record, and returns the fields of the translated log that the reference tests check.
-fn translate(case: &Case) -> Item {
+/// Translates log records with one resource and one scope, as the reference tests do.
+fn translate_records(resource: &Resource, scope: &InstrumentationScope, records: Vec<LogRecord>) -> Vec<Log> {
     let resource_logs = ResourceLogs {
-        resource: Some(case.resource.clone()),
+        resource: Some(resource.clone()),
         scope_logs: vec![ScopeLogs {
-            scope: Some(case.scope.clone()),
-            log_records: vec![case.record.clone()],
+            scope: Some(scope.clone()),
+            log_records: records,
             ..Default::default()
         }],
         ..Default::default()
     };
     let resolver = OtlpOriginTagResolver::new(std::sync::Arc::new(NoopWorkloadProvider));
-    let mut events = OtlpLogsTranslator::from_resource_logs(resource_logs, &resolver).collect::<Vec<_>>();
-    assert_eq!(events.len(), 1, "{}: expected one log", case.name);
-    let Event::Log(log) = events.remove(0) else {
-        panic!("{}: expected a log event", case.name);
-    };
+    ResourceLogsIter::new(resource_logs, &resolver).collect()
+}
+
+fn tags_of(log: &Log) -> BTreeSet<String> {
+    log.tags().into_iter().map(|tag| tag.as_str().to_string()).collect()
+}
+
+/// Translates the case's log record, and returns the fields of the translated log that the reference tests check.
+fn translate(case: &Case) -> Item {
+    let mut logs = translate_records(&case.resource, &case.scope, vec![case.record.clone()]);
+    assert_eq!(logs.len(), 1, "{}: expected one log", case.name);
+    let log = logs.remove(0);
 
     // The fields are merged in the logs encoder's order: the additional properties come last, and overwrite the
     // fields before them, including the status.
@@ -123,7 +139,7 @@ fn translate(case: &Case) -> Item {
             .map(|(key, value)| (key.to_string(), value.clone())),
     );
     Item {
-        ddtags: log.tags().into_iter().map(|tag| tag.as_str().to_string()).collect(),
+        ddtags: tags_of(&log),
         json,
     }
 }
@@ -221,6 +237,11 @@ impl Record {
 
     fn event_name(mut self, event_name: &str) -> Self {
         self.0.event_name = event_name.to_string();
+        self
+    }
+
+    fn dropped_attributes_count(mut self, count: u32) -> Self {
+        self.0.dropped_attributes_count = count;
         self
     }
 }
@@ -931,4 +952,249 @@ fn target_scope_metadata() {
 #[ignore = "target for `gap/array-attributes`"]
 fn target_array_attributes() {
     check(array_attributes_cases());
+}
+
+// `TestLogsExporter` uses the records of `comp/otelcol/otlp/testutil`.
+const TEST_LOG_TIME_UNIX_NANO: u64 = 1_581_452_773_000_000_789;
+const TEST_LOG_TIME: &str = "2020-02-11T20:26:13.000Z";
+const LOG_ONE_SPAN_ID: [u8; 8] = [0x01, 0x02, 0x04, 0x08, 0x00, 0x00, 0x00, 0x00];
+const LOG_ONE_TRACE_ID: [u8; 16] = [
+    0x08, 0x04, 0x02, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+];
+
+/// The log source name of OTLP logs, used unless `datadog.log.source` is set.
+const DEFAULT_LOG_SOURCE: &str = "otlp_log_ingestion";
+
+/// The record of `testutil.fillLogOne`.
+fn log_one() -> Record {
+    record()
+        .timestamp(TEST_LOG_TIME_UNIX_NANO)
+        .dropped_attributes_count(1)
+        .severity_number(9)
+        .severity_text("Info")
+        .span_id(LOG_ONE_SPAN_ID)
+        .trace_id(LOG_ONE_TRACE_ID)
+        .attr("app", string("server"))
+        .attr("instance_num", int(1))
+        .body("This is a log message")
+}
+
+/// The record of `testutil.fillLogTwo`.
+fn log_two() -> Record {
+    record()
+        .timestamp(TEST_LOG_TIME_UNIX_NANO)
+        .dropped_attributes_count(1)
+        .severity_number(9)
+        .severity_text("Info")
+        .attr("customer", string("acme"))
+        .attr("env", string("dev"))
+        .body("something happened")
+}
+
+/// The resource of `testutil.GenerateLogsOneLogRecord`, with `extra` attributes after its own.
+fn testutil_resource<const N: usize>(extra: [(&str, AnyValue); N]) -> Resource {
+    let mut attributes = key_values([("resource-attr", string("resource-attr-val-1"))]);
+    attributes.extend(key_values(extra));
+    Resource {
+        attributes,
+        ..Default::default()
+    }
+}
+
+/// The content of `fillLogOne`, merged with `overrides`.
+fn log_one_content(overrides: Value) -> Value {
+    let mut content = json!({
+        "message": "This is a log message",
+        "app": "server",
+        "instance_num": 1,
+        "@timestamp": TEST_LOG_TIME,
+        "status": "Info",
+        "dd.span_id": "72624976397598720",
+        "dd.trace_id": "0",
+        "otel.severity_text": "Info",
+        "otel.severity_number": "9",
+        "otel.span_id": "0102040800000000",
+        "otel.trace_id": "08040201000000000000000000000000",
+        "otel.timestamp": TEST_LOG_TIME_UNIX_NANO.to_string(),
+        "resource-attr": "resource-attr-val-1",
+    });
+    if let (Value::Object(content), Value::Object(overrides)) = (&mut content, overrides) {
+        content.extend(overrides);
+    }
+    content
+}
+
+/// The content of `fillLogTwo`.
+fn log_two_content() -> Value {
+    json!({
+        "message": "something happened",
+        "env": "dev",
+        "customer": "acme",
+        "@timestamp": TEST_LOG_TIME,
+        "status": "Info",
+        "otel.severity_text": "Info",
+        "otel.severity_number": "9",
+        "otel.timestamp": TEST_LOG_TIME_UNIX_NANO.to_string(),
+        "resource-attr": "resource-attr-val-1",
+    })
+}
+
+/// A log that the exporter sends, as the reference test checks it.
+#[derive(Debug, PartialEq)]
+struct Sent {
+    content: Value,
+    source: String,
+    tags: BTreeSet<String>,
+}
+
+fn sent(content: Value, source: &str, tags: &str) -> Sent {
+    Sent {
+        content,
+        source: source.to_string(),
+        tags: tags.split(',').map(str::to_string).collect(),
+    }
+}
+
+/// A `TestLogsExporter` case: the records of one resource, and the logs that the exporter sends for them.
+struct ExporterCase {
+    name: &'static str,
+    resource: Resource,
+    records: Vec<Record>,
+    expected: Vec<Sent>,
+}
+
+fn check_exporter(cases: Vec<ExporterCase>) {
+    let mut renderer = ContentRenderer::default();
+    for case in cases {
+        let records = case.records.into_iter().map(|record| record.0).collect();
+        let sent = translate_records(&case.resource, &InstrumentationScope::default(), records)
+            .iter()
+            .map(|log| {
+                let content = renderer.render(log).expect("content should render");
+                Sent {
+                    content: serde_json::from_str(&content).expect("content should be JSON"),
+                    source: log.source().as_deref().unwrap_or_default().to_string(),
+                    tags: tags_of(log),
+                }
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(sent, case.expected, "{}", case.name);
+    }
+}
+
+/// Returns the `TestLogsExporter` cases that the translator and renderer match.
+fn exporter_cases() -> Vec<ExporterCase> {
+    vec![
+        ExporterCase {
+            name: "message",
+            resource: testutil_resource([]),
+            records: vec![log_one()],
+            expected: vec![sent(log_one_content(json!({})), DEFAULT_LOG_SOURCE, OTEL_SOURCE_TAG)],
+        },
+        ExporterCase {
+            name: "status",
+            resource: testutil_resource([]),
+            records: vec![log_one().severity_text("Fatal")],
+            expected: vec![sent(
+                log_one_content(json!({"status": "Fatal", "otel.severity_text": "Fatal"})),
+                DEFAULT_LOG_SOURCE,
+                OTEL_SOURCE_TAG,
+            )],
+        },
+        ExporterCase {
+            name: "ddtags",
+            resource: testutil_resource([]),
+            records: vec![log_one().attr("ddtags", string("tag1:true"))],
+            expected: vec![sent(
+                log_one_content(json!({})),
+                DEFAULT_LOG_SOURCE,
+                "tag1:true,otel_source:datadog_agent",
+            )],
+        },
+        ExporterCase {
+            name: "ddtags-same-tags",
+            resource: testutil_resource([]),
+            records: vec![
+                log_one().attr("ddtags", string("tag1:true")),
+                log_two().attr("ddtags", string("tag1:true")),
+            ],
+            expected: vec![
+                sent(
+                    log_one_content(json!({})),
+                    DEFAULT_LOG_SOURCE,
+                    "tag1:true,otel_source:datadog_agent",
+                ),
+                sent(
+                    log_two_content(),
+                    DEFAULT_LOG_SOURCE,
+                    "tag1:true,otel_source:datadog_agent",
+                ),
+            ],
+        },
+        ExporterCase {
+            name: "ddtags-different-tags",
+            resource: testutil_resource([]),
+            records: vec![
+                log_one().attr("ddtags", string("tag1:true")),
+                log_two().attr("ddtags", string("tag2:true")),
+            ],
+            expected: vec![
+                sent(
+                    log_one_content(json!({})),
+                    DEFAULT_LOG_SOURCE,
+                    "tag1:true,otel_source:datadog_agent",
+                ),
+                sent(
+                    log_two_content(),
+                    DEFAULT_LOG_SOURCE,
+                    "tag2:true,otel_source:datadog_agent",
+                ),
+            ],
+        },
+    ]
+}
+
+/// The `TestLogsExporter` cases of a `datadog.log.source` attribute, which the reference exporter uses as the source.
+fn log_source_attribute_cases() -> Vec<ExporterCase> {
+    vec![
+        ExporterCase {
+            name: "message-attribute",
+            resource: testutil_resource([]),
+            records: vec![log_one()
+                .attr("message", string("hello"))
+                .attr("datadog.log.source", string("custom_source"))
+                .attr("host.name", string("test-host"))],
+            expected: vec![sent(
+                log_one_content(json!({
+                    "message": "hello",
+                    "datadog.log.source": "custom_source",
+                    "host.name": "test-host",
+                    "hostname": "test-host",
+                })),
+                "custom_source",
+                OTEL_SOURCE_TAG,
+            )],
+        },
+        ExporterCase {
+            name: "resource-attribute-source",
+            resource: testutil_resource([("datadog.log.source", string("custom_source_rattr"))]),
+            records: vec![log_one()],
+            expected: vec![sent(
+                log_one_content(json!({"datadog.log.source": "custom_source_rattr"})),
+                "custom_source_rattr",
+                OTEL_SOURCE_TAG,
+            )],
+        },
+    ]
+}
+
+#[test]
+fn exporter() {
+    check_exporter(exporter_cases());
+}
+
+#[test]
+#[ignore = "target for `gap/log-source-attribute`"]
+fn target_log_source_attribute() {
+    check_exporter(log_source_attribute_cases());
 }

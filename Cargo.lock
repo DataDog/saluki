@@ -5804,6 +5804,7 @@ dependencies = [
  "http-serde-ext",
  "hyper",
  "hyper-http-proxy",
+ "itoa",
  "libdd-trace-obfuscation",
  "lru-slab",
  "memchr",
