@@ -454,7 +454,7 @@ default values.
 | `forwarder_high_prio_buffer_size`                               | High-priority request queue size                |
 | `forwarder_num_workers`                                         | Concurrent forwarder workers                    |
 | `forwarder_stop_timeout`                                        | Timeout (s) for forwarder graceful stop         |
-| `log_enabled`                                                   | Deprecated name for logs_enabled                |
+| `log_enabled`                                                   | Deprecated name for `logs_enabled`              |
 | `log_level`                                                     | Log verbosity directives                        |
 | `logs_enabled`                                                  | Enable the logs agent                           |
 | `min_tls_version`                                               | Minimum TLS version for HTTPS connections       |

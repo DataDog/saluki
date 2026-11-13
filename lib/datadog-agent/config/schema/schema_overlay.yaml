@@ -1785,7 +1785,7 @@ inventory:
   log_enabled:
     support: partial
     pipelines: [otlp]
-    description: "Deprecated name for logs_enabled"
+    description: "Deprecated name for `logs_enabled`"
     documentation: |-
       The core Agent treats `log_enabled` as a deprecated spelling of `logs_enabled`: the logs agent
       runs when either key is `true`, and the Agent logs a deprecation warning when `log_enabled` is
