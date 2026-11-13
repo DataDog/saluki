@@ -429,6 +429,7 @@ impl APIHandler for ApmRelayAPIHandler {
 #[cfg(test)]
 mod tests {
     use std::net::SocketAddr;
+    use std::sync::OnceLock;
     use std::time::Duration;
 
     use http::{Request, StatusCode};
@@ -442,6 +443,7 @@ mod tests {
     use tokio::net::TcpStream;
     #[cfg(unix)]
     use tokio::net::UnixStream;
+    use tower::service_fn;
     use tower::ServiceExt;
 
     use super::*;
@@ -742,23 +744,22 @@ mod tests {
 
         let supervisor = TestSupervisor::start("apm-relay-loop-test").await;
 
-        // Find a free port, then point both the listener and the destination at it. The relay is served directly
-        // rather than built, as building rejects this configuration.
-        let port = std::net::TcpListener::bind("127.0.0.1:0")
-            .and_then(|listener| listener.local_addr())
-            .expect("should find a free port")
-            .port();
-        let tcp_endpoint =
-            ListenAddress::try_from(format!("tcp://127.0.0.1:{port}")).expect("TCP APM endpoint should parse");
-        let router = build_router(RelayState {
-            proxy: TraceAgentProxy::from_destination(&format!("http://127.0.0.1:{port}"))
-                .expect("destination should parse"),
-            tracer_flare: unreachable_tracer_flare(),
-            capture_entity_resolver: None,
-            metrics: Metrics::new("dd_traces_relay", "relays"),
-        });
-        let server = HttpServer::from_listen_address(tcp_endpoint)
-            .with_routes(router)
+        // The relay's destination has to be its own listener, whose port is only known once it's bound. So the server
+        // is given a pass-through to the relay router, which is built once the listener is bound. The relay is served
+        // directly rather than built, as building rejects this configuration.
+        let relay_router = Arc::new(OnceLock::<Router>::new());
+        let pass_through = Router::new().fallback_service(service_fn({
+            let relay_router = Arc::clone(&relay_router);
+            move |request: AxumRequest| {
+                let relay_router = relay_router
+                    .get()
+                    .cloned()
+                    .expect("the relay router should be set before any request arrives");
+                relay_router.oneshot(request)
+            }
+        }));
+        let server = HttpServer::from_listen_address(ListenAddress::tcp_loopback(0))
+            .with_routes(pass_through)
             .with_server_id(BOUND_ADDRESS_ID)
             .with_worker_pool(tokio::runtime::Handle::current());
 
@@ -776,6 +777,16 @@ mod tests {
             Ok(Some(DataspaceUpdate::Asserted(_, BoundListenAddress::Tcp(address)))) => address,
             update => panic!("expected a bound address assertion for `{BOUND_ADDRESS_ID}`, got {update:?}"),
         };
+
+        relay_router
+            .set(build_router(RelayState {
+                proxy: TraceAgentProxy::from_destination(&format!("http://{bound_addr}"))
+                    .expect("destination should parse"),
+                tracer_flare: unreachable_tracer_flare(),
+                capture_entity_resolver: None,
+                metrics: Metrics::new("dd_traces_relay", "relays"),
+            }))
+            .expect("the relay router should be set only once");
 
         let mut stream = TcpStream::connect(bound_addr)
             .await
