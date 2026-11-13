@@ -151,7 +151,7 @@ fn native_trace(priority: i32) -> Trace {
     let bytes = general_purpose::STANDARD
         .decode(payload)
         .expect("fixture should be base64");
-    let mut traces = decode_v1_payload(&bytes).expect("fixture should decode");
+    let mut traces = decode_v1_payload(&bytes).expect("fixture should decode").traces;
     assert_eq!(traces.len(), 1);
     let mut trace = traces.remove(0);
     trace.priority = Some(priority);
