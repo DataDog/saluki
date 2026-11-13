@@ -164,21 +164,12 @@ pub fn flatten_attribute(base_key: &str, av: &otlp_common::AnyValue, depth: usiz
     vec![(base_key.to_string(), to_leaf_json(av))]
 }
 
-/// The length of the longest reserved record attribute key, `contextmap.traceid`.
-const MAX_RESERVED_KEY_LEN: usize = 18;
-
-/// Converts an attribute key to ASCII lowercase, for matching against reserved keys.
+/// Returns whether `key` is one of the `reserved` keys, ignoring ASCII case.
 ///
-/// Reserved keys are short and ASCII, so this returns `None` for a key that's too long or isn't ASCII.
-fn lowercase_reserved_key<'a>(key: &str, buf: &'a mut [u8; MAX_RESERVED_KEY_LEN]) -> Option<&'a str> {
-    let key = key.as_bytes();
-    if key.len() > buf.len() || !key.is_ascii() {
-        return None;
-    }
-    let buf = &mut buf[..key.len()];
-    buf.copy_from_slice(key);
-    buf.make_ascii_lowercase();
-    simdutf8::basic::from_utf8(buf).ok()
+/// Only ASCII letters are folded. Go's `strings.ToLower` also turns the dotted `İ` (U+0130) into `i`, so a key such
+/// as `TRACEİD` is reserved under Go's matching. We choose to ignore that edge case.
+fn is_reserved(key: &str, reserved: &[&str]) -> bool {
+    reserved.iter().any(|reserved| reserved.eq_ignore_ascii_case(key))
 }
 
 // Helper to insert safely avoid overwriting fields that are already set
@@ -200,12 +191,11 @@ pub fn transform_log_record(
     // Single-pass over record attributes: handle special keys and flatten others
     let mut status_text_from_attrs: Option<String> = None;
     let mut msg_from_attrs: Option<String> = None;
-    let mut key_buf = [0u8; MAX_RESERVED_KEY_LEN];
     for kv in &lr.attributes {
         // Reserved keys match in any case, but every other key keeps its original spelling.
-        match lowercase_reserved_key(&kv.key, &mut key_buf).unwrap_or_default() {
+        match kv.key.as_str() {
             // Message keys
-            k if MESSAGE_KEYS.contains(&k) => {
+            k if is_reserved(k, MESSAGE_KEYS) => {
                 if let Some(av) = kv.value.as_ref() {
                     if let Some(OtlpStringValue(s)) = av.value.as_ref() {
                         msg_from_attrs = Some(s.clone());
@@ -213,7 +203,7 @@ pub fn transform_log_record(
                 }
             }
             // Status/severity text from attributes
-            k if STATUS_KEYS.contains(&k) => {
+            k if is_reserved(k, STATUS_KEYS) => {
                 if let Some(av) = kv.value.as_ref() {
                     if let Some(OtlpStringValue(s)) = av.value.as_ref() {
                         status_text_from_attrs = Some(s.clone());
@@ -221,7 +211,7 @@ pub fn transform_log_record(
                 }
             }
             // Trace correlation from attributes
-            k if TRACE_ID_ATTR_KEYS.contains(&k) => {
+            k if is_reserved(k, TRACE_ID_ATTR_KEYS) => {
                 if let Some(av) = kv.value.as_ref() {
                     if let Some(OtlpStringValue(trace_hex)) = av.value.as_ref() {
                         if !additional_properties.contains_key("dd.trace_id") {
@@ -241,7 +231,7 @@ pub fn transform_log_record(
                 }
             }
             // Span correlation from attributes
-            k if SPAN_ID_ATTR_KEYS.contains(&k) => {
+            k if is_reserved(k, SPAN_ID_ATTR_KEYS) => {
                 if let Some(av) = kv.value.as_ref() {
                     if let Some(OtlpStringValue(span_hex)) = av.value.as_ref() {
                         if !additional_properties.contains_key("dd.span_id") {
@@ -259,7 +249,7 @@ pub fn transform_log_record(
                 }
             }
             // ddtags aggregation
-            k if k == DDTAGS_ATTR => {
+            k if k.eq_ignore_ascii_case(DDTAGS_ATTR) => {
                 if let Some(av) = kv.value.as_ref() {
                     if let Some(OtlpStringValue(s)) = av.value.as_ref() {
                         for raw in s.split(',') {
@@ -409,45 +399,6 @@ mod tests {
             ..Default::default()
         };
         transform_log_record(lr, &Resource::default(), None, None, None, TagSet::default())
-    }
-
-    #[test]
-    fn lowercase_reserved_key_lowercases_short_ascii_keys() {
-        let cases = [
-            ("message", Some("message")),
-            ("Message", Some("message")),
-            ("SYSLOG.Severity", Some("syslog.severity")),
-            ("ContextMap.TraceID", Some("contextmap.traceid")),
-            ("", Some("")),
-            // Keys that can't be reserved: too long, or not ASCII. Only ASCII letters are lowercased, so `İ` and the
-            // Kelvin sign don't match the `i` and `k` of a reserved key.
-            ("ContextMap.TraceIDs", None),
-            ("TRACE\u{130}D", None),
-            ("\u{212a}ey", None),
-        ];
-
-        for (key, expected) in cases {
-            let mut buf = [0u8; MAX_RESERVED_KEY_LEN];
-            assert_eq!(
-                lowercase_reserved_key(key, &mut buf),
-                expected,
-                "lowercase_reserved_key({:?})",
-                key
-            );
-        }
-
-        let longest = [
-            MESSAGE_KEYS,
-            STATUS_KEYS,
-            TRACE_ID_ATTR_KEYS,
-            SPAN_ID_ATTR_KEYS,
-            &[DDTAGS_ATTR],
-        ]
-        .concat()
-        .iter()
-        .map(|key| key.len())
-        .max();
-        assert_eq!(longest, Some(MAX_RESERVED_KEY_LEN));
     }
 
     #[test]
