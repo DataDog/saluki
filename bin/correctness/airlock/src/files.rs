@@ -43,6 +43,24 @@ impl Archive {
             .append_data(&mut header, path, contents)
             .with_error_context(|| format!("Failed to add '{}' to an archive.", path))
     }
+
+    /// Adds a directory with the given permission bits, so the directory has them even if no file of the archive lies
+    /// in it.
+    ///
+    /// `path` is relative to the root the archive is placed at, as in [`Self::add_file`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `path` is absolute or contains `..`.
+    pub fn add_dir(&mut self, path: &str, mode: u32) -> Result<(), GenericError> {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(0);
+        header.set_mode(mode);
+        header.set_entry_type(tar::EntryType::Directory);
+        self.builder
+            .append_data(&mut header, path, std::io::empty())
+            .with_error_context(|| format!("Failed to add '{}' to an archive.", path))
+    }
 }
 
 impl Default for Archive {
@@ -150,6 +168,7 @@ mod tests {
 
         assert!(archive.add_file("/etc/passwd", b"", 0o644).is_err());
         assert!(archive.add_file("data/../../etc/passwd", b"", 0o644).is_err());
+        assert!(archive.add_dir("/tmp", 0o777).is_err());
         archive.add_file("data/greeting", b"hello", 0o644).unwrap();
     }
 }

@@ -49,8 +49,8 @@ fn names_tag_or_digest(image: &str) -> bool {
 /// The image of the tests that need a Docker daemon.
 ///
 /// CI cannot reach Docker Hub, so this comes from the internal registry's mirror. It is multi-arch and has a shell.
-#[cfg(test)]
-pub(crate) const DAEMON_TEST_IMAGE: &str = "registry.ddbuild.io/images/mirror/alpine:3.20";
+#[cfg(any(test, feature = "test-util"))]
+pub const DAEMON_TEST_IMAGE: &str = "registry.ddbuild.io/images/mirror/alpine:3.20";
 
 #[cfg(test)]
 mod tests {

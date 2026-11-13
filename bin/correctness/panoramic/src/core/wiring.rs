@@ -192,6 +192,22 @@ impl PlannedEndpoint {
         })
     }
 
+    /// The address the courier reaches the endpoint at from inside `participant`, the endpoint's own participant, to do
+    /// `operation`: by the participant's name, as a peer would, and without TLS, which the courier does not speak. A
+    /// send writes raw bytes, so it reaches an `http` or `grpc` port as `tcp`.
+    pub(crate) fn courier_address(&self, participant: &str, operation: EndpointOperation) -> String {
+        let protocol = match (operation, self.protocol) {
+            (EndpointOperation::Send, Protocol::Http | Protocol::Grpc) => Protocol::Tcp,
+            (_, protocol) => protocol,
+        };
+        let scheme = protocol.scheme(false);
+        match &self.address {
+            PlannedAddress::Port(port) => format!("{}://{}:{}", scheme, participant, port),
+            PlannedAddress::Path(path) => format!("{}://{}", scheme, path),
+            PlannedAddress::Pipe(name) => format!("{}://{}", scheme, name),
+        }
+    }
+
     /// The address space the endpoint's listener holds its address in, and the address as that space compares it.
     ///
     /// Two listeners cannot hold one address in one space, so every endpoint counts, wired or not. `tcp`, `http` and
@@ -288,14 +304,22 @@ pub(crate) fn reach(
             "a probe cannot confirm a UDP listener: wait for its log line, {output: <pattern>, process: <name>}"
                 .to_string(),
         ),
-        (EndpointOperation::Request, Protocol::Http | Protocol::Grpc, LinuxContainer) => Ok(Reach::PublishedPort),
-        (EndpointOperation::Request, Protocol::Http | Protocol::Grpc, KubernetesPod) => Ok(Reach::ForwardedPort),
-        (EndpointOperation::Request, Protocol::Http | Protocol::Grpc, HostProcessGroup) => Ok(Reach::InRunner),
-        (EndpointOperation::Request, Protocol::Http | Protocol::Grpc, WindowsContainer) if tls => {
+        (EndpointOperation::Request, Protocol::Http, WindowsContainer) if tls => {
             Err("a request to a Windows container goes through the courier, which does not speak TLS".to_string())
         }
-        (EndpointOperation::Request, Protocol::Http | Protocol::Grpc, WindowsContainer) => Ok(Reach::CourierInServer),
-        (EndpointOperation::Request, _, _) => Err("a request goes to an http or grpc endpoint".to_string()),
+        // TODO: request TLS endpoints, with `http_check`'s `insecure_skip_verify`, with the first case that does.
+        (EndpointOperation::Request, Protocol::Http, _) if tls => {
+            Err("requests to TLS endpoints are not built".to_string())
+        }
+        (EndpointOperation::Request, Protocol::Http, LinuxContainer) => Ok(Reach::PublishedPort),
+        (EndpointOperation::Request, Protocol::Http, KubernetesPod) => Ok(Reach::ForwardedPort),
+        (EndpointOperation::Request, Protocol::Http, HostProcessGroup) => Ok(Reach::InRunner),
+        (EndpointOperation::Request, Protocol::Http, WindowsContainer) => Ok(Reach::CourierInServer),
+        // TODO: request grpc endpoints with the first case that does.
+        (EndpointOperation::Request, Protocol::Grpc, _) => {
+            Err("a request is an HTTP GET, and requests to grpc endpoints are not built".to_string())
+        }
+        (EndpointOperation::Request, _, _) => Err("a request goes to an http endpoint".to_string()),
         (_, Protocol::NamedPipe, WindowsContainer) => Ok(Reach::CourierInServer),
         (_, Protocol::NamedPipe, _) => Err("a named pipe exists only in a Windows container".to_string()),
         (EndpointOperation::Probe | EndpointOperation::Send, _, HostProcessGroup) => Ok(Reach::InRunner),
