@@ -83,6 +83,7 @@ architecture is fundamentally different or the feature is platform-specific.
 | `aggregator_flush_metrics_and_serialize_in_parallel_chan_size`                           | Parallel flush: channel size                       | See below                                                                                                                                                                                                                                                                 |
 | `aggregator_use_tags_store`                                                              | Enable shared tag deduplication store              | See below                                                                                                                                                                                                                                                                 |
 | `config_id`                                                                              | Fleet Automation config ID tag                     | Core Agent uses this only on Agent HA telemetry metrics.                                                                                                                                                                                                                  |
+| `data_plane.experimental.otlp.proxy.agent_receiver_http_endpoint`                        | Relocated Agent OTLP/HTTP listener                 | See below                                                                                                                                                                                                                                                                 |
 | `data_plane.telemetry_enabled`                                                           | ADP telemetry toggle                               | See below                                                                                                                                                                                                                                                                 |
 | `data_plane.telemetry_listen_addr`                                                       | ADP telemetry listen address                       | See below                                                                                                                                                                                                                                                                 |
 | `dogstatsd_host_socket_path`                                                             | Host UDS socket dir for DSD                        | Not read by DSD server; admission controller only.                                                                                                                                                                                                                        |
@@ -153,6 +154,7 @@ architecture is fundamentally different or the feature is platform-specific.
 | `otlp_config.receiver.protocols.http.tls.tpm.enabled`                                    | HTTP TLS TPM enabled                               |                                                                                                                                                                                                                                                                           |
 | `otlp_config.receiver.protocols.http.tls.tpm.owner_auth`                                 | HTTP TLS TPM owner auth                            |                                                                                                                                                                                                                                                                           |
 | `otlp_config.receiver.protocols.http.tls.tpm.path`                                       | HTTP TLS TPM path                                  |                                                                                                                                                                                                                                                                           |
+| `schema.enforce`                                                                         | Revert settings that fail schema validation        | See below                                                                                                                                                                                                                                                                 |
 | `telemetry.dogstatsd.aggregator_channel_latency_buckets`                                 | Histogram buckets: DSD-to-aggregator channel lag   | ADP already tracks this latency with histogram buckets determined by logarithmic calculation, so pre-defined bucket configuration is not applicable.                                                                                                                      |
 | `telemetry.dogstatsd.listeners_channel_latency_buckets`                                  | Histogram buckets: listener packet-channel latency | ADP already tracks this latency with histogram buckets determined by logarithmic calculation, so pre-defined bucket configuration is not applicable.                                                                                                                      |
 | `telemetry.dogstatsd.listeners_latency_buckets`                                          | Histogram buckets: listener processing latency     | ADP already tracks this latency with histogram buckets determined by logarithmic calculation, so pre-defined bucket configuration is not applicable.                                                                                                                      |
@@ -219,6 +221,14 @@ and `SharedTagSet` structural sharing.
 Related ADP-specific tuning is exposed through context/tag-set resolver settings such as
 `dogstatsd_cached_tagsets_limit`, not through `aggregator_use_tags_store`. Setting
 `aggregator_use_tags_store` has no effect in ADP.
+
+### `data_plane.experimental.otlp.proxy.agent_receiver_http_endpoint`
+
+ADP proxies every signal to the Agent over gRPC, at
+`data_plane.experimental.otlp.proxy.agent_receiver_grpc_endpoint`, including signals it receives
+over HTTP. It never sends to this endpoint. The Agent relocates only the receiver protocols
+configured under `otlp_config.receiver.protocols`, so without a gRPC receiver, proxied signals
+have no destination.
 
 ### `data_plane.telemetry_enabled`
 
@@ -428,6 +438,15 @@ ADP's OTLP receiver does not propagate request headers to downstream components.
 and HTTP handlers decode the request body and discard transport-level metadata. Enabling this
 setting has no effect in ADP.
 
+### `schema.enforce`
+
+With `schema.enforce: true`, the Core Agent reverts a setting from `datadog.yaml` or the
+environment to its default when its value fails schema validation: a wrong type, or a value
+outside its `minimum`, `maximum`, `pattern`, or `enum`. ADP doesn't validate settings against
+the schema. Under the Core Agent's configuration stream, ADP receives the reverted values. In
+standalone mode, ADP uses the configured value, and fails at startup on a value it can't
+translate, such as a port above 65535.
+
 
 
 ---
@@ -444,6 +463,9 @@ default values.
 | `aggregator_stop_timeout`                                       | Timeout (s) for aggregator flush on stop        |
 | `apm_config.features`                                           | Beta APM feature flags                          |
 | `cri_socket_path`                                               | containerd/CRI socket path                      |
+| `data_plane.experimental.otlp.proxy.logs`                       | Proxy OTLP logs to the Agent                    |
+| `data_plane.experimental.otlp.proxy.metrics`                    | Proxy OTLP metrics to the Agent                 |
+| `data_plane.experimental.otlp.proxy.traces`                     | Proxy OTLP traces to the Agent                  |
 | `dogstatsd_mapper_cache_size`                                   | Mapper result LRU cache size                    |
 | `dogstatsd_metrics_stats_enable`                                | Enable per-metric debug stats                   |
 | `dogstatsd_workers_count`                                       | Number of DSD processing workers                |
@@ -515,6 +537,33 @@ the well-known containerd socket paths only. An explicitly empty path leaves con
 undetected.
 
 Container ID resolution through cgroups is independent of this key and is unaffected.
+
+### `data_plane.experimental.otlp.proxy.logs`
+
+ADP has no native path for OTLP logs or metrics while it proxies any signal. When any of
+`data_plane.experimental.otlp.proxy.logs`, `data_plane.experimental.otlp.proxy.metrics`, or
+`data_plane.experimental.otlp.proxy.traces` is `true`, ADP proxies both logs and metrics to the
+Agent, which ingests them on its relocated listener. ADP handles logs and metrics natively only
+when all three settings are `false`. Traces follow `data_plane.experimental.otlp.proxy.traces`
+exactly.
+
+### `data_plane.experimental.otlp.proxy.metrics`
+
+ADP has no native path for OTLP logs or metrics while it proxies any signal. When any of
+`data_plane.experimental.otlp.proxy.logs`, `data_plane.experimental.otlp.proxy.metrics`, or
+`data_plane.experimental.otlp.proxy.traces` is `true`, ADP proxies both logs and metrics to the
+Agent, which ingests them on its relocated listener. ADP handles logs and metrics natively only
+when all three settings are `false`. Traces follow `data_plane.experimental.otlp.proxy.traces`
+exactly.
+
+### `data_plane.experimental.otlp.proxy.traces`
+
+ADP has no native path for OTLP logs or metrics while it proxies any signal. When any of
+`data_plane.experimental.otlp.proxy.logs`, `data_plane.experimental.otlp.proxy.metrics`, or
+`data_plane.experimental.otlp.proxy.traces` is `true`, ADP proxies both logs and metrics to the
+Agent, which ingests them on its relocated listener. ADP handles logs and metrics natively only
+when all three settings are `false`. Traces follow `data_plane.experimental.otlp.proxy.traces`
+exactly.
 
 ### `dogstatsd_mapper_cache_size`
 
@@ -1059,13 +1108,9 @@ The following settings work in ADP with the same behavior as the core agent.
 | `data_plane.dogstatsd.aggregator_tag_filter_cache_capacity`                                | Tag-filter deduplication cache size                |
 | `data_plane.dogstatsd.enabled`                                                             | Enable the DogStatsD pipeline                      |
 | `data_plane.enabled`                                                                       | Enable the data plane                              |
+| `data_plane.experimental.otlp.proxy.agent_receiver_grpc_endpoint`                          | Agent OTLP/gRPC listener that ADP proxies to       |
 | `data_plane.log_file`                                                                      | ADP log file path                                  |
 | `data_plane.otlp.enabled`                                                                  | Enable the OTLP pipeline                           |
-| `data_plane.otlp.proxy.enabled`                                                            | Enable OTLP proxy to Core Agent                    |
-| `data_plane.otlp.proxy.logs.enabled`                                                       | Proxy OTLP logs to Core Agent                      |
-| `data_plane.otlp.proxy.metrics.enabled`                                                    | Proxy OTLP metrics to Core Agent                   |
-| `data_plane.otlp.proxy.receiver.protocols.grpc.endpoint`                                   | OTLP proxy gRPC receiver endpoint                  |
-| `data_plane.otlp.proxy.traces.enabled`                                                     | Proxy OTLP traces to Core Agent                    |
 | `data_plane.remote_agent_enabled`                                                          | Enable remote agent mode                           |
 | `data_plane.secure_api_listen_address`                                                     | mTLS-authenticated privileged API address          |
 | `data_plane.serializer_zstd_compressor_level`                                              | ADP zstd compression level                         |
@@ -1095,6 +1140,7 @@ The following settings work in ADP with the same behavior as the core agent.
 | `dogstatsd_pipe_name`                                                                      | Windows named pipe path                            |
 | `dogstatsd_port`                                                                           | UDP listen port                                    |
 | `dogstatsd_require_listener`                                                               | Require an active DogStatsD listener               |
+| `dogstatsd_set_timing_unit`                                                                | Attach the millisecond unit to timing metrics      |
 | `dogstatsd_so_rcvbuf`                                                                      | Socket receive buffer size                         |
 | `dogstatsd_socket`                                                                         | UDS datagram socket path                           |
 | `dogstatsd_stream_log_too_big`                                                             | Log oversized UDS stream frames                    |

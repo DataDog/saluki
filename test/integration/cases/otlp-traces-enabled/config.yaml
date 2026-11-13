@@ -10,8 +10,12 @@ env:
   DD_DATA_PLANE_ENABLED: "true"
   DD_DATA_PLANE_STANDALONE_MODE: "true"
   DD_DATA_PLANE_OTLP_ENABLED: "true"
+  # The Core Agent in the test image predates datadog-agent#59825 and relocates its OTLP listener on this key.
+  # Remove it once `.datadog-agent-version` includes that change.
   DD_DATA_PLANE_OTLP_PROXY_ENABLED: "true"
-  DD_DATA_PLANE_OTLP_PROXY_TRACES_ENABLED: "false"
+  DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_LOGS: "true"
+  DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_METRICS: "true"
+  DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_TRACES: "false"
   # Bind ADP to framework-isolated addresses reachable through the container port mapping.
   #
   # TODO(#2177): Replace these temporary keys and ports with the canonical schema keys and the

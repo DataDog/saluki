@@ -562,6 +562,60 @@ inventory:
     pipelines: [cross_cutting]
     description: "Enable the data plane"
 
+  data_plane.experimental.otlp.proxy.agent_receiver_grpc_endpoint:
+    support: full
+    pipelines: [otlp]
+    description: "Agent OTLP/gRPC listener that ADP proxies to"
+
+  data_plane.experimental.otlp.proxy.agent_receiver_http_endpoint:
+    support: none
+    severity: low
+    planned: false
+    pipelines: [otlp]
+    description: "Relocated Agent OTLP/HTTP listener"
+    documentation: |-
+      ADP proxies every signal to the Agent over gRPC, at
+      `data_plane.experimental.otlp.proxy.agent_receiver_grpc_endpoint`, including signals it receives
+      over HTTP. It never sends to this endpoint. The Agent relocates only the receiver protocols
+      configured under `otlp_config.receiver.protocols`, so without a gRPC receiver, proxied signals
+      have no destination.
+
+  data_plane.experimental.otlp.proxy.logs:
+    support: partial
+    pipelines: [otlp]
+    description: "Proxy OTLP logs to the Agent"
+    documentation: |-
+      ADP has no native path for OTLP logs or metrics while it proxies any signal. When any of
+      `data_plane.experimental.otlp.proxy.logs`, `data_plane.experimental.otlp.proxy.metrics`, or
+      `data_plane.experimental.otlp.proxy.traces` is `true`, ADP proxies both logs and metrics to the
+      Agent, which ingests them on its relocated listener. ADP handles logs and metrics natively only
+      when all three settings are `false`. Traces follow `data_plane.experimental.otlp.proxy.traces`
+      exactly.
+
+  data_plane.experimental.otlp.proxy.metrics:
+    support: partial
+    pipelines: [otlp]
+    description: "Proxy OTLP metrics to the Agent"
+    documentation: |-
+      ADP has no native path for OTLP logs or metrics while it proxies any signal. When any of
+      `data_plane.experimental.otlp.proxy.logs`, `data_plane.experimental.otlp.proxy.metrics`, or
+      `data_plane.experimental.otlp.proxy.traces` is `true`, ADP proxies both logs and metrics to the
+      Agent, which ingests them on its relocated listener. ADP handles logs and metrics natively only
+      when all three settings are `false`. Traces follow `data_plane.experimental.otlp.proxy.traces`
+      exactly.
+
+  data_plane.experimental.otlp.proxy.traces:
+    support: partial
+    pipelines: [otlp]
+    description: "Proxy OTLP traces to the Agent"
+    documentation: |-
+      ADP has no native path for OTLP logs or metrics while it proxies any signal. When any of
+      `data_plane.experimental.otlp.proxy.logs`, `data_plane.experimental.otlp.proxy.metrics`, or
+      `data_plane.experimental.otlp.proxy.traces` is `true`, ADP proxies both logs and metrics to the
+      Agent, which ingests them on its relocated listener. ADP handles logs and metrics natively only
+      when all three settings are `false`. Traces follow `data_plane.experimental.otlp.proxy.traces`
+      exactly.
+
   data_plane.log_file:
     support: full
     pipelines: [cross_cutting]
@@ -575,31 +629,6 @@ inventory:
     support: full
     pipelines: [cross_cutting]
     description: "Enable the OTLP pipeline"
-
-  data_plane.otlp.proxy.enabled:
-    support: full
-    pipelines: [otlp]
-    description: "Enable OTLP proxy to Core Agent"
-
-  data_plane.otlp.proxy.logs.enabled:
-    support: full
-    pipelines: [otlp]
-    description: "Proxy OTLP logs to Core Agent"
-
-  data_plane.otlp.proxy.metrics.enabled:
-    support: full
-    pipelines: [otlp]
-    description: "Proxy OTLP metrics to Core Agent"
-
-  data_plane.otlp.proxy.receiver.protocols.grpc.endpoint:
-    support: full
-    pipelines: [otlp]
-    description: "OTLP proxy gRPC receiver endpoint"
-
-  data_plane.otlp.proxy.traces.enabled:
-    support: full
-    pipelines: [otlp]
-    description: "Proxy OTLP traces to Core Agent"
 
   data_plane.remote_agent_enabled:
     support: full
@@ -1120,6 +1149,11 @@ inventory:
     support: full
     pipelines: [dogstatsd]
     description: "Require an active DogStatsD listener"
+
+  dogstatsd_set_timing_unit:
+    support: full
+    pipelines: [dogstatsd]
+    description: "Attach the millisecond unit to timing metrics"
 
   dogstatsd_so_rcvbuf:
     support: full
@@ -2878,6 +2912,20 @@ inventory:
     pipelines: [cross_cutting]
     description: "Runtime state directory"
 
+  schema.enforce:
+    support: none
+    severity: low
+    planned: false
+    pipelines: [cross_cutting]
+    description: "Revert settings that fail schema validation"
+    documentation: |-
+      With `schema.enforce: true`, the Core Agent reverts a setting from `datadog.yaml` or the
+      environment to its default when its value fails schema validation: a wrong type, or a value
+      outside its `minimum`, `maximum`, `pattern`, or `enum`. ADP doesn't validate settings against
+      the schema. Under the Core Agent's configuration stream, ADP receives the reverted values. In
+      standalone mode, ADP uses the configured value, and fails at startup on a value it can't
+      translate, such as a port above 65535.
+
   secret_backend_command:
     support: partial
     pipelines: [cross_cutting]
@@ -3444,6 +3492,8 @@ excluded:
   anomaly_detection.logs.time_buckets.enabled: "2026-09-08 ADP does not currently have an anomaly-detection component; anomaly detection currently runs in the Core Agent."
   anomaly_detection.logs.time_buckets.idle_ttl: "2026-09-08 ADP does not currently have an anomaly-detection component; anomaly detection currently runs in the Core Agent."
   anomaly_detection.logs.time_buckets.retention: "2026-09-08 ADP does not currently have an anomaly-detection component; anomaly detection currently runs in the Core Agent."
+  anomaly_detection.metric_pipeline.anomaly_cutoff: "2026-11-13: ADP does not currently have an anomaly-detection component; anomaly detection currently runs in the Core Agent."
+  anomaly_detection.metric_pipeline.enabled: "2026-11-13: ADP does not currently have an anomaly-detection component; anomaly detection currently runs in the Core Agent."
   anomaly_detection.metrics.allowed_types: "2026-11-05: ADP does not currently have an anomaly-detection component; anomaly detection currently runs in the Core Agent."
   anomaly_detection.metrics.enabled: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
   anomaly_detection.metrics.processing_rules: "2026-09-08 ADP does not currently have an anomaly-detection component; anomaly detection currently runs in the Core Agent."
@@ -3607,6 +3657,8 @@ excluded:
   check_sampler_bucket_commits_count_expiry: "ignored in initial audit 2026-04-23"
   check_sampler_context_metrics: "ignored in initial audit 2026-04-23"
   check_sampler_expire_metrics: "ignored in initial audit 2026-04-23"
+  check_sampler_periodic_flush_checks: "2026-11-13: ADP does not currently support the check sampler; the Core Agent aggregates check metrics before sending them to ADP."
+  check_sampler_sketches_at_commit: "2026-11-13: ADP does not currently support the check sampler; the Core Agent aggregates check metrics before sending them to ADP."
   check_sampler_stateful_metric_expiration_time: "ignored in initial audit 2026-04-23"
   check_system_probe_startup_time: "ignored in initial audit 2026-04-23"
   check_system_probe_timeout: "ignored in initial audit 2026-04-23"
@@ -4146,6 +4198,7 @@ excluded:
   ha_agent.enabled: "ignored in initial audit 2026-04-23"
   ha_agent.group: "ignored in initial audit 2026-04-23"
   health_platform.enabled: "ignored in initial audit 2026-04-23"
+  health_platform.forwarder.dd_url: "2026-11-13: ADP does not currently support the Health Platform."
   health_platform.forwarder.interval: "ignored in initial audit 2026-04-23"
   health_platform.invalidconfig_check.enabled: "2026-06-10 Health platform subsystem; sibling keys excluded in Apr 2026 audit."
   health_platform.invalidsysprobeconfig_check.enabled: "2026-09-08 ADP does not currently run the Health Platform invalid system-probe configuration check."
@@ -4539,6 +4592,11 @@ excluded:
   network_devices.default_scan.excluded_ips: "ignored in initial audit 2026-04-23"
   network_devices.default_scan.flush_every_n_oids: "2026-09-08 ADP does not currently scan SNMP devices."
   network_devices.default_scan.flush_interval: "2026-09-08 ADP does not currently scan SNMP devices."
+  network_devices.discovery.default_interval_sec: "2026-11-13: ADP does not currently support Network Devices Autodiscovery."
+  network_devices.discovery.default_namespace: "2026-11-13: ADP does not currently support Network Devices Autodiscovery."
+  network_devices.discovery.enabled: "2026-11-13: ADP does not currently support Network Devices Autodiscovery."
+  network_devices.discovery.max_range_addresses: "2026-11-13: ADP does not currently support Network Devices Autodiscovery."
+  network_devices.discovery.workers: "2026-11-13: ADP does not currently support Network Devices Autodiscovery."
   network_devices.metadata.additional_endpoints: "ignored in initial audit 2026-04-23"
   network_devices.metadata.batch_max_concurrent_send: "ignored in initial audit 2026-04-23"
   network_devices.metadata.batch_max_content_size: "ignored in initial audit 2026-04-23"
@@ -4591,6 +4649,7 @@ excluded:
   network_devices.netflow.listeners: "ignored in initial audit 2026-04-23"
   network_devices.netflow.reverse_dns_enrichment_enabled: "ignored in initial audit 2026-04-23"
   network_devices.netflow.stop_timeout: "ignored in initial audit 2026-04-23"
+  network_devices.remote_config.dev_config_file: "2026-11-13: ADP does not currently support Network Device Monitoring Remote Configuration."
   network_devices.remote_config.enabled: "2026-11-05: ADP does not currently scan SNMP devices."
   network_devices.snmp_traps.bind_host: "ignored in initial audit 2026-04-23"
   network_devices.snmp_traps.community_strings: "ignored in initial audit 2026-04-23"
@@ -5038,6 +5097,7 @@ excluded:
   security_agent.log_file: "ignored in initial audit 2026-04-23"
   security_agent.log_level: "2026-11-05: ADP does not currently support per-Agent log level overrides; ADP logs at the global `log_level`."
   server_timeout: "ignored in initial audit 2026-04-23"
+  serverless.aas_extension_metadata_enabled: "2026-11-13: ADP does not currently support serverless environments."
   serverless.enabled: "ignored in initial audit 2026-04-23"
   serverless.logs_enabled: "ignored in initial audit 2026-04-23"
   serverless.metadata_enabled: "2026-11-05: ADP does not currently support serverless environments."

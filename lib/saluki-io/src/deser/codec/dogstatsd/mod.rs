@@ -84,6 +84,7 @@ pub struct DogStatsDCodecConfiguration {
     timestamps: bool,
     minimum_sample_rate: f64,
     client_origin_detection: bool,
+    timing_unit: bool,
 }
 
 impl DogStatsDCodecConfiguration {
@@ -163,6 +164,16 @@ impl DogStatsDCodecConfiguration {
         self.client_origin_detection = enabled;
         self
     }
+
+    /// Sets whether timing (`ms`) metrics carry the `millisecond` unit.
+    ///
+    /// No other metric type carries a unit.
+    ///
+    /// Defaults to `false`.
+    pub fn with_timing_unit(mut self, enabled: bool) -> Self {
+        self.timing_unit = enabled;
+        self
+    }
 }
 
 impl Default for DogStatsDCodecConfiguration {
@@ -174,6 +185,7 @@ impl Default for DogStatsDCodecConfiguration {
             permissive: false,
             minimum_sample_rate: MINIMUM_SAFE_DEFAULT_SAMPLE_RATE,
             client_origin_detection: false,
+            timing_unit: false,
         }
     }
 }

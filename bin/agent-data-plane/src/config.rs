@@ -154,8 +154,11 @@ impl<'a> DataPlaneConfiguration<'a> {
     }
 
     /// Returns `true` if the OTLP proxy is enabled.
+    ///
+    /// The proxy is enabled when any signal is proxied. In proxy mode, ADP forwards both logs and metrics to the Core
+    /// Agent, whatever their individual settings, because it has no native path for them while the relay runs.
     pub const fn otlp_proxy_enabled(&self) -> bool {
-        self.config.domains.otlp.proxy.enabled
+        self.config.domains.otlp.proxy.enabled()
     }
 
     /// Returns `true` if OTLP traces should be proxied to the Core Agent.
@@ -246,6 +249,7 @@ impl<'a> DataPlaneConfiguration<'a> {
 
 #[cfg(test)]
 mod tests {
+    use agent_data_plane_config::domains::otlp::Proxy;
     use datadog_agent_commons::platform::PlatformSettings;
 
     use super::*;
@@ -320,7 +324,7 @@ mod tests {
 
     #[test]
     fn otlp_without_signals_activates_no_otlp_pipelines() {
-        let mut config = pipeline_configuration(false, false, true, false, false);
+        let mut config = pipeline_configuration(false, false, true, Proxy::default());
         config.domains.otlp.receiver.metrics_enabled = false;
         let dp = DataPlaneConfiguration::from_configuration(&config);
 
@@ -407,9 +411,18 @@ mod tests {
         assert_eq!(host_settings(&config).hostname.as_deref(), Some("explicit-host"));
     }
 
+    /// Returns OTLP proxy settings that proxy the given signals.
+    fn proxy(logs: bool, metrics: bool, traces: bool) -> Proxy {
+        Proxy {
+            logs_enabled: logs,
+            metrics_enabled: metrics,
+            traces_enabled: traces,
+            ..Proxy::default()
+        }
+    }
+
     fn pipeline_configuration(
-        checks_enabled: bool, dogstatsd_enabled: bool, otlp_enabled: bool, otlp_proxy_enabled: bool,
-        otlp_proxy_traces_enabled: bool,
+        checks_enabled: bool, dogstatsd_enabled: bool, otlp_enabled: bool, otlp_proxy: Proxy,
     ) -> SalukiConfiguration {
         let mut config = SalukiConfiguration::default();
         config.control.checks = checks_enabled;
@@ -417,8 +430,7 @@ mod tests {
         config.control.otlp = otlp_enabled;
         // The OTLP pipeline needs at least one signal, and the Agent enables metrics by default.
         config.domains.otlp.receiver.metrics_enabled = true;
-        config.domains.otlp.proxy.enabled = otlp_proxy_enabled;
-        config.domains.otlp.proxy.traces_enabled = otlp_proxy_traces_enabled;
+        config.domains.otlp.proxy = otlp_proxy;
         config
     }
 
@@ -428,7 +440,7 @@ mod tests {
 
     #[test]
     fn dogstatsd_only_requires_metrics_events_and_service_checks_pipelines() {
-        let config = pipeline_configuration(false, true, false, false, false);
+        let config = pipeline_configuration(false, true, false, Proxy::default());
         let dp = DataPlaneConfiguration::from_configuration(&config);
 
         assert!(dp.data_pipelines_enabled());
@@ -441,7 +453,7 @@ mod tests {
 
     #[test]
     fn checks_enabled_requires_every_pipeline_except_traces() {
-        let config = pipeline_configuration(true, false, false, false, false);
+        let config = pipeline_configuration(true, false, false, Proxy::default());
         let dp = DataPlaneConfiguration::from_configuration(&config);
 
         assert!(dp.data_pipelines_enabled());
@@ -454,7 +466,7 @@ mod tests {
 
     #[test]
     fn otlp_without_proxy_requires_metrics_logs_and_traces_pipelines() {
-        let config = pipeline_configuration(false, false, true, false, false);
+        let config = pipeline_configuration(false, false, true, Proxy::default());
         let dp = DataPlaneConfiguration::from_configuration(&config);
 
         assert!(dp.data_pipelines_enabled());
@@ -468,7 +480,7 @@ mod tests {
     #[test]
     fn standalone_otlp_proxy_mode_does_not_require_liveness_baseline_pipelines() {
         // Standalone OTLP proxy mode must only construct the local proxy path, which avoids resolving output endpoints.
-        let mut config = pipeline_configuration(false, false, true, true, true);
+        let mut config = pipeline_configuration(false, false, true, proxy(true, true, true));
         config.control.standalone_mode = true;
         let dp = DataPlaneConfiguration::from_configuration(&config);
 
@@ -484,7 +496,7 @@ mod tests {
     fn connected_otlp_proxy_mode_requires_liveness_baseline_pipelines() {
         // Connected mode still forwards the liveness metric and service check, so those baselines stay required even
         // when every OTLP signal is proxied.
-        let config = pipeline_configuration(false, false, true, true, true);
+        let config = pipeline_configuration(false, false, true, proxy(true, true, true));
         let dp = DataPlaneConfiguration::from_configuration(&config);
 
         assert!(dp.data_pipelines_enabled());
@@ -499,7 +511,7 @@ mod tests {
     fn otlp_proxy_mode_with_local_traces_requires_liveness_and_traces_pipelines() {
         // Proxy mode is enabled but trace proxying is turned off, so ADP must handle traces locally. The liveness
         // metric and service-check baselines remain required regardless of the OTLP routing.
-        let config = pipeline_configuration(false, false, true, true, false);
+        let config = pipeline_configuration(false, false, true, proxy(true, true, false));
         let dp = DataPlaneConfiguration::from_configuration(&config);
 
         assert!(dp.data_pipelines_enabled());
@@ -511,10 +523,49 @@ mod tests {
     }
 
     #[test]
+    fn otlp_proxy_is_disabled_when_no_signal_is_proxied() {
+        let config = pipeline_configuration(false, false, true, proxy(false, false, false));
+        let dp = DataPlaneConfiguration::from_configuration(&config);
+
+        assert!(!dp.otlp_proxy_enabled());
+        assert!(dp.metrics_pipeline_required());
+        assert!(dp.logs_pipeline_required());
+        assert!(dp.traces_pipeline_required());
+    }
+
+    #[test]
+    fn otlp_proxy_traces_only_proxies_every_signal() {
+        // Proxy mode forwards logs and metrics whatever their own settings, so no native OTLP pipeline is needed.
+        let mut config = pipeline_configuration(false, false, true, proxy(false, false, true));
+        config.control.standalone_mode = true;
+        let dp = DataPlaneConfiguration::from_configuration(&config);
+
+        assert!(dp.otlp_proxy_enabled());
+        assert!(dp.otlp_proxy_traces_enabled());
+        assert!(!dp.metrics_pipeline_required());
+        assert!(!dp.logs_pipeline_required());
+        assert!(!dp.traces_pipeline_required());
+    }
+
+    #[test]
+    fn otlp_proxy_metrics_only_decodes_traces_natively() {
+        let mut config = pipeline_configuration(false, false, true, proxy(false, true, false));
+        config.control.standalone_mode = true;
+        let dp = DataPlaneConfiguration::from_configuration(&config);
+
+        assert!(dp.otlp_proxy_enabled());
+        assert!(!dp.otlp_proxy_traces_enabled());
+        assert!(!dp.logs_pipeline_required());
+        assert!(dp.traces_pipeline_required());
+        // The trace sampler's telemetry needs the metrics pipeline; OTLP metrics themselves are proxied.
+        assert!(dp.metrics_pipeline_required());
+    }
+
+    #[test]
     fn standalone_local_traces_requires_metrics_pipeline_for_sampler_telemetry() {
         // The sampler reports its telemetry as metric events, so a running traces pipeline requires
         // the metrics pipeline even in standalone mode.
-        let mut config = pipeline_configuration(false, false, true, true, false);
+        let mut config = pipeline_configuration(false, false, true, proxy(true, true, false));
         config.control.standalone_mode = true;
         let dp = DataPlaneConfiguration::from_configuration(&config);
 
@@ -526,7 +577,7 @@ mod tests {
     fn connected_apm_only_requires_liveness_baseline_pipelines() {
         // The APM relay forwards to the trace-agent what it does not handle itself, so it needs no baseline pipeline of
         // its own, but connected mode still forwards the liveness metric and service check.
-        let mut config = pipeline_configuration(false, false, false, false, false);
+        let mut config = pipeline_configuration(false, false, false, Proxy::default());
         config.control.apm = true;
         let dp = DataPlaneConfiguration::from_configuration(&config);
 
@@ -541,7 +592,7 @@ mod tests {
     #[test]
     fn standalone_apm_only_requires_no_baseline_pipelines() {
         // The traces pipeline would have no events source to feed it, so the relay connects to the forwarder alone.
-        let mut config = pipeline_configuration(false, false, false, false, false);
+        let mut config = pipeline_configuration(false, false, false, Proxy::default());
         config.control.apm = true;
         config.control.standalone_mode = true;
         let dp = DataPlaneConfiguration::from_configuration(&config);
@@ -556,7 +607,7 @@ mod tests {
 
     #[test]
     fn no_pipelines_enabled_requires_no_baseline_pipelines() {
-        let config = pipeline_configuration(false, false, false, false, false);
+        let config = pipeline_configuration(false, false, false, Proxy::default());
         let dp = DataPlaneConfiguration::from_configuration(&config);
 
         assert!(!dp.data_pipelines_enabled());

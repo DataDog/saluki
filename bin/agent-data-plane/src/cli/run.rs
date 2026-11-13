@@ -728,6 +728,7 @@ fn dogstatsd_source_configuration(
         cached_tagsets_limit: contexts.cached_tagsets_limit,
         context_expiry_seconds: dogstatsd.aggregation.context_expiry_seconds,
         permissive_decoding: listeners.permissive_decoding,
+        set_timing_unit: listeners.set_timing_unit,
         minimum_sample_rate: contexts.minimum_sample_rate,
         enable_payloads: EnablePayloadsConfiguration {
             series: dogstatsd.enable_payloads.series,
@@ -1028,10 +1029,10 @@ async fn add_otlp_pipeline_to_blueprint(
 
         info!(
             proxy_grpc_endpoint = %core_agent_otlp_grpc_endpoint,
-            proxy_metrics,
             proxy_logs,
+            proxy_metrics,
             proxy_traces,
-            "OTLP proxy mode enabled. Select OTLP payloads will be proxied to the Core Agent."
+            "OTLP proxy mode enabled. Logs, metrics, and (if `proxy_traces`) traces will be proxied to the Core Agent."
         );
 
         let config = config_system.config();

@@ -176,8 +176,7 @@ pub fn parse_dogstatsd_metric<'a>(
     };
 
     // Capture the unit from the metric type before it is erased into a MetricValues variant.
-    // Only timing metrics carry an implicit unit; all other types have no unit.
-    let maybe_unit = if matches!(metric_type, MetricType::Timer) {
+    let maybe_unit = if config.timing_unit && matches!(metric_type, MetricType::Timer) {
         Some("millisecond")
     } else {
         None
@@ -436,14 +435,36 @@ mod tests {
     }
 
     #[test]
-    fn metric_unit() {
+    fn metric_unit_absent_by_default() {
         let config = DogStatsDCodecConfiguration::default();
 
-        // Timing metrics must carry an implicit millisecond unit.
-        let (_, packet) = parse_dogstatsd_metric(b"my.timer:1.0|ms", &config).expect("should not fail to parse");
-        assert_eq!(packet.unit, Some("millisecond"));
+        for raw in [
+            "my.metric:1.0|c",
+            "my.metric:1.0|g",
+            "my.metric:1.0|ms",
+            "my.metric:1.0:2.0|ms",
+            "my.metric:1.0|h",
+            "my.metric:1.0|d",
+            "my.metric:1.0|s",
+        ] {
+            let (_, packet) = parse_dogstatsd_metric(raw.as_bytes(), &config).expect("should not fail to parse");
+            assert_eq!(packet.unit, None, "expected no unit for {raw:?}");
+        }
+    }
 
-        // All other metric types must have no unit.
+    #[test]
+    fn metric_unit_with_timing_unit() {
+        let config = DogStatsDCodecConfiguration::default().with_timing_unit(true);
+
+        for raw in ["my.timer:1.0|ms", "my.timer:1.0:2.0:3.0|ms|@0.5|#tag1"] {
+            let (_, packet) = parse_dogstatsd_metric(raw.as_bytes(), &config).expect("should not fail to parse");
+            assert_eq!(
+                packet.unit,
+                Some("millisecond"),
+                "expected millisecond unit for {raw:?}"
+            );
+        }
+
         for kind in &["c", "g", "h", "d", "s"] {
             let raw = format!("my.metric:1.0|{}", kind);
             let (_, packet) = parse_dogstatsd_metric(raw.as_bytes(), &config).expect("should not fail to parse");

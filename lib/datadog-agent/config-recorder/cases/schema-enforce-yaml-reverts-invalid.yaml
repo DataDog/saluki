@@ -1,0 +1,15 @@
+# Enables schema.enforce in YAML beside an out-of-range integer, a quoted number for a number
+# setting, and dogstatsd_port at its schema minimum of 0.
+# Shows that only the out-of-range value reverts to its default, streamed as config-post-init; the
+# quoted number is converted at load before validation, so it is kept.
+name: schema-enforce-yaml-reverts-invalid
+group: behavior
+why: [schema-enforce-reverts-invalid-to-default, schema-enforce-validates-converted-value, schema-enforce-valid-value-kept]
+yaml: |
+  schema:
+    enforce: true
+  log_file_max_rolls: 2000
+  apm_config:
+    max_traces_per_second: "50"
+  dogstatsd_port: 0
+keys: [log_file_max_rolls, apm_config.max_traces_per_second, dogstatsd_port]
