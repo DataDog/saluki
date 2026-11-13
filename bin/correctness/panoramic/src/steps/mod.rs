@@ -12,6 +12,7 @@ use crate::core::registry::Registry;
 use crate::core::step::StepReport;
 
 pub(crate) mod analysis;
+mod compare;
 mod file_contains;
 pub(crate) mod intake;
 mod intake_has_metric;
@@ -24,6 +25,7 @@ const POLL: Duration = Duration::from_millis(100);
 
 /// Registers every step.
 pub(crate) fn register(registry: &mut Registry) {
+    registry.add_step(Box::new(compare::CompareFactory));
     registry.add_step(Box::new(file_contains::FileContainsFactory));
     registry.add_step(Box::new(intake_has_metric::IntakeHasMetricFactory));
     registry.add_step(Box::new(log::LogContainsFactory));
@@ -57,7 +59,7 @@ fn described(on: &str, process: Option<&str>) -> String {
 
 /// One participant, `app`, for the steps' failing-check tests: a process `main` observed through its container, a
 /// supervised process `job` with an exit record, a UDP endpoint `statsd`, and an operation `dump` that answers with
-/// what [`DUMP_FILE`] holds.
+/// what [`DUMP_FILE`] holds. A second participant, `peer`, offers the same `dump`, for steps that read two.
 #[cfg(test)]
 mod scripted {
     use std::collections::BTreeMap;
@@ -71,7 +73,7 @@ mod scripted {
     use crate::core::backend::{Exec, Realized};
     use crate::core::case::{self, CASE_FILE};
     use crate::core::handle::{Handle, HandleError};
-    use crate::core::observe::Observation;
+    use crate::core::observe::{Kept, Observation};
     use crate::core::participant::Os;
     use crate::core::plan;
     use crate::core::reference::Values;
@@ -140,6 +142,13 @@ mod scripted {
     pub(super) async fn run(
         factory: &dyn StepFactory, fields: &str, realized: &Scripted, observation: &Observation,
     ) -> StepReport {
+        run_with_peer(factory, fields, realized, &Scripted::default(), observation).await
+    }
+
+    /// As [`run`], with `peer` scripted by `peer`, observed as `app` is.
+    pub(super) async fn run_with_peer(
+        factory: &dyn StepFactory, fields: &str, realized: &Scripted, peer: &Scripted, observation: &Observation,
+    ) -> StepReport {
         let suite = tempfile::tempdir().unwrap();
         let dir = suite.path().join("scripted");
         std::fs::create_dir(&dir).unwrap();
@@ -155,25 +164,36 @@ participants:
       - {name: job, exit: {record: job}, output: {file: job.log}}
     endpoints:
       statsd: {udp: 8125}
+  peer:
+    image: alpine:3.20
 procedure: []
 "#;
         std::fs::write(dir.join(CASE_FILE), config).unwrap();
         let registry = Registry::default();
         let case = case::load(&dir, &registry).unwrap();
         let mut plan = plan::plan(&case, Os::Linux, &registry, &BTreeMap::new()).unwrap();
-        // A participant with no participant type offers no operation, so the test gives `app` one.
-        plan.participants
-            .get_mut("app")
-            .unwrap()
-            .operations
-            .insert("dump", &Dump);
+        // A participant with no participant type offers no operation, so the test gives each one.
+        for planned in plan.participants.values_mut() {
+            planned.operations.insert("dump", &Dump);
+        }
         let values = Values::of_plan(&plan.participants);
-        let handle = Handle::new("app", &plan.participants["app"], realized, &values, observation);
-        let handles = BTreeMap::from([("app".to_string(), handle)]);
+        let handles = BTreeMap::from([
+            (
+                "app".to_string(),
+                Handle::new("app", &plan.participants["app"], realized, &values, observation),
+            ),
+            (
+                "peer".to_string(),
+                Handle::new("peer", &plan.participants["peer"], peer, &values, observation),
+            ),
+        ]);
 
         let fields = StepFields(serde_saphyr::from_str(fields).unwrap());
         let step = factory.build(&fields).unwrap();
-        let cx = StepContext::new(&handles, &values, Instant::now() + step.budget());
+        let kept = Kept::new(&suite.path().join("logs"));
+        // A step whose budget is what remains of the case gets the case's.
+        let budget = step.budget().min(Duration::from_secs(60));
+        let cx = StepContext::new(&handles, &values, &kept, Instant::now() + budget);
         step.run(&cx).await
     }
 

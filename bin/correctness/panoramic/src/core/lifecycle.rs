@@ -31,7 +31,7 @@ use super::container::{CaseContainers, ContainerBackend, RealizedContainer};
 use super::deadline::{Budget, Deadline};
 use super::handle::{Handle, HandleError};
 use super::ledger::ResourceLedger;
-use super::observe::{self, Collected, Observation, ProcessExit, Sink, CONTAINER_LOG};
+use super::observe::{self, Collected, Kept, Observation, ProcessExit, Sink, CONTAINER_LOG};
 use super::participant::Enclosure;
 use super::plan::{CasePlan, PlannedStep};
 use super::record::{CaseRecord, RunningStep, StepResult, StepStatus, Verdict};
@@ -82,6 +82,7 @@ pub(crate) async fn run(plan: &CasePlan, run: &CaseRun<'_>) -> TestResult {
         plan,
         run,
         values: Values::of_plan(&plan.participants),
+        kept: Kept::new(run.log_dir),
         created: BTreeMap::new(),
         started: BTreeMap::new(),
     };
@@ -98,7 +99,8 @@ pub(crate) async fn run(plan: &CasePlan, run: &CaseRun<'_>) -> TestResult {
             run.record.decide(Verdict::SetupFailed(Box::new(result)));
         }
     }
-    let (mut processes, collected) = case.observe().await;
+    let (mut processes, mut collected) = case.observe().await;
+    collected.extend(case.kept.files());
     let mut result = run
         .record
         .result(&plan.case.name, started.elapsed(), run.phases.completed());
@@ -124,6 +126,8 @@ struct Case<'a> {
     run: &'a CaseRun<'a>,
     /// What fills references, as participants are created and start.
     values: Values,
+    /// The files steps keep.
+    kept: Kept,
     /// Participants created and not started yet.
     created: BTreeMap<String, RealizedContainer>,
     started: BTreeMap<String, Started>,
@@ -494,7 +498,7 @@ impl Case<'_> {
         };
         self.run.record.start(slot, running);
 
-        let cx = StepContext::new(handles, &self.values, deadline.at);
+        let cx = StepContext::new(handles, &self.values, &self.kept, deadline.at);
         let cancel = self.run.cancel;
         let result = tokio::select! {
             biased;
