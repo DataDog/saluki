@@ -44,9 +44,11 @@ comparison:
     DD_DATA_PLANE_ENABLED: "true"
     DD_DATA_PLANE_STANDALONE_MODE: "false"
     DD_DATA_PLANE_OTLP_ENABLED: "true"
-    # Handle OTLP logs natively in ADP rather than relaying them to the core Agent. Per-signal proxy flags aren't
-    # honored yet, so this turns off the proxy for every signal.
-    DD_DATA_PLANE_OTLP_PROXY_ENABLED: "false"
+    # Handle OTLP logs natively in ADP rather than relaying them to the core Agent. Proxying any signal also proxies
+    # logs, so this turns off the proxy for every signal.
+    DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_LOGS: "false"
+    DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_METRICS: "false"
+    DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_TRACES: "false"
     # TODO(#2177): Replace these ADP-only overrides with canonical schema-provided endpoint keys
     # once endpoint ownership prevents both processes from attempting to bind the same ports.
     ADP_DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY: "0.0.0.0:54317"

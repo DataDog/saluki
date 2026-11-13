@@ -1,0 +1,13 @@
+upgrade:
+  - |
+    The OTLP proxy settings moved to ``data_plane.experimental.otlp.proxy``, matching the Datadog Agent.
+    ``data_plane.otlp.proxy.enabled`` is removed: proxying turns on when any of
+    ``data_plane.experimental.otlp.proxy.logs``, ``data_plane.experimental.otlp.proxy.metrics``, or
+    ``data_plane.experimental.otlp.proxy.traces`` is ``true``. These settings replace
+    ``data_plane.otlp.proxy.logs.enabled``, ``data_plane.otlp.proxy.metrics.enabled``, and
+    ``data_plane.otlp.proxy.traces.enabled``, and default to ``false`` instead of ``true``.
+    ``data_plane.experimental.otlp.proxy.agent_receiver_grpc_endpoint`` replaces
+    ``data_plane.otlp.proxy.receiver.protocols.grpc.endpoint``. Agent Data Plane proxies logs and metrics
+    together: when any signal is proxied, both logs and metrics are proxied, and traces are proxied only when
+    ``data_plane.experimental.otlp.proxy.traces`` is ``true``. The old settings are no longer read. To keep
+    proxying, set the new signal settings explicitly.

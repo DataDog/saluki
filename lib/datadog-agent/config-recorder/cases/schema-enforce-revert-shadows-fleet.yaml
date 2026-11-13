@@ -1,0 +1,12 @@
+# Enables schema.enforce with an out-of-range YAML log_file_max_rolls and a valid fleet value.
+# Shows that the revert, written at load as config-post-init, takes priority over the fleet value.
+name: schema-enforce-revert-shadows-fleet
+group: behavior
+why: [schema-enforce-reverts-invalid-to-default, load-fixup-source-outranks-fleet]
+yaml: |
+  schema:
+    enforce: true
+  log_file_max_rolls: 2000
+fleet_policy: |
+  log_file_max_rolls: 5
+keys: [log_file_max_rolls]

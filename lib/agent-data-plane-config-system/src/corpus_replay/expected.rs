@@ -12,6 +12,7 @@
 //! - `wire-number-loss`: the wire format loses numeric precision.
 //! - `nil-map-element`: ADP cannot represent nil maps.
 //! - `numeric-map-representation`: ADP reads numeric map values as floats instead of integers.
+//! - `schema-enforce-unsupported`: ADP does not revert values that fail schema validation.
 //!
 //! Other entries are `known_bug`: ADP should match the Agent. Fixing a bug makes its entry fail,
 //! so remove it. Causes link tracking issues; each expectation applies to one check.
@@ -2247,6 +2248,24 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             cause: AGENT_LOAD_WRITE,
         }),
         intentional(Entry {
+            origin: "schema-enforce-env-reverts-invalid",
+            tier: Bootstrap,
+            at: "snapshot",
+            getter: "GetInt",
+            key: "log_file_max_rolls",
+            adp: Adp::value("2000"),
+            cause: SCHEMA_ENFORCE_UNSUPPORTED,
+        }),
+        intentional(Entry {
+            origin: "schema-enforce-yaml-reverts-invalid",
+            tier: Bootstrap,
+            at: "snapshot",
+            getter: "GetInt",
+            key: "log_file_max_rolls",
+            adp: Adp::value("2000"),
+            cause: SCHEMA_ENFORCE_UNSUPPORTED,
+        }),
+        intentional(Entry {
             origin: "valid-stream-updates",
             tier: Translate,
             at: "update dogstatsd_tag_cardinality #2",
@@ -2423,6 +2442,14 @@ const RUN_PATH_DEFAULT: Cause = Cause {
 const WIRE_NUMBER_LOSS: Cause = Cause {
     name: "wire-number-loss",
     why: "NaN and integers above 2^53 do not survive the protobuf stream; ADP cannot recover them",
+    issue: None,
+};
+
+const SCHEMA_ENFORCE_UNSUPPORTED: Cause = Cause {
+    name: "schema-enforce-unsupported",
+    why: "with schema.enforce, the Agent reverts a file or env value that fails schema validation to its default at \
+load (nodetreemodel/validation.go revertToDefault); ADP does not support schema.enforce and keeps the value locally, \
+while the stream carries the reverted one",
     issue: None,
 };
 

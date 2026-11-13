@@ -39,6 +39,7 @@ func (stubReader) GetStringMapStringSlice(string) map[string][]string         { 
 func (stubReader) GetSizeInBytes(string) uint                                 { return 0 }
 func (stubReader) GetProxies() *model.Proxy                                   { return nil }
 func (stubReader) GetSequenceID() uint64                                      { return 0 }
+func (stubReader) GetSchemaID() model.SchemaID                                { return "" }
 func (stubReader) GetSource(string) model.Source                              { return "" }
 func (stubReader) GetAllSources(string) []model.ValueWithSource               { return nil }
 func (stubReader) ConfigFileUsed() string                                     { return "" }
@@ -58,6 +59,8 @@ func (stubReader) HasSection(string) bool                                  { ret
 func (stubReader) IsKnown(string) bool                                     { return false }
 func (stubReader) IsSetting(string) bool                                   { return false }
 func (stubReader) GetEnvVars() []string                                    { return nil }
+func (stubReader) IsSensitive(string) bool                                 { return false }
+func (stubReader) FilterSensitiveEnvVars([]string) []string                { return nil }
 func (stubReader) Warnings() []string                                      { return nil }
 func (stubReader) StartTime() time.Time                                    { return time.Time{} }
 func (r stubReader) Object() model.Reader                                  { return r }

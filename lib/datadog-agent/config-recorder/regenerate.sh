@@ -15,6 +15,8 @@ GOBUILD_VOLUME="saluki-config-recorder-gobuild"
 UV_VOLUME="saluki-config-recorder-uv"
 # `requests` is imported on codegen's import path but is not in the Agent's dev requirements.
 REQUESTS_PIN="requests==2.32.5"
+# Compresses the schemas the Agent embeds for validation; the Agent's own path needs the zstd binary.
+ZSTANDARD_PIN="zstandard==0.23.0"
 AGENT_REPO_URL="${AGENT_REPO_URL:-https://github.com/DataDog/datadog-agent.git}"
 
 RECORDER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -161,11 +163,12 @@ INPUTS_DIGEST_HEX="$(docker run --rm ${PLATFORM_ARGS[@]+"${PLATFORM_ARGS[@]}"} \
 INPUTS_DIGEST="sha256:$INPUTS_DIGEST_HEX"
 step "inputs digest is $INPUTS_DIGEST"
 
-# 4. The Agent's schema codegen and core schema merge, with the Agent's pinned Python packages.
+# 4. The Agent's schema codegen, embedded schema compression and core schema merge, with the
+# Agent's pinned Python packages.
 # Codegen always starts from a checkout with no gitignored files under pkg/config, so a reused
 # checkout builds exactly what a fresh checkout builds.
 agent_git clean -fdXq -- pkg/config
-step "running the Agent's schema codegen and merge"
+step "running the Agent's schema codegen, compression and merge"
 docker run --rm ${PLATFORM_ARGS[@]+"${PLATFORM_ARGS[@]}"} \
     --user "$HOST_UID:$HOST_GID" \
     -e HOME=/tmp/home \
@@ -174,17 +177,24 @@ docker run --rm ${PLATFORM_ARGS[@]+"${PLATFORM_ARGS[@]}"} \
     -v "$UV_VOLUME":/uv-cache \
     -e UV_CACHE_DIR=/uv-cache \
     -e UV_PYTHON_DOWNLOADS=never \
+    -e REQUESTS_PIN="$REQUESTS_PIN" \
+    -e ZSTANDARD_PIN="$ZSTANDARD_PIN" \
     -w "$C_AGENT" \
     "$PYTHON_IMAGE" \
     bash -euo pipefail -c '
         mkdir -p "$HOME"
         uv_run() {
-            uv run --quiet --no-project --with-requirements deps/py_dev_requirements.txt --with "$1" python3 "${@:2}"
+            uv run --quiet --no-project --with-requirements deps/py_dev_requirements.txt \
+                --with "$REQUESTS_PIN" --with "$ZSTANDARD_PIN" python3 "$@"
         }
-        uv_run "$0" /tools/agent_codegen.py
-        uv_run "$0" tasks/schema/merge_schema.py pkg/config/schema/yaml/core_schema.yaml "$1"
-    ' "$REQUESTS_PIN" "$C_SCHEMA"
+        uv_run /tools/agent_codegen.py
+        uv_run tasks/schema/merge_schema.py pkg/config/schema/yaml/core_schema.yaml "$0"
+    ' "$C_SCHEMA"
 [ -s "$SCHEMA_FILE" ] || die "schema merge did not write $SCHEMA_FILE"
+for name in core_schema system-probe_schema; do
+    [ -s "$AGENT_DIR/pkg/config/schema/compressed/$name.yaml.zstd" ] \
+        || die "codegen did not write pkg/config/schema/compressed/$name.yaml.zstd"
+done
 
 # 5. Build, check, test and run the recorder over the hand-written and generated cases. The
 # overlay is read only to choose the generated cases' keys; it is not a digest input.

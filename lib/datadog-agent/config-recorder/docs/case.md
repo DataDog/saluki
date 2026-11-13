@@ -228,10 +228,16 @@ var, and the byte-first deprecated name (`renamed_from`) of a modeled key, set i
 - The harness must build the config through the Agent's production `fx` path:
   `fxutil.OneShot` with `fx.Supply(config.NewAgentParams(path,
   opts...))`, `config.Module()`, `comp/core/secrets/fx-noop`, `comp/core/delegatedauth/fx-noop`,
-  `comp/core/telemetry/fx-noop`, `logimpl.NewTemporaryLoggerWithoutInit()` and
-  `configstreamfx.Module()`. It must not call `SetTestOnlyDynamicSchema` or any test-only API.
+  `comp/core/schema/fx`, `comp/core/telemetry/fx-noop`, `logimpl.NewTemporaryLoggerWithoutInit()`
+  and `configstreamfx.Module()`. It must not call `SetTestOnlyDynamicSchema` or any test-only API.
   This runs `LoadDatadog`, `MergeFleetPolicy`, the data-plane fix-ups and the CLI overrides
   (`comp/core/config/setup.go:53-94`).
+- The schema module is the real validator `agent run` uses, not `comp/core/schema/fx-noop`, so
+  loading validates the file and env settings against the schema and, with `schema.enforce`,
+  reverts invalid ones to their default in the `config-post-init` layer
+  (`pkg/config/setup/config.go:415-420` and `pkg/config/nodetreemodel/validation.go` at
+  `72cc7f34878`). It reads the compressed schemas that `regenerate.sh` writes into the checkout
+  before building.
 - Before anything logs, the harness must route the Agent's global logger into an in-process
   recorder with `pkglog.SetupLogger(ddslog.NewWrapper(handler), "debug")`
   (`pkg/util/log/log.go:67`, `pkg/util/log/slog/wrapper.go:40`).

@@ -82,13 +82,12 @@ pub trait DatadogConfigWitness {
     fn consume_data_plane_dogstatsd_aggregator_tag_filter_cache_capacity(&mut self, value: i64);
     fn consume_data_plane_dogstatsd_enabled(&mut self, value: bool);
     fn consume_data_plane_enabled(&mut self, value: bool);
+    fn consume_data_plane_experimental_otlp_proxy_agent_receiver_grpc_endpoint(&mut self, value: String);
+    fn consume_data_plane_experimental_otlp_proxy_logs(&mut self, value: bool);
+    fn consume_data_plane_experimental_otlp_proxy_metrics(&mut self, value: bool);
+    fn consume_data_plane_experimental_otlp_proxy_traces(&mut self, value: bool);
     fn consume_data_plane_log_file(&mut self, value: String);
     fn consume_data_plane_otlp_enabled(&mut self, value: bool);
-    fn consume_data_plane_otlp_proxy_enabled(&mut self, value: bool);
-    fn consume_data_plane_otlp_proxy_logs_enabled(&mut self, value: bool);
-    fn consume_data_plane_otlp_proxy_metrics_enabled(&mut self, value: bool);
-    fn consume_data_plane_otlp_proxy_receiver_protocols_grpc_endpoint(&mut self, value: String);
-    fn consume_data_plane_otlp_proxy_traces_enabled(&mut self, value: bool);
     fn consume_data_plane_remote_agent_enabled(&mut self, value: bool);
     fn consume_data_plane_secure_api_listen_address(&mut self, value: String);
     fn consume_data_plane_serializer_zstd_compressor_level(&mut self, value: i64);
@@ -121,6 +120,7 @@ pub trait DatadogConfigWitness {
     fn consume_dogstatsd_port(&mut self, value: i64);
     fn consume_dogstatsd_queue_size(&mut self, value: i64);
     fn consume_dogstatsd_require_listener(&mut self, value: bool);
+    fn consume_dogstatsd_set_timing_unit(&mut self, value: bool);
     fn consume_dogstatsd_so_rcvbuf(&mut self, value: i64);
     fn consume_dogstatsd_socket(&mut self, value: String);
     fn consume_dogstatsd_stream_log_too_big(&mut self, value: bool);
@@ -401,15 +401,22 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     );
     consumer.consume_data_plane_dogstatsd_enabled(config.data_plane.dogstatsd.enabled.clone());
     consumer.consume_data_plane_enabled(config.data_plane.enabled.clone());
+    consumer.consume_data_plane_experimental_otlp_proxy_agent_receiver_grpc_endpoint(
+        config
+            .data_plane
+            .experimental
+            .otlp
+            .proxy
+            .agent_receiver_grpc_endpoint
+            .clone(),
+    );
+    consumer.consume_data_plane_experimental_otlp_proxy_logs(config.data_plane.experimental.otlp.proxy.logs.clone());
+    consumer
+        .consume_data_plane_experimental_otlp_proxy_metrics(config.data_plane.experimental.otlp.proxy.metrics.clone());
+    consumer
+        .consume_data_plane_experimental_otlp_proxy_traces(config.data_plane.experimental.otlp.proxy.traces.clone());
     consumer.consume_data_plane_log_file(config.data_plane.log_file.clone());
     consumer.consume_data_plane_otlp_enabled(config.data_plane.otlp.enabled.clone());
-    consumer.consume_data_plane_otlp_proxy_enabled(config.data_plane.otlp.proxy.enabled.clone());
-    consumer.consume_data_plane_otlp_proxy_logs_enabled(config.data_plane.otlp.proxy.logs.enabled.clone());
-    consumer.consume_data_plane_otlp_proxy_metrics_enabled(config.data_plane.otlp.proxy.metrics.enabled.clone());
-    consumer.consume_data_plane_otlp_proxy_receiver_protocols_grpc_endpoint(
-        config.data_plane.otlp.proxy.receiver.protocols.grpc.endpoint.clone(),
-    );
-    consumer.consume_data_plane_otlp_proxy_traces_enabled(config.data_plane.otlp.proxy.traces.enabled.clone());
     consumer.consume_data_plane_remote_agent_enabled(config.data_plane.remote_agent_enabled.clone());
     consumer.consume_data_plane_secure_api_listen_address(config.data_plane.secure_api_listen_address.clone());
     consumer.consume_data_plane_serializer_zstd_compressor_level(
@@ -445,6 +452,7 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_dogstatsd_port(config.dogstatsd_port.clone());
     consumer.consume_dogstatsd_queue_size(config.dogstatsd_queue_size.clone());
     consumer.consume_dogstatsd_require_listener(config.dogstatsd_require_listener.clone());
+    consumer.consume_dogstatsd_set_timing_unit(config.dogstatsd_set_timing_unit.clone());
     consumer.consume_dogstatsd_so_rcvbuf(config.dogstatsd_so_rcvbuf.clone());
     consumer.consume_dogstatsd_socket(config.dogstatsd_socket.clone());
     consumer.consume_dogstatsd_stream_log_too_big(config.dogstatsd_stream_log_too_big.clone());

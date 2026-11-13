@@ -1,0 +1,5 @@
+enhancements:
+  - |
+    DogStatsD timing (``ms``) metrics are now sent without a unit by default.
+    Set ``dogstatsd_set_timing_unit`` to ``true`` to attach the ``millisecond``
+    unit. Restart Agent Data Plane after changing this setting.
