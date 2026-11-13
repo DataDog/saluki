@@ -180,13 +180,16 @@ fn attributes_fixture() -> Vec<u8> {
                 kv("attr_bytes_binary", bytes(&[0, 159, 146, 150])),
             ],
         ),
-        // gap/attribute-key-case: only reserved keys are matched case-insensitively; others keep their spelling.
+        // gap/attribute-key-case: only reserved keys are matched case-insensitively; others keep their spelling, so
+        // `Hostname` and `Service` stay in the content next to `hostname` and `service`.
         record(
             5,
             "key-spelling",
             vec![
                 kv("RequestID", string("r-1")),
                 kv("nested_Map", map(vec![kv("InnerKey", int(1))])),
+                kv("Hostname", string("record-hostname")),
+                kv("Service", string("record-service")),
             ],
         ),
         // gap/as-string-coercion: empty values become "" in the Agent.
