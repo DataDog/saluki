@@ -16,6 +16,7 @@ use saluki_core::{
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_io::compression::CompressionScheme;
 use saluki_metrics::MetricsBuilder;
+use stringtheory::MetaString;
 use tracing::{error, warn};
 
 use crate::common::datadog::{
@@ -50,6 +51,9 @@ pub struct DatadogLogsConfiguration {
     /// Ignored for algorithms other than `zstd`.
     zstd_level: i32,
 
+    /// Hostname for the envelope of a log that has none.
+    default_hostname: MetaString,
+
     /// Source of the current time, for the envelope `timestamp`.
     clock: fn() -> DateTime<Utc>,
 }
@@ -60,8 +64,17 @@ impl DatadogLogsConfiguration {
         Self {
             compressor_kind: compressor_kind.into(),
             zstd_level,
+            default_hostname: MetaString::empty(),
             clock: Utc::now,
         }
+    }
+
+    /// Sets the hostname for the envelope of a log that has none.
+    ///
+    /// Only the envelope uses it: a log's rendered content is left as it is. Defaults to an empty hostname.
+    pub fn with_default_hostname(mut self, default_hostname: impl Into<MetaString>) -> Self {
+        self.default_hostname = default_hostname.into();
+        self
     }
 
     /// Sets the source of the current time, so tests can pin the envelope `timestamp`.
@@ -90,7 +103,7 @@ impl IncrementalEncoderBuilder for DatadogLogsConfiguration {
         let compression_scheme = CompressionScheme::new(&self.compressor_kind, self.zstd_level);
 
         let mut request_builder = RequestBuilder::new(
-            LogsEndpointEncoder::new(self.clock),
+            LogsEndpointEncoder::new(self.default_hostname.clone(), self.clock),
             compression_scheme,
             RB_BUFFER_CHUNK_SIZE,
         )
@@ -181,14 +194,16 @@ impl IncrementalEncoder for DatadogLogs {
 struct LogsEndpointEncoder {
     tags_deduplicator: ReusableDeduplicator<Tag>,
     tags_buffer: String,
+    default_hostname: MetaString,
     clock: fn() -> DateTime<Utc>,
 }
 
 impl LogsEndpointEncoder {
-    fn new(clock: fn() -> DateTime<Utc>) -> Self {
+    fn new(default_hostname: MetaString, clock: fn() -> DateTime<Utc>) -> Self {
         Self {
             tags_deduplicator: ReusableDeduplicator::new(),
             tags_buffer: String::new(),
+            default_hostname,
             clock,
         }
     }
@@ -197,9 +212,9 @@ impl LogsEndpointEncoder {
     ///
     /// The envelope has the same fields, in the same order, as the logs intake's JSON envelope: the message, the
     /// status, the time the log was encoded in milliseconds, the hostname, the service, the source, and the tags. Every
-    /// field is present, empty when the log has no value for it. The message is written as it is: a log's producer
-    /// renders whatever content the message should carry, such as a JSON object holding the log's properties, so the
-    /// log's additional properties aren't written.
+    /// field is present, empty when the log has no value for it, except that a log without a hostname gets the
+    /// default hostname. The message is written as it is: a log's producer renders whatever content the message should
+    /// carry, such as a JSON object holding the log's properties, so the log's additional properties aren't written.
     fn write_envelope(&mut self, log: &Log, buffer: &mut Vec<u8>) -> Result<(), serde_json::Error> {
         // A log without a status is sent as `info`.
         let status = if log.status().is_empty() {
@@ -216,7 +231,13 @@ impl LogsEndpointEncoder {
         buffer.extend_from_slice(b",\"timestamp\":");
         buffer.extend_from_slice(itoa::Buffer::new().format((self.clock)().timestamp_millis()).as_bytes());
         buffer.extend_from_slice(b",\"hostname\":");
-        serde_json::to_writer(&mut *buffer, log.hostname())?;
+        // A log without a hostname gets the default hostname, in the envelope only.
+        let hostname = if log.hostname().is_empty() {
+            &*self.default_hostname
+        } else {
+            log.hostname()
+        };
+        serde_json::to_writer(&mut *buffer, hostname)?;
         buffer.extend_from_slice(b",\"service\":");
         serde_json::to_writer(&mut *buffer, log.service())?;
         buffer.extend_from_slice(b",\"ddsource\":");
@@ -315,7 +336,7 @@ mod tests {
     }
 
     fn envelope(log: &Log) -> String {
-        let mut encoder = LogsEndpointEncoder::new(fixed_clock);
+        let mut encoder = LogsEndpointEncoder::new(MetaString::empty(), fixed_clock);
         let mut buffer = Vec::new();
         encoder
             .write_envelope(log, &mut buffer)
@@ -329,7 +350,7 @@ mod tests {
 
     #[test]
     fn releases_the_excess_of_an_oversized_tags_buffer() {
-        let mut encoder = LogsEndpointEncoder::new(fixed_clock);
+        let mut encoder = LogsEndpointEncoder::new(MetaString::empty(), fixed_clock);
         let mut buffer = Vec::new();
 
         let ordinary = Log::new("m").with_tags(tag_set(["env:prod"]));
@@ -384,6 +405,27 @@ mod tests {
                 NOW_MS
             )
         );
+    }
+
+    #[test]
+    fn uses_the_default_hostname_only_when_the_log_has_none() {
+        let mut encoder = LogsEndpointEncoder::new(MetaString::from_static("default-host"), fixed_clock);
+        let content = r#"{"message":"hi","status":""}"#;
+        let mut write = |log: &Log| {
+            let mut buffer = Vec::new();
+            encoder
+                .write_envelope(log, &mut buffer)
+                .expect("envelope should serialize");
+            serde_json::from_slice::<serde_json::Value>(&buffer).expect("envelope should be JSON")
+        };
+
+        // The default hostname goes only into the envelope: the rendered content is sent as it is.
+        let without_host = write(&Log::new(content));
+        assert_eq!(without_host["hostname"], json!("default-host"));
+        assert_eq!(without_host["message"], json!(content));
+
+        let with_host = write(&Log::new("hello").with_hostname(MetaString::from_static("log-host")));
+        assert_eq!(with_host["hostname"], json!("log-host"));
     }
 
     #[test]
