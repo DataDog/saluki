@@ -58,6 +58,8 @@ pub(crate) struct CaseInfo {
     pub(crate) file: PathBuf,
     pub(crate) description: Option<String>,
     pub(crate) timeout: Timeout,
+    /// The case is loaded and planned, but no run includes it.
+    pub(crate) disabled: bool,
 }
 
 /// A time budget, written with a unit: `20m`, `180s`. A case's timeout and a step's durations are written this way.
@@ -117,6 +119,8 @@ struct CaseFile {
     #[serde(default, deserialize_with = "strict_optional_string")]
     description: Option<String>,
     timeout: Timeout,
+    #[serde(default)]
+    disabled: bool,
     subject_os: Vec<Os>,
     participants: BTreeMap<String, ParticipantEntry>,
     procedure: Vec<Value>,
@@ -619,6 +623,7 @@ pub(crate) fn load(dir: &Path, registry: &Registry) -> Result<LoadedCase, Vec<Ca
             file,
             description: case.description,
             timeout: case.timeout,
+            disabled: case.disabled,
         },
         subject_os: case.subject_os,
         participants,

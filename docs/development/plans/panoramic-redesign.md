@@ -228,6 +228,7 @@ does not know is an error before anything starts.
 ```yaml
 description: <text>                    # optional
 timeout: <duration>                    # required, with a unit: 20m, 180s
+disabled: true                         # optional: planned, but no run includes the case
 subject_os: [linux, macos, windows]    # required, at least one
 participants:
   <name>: <participant>                # exactly one has subject: true
@@ -1816,8 +1817,8 @@ Why this order:
   - Traces and logs: `compare` of `traces` and `logs`, the APM endpoints over TCP and a Unix
     socket, and the embedded collector's receiver endpoint on `agent` for the OTTL cases. Migrates
     the trace and log cases.
-  - The new schema has no `disabled` key, so a disabled case migrates with its family and moves to
-    `test/correctness/disabled`, which no job runs.
+  - A disabled case migrates with its family and keeps `disabled: true`, which the schema gains here.
+    Discovery still loads and plans it, so it cannot rot, and leaves it out of every run.
 - **Watch out:** most of this PR is case files. Keep one commit per family, so a family with a flaky
   case can be split off and the others can merge.
   - DogStatsD: `dsd-origin-detection` keeps the container environment it tests today. `dsd-udp`,
