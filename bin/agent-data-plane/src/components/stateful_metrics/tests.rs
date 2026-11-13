@@ -2048,6 +2048,12 @@ async fn retry_telemetry_reports_retention_replays_and_returns() {
     assert_eq!(queued_names(&mut worker).await, ["requests"]);
 }
 
+// Other tests may have already initialized these process-wide TLS resources.
+fn initialize_tls() {
+    let _ = initialize_default_crypto_provider();
+    let _ = load_platform_root_certificates();
+}
+
 async fn tls_worker(harness: &EndpointHarness, trusted: &SelfSignedCert) -> StatefulMetricsWorker {
     let mut roots = RootCertStore::empty();
     roots.add(trusted.cert_chain().pop().unwrap()).unwrap();
@@ -2062,7 +2068,7 @@ async fn tls_worker(harness: &EndpointHarness, trusted: &SelfSignedCert) -> Stat
 
 #[tokio::test]
 async fn https_negotiates_http2_and_reuses_acknowledged_dictionary() {
-    initialize_default_crypto_provider().unwrap();
+    initialize_tls();
     let cert = SelfSignedCert::new(["127.0.0.1"]);
     let mut harness = EndpointHarness::tls(&cert).await;
     let mut worker = tls_worker(&harness, &cert).await;
@@ -2089,9 +2095,8 @@ async fn https_negotiates_http2_and_reuses_acknowledged_dictionary() {
 
 #[tokio::test]
 async fn https_rejects_untrusted_certificates() {
-    initialize_default_crypto_provider().unwrap();
+    initialize_tls();
     let cert = SelfSignedCert::new(["127.0.0.1"]);
-    load_platform_root_certificates().unwrap();
     let mut harness = EndpointHarness::tls(&cert).await;
     let mut config = configuration(1, 512);
     config.endpoints = vec![harness.endpoint.clone()];
@@ -2111,7 +2116,7 @@ async fn https_rejects_untrusted_certificates() {
 
 #[tokio::test]
 async fn https_rejects_certificate_hostname_mismatches() {
-    initialize_default_crypto_provider().unwrap();
+    initialize_tls();
     let cert = SelfSignedCert::localhost();
     let mut harness = EndpointHarness::tls(&cert).await;
     let mut worker = tls_worker(&harness, &cert).await;
@@ -2128,7 +2133,7 @@ async fn https_rejects_certificate_hostname_mismatches() {
 
 #[tokio::test]
 async fn https_and_http_endpoints_receive_the_same_payload() {
-    initialize_default_crypto_provider().unwrap();
+    initialize_tls();
     let cert = SelfSignedCert::new(["127.0.0.1"]);
     let mut encrypted = EndpointHarness::tls(&cert).await;
     let mut plaintext = EndpointHarness::new().await;
