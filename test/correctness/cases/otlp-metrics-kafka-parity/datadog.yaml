@@ -8,13 +8,10 @@ api_key: dummy-api-key-correctness-testing
 # We have to specifically configure the health port to use.
 health_port: 5555
 
-# Point ourselves at the datadog-intake service.
-dd_url: "http://datadog-intake:2049"
-
-# Enable OTLP receiver on gRPC port 4317
+# Enable OTLP receiver on gRPC
 otlp_config:
   receiver:
     protocols:
       grpc:
-        endpoint: "0.0.0.0:54317"
+        endpoint: "0.0.0.0:{{ self.endpoints.agent_otlp_grpc.port }}"
         max_recv_msg_size_mib: 4
