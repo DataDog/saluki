@@ -88,14 +88,45 @@ mod tests {
     use super::WellKnownTags;
 
     #[test]
-    fn well_known_tags_empty() {
-        let tags = RawTags::new("", usize::MAX, usize::MAX);
-        let (wkt, _) = WellKnownTags::split_raw_tags(&tags);
+    fn well_known_tags_are_parsed_from_their_tag() {
+        let tag = |key: &str, value: &str| format!("{key}:{value}");
+        let card = |value| (None, None, None, value);
+        // Expected hostname, pod UID, JMX check name, and cardinality.
+        let cases = [
+            (String::new(), (None, None, None, None)),
+            // Cardinality values are case-insensitive, to match the core Datadog Agent.
+            (tag(CARDINALITY_TAG_KEY, "none"), card(Some(OriginTagCardinality::None))),
+            (tag(CARDINALITY_TAG_KEY, "low"), card(Some(OriginTagCardinality::Low))),
+            (
+                tag(CARDINALITY_TAG_KEY, "orch"),
+                card(Some(OriginTagCardinality::Orchestrator)),
+            ),
+            (
+                tag(CARDINALITY_TAG_KEY, "orchestrator"),
+                card(Some(OriginTagCardinality::Orchestrator)),
+            ),
+            (tag(CARDINALITY_TAG_KEY, "high"), card(Some(OriginTagCardinality::High))),
+            (tag(CARDINALITY_TAG_KEY, "Low"), card(Some(OriginTagCardinality::Low))),
+            (tag(CARDINALITY_TAG_KEY, "HiGH"), card(Some(OriginTagCardinality::High))),
+            (tag(CARDINALITY_TAG_KEY, "MEDIUM"), card(None)),
+            (tag(CARDINALITY_TAG_KEY, "fakelevel"), card(None)),
+            (tag(HOST_TAG_KEY, ""), (Some(""), None, None, None)),
+            (tag(HOST_TAG_KEY, "localhost"), (Some("localhost"), None, None, None)),
+            (tag(JMX_CHECK_NAME_TAG_KEY, ""), (None, None, Some(""), None)),
+            (
+                tag(JMX_CHECK_NAME_TAG_KEY, "check_name"),
+                (None, None, Some("check_name"), None),
+            ),
+            (tag(ENTITY_ID_TAG_KEY, "asdasda"), (None, Some("asdasda"), None, None)),
+            (tag(ENTITY_ID_TAG_KEY, ENTITY_ID_IGNORE_VALUE), (None, None, None, None)),
+        ];
 
-        assert_eq!(wkt.cardinality, None);
-        assert_eq!(wkt.hostname, None);
-        assert_eq!(wkt.jmx_check_name, None);
-        assert_eq!(wkt.pod_uid, None);
+        for (raw_tags, expected) in cases {
+            let tags = RawTags::new(&raw_tags, usize::MAX, usize::MAX);
+            let (wkt, _) = WellKnownTags::split_raw_tags(&tags);
+            let actual = (wkt.hostname, wkt.pod_uid, wkt.jmx_check_name, wkt.cardinality);
+            assert_eq!(actual, expected, "raw tags {raw_tags:?}");
+        }
     }
 
     #[test]
@@ -117,70 +148,5 @@ mod tests {
         assert_eq!(wkt.pod_uid, None);
         assert_eq!(wkt.cardinality, None);
         assert_eq!(wkt.jmx_check_name, Some("check"));
-    }
-
-    #[test]
-    fn well_known_tags_cardinality() {
-        let cases = [
-            // Canonical lowercase values.
-            ("none", Some(OriginTagCardinality::None)),
-            ("low", Some(OriginTagCardinality::Low)),
-            ("orch", Some(OriginTagCardinality::Orchestrator)),
-            ("orchestrator", Some(OriginTagCardinality::Orchestrator)),
-            ("high", Some(OriginTagCardinality::High)),
-            // Wrong-case variants — case-insensitive to match the core Datadog Agent.
-            ("Low", Some(OriginTagCardinality::Low)),
-            ("HiGH", Some(OriginTagCardinality::High)),
-            // Genuinely unknown values still return None.
-            ("MEDIUM", None),
-            ("fakelevel", None),
-        ];
-
-        for (tag_value, expected) in cases {
-            let card_tag = format!("{}:{}", CARDINALITY_TAG_KEY, tag_value);
-            let tags = RawTags::new(&card_tag, usize::MAX, usize::MAX);
-            let (wkt, _) = WellKnownTags::split_raw_tags(&tags);
-
-            assert_eq!(wkt.cardinality, expected);
-        }
-    }
-
-    #[test]
-    fn well_known_tags_hostname() {
-        let cases = [("", Some("")), ("localhost", Some("localhost"))];
-
-        for (tag_value, expected) in cases {
-            let host_tag = format!("{}:{}", HOST_TAG_KEY, tag_value);
-            let tags = RawTags::new(&host_tag, usize::MAX, usize::MAX);
-            let (wkt, _) = WellKnownTags::split_raw_tags(&tags);
-
-            assert_eq!(wkt.hostname, expected);
-        }
-    }
-
-    #[test]
-    fn well_known_tags_jmx_check_name() {
-        let cases = [("", Some("")), ("check_name", Some("check_name"))];
-
-        for (tag_value, expected) in cases {
-            let jmx_tag = format!("{}:{}", JMX_CHECK_NAME_TAG_KEY, tag_value);
-            let tags = RawTags::new(&jmx_tag, usize::MAX, usize::MAX);
-            let (wkt, _) = WellKnownTags::split_raw_tags(&tags);
-
-            assert_eq!(wkt.jmx_check_name, expected);
-        }
-    }
-
-    #[test]
-    fn well_known_tags_pod_uid() {
-        let cases = [("asdasda", Some("asdasda")), (ENTITY_ID_IGNORE_VALUE, None)];
-
-        for (tag_value, expected) in cases {
-            let pod_tag = format!("{}:{}", ENTITY_ID_TAG_KEY, tag_value);
-            let tags = RawTags::new(&pod_tag, usize::MAX, usize::MAX);
-            let (wkt, _) = WellKnownTags::split_raw_tags(&tags);
-
-            assert_eq!(wkt.pod_uid, expected);
-        }
     }
 }

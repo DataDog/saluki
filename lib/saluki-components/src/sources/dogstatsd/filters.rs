@@ -122,35 +122,49 @@ mod tests {
     }
 
     #[test]
-    fn test_enable_payloads_filter_metrics() {
-        let serie_metric = metric_packet(Counter(1.0.into()));
-        let sketch_metric = metric_packet(Distribution(1.0.into()));
-        let mut filter = EnablePayloadsFilter::default();
-        assert!(filter.allow_metric(&serie_metric));
-        assert!(filter.allow_metric(&sketch_metric));
+    fn enable_payloads_filter_allows_only_enabled_payload_types() {
+        let default = EnablePayloadsFilter::default;
+        // Expected verdicts for a series, a sketch, an event, and a service check.
+        let cases = [
+            ("default", default(), [true, true, true, true]),
+            (
+                "series off",
+                default().with_allow_series(false),
+                [false, true, true, true],
+            ),
+            (
+                "sketches off",
+                default().with_allow_sketches(false),
+                [true, false, true, true],
+            ),
+            (
+                "series and sketches off",
+                default().with_allow_series(false).with_allow_sketches(false),
+                [false, false, true, true],
+            ),
+            (
+                "events off",
+                default().with_allow_events(false),
+                [true, true, false, true],
+            ),
+            (
+                "service checks off",
+                default().with_allow_service_checks(false),
+                [true, true, true, false],
+            ),
+        ];
 
-        filter = filter.with_allow_series(false).with_allow_sketches(false);
-        assert!(!filter.allow_metric(&serie_metric));
-        assert!(!filter.allow_metric(&sketch_metric));
-    }
-
-    #[test]
-    fn test_enable_payloads_filter_events() {
-        let event = event_packet();
-        let mut filter = EnablePayloadsFilter::default();
-        assert!(filter.allow_event(&event));
-
-        filter = filter.with_allow_events(false);
-        assert!(!filter.allow_event(&event));
-    }
-
-    #[test]
-    fn test_enable_payloads_filter_service_checks() {
-        let service_check = service_check_packet();
-        let mut filter = EnablePayloadsFilter::default();
-        assert!(filter.allow_service_check(&service_check));
-
-        filter = filter.with_allow_service_checks(false);
-        assert!(!filter.allow_service_check(&service_check));
+        let serie = metric_packet(Counter(1.0.into()));
+        let sketch = metric_packet(Distribution(1.0.into()));
+        let (event, service_check) = (event_packet(), service_check_packet());
+        for (name, filter, expected) in cases {
+            let actual = [
+                filter.allow_metric(&serie),
+                filter.allow_metric(&sketch),
+                filter.allow_event(&event),
+                filter.allow_service_check(&service_check),
+            ];
+            assert_eq!(actual, expected, "{name}");
+        }
     }
 }
