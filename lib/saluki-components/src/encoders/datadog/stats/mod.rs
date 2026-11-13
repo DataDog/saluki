@@ -328,7 +328,10 @@ async fn run_request_builder(
 
                     match stats_request_builder.encode(stats_to_retry).await {
                         Ok(None) => payload_telemetry.track_stats(stats_counts),
-                        Ok(Some(_)) => {}
+                        Ok(Some(_)) => {
+                            error!("Stats did not fit in a request after flushing; dropping them.");
+                            telemetry.events_dropped_encoder().increment(1);
+                        }
                         Err(e) => {
                             error!(error = %e, "Failed to encode stats.");
                             telemetry.events_dropped_encoder().increment(1);

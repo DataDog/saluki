@@ -429,7 +429,10 @@ async fn run_request_builder(
                     // Now try to encode the trace again.
                     match trace_request_builder.encode(trace_to_retry).await {
                         Ok(None) => payload_telemetry.track_trace(trace_counts),
-                        Ok(Some(_)) => {}
+                        Ok(Some(_)) => {
+                            error!("Trace did not fit in a request after flushing; dropping it.");
+                            telemetry.events_dropped_encoder().increment(1);
+                        }
                         Err(e) => {
                             error!(error = %e, "Failed to encode trace.");
                             telemetry.events_dropped_encoder().increment(1);
