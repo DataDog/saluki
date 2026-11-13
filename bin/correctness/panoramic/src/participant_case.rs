@@ -82,6 +82,8 @@ pub(crate) struct ParticipantCase {
     description: Option<String>,
     timeout: Duration,
     runtime: &'static str,
+    /// Discovery leaves the case out.
+    pub(crate) disabled: bool,
     /// The plan for the run's subject OS, or why the case is skipped.
     pub(crate) plan: Result<CasePlan, String>,
 }
@@ -115,6 +117,7 @@ impl ParticipantCase {
             description: case.info.description.clone(),
             timeout: case.info.timeout.duration,
             runtime: runtime_of(subject_os),
+            disabled: case.info.disabled,
             plan,
         };
         Ok((participant_case, images))
