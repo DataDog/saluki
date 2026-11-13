@@ -372,6 +372,9 @@ mod tests {
         for (rate, route, max_points) in [
             (0.0, "/custom/sketch-shadow", usize::MAX),
             (1.0, "invalid route", usize::MAX),
+            // URI parsing accepts these, but endpoint rewriting requires an absolute path.
+            (1.0, "localhost:8080", usize::MAX),
+            (1.0, "*", usize::MAX),
             // Dropping the oversized metric used to advertise the surviving V3 metric as a complete group.
             (1.0, "/custom/sketch-shadow", 1),
         ] {

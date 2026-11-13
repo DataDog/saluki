@@ -2,7 +2,7 @@ use std::{collections::HashMap, collections::VecDeque, ops::Range, sync::Arc, ti
 
 use async_trait::async_trait;
 use ddsketch::DDSketch;
-use http::{HeaderValue, Method, Request};
+use http::{HeaderValue, Method, Request, Uri};
 use protobuf::{rt::WireType, CodedOutputStream};
 use saluki_common::{
     buf::{ChunkedBytesBuffer, FrozenChunkedBytesBuffer},
@@ -381,6 +381,14 @@ impl DatadogMetricsConfiguration {
     fn build_sketch_shadow_config(&self, disabled_by_compressor: bool) -> Result<SketchShadowConfig, GenericError> {
         let settings = &self.v3_api.sketches;
         if disabled_by_compressor || settings.shadow_sample_rate <= 0.0 || settings.shadow_sample_rate.is_nan() {
+            return Ok(SketchShadowConfig::default());
+        }
+        let valid_route = settings
+            .beta_route
+            .parse::<Uri>()
+            .is_ok_and(|uri| uri.path_and_query().is_some_and(|path| path.path().starts_with('/')));
+        if !valid_route {
+            warn!(route = %settings.beta_route, "Invalid sketch shadow route. Disabling sketch shadowing.");
             return Ok(SketchShadowConfig::default());
         }
         let mut eligible_destinations = Vec::new();
