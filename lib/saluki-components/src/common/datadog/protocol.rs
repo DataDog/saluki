@@ -93,6 +93,15 @@ pub struct V3ApiSettings {
 
     /// Resolved maximum sketch points per payload; `usize::MAX` disables the cap.
     pub max_points_per_payload: usize,
+
+    /// Route for sampled V3 sketch copies
+    pub beta_route: String,
+
+    /// Per-batch sampling probability
+    pub shadow_sample_rate: f64,
+
+    /// Resolved destination sites eligible for sampling
+    pub shadow_sites: Vec<String>,
 }
 
 impl V3ApiSettings {

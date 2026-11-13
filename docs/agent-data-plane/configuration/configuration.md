@@ -25,47 +25,44 @@ If you find an error on this page, please [open an issue].
 The following settings are not yet supported in ADP but are planned with GitHub issue links for
 tracking.
 
-| Config Key                                                       | Description                                       | Issue   |
-| ---------------------------------------------------------------- | ------------------------------------------------- | ------- |
-| `apm_config.apm_dd_url`                                          | APM intake URL override                           | [#2419] |
-| `apm_config.traces_send_to_main_endpoint`                        | Send traces and stats to the main endpoint        | [#2419] |
-| `dogstatsd_client_drop_detection.dropped_ratio_threshold`        | Client drop ratio that marks a client unhealthy   | [#3088] |
-| `dogstatsd_client_drop_detection.enabled`                        | DogStatsD client drop detection                   | [#3088] |
-| `dogstatsd_client_drop_detection.recovery_confirmation_window`   | Time below threshold before a client recovers     | [#3088] |
-| `dogstatsd_client_drop_detection.unhealthy_confirmation_window`  | Time above threshold before a client is unhealthy | [#3088] |
-| `dogstatsd_experimental_http.max_concurrent_requests`            | DogStatsD HTTP concurrent request limit           | [#1682] |
-| `dogstatsd_experimental_http.max_payload_size`                   | DogStatsD HTTP request body size limit            | [#1682] |
-| `dogstatsd_experimental_http.read_timeout`                       | DogStatsD HTTP request read timeout               | [#1682] |
-| `forwarder.dynamic_concurrency.decrease_threshold`               | Dynamic concurrency decrease threshold            | [#3089] |
-| `forwarder.dynamic_concurrency.eval_interval`                    | Dynamic concurrency evaluation interval           | [#3089] |
-| `forwarder.dynamic_concurrency.increase_cooldown`                | Dynamic concurrency increase cooldown             | [#3089] |
-| `forwarder.dynamic_concurrency.increase_step`                    | Dynamic concurrency increase step                 | [#3089] |
-| `forwarder.dynamic_concurrency.increase_threshold`               | Dynamic concurrency increase threshold            | [#3089] |
-| `forwarder.dynamic_concurrency.initial_limit`                    | Dynamic concurrency initial limit                 | [#3089] |
-| `forwarder.dynamic_concurrency.max_concurrent_requests`          | Dynamic concurrency request ceiling               | [#3089] |
-| `forwarder.dynamic_concurrency.min_decrease_interval`            | Dynamic concurrency minimum decrease interval     | [#3089] |
-| `forwarder.dynamic_concurrency.num_workers`                      | Dynamic concurrency worker count                  | [#3089] |
-| `forwarder_concurrency_policy`                                   | Forwarder concurrency policy                      | [#3089] |
-| `intake_routing.enabled`                                         | Pre-intake endpoint routing                       | [#3090] |
-| `intake_routing.refresh_interval`                                | Intake routing refresh interval                   | [#3090] |
-| `intake_routing.startup_grace_period`                            | Intake routing startup grace period               | [#3090] |
-| `metric_lookback.capacity`                                       | Metric lookback ring capacity                     | [#2558] |
-| `metric_lookback.dogstatsd.metric_names`                         | DogStatsD metric lookback selection               | [#2558] |
-| `metric_lookback.egress.post_recovery_window`                    | Lookback post-recovery replay window              | [#2558] |
-| `metric_lookback.egress.pre_trigger_window`                      | Lookback pre-trigger replay window                | [#2558] |
-| `metric_lookback.enabled`                                        | Enable metric lookback                            | [#2558] |
-| `metric_lookback.monitor.evaluation_interval`                    | Lookback monitor evaluation window                | [#2558] |
-| `metric_lookback.monitor.metric_name`                            | Metric watched by lookback monitor                | [#2558] |
-| `metric_lookback.monitor.mode`                                   | Metric lookback monitor mode                      | [#2558] |
-| `metric_lookback.monitor.partition_tags`                         | Lookback monitor tag partitions                   | [#2558] |
-| `metric_lookback.monitor.range_epsilon`                          | Lookback monitor range threshold                  | [#2558] |
-| `metric_lookback.shard_count`                                    | Metric lookback ring shards                       | [#2558] |
-| `otlp_config.metrics.infra_attributes.as_tags`                   | Promote infrastructure attributes to tags         | [#2559] |
-| `serializer_experimental_use_v3_api.sketches.beta_route`         | V3 sketches beta intake route                     | [#2555] |
-| `serializer_experimental_use_v3_api.sketches.shadow_sample_rate` | V3 sketches shadow sample rate                    | [#2555] |
-| `serializer_experimental_use_v3_api.sketches.shadow_sites`       | V3 sketches shadow sites                          | [#2555] |
-| `use_v3_api.distributions.enabled`                               | Send sketches using the V3 API                    | [#3091] |
-| `use_v3_api.distributions.endpoints`                             | Per-endpoint V3 sketches mode                     | [#3091] |
+| Config Key                                                      | Description                                       | Issue   |
+| --------------------------------------------------------------- | ------------------------------------------------- | ------- |
+| `apm_config.apm_dd_url`                                         | APM intake URL override                           | [#2419] |
+| `apm_config.traces_send_to_main_endpoint`                       | Send traces and stats to the main endpoint        | [#2419] |
+| `dogstatsd_client_drop_detection.dropped_ratio_threshold`       | Client drop ratio that marks a client unhealthy   | [#3088] |
+| `dogstatsd_client_drop_detection.enabled`                       | DogStatsD client drop detection                   | [#3088] |
+| `dogstatsd_client_drop_detection.recovery_confirmation_window`  | Time below threshold before a client recovers     | [#3088] |
+| `dogstatsd_client_drop_detection.unhealthy_confirmation_window` | Time above threshold before a client is unhealthy | [#3088] |
+| `dogstatsd_experimental_http.max_concurrent_requests`           | DogStatsD HTTP concurrent request limit           | [#1682] |
+| `dogstatsd_experimental_http.max_payload_size`                  | DogStatsD HTTP request body size limit            | [#1682] |
+| `dogstatsd_experimental_http.read_timeout`                      | DogStatsD HTTP request read timeout               | [#1682] |
+| `forwarder.dynamic_concurrency.decrease_threshold`              | Dynamic concurrency decrease threshold            | [#3089] |
+| `forwarder.dynamic_concurrency.eval_interval`                   | Dynamic concurrency evaluation interval           | [#3089] |
+| `forwarder.dynamic_concurrency.increase_cooldown`               | Dynamic concurrency increase cooldown             | [#3089] |
+| `forwarder.dynamic_concurrency.increase_step`                   | Dynamic concurrency increase step                 | [#3089] |
+| `forwarder.dynamic_concurrency.increase_threshold`              | Dynamic concurrency increase threshold            | [#3089] |
+| `forwarder.dynamic_concurrency.initial_limit`                   | Dynamic concurrency initial limit                 | [#3089] |
+| `forwarder.dynamic_concurrency.max_concurrent_requests`         | Dynamic concurrency request ceiling               | [#3089] |
+| `forwarder.dynamic_concurrency.min_decrease_interval`           | Dynamic concurrency minimum decrease interval     | [#3089] |
+| `forwarder.dynamic_concurrency.num_workers`                     | Dynamic concurrency worker count                  | [#3089] |
+| `forwarder_concurrency_policy`                                  | Forwarder concurrency policy                      | [#3089] |
+| `intake_routing.enabled`                                        | Pre-intake endpoint routing                       | [#3090] |
+| `intake_routing.refresh_interval`                               | Intake routing refresh interval                   | [#3090] |
+| `intake_routing.startup_grace_period`                           | Intake routing startup grace period               | [#3090] |
+| `metric_lookback.capacity`                                      | Metric lookback ring capacity                     | [#2558] |
+| `metric_lookback.dogstatsd.metric_names`                        | DogStatsD metric lookback selection               | [#2558] |
+| `metric_lookback.egress.post_recovery_window`                   | Lookback post-recovery replay window              | [#2558] |
+| `metric_lookback.egress.pre_trigger_window`                     | Lookback pre-trigger replay window                | [#2558] |
+| `metric_lookback.enabled`                                       | Enable metric lookback                            | [#2558] |
+| `metric_lookback.monitor.evaluation_interval`                   | Lookback monitor evaluation window                | [#2558] |
+| `metric_lookback.monitor.metric_name`                           | Metric watched by lookback monitor                | [#2558] |
+| `metric_lookback.monitor.mode`                                  | Metric lookback monitor mode                      | [#2558] |
+| `metric_lookback.monitor.partition_tags`                        | Lookback monitor tag partitions                   | [#2558] |
+| `metric_lookback.monitor.range_epsilon`                         | Lookback monitor range threshold                  | [#2558] |
+| `metric_lookback.shard_count`                                   | Metric lookback ring shards                       | [#2558] |
+| `otlp_config.metrics.infra_attributes.as_tags`                  | Promote infrastructure attributes to tags         | [#2559] |
+| `use_v3_api.distributions.enabled`                              | Send sketches using the V3 API                    | [#3091] |
+| `use_v3_api.distributions.endpoints`                            | Per-endpoint V3 sketches mode                     | [#3091] |
 
 <!-- section:unsupported-not-planned -->
 ### Not Planned
@@ -1209,10 +1206,13 @@ The following settings work in ADP with the same behavior as the core agent.
 | `run_path`                                                                                 | Runtime state directory                            |
 | `serializer_compressor_kind`                                                               | Payload compression algorithm                      |
 | `serializer_experimental_use_v3_api.compression_level`                                     | V3 API zstd compression level                      |
+| `serializer_experimental_use_v3_api.sketches.beta_route`                                   | V3 sketches beta intake route                      |
 | `serializer_experimental_use_v3_api.sketches.endpoints`                                    | Endpoints enabling v3 sketches API                 |
 | `serializer_experimental_use_v3_api.sketches.max_compressed_payload_size`                  | Max compressed V3 sketch payload size              |
 | `serializer_experimental_use_v3_api.sketches.max_points_per_payload`                       | Max data points per V3 sketch payload              |
 | `serializer_experimental_use_v3_api.sketches.max_uncompressed_payload_size`                | Max uncompressed V3 sketch payload size            |
+| `serializer_experimental_use_v3_api.sketches.shadow_sample_rate`                           | V3 sketches shadow sample rate                     |
+| `serializer_experimental_use_v3_api.sketches.shadow_sites`                                 | V3 sketches shadow sites                           |
 | `serializer_max_payload_size`                                                              | Max compressed payload size (generic)              |
 | `serializer_max_series_payload_size`                                                       | Max compressed V2 series payload size              |
 | `serializer_max_series_points_per_payload`                                                 | Max data points per series payload                 |
@@ -1532,6 +1532,10 @@ the instrumentation library name and span kind.
 A non-empty `otlp_config.traces.span_name_remappings` selects the Agent's V1 operation and
 resource naming for OTLP spans, and renames each operation name it lists.
 
+### `serializer_experimental_use_v3_api.sketches.beta_route`
+
+Defaults to `/api/intake/metrics/v3beta/sketches`. Overrides the route used for sampled sketch copies; the authoritative V2 route is unchanged.
+
 ### `serializer_experimental_use_v3_api.sketches.max_compressed_payload_size`
 
 Defaults to `0`. Zero or negative values use `serializer_max_payload_size`.
@@ -1543,6 +1547,14 @@ Defaults to `0`. Zero or negative values disable the sketch point limit.
 ### `serializer_experimental_use_v3_api.sketches.max_uncompressed_payload_size`
 
 Defaults to `0`. Zero or negative values use `serializer_max_uncompressed_payload_size`.
+
+### `serializer_experimental_use_v3_api.sketches.shadow_sample_rate`
+
+Defaults to `0` (disabled). Samples eligible V2 sketch batches independently per destination. Zero or negative values disable shadowing; values at least `1` sample every batch. Authoritative V3 sketches are not shadowed.
+
+### `serializer_experimental_use_v3_api.sketches.shadow_sites`
+
+Defaults to `["datadoghq.com"]`. Matches the resolved V2 destination site. An empty list disables sketch shadowing for all sites.
 
 ### `sslkeylogfile`
 
@@ -1600,7 +1612,6 @@ Both commands scrub recognized secret values before writing JSON to standard out
 [#1755]: https://github.com/DataDog/saluki/issues/1755
 [#2079]: https://github.com/DataDog/saluki/issues/2079
 [#2419]: https://github.com/DataDog/saluki/issues/2419
-[#2555]: https://github.com/DataDog/saluki/issues/2555
 [#2557]: https://github.com/DataDog/saluki/issues/2557
 [#2558]: https://github.com/DataDog/saluki/issues/2558
 [#2559]: https://github.com/DataDog/saluki/issues/2559

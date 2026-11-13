@@ -5855,6 +5855,7 @@ dependencies = [
  "tracing-rolling-file",
  "tracing-subscriber",
  "url",
+ "uuid",
  "zstd",
 ]
 
@@ -7550,6 +7551,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4a0e2d11620c50695fe12bbbfde96b3477fe606e7284c22d505c12ce51214514"
 dependencies = [
  "getrandom 0.4.2",
+ "js-sys",
+ "wasm-bindgen",
 ]
 
 [[package]]

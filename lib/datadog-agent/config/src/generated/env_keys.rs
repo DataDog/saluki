@@ -1232,6 +1232,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Integer,
     },
     EnvKey {
+        env_vars: &["DD_SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_BETA_ROUTE"],
+        path: &["serializer_experimental_use_v3_api", "sketches", "beta_route"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
         env_vars: &["DD_SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_ENDPOINTS"],
         path: &["serializer_experimental_use_v3_api", "sketches", "endpoints"],
         decode: EnvDecode::StringList,
@@ -1262,6 +1267,16 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
             "max_uncompressed_payload_size",
         ],
         decode: EnvDecode::Integer,
+    },
+    EnvKey {
+        env_vars: &["DD_SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_SHADOW_SAMPLE_RATE"],
+        path: &["serializer_experimental_use_v3_api", "sketches", "shadow_sample_rate"],
+        decode: EnvDecode::Float,
+    },
+    EnvKey {
+        env_vars: &["DD_SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_SHADOW_SITES"],
+        path: &["serializer_experimental_use_v3_api", "sketches", "shadow_sites"],
+        decode: EnvDecode::StringList,
     },
     EnvKey {
         env_vars: &["DD_SERIALIZER_MAX_PAYLOAD_SIZE"],

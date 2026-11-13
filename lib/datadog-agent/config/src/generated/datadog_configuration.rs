@@ -2181,6 +2181,12 @@ impl Default for SerializerExperimentalUseV3Api {
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct SerializerExperimentalUseV3ApiSketches {
+    #[serde(
+        default = "defaults::datadog_configuration_serializer_experimental_use_v3_api_sketches_beta_route"
+    )]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
+    pub beta_route: String,
+
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
     #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub endpoints: Vec<String>,
@@ -2196,15 +2202,30 @@ pub struct SerializerExperimentalUseV3ApiSketches {
     #[serde(default)]
     #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub max_uncompressed_payload_size: i64,
+
+    #[serde(
+        default = "defaults::datadog_configuration_serializer_experimental_use_v3_api_sketches_shadow_sample_rate"
+    )]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_f64")]
+    pub shadow_sample_rate: f64,
+
+    #[serde(
+        default = "defaults::datadog_configuration_serializer_experimental_use_v3_api_sketches_shadow_sites"
+    )]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
+    pub shadow_sites: Vec<String>,
 }
 
 impl Default for SerializerExperimentalUseV3ApiSketches {
     fn default() -> Self {
         Self {
+            beta_route: defaults::datadog_configuration_serializer_experimental_use_v3_api_sketches_beta_route(),
             endpoints: Default::default(),
             max_compressed_payload_size: Default::default(),
             max_points_per_payload: Default::default(),
             max_uncompressed_payload_size: Default::default(),
+            shadow_sample_rate: defaults::datadog_configuration_serializer_experimental_use_v3_api_sketches_shadow_sample_rate(),
+            shadow_sites: defaults::datadog_configuration_serializer_experimental_use_v3_api_sketches_shadow_sites(),
         }
     }
 }
@@ -2510,6 +2531,17 @@ pub mod defaults {
     }
     pub(super) fn datadog_configuration_otlp_config_traces_probabilistic_sampler_sampling_percentage() -> f64 {
         100_f64
+    }
+    pub(super) fn datadog_configuration_serializer_experimental_use_v3_api_sketches_beta_route() -> String {
+        "/api/intake/metrics/v3beta/sketches".to_string()
+    }
+    pub(super) fn datadog_configuration_serializer_experimental_use_v3_api_sketches_shadow_sample_rate() -> f64 {
+        0_f64
+    }
+    pub(super) fn datadog_configuration_serializer_experimental_use_v3_api_sketches_shadow_sites() -> Vec<
+        String,
+    > {
+        vec!["datadoghq.com".to_string()]
     }
     pub(super) fn datadog_configuration_use_v3_api_series_enabled() -> String {
         "datadog_only".to_string()

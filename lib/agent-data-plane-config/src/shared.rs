@@ -547,6 +547,21 @@ pub struct V3ApiEncoding {
 /// V3 sketches intake settings.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct V3ApiSettings {
+    /// Route for sampled V3 sketch copies, used for intake validation.
+    ///
+    /// Defaults to `/api/intake/metrics/v3beta/sketches`. This does not change the authoritative route.
+    pub beta_route: String,
+
+    /// Probability of shadowing each eligible V2 sketch batch, independently for each destination.
+    ///
+    /// Defaults to `0` (disabled). Zero or negative values disable sampling; values at least `1` sample every batch.
+    pub shadow_sample_rate: f64,
+
+    /// Sites eligible for sketch shadow sampling, matched against the resolved V2 destination.
+    ///
+    /// Defaults to `["datadoghq.com"]`. An empty list disables shadowing for every site.
+    pub shadow_sites: Vec<String>,
+
     /// Endpoints enabled for the V3 intake.
     pub endpoints: Vec<String>,
 

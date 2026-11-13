@@ -19,15 +19,16 @@ use tracing::debug;
 use crate::common::datadog::{
     api_key::{ApiKeyView, LiveApiKeys},
     config::ForwarderConfiguration,
-    endpoints::SingleDestination,
-    io::{LiveForwarderConfiguration, TransactionForwarder},
+    endpoints::{EndpointRoute, SingleDestination},
+    io::{LiveForwarderConfiguration, TransactionForwarder, ENDPOINT_CHANNEL_CAPACITY},
     protocol::MetricsPayloadInfo,
     routing::{MetricsRoutingTargets, RoutingTargetCatalog},
+    sketch_shadow::SketchShadowMetadata,
     telemetry::ComponentTelemetry,
     transaction::{Metadata, Transaction},
     validation::ValidationReadiness,
-    DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, METRICS_SERIES_V3_BETA_PATH, METRICS_SERIES_V3_PATH,
-    METRICS_SKETCHES_V3_PATH,
+    DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT, METRICS_SERIES_V3_BETA_PATH,
+    METRICS_SERIES_V3_PATH, METRICS_SKETCHES_V3_PATH,
 };
 
 /// Datadog forwarder.
@@ -162,6 +163,34 @@ impl MemoryBounds for DatadogForwarderConfiguration {
                     UsageExpr::constant("maximum compressed payload size", DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT),
                 ),
             ));
+
+        // Count the same eligible workers used for dispatch, including separate additional API keys.
+        let Ok(endpoints) = self.forwarder_config.build_routable_endpoints() else {
+            return;
+        };
+        let has_metrics_primary = endpoints
+            .iter()
+            .any(|endpoint| endpoint.route() == EndpointRoute::MetricsPrimary);
+        let shadow_endpoint_count = endpoints
+            .iter()
+            .filter(|endpoint| {
+                self.forwarder_config
+                    .endpoint_supports_sketch_shadow(endpoint, has_metrics_primary)
+            })
+            .count();
+        if shadow_endpoint_count != 0 {
+            let request_slots = self
+                .forwarder_config
+                .endpoint_buffer_size
+                .saturating_add(ENDPOINT_CHANNEL_CAPACITY)
+                .saturating_add(self.forwarder_config.effective_endpoint_concurrency());
+            let per_endpoint_bytes = (self.forwarder_config.retry.queue_max_size_bytes as usize)
+                .saturating_add(request_slots.saturating_mul(DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT));
+            builder.firm().with_fixed_amount(
+                "sketch shadow queues and in-flight payloads",
+                shadow_endpoint_count.saturating_mul(per_endpoint_bytes),
+            );
+        }
     }
 }
 
@@ -221,6 +250,16 @@ impl Forwarder for Datadog {
 fn transaction_metadata_from_payload_metadata(payload_meta: &PayloadMetadata) -> Metadata {
     let mut transaction_meta =
         Metadata::from_event_and_data_point_count(payload_meta.event_count(), payload_meta.data_point_count());
+    transaction_meta.sketch_shadow = payload_meta.get::<SketchShadowMetadata>().cloned();
+    if transaction_meta
+        .sketch_shadow
+        .as_ref()
+        .is_some_and(|shadow| shadow.is_shadow)
+    {
+        // Validation copies must not count as delivered or dropped metric data.
+        transaction_meta.event_count = 0;
+        transaction_meta.data_point_count = 0;
+    }
     transaction_meta.payload_info = payload_meta.get::<MetricsPayloadInfo>().copied();
     transaction_meta.metrics_routing_targets = payload_meta.get::<Arc<MetricsRoutingTargets>>().cloned();
     transaction_meta
@@ -235,6 +274,7 @@ fn get_dd_endpoint_name(uri: &Uri) -> Option<MetaString> {
         METRICS_SERIES_V3_BETA_PATH => Some(MetaString::from_static("series_v3beta")),
         "/api/beta/sketches" => Some(MetaString::from_static("sketches_v2")),
         METRICS_SKETCHES_V3_PATH => Some(MetaString::from_static("sketches_v3")),
+        "/api/intake/metrics/v3beta/sketches" => Some(MetaString::from_static("sketches_v3beta")),
         "/api/v1/check_run" => Some(MetaString::from_static("check_run_v1")),
         "/api/v1/events_batch" => Some(MetaString::from_static("events_batch_v1")),
         "/api/v0.2/traces" => Some(MetaString::from_static("traces_v0.2")),
@@ -249,6 +289,7 @@ mod tests {
     use super::*;
     use crate::common::datadog::{
         api_key::ApiKeyRefresher,
+        sketch_shadow::SketchShadowDestination,
         test_util::{forwarder_configuration, LiveConfiguration, LiveRoot},
     };
 
@@ -313,6 +354,123 @@ mod tests {
             cloned_meta.metrics_routing_targets.as_ref().unwrap(),
             &routing_targets
         ));
+
+        for is_shadow in [false, true] {
+            let payload_meta = PayloadMetadata::from_event_and_data_point_count(2, 7).with(SketchShadowMetadata {
+                sampled_destinations: vec![SketchShadowDestination {
+                    configured_endpoint: Arc::from("https://primary.example.com"),
+                    batch_id: "batch-id".parse().unwrap(),
+                }]
+                .into(),
+                request_index: 1,
+                request_count: 3,
+                is_shadow,
+            });
+            let transaction_meta = transaction_metadata_from_payload_metadata(&payload_meta);
+            assert_eq!(
+                (transaction_meta.event_count, transaction_meta.data_point_count),
+                if is_shadow { (0, 0) } else { (2, 7) },
+            );
+            assert_eq!((payload_meta.event_count(), payload_meta.data_point_count()), (2, 7));
+            let shadow = transaction_meta.sketch_shadow.unwrap();
+            assert_eq!(
+                (shadow.is_shadow, shadow.request_index, shadow.request_count),
+                (is_shadow, 1, 3)
+            );
+            assert_eq!(shadow.batch_id("https://primary.example.com").unwrap(), "batch-id");
+        }
+    }
+
+    #[tokio::test]
+    async fn primary_v3_sketches_and_additional_shadow_pairs_reach_only_their_destinations() {
+        use axum::{
+            body::Bytes,
+            http::{HeaderMap, StatusCode},
+            routing::post,
+            Router,
+        };
+        use saluki_core::{
+            components::test_util::TestComponentDriver,
+            data_model::event::{metric::Metric, Event},
+        };
+        use tokio::{net::TcpListener, sync::mpsc};
+
+        use crate::common::datadog::{
+            endpoints::EndpointConfiguration, test_util::datadog_metrics_configuration, METRICS_SKETCHES_PATH,
+        };
+
+        const PRIMARY: &str = "http://app.datadoghq.com";
+        const ADDITIONAL: &str = "http://app.datadoghq.eu";
+        const BETA: &str = "/api/intake/metrics/v3beta/sketches";
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy = format!("http://{}", listener.local_addr().unwrap());
+        let (requests_tx, mut requests_rx) = mpsc::unbounded_channel();
+        let app = Router::new().fallback(post(move |uri: Uri, headers: HeaderMap, _: Bytes| {
+            requests_tx.send((uri, headers)).unwrap();
+            async { StatusCode::OK }
+        }));
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let _ = saluki_tls::initialize_default_crypto_provider();
+        let live = LiveConfiguration::new(LiveRoot {
+            api_key: "0".repeat(32), // Synthetic key skips API-key validation.
+            additional_endpoints: HashMap::from([(ADDITIONAL.into(), vec!["0".repeat(32)])]),
+            ..Default::default()
+        });
+        let mut metrics = datadog_metrics_configuration();
+        metrics.primary_endpoint = PRIMARY.into();
+        metrics.additional_endpoints = live.source.load().additional_endpoints.clone();
+        let sketches = &mut metrics.v3_api.sketches;
+        sketches.endpoints = vec![PRIMARY.into()];
+        sketches.shadow_sites = vec!["datadoghq.com".into(), "datadoghq.eu".into()];
+        sketches.shadow_sample_rate = 1.0;
+        sketches.beta_route = BETA.into();
+        let mut forwarder = forwarder_configuration();
+        forwarder.endpoint =
+            EndpointConfiguration::new("0".repeat(32), PRIMARY.into(), metrics.additional_endpoints.clone());
+        forwarder.proxy.http = proxy;
+        forwarder.skip_ssl_validation = true;
+        forwarder.v3_api = metrics.v3_api.clone();
+        let forwarder_config = DatadogForwarderConfiguration::new(
+            forwarder,
+            live.source.live(|root| &root.api_key),
+            live.source.live(|root| &root.additional_endpoints),
+            live.source.live(|root| &root.secrets_in_use),
+        );
+        let (encoder, mut output) = TestComponentDriver::encoder(metrics).await.unwrap();
+        encoder
+            .send_events([Event::Metric(Metric::distribution("mixed.sketch", [(123, 4.0)]))])
+            .await;
+        let (result, payloads) = tokio::join!(encoder.shutdown(), output.collect());
+        result.unwrap();
+        let forwarder = TestComponentDriver::forwarder(forwarder_config).await.unwrap();
+        for payload in payloads {
+            forwarder.send(payload).await;
+        }
+        forwarder
+            .wait_until(|| requests_rx.len() >= 3, || "three sketch requests".into())
+            .await;
+        forwarder.shutdown().await.unwrap();
+        server.abort();
+        let mut received: Vec<_> = std::iter::from_fn(|| requests_rx.try_recv().ok()).collect();
+        assert_eq!(received.len(), 3, "no extra requests");
+        received.sort_by(|a, b| a.0.path().cmp(b.0.path()));
+
+        let correlation = |headers: &HeaderMap| {
+            ["X-Metrics-Request-ID", "X-Metrics-Request-Seq", "X-Metrics-Request-Len"]
+                .map(|key| headers.get(key).cloned())
+        };
+        let baseline = correlation(&received[0].1);
+        assert!(baseline.iter().all(Option::is_some));
+        // Primary gets only authoritative V3; the additional endpoint gets the correlated V2/V3beta pair.
+        for ((uri, headers), (path, site, expected)) in received.iter().zip([
+            (METRICS_SKETCHES_PATH, ".datadoghq.eu", baseline.clone()),
+            (METRICS_SKETCHES_V3_PATH, ".datadoghq.com", [None, None, None]),
+            (BETA, ".datadoghq.eu", baseline),
+        ]) {
+            assert_eq!(uri.path(), path);
+            assert!(uri.host().unwrap().ends_with(site));
+            assert_eq!(correlation(headers), expected);
+        }
     }
 
     #[tokio::test]
