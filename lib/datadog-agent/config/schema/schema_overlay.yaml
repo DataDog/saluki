@@ -1929,9 +1929,9 @@ inventory:
     description: "Extra logs intake endpoints (host, key, options)"
     documentation: |-
       In the core Agent's OTLP logs path: each entry becomes an additional destination that receives
-      every payload (reliable unless is_reliable:false, which makes it best effort). Its presence also
-      selects TCP over HTTP unless force_use_http or an http(s) logs_dd_url is set, and makes
-      compression default to gzip unless compression_kind is configured. Entries may hold DELA[...]
+      every payload (reliable unless `is_reliable`:false, which makes it best effort). Its presence also
+      selects TCP over HTTP unless `force_use_http` or an http(s) `logs_dd_url` is set, and makes
+      compression default to gzip unless `compression_kind` is configured. Entries may hold DELA[...]
       delegated-auth keys (HTTP only; skipped over TCP).
 
       ADP ignores this key: it sends native OTLP logs through its shared forwarder, to the logs intake
@@ -1944,10 +1944,10 @@ inventory:
     planned: true
     issue: "#2973"
     pipelines: [logs]
-    description: "API key for logs intake (falls back to api_key)"
+    description: "API key for logs intake (falls back to `api_key`)"
     documentation: |-
       In the core Agent's OTLP logs path: used as the main endpoint API key when non-empty, otherwise
-      the top-level api_key. Runtime changes rotate the key of the main endpoint (OnUpdate callback).
+      the top-level `api_key`. Runtime changes rotate the key of the main endpoint (OnUpdate callback).
 
       ADP ignores this key: it sends native OTLP logs through its shared forwarder, to the logs intake
       derived from `site` or `dd_url`. This only matters when ADP handles OTLP logs itself: in proxy
@@ -2022,7 +2022,7 @@ inventory:
     description: "Payload compression algorithm (zstd or gzip)"
     documentation: |-
       In the core Agent's OTLP logs path: selects the compressor of the HTTP batch strategy. Invalid
-      values warn and fall back to the default (zstd). If additional_endpoints are configured and this
+      values warn and fall back to the default (zstd). If `additional_endpoints` are configured and this
       key is not explicitly configured, gzip is forced for compatibility.
 
       ADP ignores this key: it sends native OTLP logs through its shared forwarder, to the logs intake
@@ -2052,7 +2052,7 @@ inventory:
     pipelines: [logs]
     description: "Seconds before recycling intake connections"
     documentation: |-
-      In the core Agent's OTLP logs path: hTTP: the client resets its connections after this interval;
+      In the core Agent's OTLP logs path: HTTP: the client resets its connections after this interval;
       TCP: the connection manager closes and reconnects after it. 0 disables.
 
       ADP ignores this key: it batches and sends native OTLP logs with the settings of its shared
@@ -2067,7 +2067,7 @@ inventory:
     pipelines: [logs]
     description: "TCP intake port override"
     documentation: |-
-      In the core Agent's OTLP logs path: tCP only: port used when the resolved host is not one of the
+      In the core Agent's OTLP logs path: TCP only: port used when the resolved host is not one of the
       well-known agent-intake hosts.
 
       ADP ignores this key: it always sends native OTLP logs over HTTP. This only matters when ADP
@@ -2082,8 +2082,8 @@ inventory:
     description: "Override logs intake URL or host"
     documentation: |-
       In the core Agent's OTLP logs path: when set (and non-empty) it replaces the site-derived intake
-      host (agent-http-intake.logs.<site> for HTTP, agent-intake.logs.<site> for TCP). The top-level
-      dd_url is NOT consulted for logs. logs_config.logs_dd_url, when set, takes precedence over this
+      host (`agent-http-intake.logs.<site>` for HTTP, `agent-intake.logs.<site>` for TCP). The top-level
+      `dd_url` is NOT consulted for logs. `logs_config.logs_dd_url`, when set, takes precedence over this
       key.
 
       ADP ignores this key: it sends native OTLP logs through its shared forwarder, to the logs intake
@@ -2098,7 +2098,7 @@ inventory:
     pipelines: [logs]
     description: "TCP intake host for port 443"
     documentation: |-
-      In the core Agent's OTLP logs path: tCP only: host used when use_port_443 is true.
+      In the core Agent's OTLP logs path: TCP only: host used when `use_port_443` is true.
 
       ADP ignores this key: it always sends native OTLP logs over HTTP. This only matters when ADP
       handles OTLP logs itself: in proxy mode, the core Agent processes the logs and applies this key.
@@ -2111,7 +2111,7 @@ inventory:
     description: "Org UUID enabling delegated auth for logs key"
     documentation: |-
       In the core Agent's OTLP logs path: when non-empty, LoadDatadog registers a delegated-auth
-      instance for logs_config.api_key, which fetches the key from the cloud provider and writes it back
+      instance for `logs_config.api_key`, which fetches the key from the cloud provider and writes it back
       to the config; the logs endpoint then picks it up through the key-rotation callback.
 
       ADP ignores this key: it sends native OTLP logs through its shared forwarder, to the logs intake
@@ -2126,7 +2126,7 @@ inventory:
     description: "Delegated auth key refresh interval (minutes)"
     documentation: |-
       In the core Agent's OTLP logs path: refresh interval of the delegated-auth instance registered for
-      logs_config.api_key; only meaningful when logs_config.delegated_auth.org_uuid is set.
+      `logs_config.api_key`; only meaningful when `logs_config.delegated_auth.org_uuid` is set.
 
       ADP ignores this key: it sends native OTLP logs through its shared forwarder, to the logs intake
       derived from `site` or `dd_url`. This only matters when ADP handles OTLP logs itself: in proxy
@@ -2138,9 +2138,9 @@ inventory:
     planned: true
     issue: "#2973"
     pipelines: [logs]
-    description: "Disable TLS on the default intake (dev only)"
+    description: "Disable TLS on the default intake (for testing)"
     documentation: |-
-      In the core Agent's OTLP logs path: makes the site/dd_url-derived main endpoint plain HTTP (HTTP
+      In the core Agent's OTLP logs path: makes the site/`dd_url`-derived main endpoint plain HTTP (HTTP
       path) or non-SSL (TCP path) and logs a warning that the setting is illegal outside development.
 
       ADP ignores this key: it sends native OTLP logs through its shared forwarder, to the logs intake
@@ -2153,9 +2153,9 @@ inventory:
     planned: true
     issue: "#2976"
     pipelines: [logs]
-    description: "Send TCP logs as protobuf (dev only)"
+    description: "Send TCP logs as protobuf (for testing)"
     documentation: |-
-      In the core Agent's OTLP logs path: tCP only: sets Endpoints.UseProto so the pipeline uses the
+      In the core Agent's OTLP logs path: TCP only: sets `Endpoints.UseProto` so the pipeline uses the
       protobuf encoder instead of the raw encoder.
 
       ADP ignores this key: it always sends native OTLP logs over HTTP. This only matters when ADP
@@ -2169,7 +2169,7 @@ inventory:
     description: "Use legacy per-pipeline senders"
     documentation: |-
       In the core Agent's OTLP logs path: selects the legacy sender layout: one sender queue and worker
-      per pipeline, and per-sender concurrency from batch_max_concurrent_send, instead of the shared
+      per pipeline, and per-sender concurrency from `batch_max_concurrent_send`, instead of the shared
       distributed sender.
 
       ADP ignores this key: its logs pipeline is part of its own topology, which this key doesn't
@@ -2184,9 +2184,9 @@ inventory:
     description: "Fingerprint line/byte count (validated only)"
     documentation: |-
       The core Agent only validates this key on the OTLP logs path: never used to fingerprint OTLP logs,
-      but GlobalFingerprintConfig runs at logs agent start and an invalid fingerprint_config aborts
-      start with 'Invalid fingerprint_config setting'. Must be > 0 when strategy is not disabled
-      (defaulted per strategy if not configured); a non-integer value fails unmarshaling.
+      but GlobalFingerprintConfig runs at logs agent start and an invalid `fingerprint_config` aborts
+      start with `Invalid fingerprint_config setting`. Must be > 0 when strategy is not disabled
+      (defaulted per strategy if not configured); a non-integer value fails parsing.
 
       ADP doesn't validate this key, so a value that stops the core Agent's logs agent, and with it the
       Agent's whole OTLP receiver, doesn't stop ADP. This only matters when ADP handles OTLP logs
@@ -2200,9 +2200,9 @@ inventory:
     description: "Fingerprint skip count (validated only)"
     documentation: |-
       The core Agent only validates this key on the OTLP logs path: never used to fingerprint OTLP logs,
-      but GlobalFingerprintConfig runs at logs agent start and an invalid fingerprint_config aborts
-      start with 'Invalid fingerprint_config setting'. Must be >= 0 when strategy is not disabled; a
-      non-integer value fails unmarshaling.
+      but GlobalFingerprintConfig runs at logs agent start and an invalid `fingerprint_config` aborts
+      start with `Invalid fingerprint_config setting`. Must be >= 0 when strategy is not disabled; a
+      non-integer value fails parsing.
 
       ADP doesn't validate this key, so a value that stops the core Agent's logs agent, and with it the
       Agent's whole OTLP receiver, doesn't stop ADP. This only matters when ADP handles OTLP logs
@@ -2216,9 +2216,9 @@ inventory:
     description: "Fingerprint strategy (validated only)"
     documentation: |-
       The core Agent only validates this key on the OTLP logs path: never used to fingerprint OTLP logs,
-      but GlobalFingerprintConfig runs at logs agent start and an invalid fingerprint_config aborts
-      start with 'Invalid fingerprint_config setting'. An unknown value (not line_checksum,
-      byte_checksum or disabled) fails validation. Default disabled skips all other fingerprint checks.
+      but GlobalFingerprintConfig runs at logs agent start and an invalid `fingerprint_config` aborts
+      start with `Invalid fingerprint_config setting`. An unknown value (not `line_checksum`,
+      `byte_checksum` or disabled) fails validation. Default disabled skips all other fingerprint checks.
 
       ADP doesn't validate this key, so a value that stops the core Agent's logs agent, and with it the
       Agent's whole OTLP receiver, doesn't stop ADP. This only matters when ADP handles OTLP logs
@@ -2232,9 +2232,9 @@ inventory:
     description: "Fingerprint max bytes (validated only)"
     documentation: |-
       The core Agent only validates this key on the OTLP logs path: never used to fingerprint OTLP logs,
-      but GlobalFingerprintConfig runs at logs agent start and an invalid fingerprint_config aborts
-      start with 'Invalid fingerprint_config setting'. Must be > 0 when strategy is line_checksum; a
-      non-integer value fails unmarshaling.
+      but GlobalFingerprintConfig runs at logs agent start and an invalid `fingerprint_config` aborts
+      start with `Invalid fingerprint_config setting`. Must be > 0 when strategy is `line_checksum`; a
+      non-integer value fails parsing.
 
       ADP doesn't validate this key, so a value that stops the core Agent's logs agent, and with it the
       Agent's whole OTLP receiver, doesn't stop ADP. This only matters when ADP handles OTLP logs
@@ -2321,7 +2321,7 @@ inventory:
     pipelines: [logs]
     description: "Logs intake URL override (proxy or custom intake)"
     documentation: |-
-      In the core Agent's OTLP logs path: takes precedence over dd_url and site. A http(s):// prefix
+      In the core Agent's OTLP logs path: takes precedence over `dd_url` and site. A http(s):// prefix
       forces the HTTP transport (never falls back to TCP) and is parsed for scheme, host, port and path
       prefix (legacy /v1/input and /api/v2/logs prefixes are dropped). Without a scheme it is host:port,
       required in that form for TCP.
@@ -2339,7 +2339,7 @@ inventory:
     description: "Disable TLS for logs intake"
     documentation: |-
       In the core Agent's OTLP logs path: sets the default useSSL=false for the main and MRF endpoints
-      and for URL-less hosts; an https:// URL with logs_no_ssl set only logs a conflict warning and
+      and for URL-less hosts; an https:// URL with `logs_no_ssl` set only logs a conflict warning and
       stays TLS.
 
       ADP ignores this key: it sends native OTLP logs through its shared forwarder, to the logs intake
@@ -2398,7 +2398,7 @@ inventory:
     description: "Router channel size when failover is on"
     documentation: |-
       In the core Agent's OTLP logs path: buffer size of each failover router channel; only read when
-      pipeline_failover.enabled is true.
+      `pipeline_failover.enabled` is true.
 
       ADP ignores this key: its logs pipeline is part of its own topology, which this key doesn't
       configure. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
@@ -2427,9 +2427,9 @@ inventory:
     description: "Global log processing rules"
     documentation: |-
       In the core Agent's OTLP logs path: unmarshaled, validated and compiled at start; an invalid rule
-      (missing name, type or pattern, bad regex) aborts logs agent start. Valid rules (exclude_at_match,
-      include_at_match, mask_sequences, exclude_truncated, remap_source) run in the processor on every
-      OTLP log; multi_line rules are only warned about and ignored.
+      (missing name, type or pattern, bad regex) aborts logs agent start. Valid rules (`exclude_at_match`,
+      `include_at_match`, `mask_sequences`, `exclude_truncated`, `remap_source`) run in the processor on every
+      OTLP log; `multi_line` rules are only warned about and ignored.
 
       ADP ignores this key and applies no processing rules to native OTLP logs, so logs that the Agent
       would drop or mask are sent as they are. This only matters when ADP handles OTLP logs itself: in
@@ -2547,7 +2547,7 @@ inventory:
     documentation: |-
       In the core Agent's OTLP logs path: compiled once at start. Malformed patterns only warn (never
       block start). The processor lazily resolves the filter on the exporter's log source and the JSON
-      encoder emits Origin.TransportTags(), so ddtags of OTLP logs are filtered.
+      encoder emits `Origin.TransportTags()`, so `ddtags` of OTLP logs are filtered.
 
       ADP ignores this key and filters no tags on native OTLP logs. This only matters when ADP handles
       OTLP logs itself: in proxy mode, the core Agent processes the logs and applies this key.
@@ -2560,9 +2560,9 @@ inventory:
     description: "Unreliable-mount profile (affects validation)"
     documentation: |-
       The core Agent only validates this key on the OTLP logs path: not used for OTLP logs, but when
-      true GlobalFingerprintConfig changes defaults (strategy line_checksum unless configured, max_bytes
+      true GlobalFingerprintConfig changes defaults (strategy `line_checksum` unless configured, `max_bytes`
       4096, count default), so previously skipped fingerprint validation then applies to configured
-      fingerprint_config values.
+      `fingerprint_config` values.
 
       ADP doesn't validate this key, so a value that stops the core Agent's logs agent, and with it the
       Agent's whole OTLP receiver, doesn't stop ADP. This only matters when ADP handles OTLP logs
@@ -2591,7 +2591,7 @@ inventory:
     pipelines: [logs]
     description: "Force the HTTP transport"
     documentation: |-
-      In the core Agent's OTLP logs path: same as force_use_http: BuildEndpoints returns HTTP endpoints
+      In the core Agent's OTLP logs path: same as `force_use_http`: BuildEndpoints returns HTTP endpoints
       without needing the connectivity check to pass and regardless of TCP triggers.
 
       ADP ignores this key: it always sends native OTLP logs over HTTP. This only matters when ADP
@@ -2605,7 +2605,7 @@ inventory:
     pipelines: [logs]
     description: "Send TCP logs to the 443 intake"
     documentation: |-
-      In the core Agent's OTLP logs path: tCP only: main endpoint becomes dd_url_443 on port 443 with
+      In the core Agent's OTLP logs path: TCP only: main endpoint becomes `dd_url_443` on port 443 with
       TLS.
 
       ADP ignores this key: it always sends native OTLP logs over HTTP. This only matters when ADP
@@ -2619,7 +2619,7 @@ inventory:
     pipelines: [logs]
     description: "Force the TCP transport"
     documentation: |-
-      In the core Agent's OTLP logs path: alias of force_use_tcp: when HTTP is not forced, a true value
+      In the core Agent's OTLP logs path: alias of `force_use_tcp`: when HTTP is not forced, a true value
       selects TCP (stream strategy, no compression, no batching).
 
       ADP ignores this key: it always sends native OTLP logs over HTTP. This only matters when ADP
@@ -2895,8 +2895,8 @@ inventory:
     pipelines: [logs]
     description: "Activate failover to the MRF logs endpoint"
     documentation: |-
-      In the core Agent's OTLP logs path: mRF destinations drop transactions unless
-      multi_region_failover.enabled and failover_logs are both true; flipping it at runtime enables or
+      In the core Agent's OTLP logs path: MRF destinations drop transactions unless
+      `multi_region_failover.enabled` and `failover_logs` are both true; flipping it at runtime enables or
       disables the MRF destination.
 
       ADP ignores this key: it doesn't support multi-region failover or Observability Pipelines Worker
@@ -2947,7 +2947,7 @@ inventory:
     description: "Also send logs to OPW, keep Datadog primary"
     documentation: |-
       In the core Agent's OTLP logs path: with OPW enabled and a url set, Datadog stays the main
-      endpoint and OPW is appended as an additional (best-effort unless dual_ship_reliable) endpoint
+      endpoint and OPW is appended as an additional (best-effort unless `dual_ship_reliable`) endpoint
       inheriting main's v2 API and compression settings.
 
       ADP ignores this key: it doesn't support multi-region failover or Observability Pipelines Worker
@@ -2963,7 +2963,7 @@ inventory:
     description: "Make the OPW dual-ship endpoint reliable"
     documentation: |-
       In the core Agent's OTLP logs path: marks the OPW dual-ship endpoint reliable so a failing OPW
-      applies backpressure to the pipeline; warns and has no effect unless dual_ship is true.
+      applies backpressure to the pipeline; warns and has no effect unless `dual_ship` is true.
 
       ADP ignores this key: it doesn't support multi-region failover or Observability Pipelines Worker
       for logs. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
@@ -3027,7 +3027,7 @@ inventory:
     pipelines: [otlp]
     description: "Verbosity of the OTLP debug exporter"
     documentation: |-
-      In the core Agent's OTLP logs path: when the otlp_config.debug section is declared and verbosity
+      In the core Agent's OTLP logs path: when the `otlp_config.debug` section is declared and verbosity
       is a valid level other than none, a debug exporter is added to the logs (and other enabled)
       pipelines; invalid levels leave it detached.
 
@@ -3041,7 +3041,7 @@ inventory:
     pipelines: [logs]
     description: "OTLP logs exporter batch flush timeout"
     documentation: |-
-      In the core Agent's OTLP logs path: passed as sending_queue.batch.flush_timeout of the logsagent
+      In the core Agent's OTLP logs path: passed as `sending_queue.batch.flush_timeout` of the logsagent
       exporter: time after which a partial batch is flushed.
 
       ADP ignores this key: it has no pre-translation batcher for OTLP logs, and translates each request
@@ -3056,7 +3056,7 @@ inventory:
     pipelines: [logs]
     description: "OTLP logs exporter batch max size"
     documentation: |-
-      In the core Agent's OTLP logs path: passed as sending_queue.batch.max_size of the logsagent
+      In the core Agent's OTLP logs path: passed as `sending_queue.batch.max_size` of the logsagent
       exporter (0 means unlimited).
 
       ADP ignores this key: it has no pre-translation batcher for OTLP logs, and translates each request
@@ -3071,7 +3071,7 @@ inventory:
     pipelines: [logs]
     description: "OTLP logs exporter batch min size"
     documentation: |-
-      In the core Agent's OTLP logs path: passed as sending_queue.batch.min_size of the logsagent
+      In the core Agent's OTLP logs path: passed as `sending_queue.batch.min_size` of the logsagent
       exporter: minimum batch size that triggers a flush.
 
       ADP ignores this key: it has no pre-translation batcher for OTLP logs, and translates each request
@@ -3099,10 +3099,10 @@ inventory:
     planned: true
     issue: "#2972"
     pipelines: [logs]
-    description: "Write infra tags as ddtags on OTLP logs"
+    description: "Write infra tags as `ddtags` on OTLP logs"
     documentation: |-
-      In the core Agent's OTLP logs path: when logs are enabled, sets logs_tags_as_ddtags on the
-      infraattributes processor so custom tagger tags (e.g. kube labels as tags) become the ddtags log
+      In the core Agent's OTLP logs path: when logs are enabled, sets `logs_tags_as_ddtags` on the
+      infraattributes processor so custom tagger tags (e.g. kube labels as tags) become the `ddtags` log
       attribute instead of resource attributes.
 
       ADP ignores this key. This only matters when ADP handles OTLP logs itself: in proxy mode, the core
@@ -4197,7 +4197,7 @@ inventory:
     description: "Also send logs to OPW, keep Datadog primary"
     documentation: |-
       In the core Agent's OTLP logs path: with OPW enabled and a url set, Datadog stays the main
-      endpoint and OPW is appended as an additional (best-effort unless dual_ship_reliable) endpoint
+      endpoint and OPW is appended as an additional (best-effort unless `dual_ship_reliable`) endpoint
       inheriting main's v2 API and compression settings.
 
       ADP ignores this key: it doesn't support multi-region failover or Observability Pipelines Worker
@@ -4213,7 +4213,7 @@ inventory:
     description: "Make the OPW dual-ship endpoint reliable"
     documentation: |-
       In the core Agent's OTLP logs path: marks the OPW dual-ship endpoint reliable so a failing OPW
-      applies backpressure to the pipeline; warns and has no effect unless dual_ship is true.
+      applies backpressure to the pipeline; warns and has no effect unless `dual_ship` is true.
 
       ADP ignores this key: it doesn't support multi-region failover or Observability Pipelines Worker
       for logs. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent

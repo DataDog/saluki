@@ -50,7 +50,7 @@ tracking.
 | `intake_routing.refresh_interval`                                           | Intake routing refresh interval                   | [#3090] |
 | `intake_routing.startup_grace_period`                                       | Intake routing startup grace period               | [#3090] |
 | `logs_config.additional_endpoints`                                          | Extra logs intake endpoints (host, key, options)  | [#2973] |
-| `logs_config.api_key`                                                       | API key for logs intake (falls back to api_key)   | [#2973] |
+| `logs_config.api_key`                                                       | API key for logs intake (falls back to `api_key`) | [#2973] |
 | `logs_config.batch_max_concurrent_send`                                     | Concurrent HTTP sends per pipeline                | [#2973] |
 | `logs_config.batch_max_content_size`                                        | Max bytes per HTTP payload                        | [#2973] |
 | `logs_config.batch_max_size`                                                | Max logs per HTTP payload                         | [#2973] |
@@ -61,8 +61,8 @@ tracking.
 | `logs_config.dd_port`                                                       | TCP intake port override                          | [#2976] |
 | `logs_config.dd_url`                                                        | Override logs intake URL or host                  | [#2973] |
 | `logs_config.dd_url_443`                                                    | TCP intake host for port 443                      | [#2976] |
-| `logs_config.dev_mode_no_ssl`                                               | Disable TLS on the default intake (dev only)      | [#2973] |
-| `logs_config.dev_mode_use_proto`                                            | Send TCP logs as protobuf (dev only)              | [#2976] |
+| `logs_config.dev_mode_no_ssl`                                               | Disable TLS on the default intake (for testing)   | [#2973] |
+| `logs_config.dev_mode_use_proto`                                            | Send TCP logs as protobuf (for testing)           | [#2976] |
 | `logs_config.force_use_http`                                                | Force the HTTP transport                          | [#2976] |
 | `logs_config.force_use_tcp`                                                 | Force the TCP transport                           | [#2976] |
 | `logs_config.http_connectivity_retry_interval_max`                          | Max retry interval for HTTP check after TCP       | [#2976] |
@@ -103,7 +103,7 @@ tracking.
 | `otlp_config.logs.batch.flush_timeout`                                      | OTLP logs exporter batch flush timeout            | [#2973] |
 | `otlp_config.logs.batch.max_size`                                           | OTLP logs exporter batch max size                 | [#2973] |
 | `otlp_config.logs.batch.min_size`                                           | OTLP logs exporter batch min size                 | [#2973] |
-| `otlp_config.logs.infra_attributes.tags_as_ddtags`                          | Write infra tags as ddtags on OTLP logs           | [#2972] |
+| `otlp_config.logs.infra_attributes.tags_as_ddtags`                          | Write infra tags as `ddtags` on OTLP logs         | [#2972] |
 | `otlp_config.metrics.infra_attributes.as_tags`                              | Promote infrastructure attributes to tags         | [#2559] |
 | `serializer_experimental_use_v3_api.sketches.beta_route`                    | V3 sketches beta intake route                     | [#2555] |
 | `serializer_experimental_use_v3_api.sketches.max_compressed_payload_size`   | V3 sketches max compressed payload size           | [#3091] |
@@ -367,7 +367,7 @@ deployment path, ADP does not implement `heroku_dyno`. See [#1753].
 ### `logs_config.delegated_auth.org_uuid`
 
 In the core Agent's OTLP logs path: when non-empty, LoadDatadog registers a delegated-auth
-instance for logs_config.api_key, which fetches the key from the cloud provider and writes it back
+instance for `logs_config.api_key`, which fetches the key from the cloud provider and writes it back
 to the config; the logs endpoint then picks it up through the key-rotation callback.
 
 ADP ignores this key: it sends native OTLP logs through its shared forwarder, to the logs intake
@@ -377,7 +377,7 @@ mode, the core Agent processes the logs and applies this key.
 ### `logs_config.delegated_auth.refresh_interval_mins`
 
 In the core Agent's OTLP logs path: refresh interval of the delegated-auth instance registered for
-logs_config.api_key; only meaningful when logs_config.delegated_auth.org_uuid is set.
+`logs_config.api_key`; only meaningful when `logs_config.delegated_auth.org_uuid` is set.
 
 ADP ignores this key: it sends native OTLP logs through its shared forwarder, to the logs intake
 derived from `site` or `dd_url`. This only matters when ADP handles OTLP logs itself: in proxy
@@ -386,7 +386,7 @@ mode, the core Agent processes the logs and applies this key.
 ### `logs_config.disable_distributed_senders`
 
 In the core Agent's OTLP logs path: selects the legacy sender layout: one sender queue and worker
-per pipeline, and per-sender concurrency from batch_max_concurrent_send, instead of the shared
+per pipeline, and per-sender concurrency from `batch_max_concurrent_send`, instead of the shared
 distributed sender.
 
 ADP ignores this key: its logs pipeline is part of its own topology, which this key doesn't
@@ -396,9 +396,9 @@ processes the logs and applies this key.
 ### `logs_config.fingerprint_config.count`
 
 The core Agent only validates this key on the OTLP logs path: never used to fingerprint OTLP logs,
-but GlobalFingerprintConfig runs at logs agent start and an invalid fingerprint_config aborts
-start with 'Invalid fingerprint_config setting'. Must be > 0 when strategy is not disabled
-(defaulted per strategy if not configured); a non-integer value fails unmarshaling.
+but GlobalFingerprintConfig runs at logs agent start and an invalid `fingerprint_config` aborts
+start with `Invalid fingerprint_config setting`. Must be > 0 when strategy is not disabled
+(defaulted per strategy if not configured); a non-integer value fails parsing.
 
 ADP doesn't validate this key, so a value that stops the core Agent's logs agent, and with it the
 Agent's whole OTLP receiver, doesn't stop ADP. This only matters when ADP handles OTLP logs
@@ -407,9 +407,9 @@ itself: in proxy mode, the core Agent processes the logs and applies this key.
 ### `logs_config.fingerprint_config.count_to_skip`
 
 The core Agent only validates this key on the OTLP logs path: never used to fingerprint OTLP logs,
-but GlobalFingerprintConfig runs at logs agent start and an invalid fingerprint_config aborts
-start with 'Invalid fingerprint_config setting'. Must be >= 0 when strategy is not disabled; a
-non-integer value fails unmarshaling.
+but GlobalFingerprintConfig runs at logs agent start and an invalid `fingerprint_config` aborts
+start with `Invalid fingerprint_config setting`. Must be >= 0 when strategy is not disabled; a
+non-integer value fails parsing.
 
 ADP doesn't validate this key, so a value that stops the core Agent's logs agent, and with it the
 Agent's whole OTLP receiver, doesn't stop ADP. This only matters when ADP handles OTLP logs
@@ -418,9 +418,9 @@ itself: in proxy mode, the core Agent processes the logs and applies this key.
 ### `logs_config.fingerprint_config.fingerprint_strategy`
 
 The core Agent only validates this key on the OTLP logs path: never used to fingerprint OTLP logs,
-but GlobalFingerprintConfig runs at logs agent start and an invalid fingerprint_config aborts
-start with 'Invalid fingerprint_config setting'. An unknown value (not line_checksum,
-byte_checksum or disabled) fails validation. Default disabled skips all other fingerprint checks.
+but GlobalFingerprintConfig runs at logs agent start and an invalid `fingerprint_config` aborts
+start with `Invalid fingerprint_config setting`. An unknown value (not `line_checksum`,
+`byte_checksum` or disabled) fails validation. Default disabled skips all other fingerprint checks.
 
 ADP doesn't validate this key, so a value that stops the core Agent's logs agent, and with it the
 Agent's whole OTLP receiver, doesn't stop ADP. This only matters when ADP handles OTLP logs
@@ -429,9 +429,9 @@ itself: in proxy mode, the core Agent processes the logs and applies this key.
 ### `logs_config.fingerprint_config.max_bytes`
 
 The core Agent only validates this key on the OTLP logs path: never used to fingerprint OTLP logs,
-but GlobalFingerprintConfig runs at logs agent start and an invalid fingerprint_config aborts
-start with 'Invalid fingerprint_config setting'. Must be > 0 when strategy is line_checksum; a
-non-integer value fails unmarshaling.
+but GlobalFingerprintConfig runs at logs agent start and an invalid `fingerprint_config` aborts
+start with `Invalid fingerprint_config setting`. Must be > 0 when strategy is `line_checksum`; a
+non-integer value fails parsing.
 
 ADP doesn't validate this key, so a value that stops the core Agent's logs agent, and with it the
 Agent's whole OTLP receiver, doesn't stop ADP. This only matters when ADP handles OTLP logs
@@ -469,7 +469,7 @@ processes the logs and applies this key.
 ### `logs_config.pipeline_failover.router_channel_size`
 
 In the core Agent's OTLP logs path: buffer size of each failover router channel; only read when
-pipeline_failover.enabled is true.
+`pipeline_failover.enabled` is true.
 
 ADP ignores this key: its logs pipeline is part of its own topology, which this key doesn't
 configure. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
@@ -498,7 +498,7 @@ processes the logs and applies this key.
 
 In the core Agent's OTLP logs path: compiled once at start. Malformed patterns only warn (never
 block start). The processor lazily resolves the filter on the exporter's log source and the JSON
-encoder emits Origin.TransportTags(), so ddtags of OTLP logs are filtered.
+encoder emits `Origin.TransportTags()`, so `ddtags` of OTLP logs are filtered.
 
 ADP ignores this key and filters no tags on native OTLP logs. This only matters when ADP handles
 OTLP logs itself: in proxy mode, the core Agent processes the logs and applies this key.
@@ -506,9 +506,9 @@ OTLP logs itself: in proxy mode, the core Agent processes the logs and applies t
 ### `logs_config.unreliable_mount.enabled`
 
 The core Agent only validates this key on the OTLP logs path: not used for OTLP logs, but when
-true GlobalFingerprintConfig changes defaults (strategy line_checksum unless configured, max_bytes
+true GlobalFingerprintConfig changes defaults (strategy `line_checksum` unless configured, `max_bytes`
 4096, count default), so previously skipped fingerprint validation then applies to configured
-fingerprint_config values.
+`fingerprint_config` values.
 
 ADP doesn't validate this key, so a value that stops the core Agent's logs agent, and with it the
 Agent's whole OTLP receiver, doesn't stop ADP. This only matters when ADP handles OTLP logs
@@ -516,7 +516,7 @@ itself: in proxy mode, the core Agent processes the logs and applies this key.
 
 ### `otlp_config.debug.verbosity`
 
-In the core Agent's OTLP logs path: when the otlp_config.debug section is declared and verbosity
+In the core Agent's OTLP logs path: when the `otlp_config.debug` section is declared and verbosity
 is a valid level other than none, a debug exporter is added to the logs (and other enabled)
 pipelines; invalid levels leave it detached.
 
