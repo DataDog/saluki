@@ -11,7 +11,7 @@ use futures::{
     FutureExt as _,
 };
 use saluki_error::GenericError;
-use saluki_io::net::client::http::{HttpsCapableConnector, HttpsCapableConnectorBuilder};
+use saluki_io::net::client::http::{HttpProtocol, HttpsCapableConnector, HttpsCapableConnectorBuilder};
 use saluki_tls::ClientTLSConfigBuilder;
 use tokio::{
     select,
@@ -31,6 +31,8 @@ const REQUESTED_STATE_BYTES: &str = "5242880";
 
 pub(super) fn build_https_connector(tls: ClientTLSConfigBuilder) -> Result<HttpsCapableConnector, GenericError> {
     HttpsCapableConnectorBuilder::default()
+        .with_http_protocol(HttpProtocol::Http2)
+        .with_tcp_nodelay(true)
         .with_connect_timeout(CONNECT_TIMEOUT)
         .with_tls_handshake_timeout(CONNECT_TIMEOUT)
         .build(tls.build()?)

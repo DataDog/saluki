@@ -1192,7 +1192,9 @@ impl EndpointHarness {
             .with_no_client_auth()
             .with_single_cert(cert.cert_chain(), cert.private_key())
             .unwrap();
-        config.alpn_protocols = vec![b"h2".to_vec()];
+        // build_https_connector used to negotiate HTTP/1.1 while Tonic sent HTTP/2.
+        // Advertising only h2 must override this server's HTTP/1.1 preference.
+        config.alpn_protocols = vec![b"http/1.1".to_vec(), b"h2".to_vec()];
         let acceptor = TlsAcceptor::from(Arc::new(config));
         let (sessions, sessions_rx) = mpsc::channel(32);
         let server = tokio::spawn(async move {
@@ -2059,7 +2061,7 @@ async fn tls_worker(harness: &EndpointHarness, trusted: &SelfSignedCert) -> Stat
 }
 
 #[tokio::test]
-async fn https_sends_compressed_metrics_and_reuses_acknowledged_dictionary() {
+async fn https_negotiates_http2_and_reuses_acknowledged_dictionary() {
     initialize_default_crypto_provider().unwrap();
     let cert = SelfSignedCert::new(["127.0.0.1"]);
     let mut harness = EndpointHarness::tls(&cert).await;
