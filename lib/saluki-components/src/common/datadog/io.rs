@@ -78,7 +78,10 @@ use super::{
     api_key::{ApiKeyRefresher, LiveApiKeys},
     config::ForwarderConfiguration,
     endpoints::{EndpointRoute, EndpointV3Settings, ResolvedEndpoint, RoutableEndpoint, V3EndpointConfig},
-    middleware::{for_resolved_endpoint, with_allow_arbitrary_tags, with_version_info},
+    middleware::{
+        for_resolved_endpoint, system_clock, with_allow_arbitrary_tags, with_logs_current_timestamp, with_version_info,
+        UnixMillisClock,
+    },
     retry::{SecretsGate, SecretsGateRefresher},
     retry_capacity::{TrafficRateWindow, RETRY_QUEUE_CAPACITY_BUCKET_DURATION_SECS},
     routing::RoutingTargetId,
@@ -345,6 +348,7 @@ pub struct TransactionForwarder<B> {
     endpoints: Vec<RoutableEndpoint>,
     api_key_refresher: Option<ApiKeyRefresher>,
     endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
+    clock: UnixMillisClock,
     emitter: DiagnosticsEmitter,
     _marker: PhantomData<B>,
 }
@@ -542,6 +546,7 @@ where
             endpoints,
             api_key_refresher,
             endpoint_request_mapper_factory,
+            clock: system_clock(),
             emitter,
             _marker: PhantomData,
         })
@@ -577,6 +582,7 @@ where
             endpoints,
             api_key_refresher,
             endpoint_request_mapper_factory,
+            clock,
             emitter,
             _marker,
         } = self;
@@ -606,6 +612,7 @@ where
                 endpoint_name,
                 endpoints,
                 endpoint_request_mapper_factory,
+                clock,
                 emitter,
             ),
         )
@@ -614,6 +621,13 @@ where
         .spawn();
 
         Handle { transactions_tx }
+    }
+
+    /// Replaces the clock that stamps logs requests with their send time.
+    #[cfg(test)]
+    pub(crate) fn with_clock(mut self, clock: UnixMillisClock) -> Self {
+        self.clock = clock;
+        self
     }
 
     /// Returns API key validation for the startup endpoint set.
@@ -650,7 +664,8 @@ async fn run_io_loop<B>(
     mut transactions_rx: mpsc::Receiver<Transaction<B>>, context: ComponentContext, config: ForwarderConfiguration,
     retry_storage_path: PathBuf, secrets: SecretsGate, service: HttpClient, telemetry: ComponentTelemetry,
     metrics_builder: MetricsBuilder, endpoint_name: Arc<EndpointNameFn>, resolved_endpoints: Vec<RoutableEndpoint>,
-    endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>, emitter: DiagnosticsEmitter,
+    endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>, clock: UnixMillisClock,
+    emitter: DiagnosticsEmitter,
 ) where
     B: Body + Buf + Clone + Send + Sync + 'static,
     B::Data: Send,
@@ -692,6 +707,7 @@ async fn run_io_loop<B>(
                 route,
                 resolved_endpoint,
                 endpoint_request_mapper_factory.clone(),
+                Arc::clone(&clock),
                 emitter.clone(),
             ),
         )
@@ -825,7 +841,7 @@ async fn run_endpoint_io_loop<B>(
     txnq_telemetry: TransactionQueueTelemetry, mut retry_telemetry: TransactionRetryTelemetry,
     retry_cause_telemetry: RetryCauseTelemetry, endpoint_name: Arc<EndpointNameFn>, route: EndpointRoute,
     endpoint: ResolvedEndpoint, endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
-    emitter: DiagnosticsEmitter,
+    clock: UnixMillisClock, emitter: DiagnosticsEmitter,
 ) where
     B: Body + Buf + Clone + Send + Sync + 'static,
     B::Data: Send,
@@ -904,6 +920,9 @@ async fn run_endpoint_io_loop<B>(
         .layer(retry_circuit_breaker)
         .layer(build_diagnostics_layer(emitter, endpoint_url.clone()))
         .map_request(|req: Request<TransactionBody<B>>| req.map(into_client_body))
+        // Stamp logs requests with the send time, after any wait for a concurrency permit or the circuit breaker. This
+        // runs on every attempt, so retries carry a fresh value.
+        .map_request(with_logs_current_timestamp(clock))
         .service(service);
 
     let retry = &config.retry;
@@ -1371,7 +1390,7 @@ mod tests {
     use std::{
         future::{pending, Pending},
         sync::{
-            atomic::{AtomicUsize, Ordering},
+            atomic::{AtomicU64, AtomicUsize, Ordering},
             Arc, OnceLock,
         },
     };
@@ -2684,13 +2703,17 @@ mod tests {
     }
 
     fn build_test_transaction() -> Transaction<FrozenChunkedBytesBuffer> {
+        // The endpoint middleware rewrites the authority to point at our `dd_url`, but preserves the path. Use a path
+        // that is not the special-cased `/api/v2/logs` or `/api/v0.2/{traces,stats}` routes, so the request is
+        // dispatched to the configured `dd_url` host directly.
+        build_test_transaction_for("http://placeholder/api/v2/series")
+    }
+
+    fn build_test_transaction_for(uri: &'static str) -> Transaction<FrozenChunkedBytesBuffer> {
         let body = FrozenChunkedBytesBuffer::from(Bytes::from_static(b"test-payload"));
         let request = http::Request::builder()
             .method("POST")
-            // The endpoint middleware rewrites the authority to point at our `dd_url`, but preserves the path. Use a
-            // path that is not the special-cased `/api/v2/logs` or `/api/v0.2/{traces,stats}` routes, so the request
-            // is dispatched to the configured `dd_url` host directly.
-            .uri("http://placeholder/api/v2/series")
+            .uri(uri)
             .body(body)
             .expect("request should build");
         Transaction::from_original(TxnMetadata::from_event_and_data_point_count(1, 0), request)
@@ -2716,9 +2739,14 @@ mod tests {
 
     /// Returns the API key a recorded request presented.
     fn recorded_api_key(request: &str) -> Option<&str> {
+        recorded_header(request, "dd-api-key")
+    }
+
+    /// Returns the value of the header `name` in the text of a recorded request.
+    fn recorded_header<'a>(request: &'a str, name: &str) -> Option<&'a str> {
         request.lines().find_map(|line| {
-            let (name, value) = line.split_once(':')?;
-            name.trim().eq_ignore_ascii_case("dd-api-key").then_some(value.trim())
+            let (header, value) = line.split_once(':')?;
+            header.trim().eq_ignore_ascii_case(name).then_some(value.trim())
         })
     }
 
@@ -3037,6 +3065,44 @@ mod tests {
             recorder.counter(component_metric_key("component_bytes_sent_total")),
             Some(12)
         );
+    }
+
+    #[tokio::test]
+    async fn forwarder_refreshes_logs_current_timestamp_on_each_retry() {
+        let (server_url, _counter, mut requests) = start_recording_http_server_with_requests(vec![
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::OK,
+        ])
+        .await;
+        let (_, forwarder) = build_test_forwarder(&server_url, Live::new_fixed(false)).await;
+        // Each read of the clock moves it forward by a millisecond.
+        let now_ms = Arc::new(AtomicU64::new(1_700_000_000_000));
+        let forwarder = forwarder.with_clock(Arc::new(move || now_ms.fetch_add(1, Ordering::SeqCst)));
+
+        let supervisor = TestSupervisor::start("test_forwarder").await;
+        let handle = spawn_test_forwarder(&supervisor, forwarder).await;
+        // A custom `dd_url` has no logs intake host, so logs requests also go to the test server.
+        handle
+            .send_transaction(build_test_transaction_for("http://placeholder/api/v2/logs"))
+            .await
+            .expect("send should succeed");
+
+        let mut timestamps = Vec::new();
+        for _ in 0..3 {
+            let request = timeout(Duration::from_secs(3), requests.recv())
+                .await
+                .expect("the server should record the request")
+                .expect("the server should be running");
+            let timestamp = recorded_header(&request, "dd-current-timestamp")
+                .expect("logs requests should carry dd-current-timestamp")
+                .to_string();
+            timestamps.push(timestamp);
+        }
+        drain_test_forwarder(supervisor, handle).await;
+
+        // One read per attempt: a value taken once and reused, or read more than once per send, breaks the sequence.
+        assert_eq!(timestamps, ["1700000000000", "1700000000001", "1700000000002"]);
     }
 
     #[tokio::test]
