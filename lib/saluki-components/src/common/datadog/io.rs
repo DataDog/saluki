@@ -733,6 +733,7 @@ async fn run_io_loop<B>(
             None
         };
         endpoint_txs.push(EndpointSender {
+            configured_endpoint: resolved_endpoint.configured_endpoint().to_string(),
             endpoint_url,
             endpoint_domain,
             target,
@@ -788,6 +789,7 @@ struct EndpointSender<B>
 where
     B: Buf + Clone,
 {
+    configured_endpoint: String,
     endpoint_url: String,
     endpoint_domain: String,
     target: Option<RoutingTargetId>,
@@ -798,12 +800,15 @@ where
 
 impl<B: Buf + Clone> EndpointSender<B> {
     async fn send(&self, transaction: Transaction<B>) -> Result<(), SendError<Transaction<B>>> {
-        if transaction
+        if let Some(shadow) = transaction
             .metadata()
             .sketch_shadow
             .as_ref()
-            .is_some_and(|shadow| shadow.is_shadow)
+            .filter(|shadow| shadow.is_shadow)
         {
+            if shadow.batch_id(&self.configured_endpoint).is_none() {
+                return Ok(());
+            }
             let Some(shadow_tx) = &self.shadow_tx else {
                 return Ok(());
             };
@@ -3254,6 +3259,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(1);
         let (shadow_tx, _shadow_rx) = mpsc::channel(1);
         let mut sender = EndpointSender {
+            configured_endpoint: "sampled".to_string(),
             endpoint_url: String::new(),
             endpoint_domain: String::new(),
             target: None,
@@ -3261,9 +3267,12 @@ mod tests {
             tx,
             shadow_tx: Some(shadow_tx),
         };
-        sender.send(build_test_shadow_transaction("unused")).await.unwrap();
+        // Unrelated shadows used to fill this channel and drop samples intended for this destination.
+        sender.send(build_test_shadow_transaction("other")).await.unwrap();
+        sender.send(build_test_shadow_transaction("sampled")).await.unwrap();
+        sender.send(build_test_shadow_transaction("other")).await.unwrap();
         assert!(sender
-            .send(build_test_shadow_transaction("unused"))
+            .send(build_test_shadow_transaction("sampled"))
             .now_or_never()
             .unwrap()
             .is_err());
@@ -3271,7 +3280,7 @@ mod tests {
         assert!(sender.send(build_test_transaction()).now_or_never().is_none());
         rx.recv().await.unwrap();
         sender.shadow_tx = None;
-        sender.send(build_test_shadow_transaction("unused")).await.unwrap();
+        sender.send(build_test_shadow_transaction("sampled")).await.unwrap();
         assert!(
             rx.try_recv().is_err(),
             "disabled shadows must not use the authoritative channel"
