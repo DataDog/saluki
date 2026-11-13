@@ -46,7 +46,7 @@ impl Retryable for String {
 /// Result of a push operation.
 ///
 /// As pushing items to `RetryQueue` may result in dropping older items to make room for new ones, this struct tracks
-/// the total number of items dropped, and the number of events represented by those items.
+/// the total number of items dropped, the number of events represented by those items, and their size.
 #[derive(Default)]
 #[must_use = "`PushResult` carries information about potentially dropped items/events and should not be ignored"]
 pub struct PushResult {
@@ -58,6 +58,9 @@ pub struct PushResult {
 
     /// Total number of metric data points represented by the dropped items.
     pub data_points_dropped: u64,
+
+    /// Total size of the dropped items, in bytes, as reported by [`Retryable::size_bytes`].
+    pub bytes_dropped: u64,
 }
 
 impl PushResult {
@@ -71,13 +74,15 @@ impl PushResult {
         self.items_dropped += other.items_dropped;
         self.events_dropped += other.events_dropped;
         self.data_points_dropped += other.data_points_dropped;
+        self.bytes_dropped += other.bytes_dropped;
     }
 
     /// Tracks a single dropped item.
-    pub fn track_dropped_item(&mut self, item: &dyn EventContainer) {
+    pub fn track_dropped_item<T: Retryable>(&mut self, item: &T) {
         self.items_dropped += 1;
         self.events_dropped += item.event_count();
         self.data_points_dropped += item.data_point_count();
+        self.bytes_dropped += item.size_bytes();
     }
 }
 
@@ -273,6 +278,7 @@ where
                         push_result.items_dropped += 1;
                         push_result.events_dropped += oldest_entry_events;
                         push_result.data_points_dropped += oldest_entry_data_points;
+                        push_result.bytes_dropped += oldest_entry_size;
                     }
                 }
             } else {
@@ -523,9 +529,11 @@ mod tests {
         let mut retry_queue = RetryQueue::<FakeData>::new("test".to_string(), 36);
 
         // Push our data to the queue.
+        let data1_size = data1.size_bytes();
         let push_result = retry_queue.push(data1).await.expect("should not fail to push data");
         assert_eq!(0, push_result.items_dropped);
         assert_eq!(0, push_result.events_dropped);
+        assert_eq!(0, push_result.bytes_dropped);
 
         // Push a second data entry, which should cause the first entry to be removed.
         let push_result = retry_queue
@@ -534,6 +542,7 @@ mod tests {
             .expect("should not fail to push data");
         assert_eq!(1, push_result.items_dropped);
         assert_eq!(1, push_result.events_dropped);
+        assert_eq!(data1_size, push_result.bytes_dropped);
 
         // Now pop the data back out and ensure it matches the second item we pushed, indicating the first item was
         // removed from the queue to make room.
@@ -552,6 +561,7 @@ mod tests {
 
         // Create our retry queue such that it can hold both items.
         let mut retry_queue = RetryQueue::<FakeData>::new("test".to_string(), u64::MAX);
+        let total_size = data1.size_bytes() + data2.size_bytes();
 
         // Push our data to the queue.
         let push_result1 = retry_queue.push(data1).await.expect("should not fail to push data");
@@ -565,6 +575,7 @@ mod tests {
         let flush_result = retry_queue.flush().await.expect("should not fail to flush");
         assert_eq!(2, flush_result.items_dropped);
         assert_eq!(2, flush_result.events_dropped);
+        assert_eq!(total_size, flush_result.bytes_dropped);
     }
 
     #[tokio::test]

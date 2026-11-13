@@ -927,15 +927,18 @@ async fn run_endpoint_io_loop<B>(
                     .with_flush_to_disk_mem_ratio(retry.flush_to_disk_mem_ratio)
             });
     }
+    let queue_domain = MetaString::from(endpoint_domain.as_str());
+    let in_flight_telemetry = txnq_telemetry.clone();
     let mut pending_txns = PendingTransactions::new(
         config.endpoint_buffer_size,
         retry_queue,
         txnq_telemetry,
-        MetaString::from(endpoint_domain.as_str()),
+        queue_domain.clone(),
         retry.effective_capacity_time_interval_secs(),
     );
 
     let mut in_flight = JoinSet::new();
+    in_flight_telemetry.record_in_flight_requests(&queue_domain, 0);
     let mut transaction_input_telemetry_by_endpoint = FastHashMap::<MetaString, TransactionInputTelemetry>::default();
     let mut done = false;
 
@@ -983,21 +986,39 @@ async fn run_endpoint_io_loop<B>(
             // While we're not done and there are pending transactions, wait for the service to become ready and then
             // next the next available pending transaction.
             svc = service.ready(), if !done && !pending_txns.is_empty() => match svc {
-                Ok(svc) => if let Some(pending_txn) = pending_txns.pop().await {
-                    let (metadata, request, retry_counters) = prepare_transaction_for_dispatch(
-                        pending_txn,
-                        &mut retry_telemetry,
-                        endpoint_name.as_ref(),
-                    );
-                    let body_size = request.body().remaining() as u64;
-                    in_flight.spawn(svc.call(request).map(move |result| InFlightTransaction {
-                        metadata,
-                        body_size,
-                        retry_counters,
-                        result,
-                    }));
+                Ok(svc) => {
+                    // Dequeuing can read from disk, and requests can finish while it does, so dequeue first.
+                    let pending_txn = pending_txns.pop().await;
 
-                    debug!(endpoint_url, "Request sent.");
+                    // A finished request releases its concurrency permit before its task is joined, so collect
+                    // finished tasks before dispatching, or the in-flight count would include them.
+                    while let Some(task_result) = in_flight.try_join_next() {
+                        handle_in_flight_transaction_result(
+                            task_result,
+                            &mut pending_txns,
+                            &telemetry,
+                            &endpoint_url,
+                            &endpoint_domain,
+                        ).await;
+                    }
+
+                    if let Some(pending_txn) = pending_txn {
+                        let (metadata, request, retry_counters) = prepare_transaction_for_dispatch(
+                            pending_txn,
+                            &mut retry_telemetry,
+                            endpoint_name.as_ref(),
+                        );
+                        let body_size = request.body().remaining() as u64;
+                        in_flight.spawn(svc.call(request).map(move |result| InFlightTransaction {
+                            metadata,
+                            body_size,
+                            retry_counters,
+                            result,
+                        }));
+
+                        debug!(endpoint_url, "Request sent.");
+                    }
+                    in_flight_telemetry.record_in_flight_requests(&queue_domain, in_flight.len());
                 },
                 Err(e) => match e {
                     RetryCircuitBreakerError::Service(e) => {
@@ -1016,6 +1037,7 @@ async fn run_endpoint_io_loop<B>(
             // Drive any in-flight transactions to completion.
             maybe_result = in_flight.join_next(), if !in_flight.is_empty() => {
                 let task_result = maybe_result.expect("in_flight marked as not being empty");
+                in_flight_telemetry.record_in_flight_requests(&queue_domain, in_flight.len());
                 handle_in_flight_transaction_result(
                     task_result,
                     &mut pending_txns,
@@ -1045,6 +1067,9 @@ async fn run_endpoint_io_loop<B>(
             error!(endpoint_url, error = %e, "Failed to flush pending transactions. Events may be permanently lost.")
         }
     }
+
+    // Any request still in flight here is aborted when the set is dropped, so none remain once this task stops.
+    in_flight_telemetry.record_in_flight_requests(&queue_domain, 0);
 
     debug!(endpoint_url, "Endpoint I/O task stopped.");
 }
@@ -1087,6 +1112,7 @@ fn track_queue_drops(telemetry: &ComponentTelemetry, domain: &str, push_result: 
     telemetry.track_dropped_items(push_result.items_dropped);
     telemetry.track_dropped_events(push_result.events_dropped);
     telemetry.track_data_points_dropped(domain, push_result.data_points_dropped);
+    telemetry.track_dropped_bytes(domain, push_result.bytes_dropped);
 }
 
 /// Processes an HTTP response to a forwarded intake request, updating telemetry and logging as appropriate.
@@ -1188,7 +1214,7 @@ impl<T: Retryable> PendingTransactions<T> {
         max_enqueued: usize, retry_queue: RetryQueue<T>, telemetry: TransactionQueueTelemetry, domain: MetaString,
         capacity_history_duration_secs: u64,
     ) -> Self {
-        Self {
+        let pending = Self {
             high_priority: VecDeque::with_capacity(max_enqueued),
             low_priority: retry_queue,
             telemetry,
@@ -1197,7 +1223,15 @@ impl<T: Retryable> PendingTransactions<T> {
                 capacity_history_duration_secs,
                 RETRY_QUEUE_CAPACITY_BUCKET_DURATION_SECS,
             ),
-        }
+        };
+
+        // Admission to the high-priority queue is bounded by the capacity actually allocated, so report that.
+        pending
+            .telemetry
+            .record_high_prio_queue_capacity(&pending.domain, pending.high_priority.capacity());
+        pending.record_high_prio_queue_size();
+
+        pending
     }
 
     /// Returns `true` if there are no pending transactions.
@@ -1216,6 +1250,7 @@ impl<T: Retryable> PendingTransactions<T> {
         if self.high_priority.len() < self.high_priority.capacity() {
             self.high_priority.push_back(transaction);
             self.telemetry.high_prio_queue_insertions().increment(1);
+            self.record_high_prio_queue_size();
 
             debug!(
                 high_prio_queue_len = self.high_priority.len(),
@@ -1261,6 +1296,7 @@ impl<T: Retryable> PendingTransactions<T> {
         loop {
             if let Some(transaction) = self.high_priority.pop_front() {
                 self.telemetry.high_prio_queue_removals().increment(1);
+                self.record_high_prio_queue_size();
 
                 debug!(
                     high_prio_queue_len = self.high_priority.len(),
@@ -1319,6 +1355,7 @@ impl<T: Retryable> PendingTransactions<T> {
         // Push all high-priority transactions into the low-priority queue.
         while let Some(transaction) = self.high_priority.pop_front() {
             self.telemetry.high_prio_queue_removals().increment(1);
+            self.record_high_prio_queue_size();
 
             let subpush_result = self.low_priority.push(transaction).await?;
             self.telemetry.low_prio_queue_insertions().increment(1);
@@ -1337,6 +1374,11 @@ impl<T: Retryable> PendingTransactions<T> {
     fn record_retry_queue_size(&self) {
         self.telemetry
             .record_retry_queue_size(&self.domain, self.low_priority.len());
+    }
+
+    fn record_high_prio_queue_size(&self) {
+        self.telemetry
+            .record_high_prio_queue_size(&self.domain, self.high_priority.len());
     }
 
     async fn record_incoming_transaction_size(&mut self, bytes: u64) {
@@ -2136,6 +2178,76 @@ mod tests {
         assert!(push_result.had_drops());
         assert_eq!(push_result.items_dropped, 2);
         assert_eq!(push_result.events_dropped, 2);
+        assert_eq!(push_result.bytes_dropped, ("high".len() + "low".len()) as u64);
+    }
+
+    #[test]
+    fn track_queue_drops_counts_dropped_bytes_by_domain() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let telemetry = ComponentTelemetry::from_builder(&MetricsBuilder::default());
+
+        let push_result = PushResult {
+            items_dropped: 2,
+            events_dropped: 3,
+            data_points_dropped: 0,
+            bytes_dropped: 42,
+        };
+        track_queue_drops(&telemetry, "https://example.com", push_result);
+
+        assert_eq!(recorder.counter("component_items_dropped_total"), Some(2));
+        assert_eq!(
+            recorder.counter(("component_bytes_dropped_total", &[("domain", "https://example.com")])),
+            Some(42)
+        );
+    }
+
+    #[tokio::test]
+    async fn high_prio_queue_fill_tracks_pushes_pops_and_flush() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let (telemetry, domain) = transaction_queue_telemetry();
+        let retry_queue = RetryQueue::new("test".to_string(), 1024);
+        let mut pending_txns = PendingTransactions::new(2, retry_queue, telemetry, domain, 900);
+        let capacity = pending_txns.high_priority.capacity() as f64;
+        let size = |recorder: &TestRecorder| {
+            let total = recorder.gauge("network_http_high_prio_queue_size");
+            let by_domain = recorder.gauge((
+                "network_http_high_prio_queue_size",
+                &[("domain", "https://example.com")],
+            ));
+            assert_eq!(total, by_domain);
+            total
+        };
+
+        assert_eq!(recorder.gauge("network_http_high_prio_queue_capacity"), Some(capacity));
+        assert_eq!(
+            recorder.gauge((
+                "network_http_high_prio_queue_capacity",
+                &[("domain", "https://example.com")],
+            )),
+            Some(capacity)
+        );
+        assert_eq!(size(&recorder), Some(0.0));
+
+        for txn in ["first", "second", "third"] {
+            let _ = pending_txns
+                .push_high_priority(txn.to_string())
+                .await
+                .expect("push should succeed");
+        }
+        // The third transaction overflows into the retry queue, so the high-priority queue stays full.
+        assert_eq!(size(&recorder), Some(2.0));
+        assert_eq!(recorder.gauge("network_http_retry_queue_size"), Some(1.0));
+
+        assert!(matches!(
+            pending_txns.pop().await,
+            Some(PendingTransaction::HighPriority(txn)) if txn == "first"
+        ));
+        assert_eq!(size(&recorder), Some(1.0));
+
+        let _ = pending_txns.flush().await.expect("flush should succeed");
+        assert_eq!(size(&recorder), Some(0.0));
     }
 
     #[tokio::test]
@@ -3037,6 +3149,47 @@ mod tests {
             recorder.counter(component_metric_key("component_bytes_sent_total")),
             Some(12)
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn forwarder_reports_in_flight_requests() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let (server_url, _, mut requests) =
+            start_recording_http_server_with_delay(vec![StatusCode::OK], Duration::from_millis(200)).await;
+        let live = LiveForwarderConfiguration {
+            secrets_in_use: Live::new_fixed(false),
+            ..Default::default()
+        };
+        let (_, forwarder) = build_test_forwarder_configured(&server_url, live, |config| {
+            config.request_timeout_secs = 10;
+            config.stop_wait_for_inflight = true;
+        })
+        .await;
+        let in_flight_key = || {
+            metrics::Key::from_parts(
+                "network_http_in_flight_requests",
+                vec![
+                    metrics::Label::new("component_id", "test_forwarder"),
+                    metrics::Label::new("component_type", "forwarder"),
+                    metrics::Label::new("domain", server_url.trim_end_matches('/').to_string()),
+                ],
+            )
+        };
+
+        let supervisor = TestSupervisor::start("test_forwarder").await;
+        let handle = spawn_test_forwarder(&supervisor, forwarder).await;
+        handle
+            .send_transaction(build_test_transaction())
+            .await
+            .expect("send should succeed");
+
+        // The endpoint holds its answer back, so the request is still in flight once the endpoint has received it.
+        requests.recv().await.expect("the endpoint should receive the request");
+        assert_eq!(recorder.gauge(in_flight_key()), Some(1.0));
+
+        drain_test_forwarder(supervisor, handle).await;
+        assert_eq!(recorder.gauge(in_flight_key()), Some(0.0));
     }
 
     #[tokio::test]

@@ -130,8 +130,10 @@ impl RetryQueueCapacityAggregator {
             let domain = endpoint_stats.domain.to_string();
             let (domain_bytes_per_sec, domain_in_memory_capacity_bytes) = per_domain.entry(domain).or_insert((0.0, 0));
             *domain_bytes_per_sec += endpoint_stats.bytes_per_sec;
+            // Every endpoint loop has its own in-memory retry queue, including loops that share an endpoint URL, so
+            // the buffering a domain has is the sum of theirs.
             *domain_in_memory_capacity_bytes =
-                (*domain_in_memory_capacity_bytes).max(endpoint_stats.in_memory_capacity_bytes);
+                (*domain_in_memory_capacity_bytes).saturating_add(endpoint_stats.in_memory_capacity_bytes);
 
             total_bytes_per_sec += endpoint_stats.bytes_per_sec;
             shared_disk_available_capacity_bytes =
@@ -250,6 +252,27 @@ mod tests {
         assert_eq!(domain2.bytes_per_sec, 1.5);
         assert_eq!(domain2.capacity_bytes, 38.75);
         assert_eq!(domain2.capacity_secs, 25.833333333333332);
+    }
+
+    #[test]
+    fn capacity_aggregator_adds_up_memory_of_endpoints_in_a_domain() {
+        let mut aggregator = RetryQueueCapacityAggregator::new();
+
+        for endpoint in ["one", "two"] {
+            aggregator.update_endpoint(
+                MetaString::from_static(endpoint),
+                MetaString::from_static("domain"),
+                10.0,
+                100,
+                50,
+            );
+        }
+
+        // Two queues of 100 bytes each, fed 20 bytes per second in total, plus the shared disk.
+        let stats = domain_stats(&aggregator, "domain").expect("domain should have stats");
+        assert_eq!(stats.bytes_per_sec, 20.0);
+        assert_eq!(stats.capacity_bytes, 250.0);
+        assert_eq!(stats.capacity_secs, 12.5);
     }
 
     #[test]

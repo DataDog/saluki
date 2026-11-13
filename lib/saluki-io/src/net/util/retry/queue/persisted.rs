@@ -9,10 +9,10 @@ use chrono::{DateTime, NaiveDateTime, Utc};
 use fs4::{available_space, total_space};
 use rand::RngExt as _;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use serde::{de::DeserializeOwned, Serialize};
+use serde::de::DeserializeOwned;
 use tracing::{debug, error, info, warn};
 
-use super::{EventContainer, PushResult};
+use super::{PushResult, Retryable};
 
 /// A persisted entry.
 ///
@@ -116,7 +116,7 @@ pub struct PersistedQueue<T> {
 
 impl<T> PersistedQueue<T>
 where
-    T: EventContainer + DeserializeOwned + Serialize,
+    T: Retryable,
 {
     /// Creates a new `PersistedQueue` instance from the given arguments.
     ///
@@ -585,9 +585,10 @@ async fn remove_outdated_retry_files(queue_path: &Path, max_age_days: u32) -> Re
 mod tests {
     use rand::RngExt as _;
     use rand_distr::Alphanumeric;
-    use serde::Deserialize;
+    use serde::{Deserialize, Serialize};
 
     use super::*;
+    use crate::net::util::retry::EventContainer;
 
     #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
     struct FakeData {
@@ -607,6 +608,12 @@ mod tests {
     impl EventContainer for FakeData {
         fn event_count(&self) -> u64 {
             1
+        }
+    }
+
+    impl Retryable for FakeData {
+        fn size_bytes(&self) -> u64 {
+            (self.name.len() + std::mem::size_of::<String>() + 4) as u64
         }
     }
 
@@ -725,10 +732,12 @@ mod tests {
         assert_eq!(0, files_in_dir(&root_path).await);
 
         // Push our data to the queue and ensure it persisted it to disk.
+        let data1_size = data1.size_bytes();
         let push_result = persisted_queue.push(data1).await.expect("should not fail to push data");
         assert_eq!(1, files_in_dir(&root_path).await);
         assert_eq!(0, push_result.items_dropped);
         assert_eq!(0, push_result.events_dropped);
+        assert_eq!(0, push_result.bytes_dropped);
 
         // Push a second data entry, which should cause the first entry to be removed.
         let push_result = persisted_queue
@@ -738,6 +747,7 @@ mod tests {
         assert_eq!(1, files_in_dir(&root_path).await);
         assert_eq!(1, push_result.items_dropped);
         assert_eq!(1, push_result.events_dropped);
+        assert_eq!(data1_size, push_result.bytes_dropped);
 
         // Now pop the data back out and ensure it matches the second item we pushed -- indicating the first item was
         // removed -- and that we've consumed it, leaving no files on disk.
