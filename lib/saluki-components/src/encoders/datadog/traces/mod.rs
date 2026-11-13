@@ -38,6 +38,7 @@ use tokio::{
 };
 use tracing::{debug, error};
 
+use crate::common::datadog::traces::normalize::{is_normalized_tag_value, normalize_tag_value_into_unchecked};
 use crate::common::datadog::{
     get_tracer_hostname,
     io::RB_BUFFER_CHUNK_SIZE,
@@ -47,7 +48,6 @@ use crate::common::datadog::{
     DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT, KEY_ANALYZED_SPANS,
     TAG_DECISION_MAKER,
 };
-use crate::common::otlp::traces::normalize::{is_normalized_tag_value, normalize_tag_value_into_unchecked};
 use crate::common::otlp::util::{
     attributes_to_source, extract_container_tags_from_attributes_map, Source as OtlpSource,
     SourceKind as OtlpSourceKind, KEY_DATADOG_CONTAINER_TAGS,
