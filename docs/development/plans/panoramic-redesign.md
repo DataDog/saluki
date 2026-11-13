@@ -1061,7 +1061,8 @@ a step calls. The lifecycle hands each planned participant to its realization ba
 `serde::Serialize`, and its field names are theirs. Every map is ordered and every field keeps its
 declared order, so dumping one case twice gives identical output, and any two dumps diff line by
 line. A file appears with its contents, a template as written and, where planning filled it, as
-resolved, and an operation as its name and what it uses. Migration reviews read this JSON beside
+resolved, an operation as its name and what it uses, and a step as its fields, what it needs, and how the
+runner reaches each endpoint it uses, itself or through an operation. Migration reviews read this JSON beside
 the legacy file. A case that fails may also write its plan to its log directory.
 
 This is part of the plan for `dsd-plain`, trimmed:
