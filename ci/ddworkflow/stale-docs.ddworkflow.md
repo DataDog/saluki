@@ -1,6 +1,7 @@
 ---
 name: Stale Comments Cleaner
 description: Clean up comments, paths and docs that have gone stale.
+disabled: true
 schedule:
   - cron: "0 9 * * *"    # run every day at 9:00 AM UTC
 repo: DataDog/saluki
