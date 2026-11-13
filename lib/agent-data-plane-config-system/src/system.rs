@@ -1156,6 +1156,76 @@ mod tests {
         standalone_system(file)
     }
 
+    #[test]
+    fn logs_agent_is_enabled_by_either_logs_enabled_or_log_enabled() {
+        // Like the Datadog Agent, the deprecated `log_enabled` isn't a former name of `logs_enabled`: the logs agent
+        // runs when either key is `true`, so neither key overrides the other.
+        let cases: [(&str, Value, bool); 7] = [
+            ("neither set", json!({}), false),
+            ("logs_enabled", json!({ "logs_enabled": true }), true),
+            ("log_enabled", json!({ "log_enabled": true }), true),
+            ("both true", json!({ "logs_enabled": true, "log_enabled": true }), true),
+            (
+                "both false",
+                json!({ "logs_enabled": false, "log_enabled": false }),
+                false,
+            ),
+            (
+                "only logs_enabled true",
+                json!({ "logs_enabled": true, "log_enabled": false }),
+                true,
+            ),
+            (
+                "only log_enabled true",
+                json!({ "logs_enabled": false, "log_enabled": true }),
+                true,
+            ),
+        ];
+
+        for (name, file, expected) in cases {
+            let system = standalone_system(file).expect("configuration translates");
+            assert_eq!(system.config().control.logs_enabled, expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn logs_agent_enablement_is_read_from_the_environment() {
+        // (case, environment, expected)
+        type Case<'a> = (&'a str, &'a [(&'a str, &'a str)], bool);
+        let cases: [Case; 5] = [
+            ("DD_LOGS_ENABLED", &[("DD_LOGS_ENABLED", "true")], true),
+            ("DD_LOG_ENABLED", &[("DD_LOG_ENABLED", "true")], true),
+            (
+                "both false",
+                &[("DD_LOGS_ENABLED", "false"), ("DD_LOG_ENABLED", "false")],
+                false,
+            ),
+            (
+                "only DD_LOGS_ENABLED true",
+                &[("DD_LOGS_ENABLED", "true"), ("DD_LOG_ENABLED", "false")],
+                true,
+            ),
+            (
+                "only DD_LOG_ENABLED true",
+                &[("DD_LOGS_ENABLED", "false"), ("DD_LOG_ENABLED", "true")],
+                true,
+            ),
+        ];
+
+        for (name, env, expected) in cases {
+            let system = standalone_system_with_env(json!({}), env).expect("configuration translates");
+            assert_eq!(system.config().control.logs_enabled, expected, "{name}");
+        }
+
+        // The environment overrides the file for each key separately, and the two keys still combine.
+        let system = standalone_system_with_env(
+            json!({ "logs_enabled": true, "log_enabled": false }),
+            &[("DD_LOGS_ENABLED", "false")],
+        )
+        .expect("configuration translates");
+        assert!(!system.config().control.logs_enabled);
+    }
+
     #[tokio::test]
     async fn standalone_reads_log_file_max_size_from_numbers_strings_and_environment() {
         // A YAML integer reaches the translator as its decimal string, a string keeps the Agent's unit

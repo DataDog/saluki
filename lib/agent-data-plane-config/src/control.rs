@@ -28,6 +28,11 @@ pub struct ControlConfiguration {
     /// Whether the OTLP pipeline is built.
     pub otlp: bool,
 
+    /// Whether the logs agent is enabled: `logs_enabled`, or its deprecated spelling `log_enabled`.
+    ///
+    /// Defaults to `false`.
+    pub logs_enabled: bool,
+
     /// Whether the experimental APM proxy runs in front of the trace-agent. (not in Datadog Agent
     /// config schema)
     ///

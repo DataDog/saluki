@@ -407,6 +407,10 @@ pub struct DatadogConfiguration {
     #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub kubernetes_kubelet_nodename: String,
 
+    #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
+    pub log_enabled: bool,
+
     #[serde(default = "defaults::default_u64::<i64, 1>")]
     #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub log_file_max_rolls: i64,
@@ -438,6 +442,10 @@ pub struct DatadogConfiguration {
     #[serde(default)]
     #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub log_to_syslog: bool,
+
+    #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
+    pub logs_enabled: bool,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
     #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
@@ -699,6 +707,7 @@ impl Default for DatadogConfiguration {
             ipc_address: defaults::datadog_configuration_ipc_address(),
             ipc_cert_file_path: Default::default(),
             kubernetes_kubelet_nodename: Default::default(),
+            log_enabled: Default::default(),
             log_file_max_rolls: defaults::default_u64::<i64, 1>(),
             log_file_max_size: defaults::datadog_configuration_log_file_max_size(),
             log_format_json: Default::default(),
@@ -707,6 +716,7 @@ impl Default for DatadogConfiguration {
             log_payloads: Default::default(),
             log_to_console: defaults::default_bool::<true>(),
             log_to_syslog: Default::default(),
+            logs_enabled: Default::default(),
             metric_filterlist: Default::default(),
             metric_filterlist_match_prefix: Default::default(),
             metric_filterlist_prefix: Default::default(),

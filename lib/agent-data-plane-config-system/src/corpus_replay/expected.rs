@@ -2210,6 +2210,15 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             adp: Adp::value("false"),
             cause: UNRESOLVED_AGENT_DEFAULT,
         }),
+        known_bug(Entry {
+            origin: "logs-enabled-yes-yaml",
+            tier: Deserialize,
+            at: "snapshot",
+            getter: "-",
+            key: "logs_enabled",
+            adp: Adp::error("invalid value: string \"yes\", expected a boolean, a boolean string, or a number"),
+            cause: UNPARSEABLE_SCALAR_STRING,
+        }),
         intentional(Entry {
             origin: "proxy-env-bare-lowercase",
             tier: Bootstrap,
