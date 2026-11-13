@@ -273,13 +273,18 @@ impl RelayBuilder for ApmRelayConfiguration {
             tracer_flare.api_key(),
         )?;
 
+        // Cloned before `/info` takes its first snapshot, so that any update published after it is waited on.
+        let semantic_registry_updates = self.semantic_registry.clone();
+        let info = Info::new(self.info.clone(), self.semantic_registry.clone());
+
         Ok(Box::new(ApmRelay {
             tcp_endpoint,
             uds_endpoint,
             proxy,
             tracer_flare,
             tracer_flare_api_key: self.tracer_flare.api_key.clone(),
-            info: Info::new(self.info.clone(), self.semantic_registry.clone()),
+            info,
+            semantic_registry_updates,
             agent_client: self.agent_client.clone(),
             org_prop_marker,
             container_tags: ContainerTagsHasher::new(
@@ -302,6 +307,7 @@ pub struct ApmRelay {
     tracer_flare: TracerFlareProxy,
     tracer_flare_api_key: Live<String>,
     info: Info,
+    semantic_registry_updates: SemanticRegistryProvider,
     agent_client: Option<RemoteAgentClientConfiguration>,
     org_prop_marker: OrgPropagationMarkerFetcher,
     container_tags: ContainerTagsHasher,
@@ -319,6 +325,7 @@ impl Relay for ApmRelay {
             tracer_flare,
             mut tracer_flare_api_key,
             info,
+            mut semantic_registry_updates,
             agent_client,
             org_prop_marker,
             container_tags,
@@ -387,6 +394,8 @@ impl Relay for ApmRelay {
                 },
                 _ = health.live() => continue,
                 api_key = tracer_flare_api_key.changed() => tracer_flare.refresh_api_key(&api_key),
+                // Peer tags follow the registry, so tracers must see its updates, unlike the trace-agent's `/info`.
+                _ = semantic_registry_updates.changed() => info.refresh_semantic_registry(),
                 version = &mut agent_version, if agent_version_pending => {
                     agent_version_pending = false;
                     if let Some(version) = version {

@@ -154,6 +154,21 @@ impl SemanticRegistryProvider {
             None => Arc::clone(&EMBEDDED_REGISTRY),
         }
     }
+
+    /// Waits until a registry update is accepted, after which [`Self::snapshot`] can return a different registry.
+    ///
+    /// Rejected updates are skipped, as they leave the registry unchanged. An accepted update isn't guaranteed to
+    /// differ from the previous registry: Remote Configuration may publish the same one again, for example after its
+    /// worker restarts.
+    ///
+    /// A clone only notices updates published after it was created or last waited, so a caller should take a snapshot
+    /// after creating the clone it waits on. A default provider waits indefinitely, so a caller may `select!` on this.
+    ///
+    /// This takes `&mut self` because the provider tracks which update it has observed. Each task that waits holds its
+    /// own clone.
+    pub async fn changed(&mut self) {
+        while self.subscription.changed().await.is_err() {}
+    }
 }
 
 impl Default for SemanticRegistryProvider {
@@ -225,6 +240,30 @@ mod tests {
         let registry = Arc::clone(&core.registry);
         publisher.accept(core);
         publisher.reject(SemanticCoreError::NoValidConfiguration { assigned: 1 });
+
+        assert!(Arc::ptr_eq(&provider.snapshot(), &registry));
+    }
+
+    #[tokio::test]
+    async fn changed_waits_for_an_accepted_update() {
+        let (publisher, subscription) = TestPublisher::new();
+        let mut provider = SemanticRegistryProvider::from_subscription(subscription);
+
+        publisher.reject(SemanticCoreError::NoValidConfiguration { assigned: 1 });
+        let core = remote(DB_STATEMENT, "a");
+        let registry = Arc::clone(&core.registry);
+        {
+            let changed = provider.changed();
+            tokio::pin!(changed);
+            tokio::select! {
+                biased;
+                _ = &mut changed => panic!("a rejection is not an update"),
+                _ = std::future::ready(()) => {}
+            }
+
+            publisher.accept(core);
+            changed.await;
+        }
 
         assert!(Arc::ptr_eq(&provider.snapshot(), &registry));
     }

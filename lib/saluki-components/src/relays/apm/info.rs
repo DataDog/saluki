@@ -338,8 +338,8 @@ impl RenderedInfo {
 
 /// The `/info` endpoint: its payload, and the headers every other response carries.
 ///
-/// Clones share the payload. The setters re-render it from every input, so they must be called from a single task,
-/// as the relay does, for the last render to see every update.
+/// Clones share the payload. The setters and [`Self::refresh_semantic_registry`] re-render it from every input, so they
+/// must be called from a single task, as the relay does, for the last render to see every update.
 #[derive(Clone)]
 pub(super) struct Info {
     config: Arc<InfoConfiguration>,
@@ -373,6 +373,13 @@ impl Info {
     /// Re-renders the payload with the version of the Agent.
     pub(super) fn set_agent_version(&self, agent: RunningAgentVersion) {
         self.agent.store(Arc::new(agent));
+        self.rerender();
+    }
+
+    /// Re-renders the payload with the current semantic registry, whose mappings select the peer tags.
+    ///
+    /// An unchanged registry renders the same body, so `Datadog-Agent-State` only changes when the peer tags do.
+    pub(super) fn refresh_semantic_registry(&self) {
         self.rerender();
     }
 
@@ -1098,6 +1105,40 @@ mod tests {
         assert_eq!(payload["org_prop_marker"], "6Hy0XAWtOJA");
         // Neither update loses the other.
         assert_eq!(payload["version"], "7.85.0");
+    }
+
+    #[test]
+    fn a_registry_update_rerenders_the_peer_tags_and_their_headers() {
+        use datadog_agent_apm::semantics::test_util::{registry_json, TestRegistryPublisher};
+
+        let (publisher, provider) = TestRegistryPublisher::new();
+        let info = Info::new(
+            InfoConfiguration {
+                peer_tags_aggregation: true,
+                ..Default::default()
+            },
+            provider,
+        );
+        let peer_tags = |info: &Info| -> Value {
+            let payload: Value = serde_json::from_slice(&info.rendered.load().body).unwrap();
+            payload["peer_tags"].clone()
+        };
+        let before = peer_tags(&info);
+        let mut before_headers = HeaderMap::new();
+        info.set_headers(&mut before_headers);
+
+        let remapped = registry_json(
+            r#"{"peer.service": {"fallbacks": [
+                {"name": "custom.remote.service", "provider": "otel", "type": "string"}]}}"#,
+        );
+        publisher.accept_registry(Registry::from_json(&remapped).unwrap(), "remapped");
+        info.refresh_semantic_registry();
+
+        assert_eq!(peer_tags(&info), json!(["custom.remote.service"]));
+        assert_ne!(peer_tags(&info), before);
+        let mut after_headers = HeaderMap::new();
+        info.set_headers(&mut after_headers);
+        assert_ne!(after_headers[AGENT_STATE_HEADER], before_headers[AGENT_STATE_HEADER]);
     }
 
     #[test]
