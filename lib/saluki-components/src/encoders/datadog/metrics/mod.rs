@@ -1010,7 +1010,7 @@ async fn flush_v2_metrics(
     let maybe_requests = request_builder.flush().await;
     for maybe_request in maybe_requests {
         match maybe_request {
-            Ok((events, data_points, request)) => {
+            Ok((events, data_points, _uncompressed_len, request)) => {
                 requests_flushed += 1;
 
                 flush_payload(request, events, data_points, payloads_tx, payload_info).await?;
@@ -3137,7 +3137,7 @@ mod tests {
             while let Some(metric) = pending.take() {
                 if let Some(returned) = builder.encode(metric).await.expect("encode should not error") {
                     for request in builder.flush().await {
-                        let (_, points, _) = request.expect("request should build");
+                        let (_, points, _, _) = request.expect("request should build");
                         assert!(
                             points <= 10_000,
                             "payload carried {} points, over the 10000 limit",
@@ -3150,7 +3150,7 @@ mod tests {
             }
         }
         for request in builder.flush().await {
-            let (_, points, _) = request.expect("request should build");
+            let (_, points, _, _) = request.expect("request should build");
             assert!(
                 points <= 10_000,
                 "final payload carried {} points, over the 10000 limit",

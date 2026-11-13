@@ -3,6 +3,7 @@ use std::{borrow::Cow, fmt::Write, time::Duration};
 use async_trait::async_trait;
 use datadog_protos::traces::builders::{idx::SpanKind, AgentPayloadBuilder};
 use http::{uri::PathAndQuery, HeaderName, HeaderValue, Method, Uri};
+use metrics::{Counter, Histogram};
 use piecemeal::{ScratchBuffer, ScratchWriter};
 use saluki_common::collections::{FastHashMap, FastIndexSet};
 use saluki_common::strings::StringBuilder;
@@ -40,7 +41,8 @@ use crate::common::datadog::{
     io::RB_BUFFER_CHUNK_SIZE,
     request_builder::{EndpointEncoder, RequestBuilder},
     telemetry::ComponentTelemetry,
-    DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT, TAG_DECISION_MAKER,
+    DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT, KEY_ANALYZED_SPANS,
+    TAG_DECISION_MAKER,
 };
 use crate::common::otlp::util::{
     attributes_to_source, extract_container_tags_from_attributes_map, Source as OtlpSource,
@@ -178,6 +180,7 @@ impl EncoderBuilder for DatadogTraceConfiguration {
     async fn build(&self, context: BuildContext) -> Result<Box<dyn Encoder + Send>, GenericError> {
         let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
+        let payload_telemetry = TracePayloadTelemetry::from_builder(&metrics_builder);
         let compression_scheme = CompressionScheme::new(&self.compressor_kind, self.zstd_compressor_level);
 
         // Create request builder for traces which is used to generate HTTP requests.
@@ -196,6 +199,7 @@ impl EncoderBuilder for DatadogTraceConfiguration {
         Ok(Box::new(DatadogTrace {
             trace_rb,
             telemetry,
+            payload_telemetry,
             flush_timeout,
         }))
     }
@@ -219,7 +223,77 @@ impl MemoryBounds for DatadogTraceConfiguration {
 pub struct DatadogTrace {
     trace_rb: RequestBuilder<TraceEndpointEncoder>,
     telemetry: ComponentTelemetry,
+    payload_telemetry: TracePayloadTelemetry,
     flush_timeout: Duration,
+}
+
+/// Telemetry for what the traces encoder writes into payloads.
+struct TracePayloadTelemetry {
+    traces: Counter,
+    spans: Counter,
+    events: Counter,
+    bytes_uncompressed: Counter,
+    payload_size: Histogram,
+}
+
+impl TracePayloadTelemetry {
+    fn from_builder(builder: &MetricsBuilder) -> Self {
+        Self {
+            traces: builder.register_counter("component_traces_encoded_total"),
+            spans: builder.register_counter("component_spans_encoded_total"),
+            events: builder.register_counter("component_trace_events_encoded_total"),
+            bytes_uncompressed: builder.register_counter("component_bytes_uncompressed_total"),
+            payload_size: builder.register_histogram("component_payload_size_bytes"),
+        }
+    }
+
+    /// Tracks a trace written into a payload.
+    fn track_trace(&self, counts: TraceCounts) {
+        self.traces.increment(1);
+        self.spans.increment(counts.spans);
+        self.events.increment(counts.events);
+    }
+
+    /// Tracks a flushed payload, given its size before compression and the size of the request body.
+    ///
+    /// The body size is recorded as a distribution, so that its maximum is the largest single payload.
+    fn track_payload(&self, uncompressed_len: usize, body_len: usize) {
+        self.bytes_uncompressed.increment(uncompressed_len as u64);
+        self.payload_size.record(body_len as f64);
+    }
+}
+
+/// Spans and events that a trace adds to a payload.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct TraceCounts {
+    spans: u64,
+    events: u64,
+}
+
+impl TraceCounts {
+    /// Counts the spans and events of a trace.
+    ///
+    /// A trace that sampling dropped is still sent when it carries spans kept as standalone events. Only those
+    /// analyzed spans count, as events, and none of its spans count as spans. A kept trace counts all of its spans as
+    /// spans and no events, even when some of its spans are analyzed: those are not sent as standalone events.
+    fn from_trace(trace: &Trace) -> Self {
+        if trace.dropped_trace {
+            let events = trace
+                .spans()
+                .iter()
+                .filter(|span| span.attributes.contains_key(KEY_ANALYZED_SPANS))
+                .count();
+            Self {
+                spans: 0,
+                events: events as u64,
+            }
+        } else {
+            Self {
+                spans: trace.spans().len() as u64,
+                events: 0,
+            }
+        }
+    }
 }
 
 // Encodes Trace events to TracerPayloads.
@@ -229,6 +303,7 @@ impl Encoder for DatadogTrace {
         let Self {
             trace_rb,
             telemetry,
+            payload_telemetry,
             flush_timeout,
         } = *self;
 
@@ -241,7 +316,14 @@ impl Encoder for DatadogTrace {
         //
         // The request builder task ignores the shutdown signal on purpose: it drains its incoming event buffer channel
         // until the channel closes, which is what guarantees every buffered metric is encoded and dispatched.
-        let request_builder_fut = run_request_builder(trace_rb, telemetry, events_rx, payloads_tx, flush_timeout);
+        let request_builder_fut = run_request_builder(
+            trace_rb,
+            telemetry,
+            payload_telemetry,
+            events_rx,
+            payloads_tx,
+            flush_timeout,
+        );
         runtime::worker("request_builder", request_builder_fut)
             .on_runtime(context.topology_context().global_thread_pool().clone())
             .needed()
@@ -292,7 +374,8 @@ impl Encoder for DatadogTrace {
 
 async fn run_request_builder(
     mut trace_request_builder: RequestBuilder<TraceEndpointEncoder>, telemetry: ComponentTelemetry,
-    mut events_rx: Receiver<EventsBuffer>, payloads_tx: Sender<PayloadsBuffer>, flush_timeout: std::time::Duration,
+    payload_telemetry: TracePayloadTelemetry, mut events_rx: Receiver<EventsBuffer>,
+    payloads_tx: Sender<PayloadsBuffer>, flush_timeout: std::time::Duration,
 ) -> Result<(), GenericError> {
     let mut pending_flush = false;
     let pending_flush_timeout = sleep(flush_timeout);
@@ -308,8 +391,12 @@ async fn run_request_builder(
                     };
                     // Encode the trace. If we get it back, that means the current request is full, and we need to
                     // flush it before we can try to encode the trace again.
+                    let trace_counts = TraceCounts::from_trace(&trace);
                     let trace_to_retry = match trace_request_builder.encode(trace).await {
-                        Ok(None) => continue,
+                        Ok(None) => {
+                            payload_telemetry.track_trace(trace_counts);
+                            continue;
+                        }
                         Ok(Some(trace)) => trace,
                         Err(e) => {
                             error!(error = %e, "Failed to encode trace.");
@@ -325,7 +412,8 @@ async fn run_request_builder(
 
                     for maybe_request in maybe_requests {
                         match maybe_request {
-                            Ok((events, _data_points, request)) => {
+                            Ok((events, _data_points, uncompressed_len, request)) => {
+                                payload_telemetry.track_payload(uncompressed_len, request.body().len());
                                 let payload_meta = PayloadMetadata::from_event_count(events);
                                 let http_payload = HttpPayload::new(payload_meta, request);
                                 let payload = Payload::Http(http_payload);
@@ -343,9 +431,13 @@ async fn run_request_builder(
                     }
 
                     // Now try to encode the trace again.
-                    if let Err(e) = trace_request_builder.encode(trace_to_retry).await {
-                        error!(error = %e, "Failed to encode trace.");
-                        telemetry.events_dropped_encoder().increment(1);
+                    match trace_request_builder.encode(trace_to_retry).await {
+                        Ok(None) => payload_telemetry.track_trace(trace_counts),
+                        Ok(Some(_)) => {}
+                        Err(e) => {
+                            error!(error = %e, "Failed to encode trace.");
+                            telemetry.events_dropped_encoder().increment(1);
+                        }
                     }
                 }
 
@@ -367,7 +459,8 @@ async fn run_request_builder(
                 let maybe_trace_requests = trace_request_builder.flush().await;
                 for maybe_request in maybe_trace_requests {
                     match maybe_request {
-                        Ok((events, _data_points, request)) => {
+                        Ok((events, _data_points, uncompressed_len, request)) => {
+                            payload_telemetry.track_payload(uncompressed_len, request.body().len());
                             let payload_meta = PayloadMetadata::from_event_count(events);
                             let http_payload = HttpPayload::new(payload_meta, request);
                             let payload = Payload::Http(http_payload);
@@ -865,9 +958,13 @@ mod tests {
     use datadog_protos::traces::{idx, AgentPayload};
     use protobuf::Message as _;
     use saluki_core::data_model::{
-        event::trace::{Span as DdSpan, Trace, TraceIngestInfo},
+        event::{
+            trace::{Span as DdSpan, Trace, TraceIngestInfo},
+            Event,
+        },
         tags::Tag,
     };
+    use saluki_metrics::test::TestRecorder;
     use stringtheory::MetaString;
 
     use super::*;
@@ -1412,5 +1509,111 @@ mod tests {
             "unexpected native chunk rate {native_chunk_rate:?}"
         );
         assert_eq!(decode_etp_span_attributes(&buf)[0][TAG_OTLP_SAMPLING_RATE], "0.77");
+    }
+
+    fn make_span(span_id: u64, analyzed: bool) -> DdSpan {
+        let span = DdSpan::new(
+            MetaString::from("svc"),
+            MetaString::from("op"),
+            MetaString::from("res"),
+            MetaString::from("web"),
+            span_id,
+            0,    // parent_id
+            0,    // start
+            1000, // duration
+            0,    // error
+        );
+        if analyzed {
+            span.with_attributes(FastHashMap::from_iter([(
+                MetaString::from(KEY_ANALYZED_SPANS),
+                AttributeValue::Float(1.0),
+            )]))
+        } else {
+            span
+        }
+    }
+
+    fn make_sampled_trace(spans: Vec<DdSpan>, dropped_trace: bool) -> Trace {
+        let mut trace = Trace::new(spans, TraceIngestInfo::Datadog);
+        trace.priority = Some(1);
+        trace.dropped_trace = dropped_trace;
+        trace
+    }
+
+    #[test]
+    fn trace_counts_follow_the_sampling_decision() {
+        // A kept trace counts every span as a span, analyzed or not, and no events.
+        let kept = make_sampled_trace(vec![make_span(1, true), make_span(2, false)], false);
+        assert_eq!(TraceCounts::from_trace(&kept), TraceCounts { spans: 2, events: 0 });
+
+        // A dropped trace counts only its analyzed spans, as events.
+        let dropped = make_sampled_trace(vec![make_span(1, true), make_span(2, true), make_span(3, false)], true);
+        assert_eq!(TraceCounts::from_trace(&dropped), TraceCounts { spans: 0, events: 2 });
+    }
+
+    #[tokio::test]
+    async fn request_builder_tracks_written_traces_and_payload_sizes() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let metrics_builder = MetricsBuilder::default();
+
+        let traces = vec![
+            make_sampled_trace(vec![make_span(1, false), make_span(2, true)], false),
+            make_sampled_trace(vec![make_span(3, true), make_span(4, false)], true),
+            make_sampled_trace(vec![make_span(5, false)], false),
+        ];
+
+        // Without compression or framing, the payload before compression is every trace encoded back to back.
+        let expected_uncompressed_len = traces
+            .iter()
+            .map(|trace| {
+                let mut buf = Vec::new();
+                make_encoder(false)
+                    .encode(trace, &mut buf)
+                    .expect("encode should succeed");
+                buf.len() as u64
+            })
+            .sum::<u64>();
+
+        let request_builder = RequestBuilder::new(make_encoder(false), CompressionScheme::noop(), RB_BUFFER_CHUNK_SIZE)
+            .await
+            .expect("request builder should be created");
+        let (events_tx, events_rx) = mpsc::channel(1);
+        let (payloads_tx, mut payloads_rx) = mpsc::channel(8);
+
+        let mut events = EventsBuffer::default();
+        for trace in traces {
+            assert!(events.try_push(Event::Trace(trace)).is_none());
+        }
+        events_tx.send(events).await.expect("events should be sent");
+        drop(events_tx);
+
+        run_request_builder(
+            request_builder,
+            ComponentTelemetry::from_builder(&metrics_builder),
+            TracePayloadTelemetry::from_builder(&metrics_builder),
+            events_rx,
+            payloads_tx,
+            Duration::from_millis(1),
+        )
+        .await
+        .expect("request builder should run to completion");
+
+        let mut body_lens = Vec::new();
+        while let Some(payload) = payloads_rx.recv().await {
+            let http_payload = payload.try_into_http_payload().expect("payload should be HTTP");
+            let (_, request) = http_payload.into_parts();
+            body_lens.push(request.body().len() as f64);
+        }
+        assert_eq!(body_lens.len(), 1);
+        assert_eq!(recorder.histogram("component_payload_size_bytes"), Some(body_lens));
+
+        assert_eq!(recorder.counter("component_traces_encoded_total"), Some(3));
+        assert_eq!(recorder.counter("component_spans_encoded_total"), Some(3));
+        assert_eq!(recorder.counter("component_trace_events_encoded_total"), Some(1));
+        assert_eq!(
+            recorder.counter("component_bytes_uncompressed_total"),
+            Some(expected_uncompressed_len)
+        );
     }
 }

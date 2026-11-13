@@ -86,6 +86,9 @@ pub const TAG_ORIGIN: &str = "_dd.origin";
 /// Span attribute key used to mark top-level spans (`_top_level`).
 pub const TOP_LEVEL_KEY: &str = "_top_level";
 
+/// Span attribute key used to mark spans that sampling kept as standalone events (`_dd.analyzed`).
+pub const KEY_ANALYZED_SPANS: &str = "_dd.analyzed";
+
 /// Decision maker value for probabilistic sampling (matches Datadog Agent).
 pub const DECISION_MAKER_PROBABILISTIC: &str = "-9";
 
