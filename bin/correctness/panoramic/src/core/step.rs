@@ -65,9 +65,6 @@ pub(crate) trait Step: fmt::Debug + Send + Sync {
 }
 
 /// Something of the case a step uses.
-// TODO: remove the dead_code allowance once steps that run commands, call operations and reach endpoints are
-// registered.
-#[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Need {
@@ -75,6 +72,8 @@ pub(crate) enum Need {
     /// A participant and one of its processes.
     Process(String, String),
     /// A participant and one of its named commands.
+    // TODO: remove the dead_code allowance once a step runs a named command.
+    #[allow(dead_code)]
     Command(String, String),
     /// A participant and one of its operations.
     Operation(String, String),
@@ -87,15 +86,11 @@ pub(crate) enum Need {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum EndpointOperation {
     Probe,
-    // TODO: remove the dead_code allowance once a step sends to an endpoint.
-    #[allow(dead_code)]
     Send,
     Request,
 }
 
 /// A capability a participant offers to steps: a name, what it uses of its participant, and a function.
-// TODO: remove the dead_code allowance once a step calls an operation.
-#[allow(dead_code)]
 #[async_trait]
 pub(crate) trait Operation: fmt::Debug + Send + Sync {
     fn name(&self) -> &'static str;

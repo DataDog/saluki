@@ -1,9 +1,14 @@
+use serde::Deserialize;
 use stele::{ClientStatisticsAggregator, Event, Log, LogsRequest, Metric, ServiceCheck, Span};
 
 /// Collected data from a test target.
 ///
 /// Holds all telemetry data sent by the test target to the `datadog-intake` server spawned for the test run.
-#[cfg_attr(test, derive(Default))]
+///
+/// Decodes from a `dump` operation's answer: an object with one key per field, named as the field is. A field the answer
+/// leaves out is empty.
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct CollectedData {
     pub(crate) events: Vec<Event>,
     pub(crate) log_requests: Vec<LogsRequest>,

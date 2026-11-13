@@ -1405,7 +1405,7 @@ is added for this command. All three may hold references.
 | `config_key_equals` | assertion | `on`, `key`, `value`, `view`, `timeout` | operation `config_dump` |
 | `config_set` | action | `on`, `key`, `value`, `timeout` | operation `config_set` |
 | `dogstatsd_replay` | action | `on`, `endpoint`, `payloads`, `capture_duration`, `stats_duration`, `expected_metrics`, `timeout` | three operations; the endpoint, to send |
-| `intake_has_metric` | assertion | `on`, `name`, `metric_type`, `value`, `tags`, `tags_match`, `tag_patterns`, `max_age`, `timeout` | operation `dump` |
+| `intake_has_metric` | assertion | `on`, `name`, `metric_type`, `value`, `tags`, `tags_match`, `timeout` | operation `dump` |
 | `compare` | assertion | `telemetry`, `comparison`, `baseline`, and the options of each telemetry | operation `dump` on both participants |
 
 `timeout` is required wherever it is listed and has no default. `compare` has none: its budget is

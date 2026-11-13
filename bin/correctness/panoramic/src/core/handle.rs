@@ -240,8 +240,6 @@ impl<'a> Handle<'a> {
     /// # Errors
     ///
     /// Returns a harness error if the participant offers no such operation, or the operation's own error.
-    // TODO: remove the dead_code allowance once a step calls an operation.
-    #[allow(dead_code)]
     pub(crate) async fn op(&self, name: &str, args: Value, limit: Duration) -> Result<Value, HandleError> {
         let operation = self.planned.operations.get(name).ok_or_else(|| {
             HandleError::Harness(format!("participant '{}' offers no operation '{}'", self.name, name))
@@ -272,8 +270,6 @@ impl<'a> Handle<'a> {
     ///
     /// Returns a software error if the endpoint refuses the bytes within `limit`, and a harness error if nothing can be
     /// sent to it.
-    // TODO: remove the dead_code allowance once a step sends to an endpoint.
-    #[allow(dead_code)]
     pub(crate) async fn send(&self, endpoint: &str, payload: Bytes, limit: Duration) -> Result<(), HandleError> {
         let (planned, route) = self.route(endpoint, EndpointOperation::Send)?;
         match route {

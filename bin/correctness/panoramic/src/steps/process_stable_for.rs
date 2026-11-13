@@ -120,6 +120,7 @@ mod tests {
         let fields = "{on: app, process: job, duration: 10s}";
         let exited = Scripted {
             files: [("/airlock/app/exit/job", Ok(b"1 0 1794511601.5\n".to_vec()))].into(),
+            ..Scripted::default()
         };
         let report = run(&ProcessStableForFactory, fields, &exited, &observation()).await;
         assert_eq!(report.status, StepStatus::Failed, "{}", report.message);

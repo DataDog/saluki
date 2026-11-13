@@ -13,8 +13,10 @@ use crate::core::step::StepReport;
 
 mod file_contains;
 pub(crate) mod intake;
+mod intake_has_metric;
 mod log;
 mod process_stable_for;
+mod send;
 
 /// How often a step that waits for something looks again.
 const POLL: Duration = Duration::from_millis(100);
@@ -22,9 +24,11 @@ const POLL: Duration = Duration::from_millis(100);
 /// Registers every step.
 pub(crate) fn register(registry: &mut Registry) {
     registry.add_step(Box::new(file_contains::FileContainsFactory));
+    registry.add_step(Box::new(intake_has_metric::IntakeHasMetricFactory));
     registry.add_step(Box::new(log::LogContainsFactory));
     registry.add_step(Box::new(log::LogNotContainsFactory));
     registry.add_step(Box::new(process_stable_for::ProcessStableForFactory));
+    registry.add_step(Box::new(send::SendFactory));
 }
 
 /// The report of a step stopped by `error`: `errored` when the mechanism failed, `failed` when the software answered
@@ -50,14 +54,17 @@ fn described(on: &str, process: Option<&str>) -> String {
     }
 }
 
-/// One participant, `app`, for the steps' failing-check tests: a process `main` observed through its container, and a
-/// supervised process `job` with an exit record.
+/// One participant, `app`, for the steps' failing-check tests: a process `main` observed through its container, a
+/// supervised process `job` with an exit record, a UDP endpoint `statsd`, and an operation `dump` that answers with
+/// what [`DUMP_FILE`] holds.
 #[cfg(test)]
 mod scripted {
     use std::collections::BTreeMap;
+    use std::time::Duration;
 
     use async_trait::async_trait;
-    use tokio::io::AsyncWrite;
+    use serde_json::Value;
+    use tokio::io::{AsyncWrite, AsyncWriteExt as _};
     use tokio::time::Instant;
 
     use crate::core::backend::{Exec, Realized};
@@ -68,21 +75,30 @@ mod scripted {
     use crate::core::plan;
     use crate::core::reference::Values;
     use crate::core::registry::Registry;
-    use crate::core::step::{StepContext, StepFactory, StepFields, StepReport};
+    use crate::core::step::{Operation, StepContext, StepFactory, StepFields, StepReport, Uses};
 
-    /// What the participant's files read as, by path. A path not here holds no file.
+    /// The file whose contents `app`'s `dump` answers with.
+    pub(super) const DUMP_FILE: &str = "/scripted/dump.json";
+
+    /// What the participant's files read as, by path, and how every command run in it exits, with what it writes to
+    /// standard error. A path not here holds no file; with no exit, a command cannot run.
     #[derive(Debug, Default)]
     pub(super) struct Scripted {
         pub(super) files: BTreeMap<&'static str, Result<Vec<u8>, HandleError>>,
+        pub(super) exit: Option<(i64, &'static str)>,
     }
 
     #[async_trait]
     impl Realized for Scripted {
         async fn exec(
             &self, _exec: Exec, _stdout: &mut (dyn AsyncWrite + Send + Unpin),
-            _stderr: &mut (dyn AsyncWrite + Send + Unpin), _deadline: Instant,
+            stderr: &mut (dyn AsyncWrite + Send + Unpin), _deadline: Instant,
         ) -> Result<i64, HandleError> {
-            Err(HandleError::Harness("not scripted".to_string()))
+            let (code, written) = self
+                .exit
+                .ok_or_else(|| HandleError::Harness("not scripted".to_string()))?;
+            stderr.write_all(written.as_bytes()).await.unwrap();
+            Ok(code)
         }
 
         async fn has_exited(&self) -> bool {
@@ -95,6 +111,26 @@ mod scripted {
 
         fn host_port(&self, _endpoint: &str) -> Option<u16> {
             None
+        }
+    }
+
+    /// `app`'s `dump`: the JSON in [`DUMP_FILE`], or the error reading it.
+    #[derive(Debug)]
+    struct Dump;
+
+    #[async_trait]
+    impl Operation for Dump {
+        fn name(&self) -> &'static str {
+            "dump"
+        }
+
+        fn uses(&self) -> &'static [Uses] {
+            &[]
+        }
+
+        async fn run(&self, on: &Handle<'_>, _args: Value, limit: Duration) -> Result<Value, HandleError> {
+            let answer = on.read_file(DUMP_FILE, limit).await?.unwrap_or_default();
+            serde_json::from_slice(&answer).map_err(|e| HandleError::Software(e.to_string()))
         }
     }
 
@@ -116,12 +152,20 @@ participants:
     processes:
       - {name: main, exit: container, output: container}
       - {name: job, exit: {record: job}, output: {file: job.log}}
+    endpoints:
+      statsd: {udp: 8125}
 procedure: []
 "#;
         std::fs::write(dir.join(CASE_FILE), config).unwrap();
         let registry = Registry::default();
         let case = case::load(&dir, &registry).unwrap();
-        let plan = plan::plan(&case, Os::Linux, &registry, &BTreeMap::new()).unwrap();
+        let mut plan = plan::plan(&case, Os::Linux, &registry, &BTreeMap::new()).unwrap();
+        // A participant with no participant type offers no operation, so the test gives `app` one.
+        plan.participants
+            .get_mut("app")
+            .unwrap()
+            .operations
+            .insert("dump", &Dump);
         let values = Values::of_plan(&plan.participants);
         let handle = Handle::new("app", &plan.participants["app"], realized, &values, observation);
         let handles = BTreeMap::from([("app".to_string(), handle)]);
