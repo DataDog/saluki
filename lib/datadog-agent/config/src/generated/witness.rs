@@ -256,6 +256,9 @@ pub trait DatadogConfigWitness {
     fn consume_serializer_compressor_kind(&mut self, value: String);
     fn consume_serializer_experimental_use_v3_api_compression_level(&mut self, value: i64);
     fn consume_serializer_experimental_use_v3_api_sketches_endpoints(&mut self, value: Vec<String>);
+    fn consume_serializer_experimental_use_v3_api_sketches_max_compressed_payload_size(&mut self, value: i64);
+    fn consume_serializer_experimental_use_v3_api_sketches_max_points_per_payload(&mut self, value: i64);
+    fn consume_serializer_experimental_use_v3_api_sketches_max_uncompressed_payload_size(&mut self, value: i64);
     fn consume_serializer_max_payload_size(&mut self, value: i64);
     fn consume_serializer_max_series_payload_size(&mut self, value: i64);
     fn consume_serializer_max_series_points_per_payload(&mut self, value: i64);
@@ -707,6 +710,27 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     );
     consumer.consume_serializer_experimental_use_v3_api_sketches_endpoints(
         config.serializer_experimental_use_v3_api.sketches.endpoints.clone(),
+    );
+    consumer.consume_serializer_experimental_use_v3_api_sketches_max_compressed_payload_size(
+        config
+            .serializer_experimental_use_v3_api
+            .sketches
+            .max_compressed_payload_size
+            .clone(),
+    );
+    consumer.consume_serializer_experimental_use_v3_api_sketches_max_points_per_payload(
+        config
+            .serializer_experimental_use_v3_api
+            .sketches
+            .max_points_per_payload
+            .clone(),
+    );
+    consumer.consume_serializer_experimental_use_v3_api_sketches_max_uncompressed_payload_size(
+        config
+            .serializer_experimental_use_v3_api
+            .sketches
+            .max_uncompressed_payload_size
+            .clone(),
     );
     consumer.consume_serializer_max_payload_size(config.serializer_max_payload_size.clone());
     consumer.consume_serializer_max_series_payload_size(config.serializer_max_series_payload_size.clone());

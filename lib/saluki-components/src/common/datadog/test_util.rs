@@ -21,7 +21,7 @@ use tracing::debug;
 use super::api_key::{ApiKeyView, LiveApiKeys};
 use super::config::{ForwarderConfiguration, ForwarderHttpProtocol, OpwMetricsConfiguration};
 use super::endpoints::EndpointConfiguration;
-use super::protocol::{UseV3ApiConfig, UseV3ApiSeriesConfig, V3ApiConfig, V3SeriesMode};
+use super::protocol::{UseV3ApiConfig, UseV3ApiSeriesConfig, V3ApiConfig, V3ApiSettings, V3SeriesMode};
 use super::proxy::ProxyConfiguration;
 use super::retry::RetryConfiguration;
 use crate::encoders::DatadogMetricsConfiguration;
@@ -104,7 +104,15 @@ pub(crate) fn forwarder_configuration() -> ForwarderConfiguration {
         http_protocol: ForwarderHttpProtocol::Auto,
         connection_reset_interval_secs: 0,
         stop_wait_for_inflight: false,
-        v3_api: V3ApiConfig::default(),
+        v3_api: V3ApiConfig {
+            sketches: V3ApiSettings {
+                endpoints: Vec::new(),
+                max_compressed_payload_size: 2_621_440,
+                max_uncompressed_payload_size: 4_194_304,
+                max_points_per_payload: usize::MAX,
+            },
+            compression_level: 0,
+        },
         use_v3_api: UseV3ApiConfig {
             series: default_series_config(),
         },
@@ -134,7 +142,15 @@ pub(crate) fn datadog_metrics_configuration() -> DatadogMetricsConfiguration {
         use_v2_series_api: true,
         log_payloads: false,
         additional_tags: None,
-        v3_api: V3ApiConfig::default(),
+        v3_api: V3ApiConfig {
+            sketches: V3ApiSettings {
+                endpoints: Vec::new(),
+                max_compressed_payload_size: 2_621_440,
+                max_uncompressed_payload_size: 4_194_304,
+                max_points_per_payload: usize::MAX,
+            },
+            compression_level: 0,
+        },
         use_v3_api: UseV3ApiConfig {
             series: default_series_config(),
         },

@@ -78,7 +78,23 @@ impl<'a> DatadogTranslator<'a> {
         let datadog = self.datadog;
         let errors = drive(datadog, &mut self).err();
         self.apply_deprecated_max_tps_alias();
+        self.resolve_v3_sketch_payload_limits();
         (self.config, errors)
+    }
+
+    // Resolve after the witness has supplied both generic limits and sketch overrides.
+    fn resolve_v3_sketch_payload_limits(&mut self) {
+        let metrics = &mut self.config.shared.metrics_encoding;
+        let sketches = &mut metrics.v3_api.sketches;
+        if sketches.max_compressed_payload_size == 0 {
+            sketches.max_compressed_payload_size = metrics.max_payload_size;
+        }
+        if sketches.max_uncompressed_payload_size == 0 {
+            sketches.max_uncompressed_payload_size = metrics.max_uncompressed_payload_size;
+        }
+        if sketches.max_points_per_payload == 0 {
+            sketches.max_points_per_payload = usize::MAX;
+        }
     }
 
     /// Applies the deprecated `max_traces_per_second` alias to the target rate.
@@ -1736,6 +1752,33 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.shared.metrics_encoding.v3_api.sketches.endpoints = value;
     }
 
+    fn consume_serializer_experimental_use_v3_api_sketches_max_compressed_payload_size(&mut self, value: i64) {
+        self.config
+            .shared
+            .metrics_encoding
+            .v3_api
+            .sketches
+            .max_compressed_payload_size = value.max(0) as usize;
+    }
+
+    fn consume_serializer_experimental_use_v3_api_sketches_max_points_per_payload(&mut self, value: i64) {
+        self.config
+            .shared
+            .metrics_encoding
+            .v3_api
+            .sketches
+            .max_points_per_payload = value.max(0) as usize;
+    }
+
+    fn consume_serializer_experimental_use_v3_api_sketches_max_uncompressed_payload_size(&mut self, value: i64) {
+        self.config
+            .shared
+            .metrics_encoding
+            .v3_api
+            .sketches
+            .max_uncompressed_payload_size = value.max(0) as usize;
+    }
+
     fn consume_serializer_max_payload_size(&mut self, value: i64) {
         self.config.shared.metrics_encoding.max_payload_size = value.max(0) as usize;
     }
@@ -2851,6 +2894,48 @@ mod tests {
         assert!(errors.is_none());
         assert_defaulted(&config.shared.endpoints.site, "");
         assert_defaulted(&config.shared.endpoints.dd_url, "");
+    }
+
+    #[test]
+    fn v3_sketch_payload_limits_resolve_fallbacks_and_overrides() {
+        for (compressed, uncompressed, points, expected) in [
+            (0, 0, 0, (100_000, 300_000, usize::MAX)),
+            (-1, -2, -3, (100_000, 300_000, usize::MAX)),
+            (110_000, 330_000, 43, (110_000, 330_000, 43)),
+            (110_000, 0, 0, (110_000, 300_000, usize::MAX)),
+        ] {
+            let (config, errors) = translate_explicit(json!({
+                "serializer_max_payload_size": 100_000,
+                "serializer_max_uncompressed_payload_size": 300_000,
+                "serializer_experimental_use_v3_api": {"sketches": {
+                    "max_compressed_payload_size": compressed,
+                    "max_uncompressed_payload_size": uncompressed,
+                    "max_points_per_payload": points,
+                }},
+            }));
+            assert!(errors.is_none(), "{errors:?}");
+            let sketches = &config.shared.metrics_encoding.v3_api.sketches;
+            assert_eq!(
+                (
+                    sketches.max_compressed_payload_size,
+                    sketches.max_uncompressed_payload_size,
+                    sketches.max_points_per_payload
+                ),
+                expected
+            );
+        }
+
+        let (config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none(), "{errors:?}");
+        let sketches = &config.shared.metrics_encoding.v3_api.sketches;
+        assert_eq!(
+            (
+                sketches.max_compressed_payload_size,
+                sketches.max_uncompressed_payload_size,
+                sketches.max_points_per_payload
+            ),
+            (2_621_440, 4_194_304, usize::MAX)
+        );
     }
 
     // The Agent streams `serializer_zstd_compressor_level` at its schema default of 1 even when the

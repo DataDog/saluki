@@ -2184,12 +2184,27 @@ pub struct SerializerExperimentalUseV3ApiSketches {
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
     #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub endpoints: Vec<String>,
+
+    #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
+    pub max_compressed_payload_size: i64,
+
+    #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
+    pub max_points_per_payload: i64,
+
+    #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
+    pub max_uncompressed_payload_size: i64,
 }
 
 impl Default for SerializerExperimentalUseV3ApiSketches {
     fn default() -> Self {
         Self {
             endpoints: Default::default(),
+            max_compressed_payload_size: Default::default(),
+            max_points_per_payload: Default::default(),
+            max_uncompressed_payload_size: Default::default(),
         }
     }
 }

@@ -138,7 +138,7 @@ pub struct DatadogMetricsConfiguration {
 
     /// Maximum compressed size, in bytes, of generic payloads.
     ///
-    /// This applies to V1 JSON series payloads and sketch payloads, matching the Datadog Agent's generic payload
+    /// This applies to V1 JSON series payloads and V2 sketch payloads, matching the Datadog Agent's generic payload
     /// builder. V2 series payloads use the series-specific limit instead. The effective value is clamped to
     /// the Agent's default intake-safe limit of 2,621,440 bytes, so larger configured values do not allow payloads that
     /// intake may reject. If set to `0`, every non-empty compressed payload exceeds the limit and is dropped during
@@ -147,7 +147,7 @@ pub struct DatadogMetricsConfiguration {
 
     /// Maximum uncompressed size, in bytes, of generic payloads.
     ///
-    /// This applies to V1 JSON series payloads and sketch payloads, matching the Datadog Agent's generic payload
+    /// This applies to V1 JSON series payloads and V2 sketch payloads, matching the Datadog Agent's generic payload
     /// builder. V2 series payloads use the series-specific limit instead. The effective value
     /// is clamped to the Agent's default intake-safe limit of 4,194,304 bytes, so larger configured values do not allow
     /// payloads that intake may reject. Values smaller than the minimum endpoint framing size prevent the request
@@ -277,12 +277,28 @@ impl DatadogMetricsConfiguration {
         self
     }
 
-    fn v3_payload_limits(&self) -> V3PayloadLimits {
+    fn v3_series_payload_limits(&self) -> V3PayloadLimits {
         V3PayloadLimits::new(
             self.max_series_payload_size,
             self.max_series_uncompressed_payload_size,
             self.max_metrics_per_payload,
             self.max_series_points_per_payload,
+        )
+    }
+
+    fn v3_sketch_payload_limits(&self) -> V3PayloadLimits {
+        let sketches = &self.v3_api.sketches;
+        let (uncompressed_limit, compressed_limit) = clamp_payload_limits(
+            sketches.max_uncompressed_payload_size,
+            sketches.max_compressed_payload_size,
+            DEFAULT_SERIALIZER_UNCOMPRESSED_SIZE_LIMIT,
+            DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT,
+        );
+        V3PayloadLimits::new(
+            compressed_limit,
+            uncompressed_limit,
+            self.max_metrics_per_payload,
+            sketches.max_points_per_payload,
         )
     }
 
@@ -400,7 +416,7 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
             v2_compression_scheme
         };
         let series_endpoint_uri = METRICS_SERIES_V3_PATH.to_string();
-        let payload_limits = self.v3_payload_limits();
+        let series_payload_limits = self.v3_series_payload_limits();
 
         let v2_endpoint_config = EndpointConfiguration::new(
             v2_compression_scheme,
@@ -430,7 +446,8 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
         };
         let v3_runtime_config = V3RuntimeConfig {
             endpoint_config,
-            payload_limits,
+            series_payload_limits,
+            sketch_payload_limits: self.v3_sketch_payload_limits(),
             series_endpoint_uri,
             serializer_telemetry: v3_serializer_telemetry,
         };
@@ -537,7 +554,8 @@ pub struct DatadogMetrics {
 
 struct V3RuntimeConfig {
     endpoint_config: EndpointConfiguration,
-    payload_limits: V3PayloadLimits,
+    series_payload_limits: V3PayloadLimits,
+    sketch_payload_limits: V3PayloadLimits,
     series_endpoint_uri: String,
     serializer_telemetry: V3SerializerTelemetry,
 }
@@ -698,22 +716,25 @@ async fn run_request_builder(
     let pending_flush_timeout = sleep(flush_timeout);
     tokio::pin!(pending_flush_timeout);
 
-    let mut v3_series_metrics = series_mode.needs_v3().then(Vec::<Metric>::new);
-    let mut v3_sketch_metrics = sketches_mode.needs_v3().then(Vec::<Metric>::new);
-    let mut v3_series_points = 0usize;
-    let mut v3_sketch_points = 0usize;
-    let mut v3_series_ratio = V3CompressionRatio::default();
-    let mut v3_sketch_ratio = V3CompressionRatio::default();
-
     let tag_series = series_mode.needs_tagging();
     let tag_sketches = sketches_mode.needs_tagging();
-    let v3_flush_context = V3FlushContext {
+    let v3_series_flush_context = V3FlushContext {
         endpoint_config: &v3_runtime_config.endpoint_config,
-        payload_limits: v3_runtime_config.payload_limits,
+        payload_limits: v3_runtime_config.series_payload_limits,
         series_endpoint_uri: &v3_runtime_config.series_endpoint_uri,
         serializer_telemetry: &v3_runtime_config.serializer_telemetry,
         telemetry: &telemetry,
     };
+    let v3_sketch_flush_context = V3FlushContext {
+        payload_limits: v3_runtime_config.sketch_payload_limits,
+        ..v3_series_flush_context
+    };
+    let mut v3_series = series_mode
+        .needs_v3()
+        .then(|| V3EncoderState::new(v3_series_flush_context));
+    let mut v3_sketches = sketches_mode
+        .needs_v3()
+        .then(|| V3EncoderState::new(v3_sketch_flush_context));
 
     loop {
         select! {
@@ -734,32 +755,23 @@ async fn run_request_builder(
 
                     // Figure out which endpoint the metric belongs to, and grab the relevant V2 builder/V3 storage.
                     let endpoint = MetricsEndpoint::from_metric(&metric);
-                    let (endpoint_mode, maybe_v2_builder, maybe_v3_metrics, v3_points) = match endpoint {
+                    let (endpoint_mode, maybe_v2_builder, maybe_v3_state) = match endpoint {
                         MetricsEndpoint::SeriesV1 | MetricsEndpoint::SeriesV2 => (
                             series_mode,
                             &mut v2_series_builder,
-                            &mut v3_series_metrics,
-                            &mut v3_series_points,
+                            &mut v3_series,
                         ),
                         MetricsEndpoint::Sketches => (
                             sketches_mode,
                             &mut v2_sketch_builder,
-                            &mut v3_sketch_metrics,
-                            &mut v3_sketch_points,
+                            &mut v3_sketches,
                         ),
                     };
                     let metric_point_count = metric.values().len();
-                    let should_buffer_v3 = endpoint_mode.needs_v3();
-
-                    // Store a copy of the metric in `maybe_v3_metrics` if it's present.
-                    //
-                    // We have to do this before encoding because `RequestBuilder::encode` consumes the metric. This also means we'll
-                    // need to _remove_ the metric if encoding fails.
-                    if should_buffer_v3 {
-                        if let Some(metrics) = maybe_v3_metrics {
-                            metrics.push(metric.clone());
-                            *v3_points += metric_point_count;
-                        }
+                    // Buffer before V2 encoding consumes the metric; roll back if V2 fails and is authoritative.
+                    if let Some(state) = maybe_v3_state.as_mut() {
+                        state.metrics.push(metric.clone());
+                        state.points += metric_point_count;
                     }
 
                     // Attempt encoding the metric for V2 if configured.
@@ -774,13 +786,10 @@ async fn run_request_builder(
                     };
                     let _v2_flushed = if let Some(builder) = maybe_v2_builder {
                         let result = encode_v2_metrics(builder, metric, &telemetry, &mut payloads_tx, v2_payload_info).await?;
-                        if should_buffer_v3
-                            && !result.encoded()
-                            && !matches!(endpoint_mode, MetricsEncoderMode::V3Enabled)
-                        {
-                            if let Some(metrics) = maybe_v3_metrics {
-                                let _ = metrics.pop();
-                                *v3_points = v3_points.saturating_sub(metric_point_count);
+                        if !result.encoded() && !matches!(endpoint_mode, MetricsEncoderMode::V3Enabled) {
+                            if let Some(state) = maybe_v3_state.as_mut() {
+                                let _ = state.metrics.pop();
+                                state.points = state.points.saturating_sub(metric_point_count);
                             }
                         }
                         result.flushed()
@@ -795,56 +804,38 @@ async fn run_request_builder(
                         MetricsEndpoint::Sketches => tag_sketches.then(MetricsPayloadInfo::v3_sketches),
                     };
                     let mut split_metric = None;
-                    let _v3_flushed = if let Some(v3_metrics) = maybe_v3_metrics {
+                    if let Some(state) = maybe_v3_state.as_mut() {
                         let should_flush_v3 = match endpoint_mode {
                             MetricsEncoderMode::V2Only => false,
                             MetricsEncoderMode::V3Enabled => {
-                                if v3_flush_context.payload_limits.point_count_fits(metric_point_count)
-                                    && v3_flush_context.payload_limits.point_count_exceeds_limit(*v3_points)
-                                    && v3_metrics.len() > 1
+                                if state.context.payload_limits.point_count_fits(metric_point_count)
+                                    && state.context.payload_limits.point_count_exceeds_limit(state.points)
+                                    && state.metrics.len() > 1
                                 {
-                                    v3_flush_context
+                                    state.context
                                         .serializer_telemetry
                                         .record_split_reason(V3PayloadSplitReason::MaxPoints);
-                                    if let Some(metric) = v3_metrics.pop() {
-                                        *v3_points = v3_points.saturating_sub(metric.values().len());
+                                    if let Some(metric) = state.metrics.pop() {
+                                        state.points = state.points.saturating_sub(metric.values().len());
                                         split_metric = Some(metric);
                                     }
                                     true
                                 } else {
-                                    v3_flush_context.payload_limits.should_flush_point_count_limit(*v3_points)
-                                        || v3_flush_context
+                                    state.context.payload_limits.should_flush_point_count_limit(state.points)
+                                        || state.context
                                             .payload_limits
-                                            .should_flush_metric_count_limit(v3_metrics)
+                                            .should_flush_metric_count_limit(&state.metrics)
                                 }
                             }
                         };
                         if should_flush_v3 {
-                            encode_and_flush_v3_metrics(
-                                endpoint,
-                                v3_flush_context,
-                                v3_metrics,
-                                &mut v3_series_ratio,
-                                &mut v3_sketch_ratio,
-                                &mut payloads_tx,
-                                v3_payload_info,
-                            )
-                            .await?;
-                            *v3_points = 0;
-                            true
-                        } else {
-                            false
+                            encode_and_flush_v3_metrics(endpoint, state, &mut payloads_tx, v3_payload_info).await?;
                         }
-                    } else {
-                        false
-                    };
 
-                    if matches!(endpoint_mode, MetricsEncoderMode::V3Enabled) {
-                        if let Some(m) = split_metric.take() {
-                            let point_count = m.values().len();
-                            if let Some(metrics) = maybe_v3_metrics {
-                                metrics.push(m);
-                                *v3_points += point_count;
+                        if matches!(endpoint_mode, MetricsEncoderMode::V3Enabled) {
+                            if let Some(metric) = split_metric.take() {
+                                state.points += metric.values().len();
+                                state.metrics.push(metric);
                             }
                         }
                     }
@@ -874,12 +865,10 @@ async fn run_request_builder(
                 }
 
                 let v3_series_payload_info = tag_series.then(MetricsPayloadInfo::v3_series);
-                if let Some(metrics) = &mut v3_series_metrics {
+                if let Some(state) = &mut v3_series {
                     if v2_series_flush_succeeded || matches!(series_mode, MetricsEncoderMode::V3Enabled) {
                         if let Err(e) = encode_and_flush_v3_series_metrics(
-                            v3_flush_context,
-                            metrics,
-                            &mut v3_series_ratio,
+                            state,
                             &mut payloads_tx,
                             v3_series_payload_info,
                         )
@@ -887,11 +876,10 @@ async fn run_request_builder(
                         {
                             error!(error = %e, "Failed to flush V3 series metrics: {}", e);
                         }
-                        v3_series_points = 0;
                     } else {
                         warn!("Failed to flush V2 series metrics, skipping V3 series flush.");
-                        metrics.clear();
-                        v3_series_points = 0;
+                        state.metrics.clear();
+                        state.points = 0;
                     }
                 }
 
@@ -906,12 +894,10 @@ async fn run_request_builder(
                 }
 
                 let v3_sketches_payload_info = tag_sketches.then(MetricsPayloadInfo::v3_sketches);
-                if let Some(metrics) = &mut v3_sketch_metrics {
+                if let Some(state) = &mut v3_sketches {
                     if v2_sketches_flush_succeeded || matches!(sketches_mode, MetricsEncoderMode::V3Enabled) {
                         if let Err(e) = encode_and_flush_v3_sketch_metrics(
-                            v3_flush_context,
-                            metrics,
-                            &mut v3_sketch_ratio,
+                            state,
                             &mut payloads_tx,
                             v3_sketches_payload_info,
                         )
@@ -919,11 +905,10 @@ async fn run_request_builder(
                         {
                             error!(error = %e, "Failed to flush V3 sketch metrics: {}", e);
                         }
-                        v3_sketch_points = 0;
                     } else {
                         warn!("Failed to flush V2 sketch metrics, skipping V3 sketch flush.");
-                        metrics.clear();
-                        v3_sketch_points = 0;
+                        state.metrics.clear();
+                        state.points = 0;
                     }
                 }
 
@@ -1024,6 +1009,25 @@ async fn flush_v2_metrics(
     Ok(requests_flushed)
 }
 
+/// Buffered metrics and batching state for one V3 metric type.
+struct V3EncoderState<'a> {
+    metrics: Vec<Metric>,
+    points: usize,
+    context: V3FlushContext<'a>,
+    ratio: V3CompressionRatio,
+}
+
+impl<'a> V3EncoderState<'a> {
+    fn new(context: V3FlushContext<'a>) -> Self {
+        Self {
+            metrics: Vec::new(),
+            points: 0,
+            context,
+            ratio: V3CompressionRatio::default(),
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct V3FlushContext<'a> {
     endpoint_config: &'a EndpointConfiguration,
@@ -1033,37 +1037,33 @@ struct V3FlushContext<'a> {
     telemetry: &'a ComponentTelemetry,
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn encode_and_flush_v3_metrics(
-    endpoint: MetricsEndpoint, context: V3FlushContext<'_>, metrics: &mut Vec<Metric>,
-    series_ratio: &mut V3CompressionRatio, sketches_ratio: &mut V3CompressionRatio,
-    payloads_tx: &mut mpsc::Sender<Payload>, payload_info: Option<MetricsPayloadInfo>,
+    endpoint: MetricsEndpoint, state: &mut V3EncoderState<'_>, payloads_tx: &mut mpsc::Sender<Payload>,
+    payload_info: Option<MetricsPayloadInfo>,
 ) -> Result<(), GenericError> {
     match endpoint {
         MetricsEndpoint::SeriesV1 | MetricsEndpoint::SeriesV2 => {
-            encode_and_flush_v3_series_metrics(context, metrics, series_ratio, payloads_tx, payload_info).await
+            encode_and_flush_v3_series_metrics(state, payloads_tx, payload_info).await
         }
-        MetricsEndpoint::Sketches => {
-            encode_and_flush_v3_sketch_metrics(context, metrics, sketches_ratio, payloads_tx, payload_info).await
-        }
+        MetricsEndpoint::Sketches => encode_and_flush_v3_sketch_metrics(state, payloads_tx, payload_info).await,
     }
 }
 
 async fn encode_and_flush_v3_series_metrics(
-    context: V3FlushContext<'_>, metrics: &mut Vec<Metric>, ratio: &mut V3CompressionRatio,
-    payloads_tx: &mut mpsc::Sender<Payload>, payload_info: Option<MetricsPayloadInfo>,
+    state: &mut V3EncoderState<'_>, payloads_tx: &mut mpsc::Sender<Payload>, payload_info: Option<MetricsPayloadInfo>,
 ) -> Result<(), GenericError> {
-    if metrics.is_empty() {
+    state.points = 0;
+    if state.metrics.is_empty() {
         return Ok(());
     }
-    let metrics_to_flush = std::mem::take(metrics);
+    let metrics_to_flush = std::mem::take(&mut state.metrics);
 
     encode_and_flush_v3_payload_requests(
-        context.series_endpoint_uri,
+        state.context.series_endpoint_uri,
         &metrics_to_flush,
-        context,
+        state.context,
         "series",
-        ratio,
+        &mut state.ratio,
         payloads_tx,
         payload_info,
     )
@@ -1071,20 +1071,20 @@ async fn encode_and_flush_v3_series_metrics(
 }
 
 async fn encode_and_flush_v3_sketch_metrics(
-    context: V3FlushContext<'_>, metrics: &mut Vec<Metric>, ratio: &mut V3CompressionRatio,
-    payloads_tx: &mut mpsc::Sender<Payload>, payload_info: Option<MetricsPayloadInfo>,
+    state: &mut V3EncoderState<'_>, payloads_tx: &mut mpsc::Sender<Payload>, payload_info: Option<MetricsPayloadInfo>,
 ) -> Result<(), GenericError> {
-    if metrics.is_empty() {
+    state.points = 0;
+    if state.metrics.is_empty() {
         return Ok(());
     }
-    let metrics_to_flush = std::mem::take(metrics);
+    let metrics_to_flush = std::mem::take(&mut state.metrics);
 
     encode_and_flush_v3_payload_requests(
         V3_SKETCHES_ENDPOINT_URI,
         &metrics_to_flush,
-        context,
+        state.context,
         "sketches",
-        ratio,
+        &mut state.ratio,
         payloads_tx,
         payload_info,
     )
@@ -2931,7 +2931,8 @@ mod tests {
                 self.sketches_mode,
                 V3RuntimeConfig {
                     endpoint_config: v3_endpoint_config,
-                    payload_limits: self.payload_limits,
+                    series_payload_limits: self.payload_limits,
+                    sketch_payload_limits: self.payload_limits,
                     series_endpoint_uri: METRICS_SERIES_V3_PATH.to_string(),
                     serializer_telemetry,
                 },
@@ -2993,6 +2994,41 @@ mod tests {
                 .expect("request builder task should complete")
                 .expect("request builder should stop cleanly");
         }
+    }
+
+    #[tokio::test]
+    async fn v3_sketches_do_not_inherit_series_size_or_point_limits() {
+        use crate::common::datadog::METRICS_SKETCHES_PATH;
+
+        // Regression for Core PR #57176: a sketch that fits its own limits must survive smaller series limits.
+        let mut config = datadog_metrics_configuration();
+        config.use_v3_api.series.enabled = V3SeriesMode::Enabled;
+        config.v3_api.sketches.endpoints = vec![config.primary_endpoint.clone()];
+        config.max_series_payload_size = 1;
+        config.max_series_uncompressed_payload_size = 1;
+        config.max_series_points_per_payload = 1;
+        config.flush_timeout = Duration::from_millis(10);
+        let (control, mut output) = TestComponentDriver::encoder(config).await.unwrap();
+        control
+            .send_events([
+                Event::Metric(Metric::counter("series.too.large", 1.0)),
+                Event::Metric(Metric::distribution("sketch.fits", [(123, 1.0), (124, 2.0)])),
+            ])
+            .await;
+        let (result, payloads) = tokio::join!(control.shutdown(), output.collect());
+        result.unwrap();
+
+        // V2 copies are routed separately; inspect only authoritative V3 output.
+        let requests: Vec<_> = payloads
+            .into_iter()
+            .map(|p| p.try_into_http_payload().unwrap().into_parts())
+            .filter(|(_, request)| request.uri() != METRICS_SKETCHES_PATH)
+            .collect();
+        assert_eq!(requests.len(), 1, "only the V3 sketch should fit");
+        let (metadata, request) = &requests[0];
+        assert_eq!(request.uri(), METRICS_SKETCHES_V3_PATH);
+        assert_eq!(metadata.event_count(), 1);
+        assert_eq!(metadata.data_point_count(), 2);
     }
 
     #[tokio::test]
@@ -3264,7 +3300,10 @@ mod tests {
 #[cfg(test)]
 mod payload_limits {
     use super::v2;
-    use crate::common::datadog::{clamp_payload_limits, test_util::datadog_metrics_configuration};
+    use crate::common::datadog::{
+        clamp_payload_limits, test_util::datadog_metrics_configuration, DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT,
+        DEFAULT_SERIALIZER_UNCOMPRESSED_SIZE_LIMIT,
+    };
 
     #[test]
     fn v3_payload_limits_come_from_the_series_limits() {
@@ -3273,11 +3312,34 @@ mod payload_limits {
         config.max_series_uncompressed_payload_size = 5678;
         config.max_series_points_per_payload = 500;
 
-        let limits = config.v3_payload_limits();
+        let limits = config.v3_series_payload_limits();
 
         assert_eq!(1234, limits.max_compressed_size);
         assert_eq!(5678, limits.max_uncompressed_size);
         assert_eq!(500, limits.max_points_per_payload);
+    }
+
+    #[test]
+    fn clamps_v3_sketch_payload_sizes_to_generic_limits() {
+        let mut config = datadog_metrics_configuration();
+        config.v3_api.sketches.max_points_per_payload = 43;
+        for (compressed, uncompressed, expected) in [
+            (
+                DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT + 1,
+                DEFAULT_SERIALIZER_UNCOMPRESSED_SIZE_LIMIT + 1,
+                (
+                    DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT,
+                    DEFAULT_SERIALIZER_UNCOMPRESSED_SIZE_LIMIT,
+                ),
+            ),
+            (1234, 5678, (1234, 5678)),
+        ] {
+            config.v3_api.sketches.max_compressed_payload_size = compressed;
+            config.v3_api.sketches.max_uncompressed_payload_size = uncompressed;
+            let limits = config.v3_sketch_payload_limits();
+            assert_eq!((limits.max_compressed_size, limits.max_uncompressed_size), expected);
+            assert_eq!(limits.max_points_per_payload, 43);
+        }
     }
 
     #[test]

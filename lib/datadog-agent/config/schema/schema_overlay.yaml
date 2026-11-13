@@ -2935,50 +2935,26 @@ inventory:
 
   serializer_experimental_use_v3_api.sketches.endpoints:
     support: full
-    pipelines: [dogstatsd]
+    pipelines: [checks, dogstatsd]
     description: "Endpoints enabling v3 sketches API"
 
   serializer_experimental_use_v3_api.sketches.max_compressed_payload_size:
-    support: none
-    severity: low
-    planned: true
-    issue: "#3091"
-    pipelines: [dogstatsd]
-    description: "V3 sketches max compressed payload size"
-    documentation: |-
-      The Agent limits V3 sketches payloads with the `serializer_experimental_use_v3_api.sketches.max_*`
-      settings, falling back to `serializer_max_payload_size` and `serializer_max_uncompressed_payload_size`,
-      with no point limit by default. ADP limits V3 sketches payloads with the series limits:
-      `serializer_max_series_payload_size`, `serializer_max_series_uncompressed_payload_size` and
-      `serializer_max_series_points_per_payload`.
+    support: full
+    pipelines: [checks, dogstatsd]
+    description: "Max compressed V3 sketch payload size"
+    documentation: "Defaults to `0`. Zero or negative values use `serializer_max_payload_size`."
 
   serializer_experimental_use_v3_api.sketches.max_points_per_payload:
-    support: none
-    severity: low
-    planned: true
-    issue: "#3091"
-    pipelines: [dogstatsd]
-    description: "V3 sketches max points per payload"
-    documentation: |-
-      The Agent limits V3 sketches payloads with the `serializer_experimental_use_v3_api.sketches.max_*`
-      settings, falling back to `serializer_max_payload_size` and `serializer_max_uncompressed_payload_size`,
-      with no point limit by default. ADP limits V3 sketches payloads with the series limits:
-      `serializer_max_series_payload_size`, `serializer_max_series_uncompressed_payload_size` and
-      `serializer_max_series_points_per_payload`.
+    support: full
+    pipelines: [checks, dogstatsd]
+    description: "Max data points per V3 sketch payload"
+    documentation: "Defaults to `0`. Zero or negative values disable the sketch point limit."
 
   serializer_experimental_use_v3_api.sketches.max_uncompressed_payload_size:
-    support: none
-    severity: low
-    planned: true
-    issue: "#3091"
-    pipelines: [dogstatsd]
-    description: "V3 sketches max uncompressed payload size"
-    documentation: |-
-      The Agent limits V3 sketches payloads with the `serializer_experimental_use_v3_api.sketches.max_*`
-      settings, falling back to `serializer_max_payload_size` and `serializer_max_uncompressed_payload_size`,
-      with no point limit by default. ADP limits V3 sketches payloads with the series limits:
-      `serializer_max_series_payload_size`, `serializer_max_series_uncompressed_payload_size` and
-      `serializer_max_series_points_per_payload`.
+    support: full
+    pipelines: [checks, dogstatsd]
+    description: "Max uncompressed V3 sketch payload size"
+    documentation: "Defaults to `0`. Zero or negative values use `serializer_max_uncompressed_payload_size`."
 
   serializer_experimental_use_v3_api.sketches.shadow_sample_rate:
     support: none
