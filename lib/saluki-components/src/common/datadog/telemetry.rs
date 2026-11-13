@@ -336,12 +336,13 @@ impl DomainAggregatedGauge {
             .filter(|stats| stats.domain == *domain)
             .map(&value)
             .sum::<usize>();
-        let name = self.name;
-        let domain_gauge = self
-            .by_domain
-            .entry(domain.to_string())
-            .or_insert_with(|| builder.register_gauge_with_tags(name, [("domain", domain.to_string())]));
-        domain_gauge.set(domain_total as f64);
+        if let Some(domain_gauge) = self.by_domain.get::<str>(domain.as_ref()) {
+            domain_gauge.set(domain_total as f64);
+        } else {
+            let domain_gauge = builder.register_gauge_with_tags(self.name, [("domain", domain.to_string())]);
+            domain_gauge.set(domain_total as f64);
+            self.by_domain.insert(domain.to_string(), domain_gauge);
+        }
     }
 }
 

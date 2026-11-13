@@ -1001,7 +1001,6 @@ async fn run_endpoint_io_loop<B>(
                             &endpoint_domain,
                         ).await;
                     }
-                    in_flight_telemetry.record_in_flight_requests(&queue_domain, in_flight.len());
 
                     if let Some(pending_txn) = pending_txn {
                         let (metadata, request, retry_counters) = prepare_transaction_for_dispatch(
@@ -1016,10 +1015,10 @@ async fn run_endpoint_io_loop<B>(
                             retry_counters,
                             result,
                         }));
-                        in_flight_telemetry.record_in_flight_requests(&queue_domain, in_flight.len());
 
                         debug!(endpoint_url, "Request sent.");
                     }
+                    in_flight_telemetry.record_in_flight_requests(&queue_domain, in_flight.len());
                 },
                 Err(e) => match e {
                     RetryCircuitBreakerError::Service(e) => {
