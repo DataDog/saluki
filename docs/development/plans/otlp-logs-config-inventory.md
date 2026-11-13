@@ -88,6 +88,8 @@ key can stop a deployment from starting. PR 1 has its own, narrower, startup eff
 
 ### 1. `logs-enabled-config`: the `logs_enabled` setting
 
+Status: in review.
+
 `otlp-signal-gating` copies the Agent's check that disables the whole OTLP receiver when OTLP logs are enabled
 without the logs agent ("OTLP logs is enabled but logs agent is not enabled", `comp/otelcol/otlp/pipeline_validator.go`).
 That needs a typed `logs_enabled`, so this PR comes first. Nothing reads the field yet, so the topology doesn't
@@ -119,6 +121,8 @@ change. Validation does, though (see the last bullet).
 
 ### 2. `native-logs-pipeline`: the `logs` pipeline
 
+Status: in review.
+
 - Add a `logs` token to the overlay model, the classifier code generation, and the runtime `Pipeline` enum, with an
   overlay model test that parses it.
 - Add `DataPlaneConfiguration::otlp_logs_native()`, the single predicate for whether ADP handles OTLP logs itself.
@@ -143,6 +147,8 @@ affinity, so there's nothing to check. The gate test from the issue moves to PR 
 keys.
 
 ### 3. `logs-config-inventory`: classify the keys
+
+Status: in review. `tag_filters` has no task in #2966 yet, so it's `planned: false` for now.
 
 Deliverable: a key-by-key matrix in this file (section [Key matrix](#key-matrix)), and the overlay changes it
 justifies.
@@ -216,6 +222,8 @@ Tests:
 
 ### 4. `logs-config-startup-gate`: severities
 
+Status: not started, waiting for `otlp-signal-gating`.
+
 This PR depends on PR 3 and on `otlp-signal-gating`. Before signal gating, ADP handles logs natively whenever OTLP is
 native, so the `logs` pipeline is active for OTLP-metrics-only users. A `high` logs key, for example a
 `processing_rules` written for the Agent's file tailing, would then stop ADP for users who send it no logs.
@@ -284,11 +292,113 @@ inventory (`otlp_config.logs.enabled`, the proxy flags, `additional_endpoints`, 
 
 ## Key matrix
 
-Filled in by PR 3 and extended by PR 4. One row per key outside the "Other logs keys" groups, which get one row per
-group.
+Filled in by PR 3 from the Agent source at `2f65f1c91a2`, and extended by PR 4 with the consequence, native and proxy
+applicability, connected and standalone behavior, and final severity of each unsupported key. Severities in the
+overlay are provisional until then. Shared keys already in the inventory whose logs behavior matches the Agent (`site`,
+`proxy.*`, `skip_ssl_validation`, `min_tls_version`, `multi_region_failover.enabled`) keep their classification.
 
-| Key | Affects OTLP logs | Agent source | Classification | Pipelines | Planned, issue | Gap | Consequence if ignored | Native / proxy | Connected / standalone | Severity |
-|---|---|---|---|---|---|---|---|---|---|---|
+The Agent's OTLP ingest takes its logs channel from the full logs agent (`comp/logs/agent/impl`, wired in
+`cmd/agent/subcommands/run/command.go`), not from `logsagentpipeline`, which only the DDOT collector uses. Some keys
+apply only on the core Agent path: OPW and `vector.*`, `tag_filters`, `fingerprint_config.*`,
+`unreliable_mount.enabled`, `http_connectivity_retry_interval_max`, and `logs_config.delegated_auth.*`.
+
+| Key | Affects OTLP logs | Agent source | Classification | Pipelines | Planned issue |
+|---|---|---|---|---|---|
+| `api_key` | yes | `comp/logs/agent/config/config_keys.go:177-184` | full | cross_cutting | - |
+| `data_plane.otlp.proxy.logs.enabled` | yes | see overlay | partial, warns | otlp | #2969 |
+| `data_plane.otlp.proxy.metrics.enabled` | yes | see overlay | partial, warns | otlp | #2969 |
+| `log_enabled` | yes | see overlay | partial | otlp | #2969 |
+| `logs_config.additional_endpoints` | yes | `comp/logs/agent/config/config_keys.go:164-173 (shouldUseTCP includes hasAdditionalEndpoints)` | none, medium | logs | #2973 |
+| `logs_config.api_key` | yes | `comp/logs/agent/config/config_keys.go:177-184 (getMainAPIKey)` | none, medium | logs | #2973 |
+| `logs_config.batch_max_concurrent_send` | yes | `comp/logs/agent/config/config_keys.go:222-230` | none, medium | logs | #2973 |
+| `logs_config.batch_max_content_size` | yes | `comp/logs/agent/config/config_keys.go:242-250` | none, medium | logs | #2973 |
+| `logs_config.batch_max_size` | yes | `comp/logs/agent/config/config_keys.go:232-240` | none, medium | logs | #2973 |
+| `logs_config.batch_wait` | yes | `comp/logs/agent/config/config_keys.go:211-220` | none, medium | logs | #2973 |
+| `logs_config.compression_kind` | yes | `comp/logs/agent/config/config_keys.go:124-142` | none, medium | logs | #2973 |
+| `logs_config.compression_level` | yes | `comp/logs/agent/config/config_keys.go:144-158 (compressionLevel)` | none, medium | logs | #2973 |
+| `logs_config.connection_reset_interval` | yes | `comp/logs/agent/config/config_keys.go:186-189` | none, low | logs | #2973 |
+| `logs_config.dd_port` | yes | `comp/logs/agent/config/config_keys.go:78-80` | none, medium | logs | #2976 |
+| `logs_config.dd_url_443` | yes | `comp/logs/agent/config/config_keys.go:69-71` | none, medium | logs | #2976 |
+| `logs_config.dd_url` | yes | `comp/logs/agent/config/config.go:511 (GetMainEndpoint(...` | none, medium | logs | #2973 |
+| `logs_config.delegated_auth.org_uuid` | yes | `pkg/config/setup/config.go:307` | none, medium | logs | no |
+| `logs_config.delegated_auth.refresh_interval_mins` | yes | `pkg/config/setup/config.go:372-376` | none, medium | logs | no |
+| `logs_config.dev_mode_no_ssl` | yes | `comp/logs/agent/config/config_keys.go:112-114` | none, medium | logs | #2973 |
+| `logs_config.dev_mode_use_proto` | yes | `comp/logs/agent/config/config_keys.go:116-118` | none, medium | logs | #2976 |
+| `logs_config.disable_distributed_senders` | yes | `comp/otelcol/logsagentpipeline/impl/agent.go:222` | none, low | logs | no |
+| `logs_config.fingerprint_config.count_to_skip` | validation only | `comp/logs/agent/config/config.go:183-261 (GlobalFingerprintConfig` | none, low | logs | no |
+| `logs_config.fingerprint_config.count` | validation only | `comp/logs/agent/config/config.go:183-261 (GlobalFingerprintConfig` | none, low | logs | no |
+| `logs_config.fingerprint_config.fingerprint_strategy` | validation only | `comp/logs/agent/config/config.go:183-261 (GlobalFingerprintConfig` | none, low | logs | no |
+| `logs_config.fingerprint_config.max_bytes` | validation only | `comp/logs/agent/config/config.go:183-261 (GlobalFingerprintConfig` | none, low | logs | no |
+| `logs_config.force_use_http` | yes | `comp/logs/agent/config/config_keys.go:99-102` | none, medium | logs | #2976 |
+| `logs_config.force_use_tcp` | yes | `comp/logs/agent/config/config_keys.go:90-93` | none, medium | logs | #2976 |
+| `logs_config.http_connectivity_retry_interval_max` | yes | `comp/logs/agent/config/config_keys.go:120-122` | none, medium | logs | #2976 |
+| `logs_config.http_protocol` | yes | `comp/logs-library/client/http/destination.go:506-540 (httpClientFactory)` | none, low | logs | #2973 |
+| `logs_config.http_timeout` | yes | `comp/logs-library/client/http/destination.go:509-513` | none, low | logs | #2973 |
+| `logs_config.logs_dd_url` | yes | `comp/logs/agent/config/config_keys.go:73-76` | none, medium | logs | #2973 |
+| `logs_config.logs_no_ssl` | yes | `comp/logs/agent/config/config_keys.go:104-106` | none, medium | logs | #2973 |
+| `logs_config.message_channel_size` | yes | `comp/logs-library/pipeline/pipeline.go:47` | none, low | logs | no |
+| `logs_config.payload_channel_size` | yes | `comp/logs-library/pipeline/provider.go:154` | none, low | logs | no |
+| `logs_config.pipeline_failover.enabled` | yes | `comp/logs-library/pipeline/provider.go:253` | none, low | logs | no |
+| `logs_config.pipeline_failover.router_channel_size` | yes | `comp/logs-library/pipeline/provider.go:283-287` | none, low | logs | no |
+| `logs_config.pipelines` | yes | `comp/otelcol/logsagentpipeline/impl/agent.go:211` | none, low | logs | no |
+| `logs_config.processing_rules` | yes | `comp/logs/agent/config/config.go:88-103` | none, medium | logs | #2975 |
+| `logs_config.sender_backoff_base` | yes | `comp/logs/agent/config/config_keys.go:272-280` | none, low | logs | #2974 |
+| `logs_config.sender_backoff_factor` | yes | `comp/logs/agent/config/config_keys.go:262-270` | none, low | logs | #2974 |
+| `logs_config.sender_backoff_max` | yes | `comp/logs/agent/config/config_keys.go:282-290` | none, low | logs | #2974 |
+| `logs_config.sender_recovery_interval` | yes | `comp/logs/agent/config/config_keys.go:292-300` | none, low | logs | #2974 |
+| `logs_config.sender_recovery_reset` | yes | `comp/logs/agent/config/config_keys.go:302-304` | none, low | logs | #2974 |
+| `logs_config.socks5_proxy_address` | yes | `comp/logs/agent/config/config_keys.go:82-88` | none, medium | logs | #2976 |
+| `logs_config.stop_grace_period` | yes | `comp/otelcol/logsagentpipeline/impl/agent.go:175-193` | none, low | logs | no |
+| `logs_config.tag_filters` | yes | `comp/logs/agent/config/config.go:105-114` | none, medium | logs | no |
+| `logs_config.unreliable_mount.enabled` | validation only | `comp/logs/agent/config/config.go:192-217` | none, low | logs | no |
+| `logs_config.use_compression` | yes | `comp/logs/agent/config/config_keys.go:160-162` | none, medium | logs | #2973 |
+| `logs_config.use_http` | yes | `comp/logs/agent/config/config_keys.go:99-102` | none, medium | logs | #2976 |
+| `logs_config.use_port_443` | yes | `comp/logs/agent/config/config_keys.go:95-97` | none, medium | logs | #2976 |
+| `logs_config.use_tcp` | yes | `comp/logs/agent/config/config_keys.go:90-93` | none, medium | logs | #2976 |
+| `logs_config.use_v2_api` | yes | `comp/logs/agent/config/config_keys.go:311-313` | none, medium | logs | #2973 |
+| `logs_config.zstd_compression_level` | yes | `comp/logs/agent/config/config_keys.go:144-151` | none, medium | logs | #2973 |
+| `logs_enabled` | yes | see overlay | partial | otlp | #2969 |
+| `min_tls_version` | yes | `pkg/util/http/transport.go:42-62` | partial, warns | cross_cutting | - |
+| `multi_region_failover.enabled` | yes | `comp/logs/agent/config/config.go:329-360 (TCP)` | partial | cross_cutting | - |
+| `multi_region_failover.failover_logs` | yes | `comp/logs-library/sender/destination_sender.go:76-97` | none, medium | logs | #2973 |
+| `multi_region_failover.logs_service_allowlist` | yes | `comp/logs-library/processor/processor.go:122-131` | none, medium | logs | #2973 |
+| `observability_pipelines_worker.logs.dual_ship_reliable` | yes | `comp/logs/agent/config/config_keys.go:346-360` | none, medium | logs | #2973 |
+| `observability_pipelines_worker.logs.dual_ship` | yes | `comp/logs/agent/config/config_keys.go:329-344` | none, medium | logs | #2973 |
+| `observability_pipelines_worker.logs.enabled` | yes | `comp/logs/agent/config/config_keys.go:319-327` | none, medium | logs | #2973 |
+| `observability_pipelines_worker.logs.url` | yes | `comp/logs/agent/config/config_keys.go:362-375` | none, medium | logs | #2973 |
+| `otlp_config.debug.verbosity` | yes | `comp/otelcol/otlp/config.go:99-114` | none, low | otlp | no |
+| `otlp_config.logs.batch.flush_timeout` | yes | `comp/otelcol/otlp/map_provider.go:84-103 (buildLogsMap)` | none, low | logs | #2973 |
+| `otlp_config.logs.batch.max_size` | yes | `comp/otelcol/otlp/map_provider.go:84-103` | none, low | logs | #2973 |
+| `otlp_config.logs.batch.min_size` | yes | `comp/otelcol/otlp/map_provider.go:84-103` | none, low | logs | #2973 |
+| `otlp_config.logs.enabled` | yes | see overlay | partial, warns | otlp | #2969 |
+| `otlp_config.logs.infra_attributes.tags_as_ddtags` | yes | `comp/otelcol/otlp/config.go:65` | none, medium | logs | #2972 |
+| `proxy.http` | yes | `pkg/util/http/transport.go:116-118` | full | cross_cutting | - |
+| `proxy.https` | yes | `pkg/util/http/transport.go:116-118` | full | cross_cutting | - |
+| `proxy.no_proxy` | yes | `pkg/util/http/transport.go:127-175` | full | cross_cutting | - |
+| `site` | yes | `pkg/config/utils/endpoints.go:375-383` | full | cross_cutting | - |
+| `skip_ssl_validation` | yes | `pkg/util/http/transport.go:79-82` | partial | cross_cutting | - |
+| `vector.logs.dual_ship_reliable` | yes | `comp/logs/agent/config/config_keys.go:346-360` | none, medium | logs | #2973 |
+| `vector.logs.dual_ship` | yes | `comp/logs/agent/config/config_keys.go:329-344` | none, medium | logs | #2973 |
+| `vector.logs.enabled` | yes | `comp/logs/agent/config/config_keys.go:319-327` | none, medium | logs | #2973 |
+| `vector.logs.url` | yes | `comp/logs/agent/config/config_keys.go:362-375` | none, medium | logs | #2973 |
+
+The keys that don't affect the OTLP logs path stay `excluded`, grouped by feature:
+
+- multi-line detection: 19 keys
+- adaptive sampling: 19 keys
+- container log collection: 9 keys
+- file tailing: 7 keys
+- kubernetes log collection: 4 keys
+- auditor and registry: 3 keys
+- log decoder: 3 keys
+- integration logs: 3 keys
+- tailer tag providers: 2 keys
+- network listener (TCP/UDP): 2 keys
+- delegated auth (per-prefix region unused): 1 key
+- delegated auth (per-prefix provider unused): 1 key
+- event platform forwarders: 1 key
+- process log collection: 1 key
+- log streaming: 1 key
 
 ## Open questions
 

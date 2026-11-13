@@ -36,9 +36,18 @@
 # - support: unknown entries without severity produce no runtime classifier entry and are docs-only
 inventory:
   additional_endpoints:
-    support: full
+    support: partial
     pipelines: [cross_cutting]
     description: "Dual-ship to extra endpoints"
+    documentation: |-
+      ADP dual-ships to `additional_endpoints` as the core Agent does for metrics, events, service
+      checks, and traces.
+
+      ADP also sends native OTLP logs to these endpoints, which the core Agent never does: the Agent
+      sends logs only to the endpoints configured under `logs_config`, including
+      `logs_config.additional_endpoints`. Logs are only affected when ADP handles OTLP logs itself
+      rather than relaying them to the core Agent.
+    issue: "#2973"
 
   agent_ipc.grpc_max_message_size:
     support: full
@@ -585,14 +594,26 @@ inventory:
     description: "Enable OTLP proxy to Core Agent"
 
   data_plane.otlp.proxy.logs.enabled:
-    support: full
+    support: partial
+    warn: true
     pipelines: [otlp]
     description: "Proxy OTLP logs to Core Agent"
+    documentation: |-
+      In proxy mode, ADP relays OTLP logs to the core Agent whatever
+      `data_plane.otlp.proxy.logs.enabled` says. Setting it to `false` doesn't make ADP handle OTLP
+      logs itself. Only `data_plane.otlp.proxy.traces.enabled` is honored today.
+    issue: "#2969"
 
   data_plane.otlp.proxy.metrics.enabled:
-    support: full
+    support: partial
+    warn: true
     pipelines: [otlp]
     description: "Proxy OTLP metrics to Core Agent"
+    documentation: |-
+      In proxy mode, ADP relays OTLP metrics to the core Agent whatever
+      `data_plane.otlp.proxy.metrics.enabled` says. Setting it to `false` doesn't make ADP handle OTLP
+      metrics itself. Only `data_plane.otlp.proxy.traces.enabled` is honored today.
+    issue: "#2969"
 
   data_plane.otlp.proxy.receiver.protocols.grpc.endpoint:
     support: full
@@ -690,9 +711,18 @@ inventory:
     documentation: "See `data_plane.remote_agent_enabled` above."
 
   dd_url:
-    support: full
+    support: partial
     pipelines: [cross_cutting]
     description: "Override intake endpoint URL"
+    documentation: |-
+      ADP sends metrics, events, and service checks to `dd_url` as the core Agent does.
+
+      ADP also derives where native OTLP logs go from `dd_url`, which the core Agent never does: the
+      Agent resolves the logs intake from `site` and the `logs_config` endpoint settings. With a
+      Datadog `dd_url`, ADP sends logs to the matching logs intake host; with any other `dd_url`, it
+      sends logs to that host. Logs are only affected when ADP handles OTLP logs itself rather than
+      relaying them to the core Agent.
+    issue: "#2973"
 
   disable_file_logging:
     support: full
@@ -1890,6 +1920,742 @@ inventory:
     description: "Transaction success log interval"
     documentation: "The core agent uses `logging_frequency` to throttle repetitive successful transaction logs. ADP logs successful forwarder operations below the default `info` level, so there is no matching info-level success-log stream to throttle. This key is intentionally unused."
 
+  logs_config.additional_endpoints:
+    support: none
+    severity: medium
+    planned: true
+    issue: "#2973"
+    pipelines: [logs]
+    description: "Extra logs intake endpoints (host, key, options)"
+    documentation: |-
+      In the core Agent's OTLP logs path: each entry becomes an additional destination that receives
+      every payload (reliable unless is_reliable:false, which makes it best effort). Its presence also
+      selects TCP over HTTP unless force_use_http or an http(s) logs_dd_url is set, and makes
+      compression default to gzip unless compression_kind is configured. Entries may hold DELA[...]
+      delegated-auth keys (HTTP only; skipped over TCP).
+
+      ADP ignores this key: it sends native OTLP logs through its shared forwarder, to the logs intake
+      derived from `site` or `dd_url`. This only matters when ADP handles OTLP logs itself: in proxy
+      mode, the core Agent processes the logs and applies this key.
+
+  logs_config.api_key:
+    support: none
+    severity: medium
+    planned: true
+    issue: "#2973"
+    pipelines: [logs]
+    description: "API key for logs intake (falls back to api_key)"
+    documentation: |-
+      In the core Agent's OTLP logs path: used as the main endpoint API key when non-empty, otherwise
+      the top-level api_key. Runtime changes rotate the key of the main endpoint (OnUpdate callback).
+
+      ADP ignores this key: it sends native OTLP logs through its shared forwarder, to the logs intake
+      derived from `site` or `dd_url`. This only matters when ADP handles OTLP logs itself: in proxy
+      mode, the core Agent processes the logs and applies this key.
+
+  logs_config.batch_max_concurrent_send:
+    support: none
+    severity: medium
+    planned: true
+    issue: "#2973"
+    pipelines: [logs]
+    description: "Concurrent HTTP sends per pipeline"
+    documentation: |-
+      In the core Agent's OTLP logs path: when different from the default (0), the sender concurrency is
+      pipelines * this value instead of pipelines * 10; in legacy mode it is the per-sender concurrency.
+
+      ADP ignores this key: it batches and sends native OTLP logs with the settings of its shared
+      forwarder. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
+      processes the logs and applies this key.
+
+  logs_config.batch_max_content_size:
+    support: none
+    severity: medium
+    planned: true
+    issue: "#2973"
+    pipelines: [logs]
+    description: "Max bytes per HTTP payload"
+    documentation: |-
+      In the core Agent's OTLP logs path: maximum uncompressed payload content size; a single message
+      larger than this is dropped by the batcher (must be > 0, else default).
+
+      ADP ignores this key: it batches and sends native OTLP logs with the settings of its shared
+      forwarder. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
+      processes the logs and applies this key.
+
+  logs_config.batch_max_size:
+    support: none
+    severity: medium
+    planned: true
+    issue: "#2973"
+    pipelines: [logs]
+    description: "Max logs per HTTP payload"
+    documentation: |-
+      In the core Agent's OTLP logs path: maximum number of messages in a payload before the batch is
+      flushed (must be > 0, else default).
+
+      ADP ignores this key: it batches and sends native OTLP logs with the settings of its shared
+      forwarder. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
+      processes the logs and applies this key.
+
+  logs_config.batch_wait:
+    support: none
+    severity: medium
+    planned: true
+    issue: "#2973"
+    pipelines: [logs]
+    description: "Max seconds to wait to fill a batch"
+    documentation: |-
+      In the core Agent's OTLP logs path: batch strategy flush timeout (valid range 0.1 to 10 seconds;
+      invalid falls back to the default with a warning).
+
+      ADP ignores this key: it batches and sends native OTLP logs with the settings of its shared
+      forwarder. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
+      processes the logs and applies this key.
+
+  logs_config.compression_kind:
+    support: none
+    severity: medium
+    planned: true
+    issue: "#2973"
+    pipelines: [logs]
+    description: "Payload compression algorithm (zstd or gzip)"
+    documentation: |-
+      In the core Agent's OTLP logs path: selects the compressor of the HTTP batch strategy. Invalid
+      values warn and fall back to the default (zstd). If additional_endpoints are configured and this
+      key is not explicitly configured, gzip is forced for compatibility.
+
+      ADP ignores this key: it sends native OTLP logs through its shared forwarder, to the logs intake
+      derived from `site` or `dd_url`. This only matters when ADP handles OTLP logs itself: in proxy
+      mode, the core Agent processes the logs and applies this key.
+
+  logs_config.compression_level:
+    support: none
+    severity: medium
+    planned: true
+    issue: "#2973"
+    pipelines: [logs]
+    description: "Gzip compression level"
+    documentation: |-
+      In the core Agent's OTLP logs path: level passed to the gzip compressor; only read when the
+      effective compression kind is gzip.
+
+      ADP ignores this key: it sends native OTLP logs through its shared forwarder, to the logs intake
+      derived from `site` or `dd_url`. This only matters when ADP handles OTLP logs itself: in proxy
+      mode, the core Agent processes the logs and applies this key.
+
+  logs_config.connection_reset_interval:
+    support: none
+    severity: low
+    planned: true
+    issue: "#2973"
+    pipelines: [logs]
+    description: "Seconds before recycling intake connections"
+    documentation: |-
+      In the core Agent's OTLP logs path: hTTP: the client resets its connections after this interval;
+      TCP: the connection manager closes and reconnects after it. 0 disables.
+
+      ADP ignores this key: it batches and sends native OTLP logs with the settings of its shared
+      forwarder. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
+      processes the logs and applies this key.
+
+  logs_config.dd_port:
+    support: none
+    severity: medium
+    planned: true
+    issue: "#2976"
+    pipelines: [logs]
+    description: "TCP intake port override"
+    documentation: |-
+      In the core Agent's OTLP logs path: tCP only: port used when the resolved host is not one of the
+      well-known agent-intake hosts.
+
+      ADP ignores this key: it always sends native OTLP logs over HTTP. This only matters when ADP
+      handles OTLP logs itself: in proxy mode, the core Agent processes the logs and applies this key.
+
+  logs_config.dd_url:
+    support: none
+    severity: medium
+    planned: true
+    issue: "#2973"
+    pipelines: [logs]
+    description: "Override logs intake URL or host"
+    documentation: |-
+      In the core Agent's OTLP logs path: when set (and non-empty) it replaces the site-derived intake
+      host (agent-http-intake.logs.<site> for HTTP, agent-intake.logs.<site> for TCP). The top-level
+      dd_url is NOT consulted for logs. logs_config.logs_dd_url, when set, takes precedence over this
+      key.
+
+      ADP ignores this key: it sends native OTLP logs through its shared forwarder, to the logs intake
+      derived from `site` or `dd_url`. This only matters when ADP handles OTLP logs itself: in proxy
+      mode, the core Agent processes the logs and applies this key.
+
+  logs_config.dd_url_443:
+    support: none
+    severity: medium
+    planned: true
+    issue: "#2976"
+    pipelines: [logs]
+    description: "TCP intake host for port 443"
+    documentation: |-
+      In the core Agent's OTLP logs path: tCP only: host used when use_port_443 is true.
+
+      ADP ignores this key: it always sends native OTLP logs over HTTP. This only matters when ADP
+      handles OTLP logs itself: in proxy mode, the core Agent processes the logs and applies this key.
+
+  logs_config.delegated_auth.org_uuid:
+    support: none
+    severity: medium
+    planned: false
+    pipelines: [logs]
+    description: "Org UUID enabling delegated auth for logs key"
+    documentation: |-
+      In the core Agent's OTLP logs path: when non-empty, LoadDatadog registers a delegated-auth
+      instance for logs_config.api_key, which fetches the key from the cloud provider and writes it back
+      to the config; the logs endpoint then picks it up through the key-rotation callback.
+
+      ADP ignores this key: it sends native OTLP logs through its shared forwarder, to the logs intake
+      derived from `site` or `dd_url`. This only matters when ADP handles OTLP logs itself: in proxy
+      mode, the core Agent processes the logs and applies this key.
+
+  logs_config.delegated_auth.refresh_interval_mins:
+    support: none
+    severity: medium
+    planned: false
+    pipelines: [logs]
+    description: "Delegated auth key refresh interval (minutes)"
+    documentation: |-
+      In the core Agent's OTLP logs path: refresh interval of the delegated-auth instance registered for
+      logs_config.api_key; only meaningful when logs_config.delegated_auth.org_uuid is set.
+
+      ADP ignores this key: it sends native OTLP logs through its shared forwarder, to the logs intake
+      derived from `site` or `dd_url`. This only matters when ADP handles OTLP logs itself: in proxy
+      mode, the core Agent processes the logs and applies this key.
+
+  logs_config.dev_mode_no_ssl:
+    support: none
+    severity: medium
+    planned: true
+    issue: "#2973"
+    pipelines: [logs]
+    description: "Disable TLS on the default intake (dev only)"
+    documentation: |-
+      In the core Agent's OTLP logs path: makes the site/dd_url-derived main endpoint plain HTTP (HTTP
+      path) or non-SSL (TCP path) and logs a warning that the setting is illegal outside development.
+
+      ADP ignores this key: it sends native OTLP logs through its shared forwarder, to the logs intake
+      derived from `site` or `dd_url`. This only matters when ADP handles OTLP logs itself: in proxy
+      mode, the core Agent processes the logs and applies this key.
+
+  logs_config.dev_mode_use_proto:
+    support: none
+    severity: medium
+    planned: true
+    issue: "#2976"
+    pipelines: [logs]
+    description: "Send TCP logs as protobuf (dev only)"
+    documentation: |-
+      In the core Agent's OTLP logs path: tCP only: sets Endpoints.UseProto so the pipeline uses the
+      protobuf encoder instead of the raw encoder.
+
+      ADP ignores this key: it always sends native OTLP logs over HTTP. This only matters when ADP
+      handles OTLP logs itself: in proxy mode, the core Agent processes the logs and applies this key.
+
+  logs_config.disable_distributed_senders:
+    support: none
+    severity: low
+    planned: false
+    pipelines: [logs]
+    description: "Use legacy per-pipeline senders"
+    documentation: |-
+      In the core Agent's OTLP logs path: selects the legacy sender layout: one sender queue and worker
+      per pipeline, and per-sender concurrency from batch_max_concurrent_send, instead of the shared
+      distributed sender.
+
+      ADP ignores this key: its logs pipeline is part of its own topology, which this key doesn't
+      configure. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
+      processes the logs and applies this key.
+
+  logs_config.fingerprint_config.count:
+    support: none
+    severity: low
+    planned: false
+    pipelines: [logs]
+    description: "Fingerprint line/byte count (validated only)"
+    documentation: |-
+      The core Agent only validates this key on the OTLP logs path: never used to fingerprint OTLP logs,
+      but GlobalFingerprintConfig runs at logs agent start and an invalid fingerprint_config aborts
+      start with 'Invalid fingerprint_config setting'. Must be > 0 when strategy is not disabled
+      (defaulted per strategy if not configured); a non-integer value fails unmarshaling.
+
+      ADP doesn't validate this key, so a value that stops the core Agent's logs agent, and with it the
+      Agent's whole OTLP receiver, doesn't stop ADP. This only matters when ADP handles OTLP logs
+      itself: in proxy mode, the core Agent processes the logs and applies this key.
+
+  logs_config.fingerprint_config.count_to_skip:
+    support: none
+    severity: low
+    planned: false
+    pipelines: [logs]
+    description: "Fingerprint skip count (validated only)"
+    documentation: |-
+      The core Agent only validates this key on the OTLP logs path: never used to fingerprint OTLP logs,
+      but GlobalFingerprintConfig runs at logs agent start and an invalid fingerprint_config aborts
+      start with 'Invalid fingerprint_config setting'. Must be >= 0 when strategy is not disabled; a
+      non-integer value fails unmarshaling.
+
+      ADP doesn't validate this key, so a value that stops the core Agent's logs agent, and with it the
+      Agent's whole OTLP receiver, doesn't stop ADP. This only matters when ADP handles OTLP logs
+      itself: in proxy mode, the core Agent processes the logs and applies this key.
+
+  logs_config.fingerprint_config.fingerprint_strategy:
+    support: none
+    severity: low
+    planned: false
+    pipelines: [logs]
+    description: "Fingerprint strategy (validated only)"
+    documentation: |-
+      The core Agent only validates this key on the OTLP logs path: never used to fingerprint OTLP logs,
+      but GlobalFingerprintConfig runs at logs agent start and an invalid fingerprint_config aborts
+      start with 'Invalid fingerprint_config setting'. An unknown value (not line_checksum,
+      byte_checksum or disabled) fails validation. Default disabled skips all other fingerprint checks.
+
+      ADP doesn't validate this key, so a value that stops the core Agent's logs agent, and with it the
+      Agent's whole OTLP receiver, doesn't stop ADP. This only matters when ADP handles OTLP logs
+      itself: in proxy mode, the core Agent processes the logs and applies this key.
+
+  logs_config.fingerprint_config.max_bytes:
+    support: none
+    severity: low
+    planned: false
+    pipelines: [logs]
+    description: "Fingerprint max bytes (validated only)"
+    documentation: |-
+      The core Agent only validates this key on the OTLP logs path: never used to fingerprint OTLP logs,
+      but GlobalFingerprintConfig runs at logs agent start and an invalid fingerprint_config aborts
+      start with 'Invalid fingerprint_config setting'. Must be > 0 when strategy is line_checksum; a
+      non-integer value fails unmarshaling.
+
+      ADP doesn't validate this key, so a value that stops the core Agent's logs agent, and with it the
+      Agent's whole OTLP receiver, doesn't stop ADP. This only matters when ADP handles OTLP logs
+      itself: in proxy mode, the core Agent processes the logs and applies this key.
+
+  logs_config.force_use_http:
+    support: none
+    severity: medium
+    planned: true
+    issue: "#2976"
+    pipelines: [logs]
+    description: "Force the HTTP transport"
+    documentation: |-
+      In the core Agent's OTLP logs path: skips the HTTP-vs-TCP decision and always builds HTTP
+      endpoints.
+
+      ADP ignores this key: it always sends native OTLP logs over HTTP. This only matters when ADP
+      handles OTLP logs itself: in proxy mode, the core Agent processes the logs and applies this key.
+
+  logs_config.force_use_tcp:
+    support: none
+    severity: medium
+    planned: true
+    issue: "#2976"
+    pipelines: [logs]
+    description: "Force the TCP transport"
+    documentation: |-
+      In the core Agent's OTLP logs path: when HTTP is not forced, a true value selects TCP endpoints
+      (raw, newline/length-delimited stream, no compression or batching).
+
+      ADP ignores this key: it always sends native OTLP logs over HTTP. This only matters when ADP
+      handles OTLP logs itself: in proxy mode, the core Agent processes the logs and applies this key.
+
+  logs_config.http_connectivity_retry_interval_max:
+    support: none
+    severity: medium
+    planned: true
+    issue: "#2976"
+    pipelines: [logs]
+    description: "Max retry interval for HTTP check after TCP"
+    documentation: |-
+      In the core Agent's OTLP logs path: when the agent started on TCP, a loop re-checks HTTP
+      connectivity with exponential backoff capped at this interval and restarts the logs agent on HTTP
+      when it succeeds; 0 or less disables the loop.
+
+      ADP ignores this key: it always sends native OTLP logs over HTTP. This only matters when ADP
+      handles OTLP logs itself: in proxy mode, the core Agent processes the logs and applies this key.
+
+  logs_config.http_protocol:
+    support: none
+    severity: low
+    planned: true
+    issue: "#2973"
+    pipelines: [logs]
+    description: "HTTP version negotiation (auto or http1)"
+    documentation: |-
+      In the core Agent's OTLP logs path: auto negotiates HTTP/2 via ALPN with fallback; http1 restricts
+      to HTTP/1.1; any other value warns and uses auto.
+
+      ADP ignores this key: it batches and sends native OTLP logs with the settings of its shared
+      forwarder. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
+      processes the logs and applies this key.
+
+  logs_config.http_timeout:
+    support: none
+    severity: low
+    planned: true
+    issue: "#2973"
+    pipelines: [logs]
+    description: "HTTP request timeout in seconds"
+    documentation: |-
+      In the core Agent's OTLP logs path: timeout of the HTTP client used for log payload requests. The
+      startup connectivity check uses a fixed 5s timeout instead.
+
+      ADP ignores this key: it batches and sends native OTLP logs with the settings of its shared
+      forwarder. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
+      processes the logs and applies this key.
+
+  logs_config.logs_dd_url:
+    support: none
+    severity: medium
+    planned: true
+    issue: "#2973"
+    pipelines: [logs]
+    description: "Logs intake URL override (proxy or custom intake)"
+    documentation: |-
+      In the core Agent's OTLP logs path: takes precedence over dd_url and site. A http(s):// prefix
+      forces the HTTP transport (never falls back to TCP) and is parsed for scheme, host, port and path
+      prefix (legacy /v1/input and /api/v2/logs prefixes are dropped). Without a scheme it is host:port,
+      required in that form for TCP.
+
+      ADP ignores this key: it sends native OTLP logs through its shared forwarder, to the logs intake
+      derived from `site` or `dd_url`. This only matters when ADP handles OTLP logs itself: in proxy
+      mode, the core Agent processes the logs and applies this key.
+
+  logs_config.logs_no_ssl:
+    support: none
+    severity: medium
+    planned: true
+    issue: "#2973"
+    pipelines: [logs]
+    description: "Disable TLS for logs intake"
+    documentation: |-
+      In the core Agent's OTLP logs path: sets the default useSSL=false for the main and MRF endpoints
+      and for URL-less hosts; an https:// URL with logs_no_ssl set only logs a conflict warning and
+      stays TLS.
+
+      ADP ignores this key: it sends native OTLP logs through its shared forwarder, to the logs intake
+      derived from `site` or `dd_url`. This only matters when ADP handles OTLP logs itself: in proxy
+      mode, the core Agent processes the logs and applies this key.
+
+  logs_config.message_channel_size:
+    support: none
+    severity: low
+    planned: false
+    pipelines: [logs]
+    description: "Pipeline message channel size"
+    documentation: |-
+      In the core Agent's OTLP logs path: buffer size of the pipeline input channel (processor input)
+      and the strategy input channel.
+
+      ADP ignores this key: its logs pipeline is part of its own topology, which this key doesn't
+      configure. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
+      processes the logs and applies this key.
+
+  logs_config.payload_channel_size:
+    support: none
+    severity: low
+    planned: false
+    pipelines: [logs]
+    description: "Sender payload channel size"
+    documentation: |-
+      In the core Agent's OTLP logs path: buffer size of the channel of payloads between the batch
+      strategy and the sender workers.
+
+      ADP ignores this key: its logs pipeline is part of its own topology, which this key doesn't
+      configure. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
+      processes the logs and applies this key.
+
+  logs_config.pipeline_failover.enabled:
+    support: none
+    severity: low
+    planned: false
+    pipelines: [logs]
+    description: "Fail over between pipelines when blocked"
+    documentation: |-
+      In the core Agent's OTLP logs path: when true NextPipelineChan returns a router channel whose
+      forwarder goroutine fails over to other pipelines when the primary one is blocked. Because the
+      OTLP exporter requests only one channel at startup, this is what makes OTLP logs use more than one
+      pipeline.
+
+      ADP ignores this key: its logs pipeline is part of its own topology, which this key doesn't
+      configure. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
+      processes the logs and applies this key.
+
+  logs_config.pipeline_failover.router_channel_size:
+    support: none
+    severity: low
+    planned: false
+    pipelines: [logs]
+    description: "Router channel size when failover is on"
+    documentation: |-
+      In the core Agent's OTLP logs path: buffer size of each failover router channel; only read when
+      pipeline_failover.enabled is true.
+
+      ADP ignores this key: its logs pipeline is part of its own topology, which this key doesn't
+      configure. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
+      processes the logs and applies this key.
+
+  logs_config.pipelines:
+    support: none
+    severity: low
+    planned: false
+    pipelines: [logs]
+    description: "Number of parallel logs pipelines"
+    documentation: |-
+      In the core Agent's OTLP logs path: number of processor/strategy pipelines built by the provider;
+      it also scales default HTTP sender concurrency (pipelines * 10) and the sync sender concurrency.
+
+      ADP ignores this key: its logs pipeline is part of its own topology, which this key doesn't
+      configure. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
+      processes the logs and applies this key.
+
+  logs_config.processing_rules:
+    support: none
+    severity: medium
+    planned: true
+    issue: "#2975"
+    pipelines: [logs]
+    description: "Global log processing rules"
+    documentation: |-
+      In the core Agent's OTLP logs path: unmarshaled, validated and compiled at start; an invalid rule
+      (missing name, type or pattern, bad regex) aborts logs agent start. Valid rules (exclude_at_match,
+      include_at_match, mask_sequences, exclude_truncated, remap_source) run in the processor on every
+      OTLP log; multi_line rules are only warned about and ignored.
+
+      ADP ignores this key and applies no processing rules to native OTLP logs, so logs that the Agent
+      would drop or mask are sent as they are. This only matters when ADP handles OTLP logs itself: in
+      proxy mode, the core Agent processes the logs and applies this key.
+
+  logs_config.sender_backoff_base:
+    support: none
+    severity: low
+    planned: true
+    issue: "#2974"
+    pipelines: [logs]
+    description: "Retry backoff base (seconds)"
+    documentation: |-
+      In the core Agent's OTLP logs path: base delay of the destination exponential backoff after
+      retryable errors (must be > 0, else default).
+
+      ADP ignores this key: it batches and sends native OTLP logs with the settings of its shared
+      forwarder. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
+      processes the logs and applies this key.
+
+  logs_config.sender_backoff_factor:
+    support: none
+    severity: low
+    planned: true
+    issue: "#2974"
+    pipelines: [logs]
+    description: "Retry backoff growth factor"
+    documentation: |-
+      In the core Agent's OTLP logs path: backoff growth factor (must be >= 2, else default).
+
+      ADP ignores this key: it batches and sends native OTLP logs with the settings of its shared
+      forwarder. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
+      processes the logs and applies this key.
+
+  logs_config.sender_backoff_max:
+    support: none
+    severity: low
+    planned: true
+    issue: "#2974"
+    pipelines: [logs]
+    description: "Retry backoff cap (seconds)"
+    documentation: |-
+      In the core Agent's OTLP logs path: upper bound of the destination backoff (must be > 0, else
+      default).
+
+      ADP ignores this key: it batches and sends native OTLP logs with the settings of its shared
+      forwarder. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
+      processes the logs and applies this key.
+
+  logs_config.sender_recovery_interval:
+    support: none
+    severity: low
+    planned: true
+    issue: "#2974"
+    pipelines: [logs]
+    description: "Backoff error decrease per success"
+    documentation: |-
+      In the core Agent's OTLP logs path: number of backoff error steps removed per successful send
+      (must be > 0, else default).
+
+      ADP ignores this key: it batches and sends native OTLP logs with the settings of its shared
+      forwarder. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
+      processes the logs and applies this key.
+
+  logs_config.sender_recovery_reset:
+    support: none
+    severity: low
+    planned: true
+    issue: "#2974"
+    pipelines: [logs]
+    description: "Reset backoff errors on success"
+    documentation: |-
+      In the core Agent's OTLP logs path: when true a successful send resets the backoff error count to
+      zero instead of decrementing it.
+
+      ADP ignores this key: it batches and sends native OTLP logs with the settings of its shared
+      forwarder. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
+      processes the logs and applies this key.
+
+  logs_config.socks5_proxy_address:
+    support: none
+    severity: medium
+    planned: true
+    issue: "#2976"
+    pipelines: [logs]
+    description: "SOCKS5 proxy address for TCP logs"
+    documentation: |-
+      In the core Agent's OTLP logs path: a non-empty value selects TCP (unless HTTP is forced) and
+      every TCP connection is dialed through the SOCKS5 proxy. It does not proxy HTTP logs.
+
+      ADP ignores this key: it always sends native OTLP logs over HTTP. This only matters when ADP
+      handles OTLP logs itself: in proxy mode, the core Agent processes the logs and applies this key.
+
+  logs_config.stop_grace_period:
+    support: none
+    severity: low
+    planned: false
+    pipelines: [logs]
+    description: "Seconds to wait for pipeline flush on stop"
+    documentation: |-
+      In the core Agent's OTLP logs path: on shutdown, the pipeline is stopped serially; after this many
+      seconds destinations are forced to flush without sending and a further 5 seconds are allowed
+      before force close.
+
+      ADP ignores this key: its logs pipeline is part of its own topology, which this key doesn't
+      configure. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
+      processes the logs and applies this key.
+
+  logs_config.tag_filters:
+    support: none
+    severity: medium
+    planned: false
+    pipelines: [logs]
+    description: "Include/exclude filters on log tags"
+    documentation: |-
+      In the core Agent's OTLP logs path: compiled once at start. Malformed patterns only warn (never
+      block start). The processor lazily resolves the filter on the exporter's log source and the JSON
+      encoder emits Origin.TransportTags(), so ddtags of OTLP logs are filtered.
+
+      ADP ignores this key and filters no tags on native OTLP logs. This only matters when ADP handles
+      OTLP logs itself: in proxy mode, the core Agent processes the logs and applies this key.
+
+  logs_config.unreliable_mount.enabled:
+    support: none
+    severity: low
+    planned: false
+    pipelines: [logs]
+    description: "Unreliable-mount profile (affects validation)"
+    documentation: |-
+      The core Agent only validates this key on the OTLP logs path: not used for OTLP logs, but when
+      true GlobalFingerprintConfig changes defaults (strategy line_checksum unless configured, max_bytes
+      4096, count default), so previously skipped fingerprint validation then applies to configured
+      fingerprint_config values.
+
+      ADP doesn't validate this key, so a value that stops the core Agent's logs agent, and with it the
+      Agent's whole OTLP receiver, doesn't stop ADP. This only matters when ADP handles OTLP logs
+      itself: in proxy mode, the core Agent processes the logs and applies this key.
+
+  logs_config.use_compression:
+    support: none
+    severity: medium
+    planned: true
+    issue: "#2973"
+    pipelines: [logs]
+    description: "Enable payload compression"
+    documentation: |-
+      In the core Agent's OTLP logs path: when false the batch strategy uses the no-op compressor and
+      payloads are sent uncompressed (no Content-Encoding).
+
+      ADP ignores this key: it sends native OTLP logs through its shared forwarder, to the logs intake
+      derived from `site` or `dd_url`. This only matters when ADP handles OTLP logs itself: in proxy
+      mode, the core Agent processes the logs and applies this key.
+
+  logs_config.use_http:
+    support: none
+    severity: medium
+    planned: true
+    issue: "#2976"
+    pipelines: [logs]
+    description: "Force the HTTP transport"
+    documentation: |-
+      In the core Agent's OTLP logs path: same as force_use_http: BuildEndpoints returns HTTP endpoints
+      without needing the connectivity check to pass and regardless of TCP triggers.
+
+      ADP ignores this key: it always sends native OTLP logs over HTTP. This only matters when ADP
+      handles OTLP logs itself: in proxy mode, the core Agent processes the logs and applies this key.
+
+  logs_config.use_port_443:
+    support: none
+    severity: medium
+    planned: true
+    issue: "#2976"
+    pipelines: [logs]
+    description: "Send TCP logs to the 443 intake"
+    documentation: |-
+      In the core Agent's OTLP logs path: tCP only: main endpoint becomes dd_url_443 on port 443 with
+      TLS.
+
+      ADP ignores this key: it always sends native OTLP logs over HTTP. This only matters when ADP
+      handles OTLP logs itself: in proxy mode, the core Agent processes the logs and applies this key.
+
+  logs_config.use_tcp:
+    support: none
+    severity: medium
+    planned: true
+    issue: "#2976"
+    pipelines: [logs]
+    description: "Force the TCP transport"
+    documentation: |-
+      In the core Agent's OTLP logs path: alias of force_use_tcp: when HTTP is not forced, a true value
+      selects TCP (stream strategy, no compression, no batching).
+
+      ADP ignores this key: it always sends native OTLP logs over HTTP. This only matters when ADP
+      handles OTLP logs itself: in proxy mode, the core Agent processes the logs and applies this key.
+
+  logs_config.use_v2_api:
+    support: none
+    severity: medium
+    planned: true
+    issue: "#2973"
+    pipelines: [logs]
+    description: "Use the v2 logs intake API"
+    documentation: |-
+      In the core Agent's OTLP logs path: when true (default) the HTTP endpoint is Version 2: path
+      /api/v2/logs with the DD-PROTOCOL (agent-json) and DD-EVP-ORIGIN headers. When false the endpoint
+      is Version 1: path /v1/input.
+
+      ADP ignores this key: it sends native OTLP logs through its shared forwarder, to the logs intake
+      derived from `site` or `dd_url`. This only matters when ADP handles OTLP logs itself: in proxy
+      mode, the core Agent processes the logs and applies this key.
+
+  logs_config.zstd_compression_level:
+    support: none
+    severity: medium
+    planned: true
+    issue: "#2973"
+    pipelines: [logs]
+    description: "Zstd compression level"
+    documentation: |-
+      In the core Agent's OTLP logs path: level passed to the zstd compressor; only read when the
+      effective compression kind is zstd.
+
+      ADP ignores this key: it sends native OTLP logs through its shared forwarder, to the logs intake
+      derived from `site` or `dd_url`. This only matters when ADP handles OTLP logs itself: in proxy
+      mode, the core Agent processes the logs and applies this key.
+
   logs_enabled:
     support: partial
     pipelines: [otlp]
@@ -2121,10 +2887,41 @@ inventory:
       | `multi_region_failover.site`             | Datadog site for the failover region, used as `https://app.mrf.<site>`.    | unset   |
       | `multi_region_failover.dd_url`           | Explicit failover intake URL. Takes precedence over `site` when set.       | unset   |
 
+  multi_region_failover.failover_logs:
+    support: none
+    severity: medium
+    planned: true
+    issue: "#2973"
+    pipelines: [logs]
+    description: "Activate failover to the MRF logs endpoint"
+    documentation: |-
+      In the core Agent's OTLP logs path: mRF destinations drop transactions unless
+      multi_region_failover.enabled and failover_logs are both true; flipping it at runtime enables or
+      disables the MRF destination.
+
+      ADP ignores this key: it doesn't support multi-region failover or Observability Pipelines Worker
+      for logs. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
+      processes the logs and applies this key.
+
   multi_region_failover.failover_metrics:
     support: full
     pipelines: [cross_cutting]
     description: "Enable metrics forwarding to failover region"
+
+  multi_region_failover.logs_service_allowlist:
+    support: none
+    severity: medium
+    planned: true
+    issue: "#2973"
+    pipelines: [logs]
+    description: "Services whose logs fail over to MRF"
+    documentation: |-
+      In the core Agent's OTLP logs path: when failover is active, only messages whose service is in the
+      list are flagged for MRF destinations; empty means all logs.
+
+      ADP ignores this key: it doesn't support multi-region failover or Observability Pipelines Worker
+      for logs. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
+      processes the logs and applies this key.
 
   multi_region_failover.metric_allowlist:
     support: full
@@ -2140,6 +2937,68 @@ inventory:
     support: full
     pipelines: [cross_cutting]
     description: "Domain/CIDR `no_proxy` matching"
+
+  observability_pipelines_worker.logs.dual_ship:
+    support: none
+    severity: medium
+    planned: true
+    issue: "#2973"
+    pipelines: [logs]
+    description: "Also send logs to OPW, keep Datadog primary"
+    documentation: |-
+      In the core Agent's OTLP logs path: with OPW enabled and a url set, Datadog stays the main
+      endpoint and OPW is appended as an additional (best-effort unless dual_ship_reliable) endpoint
+      inheriting main's v2 API and compression settings.
+
+      ADP ignores this key: it doesn't support multi-region failover or Observability Pipelines Worker
+      for logs. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
+      processes the logs and applies this key.
+
+  observability_pipelines_worker.logs.dual_ship_reliable:
+    support: none
+    severity: medium
+    planned: true
+    issue: "#2973"
+    pipelines: [logs]
+    description: "Make the OPW dual-ship endpoint reliable"
+    documentation: |-
+      In the core Agent's OTLP logs path: marks the OPW dual-ship endpoint reliable so a failing OPW
+      applies backpressure to the pipeline; warns and has no effect unless dual_ship is true.
+
+      ADP ignores this key: it doesn't support multi-region failover or Observability Pipelines Worker
+      for logs. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
+      processes the logs and applies this key.
+
+  observability_pipelines_worker.logs.enabled:
+    support: none
+    severity: medium
+    planned: true
+    issue: "#2973"
+    pipelines: [logs]
+    description: "Route logs to Observability Pipelines Worker"
+    documentation: |-
+      In the core Agent's OTLP logs path: with a non-empty url, the OPW endpoint replaces the Datadog
+      main endpoint (or is dual-shipped), forces the HTTP transport and parses the url as
+      http(s)://host[:port] or host:port.
+
+      ADP ignores this key: it doesn't support multi-region failover or Observability Pipelines Worker
+      for logs. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
+      processes the logs and applies this key.
+
+  observability_pipelines_worker.logs.url:
+    support: none
+    severity: medium
+    planned: true
+    issue: "#2973"
+    pipelines: [logs]
+    description: "Observability Pipelines Worker URL"
+    documentation: |-
+      In the core Agent's OTLP logs path: host/URL of the OPW endpoint; an unparsable url makes endpoint
+      building fail, so the logs agent does not start.
+
+      ADP ignores this key: it doesn't support multi-region failover or Observability Pipelines Worker
+      for logs. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
+      processes the logs and applies this key.
 
   observability_pipelines_worker.metrics.enabled:
     support: full
@@ -2161,10 +3020,93 @@ inventory:
     pipelines: [dogstatsd]
     description: "Unified origin detection mode"
 
-  otlp_config.logs.enabled:
-    support: full
+  otlp_config.debug.verbosity:
+    support: none
+    severity: low
+    planned: false
     pipelines: [otlp]
-    description: "otlp_config.logs.enabled"
+    description: "Verbosity of the OTLP debug exporter"
+    documentation: |-
+      In the core Agent's OTLP logs path: when the otlp_config.debug section is declared and verbosity
+      is a valid level other than none, a debug exporter is added to the logs (and other enabled)
+      pipelines; invalid levels leave it detached.
+
+      ADP ignores this key: it has no OTLP debug exporter.
+
+  otlp_config.logs.batch.flush_timeout:
+    support: none
+    severity: low
+    planned: true
+    issue: "#2973"
+    pipelines: [logs]
+    description: "OTLP logs exporter batch flush timeout"
+    documentation: |-
+      In the core Agent's OTLP logs path: passed as sending_queue.batch.flush_timeout of the logsagent
+      exporter: time after which a partial batch is flushed.
+
+      ADP ignores this key: it has no pre-translation batcher for OTLP logs, and translates each request
+      as it arrives. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
+      processes the logs and applies this key.
+
+  otlp_config.logs.batch.max_size:
+    support: none
+    severity: low
+    planned: true
+    issue: "#2973"
+    pipelines: [logs]
+    description: "OTLP logs exporter batch max size"
+    documentation: |-
+      In the core Agent's OTLP logs path: passed as sending_queue.batch.max_size of the logsagent
+      exporter (0 means unlimited).
+
+      ADP ignores this key: it has no pre-translation batcher for OTLP logs, and translates each request
+      as it arrives. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
+      processes the logs and applies this key.
+
+  otlp_config.logs.batch.min_size:
+    support: none
+    severity: low
+    planned: true
+    issue: "#2973"
+    pipelines: [logs]
+    description: "OTLP logs exporter batch min size"
+    documentation: |-
+      In the core Agent's OTLP logs path: passed as sending_queue.batch.min_size of the logsagent
+      exporter: minimum batch size that triggers a flush.
+
+      ADP ignores this key: it has no pre-translation batcher for OTLP logs, and translates each request
+      as it arrives. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
+      processes the logs and applies this key.
+
+  otlp_config.logs.enabled:
+    support: partial
+    warn: true
+    pipelines: [otlp]
+    description: "Enable OTLP logs ingestion"
+    documentation: |-
+      The core Agent serves OTLP logs only when `otlp_config.logs.enabled` is `true`. Otherwise its
+      OTLP receiver doesn't serve the logs service, so clients get gRPC `Unimplemented` or HTTP 404.
+      When it's `true` but `logs_enabled` isn't, the Agent logs an error and starts no OTLP
+      receiver at all.
+
+      ADP reads `otlp_config.logs.enabled`, but doesn't yet gate on it: it accepts OTLP logs whenever
+      any OTLP signal is enabled, natively and in proxy mode.
+    issue: "#2969"
+
+  otlp_config.logs.infra_attributes.tags_as_ddtags:
+    support: none
+    severity: medium
+    planned: true
+    issue: "#2972"
+    pipelines: [logs]
+    description: "Write infra tags as ddtags on OTLP logs"
+    documentation: |-
+      In the core Agent's OTLP logs path: when logs are enabled, sets logs_tags_as_ddtags on the
+      infraattributes processor so custom tagger tags (e.g. kube labels as tags) become the ddtags log
+      attribute instead of resource attributes.
+
+      ADP ignores this key. This only matters when ADP handles OTLP logs itself: in proxy mode, the core
+      Agent processes the logs and applies this key.
 
   otlp_config.metrics.batch.flush_timeout:
     support: none
@@ -3245,6 +4187,68 @@ inventory:
     support: full
     pipelines: [dogstatsd]
     description: "Per-endpoint V3 series modes"
+
+  vector.logs.dual_ship:
+    support: none
+    severity: medium
+    planned: true
+    issue: "#2973"
+    pipelines: [logs]
+    description: "Also send logs to OPW, keep Datadog primary"
+    documentation: |-
+      In the core Agent's OTLP logs path: with OPW enabled and a url set, Datadog stays the main
+      endpoint and OPW is appended as an additional (best-effort unless dual_ship_reliable) endpoint
+      inheriting main's v2 API and compression settings.
+
+      ADP ignores this key: it doesn't support multi-region failover or Observability Pipelines Worker
+      for logs. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
+      processes the logs and applies this key.
+
+  vector.logs.dual_ship_reliable:
+    support: none
+    severity: medium
+    planned: true
+    issue: "#2973"
+    pipelines: [logs]
+    description: "Make the OPW dual-ship endpoint reliable"
+    documentation: |-
+      In the core Agent's OTLP logs path: marks the OPW dual-ship endpoint reliable so a failing OPW
+      applies backpressure to the pipeline; warns and has no effect unless dual_ship is true.
+
+      ADP ignores this key: it doesn't support multi-region failover or Observability Pipelines Worker
+      for logs. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
+      processes the logs and applies this key.
+
+  vector.logs.enabled:
+    support: none
+    severity: medium
+    planned: true
+    issue: "#2973"
+    pipelines: [logs]
+    description: "Route logs to Observability Pipelines Worker"
+    documentation: |-
+      In the core Agent's OTLP logs path: with a non-empty url, the legacy vector endpoint replaces the
+      Datadog main endpoint (or is dual-shipped), forces the HTTP transport and parses the url as
+      http(s)://host[:port] or host:port.
+
+      ADP ignores this key: it doesn't support multi-region failover or Observability Pipelines Worker
+      for logs. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
+      processes the logs and applies this key.
+
+  vector.logs.url:
+    support: none
+    severity: medium
+    planned: true
+    issue: "#2973"
+    pipelines: [logs]
+    description: "Observability Pipelines Worker URL"
+    documentation: |-
+      In the core Agent's OTLP logs path: host/URL of the legacy vector endpoint; an unparsable url
+      makes endpoint building fail, so the logs agent does not start.
+
+      ADP ignores this key: it doesn't support multi-region failover or Observability Pipelines Worker
+      for logs. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
+      processes the logs and applies this key.
 
   vector.metrics.enabled:
     support: full
@@ -4366,62 +5370,45 @@ excluded:
   log_all_goroutines_when_unhealthy: "ignored in initial audit 2026-04-23"
   log_file: "ignored in second bulk edit 2026-05-06"
   logon_duration.enabled: "ignored in initial audit 2026-04-23"
-  logs_config.add_logsource_tag: "ignored in initial audit 2026-04-23"
-  logs_config.additional_endpoints: "ignored in initial audit 2026-04-23"
-  logs_config.aggregation_timeout: "ignored in initial audit 2026-04-23"
-  logs_config.api_key: "ignored in initial audit 2026-04-23"
-  logs_config.atomic_registry_write: "ignored in initial audit 2026-04-23"
-  logs_config.auditor_ttl: "ignored in initial audit 2026-04-23"
-  logs_config.auto_multi_line.enable_datetime_detection: "ignored in initial audit 2026-04-23"
-  logs_config.auto_multi_line.enable_json_aggregation: "ignored in initial audit 2026-04-23"
-  logs_config.auto_multi_line.enable_json_detection: "ignored in initial audit 2026-04-23"
-  logs_config.auto_multi_line.pattern_table_match_threshold: "ignored in initial audit 2026-04-23"
-  logs_config.auto_multi_line.pattern_table_max_size: "ignored in initial audit 2026-04-23"
+  logs_config.add_logsource_tag: "2026-11-13: ADP does not currently support container log collection."
+  logs_config.aggregation_timeout: "2026-11-13: ADP does not currently support multi-line log aggregation."
+  logs_config.atomic_registry_write: "2026-11-13: ADP does not currently support the logs auditor and registry."
+  logs_config.auditor_ttl: "2026-11-13: ADP does not currently support the logs auditor and registry."
+  logs_config.auto_multi_line.enable_datetime_detection: "2026-11-13: ADP does not currently support multi-line log aggregation."
+  logs_config.auto_multi_line.enable_json_aggregation: "2026-11-13: ADP does not currently support multi-line log aggregation."
+  logs_config.auto_multi_line.enable_json_detection: "2026-11-13: ADP does not currently support multi-line log aggregation."
+  logs_config.auto_multi_line.pattern_table_match_threshold: "2026-11-13: ADP does not currently support multi-line log aggregation."
+  logs_config.auto_multi_line.pattern_table_max_size: "2026-11-13: ADP does not currently support multi-line log aggregation."
   logs_config.auto_multi_line.stack_trace_parsers: "2026-09-08 ADP does not currently support logs processing"
-  logs_config.auto_multi_line.tag_aggregated_json: "ignored in initial audit 2026-04-23"
-  logs_config.auto_multi_line.timestamp_detector_match_threshold: "ignored in initial audit 2026-04-23"
-  logs_config.auto_multi_line.tokenizer_max_input_bytes: "ignored in initial audit 2026-04-23"
-  logs_config.auto_multi_line_default_match_threshold: "ignored in initial audit 2026-04-23"
-  logs_config.auto_multi_line_default_match_timeout: "ignored in initial audit 2026-04-23"
-  logs_config.auto_multi_line_default_sample_size: "ignored in initial audit 2026-04-23"
-  logs_config.auto_multi_line_detection: "ignored in initial audit 2026-04-23"
-  logs_config.auto_multi_line_detection_custom_samples: "ignored in initial audit 2026-04-23"
-  logs_config.auto_multi_line_extra_patterns: "ignored in initial audit 2026-04-23"
-  logs_config.batch_max_concurrent_send: "ignored in initial audit 2026-04-23"
-  logs_config.batch_max_content_size: "ignored in initial audit 2026-04-23"
-  logs_config.batch_max_size: "ignored in initial audit 2026-04-23"
-  logs_config.batch_wait: "ignored in initial audit 2026-04-23"
-  logs_config.close_timeout: "ignored in initial audit 2026-04-23"
-  logs_config.compression_kind: "ignored in initial audit 2026-04-23"
-  logs_config.compression_level: "ignored in initial audit 2026-04-23"
-  logs_config.connection_reset_interval: "ignored in initial audit 2026-04-23"
-  logs_config.container_collect_all: "ignored in initial audit 2026-04-23"
-  logs_config.container_runtime_waiting_timeout: "ignored in initial audit 2026-04-23"
-  logs_config.dd_port: "ignored in initial audit 2026-04-23"
-  logs_config.dd_url: "ignored in initial audit 2026-04-23"
-  logs_config.dd_url_443: "ignored in initial audit 2026-04-23"
-  logs_config.delegated_auth.aws.region: "ignored in initial audit 2026-04-23"
-  logs_config.delegated_auth.org_uuid: "ignored in initial audit 2026-04-23"
-  logs_config.delegated_auth.provider: "ignored in initial audit 2026-04-23"
-  logs_config.delegated_auth.refresh_interval_mins: "ignored in initial audit 2026-04-23"
-  logs_config.dev_mode_no_ssl: "ignored in initial audit 2026-04-23"
-  logs_config.dev_mode_use_proto: "ignored in initial audit 2026-04-23"
-  logs_config.disable_distributed_senders: "ignored in initial audit 2026-04-23"
-  logs_config.docker_client_read_timeout: "ignored in initial audit 2026-04-23"
-  logs_config.docker_container_force_use_file: "ignored in initial audit 2026-04-23"
-  logs_config.docker_container_use_file: "ignored in initial audit 2026-04-23"
-  logs_config.docker_path_override: "ignored in initial audit 2026-04-23"
-  logs_config.enable_recursive_glob: "ignored in initial audit 2026-04-23"
-  logs_config.expected_tags_duration: "ignored in initial audit 2026-04-23"
-  logs_config.experimental_adaptive_sampling.burst_size: "ignored in initial audit 2026-04-23"
+  logs_config.auto_multi_line.tag_aggregated_json: "2026-11-13: ADP does not currently support multi-line log aggregation."
+  logs_config.auto_multi_line.timestamp_detector_match_threshold: "2026-11-13: ADP does not currently support multi-line log aggregation."
+  logs_config.auto_multi_line.tokenizer_max_input_bytes: "2026-11-13: ADP does not currently support multi-line log aggregation."
+  logs_config.auto_multi_line_default_match_threshold: "2026-11-13: ADP does not currently support multi-line log aggregation."
+  logs_config.auto_multi_line_default_match_timeout: "2026-11-13: ADP does not currently support multi-line log aggregation."
+  logs_config.auto_multi_line_default_sample_size: "2026-11-13: ADP does not currently support multi-line log aggregation."
+  logs_config.auto_multi_line_detection: "2026-11-13: ADP does not currently support multi-line log aggregation."
+  logs_config.auto_multi_line_detection_custom_samples: "2026-11-13: ADP does not currently support multi-line log aggregation."
+  logs_config.auto_multi_line_extra_patterns: "2026-11-13: ADP does not currently support multi-line log aggregation."
+  logs_config.close_timeout: "2026-11-13: ADP does not currently support log file tailing."
+  logs_config.container_collect_all: "2026-11-13: ADP does not currently support container log collection."
+  logs_config.container_runtime_waiting_timeout: "2026-11-13: ADP does not currently support container log collection."
+  logs_config.delegated_auth.aws.region: "2026-11-13: ADP does not currently support delegated authentication for logs."
+  logs_config.delegated_auth.provider: "2026-11-13: ADP does not currently support delegated authentication for logs."
+  logs_config.docker_client_read_timeout: "2026-11-13: ADP does not currently support container log collection."
+  logs_config.docker_container_force_use_file: "2026-11-13: ADP does not currently support container log collection."
+  logs_config.docker_container_use_file: "2026-11-13: ADP does not currently support container log collection."
+  logs_config.docker_path_override: "2026-11-13: ADP does not currently support container log collection."
+  logs_config.enable_recursive_glob: "2026-11-13: ADP does not currently support log file tailing."
+  logs_config.expected_tags_duration: "2026-11-13: ADP does not currently support log tailer tags."
+  logs_config.experimental_adaptive_sampling.burst_size: "2026-11-13: ADP does not currently support log adaptive sampling."
   logs_config.experimental_adaptive_sampling.disabled_sources: "2026-09-08 ADP does not currently support logs processing"
-  logs_config.experimental_adaptive_sampling.enabled: "ignored in initial audit 2026-04-23"
+  logs_config.experimental_adaptive_sampling.enabled: "2026-11-13: ADP does not currently support log adaptive sampling."
   logs_config.experimental_adaptive_sampling.exclude: "2026-06-10 Experimental log adaptive sampling; Go Agent log decoder feature, ADP has no log decoder."
   logs_config.experimental_adaptive_sampling.include: "2026-06-10 Experimental log adaptive sampling; Go Agent log decoder feature, ADP has no log decoder."
-  logs_config.experimental_adaptive_sampling.match_threshold: "ignored in initial audit 2026-04-23"
-  logs_config.experimental_adaptive_sampling.max_patterns: "ignored in initial audit 2026-04-23"
+  logs_config.experimental_adaptive_sampling.match_threshold: "2026-11-13: ADP does not currently support log adaptive sampling."
+  logs_config.experimental_adaptive_sampling.max_patterns: "2026-11-13: ADP does not currently support log adaptive sampling."
   logs_config.experimental_adaptive_sampling.protect_important_logs: "2026-06-10 Experimental log adaptive sampling; Go Agent log decoder feature, ADP has no log decoder."
-  logs_config.experimental_adaptive_sampling.rate_limit: "ignored in initial audit 2026-04-23"
+  logs_config.experimental_adaptive_sampling.rate_limit: "2026-11-13: ADP does not currently support log adaptive sampling."
   logs_config.experimental_adaptive_sampling.smart_severity_profiles.cooldown: "2026-09-08 ADP does not currently support logs processing"
   logs_config.experimental_adaptive_sampling.smart_severity_profiles.enabled: "2026-09-08 ADP does not currently support logs processing"
   logs_config.experimental_adaptive_sampling.smart_severity_profiles.high.burst_size: "2026-09-08 ADP does not currently support logs processing"
@@ -4431,66 +5418,34 @@ excluded:
   logs_config.experimental_adaptive_sampling.smart_severity_profiles.medium.pass_through: "2026-09-08 ADP does not currently support logs processing"
   logs_config.experimental_adaptive_sampling.smart_severity_profiles.medium.rate_limit: "2026-09-08 ADP does not currently support logs processing"
   logs_config.experimental_adaptive_sampling.tag_pattern_hash: "2026-06-10 Experimental log adaptive sampling; Go Agent log decoder feature, ADP has no log decoder."
-  logs_config.experimental_adaptive_sampling.tokenizer_max_input_bytes: "ignored in initial audit 2026-04-23"
+  logs_config.experimental_adaptive_sampling.tokenizer_max_input_bytes: "2026-11-13: ADP does not currently support log adaptive sampling."
   logs_config.experimental_auto_multi_line_detection: "2026-06-10 Experimental log multi-line detection; Go Agent log decoder feature, ADP has no log decoder."
   logs_config.experimental_noisy_log_detection: "2026-06-10 Experimental noisy log tagging; Go Agent log decoder feature, ADP has no log decoder."
-  logs_config.file_scan_period: "ignored in initial audit 2026-04-23"
-  logs_config.file_wildcard_selection_mode: "ignored in initial audit 2026-04-23"
-  logs_config.fingerprint_config.count: "ignored in initial audit 2026-04-23"
-  logs_config.fingerprint_config.count_to_skip: "ignored in initial audit 2026-04-23"
-  logs_config.fingerprint_config.fingerprint_strategy: "ignored in initial audit 2026-04-23"
-  logs_config.fingerprint_config.max_bytes: "ignored in initial audit 2026-04-23"
-  logs_config.force_auto_multi_line_detection_v1: "ignored in initial audit 2026-04-23"
-  logs_config.force_use_http: "ignored in initial audit 2026-04-23"
-  logs_config.force_use_tcp: "ignored in initial audit 2026-04-23"
-  logs_config.frame_size: "ignored in initial audit 2026-04-23"
-  logs_config.http_connectivity_retry_interval_max: "ignored in initial audit 2026-04-23"
-  logs_config.http_protocol: "ignored in initial audit 2026-04-23"
-  logs_config.http_timeout: "ignored in initial audit 2026-04-23"
-  logs_config.input_chan_size: "ignored in initial audit 2026-04-23"
-  logs_config.integrations_logs_disk_ratio: "ignored in initial audit 2026-04-23"
-  logs_config.integrations_logs_files_max_size: "ignored in initial audit 2026-04-23"
-  logs_config.integrations_logs_total_usage: "ignored in initial audit 2026-04-23"
-  logs_config.k8s_container_use_file: "ignored in initial audit 2026-04-23"
-  logs_config.k8s_container_use_kubelet_api: "ignored in initial audit 2026-04-23"
-  logs_config.kubelet_api_client_read_timeout: "ignored in initial audit 2026-04-23"
-  logs_config.logs_dd_url: "ignored in initial audit 2026-04-23"
-  logs_config.logs_no_ssl: "ignored in initial audit 2026-04-23"
-  logs_config.max_message_size_bytes: "ignored in initial audit 2026-04-23"
-  logs_config.message_channel_size: "ignored in initial audit 2026-04-23"
-  logs_config.open_files_limit: "ignored in initial audit 2026-04-23"
-  logs_config.payload_channel_size: "ignored in initial audit 2026-04-23"
-  logs_config.pipeline_failover.enabled: "ignored in initial audit 2026-04-23"
-  logs_config.pipeline_failover.router_channel_size: "ignored in initial audit 2026-04-23"
-  logs_config.pipelines: "ignored in initial audit 2026-04-23"
-  logs_config.process_exclude_agent: "ignored in initial audit 2026-04-23"
-  logs_config.processing_rules: "ignored in initial audit 2026-04-23"
-  logs_config.run_path: "ignored in initial audit 2026-04-23"
-  logs_config.sender_backoff_base: "ignored in initial audit 2026-04-23"
-  logs_config.sender_backoff_factor: "ignored in initial audit 2026-04-23"
-  logs_config.sender_backoff_max: "ignored in initial audit 2026-04-23"
-  logs_config.sender_recovery_interval: "ignored in initial audit 2026-04-23"
-  logs_config.sender_recovery_reset: "ignored in initial audit 2026-04-23"
-  logs_config.socks5_proxy_address: "ignored in initial audit 2026-04-23"
-  logs_config.stop_grace_period: "ignored in initial audit 2026-04-23"
-  logs_config.streaming.streamlogs_log_file: "ignored in initial audit 2026-04-23"
-  logs_config.tag_filters: "2026-11-05: ADP does not currently support logs processing."
-  logs_config.tag_multi_line_logs: "ignored in initial audit 2026-04-23"
-  logs_config.tag_truncated_logs: "ignored in initial audit 2026-04-23"
-  logs_config.tagger_warmup_duration: "ignored in initial audit 2026-04-23"
-  logs_config.unreliable_mount.enabled: "2026-11-05: ADP does not currently support logs processing."
+  logs_config.file_scan_period: "2026-11-13: ADP does not currently support log file tailing."
+  logs_config.file_wildcard_selection_mode: "2026-11-13: ADP does not currently support log file tailing."
+  logs_config.force_auto_multi_line_detection_v1: "2026-11-13: ADP does not currently support multi-line log aggregation."
+  logs_config.frame_size: "2026-11-13: ADP does not currently support TCP and UDP log listeners."
+  logs_config.input_chan_size: "2026-11-13: ADP does not currently support event platform forwarding."
+  logs_config.integrations_logs_disk_ratio: "2026-11-13: ADP does not currently support integration log collection."
+  logs_config.integrations_logs_files_max_size: "2026-11-13: ADP does not currently support integration log collection."
+  logs_config.integrations_logs_total_usage: "2026-11-13: ADP does not currently support integration log collection."
+  logs_config.k8s_container_use_file: "2026-11-13: ADP does not currently support Kubernetes log collection."
+  logs_config.k8s_container_use_kubelet_api: "2026-11-13: ADP does not currently support Kubernetes log collection."
+  logs_config.kubelet_api_client_read_timeout: "2026-11-13: ADP does not currently support Kubernetes log collection."
+  logs_config.max_message_size_bytes: "2026-11-13: ADP does not currently support log line decoding."
+  logs_config.open_files_limit: "2026-11-13: ADP does not currently support log file tailing."
+  logs_config.process_exclude_agent: "2026-11-13: ADP does not currently support process log collection."
+  logs_config.run_path: "2026-11-13: ADP does not currently support the logs auditor and registry."
+  logs_config.streaming.streamlogs_log_file: "2026-11-13: ADP does not currently support log streaming."
+  logs_config.tag_multi_line_logs: "2026-11-13: ADP does not currently support multi-line log aggregation."
+  logs_config.tag_truncated_logs: "2026-11-13: ADP does not currently support log line decoding."
+  logs_config.tagger_warmup_duration: "2026-11-13: ADP does not currently support log tailer tags."
   logs_config.unreliable_mount.rotation_drain_timeout: "2026-11-05: ADP does not currently support logs processing."
-  logs_config.use_compression: "ignored in initial audit 2026-04-23"
   logs_config.use_container_timestamp: "2026-06-10 Container file log timestamp mode; ADP has no container log file source."
-  logs_config.use_http: "ignored in initial audit 2026-04-23"
-  logs_config.use_podman_logs: "ignored in initial audit 2026-04-23"
-  logs_config.use_port_443: "ignored in initial audit 2026-04-23"
-  logs_config.use_sourcehost_tag: "ignored in initial audit 2026-04-23"
-  logs_config.use_tcp: "ignored in initial audit 2026-04-23"
-  logs_config.use_v2_api: "ignored in initial audit 2026-04-23"
-  logs_config.validate_pod_container_id: "ignored in initial audit 2026-04-23"
-  logs_config.windows_open_file_timeout: "ignored in initial audit 2026-04-23"
-  logs_config.zstd_compression_level: "ignored in initial audit 2026-04-23"
+  logs_config.use_podman_logs: "2026-11-13: ADP does not currently support container log collection."
+  logs_config.use_sourcehost_tag: "2026-11-13: ADP does not currently support TCP and UDP log listeners."
+  logs_config.validate_pod_container_id: "2026-11-13: ADP does not currently support Kubernetes log collection."
+  logs_config.windows_open_file_timeout: "2026-11-13: ADP does not currently support log file tailing."
   memtrack_enabled: "ignored in initial audit 2026-04-23"
   metadata_endpoints_max_hostname_size: "ignored in initial audit 2026-04-23"
   metadata_ip_resolution_from_hostname: "ignored in initial audit 2026-04-23"
@@ -4502,8 +5457,6 @@ excluded:
   metric_tag_filterlist_adp_only: "2026-11-05: Gate controlling whether the core Agent applies `metric_tag_filterlist` only when ADP is enabled; ADP always applies the filter."
   metrics_port: "ignored in initial audit 2026-04-23"
   multi_region_failover.failover_apm: "ignored in initial audit 2026-04-23"
-  multi_region_failover.failover_logs: "ignored in initial audit 2026-04-23"
-  multi_region_failover.logs_service_allowlist: "ignored in initial audit 2026-04-23"
   multi_region_failover.remote_configuration.clients.cache_bypass_limit: "ignored in initial audit 2026-04-23"
   multi_region_failover.remote_configuration.clients.ttl_seconds: "ignored in initial audit 2026-04-23"
   multi_region_failover.remote_configuration.config_root: "ignored in initial audit 2026-04-23"
@@ -4723,10 +5676,6 @@ excluded:
   network_pcap.forwarder.use_v2_api: "2026-11-05: ADP does not currently support remote packet capture."
   network_pcap.forwarder.zstd_compression_level: "2026-11-05: ADP does not currently support remote packet capture."
   notable_events.enabled: "ignored in initial audit 2026-04-23"
-  observability_pipelines_worker.logs.dual_ship: "2026-06-10 Logs-only OPW dual-ship; RefImpl comment confirms no metrics equivalent."
-  observability_pipelines_worker.logs.dual_ship_reliable: "2026-06-10 Logs-only OPW dual-ship backpressure; same exclusion rationale."
-  observability_pipelines_worker.logs.enabled: "OPW logs routing out of scope for ADP"
-  observability_pipelines_worker.logs.url: "OPW logs routing out of scope for ADP"
   observability_pipelines_worker.traces.enabled: "OPW traces routing out of scope for ADP"
   observability_pipelines_worker.traces.url: "OPW traces routing out of scope for ADP"
   ol_proxy_config.additional_endpoints: "ignored in initial audit 2026-04-23"
@@ -4777,13 +5726,8 @@ excluded:
   otelcollector.standalone.telemetry_resource_cluster_name: "2026-11-05: ADP does not currently run or configure the embedded OpenTelemetry Collector (DDOT)."
   otelcollector.standalone.use_kubelet_collector: "2026-11-05: ADP does not currently run or configure the embedded OpenTelemetry Collector (DDOT)."
   otelcollector.submit_dummy_metadata: "ignored in initial audit 2026-04-23"
-  otlp_config.debug.verbosity: "ignored in initial audit 2026-04-23"
   otlp_config.grpc_port: "ignored in initial audit 2026-04-23"
   otlp_config.http_port: "ignored in initial audit 2026-04-23"
-  otlp_config.logs.batch.flush_timeout: "ignored in initial audit 2026-04-23"
-  otlp_config.logs.batch.max_size: "ignored in initial audit 2026-04-23"
-  otlp_config.logs.batch.min_size: "ignored in initial audit 2026-04-23"
-  otlp_config.logs.infra_attributes.tags_as_ddtags: "2026-09-08 ADP does not currently support OTLP logs."
   otlp_config.metrics.histograms.send_count_sum_metrics: "deprecated; ADP supports only send_aggregation_metrics"
   patch_prometheus_client: "2026-09-08 ADP does not currently load Agent integrations or patch their Prometheus clients."
   podman_db_path: "ignored in initial audit 2026-04-23"
@@ -5183,10 +6127,6 @@ excluded:
   use_diskv2_check: "ignored in initial audit 2026-04-23"
   use_improved_cgroup_parser: "ignored in initial audit 2026-04-23"
   use_networkv2_check: "ignored in initial audit 2026-04-23"
-  vector.logs.dual_ship: "2026-06-10 Logs-only OPW dual-ship (legacy vector.* alias); same exclusion as observability_pipelines_worker.logs.dual_ship."
-  vector.logs.dual_ship_reliable: "2026-06-10 Logs-only OPW dual-ship backpressure (legacy vector.* alias); same exclusion rationale."
-  vector.logs.enabled: "OPW logs routing out of scope for ADP"
-  vector.logs.url: "OPW logs routing out of scope for ADP"
   vector.traces.enabled: "OPW traces routing out of scope for ADP"
   vector.traces.url: "OPW traces routing out of scope for ADP"
   win_skip_com_init: "ignored in initial audit 2026-04-23"

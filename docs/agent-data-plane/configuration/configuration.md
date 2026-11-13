@@ -49,6 +49,40 @@ tracking.
 | `intake_routing.enabled`                                                    | Pre-intake endpoint routing                       | [#3090] |
 | `intake_routing.refresh_interval`                                           | Intake routing refresh interval                   | [#3090] |
 | `intake_routing.startup_grace_period`                                       | Intake routing startup grace period               | [#3090] |
+| `logs_config.additional_endpoints`                                          | Extra logs intake endpoints (host, key, options)  | [#2973] |
+| `logs_config.api_key`                                                       | API key for logs intake (falls back to api_key)   | [#2973] |
+| `logs_config.batch_max_concurrent_send`                                     | Concurrent HTTP sends per pipeline                | [#2973] |
+| `logs_config.batch_max_content_size`                                        | Max bytes per HTTP payload                        | [#2973] |
+| `logs_config.batch_max_size`                                                | Max logs per HTTP payload                         | [#2973] |
+| `logs_config.batch_wait`                                                    | Max seconds to wait to fill a batch               | [#2973] |
+| `logs_config.compression_kind`                                              | Payload compression algorithm (zstd or gzip)      | [#2973] |
+| `logs_config.compression_level`                                             | Gzip compression level                            | [#2973] |
+| `logs_config.connection_reset_interval`                                     | Seconds before recycling intake connections       | [#2973] |
+| `logs_config.dd_port`                                                       | TCP intake port override                          | [#2976] |
+| `logs_config.dd_url`                                                        | Override logs intake URL or host                  | [#2973] |
+| `logs_config.dd_url_443`                                                    | TCP intake host for port 443                      | [#2976] |
+| `logs_config.dev_mode_no_ssl`                                               | Disable TLS on the default intake (dev only)      | [#2973] |
+| `logs_config.dev_mode_use_proto`                                            | Send TCP logs as protobuf (dev only)              | [#2976] |
+| `logs_config.force_use_http`                                                | Force the HTTP transport                          | [#2976] |
+| `logs_config.force_use_tcp`                                                 | Force the TCP transport                           | [#2976] |
+| `logs_config.http_connectivity_retry_interval_max`                          | Max retry interval for HTTP check after TCP       | [#2976] |
+| `logs_config.http_protocol`                                                 | HTTP version negotiation (auto or http1)          | [#2973] |
+| `logs_config.http_timeout`                                                  | HTTP request timeout in seconds                   | [#2973] |
+| `logs_config.logs_dd_url`                                                   | Logs intake URL override (proxy or custom intake) | [#2973] |
+| `logs_config.logs_no_ssl`                                                   | Disable TLS for logs intake                       | [#2973] |
+| `logs_config.processing_rules`                                              | Global log processing rules                       | [#2975] |
+| `logs_config.sender_backoff_base`                                           | Retry backoff base (seconds)                      | [#2974] |
+| `logs_config.sender_backoff_factor`                                         | Retry backoff growth factor                       | [#2974] |
+| `logs_config.sender_backoff_max`                                            | Retry backoff cap (seconds)                       | [#2974] |
+| `logs_config.sender_recovery_interval`                                      | Backoff error decrease per success                | [#2974] |
+| `logs_config.sender_recovery_reset`                                         | Reset backoff errors on success                   | [#2974] |
+| `logs_config.socks5_proxy_address`                                          | SOCKS5 proxy address for TCP logs                 | [#2976] |
+| `logs_config.use_compression`                                               | Enable payload compression                        | [#2973] |
+| `logs_config.use_http`                                                      | Force the HTTP transport                          | [#2976] |
+| `logs_config.use_port_443`                                                  | Send TCP logs to the 443 intake                   | [#2976] |
+| `logs_config.use_tcp`                                                       | Force the TCP transport                           | [#2976] |
+| `logs_config.use_v2_api`                                                    | Use the v2 logs intake API                        | [#2973] |
+| `logs_config.zstd_compression_level`                                        | Zstd compression level                            | [#2973] |
 | `metric_lookback.capacity`                                                  | Metric lookback ring capacity                     | [#2558] |
 | `metric_lookback.dogstatsd.metric_names`                                    | DogStatsD metric lookback selection               | [#2558] |
 | `metric_lookback.egress.post_recovery_window`                               | Lookback post-recovery replay window              | [#2558] |
@@ -60,6 +94,16 @@ tracking.
 | `metric_lookback.monitor.partition_tags`                                    | Lookback monitor tag partitions                   | [#2558] |
 | `metric_lookback.monitor.range_epsilon`                                     | Lookback monitor range threshold                  | [#2558] |
 | `metric_lookback.shard_count`                                               | Metric lookback ring shards                       | [#2558] |
+| `multi_region_failover.failover_logs`                                       | Activate failover to the MRF logs endpoint        | [#2973] |
+| `multi_region_failover.logs_service_allowlist`                              | Services whose logs fail over to MRF              | [#2973] |
+| `observability_pipelines_worker.logs.dual_ship`                             | Also send logs to OPW, keep Datadog primary       | [#2973] |
+| `observability_pipelines_worker.logs.dual_ship_reliable`                    | Make the OPW dual-ship endpoint reliable          | [#2973] |
+| `observability_pipelines_worker.logs.enabled`                               | Route logs to Observability Pipelines Worker      | [#2973] |
+| `observability_pipelines_worker.logs.url`                                   | Observability Pipelines Worker URL                | [#2973] |
+| `otlp_config.logs.batch.flush_timeout`                                      | OTLP logs exporter batch flush timeout            | [#2973] |
+| `otlp_config.logs.batch.max_size`                                           | OTLP logs exporter batch max size                 | [#2973] |
+| `otlp_config.logs.batch.min_size`                                           | OTLP logs exporter batch min size                 | [#2973] |
+| `otlp_config.logs.infra_attributes.tags_as_ddtags`                          | Write infra tags as ddtags on OTLP logs           | [#2972] |
 | `otlp_config.metrics.infra_attributes.as_tags`                              | Promote infrastructure attributes to tags         | [#2559] |
 | `serializer_experimental_use_v3_api.sketches.beta_route`                    | V3 sketches beta intake route                     | [#2555] |
 | `serializer_experimental_use_v3_api.sketches.max_compressed_payload_size`   | V3 sketches max compressed payload size           | [#3091] |
@@ -69,6 +113,10 @@ tracking.
 | `serializer_experimental_use_v3_api.sketches.shadow_sites`                  | V3 sketches shadow sites                          | [#2555] |
 | `use_v3_api.distributions.enabled`                                          | Send sketches using the V3 API                    | [#3091] |
 | `use_v3_api.distributions.endpoints`                                        | Per-endpoint V3 sketches mode                     | [#3091] |
+| `vector.logs.dual_ship`                                                     | Also send logs to OPW, keep Datadog primary       | [#2973] |
+| `vector.logs.dual_ship_reliable`                                            | Make the OPW dual-ship endpoint reliable          | [#2973] |
+| `vector.logs.enabled`                                                       | Route logs to Observability Pipelines Worker      | [#2973] |
+| `vector.logs.url`                                                           | Observability Pipelines Worker URL                | [#2973] |
 
 <!-- section:unsupported-not-planned -->
 ### Not Planned
@@ -113,6 +161,22 @@ architecture is fundamentally different or the feature is platform-specific.
 | `forwarder_requeue_buffer_size`                                                          | In-memory re-queue buffer size                     | See below                                                                                                                                                                                                                                                                 |
 | `heroku_dyno`                                                                            | Heroku dyno telemetry mode                         | See below                                                                                                                                                                                                                                                                 |
 | `logging_frequency`                                                                      | Transaction success log interval                   | The core agent uses `logging_frequency` to throttle repetitive successful transaction logs. ADP logs successful forwarder operations below the default `info` level, so there is no matching info-level success-log stream to throttle. This key is intentionally unused. |
+| `logs_config.delegated_auth.org_uuid`                                                    | Org UUID enabling delegated auth for logs key      | See below                                                                                                                                                                                                                                                                 |
+| `logs_config.delegated_auth.refresh_interval_mins`                                       | Delegated auth key refresh interval (minutes)      | See below                                                                                                                                                                                                                                                                 |
+| `logs_config.disable_distributed_senders`                                                | Use legacy per-pipeline senders                    | See below                                                                                                                                                                                                                                                                 |
+| `logs_config.fingerprint_config.count`                                                   | Fingerprint line/byte count (validated only)       | See below                                                                                                                                                                                                                                                                 |
+| `logs_config.fingerprint_config.count_to_skip`                                           | Fingerprint skip count (validated only)            | See below                                                                                                                                                                                                                                                                 |
+| `logs_config.fingerprint_config.fingerprint_strategy`                                    | Fingerprint strategy (validated only)              | See below                                                                                                                                                                                                                                                                 |
+| `logs_config.fingerprint_config.max_bytes`                                               | Fingerprint max bytes (validated only)             | See below                                                                                                                                                                                                                                                                 |
+| `logs_config.message_channel_size`                                                       | Pipeline message channel size                      | See below                                                                                                                                                                                                                                                                 |
+| `logs_config.payload_channel_size`                                                       | Sender payload channel size                        | See below                                                                                                                                                                                                                                                                 |
+| `logs_config.pipeline_failover.enabled`                                                  | Fail over between pipelines when blocked           | See below                                                                                                                                                                                                                                                                 |
+| `logs_config.pipeline_failover.router_channel_size`                                      | Router channel size when failover is on            | See below                                                                                                                                                                                                                                                                 |
+| `logs_config.pipelines`                                                                  | Number of parallel logs pipelines                  | See below                                                                                                                                                                                                                                                                 |
+| `logs_config.stop_grace_period`                                                          | Seconds to wait for pipeline flush on stop         | See below                                                                                                                                                                                                                                                                 |
+| `logs_config.tag_filters`                                                                | Include/exclude filters on log tags                | See below                                                                                                                                                                                                                                                                 |
+| `logs_config.unreliable_mount.enabled`                                                   | Unreliable-mount profile (affects validation)      | See below                                                                                                                                                                                                                                                                 |
+| `otlp_config.debug.verbosity`                                                            | Verbosity of the OTLP debug exporter               | See below                                                                                                                                                                                                                                                                 |
 | `otlp_config.metrics.batch.flush_timeout`                                                | OTLP metrics batch flush timeout                   | See below                                                                                                                                                                                                                                                                 |
 | `otlp_config.metrics.batch.max_size`                                                     | Maximum OTLP metrics batch size                    | See below                                                                                                                                                                                                                                                                 |
 | `otlp_config.metrics.batch.min_size`                                                     | Minimum OTLP metrics batch size                    | See below                                                                                                                                                                                                                                                                 |
@@ -300,6 +364,164 @@ core Agent's `datadog.<agentName>.running` series.
 Because the affected heartbeat is core-Agent-owned and ADP is not part of the supported Heroku
 deployment path, ADP does not implement `heroku_dyno`. See [#1753].
 
+### `logs_config.delegated_auth.org_uuid`
+
+In the core Agent's OTLP logs path: when non-empty, LoadDatadog registers a delegated-auth
+instance for logs_config.api_key, which fetches the key from the cloud provider and writes it back
+to the config; the logs endpoint then picks it up through the key-rotation callback.
+
+ADP ignores this key: it sends native OTLP logs through its shared forwarder, to the logs intake
+derived from `site` or `dd_url`. This only matters when ADP handles OTLP logs itself: in proxy
+mode, the core Agent processes the logs and applies this key.
+
+### `logs_config.delegated_auth.refresh_interval_mins`
+
+In the core Agent's OTLP logs path: refresh interval of the delegated-auth instance registered for
+logs_config.api_key; only meaningful when logs_config.delegated_auth.org_uuid is set.
+
+ADP ignores this key: it sends native OTLP logs through its shared forwarder, to the logs intake
+derived from `site` or `dd_url`. This only matters when ADP handles OTLP logs itself: in proxy
+mode, the core Agent processes the logs and applies this key.
+
+### `logs_config.disable_distributed_senders`
+
+In the core Agent's OTLP logs path: selects the legacy sender layout: one sender queue and worker
+per pipeline, and per-sender concurrency from batch_max_concurrent_send, instead of the shared
+distributed sender.
+
+ADP ignores this key: its logs pipeline is part of its own topology, which this key doesn't
+configure. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
+processes the logs and applies this key.
+
+### `logs_config.fingerprint_config.count`
+
+The core Agent only validates this key on the OTLP logs path: never used to fingerprint OTLP logs,
+but GlobalFingerprintConfig runs at logs agent start and an invalid fingerprint_config aborts
+start with 'Invalid fingerprint_config setting'. Must be > 0 when strategy is not disabled
+(defaulted per strategy if not configured); a non-integer value fails unmarshaling.
+
+ADP doesn't validate this key, so a value that stops the core Agent's logs agent, and with it the
+Agent's whole OTLP receiver, doesn't stop ADP. This only matters when ADP handles OTLP logs
+itself: in proxy mode, the core Agent processes the logs and applies this key.
+
+### `logs_config.fingerprint_config.count_to_skip`
+
+The core Agent only validates this key on the OTLP logs path: never used to fingerprint OTLP logs,
+but GlobalFingerprintConfig runs at logs agent start and an invalid fingerprint_config aborts
+start with 'Invalid fingerprint_config setting'. Must be >= 0 when strategy is not disabled; a
+non-integer value fails unmarshaling.
+
+ADP doesn't validate this key, so a value that stops the core Agent's logs agent, and with it the
+Agent's whole OTLP receiver, doesn't stop ADP. This only matters when ADP handles OTLP logs
+itself: in proxy mode, the core Agent processes the logs and applies this key.
+
+### `logs_config.fingerprint_config.fingerprint_strategy`
+
+The core Agent only validates this key on the OTLP logs path: never used to fingerprint OTLP logs,
+but GlobalFingerprintConfig runs at logs agent start and an invalid fingerprint_config aborts
+start with 'Invalid fingerprint_config setting'. An unknown value (not line_checksum,
+byte_checksum or disabled) fails validation. Default disabled skips all other fingerprint checks.
+
+ADP doesn't validate this key, so a value that stops the core Agent's logs agent, and with it the
+Agent's whole OTLP receiver, doesn't stop ADP. This only matters when ADP handles OTLP logs
+itself: in proxy mode, the core Agent processes the logs and applies this key.
+
+### `logs_config.fingerprint_config.max_bytes`
+
+The core Agent only validates this key on the OTLP logs path: never used to fingerprint OTLP logs,
+but GlobalFingerprintConfig runs at logs agent start and an invalid fingerprint_config aborts
+start with 'Invalid fingerprint_config setting'. Must be > 0 when strategy is line_checksum; a
+non-integer value fails unmarshaling.
+
+ADP doesn't validate this key, so a value that stops the core Agent's logs agent, and with it the
+Agent's whole OTLP receiver, doesn't stop ADP. This only matters when ADP handles OTLP logs
+itself: in proxy mode, the core Agent processes the logs and applies this key.
+
+### `logs_config.message_channel_size`
+
+In the core Agent's OTLP logs path: buffer size of the pipeline input channel (processor input)
+and the strategy input channel.
+
+ADP ignores this key: its logs pipeline is part of its own topology, which this key doesn't
+configure. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
+processes the logs and applies this key.
+
+### `logs_config.payload_channel_size`
+
+In the core Agent's OTLP logs path: buffer size of the channel of payloads between the batch
+strategy and the sender workers.
+
+ADP ignores this key: its logs pipeline is part of its own topology, which this key doesn't
+configure. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
+processes the logs and applies this key.
+
+### `logs_config.pipeline_failover.enabled`
+
+In the core Agent's OTLP logs path: when true NextPipelineChan returns a router channel whose
+forwarder goroutine fails over to other pipelines when the primary one is blocked. Because the
+OTLP exporter requests only one channel at startup, this is what makes OTLP logs use more than one
+pipeline.
+
+ADP ignores this key: its logs pipeline is part of its own topology, which this key doesn't
+configure. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
+processes the logs and applies this key.
+
+### `logs_config.pipeline_failover.router_channel_size`
+
+In the core Agent's OTLP logs path: buffer size of each failover router channel; only read when
+pipeline_failover.enabled is true.
+
+ADP ignores this key: its logs pipeline is part of its own topology, which this key doesn't
+configure. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
+processes the logs and applies this key.
+
+### `logs_config.pipelines`
+
+In the core Agent's OTLP logs path: number of processor/strategy pipelines built by the provider;
+it also scales default HTTP sender concurrency (pipelines * 10) and the sync sender concurrency.
+
+ADP ignores this key: its logs pipeline is part of its own topology, which this key doesn't
+configure. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
+processes the logs and applies this key.
+
+### `logs_config.stop_grace_period`
+
+In the core Agent's OTLP logs path: on shutdown, the pipeline is stopped serially; after this many
+seconds destinations are forced to flush without sending and a further 5 seconds are allowed
+before force close.
+
+ADP ignores this key: its logs pipeline is part of its own topology, which this key doesn't
+configure. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
+processes the logs and applies this key.
+
+### `logs_config.tag_filters`
+
+In the core Agent's OTLP logs path: compiled once at start. Malformed patterns only warn (never
+block start). The processor lazily resolves the filter on the exporter's log source and the JSON
+encoder emits Origin.TransportTags(), so ddtags of OTLP logs are filtered.
+
+ADP ignores this key and filters no tags on native OTLP logs. This only matters when ADP handles
+OTLP logs itself: in proxy mode, the core Agent processes the logs and applies this key.
+
+### `logs_config.unreliable_mount.enabled`
+
+The core Agent only validates this key on the OTLP logs path: not used for OTLP logs, but when
+true GlobalFingerprintConfig changes defaults (strategy line_checksum unless configured, max_bytes
+4096, count default), so previously skipped fingerprint validation then applies to configured
+fingerprint_config values.
+
+ADP doesn't validate this key, so a value that stops the core Agent's logs agent, and with it the
+Agent's whole OTLP receiver, doesn't stop ADP. This only matters when ADP handles OTLP logs
+itself: in proxy mode, the core Agent processes the logs and applies this key.
+
+### `otlp_config.debug.verbosity`
+
+In the core Agent's OTLP logs path: when the otlp_config.debug section is declared and verbosity
+is a valid level other than none, a debug exporter is added to the logs (and other enabled)
+pipelines; invalid levels leave it detached.
+
+ADP ignores this key: it has no OTLP debug exporter.
+
 ### `otlp_config.metrics.batch.flush_timeout`
 
 The core Agent batches OTLP metric input before translation through its serializer exporter queue.
@@ -441,9 +663,13 @@ default values.
 
 | Config Key                                                      | Description                                     |
 | --------------------------------------------------------------- | ----------------------------------------------- |
+| `additional_endpoints`                                          | Dual-ship to extra endpoints                    |
 | `aggregator_stop_timeout`                                       | Timeout (s) for aggregator flush on stop        |
 | `apm_config.features`                                           | Beta APM feature flags                          |
 | `cri_socket_path`                                               | containerd/CRI socket path                      |
+| `data_plane.otlp.proxy.logs.enabled`                            | Proxy OTLP logs to Core Agent                   |
+| `data_plane.otlp.proxy.metrics.enabled`                         | Proxy OTLP metrics to Core Agent                |
+| `dd_url`                                                        | Override intake endpoint URL                    |
 | `dogstatsd_mapper_cache_size`                                   | Mapper result LRU cache size                    |
 | `dogstatsd_metrics_stats_enable`                                | Enable per-metric debug stats                   |
 | `dogstatsd_workers_count`                                       | Number of DSD processing workers                |
@@ -459,12 +685,23 @@ default values.
 | `logs_enabled`                                                  | Enable the logs agent                           |
 | `min_tls_version`                                               | Minimum TLS version for HTTPS connections       |
 | `multi_region_failover.enabled`                                 | Enable multi-region failover mode               |
+| `otlp_config.logs.enabled`                                      | Enable OTLP logs ingestion                      |
 | `secret_backend_command`                                        | Path to the Agent secret-fetch executable       |
 | `secret_refresh_on_api_key_failure_interval`                    | Minutes between secret refreshes after a 403    |
 | `serializer_zstd_compressor_level`                              | Zstd compression level (Agent)                  |
 | `skip_ssl_validation`                                           | Skip TLS cert validation                        |
 | `statsd_forward_host`                                           | UDP packet forwarding destination host          |
 | `telemetry.dogstatsd_origin`                                    | Per-origin processed metrics and context counts |
+
+### `additional_endpoints`
+
+ADP dual-ships to `additional_endpoints` as the core Agent does for metrics, events, service
+checks, and traces.
+
+ADP also sends native OTLP logs to these endpoints, which the core Agent never does: the Agent
+sends logs only to the endpoints configured under `logs_config`, including
+`logs_config.additional_endpoints`. Logs are only affected when ADP handles OTLP logs itself
+rather than relaying them to the core Agent.
 
 ### `aggregator_stop_timeout`
 
@@ -517,6 +754,28 @@ the well-known containerd socket paths only. An explicitly empty path leaves con
 undetected.
 
 Container ID resolution through cgroups is independent of this key and is unaffected.
+
+### `data_plane.otlp.proxy.logs.enabled`
+
+In proxy mode, ADP relays OTLP logs to the core Agent whatever
+`data_plane.otlp.proxy.logs.enabled` says. Setting it to `false` doesn't make ADP handle OTLP
+logs itself. Only `data_plane.otlp.proxy.traces.enabled` is honored today.
+
+### `data_plane.otlp.proxy.metrics.enabled`
+
+In proxy mode, ADP relays OTLP metrics to the core Agent whatever
+`data_plane.otlp.proxy.metrics.enabled` says. Setting it to `false` doesn't make ADP handle OTLP
+metrics itself. Only `data_plane.otlp.proxy.traces.enabled` is honored today.
+
+### `dd_url`
+
+ADP sends metrics, events, and service checks to `dd_url` as the core Agent does.
+
+ADP also derives where native OTLP logs go from `dd_url`, which the core Agent never does: the
+Agent resolves the logs intake from `site` and the `logs_config` endpoint settings. With a
+Datadog `dd_url`, ADP sends logs to the matching logs intake host; with any other `dd_url`, it
+sends logs to that host. Logs are only affected when ADP handles OTLP logs itself rather than
+relaying them to the core Agent.
 
 ### `dogstatsd_mapper_cache_size`
 
@@ -785,6 +1044,16 @@ is enabled.
 | `multi_region_failover.site`             | Datadog site for the failover region, used as `https://app.mrf.<site>`.    | unset   |
 | `multi_region_failover.dd_url`           | Explicit failover intake URL. Takes precedence over `site` when set.       | unset   |
 
+### `otlp_config.logs.enabled`
+
+The core Agent serves OTLP logs only when `otlp_config.logs.enabled` is `true`. Otherwise its
+OTLP receiver doesn't serve the logs service, so clients get gRPC `Unimplemented` or HTTP 404.
+When it's `true` but `logs_enabled` isn't, the Agent logs an error and starts no OTLP
+receiver at all.
+
+ADP reads `otlp_config.logs.enabled`, but doesn't yet gate on it: it accepts OTLP logs whenever
+any OTLP signal is enabled, natively and in proxy mode.
+
 ### `secret_backend_command`
 
 ADP resolves no secrets of its own. The core Agent runs `secret_backend_command` to resolve `ENC[...]`
@@ -1015,7 +1284,6 @@ The following settings work in ADP with the same behavior as the core agent.
 
 | Config Key                                                                                 | Description                                        |
 | ------------------------------------------------------------------------------------------ | -------------------------------------------------- |
-| `additional_endpoints`                                                                     | Dual-ship to extra endpoints                       |
 | `agent_ipc.grpc_max_message_size`                                                          | Max inbound gRPC message size for IPC client       |
 | `allow_arbitrary_tags`                                                                     | Relax backend tag validation via HTTP header       |
 | `api_key`                                                                                  | API key for endpoint auth                          |
@@ -1084,8 +1352,6 @@ The following settings work in ADP with the same behavior as the core agent.
 | `data_plane.log_file`                                                                      | ADP log file path                                  |
 | `data_plane.otlp.enabled`                                                                  | Enable the OTLP pipeline                           |
 | `data_plane.otlp.proxy.enabled`                                                            | Enable OTLP proxy to Core Agent                    |
-| `data_plane.otlp.proxy.logs.enabled`                                                       | Proxy OTLP logs to Core Agent                      |
-| `data_plane.otlp.proxy.metrics.enabled`                                                    | Proxy OTLP metrics to Core Agent                   |
 | `data_plane.otlp.proxy.receiver.protocols.grpc.endpoint`                                   | OTLP proxy gRPC receiver endpoint                  |
 | `data_plane.otlp.proxy.traces.enabled`                                                     | Proxy OTLP traces to Core Agent                    |
 | `data_plane.remote_agent_enabled`                                                          | Enable remote agent mode                           |
@@ -1093,7 +1359,6 @@ The following settings work in ADP with the same behavior as the core agent.
 | `data_plane.serializer_zstd_compressor_level`                                              | ADP zstd compression level                         |
 | `data_plane.stop_timeout`                                                                  | ADP graceful shutdown timeout                      |
 | `data_plane.use_new_config_stream_endpoint`                                                | Use new config stream endpoint                     |
-| `dd_url`                                                                                   | Override intake endpoint URL                       |
 | `disable_file_logging`                                                                     | Disable writing logs to a file                     |
 | `dogstatsd_buffer_size`                                                                    | Receive buffer size (bytes)                        |
 | `dogstatsd_capture_depth`                                                                  | Traffic capture channel depth                      |
@@ -1179,7 +1444,6 @@ The following settings work in ADP with the same behavior as the core agent.
 | `observability_pipelines_worker.metrics.url`                                               | OPW metrics intake URL                             |
 | `observability_pipelines_worker.metrics.use_v3_api.series`                                 | Use V3 series for OPW                              |
 | `origin_detection_unified`                                                                 | Unified origin detection mode                      |
-| `otlp_config.logs.enabled`                                                                 | otlp_config.logs.enabled                           |
 | `otlp_config.metrics.delta_ttl`                                                            | TTL (seconds) for cached delta-conversion points   |
 | `otlp_config.metrics.enabled`                                                              | otlp_config.metrics.enabled                        |
 | `otlp_config.metrics.histograms.mode`                                                      | OTLP histogram bucket reporting mode               |
@@ -1609,6 +1873,11 @@ Both commands scrub recognized secret values before writing JSON to standard out
 [#2558]: https://github.com/DataDog/saluki/issues/2558
 [#2559]: https://github.com/DataDog/saluki/issues/2559
 [#2969]: https://github.com/DataDog/saluki/issues/2969
+[#2972]: https://github.com/DataDog/saluki/issues/2972
+[#2973]: https://github.com/DataDog/saluki/issues/2973
+[#2974]: https://github.com/DataDog/saluki/issues/2974
+[#2975]: https://github.com/DataDog/saluki/issues/2975
+[#2976]: https://github.com/DataDog/saluki/issues/2976
 [#3088]: https://github.com/DataDog/saluki/issues/3088
 [#3089]: https://github.com/DataDog/saluki/issues/3089
 [#3090]: https://github.com/DataDog/saluki/issues/3090

@@ -81,7 +81,7 @@ impl ConfigurationSystem {
 mod tests {
     use std::collections::HashSet;
 
-    use datadog_agent_config::classifier::Pipeline;
+    use datadog_agent_config::classifier::{ConfigClassifier, Pipeline};
     use saluki_config::dynamic::{ConfigSetting, Provenance as StreamProvenance};
     use serde_json::{json, Value};
 
@@ -194,6 +194,25 @@ mod tests {
         cross_cutting
             .check_compatibility(&pipelines(&[]))
             .expect_err("a cross-cutting high-severity key fails the check with no pipeline active");
+    }
+
+    #[test]
+    fn an_unsupported_object_setting_is_classified_under_its_own_key() {
+        // `logs_config.tag_filters` holds an object. The check must see it as the setting it is, whether it
+        // comes from a file or from the configuration stream.
+        let filters = json!({ "exclude": ["container_id:*"] });
+        let from_file = system_with(json!({ "logs_config": { "tag_filters": filters } }));
+        let from_stream =
+            system_from_settings(&[("logs_config.tag_filters", filters.clone(), StreamProvenance::Explicit)]);
+        let classifier = ConfigClassifier::new();
+
+        for system in [from_file, from_stream] {
+            let classified =
+                system.sources().flattened_keys().into_iter().any(|(key, value, _)| {
+                    key == "logs_config.tag_filters" && classifier.classify(&key, value).is_some()
+                });
+            assert!(classified);
+        }
     }
 
     #[test]
