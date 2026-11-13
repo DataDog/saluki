@@ -74,14 +74,8 @@ pub use self::filters::EnablePayloadsConfiguration;
 
 mod metrics;
 use self::metrics::{build_metrics, ForwarderMetrics, Metrics};
-
-mod replay;
-use self::replay::CaptureRecord;
-pub use self::replay::{
-    CaptureTriggerBody, CaptureTriggerResponseBody, DogStatsDCaptureAPIHandler, DogStatsDCaptureControl,
-    DogStatsDReplayAPIHandler, DogStatsDReplayControl, ReplayControlError, ReplaySession, ReplaySessionResponseBody,
-    TimestampResolution, TrafficCaptureReader, CAPTURE_TRIGGER_ROUTE, DEFAULT_REPLAY_LOOPS, REPLAY_CREDENTIALS_GID,
-    REPLAY_SESSION_ROUTE,
+use crate::common::dogstatsd_capture::{
+    CaptureRecord, DogStatsDCaptureControl, DogStatsDReplayControl, REPLAY_CREDENTIALS_GID,
 };
 
 mod origin;
@@ -123,8 +117,6 @@ fn default_decoder_worker_count(vcpus: usize) -> usize {
         .saturating_sub(DOGSTATSD_LISTENER_WORKER_COUNT + DOGSTATSD_PIPELINE_COUNT)
         .max(MIN_DOGSTATSD_WORKER_COUNT)
 }
-
-const MIN_CAPTURE_DEPTH: usize = 1024;
 
 /// Which of the configured listeners the source requires.
 ///
@@ -490,7 +482,7 @@ impl DogStatsDConfiguration {
             workload_provider: None,
             capture_entity_resolver: None,
             additional_tags: Vec::new(),
-            capture_control: DogStatsDCaptureControl::new(std::path::PathBuf::new(), MIN_CAPTURE_DEPTH),
+            capture_control: DogStatsDCaptureControl::new(std::path::PathBuf::new(), 1),
             replay_control: DogStatsDReplayControl::default(),
         }
     }

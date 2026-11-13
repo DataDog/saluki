@@ -10,7 +10,8 @@ use saluki_env::{
 };
 use tracing::trace;
 
-use super::{replay::CapturedTaggerHandle, tags::WellKnownTags};
+use super::tags::WellKnownTags;
+use crate::common::dogstatsd_capture::CapturedTaggerHandle;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum ProcessOrigin {
@@ -589,9 +590,9 @@ mod tests {
             duration: 0,
         };
         let captured_tagger = CapturedTaggerHandle::default();
-        captured_tagger.set_current(Some(super::super::replay::CapturedTaggerStore::from_tagger_state(
-            state,
-        )));
+        captured_tagger.set_current(Some(
+            crate::common::dogstatsd_capture::CapturedTaggerStore::from_tagger_state(state),
+        ));
 
         // Build a resolver whose live workload provider is empty; if the replay path is wired wrong, we'd get
         // no tags. If it's wired right, we get the captured tags.

@@ -41,8 +41,8 @@ abstraction would have one caller.
   the remaining service check gap is fixed here. Bug 4 landed with the step 3 `file_header` change.
 - [x] **5. Inline connected-stream reads** and the context-struct collapse (one `ListenerState` per listener). The SMP
   benchmark comparison runs in this pull request's CI.
-- [ ] **6. Capture/replay:** eager controls, marker-bit removal, typed errors, `EntityId` conversions, then relocation
-  out of `sources/dogstatsd`.
+- [x] **6. Capture/replay:** eager controls, marker-bit removal, typed errors (landed with step 4), `EntityId`
+  conversions, then relocation out of `sources/dogstatsd` into `common/dogstatsd_capture`. Four pull requests.
 - [ ] **7. Codec:** `ClientOrigin` and field helpers; tag-limit removal only if approved.
 - [ ] **8. Split `mod.rs` production code** into `config`/`listener`/`decoder`/`packets`.
 

@@ -11,8 +11,8 @@ mod reader;
 mod replay_api;
 mod replay_control;
 #[cfg(test)]
-pub(super) mod test_support;
-pub(super) mod writer;
+pub(crate) mod test_support;
+mod writer;
 
 pub use self::capture::DogStatsDCaptureControl;
 pub use self::capture_api::{
