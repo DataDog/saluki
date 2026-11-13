@@ -30,7 +30,7 @@ use tokio::io::AsyncWrite;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use super::backend::{Exec, Facts, Realized, EXIT_DIR_ENV, LOG_DIR_ENV};
+use super::backend::{Exec, Facts, Realized, EXIT_DIR_ENV, HOST_PID, LOG_DIR_ENV};
 use super::handle::HandleError;
 use super::ledger::{random_id, ResourceLedger};
 use super::participant::Enclosure;
@@ -68,7 +68,7 @@ pub(crate) struct ContainerOs {
 }
 
 /// Linux containers.
-// TODO: add the PID and cgroup namespace options with the first case that needs the host's.
+// TODO: add the cgroup namespace option with the first case that needs the host's.
 pub(crate) const LINUX: ContainerOs = ContainerOs {
     enclosure: Enclosure::LinuxContainer,
     network_driver: "bridge",
@@ -263,6 +263,9 @@ impl CaseContainers {
         }
         for (key, value) in self.os.sysctls {
             spec = spec.with_sysctl(*key, *value);
+        }
+        if planned.options.get(HOST_PID) == Some(&true) {
+            spec = spec.with_host_pid();
         }
         Ok((spec, published))
     }
