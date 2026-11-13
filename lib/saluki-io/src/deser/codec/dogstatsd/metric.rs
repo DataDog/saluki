@@ -1,13 +1,13 @@
 use nom::{
     branch::alt,
     bytes::complete::{tag, take_while1},
-    combinator::{all_consuming, value},
+    combinator::value,
     error::{Error, ErrorKind},
     number::complete::double,
-    sequence::{preceded, separated_pair, terminated},
+    sequence::{separated_pair, terminated},
     IResult, Parser as _,
 };
-use saluki_core::data_model::{event::metric::*, origin::OriginTagCardinality, tags::RawTags};
+use saluki_core::data_model::{event::metric::*, tags::RawTags};
 use tracing::{debug, warn};
 
 use super::{helpers::*, DogStatsDCodecConfiguration, NomParserError};
@@ -44,21 +44,8 @@ pub struct MetricPacket<'a> {
     /// Optional Unix timestamp for the sample, in seconds (protocol v1.3).
     pub timestamp: Option<u64>,
 
-    /// Local Data attached to the metric, carried in the `c:` field (protocol v1.2, extended in v1.4).
-    ///
-    /// Identifies the workload that emitted the metric. Carries a container ID (`ci-<id>`) or, when unavailable, a
-    /// cgroup node inode (`in-<inode>`).
-    pub local_data: Option<&'a str>,
-
-    /// External Data attached to the metric, carried in the `e:` field (protocol v1.5).
-    ///
-    /// Used to convey a richer blob of workload identity data resolved by the receiver.
-    pub external_data: Option<&'a str>,
-
-    /// Cardinality hint for origin tag enrichment, carried in the `card:` field (protocol v1.6).
-    ///
-    /// Specifies which origin tags the receiver should attach to the metric.
-    pub cardinality: Option<OriginTagCardinality>,
+    /// Client-provided origin fields.
+    pub origin: ClientOrigin<'a>,
 
     /// Unit for this metric, if any.
     pub unit: Option<&'static str>,
@@ -85,10 +72,8 @@ pub fn parse_dogstatsd_metric<'a>(
     // if it's any of the protocol extensions we know of.
     let mut maybe_sample_rate = None;
     let mut maybe_tags = None;
-    let mut maybe_local_data = None;
+    let mut origin = ClientOrigin::default();
     let mut maybe_timestamp = None;
-    let mut maybe_external_data = None;
-    let mut maybe_cardinality = None;
 
     let remaining = if !remaining.is_empty() {
         let (mut remaining, _) = tag("|")(remaining)?;
@@ -109,7 +94,7 @@ pub fn parse_dogstatsd_metric<'a>(
                 // Sample rate: indicates client-side sampling of this metric which will need to be "reinflated" at some
                 // point downstream to calculate the true metric value.
                 b'@' => {
-                    let (_, raw_sample_rate) = all_consuming(preceded(tag("@"), double)).parse(chunk)?;
+                    let raw_sample_rate = field(chunk, b"@", double)?;
 
                     // The reference DogStatsD server treats a sample rate of zero on a distribution, histogram or timer
                     // as unsampled. Clamping it to the minimum sample rate instead would count each point hundreds of
@@ -128,7 +113,7 @@ pub fn parse_dogstatsd_metric<'a>(
                 }
                 // Tags: additional tags to be added to the metric.
                 b'#' => {
-                    let (_, tags) = all_consuming(preceded(tag("#"), tags(config))).parse(chunk)?;
+                    let tags = field(chunk, b"#", tags(config))?;
                     maybe_tags = Some(tags);
                 }
                 // Local Data: client-provided data used for resolving the entity ID that this metric originated from.
@@ -137,8 +122,8 @@ pub fn parse_dogstatsd_metric<'a>(
                 // reference DogStatsD server doesn't validate this field and just fails to resolve an origin from it,
                 // so either way, the metric gets no origin tags from it.
                 b'c' if chunk.len() > 1 && chunk[1] == b':' && config.client_origin_detection => {
-                    match all_consuming(preceded(tag("c:"), local_data)).parse(chunk) {
-                        Ok((_, local_data)) => maybe_local_data = Some(local_data),
+                    match field(chunk, b"c:", local_data) {
+                        Ok(local_data) => origin.local_data = Some(local_data),
                         Err(_) if config.permissive => {
                             debug!(metric_name, "Ignoring malformed Local Data field in DogStatsD metric.")
                         }
@@ -151,7 +136,7 @@ pub fn parse_dogstatsd_metric<'a>(
                 // time, and treating it as "timestamped" would drop the sample rate without actually setting a
                 // timestamp.
                 b'T' if config.timestamps => {
-                    let (_, timestamp) = all_consuming(preceded(tag("T"), unix_timestamp)).parse(chunk)?;
+                    let timestamp = field(chunk, b"T", unix_timestamp)?;
                     if timestamp == 0 {
                         return Err(nom::Err::Error(Error::new(chunk, ErrorKind::Verify)));
                     }
@@ -163,8 +148,8 @@ pub fn parse_dogstatsd_metric<'a>(
                 // reference DogStatsD server doesn't validate this field and just fails to resolve an origin from it,
                 // so either way, the metric gets no origin tags from it.
                 b'e' if chunk.len() > 1 && chunk[1] == b':' && config.client_origin_detection => {
-                    match all_consuming(preceded(tag("e:"), external_data)).parse(chunk) {
-                        Ok((_, external_data)) => maybe_external_data = Some(external_data),
+                    match field(chunk, b"e:", external_data) {
+                        Ok(external_data) => origin.external_data = Some(external_data),
                         Err(_) if config.permissive => {
                             debug!(
                                 metric_name,
@@ -177,7 +162,7 @@ pub fn parse_dogstatsd_metric<'a>(
                 // Cardinality: client-provided cardinality for the metric.
                 b'c' if chunk.starts_with(CARDINALITY_PREFIX) && config.client_origin_detection => {
                     let (_, cardinality) = cardinality(chunk)?;
-                    maybe_cardinality = cardinality;
+                    origin.cardinality = cardinality;
                 }
                 _ => {
                     // We don't know what this is, so we just skip it.
@@ -231,9 +216,7 @@ pub fn parse_dogstatsd_metric<'a>(
             values: metric_values,
             num_points,
             timestamp: maybe_timestamp,
-            local_data: maybe_local_data,
-            external_data: maybe_external_data,
-            cardinality: maybe_cardinality,
+            origin,
             unit: maybe_unit,
         },
     ))
@@ -692,9 +675,9 @@ mod tests {
             assert_eq!(actual, Some(Metric::counter("my.counter", 1.0)), "{raw}");
 
             let (_, packet) = parse_dogstatsd_metric(raw.as_bytes(), &config).expect("should not fail to parse");
-            assert_eq!(packet.local_data, local_data, "{raw}");
-            assert_eq!(packet.external_data, external_data, "{raw}");
-            assert_eq!(packet.cardinality, cardinality, "{raw}");
+            assert_eq!(packet.origin.local_data, local_data, "{raw}");
+            assert_eq!(packet.origin.external_data, external_data, "{raw}");
+            assert_eq!(packet.origin.cardinality, cardinality, "{raw}");
         }
     }
 
@@ -740,9 +723,9 @@ mod tests {
         // We need client_origin_detection on in order to parse local_data, external_data, and cardinality fields
         let config = DogStatsDCodecConfiguration::default().with_client_origin_detection(true);
         let (_, packet) = parse_dogstatsd_metric(raw.as_bytes(), &config).expect("should not fail to parse");
-        assert_eq!(packet.local_data, Some(local_data));
-        assert_eq!(packet.external_data, Some(external_data));
-        assert_eq!(packet.cardinality, Some(OriginTagCardinality::Orchestrator));
+        assert_eq!(packet.origin.local_data, Some(local_data));
+        assert_eq!(packet.origin.external_data, Some(external_data));
+        assert_eq!(packet.origin.cardinality, Some(OriginTagCardinality::Orchestrator));
     }
 
     #[test]
@@ -862,8 +845,8 @@ mod tests {
         for raw in ["my.counter:1|c|c:!!!|#env:prod", "my.counter:1|c|e:UPPER|#env:prod"] {
             let (_, packet) = parse_dogstatsd_metric(raw.as_bytes(), &permissive)
                 .unwrap_or_else(|e| panic!("permissive mode should accept {raw:?}: {e:?}"));
-            assert_eq!(packet.local_data, None);
-            assert_eq!(packet.external_data, None);
+            assert_eq!(packet.origin.local_data, None);
+            assert_eq!(packet.origin.external_data, None);
             assert_eq!(packet.tags.iter().collect::<Vec<_>>(), ["env:prod"]);
 
             assert!(
@@ -965,9 +948,9 @@ mod tests {
         let config = DogStatsDCodecConfiguration::default().with_client_origin_detection(false);
         let (_, packet) = parse_dogstatsd_metric(raw.as_bytes(), &config).expect("should not fail to parse");
 
-        assert_eq!(packet.local_data, None);
-        assert_eq!(packet.external_data, None);
-        assert_eq!(packet.cardinality, None);
+        assert_eq!(packet.origin.local_data, None);
+        assert_eq!(packet.origin.external_data, None);
+        assert_eq!(packet.origin.cardinality, None);
     }
 
     #[test]
