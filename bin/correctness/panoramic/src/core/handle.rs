@@ -18,7 +18,6 @@ use super::backend::{Exec, Realized};
 use super::courier::{Courier, HttpResponse};
 use super::plan::PlannedParticipant;
 use super::reference::Values;
-use super::spec::Protocol;
 use super::step::EndpointOperation;
 use super::wiring::{reach, PlannedEndpoint, Reach};
 
@@ -180,13 +179,6 @@ impl<'a> Handle<'a> {
         &self, endpoint: &str, path: &str, limit: Duration,
     ) -> Result<HttpResponse, HandleError> {
         let (planned, route) = self.route(endpoint, EndpointOperation::Request)?;
-        if planned.protocol != Protocol::Http {
-            return Err(HandleError::Harness(format!(
-                "endpoint '{}' is {}, and an HTTP GET goes to an http endpoint",
-                endpoint,
-                planned.protocol.as_str()
-            )));
-        }
         if !path.starts_with('/') {
             return Err(HandleError::Harness(format!(
                 "the path '{}' does not start with '/'",
@@ -194,7 +186,7 @@ impl<'a> Handle<'a> {
             )));
         }
         match route {
-            Reach::PublishedPort => self.published_get(endpoint, planned, path, limit).await,
+            Reach::PublishedPort => self.published_get(endpoint, path, limit).await,
             Reach::CourierInServer => {
                 let address = planned.courier_address(self.name, EndpointOperation::Request);
                 self.courier()?.http_get(&address, path, limit).await
@@ -236,16 +228,7 @@ impl<'a> Handle<'a> {
 
     /// Requests `path` from the runner, through the port published for `endpoint` on the runner's loopback address. A
     /// redirect is a response, as through the courier.
-    async fn published_get(
-        &self, endpoint: &str, planned: &PlannedEndpoint, path: &str, limit: Duration,
-    ) -> Result<HttpResponse, HandleError> {
-        if planned.tls {
-            // TODO: request TLS endpoints, with `http_check`'s `insecure_skip_verify`, with the first case that does.
-            return Err(HandleError::Harness(format!(
-                "endpoint '{}' serves TLS, and requests to TLS endpoints are not built",
-                endpoint
-            )));
-        }
+    async fn published_get(&self, endpoint: &str, path: &str, limit: Duration) -> Result<HttpResponse, HandleError> {
         let port = self.realized.host_port(endpoint).ok_or_else(|| {
             HandleError::Software(format!(
                 "endpoint '{}' of participant '{}' has no published port: the participant had exited by the time its \
