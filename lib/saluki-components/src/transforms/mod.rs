@@ -23,6 +23,9 @@ pub use self::host_enrichment::HostEnrichmentConfiguration;
 mod dogstatsd_mapper;
 pub use self::dogstatsd_mapper::{DogStatsDMapperConfiguration, DogStatsDMapperProfile, DogStatsDMetricMapping};
 
+mod logs_processing_rules;
+pub use self::logs_processing_rules::{LogsProcessingRule, LogsProcessingRulesConfiguration, LogsSourceMatch};
+
 mod metric_router;
 pub use self::metric_router::MetricRouterConfiguration;
 
