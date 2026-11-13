@@ -155,11 +155,12 @@ impl SemanticRegistryProvider {
         }
     }
 
-    /// Waits until a registry update is accepted, after which [`Self::snapshot`] can return a different registry.
+    /// Waits for a registry update, after which [`Self::snapshot`] can return a different registry.
     ///
-    /// Rejected updates are skipped, as they leave the registry unchanged. An accepted update isn't guaranteed to
-    /// differ from the previous registry: Remote Configuration may publish the same one again, for example after its
-    /// worker restarts.
+    /// Every update wakes the caller, including a rejected one: updates published before the caller waits are
+    /// coalesced, so a rejection can hide an accepted registry the caller hasn't seen yet. The registry therefore
+    /// isn't guaranteed to differ from the previous one, which Remote Configuration may also publish again, for example
+    /// after its worker restarts.
     ///
     /// A clone only notices updates published after it was created or last waited, so a caller should take a snapshot
     /// after creating the clone it waits on. A default provider waits indefinitely, so a caller may `select!` on this.
@@ -167,7 +168,8 @@ impl SemanticRegistryProvider {
     /// This takes `&mut self` because the provider tracks which update it has observed. Each task that waits holds its
     /// own clone.
     pub async fn changed(&mut self) {
-        while self.subscription.changed().await.is_err() {}
+        // The rejection itself is reported to the Agent by the client; `snapshot` keeps the last accepted registry.
+        let _ = self.subscription.changed().await;
     }
 }
 
@@ -245,11 +247,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn changed_waits_for_an_accepted_update() {
+    async fn changed_sees_an_accepted_update_coalesced_with_a_later_rejection() {
         let (publisher, subscription) = TestPublisher::new();
         let mut provider = SemanticRegistryProvider::from_subscription(subscription);
 
+        // Both are published before the provider waits, so it observes them as one update.
+        let core = remote(DB_STATEMENT, "a");
+        let registry = Arc::clone(&core.registry);
+        publisher.accept(core);
         publisher.reject(SemanticCoreError::NoValidConfiguration { assigned: 1 });
+
+        provider.changed().await;
+        assert!(Arc::ptr_eq(&provider.snapshot(), &registry));
+    }
+
+    #[tokio::test]
+    async fn changed_waits_for_an_update() {
+        let (publisher, subscription) = TestPublisher::new();
+        let mut provider = SemanticRegistryProvider::from_subscription(subscription);
         let core = remote(DB_STATEMENT, "a");
         let registry = Arc::clone(&core.registry);
         {
@@ -257,7 +272,7 @@ mod tests {
             tokio::pin!(changed);
             tokio::select! {
                 biased;
-                _ = &mut changed => panic!("a rejection is not an update"),
+                _ = &mut changed => panic!("nothing was published yet"),
                 _ = std::future::ready(()) => {}
             }
 
