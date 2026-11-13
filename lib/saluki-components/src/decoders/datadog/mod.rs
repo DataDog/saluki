@@ -31,6 +31,7 @@ mod tests;
 
 pub use self::error::DecodeError;
 use self::string_table::StringTable;
+use crate::common::traces::attribute_as_string;
 
 /// Plausible minimum average wire size of a trace chunk containing a span list and 16-byte trace ID.
 const MIN_BYTES_PER_TRACE_CHUNK: u32 = 22;
@@ -64,7 +65,7 @@ pub fn decode_v1_payload(bytes: &[u8]) -> Result<Vec<Trace>, DecodeError> {
         env: payload.env,
         hostname: payload.hostname,
         app_version: payload.app_version,
-        client_dropped_p0s_weight: 0.0,
+        ..PayloadFields::default()
     };
 
     let mut traces = Vec::with_capacity(payload.chunks.len());
@@ -86,6 +87,56 @@ pub fn decode_v1_payload(bytes: &[u8]) -> Result<Vec<Trace>, DecodeError> {
     }
 
     Ok(traces)
+}
+
+/// Payload attribute holding the process tags.
+const TAG_PROCESS_TAGS: &str = "_dd.tags.process";
+
+/// Payload attribute recording whether the SDK exports its telemetry through OTLP.
+const TAG_SDK_OTLP_EXPORT: &str = "_dd.sdk.otlp_export";
+
+/// Returns the first span of the first non-empty trace, mirroring `getFirstSpan` in the reference receiver.
+pub fn first_span(traces: &[Trace]) -> Option<&Span> {
+    traces.iter().find_map(|trace| trace.spans().first())
+}
+
+/// Resolves a payload's process tags for
+/// [`ReceiverMetadata::process_tags`](saluki_core::data_model::event::trace::ReceiverMetadata::process_tags).
+///
+/// Mirrors `getProcessTags` in the reference receiver (`pkg/trace/api/api.go`): the payload attribute wins, then the
+/// first span's attribute, then the `X-Datadog-Process-Tags` header. An attribute that is present but empty still
+/// wins, as it does there.
+pub fn resolve_process_tags(
+    payload_attributes: &FastHashMap<MetaString, AttributeValue>, first_span: Option<&Span>, header: Option<&str>,
+) -> MetaString {
+    payload_attributes
+        .get(TAG_PROCESS_TAGS)
+        .or_else(|| first_span.and_then(|span| span.attributes.get(TAG_PROCESS_TAGS)))
+        .map(attribute_to_meta_string)
+        .unwrap_or_else(|| header.map(MetaString::from).unwrap_or_default())
+}
+
+/// Resolves a payload's SDK export mode for
+/// [`ReceiverMetadata::sdk_otlp_export`](saluki_core::data_model::event::trace::ReceiverMetadata::sdk_otlp_export).
+///
+/// Mirrors `getSDKOtlpExport` in the reference receiver: the payload attribute wins, then the first span's
+/// attribute. The span attribute is left in place, as it is there.
+pub fn resolve_sdk_otlp_export(
+    payload_attributes: &FastHashMap<MetaString, AttributeValue>, first_span: Option<&Span>,
+) -> MetaString {
+    payload_attributes
+        .get(TAG_SDK_OTLP_EXPORT)
+        .or_else(|| first_span.and_then(|span| span.attributes.get(TAG_SDK_OTLP_EXPORT)))
+        .map(attribute_to_meta_string)
+        .unwrap_or_default()
+}
+
+/// Renders an attribute as a string, keeping string values shared rather than copying them.
+fn attribute_to_meta_string(value: &AttributeValue) -> MetaString {
+    match value {
+        AttributeValue::String(s) => s.clone(),
+        other => MetaString::from(attribute_as_string(other).into_owned()),
+    }
 }
 
 /// Intermediate representation of a decoded tracer payload before chunks are lifted into `Trace`s.
