@@ -628,6 +628,21 @@ fn translator_cases() -> Vec<Case> {
                 ("otelcol.component.kind", string("Receiver")),
             ],
         ),
+        case(
+            "ObservedTimestamp used as fallback when Timestamp is zero",
+            record()
+                .observed_timestamp(1_700_499_303_397_000_000)
+                .severity_number(5),
+            item(
+                OTEL_SOURCE_TAG,
+                json!({
+                    "status": "debug",
+                    "otel.severity_number": "5",
+                    "@timestamp": "2023-11-20T16:55:03.397Z",
+                    "otel.timestamp": "1700499303397000000",
+                }),
+            ),
+        ),
     ]
 }
 
@@ -661,26 +676,6 @@ fn derive_status_cases() -> Vec<Case> {
         )
     })
     .collect()
-}
-
-/// The `TestTranslator` case of a log with only an observed timestamp, which the reference translator uses as
-/// the log's timestamp.
-fn observed_timestamp_cases() -> Vec<Case> {
-    vec![case(
-        "ObservedTimestamp used as fallback when Timestamp is zero",
-        record()
-            .observed_timestamp(1_700_499_303_397_000_000)
-            .severity_number(5),
-        item(
-            OTEL_SOURCE_TAG,
-            json!({
-                "status": "debug",
-                "otel.severity_number": "5",
-                "@timestamp": "2023-11-20T16:55:03.397Z",
-                "otel.timestamp": "1700499303397000000",
-            }),
-        ),
-    )]
 }
 
 /// The `TestTranslator` case of a log with an event name.
@@ -928,12 +923,6 @@ fn translator() {
     cases.extend(derive_status_cases());
     cases.extend(status_attribute_override_cases());
     check(cases);
-}
-
-#[test]
-#[ignore = "target for `gap/observed-timestamp`"]
-fn target_observed_timestamp() {
-    check(observed_timestamp_cases());
 }
 
 #[test]
