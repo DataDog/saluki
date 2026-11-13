@@ -405,6 +405,9 @@ mod tests {
     fn ordinary_attribute_keys_keep_their_spelling() {
         let log = transform_attributes(vec![
             key_value("RequestID", string("abc")),
+            // Only the lowercase spellings are special to the rendered content, so these are ordinary attributes.
+            key_value("Hostname", string("attribute-host")),
+            key_value("Service", string("attribute-service")),
             key_value(
                 "nested_Map",
                 AnyValue {
@@ -418,8 +421,12 @@ mod tests {
         let props = log.additional_properties();
         assert_eq!(props.get("RequestID"), Some(&json!("abc")));
         assert_eq!(props.get("nested_Map.InnerKey"), Some(&json!("inner")));
+        assert_eq!(props.get("Hostname"), Some(&json!("attribute-host")));
+        assert_eq!(props.get("Service"), Some(&json!("attribute-service")));
         assert!(!props.contains_key("requestid"));
         assert!(!props.contains_key("nested_map.InnerKey"));
+        assert!(!props.contains_key("hostname"));
+        assert!(!props.contains_key("service"));
     }
 
     #[test]
