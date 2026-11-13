@@ -1237,148 +1237,175 @@
 <a href=#1237 id=1237 data-nosnippet>1237</a>        decode: EnvDecode::StringList,
 <a href=#1238 id=1238 data-nosnippet>1238</a>    },
 <a href=#1239 id=1239 data-nosnippet>1239</a>    EnvKey {
-<a href=#1240 id=1240 data-nosnippet>1240</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_SERIALIZER_MAX_PAYLOAD_SIZE"</span>],
-<a href=#1241 id=1241 data-nosnippet>1241</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"serializer_max_payload_size"</span>],
-<a href=#1242 id=1242 data-nosnippet>1242</a>        decode: EnvDecode::Integer,
-<a href=#1243 id=1243 data-nosnippet>1243</a>    },
-<a href=#1244 id=1244 data-nosnippet>1244</a>    EnvKey {
-<a href=#1245 id=1245 data-nosnippet>1245</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_SERIALIZER_MAX_SERIES_PAYLOAD_SIZE"</span>],
-<a href=#1246 id=1246 data-nosnippet>1246</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"serializer_max_series_payload_size"</span>],
-<a href=#1247 id=1247 data-nosnippet>1247</a>        decode: EnvDecode::Integer,
-<a href=#1248 id=1248 data-nosnippet>1248</a>    },
-<a href=#1249 id=1249 data-nosnippet>1249</a>    EnvKey {
-<a href=#1250 id=1250 data-nosnippet>1250</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_SERIALIZER_MAX_SERIES_POINTS_PER_PAYLOAD"</span>],
-<a href=#1251 id=1251 data-nosnippet>1251</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"serializer_max_series_points_per_payload"</span>],
-<a href=#1252 id=1252 data-nosnippet>1252</a>        decode: EnvDecode::Integer,
-<a href=#1253 id=1253 data-nosnippet>1253</a>    },
-<a href=#1254 id=1254 data-nosnippet>1254</a>    EnvKey {
-<a href=#1255 id=1255 data-nosnippet>1255</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_SERIALIZER_MAX_SERIES_UNCOMPRESSED_PAYLOAD_SIZE"</span>],
-<a href=#1256 id=1256 data-nosnippet>1256</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"serializer_max_series_uncompressed_payload_size"</span>],
-<a href=#1257 id=1257 data-nosnippet>1257</a>        decode: EnvDecode::Integer,
-<a href=#1258 id=1258 data-nosnippet>1258</a>    },
-<a href=#1259 id=1259 data-nosnippet>1259</a>    EnvKey {
-<a href=#1260 id=1260 data-nosnippet>1260</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_SERIALIZER_MAX_UNCOMPRESSED_PAYLOAD_SIZE"</span>],
-<a href=#1261 id=1261 data-nosnippet>1261</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"serializer_max_uncompressed_payload_size"</span>],
-<a href=#1262 id=1262 data-nosnippet>1262</a>        decode: EnvDecode::Integer,
-<a href=#1263 id=1263 data-nosnippet>1263</a>    },
-<a href=#1264 id=1264 data-nosnippet>1264</a>    EnvKey {
-<a href=#1265 id=1265 data-nosnippet>1265</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_SERIALIZER_ZSTD_COMPRESSOR_LEVEL"</span>],
-<a href=#1266 id=1266 data-nosnippet>1266</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"serializer_zstd_compressor_level"</span>],
-<a href=#1267 id=1267 data-nosnippet>1267</a>        decode: EnvDecode::Integer,
-<a href=#1268 id=1268 data-nosnippet>1268</a>    },
-<a href=#1269 id=1269 data-nosnippet>1269</a>    EnvKey {
-<a href=#1270 id=1270 data-nosnippet>1270</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_SITE"</span>],
-<a href=#1271 id=1271 data-nosnippet>1271</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"site"</span>],
-<a href=#1272 id=1272 data-nosnippet>1272</a>        decode: EnvDecode::RawString,
-<a href=#1273 id=1273 data-nosnippet>1273</a>    },
-<a href=#1274 id=1274 data-nosnippet>1274</a>    EnvKey {
-<a href=#1275 id=1275 data-nosnippet>1275</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_SKIP_SSL_VALIDATION"</span>],
-<a href=#1276 id=1276 data-nosnippet>1276</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"skip_ssl_validation"</span>],
-<a href=#1277 id=1277 data-nosnippet>1277</a>        decode: EnvDecode::Bool,
-<a href=#1278 id=1278 data-nosnippet>1278</a>    },
-<a href=#1279 id=1279 data-nosnippet>1279</a>    EnvKey {
-<a href=#1280 id=1280 data-nosnippet>1280</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_SSLKEYLOGFILE"</span>],
-<a href=#1281 id=1281 data-nosnippet>1281</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"sslkeylogfile"</span>],
-<a href=#1282 id=1282 data-nosnippet>1282</a>        decode: EnvDecode::RawString,
-<a href=#1283 id=1283 data-nosnippet>1283</a>    },
-<a href=#1284 id=1284 data-nosnippet>1284</a>    EnvKey {
-<a href=#1285 id=1285 data-nosnippet>1285</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_STATSD_FORWARD_HOST"</span>],
-<a href=#1286 id=1286 data-nosnippet>1286</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"statsd_forward_host"</span>],
-<a href=#1287 id=1287 data-nosnippet>1287</a>        decode: EnvDecode::RawString,
-<a href=#1288 id=1288 data-nosnippet>1288</a>    },
-<a href=#1289 id=1289 data-nosnippet>1289</a>    EnvKey {
-<a href=#1290 id=1290 data-nosnippet>1290</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_STATSD_FORWARD_PORT"</span>],
-<a href=#1291 id=1291 data-nosnippet>1291</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"statsd_forward_port"</span>],
-<a href=#1292 id=1292 data-nosnippet>1292</a>        decode: EnvDecode::Integer,
-<a href=#1293 id=1293 data-nosnippet>1293</a>    },
-<a href=#1294 id=1294 data-nosnippet>1294</a>    EnvKey {
-<a href=#1295 id=1295 data-nosnippet>1295</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_STATSD_METRIC_NAMESPACE"</span>],
-<a href=#1296 id=1296 data-nosnippet>1296</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"statsd_metric_namespace"</span>],
-<a href=#1297 id=1297 data-nosnippet>1297</a>        decode: EnvDecode::RawString,
-<a href=#1298 id=1298 data-nosnippet>1298</a>    },
-<a href=#1299 id=1299 data-nosnippet>1299</a>    EnvKey {
-<a href=#1300 id=1300 data-nosnippet>1300</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_STATSD_METRIC_NAMESPACE_BLACKLIST"</span>],
-<a href=#1301 id=1301 data-nosnippet>1301</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"statsd_metric_namespace_blacklist"</span>],
-<a href=#1302 id=1302 data-nosnippet>1302</a>        decode: EnvDecode::StringList,
-<a href=#1303 id=1303 data-nosnippet>1303</a>    },
-<a href=#1304 id=1304 data-nosnippet>1304</a>    EnvKey {
-<a href=#1305 id=1305 data-nosnippet>1305</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_SYSLOG_RFC"</span>],
-<a href=#1306 id=1306 data-nosnippet>1306</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"syslog_rfc"</span>],
-<a href=#1307 id=1307 data-nosnippet>1307</a>        decode: EnvDecode::Bool,
-<a href=#1308 id=1308 data-nosnippet>1308</a>    },
-<a href=#1309 id=1309 data-nosnippet>1309</a>    EnvKey {
-<a href=#1310 id=1310 data-nosnippet>1310</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_SYSLOG_URI"</span>],
-<a href=#1311 id=1311 data-nosnippet>1311</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"syslog_uri"</span>],
-<a href=#1312 id=1312 data-nosnippet>1312</a>        decode: EnvDecode::RawString,
-<a href=#1313 id=1313 data-nosnippet>1313</a>    },
-<a href=#1314 id=1314 data-nosnippet>1314</a>    EnvKey {
-<a href=#1315 id=1315 data-nosnippet>1315</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_TAGS"</span>],
-<a href=#1316 id=1316 data-nosnippet>1316</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"tags"</span>],
-<a href=#1317 id=1317 data-nosnippet>1317</a>        decode: EnvDecode::StringList,
-<a href=#1318 id=1318 data-nosnippet>1318</a>    },
-<a href=#1319 id=1319 data-nosnippet>1319</a>    EnvKey {
-<a href=#1320 id=1320 data-nosnippet>1320</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_TELEMETRY_DOGSTATSD_ORIGIN"</span>],
-<a href=#1321 id=1321 data-nosnippet>1321</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"telemetry"</span>, <span class="string">"dogstatsd_origin"</span>],
-<a href=#1322 id=1322 data-nosnippet>1322</a>        decode: EnvDecode::Bool,
-<a href=#1323 id=1323 data-nosnippet>1323</a>    },
-<a href=#1324 id=1324 data-nosnippet>1324</a>    EnvKey {
-<a href=#1325 id=1325 data-nosnippet>1325</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_TLS_HANDSHAKE_TIMEOUT"</span>],
-<a href=#1326 id=1326 data-nosnippet>1326</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"tls_handshake_timeout"</span>],
-<a href=#1327 id=1327 data-nosnippet>1327</a>        decode: EnvDecode::DurationString,
-<a href=#1328 id=1328 data-nosnippet>1328</a>    },
-<a href=#1329 id=1329 data-nosnippet>1329</a>    EnvKey {
-<a href=#1330 id=1330 data-nosnippet>1330</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_USE_PROXY_FOR_CLOUD_METADATA"</span>],
-<a href=#1331 id=1331 data-nosnippet>1331</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"use_proxy_for_cloud_metadata"</span>],
-<a href=#1332 id=1332 data-nosnippet>1332</a>        decode: EnvDecode::Bool,
-<a href=#1333 id=1333 data-nosnippet>1333</a>    },
-<a href=#1334 id=1334 data-nosnippet>1334</a>    EnvKey {
-<a href=#1335 id=1335 data-nosnippet>1335</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_USE_V2_API_SERIES"</span>],
-<a href=#1336 id=1336 data-nosnippet>1336</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"use_v2_api"</span>, <span class="string">"series"</span>],
-<a href=#1337 id=1337 data-nosnippet>1337</a>        decode: EnvDecode::Bool,
-<a href=#1338 id=1338 data-nosnippet>1338</a>    },
-<a href=#1339 id=1339 data-nosnippet>1339</a>    EnvKey {
-<a href=#1340 id=1340 data-nosnippet>1340</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_USE_V3_API_SERIES_ENABLED"</span>],
-<a href=#1341 id=1341 data-nosnippet>1341</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"use_v3_api"</span>, <span class="string">"series"</span>, <span class="string">"enabled"</span>],
-<a href=#1342 id=1342 data-nosnippet>1342</a>        decode: EnvDecode::RawString,
-<a href=#1343 id=1343 data-nosnippet>1343</a>    },
-<a href=#1344 id=1344 data-nosnippet>1344</a>    EnvKey {
-<a href=#1345 id=1345 data-nosnippet>1345</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_USE_V3_API_SERIES_ENDPOINTS"</span>],
-<a href=#1346 id=1346 data-nosnippet>1346</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"use_v3_api"</span>, <span class="string">"series"</span>, <span class="string">"endpoints"</span>],
-<a href=#1347 id=1347 data-nosnippet>1347</a>        decode: EnvDecode::JsonValue,
-<a href=#1348 id=1348 data-nosnippet>1348</a>    },
-<a href=#1349 id=1349 data-nosnippet>1349</a>    EnvKey {
-<a href=#1350 id=1350 data-nosnippet>1350</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_VECTOR_METRICS_ENABLED"</span>],
-<a href=#1351 id=1351 data-nosnippet>1351</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"vector"</span>, <span class="string">"metrics"</span>, <span class="string">"enabled"</span>],
-<a href=#1352 id=1352 data-nosnippet>1352</a>        decode: EnvDecode::Bool,
-<a href=#1353 id=1353 data-nosnippet>1353</a>    },
-<a href=#1354 id=1354 data-nosnippet>1354</a>    EnvKey {
-<a href=#1355 id=1355 data-nosnippet>1355</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_VECTOR_METRICS_URL"</span>],
-<a href=#1356 id=1356 data-nosnippet>1356</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"vector"</span>, <span class="string">"metrics"</span>, <span class="string">"url"</span>],
-<a href=#1357 id=1357 data-nosnippet>1357</a>        decode: EnvDecode::RawString,
-<a href=#1358 id=1358 data-nosnippet>1358</a>    },
-<a href=#1359 id=1359 data-nosnippet>1359</a>    EnvKey {
-<a href=#1360 id=1360 data-nosnippet>1360</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_VECTOR_METRICS_USE_V3_API_SERIES"</span>],
-<a href=#1361 id=1361 data-nosnippet>1361</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"vector"</span>, <span class="string">"metrics"</span>, <span class="string">"use_v3_api"</span>, <span class="string">"series"</span>],
-<a href=#1362 id=1362 data-nosnippet>1362</a>        decode: EnvDecode::Bool,
-<a href=#1363 id=1363 data-nosnippet>1363</a>    },
-<a href=#1364 id=1364 data-nosnippet>1364</a>    EnvKey {
-<a href=#1365 id=1365 data-nosnippet>1365</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_VSOCK_ADDR"</span>],
-<a href=#1366 id=1366 data-nosnippet>1366</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"vsock_addr"</span>],
-<a href=#1367 id=1367 data-nosnippet>1367</a>        decode: EnvDecode::RawString,
-<a href=#1368 id=1368 data-nosnippet>1368</a>    },
-<a href=#1369 id=1369 data-nosnippet>1369</a>];
-<a href=#1370 id=1370 data-nosnippet>1370</a>
-<a href=#1371 id=1371 data-nosnippet>1371</a><span class="doccomment">/// Every former name of a Datadog schema setting, highest priority first for each setting.
-<a href=#1372 id=1372 data-nosnippet>1372</a></span><span class="kw">pub static </span>DATADOG_RENAMED_KEYS: <span class="kw-2">&amp;</span>[RenamedKey] = <span class="kw-2">&amp;</span>[
-<a href=#1373 id=1373 data-nosnippet>1373</a>    RenamedKey {
-<a href=#1374 id=1374 data-nosnippet>1374</a>        former: <span class="kw-2">&amp;</span>[<span class="string">"statsd_metric_blocklist"</span>],
-<a href=#1375 id=1375 data-nosnippet>1375</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"metric_filterlist"</span>],
-<a href=#1376 id=1376 data-nosnippet>1376</a>        env_var: <span class="prelude-val">Some</span>(<span class="string">"DD_STATSD_METRIC_BLOCKLIST"</span>),
-<a href=#1377 id=1377 data-nosnippet>1377</a>    },
-<a href=#1378 id=1378 data-nosnippet>1378</a>    RenamedKey {
-<a href=#1379 id=1379 data-nosnippet>1379</a>        former: <span class="kw-2">&amp;</span>[<span class="string">"statsd_metric_blocklist_match_prefix"</span>],
-<a href=#1380 id=1380 data-nosnippet>1380</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"metric_filterlist_match_prefix"</span>],
-<a href=#1381 id=1381 data-nosnippet>1381</a>        env_var: <span class="prelude-val">Some</span>(<span class="string">"DD_STATSD_METRIC_BLOCKLIST_MATCH_PREFIX"</span>),
-<a href=#1382 id=1382 data-nosnippet>1382</a>    },
-<a href=#1383 id=1383 data-nosnippet>1383</a>];
+<a href=#1240 id=1240 data-nosnippet>1240</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_MAX_COMPRESSED_PAYLOAD_SIZE"</span>],
+<a href=#1241 id=1241 data-nosnippet>1241</a>        path: <span class="kw-2">&amp;</span>[
+<a href=#1242 id=1242 data-nosnippet>1242</a>            <span class="string">"serializer_experimental_use_v3_api"</span>,
+<a href=#1243 id=1243 data-nosnippet>1243</a>            <span class="string">"sketches"</span>,
+<a href=#1244 id=1244 data-nosnippet>1244</a>            <span class="string">"max_compressed_payload_size"</span>,
+<a href=#1245 id=1245 data-nosnippet>1245</a>        ],
+<a href=#1246 id=1246 data-nosnippet>1246</a>        decode: EnvDecode::Integer,
+<a href=#1247 id=1247 data-nosnippet>1247</a>    },
+<a href=#1248 id=1248 data-nosnippet>1248</a>    EnvKey {
+<a href=#1249 id=1249 data-nosnippet>1249</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_MAX_POINTS_PER_PAYLOAD"</span>],
+<a href=#1250 id=1250 data-nosnippet>1250</a>        path: <span class="kw-2">&amp;</span>[
+<a href=#1251 id=1251 data-nosnippet>1251</a>            <span class="string">"serializer_experimental_use_v3_api"</span>,
+<a href=#1252 id=1252 data-nosnippet>1252</a>            <span class="string">"sketches"</span>,
+<a href=#1253 id=1253 data-nosnippet>1253</a>            <span class="string">"max_points_per_payload"</span>,
+<a href=#1254 id=1254 data-nosnippet>1254</a>        ],
+<a href=#1255 id=1255 data-nosnippet>1255</a>        decode: EnvDecode::Integer,
+<a href=#1256 id=1256 data-nosnippet>1256</a>    },
+<a href=#1257 id=1257 data-nosnippet>1257</a>    EnvKey {
+<a href=#1258 id=1258 data-nosnippet>1258</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_MAX_UNCOMPRESSED_PAYLOAD_SIZE"</span>],
+<a href=#1259 id=1259 data-nosnippet>1259</a>        path: <span class="kw-2">&amp;</span>[
+<a href=#1260 id=1260 data-nosnippet>1260</a>            <span class="string">"serializer_experimental_use_v3_api"</span>,
+<a href=#1261 id=1261 data-nosnippet>1261</a>            <span class="string">"sketches"</span>,
+<a href=#1262 id=1262 data-nosnippet>1262</a>            <span class="string">"max_uncompressed_payload_size"</span>,
+<a href=#1263 id=1263 data-nosnippet>1263</a>        ],
+<a href=#1264 id=1264 data-nosnippet>1264</a>        decode: EnvDecode::Integer,
+<a href=#1265 id=1265 data-nosnippet>1265</a>    },
+<a href=#1266 id=1266 data-nosnippet>1266</a>    EnvKey {
+<a href=#1267 id=1267 data-nosnippet>1267</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_SERIALIZER_MAX_PAYLOAD_SIZE"</span>],
+<a href=#1268 id=1268 data-nosnippet>1268</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"serializer_max_payload_size"</span>],
+<a href=#1269 id=1269 data-nosnippet>1269</a>        decode: EnvDecode::Integer,
+<a href=#1270 id=1270 data-nosnippet>1270</a>    },
+<a href=#1271 id=1271 data-nosnippet>1271</a>    EnvKey {
+<a href=#1272 id=1272 data-nosnippet>1272</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_SERIALIZER_MAX_SERIES_PAYLOAD_SIZE"</span>],
+<a href=#1273 id=1273 data-nosnippet>1273</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"serializer_max_series_payload_size"</span>],
+<a href=#1274 id=1274 data-nosnippet>1274</a>        decode: EnvDecode::Integer,
+<a href=#1275 id=1275 data-nosnippet>1275</a>    },
+<a href=#1276 id=1276 data-nosnippet>1276</a>    EnvKey {
+<a href=#1277 id=1277 data-nosnippet>1277</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_SERIALIZER_MAX_SERIES_POINTS_PER_PAYLOAD"</span>],
+<a href=#1278 id=1278 data-nosnippet>1278</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"serializer_max_series_points_per_payload"</span>],
+<a href=#1279 id=1279 data-nosnippet>1279</a>        decode: EnvDecode::Integer,
+<a href=#1280 id=1280 data-nosnippet>1280</a>    },
+<a href=#1281 id=1281 data-nosnippet>1281</a>    EnvKey {
+<a href=#1282 id=1282 data-nosnippet>1282</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_SERIALIZER_MAX_SERIES_UNCOMPRESSED_PAYLOAD_SIZE"</span>],
+<a href=#1283 id=1283 data-nosnippet>1283</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"serializer_max_series_uncompressed_payload_size"</span>],
+<a href=#1284 id=1284 data-nosnippet>1284</a>        decode: EnvDecode::Integer,
+<a href=#1285 id=1285 data-nosnippet>1285</a>    },
+<a href=#1286 id=1286 data-nosnippet>1286</a>    EnvKey {
+<a href=#1287 id=1287 data-nosnippet>1287</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_SERIALIZER_MAX_UNCOMPRESSED_PAYLOAD_SIZE"</span>],
+<a href=#1288 id=1288 data-nosnippet>1288</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"serializer_max_uncompressed_payload_size"</span>],
+<a href=#1289 id=1289 data-nosnippet>1289</a>        decode: EnvDecode::Integer,
+<a href=#1290 id=1290 data-nosnippet>1290</a>    },
+<a href=#1291 id=1291 data-nosnippet>1291</a>    EnvKey {
+<a href=#1292 id=1292 data-nosnippet>1292</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_SERIALIZER_ZSTD_COMPRESSOR_LEVEL"</span>],
+<a href=#1293 id=1293 data-nosnippet>1293</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"serializer_zstd_compressor_level"</span>],
+<a href=#1294 id=1294 data-nosnippet>1294</a>        decode: EnvDecode::Integer,
+<a href=#1295 id=1295 data-nosnippet>1295</a>    },
+<a href=#1296 id=1296 data-nosnippet>1296</a>    EnvKey {
+<a href=#1297 id=1297 data-nosnippet>1297</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_SITE"</span>],
+<a href=#1298 id=1298 data-nosnippet>1298</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"site"</span>],
+<a href=#1299 id=1299 data-nosnippet>1299</a>        decode: EnvDecode::RawString,
+<a href=#1300 id=1300 data-nosnippet>1300</a>    },
+<a href=#1301 id=1301 data-nosnippet>1301</a>    EnvKey {
+<a href=#1302 id=1302 data-nosnippet>1302</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_SKIP_SSL_VALIDATION"</span>],
+<a href=#1303 id=1303 data-nosnippet>1303</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"skip_ssl_validation"</span>],
+<a href=#1304 id=1304 data-nosnippet>1304</a>        decode: EnvDecode::Bool,
+<a href=#1305 id=1305 data-nosnippet>1305</a>    },
+<a href=#1306 id=1306 data-nosnippet>1306</a>    EnvKey {
+<a href=#1307 id=1307 data-nosnippet>1307</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_SSLKEYLOGFILE"</span>],
+<a href=#1308 id=1308 data-nosnippet>1308</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"sslkeylogfile"</span>],
+<a href=#1309 id=1309 data-nosnippet>1309</a>        decode: EnvDecode::RawString,
+<a href=#1310 id=1310 data-nosnippet>1310</a>    },
+<a href=#1311 id=1311 data-nosnippet>1311</a>    EnvKey {
+<a href=#1312 id=1312 data-nosnippet>1312</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_STATSD_FORWARD_HOST"</span>],
+<a href=#1313 id=1313 data-nosnippet>1313</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"statsd_forward_host"</span>],
+<a href=#1314 id=1314 data-nosnippet>1314</a>        decode: EnvDecode::RawString,
+<a href=#1315 id=1315 data-nosnippet>1315</a>    },
+<a href=#1316 id=1316 data-nosnippet>1316</a>    EnvKey {
+<a href=#1317 id=1317 data-nosnippet>1317</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_STATSD_FORWARD_PORT"</span>],
+<a href=#1318 id=1318 data-nosnippet>1318</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"statsd_forward_port"</span>],
+<a href=#1319 id=1319 data-nosnippet>1319</a>        decode: EnvDecode::Integer,
+<a href=#1320 id=1320 data-nosnippet>1320</a>    },
+<a href=#1321 id=1321 data-nosnippet>1321</a>    EnvKey {
+<a href=#1322 id=1322 data-nosnippet>1322</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_STATSD_METRIC_NAMESPACE"</span>],
+<a href=#1323 id=1323 data-nosnippet>1323</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"statsd_metric_namespace"</span>],
+<a href=#1324 id=1324 data-nosnippet>1324</a>        decode: EnvDecode::RawString,
+<a href=#1325 id=1325 data-nosnippet>1325</a>    },
+<a href=#1326 id=1326 data-nosnippet>1326</a>    EnvKey {
+<a href=#1327 id=1327 data-nosnippet>1327</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_STATSD_METRIC_NAMESPACE_BLACKLIST"</span>],
+<a href=#1328 id=1328 data-nosnippet>1328</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"statsd_metric_namespace_blacklist"</span>],
+<a href=#1329 id=1329 data-nosnippet>1329</a>        decode: EnvDecode::StringList,
+<a href=#1330 id=1330 data-nosnippet>1330</a>    },
+<a href=#1331 id=1331 data-nosnippet>1331</a>    EnvKey {
+<a href=#1332 id=1332 data-nosnippet>1332</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_SYSLOG_RFC"</span>],
+<a href=#1333 id=1333 data-nosnippet>1333</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"syslog_rfc"</span>],
+<a href=#1334 id=1334 data-nosnippet>1334</a>        decode: EnvDecode::Bool,
+<a href=#1335 id=1335 data-nosnippet>1335</a>    },
+<a href=#1336 id=1336 data-nosnippet>1336</a>    EnvKey {
+<a href=#1337 id=1337 data-nosnippet>1337</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_SYSLOG_URI"</span>],
+<a href=#1338 id=1338 data-nosnippet>1338</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"syslog_uri"</span>],
+<a href=#1339 id=1339 data-nosnippet>1339</a>        decode: EnvDecode::RawString,
+<a href=#1340 id=1340 data-nosnippet>1340</a>    },
+<a href=#1341 id=1341 data-nosnippet>1341</a>    EnvKey {
+<a href=#1342 id=1342 data-nosnippet>1342</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_TAGS"</span>],
+<a href=#1343 id=1343 data-nosnippet>1343</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"tags"</span>],
+<a href=#1344 id=1344 data-nosnippet>1344</a>        decode: EnvDecode::StringList,
+<a href=#1345 id=1345 data-nosnippet>1345</a>    },
+<a href=#1346 id=1346 data-nosnippet>1346</a>    EnvKey {
+<a href=#1347 id=1347 data-nosnippet>1347</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_TELEMETRY_DOGSTATSD_ORIGIN"</span>],
+<a href=#1348 id=1348 data-nosnippet>1348</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"telemetry"</span>, <span class="string">"dogstatsd_origin"</span>],
+<a href=#1349 id=1349 data-nosnippet>1349</a>        decode: EnvDecode::Bool,
+<a href=#1350 id=1350 data-nosnippet>1350</a>    },
+<a href=#1351 id=1351 data-nosnippet>1351</a>    EnvKey {
+<a href=#1352 id=1352 data-nosnippet>1352</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_TLS_HANDSHAKE_TIMEOUT"</span>],
+<a href=#1353 id=1353 data-nosnippet>1353</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"tls_handshake_timeout"</span>],
+<a href=#1354 id=1354 data-nosnippet>1354</a>        decode: EnvDecode::DurationString,
+<a href=#1355 id=1355 data-nosnippet>1355</a>    },
+<a href=#1356 id=1356 data-nosnippet>1356</a>    EnvKey {
+<a href=#1357 id=1357 data-nosnippet>1357</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_USE_PROXY_FOR_CLOUD_METADATA"</span>],
+<a href=#1358 id=1358 data-nosnippet>1358</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"use_proxy_for_cloud_metadata"</span>],
+<a href=#1359 id=1359 data-nosnippet>1359</a>        decode: EnvDecode::Bool,
+<a href=#1360 id=1360 data-nosnippet>1360</a>    },
+<a href=#1361 id=1361 data-nosnippet>1361</a>    EnvKey {
+<a href=#1362 id=1362 data-nosnippet>1362</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_USE_V2_API_SERIES"</span>],
+<a href=#1363 id=1363 data-nosnippet>1363</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"use_v2_api"</span>, <span class="string">"series"</span>],
+<a href=#1364 id=1364 data-nosnippet>1364</a>        decode: EnvDecode::Bool,
+<a href=#1365 id=1365 data-nosnippet>1365</a>    },
+<a href=#1366 id=1366 data-nosnippet>1366</a>    EnvKey {
+<a href=#1367 id=1367 data-nosnippet>1367</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_USE_V3_API_SERIES_ENABLED"</span>],
+<a href=#1368 id=1368 data-nosnippet>1368</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"use_v3_api"</span>, <span class="string">"series"</span>, <span class="string">"enabled"</span>],
+<a href=#1369 id=1369 data-nosnippet>1369</a>        decode: EnvDecode::RawString,
+<a href=#1370 id=1370 data-nosnippet>1370</a>    },
+<a href=#1371 id=1371 data-nosnippet>1371</a>    EnvKey {
+<a href=#1372 id=1372 data-nosnippet>1372</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_USE_V3_API_SERIES_ENDPOINTS"</span>],
+<a href=#1373 id=1373 data-nosnippet>1373</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"use_v3_api"</span>, <span class="string">"series"</span>, <span class="string">"endpoints"</span>],
+<a href=#1374 id=1374 data-nosnippet>1374</a>        decode: EnvDecode::JsonValue,
+<a href=#1375 id=1375 data-nosnippet>1375</a>    },
+<a href=#1376 id=1376 data-nosnippet>1376</a>    EnvKey {
+<a href=#1377 id=1377 data-nosnippet>1377</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_VECTOR_METRICS_ENABLED"</span>],
+<a href=#1378 id=1378 data-nosnippet>1378</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"vector"</span>, <span class="string">"metrics"</span>, <span class="string">"enabled"</span>],
+<a href=#1379 id=1379 data-nosnippet>1379</a>        decode: EnvDecode::Bool,
+<a href=#1380 id=1380 data-nosnippet>1380</a>    },
+<a href=#1381 id=1381 data-nosnippet>1381</a>    EnvKey {
+<a href=#1382 id=1382 data-nosnippet>1382</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_VECTOR_METRICS_URL"</span>],
+<a href=#1383 id=1383 data-nosnippet>1383</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"vector"</span>, <span class="string">"metrics"</span>, <span class="string">"url"</span>],
+<a href=#1384 id=1384 data-nosnippet>1384</a>        decode: EnvDecode::RawString,
+<a href=#1385 id=1385 data-nosnippet>1385</a>    },
+<a href=#1386 id=1386 data-nosnippet>1386</a>    EnvKey {
+<a href=#1387 id=1387 data-nosnippet>1387</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_VECTOR_METRICS_USE_V3_API_SERIES"</span>],
+<a href=#1388 id=1388 data-nosnippet>1388</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"vector"</span>, <span class="string">"metrics"</span>, <span class="string">"use_v3_api"</span>, <span class="string">"series"</span>],
+<a href=#1389 id=1389 data-nosnippet>1389</a>        decode: EnvDecode::Bool,
+<a href=#1390 id=1390 data-nosnippet>1390</a>    },
+<a href=#1391 id=1391 data-nosnippet>1391</a>    EnvKey {
+<a href=#1392 id=1392 data-nosnippet>1392</a>        env_vars: <span class="kw-2">&amp;</span>[<span class="string">"DD_VSOCK_ADDR"</span>],
+<a href=#1393 id=1393 data-nosnippet>1393</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"vsock_addr"</span>],
+<a href=#1394 id=1394 data-nosnippet>1394</a>        decode: EnvDecode::RawString,
+<a href=#1395 id=1395 data-nosnippet>1395</a>    },
+<a href=#1396 id=1396 data-nosnippet>1396</a>];
+<a href=#1397 id=1397 data-nosnippet>1397</a>
+<a href=#1398 id=1398 data-nosnippet>1398</a><span class="doccomment">/// Every former name of a Datadog schema setting, highest priority first for each setting.
+<a href=#1399 id=1399 data-nosnippet>1399</a></span><span class="kw">pub static </span>DATADOG_RENAMED_KEYS: <span class="kw-2">&amp;</span>[RenamedKey] = <span class="kw-2">&amp;</span>[
+<a href=#1400 id=1400 data-nosnippet>1400</a>    RenamedKey {
+<a href=#1401 id=1401 data-nosnippet>1401</a>        former: <span class="kw-2">&amp;</span>[<span class="string">"statsd_metric_blocklist"</span>],
+<a href=#1402 id=1402 data-nosnippet>1402</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"metric_filterlist"</span>],
+<a href=#1403 id=1403 data-nosnippet>1403</a>        env_var: <span class="prelude-val">Some</span>(<span class="string">"DD_STATSD_METRIC_BLOCKLIST"</span>),
+<a href=#1404 id=1404 data-nosnippet>1404</a>    },
+<a href=#1405 id=1405 data-nosnippet>1405</a>    RenamedKey {
+<a href=#1406 id=1406 data-nosnippet>1406</a>        former: <span class="kw-2">&amp;</span>[<span class="string">"statsd_metric_blocklist_match_prefix"</span>],
+<a href=#1407 id=1407 data-nosnippet>1407</a>        path: <span class="kw-2">&amp;</span>[<span class="string">"metric_filterlist_match_prefix"</span>],
+<a href=#1408 id=1408 data-nosnippet>1408</a>        env_var: <span class="prelude-val">Some</span>(<span class="string">"DD_STATSD_METRIC_BLOCKLIST_MATCH_PREFIX"</span>),
+<a href=#1409 id=1409 data-nosnippet>1409</a>    },
+<a href=#1410 id=1410 data-nosnippet>1410</a>];
 </code></pre></div></section></main></body></html>
