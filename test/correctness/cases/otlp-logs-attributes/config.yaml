@@ -43,14 +43,6 @@ logs:
       paths: ["content.otel.library.name", "content.otel.library.version"]
       kinds: [extra]
       reason: ADP keeps the `otel.library.*` aliases instead of mapping them to scope keys.
-    - gap: gap/attribute-key-case
-      paths: ["content.RequestID", "content.nested_Map.InnerKey"]
-      kinds: [missing]
-      reason: ADP lowercases log attribute keys, so mixed-case keys are missing under their original spelling.
-    - gap: gap/attribute-key-case
-      paths: ["content.requestid", "content.nested_map.InnerKey"]
-      kinds: [extra]
-      reason: ADP lowercases log attribute keys, so mixed-case keys appear under their lowercased spelling.
     - gap: gap/missing-headers
       paths:
         - headers.dd-protocol
