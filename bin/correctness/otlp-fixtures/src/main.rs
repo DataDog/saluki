@@ -297,6 +297,12 @@ fn attributes_fixture() -> Vec<u8> {
             ],
         ),
     ]);
+    // gap/event-name: without an event name, an `otel.event_name` attribute stays.
+    records.push(record(
+        26,
+        "event-name-unset",
+        vec![kv("otel.event_name", string("from-attribute"))],
+    ));
 
     request(
         vec![
