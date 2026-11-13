@@ -171,6 +171,7 @@ pub trait DatadogConfigWitness {
     fn consume_ipc_address(&mut self, value: String);
     fn consume_ipc_cert_file_path(&mut self, value: String);
     fn consume_kubernetes_kubelet_nodename(&mut self, value: String);
+    fn consume_log_enabled(&mut self, value: bool);
     fn consume_log_file_max_rolls(&mut self, value: i64);
     fn consume_log_file_max_size(&mut self, value: String);
     fn consume_log_format_json(&mut self, value: bool);
@@ -179,6 +180,7 @@ pub trait DatadogConfigWitness {
     fn consume_log_payloads(&mut self, value: bool);
     fn consume_log_to_console(&mut self, value: bool);
     fn consume_log_to_syslog(&mut self, value: bool);
+    fn consume_logs_enabled(&mut self, value: bool);
     fn consume_metric_filterlist(&mut self, value: Vec<String>);
     fn consume_metric_filterlist_match_prefix(&mut self, value: bool);
     fn consume_metric_filterlist_prefix(&mut self, value: Vec<::serde_json::Map<String, ::serde_json::Value>>);
@@ -503,6 +505,7 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_ipc_address(config.ipc_address.clone());
     consumer.consume_ipc_cert_file_path(config.ipc_cert_file_path.clone());
     consumer.consume_kubernetes_kubelet_nodename(config.kubernetes_kubelet_nodename.clone());
+    consumer.consume_log_enabled(config.log_enabled.clone());
     consumer.consume_log_file_max_rolls(config.log_file_max_rolls.clone());
     consumer.consume_log_file_max_size(config.log_file_max_size.clone());
     consumer.consume_log_format_json(config.log_format_json.clone());
@@ -511,6 +514,7 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_log_payloads(config.log_payloads.clone());
     consumer.consume_log_to_console(config.log_to_console.clone());
     consumer.consume_log_to_syslog(config.log_to_syslog.clone());
+    consumer.consume_logs_enabled(config.logs_enabled.clone());
     consumer.consume_metric_filterlist(config.metric_filterlist.clone());
     consumer.consume_metric_filterlist_match_prefix(config.metric_filterlist_match_prefix.clone());
     consumer.consume_metric_filterlist_prefix(config.metric_filterlist_prefix.clone());

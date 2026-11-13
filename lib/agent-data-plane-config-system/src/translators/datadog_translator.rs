@@ -1285,6 +1285,16 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.shared.static_tags.kubernetes_kubelet_nodename = value;
     }
 
+    fn consume_log_enabled(&mut self, value: bool) {
+        // Like the Datadog Agent, the deprecated `log_enabled` enables the logs agent alongside `logs_enabled`, so
+        // either key being `true` is enough, whichever order they're read in.
+        if value {
+            // Matches the warning the Datadog Agent logs when it uses `log_enabled`.
+            warn!(r#""log_enabled" is deprecated, use "logs_enabled" instead"#);
+        }
+        self.config.control.logs_enabled |= value;
+    }
+
     fn consume_log_file_max_rolls(&mut self, value: i64) {
         match usize::try_from(value) {
             Ok(max_rolls) => self.config.control.logging.file_max_rolls = max_rolls,
@@ -1325,6 +1335,11 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
 
     fn consume_log_to_syslog(&mut self, value: bool) {
         self.config.control.logging.to_syslog = value;
+    }
+
+    fn consume_logs_enabled(&mut self, value: bool) {
+        // See `consume_log_enabled`.
+        self.config.control.logs_enabled |= value;
     }
 
     fn consume_metric_filterlist(&mut self, value: Vec<String>) {
@@ -3510,6 +3525,24 @@ mod tests {
             config.control.ipc.ipc_cert_file_path,
             PathBuf::from("/secret/ipc_cert.pem")
         );
+    }
+
+    #[test]
+    fn logs_agent_enablement_follows_the_streamed_values() {
+        // The Agent streams both keys, at their defaults unless configured.
+        let (config, errors) = translate_stream(&[
+            ("logs_enabled", json!(false), StreamProvenance::Default),
+            ("log_enabled", json!(false), StreamProvenance::Default),
+        ]);
+        assert!(errors.is_none());
+        assert!(!config.control.logs_enabled);
+
+        let (config, errors) = translate_stream(&[
+            ("logs_enabled", json!(false), StreamProvenance::Default),
+            ("log_enabled", json!(true), StreamProvenance::Explicit),
+        ]);
+        assert!(errors.is_none());
+        assert!(config.control.logs_enabled);
     }
 
     #[test]

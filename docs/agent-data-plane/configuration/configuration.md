@@ -454,7 +454,9 @@ default values.
 | `forwarder_high_prio_buffer_size`                               | High-priority request queue size                |
 | `forwarder_num_workers`                                         | Concurrent forwarder workers                    |
 | `forwarder_stop_timeout`                                        | Timeout (s) for forwarder graceful stop         |
+| `log_enabled`                                                   | Deprecated name for logs_enabled                |
 | `log_level`                                                     | Log verbosity directives                        |
+| `logs_enabled`                                                  | Enable the logs agent                           |
 | `min_tls_version`                                               | Minimum TLS version for HTTPS connections       |
 | `multi_region_failover.enabled`                                 | Enable multi-region failover mode               |
 | `secret_backend_command`                                        | Path to the Agent secret-fetch executable       |
@@ -700,6 +702,16 @@ topology-wide graceful shutdown timeout. The default is `2 + 2 = 4` seconds. Set
 Support is partial because ADP does not apply this timeout only to a forwarder component. It
 bounds graceful shutdown for the full Saluki topology.
 
+### `log_enabled`
+
+The core Agent treats `log_enabled` as a deprecated spelling of `logs_enabled`: the logs agent
+runs when either key is `true`, and the Agent logs a deprecation warning when `log_enabled` is
+`true`. ADP reads it the same way, including the warning.
+
+ADP doesn't yet act on the result. The core Agent refuses to start its OTLP receiver when
+`otlp_config.logs.enabled` is `true` but the logs agent isn't enabled. ADP doesn't apply this
+check, and accepts OTLP logs whatever `logs_enabled` and `log_enabled` say.
+
 ### `log_level`
 
 ADP accepts `log_level` as the startup logging control. A plain level applies to
@@ -721,6 +733,16 @@ under it. ADP applies those directive strings as configured:
 ```yaml
 log_level: warn,agent_data_plane=debug,hyper=warn
 ```
+
+### `logs_enabled`
+
+The core Agent runs its logs agent when `logs_enabled` (or its deprecated spelling
+`log_enabled`) is `true`. Its OTLP receiver needs the logs agent for OTLP logs: when
+`otlp_config.logs.enabled` is `true` but the logs agent isn't enabled, the Agent logs an error
+and starts no OTLP receiver at all, so OTLP metrics and traces stop too.
+
+ADP reads `logs_enabled`, but doesn't yet apply this check, and accepts OTLP logs whatever
+`logs_enabled` says.
 
 ### `min_tls_version`
 
@@ -1586,6 +1608,7 @@ Both commands scrub recognized secret values before writing JSON to standard out
 [#2557]: https://github.com/DataDog/saluki/issues/2557
 [#2558]: https://github.com/DataDog/saluki/issues/2558
 [#2559]: https://github.com/DataDog/saluki/issues/2559
+[#2969]: https://github.com/DataDog/saluki/issues/2969
 [#3088]: https://github.com/DataDog/saluki/issues/3088
 [#3089]: https://github.com/DataDog/saluki/issues/3089
 [#3090]: https://github.com/DataDog/saluki/issues/3090
