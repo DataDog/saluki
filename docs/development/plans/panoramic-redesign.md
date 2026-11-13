@@ -881,10 +881,11 @@ by default. Participant types override the protocol's default in four places. `d
 HTTP 200 at `/ready` on `api`, and its `dogstatsd_forward` waits for the intake's own log line that
 its DogStatsD listener is bound. The intake is a harness tool, so the line is ours to keep; `cmprest`,
 the first PR with a forwarding connection, adds it with the consumer. `agent-adp`'s `dogstatsd_udp` waits for ADP's "DogStatsD listener started"
-line for that port. `agent`'s `dogstatsd_udp` needs evidence that holds across Agent releases.
-`compare`, which writes the `agent` participant type, gives it one: a log line the Agent prints
-when the listener is bound, if one holds across the releases the cases use, and otherwise a gate
-on the Agent's own health check, as legacy waits for it today.
+line for that port. `agent`'s `dogstatsd_udp` waits for the Agent's "dogstatsd-udp: starting to
+listen on" line, which the Agent prints once the listener is bound, in the releases the cases use
+(7.85.2 and the nightly `agent-dev` image). The line names the address with an interface the
+Agent's configuration chooses, so it is matched without the port; the Agent opens one UDP
+listener.
 
 **What is found only at run time.** The harness does not model the software, so some mistakes are
 not plan errors. A `connect` to a listener the software has switched off times out at its gate, and
@@ -1765,7 +1766,7 @@ Why this order:
 
 **9. `compare`: comparison cases begin**
 
-- **Builds:** the `compare` step over two participants that offer `dump`, the `wait` step, the
+- **Builds:** the `compare` step over two participants that offer `dump`, the
   `agent` and `millstone` participant types, Unix sockets shared between participants, and the first
   cases that ask for the host view. Moves the analyzers from
   `bin/correctness/panoramic/src/correctness/analysis/` under `steps`. Adds `PANORAMIC_SET` to the
@@ -1794,6 +1795,7 @@ Why this order:
     those lines as each file is migrated.
   - What a failed comparison leaves on disk must not shrink: the input capture and both intake
     dumps. They become collect entries. Say what happens to the merged traffic manifest.
+  - No migrated case uses `wait`, so it lands with the first case that does.
   - The `millstone` crate's own test parses every `millstone*.yaml` under `test/` and fails on a
     templated `target:` line, such as `{{ self.connections.comparison_target.url }}`. It changes in
     this PR.
@@ -2004,4 +2006,5 @@ host-process subject with containerized helpers.
   mounted into participant containers. A value known only at run time is a reference.
 - `exec` quotes a command's output on failure, which the legacy CLI actions did not.
 - A load error exits 2 with no `run.json`, and a run where every case is skipped exits 3.
-- The merged traffic manifest may go, once retention is data.
+- The merged traffic manifest goes. A participant case writes none: its collected files, with their
+  retention, are listed in `result.json`.
