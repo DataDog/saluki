@@ -20,16 +20,20 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use super::case::{is_name, is_participant_name};
 
 /// Text with the references it holds, parsed.
+///
+/// Serializes as the text as written, or, once a reference is filled in, as `{"written": ..., "resolved": ...}`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Template {
-    text: String,
+    written: String,
+    /// The written text with each reference filled in so far, once one is.
+    resolved: Option<String>,
     parts: Vec<Part>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Part {
     Text(String),
-    Reference(Reference),
+    Reference { reference: Reference, written: String },
 }
 
 /// The participant a reference names: the one that holds it, or another by name.
@@ -41,8 +45,6 @@ pub(crate) enum Holder {
 }
 
 /// A value the harness owns, by name.
-// TODO: remove the dead_code allowance once references are resolved.
-#[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Reference {
     /// `<holder>.endpoints.<endpoint>.<part>`.
@@ -90,9 +92,9 @@ impl Template {
     ///
     /// Returns an error if an opening double brace does not start a well-formed reference.
     pub(crate) fn parse(text: impl Into<String>) -> Result<Self, String> {
-        let text = text.into();
+        let written = text.into();
         let mut parts = Vec::new();
-        let mut rest = text.as_str();
+        let mut rest = written.as_str();
         while let Some(start) = rest.find(OPEN) {
             if start > 0 {
                 parts.push(Part::Text(rest[..start].to_string()));
@@ -100,33 +102,83 @@ impl Template {
             let after = &rest[start + OPEN.len()..];
             let end = after
                 .find(CLOSE)
-                .ok_or_else(|| format!("'{}' has a '{}' that is never closed by '{}'", text, OPEN, CLOSE))?;
+                .ok_or_else(|| format!("'{}' has a '{}' that is never closed by '{}'", written, OPEN, CLOSE))?;
             let inner = &after[..end];
             if inner.contains(OPEN) {
-                return Err(format!("'{}' has a '{}' inside a reference", text, OPEN));
+                return Err(format!("'{}' has a '{}' inside a reference", written, OPEN));
             }
-            parts.push(Part::Reference(Reference::parse(inner.trim())?));
+            parts.push(Part::Reference {
+                reference: Reference::parse(inner.trim())?,
+                written: rest[start..start + OPEN.len() + end + CLOSE.len()].to_string(),
+            });
             rest = &after[end + CLOSE.len()..];
         }
         if !rest.is_empty() {
             parts.push(Part::Text(rest.to_string()));
         }
-        Ok(Self { text, parts })
+        Ok(Self {
+            written,
+            resolved: None,
+            parts,
+        })
     }
 
-    /// The text as written.
+    /// The text, with each reference filled in so far.
     pub(crate) fn text(&self) -> &str {
-        &self.text
+        self.resolved.as_deref().unwrap_or(&self.written)
     }
 
     /// The references the text holds, in order.
-    // TODO: remove the dead_code allowance once references are resolved.
-    #[allow(dead_code)]
     pub(crate) fn references(&self) -> impl Iterator<Item = &Reference> {
         self.parts.iter().filter_map(|part| match part {
-            Part::Reference(reference) => Some(reference),
+            Part::Reference { reference, .. } => Some(reference),
             Part::Text(_) => None,
         })
+    }
+
+    /// Fills in each reference `value` knows and keeps the others as written.
+    ///
+    /// In a pattern matched as a regex, each value is escaped, so a path or an address matches itself.
+    pub(crate) fn resolve<F>(&self, regex: bool, mut value: F) -> Self
+    where
+        F: FnMut(&Reference) -> Option<String>,
+    {
+        let mut parts: Vec<Part> = Vec::new();
+        let mut text = String::new();
+        let mut filled_any = false;
+        for part in &self.parts {
+            let filled = match part {
+                Part::Text(literal) => literal.clone(),
+                Part::Reference { reference, written } => match value(reference) {
+                    Some(value) => {
+                        filled_any = true;
+                        if regex {
+                            regex::escape(&value)
+                        } else {
+                            value
+                        }
+                    }
+                    None => {
+                        text.push_str(written);
+                        parts.push(part.clone());
+                        continue;
+                    }
+                },
+            };
+            text.push_str(&filled);
+            match parts.last_mut() {
+                Some(Part::Text(last)) => last.push_str(&filled),
+                _ => parts.push(Part::Text(filled)),
+            }
+        }
+        if !filled_any {
+            return self.clone();
+        }
+        Self {
+            written: self.written.clone(),
+            resolved: Some(text),
+            parts,
+        }
     }
 }
 
@@ -180,6 +232,19 @@ impl Reference {
 }
 
 impl Holder {
+    /// The participant this names, when `participant` holds the reference.
+    pub(crate) fn resolve<'a>(&'a self, participant: &'a str) -> &'a str {
+        match self {
+            Self::Own => participant,
+            Self::Participant(name) => name,
+        }
+    }
+
+    /// Whether this names `participant` when `participant` holds the reference.
+    pub(crate) fn names(&self, participant: &str) -> bool {
+        self.resolve(participant) == participant
+    }
+
     fn parse(path: &str, holder: &str) -> Result<Self, String> {
         if holder == "self" {
             Ok(Self::Own)
@@ -187,6 +252,48 @@ impl Holder {
             Ok(Self::Participant(holder.to_string()))
         } else {
             Err(not_a_reference(path))
+        }
+    }
+}
+
+impl fmt::Display for Reference {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Endpoint { holder, endpoint, part } => {
+                let part = match part {
+                    EndpointPart::Port => "port",
+                    EndpointPart::Path => "path",
+                    EndpointPart::Name => "name",
+                };
+                write!(f, "{} {}.endpoints.{}.{} {}", OPEN, holder, endpoint, part, CLOSE)
+            }
+            Self::Connection { name, part } => {
+                let part = match part {
+                    ConnectionPart::Url => "url",
+                    ConnectionPart::Host => "host",
+                    ConnectionPart::Port => "port",
+                    ConnectionPart::Path => "path",
+                };
+                write!(f, "{} self.connections.{}.{} {}", OPEN, name, part, CLOSE)
+            }
+            Self::Identity { holder, part } => {
+                let part = match part {
+                    IdentityPart::Dir => "dir",
+                    IdentityPart::Ip => "ip",
+                    IdentityPart::ContainerId => "container_id",
+                    IdentityPart::PodUid => "pod_uid",
+                };
+                write!(f, "{} {}.{} {}", OPEN, holder, part, CLOSE)
+            }
+        }
+    }
+}
+
+impl fmt::Display for Holder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Own => f.write_str("self"),
+            Self::Participant(name) => f.write_str(name),
         }
     }
 }
@@ -210,7 +317,7 @@ fn not_a_reference(path: &str) -> String {
 
 impl fmt::Display for Template {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.text)
+        f.write_str(self.text())
     }
 }
 
@@ -219,7 +326,20 @@ impl Serialize for Template {
     where
         S: Serializer,
     {
-        serializer.serialize_str(&self.text)
+        #[derive(Serialize)]
+        struct Filled<'a> {
+            written: &'a str,
+            resolved: &'a str,
+        }
+
+        match &self.resolved {
+            None => serializer.serialize_str(&self.written),
+            Some(resolved) => Filled {
+                written: &self.written,
+                resolved,
+            }
+            .serialize(serializer),
+        }
     }
 }
 
@@ -273,6 +393,25 @@ mod tests {
             ]
         );
         assert_eq!(Template::parse("no references }}").unwrap().references().count(), 0);
+    }
+
+    #[test]
+    fn resolving_fills_what_is_known_escapes_it_in_a_regex_and_keeps_the_rest() {
+        let template = Template::parse("{{ self.dir }}/a.sock {{self.ip}}").unwrap();
+        let dir = |reference: &Reference| {
+            matches!(
+                reference,
+                Reference::Identity {
+                    part: IdentityPart::Dir,
+                    ..
+                }
+            )
+            .then(|| "/x.y".to_string())
+        };
+        let plain = template.resolve(false, dir);
+        assert_eq!(plain.text(), "/x.y/a.sock {{self.ip}}");
+        assert_eq!(plain.references().count(), 1);
+        assert_eq!(template.resolve(true, dir).text(), "/x\\.y/a.sock {{self.ip}}");
     }
 
     #[test]

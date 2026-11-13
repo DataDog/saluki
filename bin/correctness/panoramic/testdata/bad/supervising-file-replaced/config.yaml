@@ -1,0 +1,9 @@
+timeout: 1m
+subject_os: [linux]
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    files:
+      /etc/services.d/agent/finish: {from: finish, mode: "0755"}
+procedure: []

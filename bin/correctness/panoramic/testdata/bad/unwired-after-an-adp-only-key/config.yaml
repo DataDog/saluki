@@ -1,0 +1,13 @@
+timeout: 1m
+subject_os: [linux]
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    env:
+      ADP_DD_DOGSTATSD_PORT: "8125"
+  load:
+    image: alpine:3.20
+    command: [sh, -c, "echo 'a:1|c' | nc -u -w1 {{ self.connections.target.host }} {{ self.connections.target.port }}"]
+    connect: {target: adp.dogstatsd_udp}
+procedure: []

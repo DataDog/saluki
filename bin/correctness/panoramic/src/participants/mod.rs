@@ -2,6 +2,11 @@
 
 use crate::core::registry::Registry;
 
+mod agent_adp;
+mod datadog_intake;
+
 /// Registers every participant type.
-// TODO: register the first participant types with harness-owned addresses.
-pub(crate) fn register(_registry: &mut Registry) {}
+pub(crate) fn register(registry: &mut Registry) {
+    registry.add_participant_type(Box::new(agent_adp::AgentAdp));
+    registry.add_participant_type(Box::new(datadog_intake::DatadogIntake));
+}

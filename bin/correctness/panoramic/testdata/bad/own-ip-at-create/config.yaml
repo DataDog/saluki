@@ -1,0 +1,9 @@
+timeout: 1m
+subject_os: [linux]
+participants:
+  app:
+    subject: true
+    image: alpine:3.20
+    env:
+      BIND_HOST: "{{ self.ip }}"
+procedure: []

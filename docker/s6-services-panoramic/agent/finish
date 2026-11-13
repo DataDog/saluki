@@ -1,0 +1,16 @@
+#!/bin/sh
+
+# Records the Agent's exit for the harness, then does what the Agent image's own finish script does: stops the
+# container.
+#
+# s6 passes the exit code, or 256 and the signal number when a signal killed the Agent.
+code=$1
+signal=0
+if [ "$code" -eq 256 ]; then
+    signal=$2
+fi
+echo "$code $signal $(date +%s.%N)" >> "$PANORAMIC_EXIT_DIR/agent"
+
+/initlog.sh "AGENT EXITED WITH CODE $code, SIGNAL $signal, KILLING CONTAINER"
+# When Docker stops the container, s6 is already shutting down and this fails.
+s6-svscanctl -t /var/run/s6/services 2>/dev/null

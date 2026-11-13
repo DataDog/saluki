@@ -412,10 +412,11 @@ pub struct ParticipantSpec {
     pub commands: BTreeMap<String, CommandSpec>,
     pub collect: Option<Vec<CollectFile>>,
 
-    // Only a participant type declares these three. A case uses them and cannot define them.
+    // Only a participant type declares these four. A case uses them and cannot define them.
     pub aliases: BTreeMap<&'static str, &'static str>,  // file names a case may write, one destination each
     pub consumes: BTreeMap<&'static str, Consumed>,     // connection names it knows, and what each delivers
     pub operations: &'static [&'static dyn Operation],  // capabilities steps call by name
+    pub wiring: BTreeMap<String, Wiring>,              // by endpoint: why a default was withdrawn, the line to write
 }
 
 pub struct Program {
@@ -663,7 +664,8 @@ to every use. A step field may reference any participant's endpoint.
 
 | Place | Fixed |
 | --- | --- |
-| `command`, `args`, `programs`, `env`, a socket path in `endpoints`, a pattern in `ready` | when the participant is created |
+| A socket path in `endpoints` | at plan; it may refer only to `self.dir`, because the address is built from it |
+| `command`, `args`, `programs`, `env`, a pattern in `ready` | when the participant is created |
 | A template file in a container or as host processes | when the participant is created |
 | A template file in a pod | when the pod is created, or after it starts if the file holds a value that exists only then |
 | `commands`, and the template fields of a step | when the step runs |
@@ -827,7 +829,8 @@ participant 'adp': endpoints 'agent_otlp_grpc' and 'api' share tcp port 45100.
 final configuration references it: its `env` after the merge and the withdraw rule, its `command`,
 `args` or `programs`, or a file it places with `template: true`. An endpoint the case declares is
 usable as declared, because the case is the authority for a command it supplies. Using an unwired
-endpoint in a `connect`, a step or a readiness gate is a plan error, and the error says why:
+endpoint in a `connect`, a step or a readiness gate is a plan error, and the error says why. The
+participant type's `wiring` gives the withdrawn default and the line to write:
 
 ```
 participant 'adp' (agent-adp, linux-container): endpoint 'dogstatsd_udp' is not wired.
@@ -1025,7 +1028,7 @@ file, the subject OS and the participant or step.
 pub struct CasePlan {
     pub case: CaseInfo,                       // name, source file, description, timeout
     pub subject_os: Os,
-    pub scope: Scope,                         // names the case's directory, network and containers
+    pub scope: Scope,                         // per-case resources of each enclosure; names come from the run
     pub participants: BTreeMap<String, PlannedParticipant>,
     pub create_order: Vec<Vec<String>>,       // levels of independent participants
     pub start_order: Vec<Vec<String>>,
@@ -1505,8 +1508,9 @@ the cases it turns over.
   `main` owns, the copy is checked against `main`'s version after every rebase, until one of the two
   is deleted. `agent-adp`'s default environment is a copy of what
   `bin/correctness/panoramic/src/test_env.rs` injects, and its s6 scripts are copies of
-  `docker/s6-services/`. The s6 scripts add exit records and log capture, so they are not byte
-  copies: their check fails when `main`'s versions change, and the change is ported by hand.
+  `docker/s6-services/`, the image's own. They sit beside them, in `docker/s6-services-panoramic/`,
+  and no image is built with them. The s6 scripts add exit records and log capture, so they are not
+  byte copies: their check fails when `main`'s versions change, and the change is ported by hand.
 - **The size of the whole.** The per-PR estimates sum to about 22k new non-test lines: about 12k of
   machinery (the Docker mechanisms, the courier, observation, the backends, the step bodies), about
   6k of the model (the case schema, the participant spec, planning, addresses and the participant
@@ -1667,9 +1671,10 @@ Why this order:
     seam for Linux containers. `plan` now prints every address and connection.
   - `agent-adp` and `datadog-intake` for Linux containers, as definitions and nothing else: the
     endpoint table, the default environment that references it, the two withdraw rules, the file
-    names, the processes, the s6 overlay, and the `with` parameters. Teaches the intake binary to
-    read its two listen variables and rebuilds the tools image. Adds the bad cases for the guards
-    and the wired check.
+    names, the processes, the s6 overlay, and `with: {host_view: true}`. `agent-adp`'s
+    `with: {own_ip: ...}` lands with `windows` and its `dogstatsd_forward` consumer with `cmprest`,
+    each with its first case. Teaches the intake binary to read its two listen variables and
+    rebuilds the tools image. Adds the bad cases for the guards and the wired check.
 - **Watch out:** this is the PR to get right.
   - Whether to keep harness-owned addresses or take the fallback is decided on a draft of the
     comparison PRs, before this PR is marked ready (see "Why this order").
@@ -1790,8 +1795,9 @@ Why this order:
 
 - **Builds:** what the remaining families of comparison cases need, each with its cases.
   - DogStatsD: `compare` of `events` and `service_checks`, UDP and stream targets, and the
-    forwarding connection. Migrates the DogStatsD cases that send events or service checks, or send
-    over UDP, a stream socket or the forwarding connection.
+    forwarding connection with `agent-adp`'s `dogstatsd_forward` consumer. Migrates the DogStatsD
+    cases that send events or service checks, or send over UDP, a stream socket or the forwarding
+    connection.
   - OTLP metrics: the OTLP endpoints on the baseline `agent`, and the references that replace the
     literals on both sides. Migrates the OTLP metrics cases.
   - Traces and logs: `compare` of `traces` and `logs`, the APM endpoints over TCP and a Unix
@@ -1887,9 +1893,9 @@ Why this order:
 
 - **Builds:** the last backend table, then the cases that needed every backend.
   - The container backend's Windows table, `agent-adp` on Windows with its entrypoint script, named
-    pipe endpoints, and a participant's own address in its configuration and its hosts file. The
-    Windows CI script builds the Windows courier. Migrates the
-    cases that run on Windows, alone or with Linux.
+    pipe endpoints, and a participant's own address in its configuration and its hosts file
+    (`agent-adp`'s `with: {own_ip: ...}`). The Windows CI script builds the Windows courier. Migrates
+    the cases that run on Windows, alone or with Linux.
   - The cases that run on all three OSes. Those that read logs and exits need almost no Rust. Those
     that use endpoints and commands need `config_set` and `exec` of a command the participant type
     names, which replaces the legacy CLI actions.

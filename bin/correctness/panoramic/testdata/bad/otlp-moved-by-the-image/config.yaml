@@ -1,0 +1,14 @@
+timeout: 1m
+subject_os: [linux]
+participants:
+  adp:
+    type: agent-adp
+    subject: true
+    env:
+      DD_DATA_PLANE_ENABLED: "true"
+      DD_DATA_PLANE_OTLP_ENABLED: "true"
+  load:
+    image: alpine:3.20
+    command: [sh, -c, "nc -z {{ self.connections.target.host }} {{ self.connections.target.port }}"]
+    connect: {target: adp.agent_otlp_grpc}
+procedure: []
