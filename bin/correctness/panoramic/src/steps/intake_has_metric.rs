@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::json;
 use tokio::time::{sleep_until, Instant};
 
 use super::intake::metrics::{get_formatted_metric_value, MetricType, NormalizationFailure, NormalizedMetrics};
@@ -98,7 +98,7 @@ impl Step for IntakeHasMetric {
             let mut failed;
             loop {
                 let limit = PROBE_TIMEOUT.min(cx.deadline.saturating_duration_since(Instant::now()));
-                let dumped = handle.op(DUMP, Value::Null, limit).await.and_then(|dump| {
+                let dumped = handle.op(DUMP, json!(["metrics"]), limit).await.and_then(|dump| {
                     serde_json::from_value::<CollectedData>(dump)
                         .map_err(|e| HandleError::Harness(format!("the dump of '{}' does not decode: {}", self.on, e)))
                 });

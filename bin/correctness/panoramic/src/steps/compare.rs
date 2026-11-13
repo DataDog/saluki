@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 use tokio::time::Instant;
 
 use super::analysis::{AnalysisMode, AnalysisRunner};
@@ -22,6 +22,8 @@ use crate::core::step::{Need, Step, StepContext, StepFactory, StepFields, StepRe
 
 /// The operation the step calls on both participants.
 const DUMP: &str = "dump";
+/// The key of a `dump` answer that holds the DogStatsD packets forwarded to it.
+const FORWARDED_PACKETS: &str = "dogstatsd_forwarded_packets";
 
 /// The names the step keeps each dump and the full list of differences under.
 const DUMP_FILE: &str = "dump.json";
@@ -42,6 +44,7 @@ impl StepFactory for CompareFactory {
             telemetry,
             comparison,
             baseline,
+            require_dogstatsd_forwarded_packets,
         } = fields.decode()?;
         if comparison == baseline {
             return Err(format!("'comparison' and 'baseline' are both '{}'", comparison));
@@ -50,35 +53,55 @@ impl StepFactory for CompareFactory {
             telemetry,
             comparison,
             baseline,
+            require_dogstatsd_forwarded_packets,
         }))
     }
 }
 
+/// The step's fields. The option is the legacy comparison case's key of the same name.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Fields {
     telemetry: Telemetry,
     comparison: String,
     baseline: String,
+    /// Fails unless the baseline and the comparison each forwarded at least one DogStatsD packet.
+    #[serde(default)]
+    require_dogstatsd_forwarded_packets: bool,
 }
 
 /// The telemetry compared.
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum Telemetry {
+    Events,
     Metrics,
+    ServiceChecks,
 }
 
 impl Telemetry {
+    /// The keys of a `dump` answer that hold this telemetry.
+    fn keys(self) -> &'static [&'static str] {
+        match self {
+            Self::Events => &["events"],
+            Self::Metrics => &["metrics"],
+            Self::ServiceChecks => &["service_checks"],
+        }
+    }
+
     fn mode(self) -> AnalysisMode {
         match self {
+            Self::Events => AnalysisMode::Events,
             Self::Metrics => AnalysisMode::Metrics,
+            Self::ServiceChecks => AnalysisMode::ServiceChecks,
         }
     }
 
     fn name(self) -> &'static str {
         match self {
+            Self::Events => "events",
             Self::Metrics => "metrics",
+            Self::ServiceChecks => "service_checks",
         }
     }
 }
@@ -89,6 +112,7 @@ struct Compare {
     telemetry: Telemetry,
     comparison: String,
     baseline: String,
+    require_dogstatsd_forwarded_packets: bool,
 }
 
 #[async_trait]
@@ -113,7 +137,8 @@ impl Step for Compare {
         let compared = async {
             let (comparison, baseline) =
                 tokio::try_join!(self.dump(cx, &self.comparison), self.dump(cx, &self.baseline))?;
-            let runner = AnalysisRunner::new(self.telemetry.mode(), baseline, comparison, None);
+            let runner = AnalysisRunner::new(self.telemetry.mode(), baseline, comparison, None)
+                .with_dogstatsd_forwarding_requirement(self.require_dogstatsd_forwarded_packets);
             let report = match runner.run_analysis() {
                 Ok(()) => StepReport {
                     status: StepStatus::Passed,
@@ -160,7 +185,11 @@ impl Compare {
     /// What `on` holds, as its `dump` answers it. The answer is kept in case the case fails.
     async fn dump(&self, cx: &StepContext<'_>, on: &str) -> Result<CollectedData, HandleError> {
         let limit = cx.deadline.saturating_duration_since(Instant::now());
-        let dump: Value = cx.handle(on)?.op(DUMP, Value::Null, limit).await?;
+        let mut keys = self.telemetry.keys().to_vec();
+        if self.require_dogstatsd_forwarded_packets {
+            keys.push(FORWARDED_PACKETS);
+        }
+        let dump: Value = cx.handle(on)?.op(DUMP, json!(keys), limit).await?;
         cx.keep(on, DUMP_FILE, dump.to_string().as_bytes(), Keep::OnFailure)
             .await;
         serde_json::from_value(dump)
