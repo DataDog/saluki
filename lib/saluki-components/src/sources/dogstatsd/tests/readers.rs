@@ -13,7 +13,6 @@ use saluki_io::net::Stream;
 use tokio::{
     io::AsyncWriteExt as _,
     net::{UnixDatagram, UnixStream},
-    sync::mpsc,
     task::{yield_now, JoinHandle},
     time::timeout,
 };
@@ -22,8 +21,8 @@ use super::*;
 use crate::sources::dogstatsd::should_drop_oversized_named_pipe_frame;
 #[cfg(unix)]
 use crate::sources::dogstatsd::{
-    build_io_buffer_pool, receive_connected_stream, receive_connectionless_stream, received_payload,
-    DatagramSocketContext, QueuedDatagram,
+    build_io_buffer_pool, drive_connected_stream, receive_connectionless_stream, received_payload, QueuedDatagram,
+    ReceivedDatagram,
 };
 #[cfg(target_os = "linux")]
 use crate::sources::dogstatsd::{
@@ -35,32 +34,13 @@ use crate::sources::dogstatsd::{
 const RECV_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[cfg(unix)]
-fn test_datagram_socket_context(listen_addr: ListenAddress) -> Arc<DatagramSocketContext> {
-    Arc::new(DatagramSocketContext {
-        metrics: build_metrics(&listen_addr, &test_component_context(), false),
-        listen_addr,
-        eol_required: false,
-        packet_forwarder: None,
-    })
-}
-
-#[cfg(unix)]
-async fn recv_datagram(packets_rx: &mut WorkQueueReceiver<QueuedDatagram>) -> ReceivedBuffer {
+async fn recv_datagram(packets_rx: &mut WorkQueueReceiver<QueuedDatagram>) -> ReceivedDatagram {
     timeout(RECV_TIMEOUT, packets_rx.recv())
         .await
         .expect("packet should be received")
         .expect("reader should remain active")
         .result
         .expect("receive should succeed")
-}
-
-#[cfg(unix)]
-async fn recv_stream(packets_rx: &mut mpsc::Receiver<io::Result<ReceivedBuffer>>) -> ReceivedBuffer {
-    timeout(RECV_TIMEOUT, packets_rx.recv())
-        .await
-        .expect("read should finish")
-        .expect("reader should remain active")
-        .expect("read should succeed")
 }
 
 /// Closes the queue of a reader, wakes the reader with `wake`, and waits for it to stop.
@@ -85,15 +65,15 @@ async fn uds_datagram_reader_is_bounded_by_io_buffer_pool() {
     let (pool, _shrinker) = build_io_buffer_pool(1, 2, TEST_BUFFER_SIZE);
     let (packets_tx, mut packets_rx) = work_queue::bounded(std::num::NonZeroUsize::MIN, 3);
     let mut packets_rx = packets_rx.pop().expect("one decoder queue");
+    let listener_state = ListenerState {
+        io_buffer_pool: pool,
+        ..test_listener_state(ListenAddress::Unixgram(socket_path.clone()))
+    };
     let reader = tokio::spawn(receive_connectionless_stream(
         Stream::from(receiver),
-        pool,
         MemoryLimiter::noop(),
-        false,
-        TrafficCapture::new(PathBuf::new(), 1),
-        None,
         packets_tx,
-        test_datagram_socket_context(ListenAddress::Unixgram(socket_path.clone())),
+        Arc::new(listener_state),
     ));
     let payloads: [&[u8]; 3] = [b"first", b"second", b"third"];
 
@@ -114,7 +94,7 @@ async fn uds_datagram_reader_is_bounded_by_io_buffer_pool() {
     assert_eq!(packets_rx.len(), 2);
 
     let first = recv_datagram(&mut packets_rx).await;
-    assert_eq!(received_payload(first.buffer(), first.bytes_read), payloads[0]);
+    assert_eq!(received_payload(&first.buffer, first.bytes_read), payloads[0]);
     drop(first);
 
     timeout(RECV_TIMEOUT, async {
@@ -127,7 +107,7 @@ async fn uds_datagram_reader_is_bounded_by_io_buffer_pool() {
 
     for expected in &payloads[1..] {
         let received = recv_datagram(&mut packets_rx).await;
-        assert_eq!(received_payload(received.buffer(), received.bytes_read), *expected);
+        assert_eq!(received_payload(&received.buffer, received.bytes_read), *expected);
     }
 
     stop_reader(packets_rx, reader, sender.send_to(b"shutdown", &socket_path)).await;
@@ -154,15 +134,17 @@ async fn uds_datagram_reader_pins_origin_before_decode() {
     let (pool, _shrinker) = build_io_buffer_pool(1, 1, TEST_BUFFER_SIZE);
     let (packets_tx, mut packets_rx) = work_queue::bounded(std::num::NonZeroUsize::MIN, 1);
     let mut packets_rx = packets_rx.pop().expect("one decoder queue");
+    let listener_state = ListenerState {
+        io_buffer_pool: pool,
+        decoder_context: test_decoder_context(true),
+        capture_entity_resolver: Some(capture_entity_resolver.clone()),
+        ..test_listener_state(listen_addr)
+    };
     let reader = tokio::spawn(receive_connectionless_stream(
         stream,
-        pool,
         MemoryLimiter::noop(),
-        true,
-        TrafficCapture::new(PathBuf::new(), 1),
-        Some(capture_entity_resolver.clone()),
         packets_tx,
-        test_datagram_socket_context(listen_addr),
+        Arc::new(listener_state),
     ));
 
     sender
@@ -205,68 +187,84 @@ async fn uds_datagram_reader_pins_origin_before_decode() {
     stop_reader(packets_rx, reader, sender.send_to(b"shutdown", &socket_path)).await;
 }
 
-/// Spawns a connected stream reader over one end of a socket pair with a single-buffer pool, returning the other end.
+/// Drives a UDS stream connection over one end of a socket pair, with a single-buffer pool, until the other end closes.
+///
+/// Returns the other end of the pair, the handler, and the metrics output the handler dispatches to.
 #[cfg(unix)]
-fn spawn_connected_reader() -> (
-    UnixStream,
-    mpsc::Receiver<io::Result<ReceivedBuffer>>,
-    JoinHandle<()>,
-    impl Future<Output = ()>,
-) {
+fn spawn_connected_stream() -> (UnixStream, JoinHandle<()>, Outputs<EventsBuffer>) {
     let (sender, receiver) = UnixStream::pair().expect("stream pair should be created");
-    let (pool, shrinker) = build_io_buffer_pool(1, 1, TEST_BUFFER_SIZE);
-    let (packets_tx, packets_rx) = mpsc::channel(1);
-    let reader = tokio::spawn(receive_connected_stream(
-        Stream::from(receiver),
-        pool,
-        MemoryLimiter::noop(),
-        false,
-        TrafficCapture::new(PathBuf::new(), 1),
-        None,
-        packets_tx,
-    ));
-    (sender, packets_rx, reader, shrinker)
+    let listener_state = test_listener_state(ListenAddress::Unix("/tmp/dsd.socket".into()));
+    let source = test_source_context();
+    let handler = tokio::spawn(async move {
+        drive_connected_stream(
+            Stream::from(receiver),
+            source.context,
+            MemoryLimiter::noop(),
+            &listener_state,
+        )
+        .await
+    });
+    (sender, handler, source.outputs)
+}
+
+/// Waits for the handler to stop, and returns the names of every metric it dispatched, in order.
+#[cfg(unix)]
+async fn dispatched_metric_names(handler: JoinHandle<()>, mut outputs: Outputs<EventsBuffer>) -> Vec<String> {
+    timeout(RECV_TIMEOUT, handler)
+        .await
+        .expect("handler should stop once the peer closes the stream")
+        .expect("handler should not panic");
+
+    let mut metrics_rx = outputs.take_named_output("metrics");
+    let mut names = Vec::new();
+    while let Some(buffer) = metrics_rx.try_next() {
+        for event in buffer {
+            let metric = event.try_into_metric().expect("should be a metric");
+            names.push(metric.context().name().to_string());
+        }
+    }
+    names
 }
 
 #[cfg(unix)]
 #[tokio::test]
-async fn connection_oriented_reader_preserves_partial_frames() {
-    let (mut sender, mut packets_rx, reader, _shrinker) = spawn_connected_reader();
+async fn connected_stream_reassembles_frames_split_across_reads() {
+    let (mut sender, handler, outputs) = spawn_connected_stream();
 
-    sender.write_all(b"partial").await.expect("first payload should send");
-    let first = recv_stream(&mut packets_rx).await;
-    assert_eq!(first.buffer().chunk(), b"partial");
-    drop(first);
+    let frame = length_delimited(b"split.metric:1|c");
+    let (head, tail) = frame.split_at(frame.len() / 2);
+    sender.write_all(head).await.expect("first half should send");
+    sender.flush().await.expect("first half should flush");
+    // Let the handler read the first half on its own before the rest arrives.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    sender.write_all(tail).await.expect("second half should send");
+    drop(sender);
 
-    sender.write_all(b"-frame").await.expect("second payload should send");
-    let second = recv_stream(&mut packets_rx).await;
-    assert_eq!(second.bytes_read, b"-frame".len());
-    assert_eq!(second.buffer().chunk(), b"partial-frame");
-    drop(second);
-
-    stop_reader(packets_rx, reader, sender.write_all(b"shutdown")).await;
+    assert_eq!(dispatched_metric_names(handler, outputs).await, ["split.metric"]);
 }
 
 #[cfg(unix)]
 #[tokio::test]
-async fn connection_oriented_reader_releases_drained_buffer_before_reacquiring() {
-    let (mut sender, mut packets_rx, reader, _shrinker) = spawn_connected_reader();
+async fn connected_stream_returns_a_drained_buffer_before_reading_again() {
+    // The pool holds a single buffer, so the handler can only read the second frame once it has given the first
+    // read's buffer back.
+    let (mut sender, handler, outputs) = spawn_connected_stream();
 
-    sender.write_all(b"first").await.expect("first payload should send");
-    let mut first = recv_stream(&mut packets_rx).await;
-    let bytes_read = first.bytes_read;
-    first.buffer_mut().advance(bytes_read);
-    drop(first);
+    sender
+        .write_all(&length_delimited(b"first.metric:1|c"))
+        .await
+        .expect("first frame should send");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    sender
+        .write_all(&length_delimited(b"second.metric:1|c"))
+        .await
+        .expect("second frame should send");
+    drop(sender);
 
-    // The pool holds a single buffer, so the reader can only read again once it gets the drained one back.
-    sender.write_all(b"second").await.expect("second payload should send");
-    let mut second = recv_stream(&mut packets_rx).await;
-    let bytes_read = second.bytes_read;
-    assert_eq!(received_payload(second.buffer(), bytes_read), b"second");
-    second.buffer_mut().advance(bytes_read);
-    drop(second);
-
-    stop_reader(packets_rx, reader, sender.write_all(b"shutdown")).await;
+    assert_eq!(
+        dispatched_metric_names(handler, outputs).await,
+        ["first.metric", "second.metric"]
+    );
 }
 
 #[test]
