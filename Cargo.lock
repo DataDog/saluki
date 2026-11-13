@@ -4635,6 +4635,7 @@ dependencies = [
  "rustls",
  "rustls-cng-crypto",
  "saluki-common",
+ "saluki-config",
  "saluki-error",
  "serde",
  "serde-saphyr",

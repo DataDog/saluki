@@ -1,0 +1,6 @@
+#!/usr/bin/execlineb -P
+
+# The image's own run script, with standard error merged into the log.
+fdmove -c 2 1
+foreground { /initlog.sh "starting agent" }
+s6-envdir -I /run/agent/env agent run

@@ -28,6 +28,7 @@ regex = { workspace = true, features = ["std"] }
 reqwest = { workspace = true, features = ["json", "zstd", "rustls-no-provider", "query"] }
 rustls = { workspace = true }
 saluki-common = { workspace = true }
+saluki-config = { workspace = true }
 saluki-error = { workspace = true }
 serde = { workspace = true }
 serde-saphyr = { workspace = true }
