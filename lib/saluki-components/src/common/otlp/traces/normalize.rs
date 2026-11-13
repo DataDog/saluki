@@ -260,6 +260,19 @@ pub(crate) fn is_normalized_tag_value(value: &str) -> bool {
     is_normalized_ascii_tag(value, false)
 }
 
+/// Returns `value` normalized as a tag value.
+///
+/// A value that's already normalized is returned as is, without copying it.
+pub(crate) fn normalized_tag_value(value: &MetaString) -> MetaString {
+    if is_normalized_tag_value(value) {
+        return value.clone();
+    }
+
+    let mut normalized = StringBuilder::new();
+    normalize_tag_value_into_unchecked(value, &mut normalized);
+    MetaString::from(normalized.as_str())
+}
+
 /// Normalization function that writes directly into a [`StringBuilder`].
 ///
 /// Characters are emitted as they're processed: valid characters are pushed directly,

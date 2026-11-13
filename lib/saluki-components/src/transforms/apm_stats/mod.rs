@@ -32,6 +32,7 @@ use tokio::{select, time::interval};
 use tracing::{debug, error};
 
 use crate::common::datadog::version_data::ContainerVersionData;
+use crate::common::otlp::traces::normalize::normalized_tag_value;
 use crate::common::otlp::util::extract_container_tags_from_attributes_map;
 use crate::config::AgentEnv;
 
@@ -238,8 +239,10 @@ impl ApmStats {
                 })
             })
             .unwrap_or_else(|| {
-                if !trace.payload.env.is_empty() {
-                    trace.payload.env.clone()
+                // The trace encoder normalizes the payload's env, so stats do the same to keep both on one env.
+                let payload_env = normalized_tag_value(&trace.payload.env);
+                if !payload_env.is_empty() {
+                    payload_env
                 } else {
                     self.agent_env.clone()
                 }
@@ -1834,6 +1837,25 @@ mod tests {
         assert_eq!(stats[0].version(), "v4");
         assert_eq!(stats[0].git_commit_sha(), "abc123");
         assert_eq!(stats[0].image_tag(), "1.2.3");
+    }
+
+    #[test]
+    fn stats_normalize_the_payload_env_like_the_trace_encoder() {
+        let transform = transform_with_workload_provider(None);
+        let key_for = |payload_env: &str| {
+            let mut trace = Trace::new(vec![make_test_span("svc", "op", "res")], TraceIngestInfo::Datadog);
+            trace.payload.env = MetaString::from(payload_env);
+            transform
+                .build_payload_key(&trace, "", ContainerVersionData::default())
+                .env
+                .to_string()
+        };
+
+        assert_eq!(key_for("Prod Env"), "prod_env");
+        assert_eq!(key_for("prod"), "prod");
+        // A payload env that normalizes to nothing falls back to the agent's.
+        assert_eq!(key_for("!!!"), "none");
+        assert_eq!(key_for(""), "none");
     }
 
     proptest! {

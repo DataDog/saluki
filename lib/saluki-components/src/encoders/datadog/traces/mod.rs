@@ -527,10 +527,16 @@ impl TraceEndpointEncoder {
             Some(self.default_hostname.as_ref()),
             self.ignore_missing_datadog_fields,
         );
-        // The container's `version` tag fills in an application version that the payload leaves empty. The container
-        // is looked up only then.
-        let version_tags = if trace.payload.app_version.is_empty() {
-            self.container_tags.get(&trace.payload.container_id)
+        // The container's `version` tag fills in an application version that the payload leaves empty. The tags come
+        // from the trace's own container-tag attributes and from the container's known tags, as they do for stats. They
+        // are gathered only when the version is missing.
+        let version_tags = if trace.payload.app_version.is_empty() && !trace.payload.container_id.is_empty() {
+            let mut tags = TagSet::default();
+            extract_container_tags_from_attributes_map(&trace.attributes, &mut tags);
+            if let Some(provider_tags) = self.container_tags.get(&trace.payload.container_id) {
+                tags.merge_shared(&provider_tags);
+            }
+            Some(tags)
         } else {
             None
         };
@@ -1530,6 +1536,28 @@ mod tests {
         // Neither does a payload without a container ID.
         let trace = make_trace(TraceIngestInfo::Datadog);
         assert_eq!(encode(&mut encoder, &trace), "");
+    }
+
+    #[test]
+    fn app_version_falls_back_to_the_traces_own_container_tag_attributes() {
+        // An OTLP trace carries its container's tags as attributes, and the tagger may not know the container yet.
+        let mut encoder = make_encoder(false);
+        let mut trace = make_trace(TraceIngestInfo::Datadog);
+        trace.payload.container_id = MetaString::from("cid-1");
+        trace.attributes = Arc::new(FastHashMap::from_iter([(
+            MetaString::from("datadog.container.tag.version"),
+            AttributeValue::String(MetaString::from("attribute-v")),
+        )]));
+
+        let mut buf = Vec::new();
+        encoder.encode(&trace, &mut buf).expect("encode should succeed");
+        assert_eq!(decode_etp_env_and_app_versions(&buf)[0].1, "attribute-v");
+
+        // Without a container ID, the attributes don't apply.
+        trace.payload.container_id = MetaString::default();
+        let mut buf = Vec::new();
+        encoder.encode(&trace, &mut buf).expect("encode should succeed");
+        assert_eq!(decode_etp_env_and_app_versions(&buf)[0].1, "");
     }
 
     #[test]
