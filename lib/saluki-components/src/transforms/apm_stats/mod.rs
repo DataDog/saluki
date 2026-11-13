@@ -31,6 +31,8 @@ use stringtheory::MetaString;
 use tokio::{select, time::interval};
 use tracing::{debug, error};
 
+use crate::common::datadog::version_data::ContainerVersionData;
+use crate::common::otlp::traces::normalize::normalized_tag_value;
 use crate::common::otlp::util::extract_container_tags_from_attributes_map;
 use crate::config::AgentEnv;
 
@@ -54,6 +56,9 @@ const DEFAULT_FLUSH_INTERVAL: Duration = Duration::from_secs(10);
 
 /// Tag key for process tags in span meta.
 const TAG_PROCESS_TAGS: &str = "_dd.tags.process";
+
+/// Attribute key for the Git commit SHA, set on the tracer payload or in span meta.
+const TAG_GIT_COMMIT_SHA: &str = "_dd.git.commit.sha";
 
 /// Maximum number of `ClientGroupedStats` entries per `TraceStats` event.
 const MAX_STATS_GROUPS_PER_EVENT: usize = 4000;
@@ -161,8 +166,9 @@ impl ApmStats {
 
         let process_tags = extract_process_tags(trace);
 
-        let payload_key = self.build_payload_key(trace, &process_tags);
         let infra_tags = self.build_infra_tags(trace, &process_tags);
+        let container_version = ContainerVersionData::from_tags(&infra_tags.container_tags);
+        let payload_key = self.build_payload_key(trace, &process_tags, container_version);
 
         let origin = trace
             .spans()
@@ -201,7 +207,12 @@ impl ApmStats {
         InfraTags::new(container_id, container_tags, process_tags)
     }
 
-    fn build_payload_key(&self, trace: &Trace, process_tags: &str) -> PayloadAggregationKey {
+    /// Builds the payload aggregation key of a trace.
+    ///
+    /// `container_version` supplies the version data that the trace itself leaves empty.
+    fn build_payload_key(
+        &self, trace: &Trace, process_tags: &str, container_version: ContainerVersionData<'_>,
+    ) -> PayloadAggregationKey {
         let root_span = trace
             .spans()
             .iter()
@@ -228,8 +239,10 @@ impl ApmStats {
                 })
             })
             .unwrap_or_else(|| {
-                if !trace.payload.env.is_empty() {
-                    trace.payload.env.clone()
+                // The trace encoder normalizes the payload's env, so stats do the same to keep both on one env.
+                let payload_env = normalized_tag_value(&trace.payload.env);
+                if !payload_env.is_empty() {
+                    payload_env
                 } else {
                     self.agent_env.clone()
                 }
@@ -251,9 +264,8 @@ impl ApmStats {
                 }
             });
 
-        // Version resolution mirrors Go agent pkg/trace/version/version.go:GetAppVersionFromTrace:
-        // root span meta["version"] (set by otel_span_to_dd_span with span-over-resource precedence)
-        // takes priority, falling back to the resource-level payload.app_version.
+        // The root span's `version` attribute takes priority: for OTLP traces it already prefers the span's version
+        // over the resource's. The payload's version comes next, then the container's `version` tag.
         let version = root_span
             .and_then(|s| {
                 s.attributes
@@ -262,7 +274,13 @@ impl ApmStats {
                     .filter(|s| !s.is_empty())
             })
             .cloned()
-            .unwrap_or_else(|| trace.payload.app_version.clone());
+            .unwrap_or_else(|| {
+                if !trace.payload.app_version.is_empty() {
+                    trace.payload.app_version.clone()
+                } else {
+                    MetaString::from(container_version.app_version)
+                }
+            });
 
         let container_id = if !trace.payload.container_id.is_empty() {
             trace.payload.container_id.clone()
@@ -273,15 +291,22 @@ impl ApmStats {
                 .unwrap_or_default()
         };
 
-        let git_commit_sha = root_span
-            .and_then(|s| {
-                s.attributes
-                    .get("_dd.git.commit.sha")
-                    .and_then(AttributeValue::as_string)
-                    .filter(|s| !s.is_empty())
+        // The commit SHA set on the tracer payload wins over the root span's, and both win over the container's tag.
+        let git_commit_sha = trace
+            .attributes
+            .get(TAG_GIT_COMMIT_SHA)
+            .and_then(AttributeValue::as_string)
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                root_span.and_then(|s| {
+                    s.attributes
+                        .get(TAG_GIT_COMMIT_SHA)
+                        .and_then(AttributeValue::as_string)
+                        .filter(|s| !s.is_empty())
+                })
             })
             .cloned()
-            .unwrap_or_default();
+            .unwrap_or_else(|| MetaString::from(container_version.git_commit_sha));
 
         let image_tag = root_span
             .and_then(|s| {
@@ -291,7 +316,7 @@ impl ApmStats {
                     .filter(|s| !s.is_empty())
             })
             .cloned()
-            .unwrap_or_default();
+            .unwrap_or_else(|| MetaString::from(container_version.image_tag));
 
         let lang = if !trace.payload.language_name.is_empty() {
             trace.payload.language_name.clone()
@@ -541,6 +566,7 @@ mod tests {
     use saluki_core::data_model::event::trace::{AttributeValue, Span, TraceIngestInfo};
     use saluki_core::data_model::event::trace_stats::ClientGroupedStats;
     use saluki_core::data_model::event::trace_stats::ClientStatsBucket;
+    use saluki_env::workload::providers::TestWorkloadProvider;
 
     use super::aggregation::BUCKET_DURATION_NS;
     use super::span_concentrator::METRIC_PARTIAL_VERSION;
@@ -1708,7 +1734,7 @@ mod tests {
         // Simulate OTLP resource extraction: payload.app_version comes from resource attrs only.
         trace.payload.app_version = MetaString::from("resource-v1");
 
-        let key = transform.build_payload_key(&trace, "");
+        let key = transform.build_payload_key(&trace, "", ContainerVersionData::default());
 
         // The Go agent resolves version from root_span.meta["version"] first, which carries
         // span-over-resource precedence. The span attribute ("span-v2") must win.
@@ -1717,6 +1743,119 @@ mod tests {
             "span-v2",
             "span-level version must take precedence over resource-level payload.app_version for OTLP traces"
         );
+    }
+
+    fn transform_with_workload_provider(workload_provider: Option<TestWorkloadProvider>) -> ApmStats {
+        let now = now_nanos();
+        ApmStats {
+            concentrator: SpanConcentrator::new(true, true, &[], Default::default(), now),
+            flush_interval: DEFAULT_FLUSH_INTERVAL,
+            agent_env: MetaString::from("none"),
+            agent_hostname: MetaString::default(),
+            workload_provider: workload_provider
+                .map(|provider| Arc::new(provider) as Arc<dyn WorkloadProvider + Send + Sync>),
+        }
+    }
+
+    fn string_attributes(pairs: &[(&str, &str)]) -> FastHashMap<MetaString, AttributeValue> {
+        pairs
+            .iter()
+            .map(|(k, v)| (MetaString::from(*k), AttributeValue::String(MetaString::from(*v))))
+            .collect()
+    }
+
+    const CONTAINER_VERSION: ContainerVersionData<'static> = ContainerVersionData {
+        git_commit_sha: "container-sha",
+        image_tag: "container-image",
+        app_version: "container-v",
+    };
+
+    #[test]
+    fn version_data_falls_back_to_container_tags() {
+        let transform = transform_with_workload_provider(None);
+        let trace = Trace::new(vec![make_test_span("svc", "op", "res")], TraceIngestInfo::Datadog);
+
+        let key = transform.build_payload_key(&trace, "", CONTAINER_VERSION);
+        assert_eq!(key.version, "container-v");
+        assert_eq!(key.git_commit_sha, "container-sha");
+        assert_eq!(key.image_tag, "container-image");
+    }
+
+    #[test]
+    fn trace_version_data_wins_over_container_tags() {
+        let transform = transform_with_workload_provider(None);
+
+        // The payload version and the root span's image tag and commit SHA win over the container's tags.
+        let span = make_test_span("svc", "op", "res").with_attributes(string_attributes(&[
+            (TAG_GIT_COMMIT_SHA, "span-sha"),
+            ("_dd.image_tag", "span-image"),
+        ]));
+        let mut trace = Trace::new(vec![span], TraceIngestInfo::Datadog);
+        trace.payload.app_version = MetaString::from("payload-v");
+        let key = transform.build_payload_key(&trace, "", CONTAINER_VERSION);
+        assert_eq!(key.version, "payload-v");
+        assert_eq!(key.git_commit_sha, "span-sha");
+        assert_eq!(key.image_tag, "span-image");
+
+        // The commit SHA set on the tracer payload wins over the root span's.
+        trace.attributes = Arc::new(string_attributes(&[(TAG_GIT_COMMIT_SHA, "payload-sha")]));
+        let key = transform.build_payload_key(&trace, "", CONTAINER_VERSION);
+        assert_eq!(key.git_commit_sha, "payload-sha");
+
+        // Empty trace values don't hide the container's tags.
+        let span = make_test_span("svc", "op", "res").with_attributes(string_attributes(&[
+            ("version", ""),
+            (TAG_GIT_COMMIT_SHA, ""),
+            ("_dd.image_tag", ""),
+        ]));
+        let mut trace = Trace::new(vec![span], TraceIngestInfo::Datadog);
+        trace.attributes = Arc::new(string_attributes(&[(TAG_GIT_COMMIT_SHA, "")]));
+        let key = transform.build_payload_key(&trace, "", CONTAINER_VERSION);
+        assert_eq!(key.version, "container-v");
+        assert_eq!(key.git_commit_sha, "container-sha");
+        assert_eq!(key.image_tag, "container-image");
+    }
+
+    #[test]
+    fn stats_carry_version_data_from_the_workload_provider() {
+        let provider = TestWorkloadProvider::with_entity(
+            EntityId::Container(MetaString::from("cid-1")),
+            &["git.commit.sha:abc123", "image_tag:1.2.3", "version:v4"],
+        );
+        let mut transform = transform_with_workload_provider(Some(provider));
+
+        let now = now_nanos();
+        let mut attrs = FastHashMap::default();
+        attrs.insert(MetaString::from("_dd.measured"), AttributeValue::Float(1.0));
+        let span = Span::new("svc", "op", "res", "web", 1, 0, now, 100_000_000, 0).with_attributes(attrs);
+        let mut trace = Trace::new(vec![span], TraceIngestInfo::Datadog);
+        trace.payload.container_id = MetaString::from("cid-1");
+        transform.process_trace(&trace);
+
+        let stats = transform.concentrator.flush(now + BUCKET_DURATION_NS * 2, true);
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].version(), "v4");
+        assert_eq!(stats[0].git_commit_sha(), "abc123");
+        assert_eq!(stats[0].image_tag(), "1.2.3");
+    }
+
+    #[test]
+    fn stats_normalize_the_payload_env_like_the_trace_encoder() {
+        let transform = transform_with_workload_provider(None);
+        let key_for = |payload_env: &str| {
+            let mut trace = Trace::new(vec![make_test_span("svc", "op", "res")], TraceIngestInfo::Datadog);
+            trace.payload.env = MetaString::from(payload_env);
+            transform
+                .build_payload_key(&trace, "", ContainerVersionData::default())
+                .env
+                .to_string()
+        };
+
+        assert_eq!(key_for("Prod Env"), "prod_env");
+        assert_eq!(key_for("prod"), "prod");
+        // A payload env that normalizes to nothing falls back to the agent's.
+        assert_eq!(key_for("!!!"), "none");
+        assert_eq!(key_for(""), "none");
     }
 
     proptest! {

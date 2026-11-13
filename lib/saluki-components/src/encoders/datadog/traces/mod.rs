@@ -1,4 +1,4 @@
-use std::{borrow::Cow, fmt::Write, time::Duration};
+use std::{borrow::Cow, fmt, fmt::Write, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use datadog_protos::traces::builders::{idx::SpanKind, AgentPayloadBuilder};
@@ -14,15 +14,16 @@ use saluki_core::{
             trace::{AttributeValue, Trace, TraceIngestInfo},
             EventType,
         },
+        origin::OriginTagCardinality,
         payload::{HttpPayload, Payload, PayloadMetadata, PayloadType},
-        tags::TagSet,
+        tags::{SharedTagSet, TagSet},
     },
     observability::ComponentMetricsExt as _,
     runtime,
     topology::{EventsBuffer, PayloadsBuffer},
 };
 use saluki_env::host::providers::BoxedHostProvider;
-use saluki_env::{EnvironmentProvider, HostProvider};
+use saluki_env::{workload::EntityId, EnvironmentProvider, HostProvider, WorkloadProvider};
 use saluki_error::generic_error;
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_io::compression::CompressionScheme;
@@ -40,8 +41,10 @@ use crate::common::datadog::{
     io::RB_BUFFER_CHUNK_SIZE,
     request_builder::{EndpointEncoder, RequestBuilder},
     telemetry::ComponentTelemetry,
+    version_data::ContainerVersionData,
     DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT, TAG_DECISION_MAKER,
 };
+use crate::common::otlp::traces::normalize::{is_normalized_tag_value, normalize_tag_value_into_unchecked};
 use crate::common::otlp::util::{
     attributes_to_source, extract_container_tags_from_attributes_map, Source as OtlpSource,
     SourceKind as OtlpSourceKind, KEY_DATADOG_CONTAINER_TAGS,
@@ -49,6 +52,12 @@ use crate::common::otlp::util::{
 use crate::config::AgentEnv;
 
 const CONTAINER_TAGS_META_KEY: &str = "_dd.tags.container";
+
+/// Cardinality of the container tags looked up to fill in a missing application version.
+///
+/// The version data tags are low cardinality, so a low cardinality lookup finds them.
+const VERSION_DATA_TAG_CARDINALITY: OriginTagCardinality = OriginTagCardinality::Low;
+
 const MAX_TRACES_PER_PAYLOAD: usize = 10000;
 static CONTENT_TYPE_PROTOBUF: HeaderValue = HeaderValue::from_static("application/x-protobuf");
 
@@ -137,6 +146,12 @@ pub struct DatadogTraceConfiguration {
     /// If unset, payloads carry an empty hostname. See
     /// [`with_environment_provider`](Self::with_environment_provider).
     pub default_hostname: Option<String>,
+
+    /// Workload provider used to look up container tags, if any.
+    ///
+    /// When a trace carries no application version, the `version` tag of its container fills it in. The lookup never
+    /// waits: if the container's tags aren't known yet, the version stays empty.
+    pub workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
 }
 
 impl DatadogTraceConfiguration {
@@ -162,6 +177,7 @@ impl DatadogTraceConfiguration {
             self.error_tracking_standalone,
             self.ignore_missing_datadog_fields,
         )
+        .with_container_tag_lookup(ContainerTagLookup(self.workload_provider.clone()))
     }
 }
 
@@ -390,6 +406,31 @@ async fn run_request_builder(
     Ok(())
 }
 
+/// One-shot lookup of a container's tags.
+///
+/// The lookup doesn't wait for the container to become known, and doesn't retry.
+#[derive(Clone, Default)]
+struct ContainerTagLookup(Option<Arc<dyn WorkloadProvider + Send + Sync>>);
+
+impl ContainerTagLookup {
+    /// Returns the tags of the container with the given ID, if the container is known.
+    fn get(&self, container_id: &MetaString) -> Option<SharedTagSet> {
+        if container_id.is_empty() {
+            return None;
+        }
+        let provider = self.0.as_ref()?;
+        provider.get_tags_for_entity(&EntityId::Container(container_id.clone()), VERSION_DATA_TAG_CARDINALITY)
+    }
+}
+
+impl fmt::Debug for ContainerTagLookup {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ContainerTagLookup")
+            .field("enabled", &self.0.is_some())
+            .finish()
+    }
+}
+
 #[derive(Debug)]
 struct TraceEndpointEncoder {
     scratch: ScratchWriter<Vec<u8>>,
@@ -401,9 +442,11 @@ struct TraceEndpointEncoder {
     errors_per_second: f64,
     ignore_missing_datadog_fields: bool,
     string_builder: StringBuilder,
+    env_builder: StringBuilder,
     string_table: StringTable,
     error_tracking_standalone: bool,
     extra_headers: Vec<(HeaderName, HeaderValue)>,
+    container_tags: ContainerTagLookup,
 }
 
 impl TraceEndpointEncoder {
@@ -429,10 +472,18 @@ impl TraceEndpointEncoder {
             errors_per_second,
             ignore_missing_datadog_fields,
             string_builder: StringBuilder::new(),
+            env_builder: StringBuilder::new(),
             string_table: StringTable::new(),
             error_tracking_standalone,
             extra_headers,
+            container_tags: ContainerTagLookup::default(),
         }
+    }
+
+    /// Sets the lookup used to fill in a missing application version from container tags.
+    fn with_container_tag_lookup(mut self, container_tags: ContainerTagLookup) -> Self {
+        self.container_tags = container_tags;
+        self
     }
 
     fn encode_tracer_payload(&mut self, trace: &Trace, output_buffer: &mut Vec<u8>) -> std::io::Result<()> {
@@ -456,8 +507,15 @@ impl TraceEndpointEncoder {
         // Resolve computed metadata strings (may produce strings not directly present on trace fields).
         let container_tags =
             resolve_container_tags_from_attrs(&trace.attributes, source.as_ref(), self.ignore_missing_datadog_fields);
-        let env_str: Option<&str> = if !trace.payload.env.is_empty() {
-            Some(&trace.payload.env)
+        // The payload environment is normalized like any other tag value before it's interned.
+        let payload_env: &str = if is_normalized_tag_value(&trace.payload.env) {
+            &trace.payload.env
+        } else {
+            normalize_tag_value_into_unchecked(&trace.payload.env, &mut self.env_builder);
+            self.env_builder.as_str()
+        };
+        let env_str: Option<&str> = if !payload_env.is_empty() {
+            Some(payload_env)
         } else if self.ignore_missing_datadog_fields {
             Some("")
         } else {
@@ -469,6 +527,27 @@ impl TraceEndpointEncoder {
             Some(self.default_hostname.as_ref()),
             self.ignore_missing_datadog_fields,
         );
+        // The container's `version` tag fills in an application version that the payload leaves empty. The tags come
+        // from the trace's own container-tag attributes and from the container's known tags, as they do for stats. They
+        // are gathered only when the version is missing.
+        let version_tags = if trace.payload.app_version.is_empty() && !trace.payload.container_id.is_empty() {
+            let mut tags = TagSet::default();
+            extract_container_tags_from_attributes_map(&trace.attributes, &mut tags);
+            if let Some(provider_tags) = self.container_tags.get(&trace.payload.container_id) {
+                tags.merge_shared(&provider_tags);
+            }
+            Some(tags)
+        } else {
+            None
+        };
+        let app_version: &str = if !trace.payload.app_version.is_empty() {
+            &trace.payload.app_version
+        } else {
+            version_tags
+                .as_ref()
+                .map(|tags| ContainerVersionData::from_tags(tags).app_version)
+                .unwrap_or_default()
+        };
         let decision_maker = trace.decision_maker.as_deref();
         let priority = trace.priority.unwrap_or(DEFAULT_CHUNK_PRIORITY);
         let dropped_trace = trace.dropped_trace;
@@ -515,8 +594,8 @@ impl TraceEndpointEncoder {
             if let Some(h) = hostname_str {
                 tp.hostname_ref(self.string_table.intern(h))?;
             }
-            if !trace.payload.app_version.is_empty() {
-                tp.app_version_ref(self.string_table.intern(&trace.payload.app_version))?;
+            if !app_version.is_empty() {
+                tp.app_version_ref(self.string_table.intern(app_version))?;
             }
 
             // Container tags go in the payload-level attributes map.
@@ -850,13 +929,13 @@ fn trace_configuration(agent_env: AgentEnv) -> DatadogTraceConfiguration {
         error_tracking_standalone: false,
         ignore_missing_datadog_fields: false,
         default_hostname: None,
+        workload_provider: None,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeSet, HashMap};
-    use std::sync::Arc;
 
     use datadog_protos::traces::{idx, AgentPayload};
     use protobuf::Message as _;
@@ -864,6 +943,7 @@ mod tests {
         event::trace::{Span as DdSpan, Trace, TraceIngestInfo},
         tags::Tag,
     };
+    use saluki_env::workload::providers::TestWorkloadProvider;
     use stringtheory::MetaString;
 
     use super::*;
@@ -1408,5 +1488,110 @@ mod tests {
             "unexpected native chunk rate {native_chunk_rate:?}"
         );
         assert_eq!(decode_etp_span_attributes(&buf)[0][TAG_OTLP_SAMPLING_RATE], "0.77");
+    }
+
+    /// Resolves the env and app version of every ETP tracer payload in an encoded `AgentPayload`.
+    fn decode_etp_env_and_app_versions(buf: &[u8]) -> Vec<(String, String)> {
+        let payload = AgentPayload::parse_from_bytes(buf).expect("AgentPayload should decode");
+        payload
+            .idxTracerPayloads
+            .iter()
+            .map(|tp| {
+                (
+                    resolve_ref(tp.strings(), tp.envRef()).to_string(),
+                    resolve_ref(tp.strings(), tp.appVersionRef()).to_string(),
+                )
+            })
+            .collect()
+    }
+
+    fn encoder_with_container(container_id: &str, tags: &[&str]) -> TraceEndpointEncoder {
+        let provider = TestWorkloadProvider::with_entity(EntityId::Container(MetaString::from(container_id)), tags);
+        make_encoder(false).with_container_tag_lookup(ContainerTagLookup(Some(Arc::new(provider))))
+    }
+
+    #[test]
+    fn app_version_falls_back_to_container_version_tag() {
+        let mut encoder = encoder_with_container("cid-1", &["image_tag:1.2.3", "version:container-v"]);
+        let encode = |encoder: &mut TraceEndpointEncoder, trace: &Trace| {
+            let mut buf = Vec::new();
+            encoder.encode(trace, &mut buf).expect("encode should succeed");
+            decode_etp_env_and_app_versions(&buf)[0].1.clone()
+        };
+
+        // A payload with no version takes the container's.
+        let mut trace = make_trace(TraceIngestInfo::Datadog);
+        trace.payload.container_id = MetaString::from("cid-1");
+        assert_eq!(encode(&mut encoder, &trace), "container-v");
+
+        // The payload's own version wins.
+        trace.payload.app_version = MetaString::from("payload-v");
+        assert_eq!(encode(&mut encoder, &trace), "payload-v");
+
+        // A container the provider doesn't know yet supplies nothing.
+        let mut trace = make_trace(TraceIngestInfo::Datadog);
+        trace.payload.container_id = MetaString::from("cid-unknown");
+        assert_eq!(encode(&mut encoder, &trace), "");
+
+        // Neither does a payload without a container ID.
+        let trace = make_trace(TraceIngestInfo::Datadog);
+        assert_eq!(encode(&mut encoder, &trace), "");
+    }
+
+    #[test]
+    fn app_version_falls_back_to_the_traces_own_container_tag_attributes() {
+        // An OTLP trace carries its container's tags as attributes, and the tagger may not know the container yet.
+        let mut encoder = make_encoder(false);
+        let mut trace = make_trace(TraceIngestInfo::Datadog);
+        trace.payload.container_id = MetaString::from("cid-1");
+        trace.attributes = Arc::new(FastHashMap::from_iter([(
+            MetaString::from("datadog.container.tag.version"),
+            AttributeValue::String(MetaString::from("attribute-v")),
+        )]));
+
+        let mut buf = Vec::new();
+        encoder.encode(&trace, &mut buf).expect("encode should succeed");
+        assert_eq!(decode_etp_env_and_app_versions(&buf)[0].1, "attribute-v");
+
+        // Without a container ID, the attributes don't apply.
+        trace.payload.container_id = MetaString::default();
+        let mut buf = Vec::new();
+        encoder.encode(&trace, &mut buf).expect("encode should succeed");
+        assert_eq!(decode_etp_env_and_app_versions(&buf)[0].1, "");
+    }
+
+    #[test]
+    fn container_version_lookup_leaves_container_tags_untouched() {
+        let mut encoder = encoder_with_container("cid-1", &["version:container-v", "kube_namespace:default"]);
+        let mut trace = make_trace(TraceIngestInfo::Datadog);
+        trace.payload.container_id = MetaString::from("cid-1");
+
+        let mut buf = Vec::new();
+        encoder.encode(&trace, &mut buf).expect("encode should succeed");
+        let payload = AgentPayload::parse_from_bytes(&buf).expect("AgentPayload should decode");
+        let tracer_payload = &payload.idxTracerPayloads[0];
+        let attrs = string_attrs(tracer_payload.attributes(), tracer_payload.strings());
+        assert!(!attrs.contains_key(CONTAINER_TAGS_META_KEY));
+    }
+
+    #[test]
+    fn payload_env_is_normalized() {
+        let cases = [
+            ("prod", "prod"),
+            ("Prod Env", "prod_env"),
+            ("STAGING", "staging"),
+            ("!!!", ""),
+            ("", ""),
+        ];
+        for (env, expected) in cases {
+            let mut trace = make_trace(TraceIngestInfo::Datadog);
+            trace.payload.env = MetaString::from(env);
+
+            let mut buf = Vec::new();
+            make_encoder(false)
+                .encode(&trace, &mut buf)
+                .expect("encode should succeed");
+            assert_eq!(decode_etp_env_and_app_versions(&buf)[0].0, expected, "env {env:?}");
+        }
     }
 }
