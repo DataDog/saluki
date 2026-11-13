@@ -5,7 +5,7 @@ use tracing::trace;
 
 use crate::actions::docker_exec;
 use crate::assertions::{Assertion, AssertionContext, AssertionResult, AssertionStatus, Attempts};
-use crate::probe::{probe, ProbeError, POLL_INTERVAL};
+use crate::core::probe::{probe, ProbeError, POLL_INTERVAL};
 
 /// Assertion that checks a file exists in the container, and optionally that its contents match a pattern.
 ///
@@ -224,7 +224,7 @@ mod tests {
     use crate::actions::test_docker::{Exec, FakeDocker};
     use crate::assertions::test_support::host_context;
     use crate::assertions::{Assertion as _, AssertionContext, AssertionResult, AssertionStatus};
-    use crate::probe::PROBE_TIMEOUT;
+    use crate::core::probe::PROBE_TIMEOUT;
 
     /// Long enough that a read capped at [`PROBE_TIMEOUT`] would be retried within the step.
     const STEP: Duration = PROBE_TIMEOUT.saturating_add(Duration::from_secs(2));

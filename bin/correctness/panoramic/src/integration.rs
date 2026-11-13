@@ -13,8 +13,8 @@ use crate::{
         target_image_for_runtime, AssertionStep, IntegrationConfig, DEFAULT_INTAKE_IMAGE, INTAKE_IMAGE_NAME,
         MAC_RUNTIME, TARGET_IMAGE_NAME,
     },
+    core::result::TestResult,
     image_override::ImageOverrides,
-    reporter::TestResult,
     test::{Test, TestContext, TestSuite},
 };
 
@@ -211,8 +211,8 @@ procedure:
 
         use crate::assertions::test_support::{host_context, procedure};
         use crate::assertions::{run_assertion_steps, LogBuffer};
-        use crate::deadline::{Budget, Deadline};
-        use crate::record::{CaseRecord, StepStatus};
+        use crate::core::deadline::{Budget, Deadline};
+        use crate::core::record::{CaseRecord, StepStatus};
 
         let mut case = procedure(
             r#"

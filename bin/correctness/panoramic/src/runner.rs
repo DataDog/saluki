@@ -21,22 +21,22 @@ use tokio::sync::{mpsc, Semaphore};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
-use crate::deadline::{Budget, Deadline};
-use crate::ledger::RECLAIM_TIME;
-use crate::probe::probe;
-use crate::record::{ActiveStep, CaseRecord, StepStatus, Verdict};
-use crate::tasks::TASK_STOP_TIME;
+use crate::core::deadline::{Budget, Deadline};
+use crate::core::ledger::RECLAIM_TIME;
+use crate::core::probe::probe;
+use crate::core::record::{ActiveStep, CaseRecord, StepStatus, Verdict};
+use crate::core::tasks::TASK_STOP_TIME;
 use crate::test::{RunnerSettings, Test, TestContext};
 use crate::{
     assertions::{AssertionContext, LogBuffer, TargetCommand},
     config::{parse_file_spec, parse_port_spec},
-    events::TestEvent,
-    intake::IntakeClient,
-    integration::IntegrationTestCase,
-    reporter::{
+    core::result::{
         ErrorKind, Issue, IssueKind, PhaseTiming, PhaseTracker, StopCause, StoppedBy, TestResult, TimeoutAttribution,
         UNKNOWN_PHASE,
     },
+    events::TestEvent,
+    intake::IntakeClient,
+    integration::IntegrationTestCase,
 };
 
 /// A sender that the `Runner` can use to send `TestEvent`s.
@@ -1445,9 +1445,9 @@ pub(crate) mod test_support {
 mod tests {
     use super::test_support::{test_runner_settings, Behavior, ScriptedTest, TaskProbe};
     use super::*;
-    use crate::record::StepStatus;
+    use crate::core::record::StepStatus;
+    use crate::core::result::{ReclaimResult, TestOutcome, TimeoutDeadline};
     use crate::reporter::test_support::{each_outcome, NOT_RUN_KIND};
-    use crate::reporter::{ReclaimResult, TestOutcome, TimeoutDeadline};
 
     /// A bound for real-time tests.
     const BOUND: Duration = Duration::from_secs(5);

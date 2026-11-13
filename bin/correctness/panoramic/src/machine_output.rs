@@ -8,8 +8,8 @@ use chrono::Local;
 use serde::Serialize;
 use tracing::warn;
 
-use crate::record::StepStatus;
-use crate::reporter::{
+use crate::core::record::StepStatus;
+use crate::core::result::{
     DurationMs, Issue, PhaseTiming, ReclaimEntry, StopCause, TestError, TestOutcome, TestResult, TimeoutAttribution,
 };
 
@@ -601,8 +601,8 @@ mod tests {
     use super::*;
     use crate::assertions::{AssertionResult, AssertionStatus};
     use crate::collector::RunCollector;
+    use crate::core::result::{ErrorKind, TestOutcome, TimeoutAttribution};
     use crate::events::TestEvent;
-    use crate::reporter::{ErrorKind, TestOutcome, TimeoutAttribution};
 
     fn assertion(name: &str, status: AssertionStatus) -> AssertionResult {
         AssertionResult {

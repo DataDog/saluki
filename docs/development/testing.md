@@ -153,6 +153,13 @@ Both suites run through the same `panoramic` binary.
 cargo run --release --bin panoramic -- --help
 ```
 
+`panoramic plan <case directory> --subject-os <os>` reads a case written in the participant case schema, the one
+without a top-level `type:` key, and prints what it does on that OS as JSON, without starting anything: each
+participant's realization, image, command, environment, files with their contents, and endpoints. `--text` prints the
+same plan in a format for people. It plans the case for every OS in its `subject_os`, so a field that can't be honored
+on any of them is an error on any host. The rejected case files under
+`bin/correctness/panoramic/testdata/bad/` show a few of these errors.
+
 The `panoramic` skill walks LLM agents through choosing and running a suite non-interactively.
 
 ### Reading panoramic results

@@ -7,6 +7,7 @@ use airlock::driver::DEFAULT_ALPINE_IMAGE;
 use chrono::Local;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
+use crate::core::participant::Os;
 use crate::{image_override::ImageOverride, reporter::OutputFormat, test::RunnerSettings};
 
 /// Environment variables Panoramic honors but doesn't own, rendered at the bottom of the help output.
@@ -131,6 +132,9 @@ pub enum Command {
 
     /// List available integration tests.
     List(ListCommand),
+
+    /// Print what a participant case does on one subject OS, without running anything.
+    Plan(PlanCommand),
 }
 
 // We build clap without its `wrap_help` feature, so help text is never reflowed. Descriptions that
@@ -277,6 +281,26 @@ pub struct ListCommand {
     pub json: bool,
 }
 
+/// Print what a participant case does on one subject OS, without running anything.
+///
+/// Loads the case and plans it for every OS it declares, so a mistake for any OS is an error on any host, then prints
+/// the plan for the selected one as JSON. Needs no Docker daemon.
+#[derive(Args)]
+#[command(args_override_self = true)]
+pub struct PlanCommand {
+    /// The case directory, holding its `config.yaml`.
+    pub case_dir: PathBuf,
+
+    /// The subject OS to print the plan for: `linux`, `macos` or `windows`.
+    /// Defaults to the host's OS
+    #[arg(long, value_parser = str::parse::<Os>, default_value_t = Os::host(), verbatim_doc_comment)]
+    pub subject_os: Os,
+
+    /// Print the plan in a format for people instead of JSON.
+    #[arg(long)]
+    pub text: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use std::ffi::OsStr;
@@ -302,7 +326,7 @@ mod tests {
     fn run_command_of(cli: &Cli) -> &RunCommand {
         match &cli.command {
             Command::Run(cmd) => cmd,
-            Command::List(_) => panic!("expected a `run` invocation"),
+            Command::List(_) | Command::Plan(_) => panic!("expected a `run` invocation"),
         }
     }
 
@@ -657,7 +681,7 @@ mod tests {
                 assert_eq!(cmd.test_dirs, vec![PathBuf::from("test/integration/cases")]);
                 assert!(cmd.json);
             }
-            Command::Run(_) => panic!("expected a `list` invocation"),
+            Command::Run(_) | Command::Plan(_) => panic!("expected a `list` invocation"),
         }
     }
 

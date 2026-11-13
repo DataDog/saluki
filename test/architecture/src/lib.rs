@@ -17,6 +17,9 @@
 //! Guards can also collect aliases with [`symbols::SourceTree::aliases`]. Matches report the source location;
 //! unreadable, invalid, or missing sources fail the scan.
 //!
+//! Module guards restrict which modules of a crate code may name. [`symbols::SourceTree::module_mentions`] matches
+//! only paths that start at `crate`, `self` or `super`, so a variable that shares a module's name doesn't match.
+//!
 //! # Limits
 //!
 //! Symbol guards don't resolve names. Unrelated items sharing a guarded identifier cause false positives.
@@ -90,6 +93,109 @@ mod tests {
             })
             .collect();
         assert!(lines.is_empty(), "{rule}:\n{}", lines.join("\n"));
+    }
+
+    /// The `panoramic` source directory and the names of its top-level modules, from `main.rs`.
+    fn panoramic() -> (PathBuf, BTreeSet<String>) {
+        let workspace = workspace();
+        let src = workspace
+            .member("panoramic")
+            .unwrap()
+            .manifest_path()
+            .parent()
+            .unwrap()
+            .as_std_path()
+            .join("src");
+        let main = syn::parse_file(&std::fs::read_to_string(src.join("main.rs")).unwrap()).unwrap();
+        let modules = main
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                syn::Item::Mod(item) => Some(item.ident.to_string()),
+                _ => None,
+            })
+            .collect();
+        (src, modules)
+    }
+
+    #[track_caller]
+    fn assert_panoramic_module_names_none_of(module: &str, guarded: &BTreeSet<String>) {
+        let (src, modules) = panoramic();
+        assert!(modules.contains(module), "`panoramic` has no `{module}` module");
+        let tree = SourceTree::read(&[src.join(module)]).unwrap_or_else(|error| panic!("{error}"));
+        assert_no_mentions(
+            &format!("panoramic's `{module}` module must not name {guarded:?}"),
+            workspace().root(),
+            &tree.module_mentions(&src, guarded),
+        );
+    }
+
+    /// Adds to `out` each name `tree` binds from a module in `modules`.
+    fn bindings_from(
+        tree: &syn::UseTree, modules: &BTreeSet<String>, path: &mut Vec<String>, out: &mut BTreeSet<String>,
+    ) {
+        let from_module = |path: &[String]| {
+            path.iter()
+                .find(|segment| !matches!(segment.as_str(), "crate" | "self"))
+                .is_some_and(|segment| modules.contains(segment))
+        };
+        match tree {
+            syn::UseTree::Path(next) => {
+                path.push(next.ident.to_string());
+                bindings_from(&next.tree, modules, path, out);
+                path.pop();
+            }
+            syn::UseTree::Name(name) if from_module(path) => {
+                out.insert(name.ident.to_string());
+            }
+            syn::UseTree::Rename(rename) if from_module(path) => {
+                out.insert(rename.rename.to_string());
+            }
+            syn::UseTree::Group(group) => {
+                for tree in &group.items {
+                    bindings_from(tree, modules, path, out);
+                }
+            }
+            syn::UseTree::Name(_) | syn::UseTree::Rename(_) | syn::UseTree::Glob(_) => {}
+        }
+    }
+
+    /// Panoramic's core runs participants without knowing what they run or what steps check.
+    #[test]
+    fn panoramic_core_names_neither_participants_nor_steps() {
+        let guarded = BTreeSet::from(["participants".to_string(), "steps".to_string()]);
+        assert_panoramic_module_names_none_of("core", &guarded);
+    }
+
+    /// Participant types and steps meet only through the core.
+    #[test]
+    fn panoramic_participants_and_steps_do_not_name_each_other() {
+        assert_panoramic_module_names_none_of("participants", &BTreeSet::from(["steps".to_string()]));
+        assert_panoramic_module_names_none_of("steps", &BTreeSet::from(["participants".to_string()]));
+    }
+
+    /// The new modules stand apart from the legacy runners, so deleting those leaves them intact.
+    // TODO: remove this rule with the legacy runners.
+    #[test]
+    fn panoramic_new_modules_name_no_legacy_module() {
+        let new = ["core", "participants", "steps"];
+        let (src, modules) = panoramic();
+        let mut legacy: BTreeSet<String> = modules
+            .into_iter()
+            .filter(|module| !new.contains(&module.as_str()))
+            .collect();
+        // The crate root's imports from legacy modules are visible to every module below it as `crate::<name>`.
+        let main = syn::parse_file(&std::fs::read_to_string(src.join("main.rs")).unwrap()).unwrap();
+        let mut imported = BTreeSet::new();
+        for item in &main.items {
+            if let syn::Item::Use(item) = item {
+                bindings_from(&item.tree, &legacy, &mut Vec::new(), &mut imported);
+            }
+        }
+        legacy.extend(imported);
+        for module in new {
+            assert_panoramic_module_names_none_of(module, &legacy);
+        }
     }
 
     /// Components take component-owned inputs; the binary adapts the shared model.
