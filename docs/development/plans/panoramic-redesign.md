@@ -1061,7 +1061,8 @@ a step calls. The lifecycle hands each planned participant to its realization ba
 `serde::Serialize`, and its field names are theirs. Every map is ordered and every field keeps its
 declared order, so dumping one case twice gives identical output, and any two dumps diff line by
 line. A file appears with its contents, a template as written and, where planning filled it, as
-resolved, and an operation as its name and what it uses. Migration reviews read this JSON beside
+resolved, an operation as its name and what it uses, and a step as its fields, what it needs, and how the
+runner reaches each endpoint it uses, itself or through an operation. Migration reviews read this JSON beside
 the legacy file. A case that fails may also write its plan to its log directory.
 
 This is part of the plan for `dsd-plain`, trimmed:
@@ -1404,7 +1405,7 @@ is added for this command. All three may hold references.
 | `config_key_equals` | assertion | `on`, `key`, `value`, `view`, `timeout` | operation `config_dump` |
 | `config_set` | action | `on`, `key`, `value`, `timeout` | operation `config_set` |
 | `dogstatsd_replay` | action | `on`, `endpoint`, `payloads`, `capture_duration`, `stats_duration`, `expected_metrics`, `timeout` | three operations; the endpoint, to send |
-| `intake_has_metric` | assertion | `on`, `name`, `metric_type`, `value`, `tags`, `tags_match`, `tag_patterns`, `max_age`, `timeout` | operation `dump` |
+| `intake_has_metric` | assertion | `on`, `name`, `metric_type`, `value`, `tags`, `tags_match`, `timeout` | operation `dump` |
 | `compare` | assertion | `telemetry`, `comparison`, `baseline`, and the options of each telemetry | operation `dump` on both participants |
 
 `timeout` is required wherever it is listed and has no default. `compare` has none: its budget is

@@ -36,9 +36,9 @@ use super::spec::{
     is_file_name, CollectFile, CommandSpec, Consumed, Contents, Evidence, ExitChannel, FileSource, HostMount,
     OutputChannel, ParticipantSpec, ProcessSpec, Program, DEFAULT_PROCESS,
 };
-use super::step::{Need, Operation, ProcedureNode, Step, StepFields, StepPurpose};
+use super::step::{EndpointOperation, Need, Operation, ProcedureNode, Step, StepFields, StepPurpose, Uses};
 use super::template::Template;
-use super::wiring::{Gate, PlannedConnection, PlannedEndpoint, TypeWiring, UnwiredUses};
+use super::wiring::{Gate, PlannedConnection, PlannedEndpoint, Reach, TypeWiring, UnwiredUses};
 use super::{order, reference, wiring};
 
 /// Environment keys with this prefix are the harness's own.
@@ -171,6 +171,12 @@ impl Serialize for Replaceable {
 pub(crate) struct PlannedStep {
     pub(crate) name: String,
     pub(crate) fields: StepFields,
+    /// Everything of the case the step uses.
+    pub(crate) needs: Vec<Need>,
+    /// How the runner reaches each endpoint the step uses, itself or through an operation, keyed by
+    /// `<participant>.<endpoint>`.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) reach: BTreeMap<String, Reach>,
     #[serde(skip)]
     pub(crate) step: Box<dyn Step>,
 }
@@ -381,8 +387,9 @@ fn build_procedure(
                     continue;
                 }
             };
+            let mut reach = BTreeMap::new();
             if let (Some(participants), Some(values)) = (participants, &values) {
-                let mut found = check_needs(step.as_ref(), &at, participants, unwired);
+                let mut found = check_needs(step.as_ref(), &at, participants, unwired, &mut reach);
                 for field in template_fields {
                     for text in entry.fields.0.get(*field).map(strings).unwrap_or_default() {
                         match Template::parse(text) {
@@ -402,6 +409,8 @@ fn build_procedure(
             steps.push(PlannedStep {
                 name: entry.step.clone(),
                 fields: entry.fields.clone(),
+                needs: step.needs(),
+                reach,
                 step,
             });
         }
@@ -416,12 +425,14 @@ fn build_procedure(
     procedure
 }
 
-/// Checks that everything `step` needs exists in `participants`, and adds each endpoint it uses that its participant
-/// does not wire to `unwired`, as used by the step at `at`.
+/// Checks that everything `step` needs exists in `participants`, with what each operation it calls uses, records how
+/// the runner reaches each endpoint in `reach`, and adds each endpoint it uses that its participant does not wire to
+/// `unwired`, as used by the step at `at`.
 ///
 /// Returns the problems found.
 fn check_needs(
     step: &dyn Step, at: &str, participants: &BTreeMap<String, PlannedParticipant>, unwired: &mut UnwiredUses,
+    reach: &mut BTreeMap<String, Reach>,
 ) -> Vec<String> {
     let mut problems = Vec::new();
     for need in step.needs() {
@@ -436,42 +447,70 @@ fn check_needs(
             problems.push(format!("names participant '{}', which the case does not have", name));
             continue;
         };
-        let problem = match &need {
-            Need::Participant(_) => None,
+        let mut endpoint = |endpoint: &str, operation, used_by: String| {
+            let Some(planned) = participant.endpoints.get(endpoint) else {
+                return Some(format!("participant '{}' has no endpoint '{}'", name, endpoint));
+            };
+            if planned.unwired.is_some() {
+                unwired
+                    .entry((name.clone(), endpoint.to_string()))
+                    .or_default()
+                    .push(used_by);
+            }
+            match wiring::reach(
+                operation,
+                planned.protocol,
+                planned.tls,
+                participant.realization.enclosure,
+            ) {
+                Ok(route) => {
+                    reach.insert(format!("{}.{}", name, endpoint), route);
+                    None
+                }
+                Err(why) => Some(format!("endpoint '{}' of participant '{}': {}", endpoint, name, why)),
+            }
+        };
+        match &need {
+            Need::Participant(_) => {}
             Need::Process(_, process) => {
-                (!participant.processes.iter().any(|spec| spec.name() == process)).then(|| {
+                if !participant.processes.iter().any(|spec| spec.name() == process) {
                     let processes: Vec<&str> = participant.processes.iter().map(ProcessSpec::name).collect();
-                    format!(
+                    problems.push(format!(
                         "participant '{}' has no process '{}': it has {}",
                         name,
                         process,
                         super::case::join(&processes)
-                    )
-                })
+                    ));
+                }
             }
-            Need::Command(_, command) => (!participant.commands.contains_key(command))
-                .then(|| format!("participant '{}' has no command '{}'", name, command)),
-            Need::Operation(_, operation) => (!participant.operations.contains_key(operation.as_str()))
-                .then(|| format!("participant '{}' offers no operation '{}'", name, operation)),
-            Need::Endpoint(_, endpoint, operation) => match participant.endpoints.get(endpoint) {
-                None => Some(format!("participant '{}' has no endpoint '{}'", name, endpoint)),
-                Some(planned) => {
-                    if planned.unwired.is_some() {
-                        let used = format!("{} ({})", at, step.name());
-                        unwired.entry((name.clone(), endpoint.clone())).or_default().push(used);
+            Need::Command(_, command) => {
+                if !participant.commands.contains_key(command) {
+                    problems.push(format!("participant '{}' has no command '{}'", name, command));
+                }
+            }
+            Need::Operation(_, operation) => match participant.operations.get(operation.as_str()) {
+                None => problems.push(format!("participant '{}' offers no operation '{}'", name, operation)),
+                Some(offered) => {
+                    for uses in offered.uses() {
+                        let problem = match *uses {
+                            Uses::Command(command) => (!participant.commands.contains_key(command))
+                                .then(|| format!("participant '{}' has no command '{}'", name, command)),
+                            Uses::Request(used) => endpoint(
+                                used,
+                                EndpointOperation::Request,
+                                format!("{} ({}, operation '{}')", at, step.name(), operation),
+                            ),
+                        };
+                        problems.extend(problem.map(|problem| {
+                            format!("operation '{}' of participant '{}': {}", operation, name, problem)
+                        }));
                     }
-                    wiring::reach(
-                        *operation,
-                        planned.protocol,
-                        planned.tls,
-                        participant.realization.enclosure,
-                    )
-                    .err()
-                    .map(|why| format!("endpoint '{}' of participant '{}': {}", endpoint, name, why))
                 }
             },
-        };
-        problems.extend(problem);
+            Need::Endpoint(_, used, operation) => {
+                problems.extend(endpoint(used, *operation, format!("{} ({})", at, step.name())));
+            }
+        }
     }
     problems
 }

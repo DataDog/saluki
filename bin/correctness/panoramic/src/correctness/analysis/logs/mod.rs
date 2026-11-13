@@ -26,7 +26,7 @@ pub use self::headers::HeaderRule;
 use self::headers::{compare_headers, default_header_rules};
 pub use self::ratchet::KnownDifference;
 use self::ratchet::Ratchet;
-use crate::intake::CollectedData;
+use crate::steps::intake::CollectedData;
 
 mod headers;
 mod ratchet;

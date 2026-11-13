@@ -415,7 +415,7 @@ Polls a file inside the container (via `docker exec cat`) until it exists and, o
 
 ### Intake artifacts
 
-A test with an intake sidecar captures what the intake holds after its assertions finish, under `traffic/` in the test's log directory. `traffic/manifest.json` describes the capture. The decoded capture, `traffic/target-decoded.jsonl.zst`, is kept unless the test passed. It is diagnostic evidence collected after the assertions, not necessarily the snapshot an assertion decided on. If the capture could not be collected or written, `decoded_unavailable` in the manifest says why. A test that is cancelled or reaches its overall `timeout` skips or abandons the capture rather than spending cleanup time on it.
+A test with an intake sidecar captures what the intake holds after its assertions finish, under `traffic/` in the test's log directory. `traffic/manifest.json` describes the capture. The decoded capture, `traffic/target-decoded.jsonl.zst`, is kept unless the test passed. It is diagnostic evidence collected after the assertions, not necessarily the snapshot an assertion decided on. If the capture could not be collected or written, `decoded_unavailable` in the manifest says why. A test that is cancelled or reaches its overall `timeout` skips or abandons the capture rather than spending cleanup time on it. A case written as participants, with an intake participant, writes no `traffic/` capture.
 
 ### Duration Format
 

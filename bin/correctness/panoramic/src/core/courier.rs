@@ -59,8 +59,6 @@ impl<'a> Courier<'a> {
     ///
     /// Returns a software error if the address refuses the bytes within `limit`, and a harness error if the courier
     /// cannot run.
-    // TODO: remove the dead_code allowance once a step sends to an endpoint.
-    #[allow(dead_code)]
     pub(crate) async fn send(&self, address: &str, payload: Bytes, limit: Duration) -> Result<(), HandleError> {
         self.run("send", &[address], Some(payload), limit, &mut tokio::io::sink())
             .await
