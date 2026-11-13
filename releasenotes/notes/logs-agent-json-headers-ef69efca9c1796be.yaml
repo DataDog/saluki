@@ -1,0 +1,7 @@
+---
+fixes:
+  - |
+    Logs requests now carry the ``DD-PROTOCOL: agent-json`` header, as the Datadog Agent sends it, so the intake reads
+    only the standard log fields of each log and takes any other attributes from its message. They also carry
+    ``DD-EVP-ORIGIN: agent-data-plane`` and ``DD-EVP-ORIGIN-VERSION`` with Agent Data Plane's version, which identify
+    Agent Data Plane as the sender.
