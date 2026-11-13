@@ -1,0 +1,7 @@
+---
+upgrade:
+  - |
+    Agent Data Plane now reads ``logs_enabled`` and its deprecated spelling ``log_enabled``, and
+    logs the Datadog Agent's deprecation warning when ``log_enabled`` is ``true``. A value that
+    isn't a boolean, such as ``logs_enabled: "yes"``, now stops Agent Data Plane at startup, as for
+    other boolean settings. Previously these settings were ignored.
