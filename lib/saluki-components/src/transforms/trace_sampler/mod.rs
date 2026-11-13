@@ -41,8 +41,9 @@ use self::event_processor::EventProcessor;
 use self::probabilistic::PROB_RATE_KEY;
 use self::telemetry::{DecisionWindow, WINDOW};
 use crate::common::datadog::{
-    compute_top_level, get_root_span_index, get_trace_env, sample_by_rate, DECISION_MAKER_MANUAL,
-    DECISION_MAKER_PROBABILISTIC, KEY_ANALYZED_SPANS, SAMPLING_PRIORITY_METRIC_KEY, TAG_DECISION_MAKER, TAG_ORIGIN,
+    compute_top_level, get_root_span_index, get_trace_env, sample_by_rate, update_tracer_top_level,
+    DECISION_MAKER_MANUAL, DECISION_MAKER_PROBABILISTIC, KEY_ANALYZED_SPANS, SAMPLING_PRIORITY_METRIC_KEY,
+    TAG_DECISION_MAKER, TAG_ORIGIN,
 };
 use crate::config::AgentEnv;
 
@@ -103,12 +104,6 @@ pub struct TraceSamplerConfiguration {
     /// Maximum number of distinct signatures the rare sampler tracks.
     pub rare_sampler_cardinality: usize,
 
-    /// Whether the OTLP translator marks top-level spans by their span kind
-    /// (`otlp_config.traces.enable_otlp_compute_top_level_by_span_kind`).
-    ///
-    /// When set, the sampler leaves the top-level marks of OTLP traces as they are. It has no effect on Datadog traces.
-    pub compute_top_level_by_span_kind: bool,
-
     /// Event extraction rates by service and operation name. Takes precedence over `analyzed_rate_by_service` when
     /// non-empty.
     pub analyzed_spans_by_service: HashMap<String, HashMap<String, f64>>,
@@ -166,7 +161,6 @@ impl TraceSamplerConfiguration {
             ),
             event_processor,
             telemetry,
-            compute_top_level_by_span_kind: self.compute_top_level_by_span_kind,
             static_settings: SamplerSettings {
                 target_traces_per_second: self.target_traces_per_second,
                 errors_per_second: self.errors_per_second,
@@ -250,7 +244,6 @@ pub struct TraceSampler {
     error_sampling_enabled: bool,
     probabilistic_sampler_enabled: bool,
     probabilistic: probabilistic::ProbabilisticSampler,
-    compute_top_level_by_span_kind: bool,
     error_sampler: errors::ErrorsSampler,
     priority_sampler: priority_sampler::PrioritySampler,
     no_priority_sampler: score_sampler::NoPrioritySampler,
@@ -588,7 +581,11 @@ impl TraceSampler {
                 return SamplerOutcome::new(true, priority, "", Some(root_span_idx), sampler_name, true);
             }
 
-            if self.priority_sampler.sample(now, trace, root_span_idx, priority, 0.0) {
+            let client_dropped_p0s_weight = trace.payload.receiver().client_dropped_p0s_weight;
+            if self
+                .priority_sampler
+                .sample(now, trace, root_span_idx, priority, client_dropped_p0s_weight)
+            {
                 return SamplerOutcome::new(true, priority, "", Some(root_span_idx), sampler_name, true);
             }
         } else if let TraceIngestInfo::Otlp { receiver_sampling_rate } = trace.ingest_info() {
@@ -683,11 +680,13 @@ impl TraceSampler {
             }
         }
 
-        // The OTLP translator already marks top-level spans by span kind when this setting is on, as the trace-agent
-        // does for OTLP payloads. Datadog traces always get their top-level spans computed here.
-        let otlp_computed_top_level =
-            self.compute_top_level_by_span_kind && matches!(trace.ingest_info(), TraceIngestInfo::Otlp { .. });
-        if !otlp_computed_top_level {
+        // A client that computed top-level spans keeps its marks, with its `_dd.top_level` flags promoted to
+        // `_top_level`; otherwise they are computed here. The OTLP translator sets the flag
+        // from `enable_otlp_compute_top_level_by_span_kind`.
+        if trace.payload.receiver().client_computed_top_level {
+            let ingest_info = trace.ingest_info();
+            update_tracer_top_level(trace.spans_mut(), ingest_info);
+        } else {
             compute_top_level(trace.spans_mut());
         }
     }
@@ -880,7 +879,6 @@ pub(crate) fn sampler_configuration(agent_env: AgentEnv) -> TraceSamplerConfigur
         rare_sampler_tps: 5.0,
         rare_sampler_cooldown_secs: 300.0,
         rare_sampler_cardinality: 200,
-        compute_top_level_by_span_kind: true,
         analyzed_spans_by_service: HashMap::new(),
         analyzed_rate_by_service: HashMap::new(),
         max_events_per_second: 0.0,
@@ -895,7 +893,7 @@ mod tests {
     use datadog_agent_apm::sampling::test_util::TestSamplingPublisher;
     use saluki_core::components::test_util::TestComponentDriver;
     use saluki_core::data_model::event::{
-        trace::{AttributeValue, Span as DdSpan, Trace, TraceIngestInfo},
+        trace::{AttributeValue, ReceiverMetadata, Span as DdSpan, Trace, TraceIngestInfo},
         Event,
     };
 
@@ -929,7 +927,6 @@ mod tests {
             ),
             event_processor: EventProcessor::for_tests(&HashMap::new(), &HashMap::new(), f64::INFINITY),
             telemetry: telemetry::DecisionWindow::new(),
-            compute_top_level_by_span_kind: false,
             static_settings: SamplerSettings {
                 target_traces_per_second: 10.0,
                 errors_per_second: 10.0,
@@ -1142,16 +1139,40 @@ mod tests {
         );
     }
 
+    fn with_receiver(mut trace: Trace, receiver: ReceiverMetadata) -> Trace {
+        trace.payload.receiver = Some(Arc::new(receiver));
+        trace
+    }
+
+    fn client_computed_top_level() -> ReceiverMetadata {
+        ReceiverMetadata {
+            client_computed_top_level: true,
+            ..ReceiverMetadata::default()
+        }
+    }
+
+    fn top_level_mark(trace: &Trace, span_id: u64) -> Option<f64> {
+        trace
+            .spans()
+            .iter()
+            .find(|s| s.span_id() == span_id)
+            .unwrap()
+            .attributes
+            .get(crate::common::datadog::TOP_LEVEL_KEY)
+            .and_then(AttributeValue::as_num)
+    }
+
     #[test]
-    fn backfill_skips_top_level_for_otlp_traces_when_span_kind_computation_enabled() {
-        let sampler = TraceSampler {
-            compute_top_level_by_span_kind: true,
-            ..create_test_sampler()
-        };
+    fn backfill_keeps_client_top_level_marks_for_otlp_traces() {
+        // The OTLP translator sets `client_computed_top_level` when it marks top-level spans by span kind.
+        let sampler = create_test_sampler();
         let root = create_span_with_parent_and_service(1, 0, "svc", &[]);
         let child = create_span_with_parent_and_service(2, 1, "svc", &[]);
         let orphan = create_span_with_parent_and_service(3, 0xEE, "svc", &[]);
-        let mut trace = create_otlp_test_trace(vec![root, child, orphan], 1.0, 1);
+        let mut trace = with_receiver(
+            create_otlp_test_trace(vec![root, child, orphan], 1.0, 1),
+            client_computed_top_level(),
+        );
 
         let root_idx = sampler.get_root_span_index(&trace).unwrap();
         sampler.backfill_trace_metadata(&mut trace, root_idx);
@@ -1159,37 +1180,130 @@ mod tests {
         for span in trace.spans() {
             assert!(
                 !span.attributes.contains_key(crate::common::datadog::TOP_LEVEL_KEY),
-                "no span should carry a top-level mark with the fallback disabled"
+                "no span should get a computed top-level mark"
             );
         }
     }
 
     #[test]
-    fn backfill_marks_top_level_for_datadog_traces_when_span_kind_computation_enabled() {
-        // The span-kind setting is an OTLP setting, so Datadog traces still get their top-level spans computed.
-        let sampler = TraceSampler {
-            compute_top_level_by_span_kind: true,
-            ..create_test_sampler()
-        };
+    fn backfill_promotes_tracer_top_level_marks_when_client_computed_top_level() {
+        let sampler = create_test_sampler();
         let root = create_span_with_parent_and_service(1, 0, "svc", &[]);
-        let child = create_span_with_parent_and_service(2, 1, "svc", &[]);
-        let mut trace = create_test_trace(vec![root, child]);
+        let mut child = create_span_with_parent_and_service(2, 1, "svc", &[]);
+        child.attributes.insert(
+            MetaString::from_static(crate::common::datadog::TRACER_TOP_LEVEL_KEY),
+            AttributeValue::Float(1.0),
+        );
+        let mut other = create_span_with_parent_and_service(3, 1, "other", &[]);
+        other.attributes.insert(
+            MetaString::from_static(crate::common::datadog::TRACER_TOP_LEVEL_KEY),
+            AttributeValue::Float(0.0),
+        );
+        let mut trace = with_receiver(create_test_trace(vec![root, child, other]), client_computed_top_level());
 
         let root_idx = sampler.get_root_span_index(&trace).unwrap();
         sampler.backfill_trace_metadata(&mut trace, root_idx);
 
-        let top_level = |sid: u64| {
-            trace
-                .spans()
-                .iter()
-                .find(|s| s.span_id() == sid)
-                .unwrap()
-                .attributes
-                .get(crate::common::datadog::TOP_LEVEL_KEY)
-                .and_then(AttributeValue::as_num)
+        assert_eq!(top_level_mark(&trace, 1), None, "the root is not computed as top-level");
+        assert_eq!(
+            top_level_mark(&trace, 2),
+            Some(1.0),
+            "the tracer's `_dd.top_level` mark is promoted"
+        );
+        assert_eq!(
+            top_level_mark(&trace, 3),
+            None,
+            "a `_dd.top_level` other than 1 is not promoted"
+        );
+    }
+
+    #[test]
+    fn backfill_reads_tracer_top_level_like_go_for_each_ingest_protocol() {
+        let sampler = create_test_sampler();
+        let flagged = |span_id: u64, value: AttributeValue| {
+            let mut span = create_span_with_parent_and_service(span_id, 1, "svc", &[]);
+            span.attributes.insert(
+                MetaString::from_static(crate::common::datadog::TRACER_TOP_LEVEL_KEY),
+                value,
+            );
+            span
         };
-        assert_eq!(top_level(1), Some(1.0), "the root span is marked");
-        assert_eq!(top_level(2), None, "the same-service child is not marked");
+        let spans = || {
+            vec![
+                create_span_with_parent_and_service(1, 0, "svc", &[]),
+                flagged(2, AttributeValue::Float(1.0)),
+                flagged(3, AttributeValue::String(MetaString::from("1"))),
+                flagged(4, AttributeValue::Bool(true)),
+                flagged(5, AttributeValue::String(MetaString::from("abc"))),
+            ]
+        };
+
+        // Datadog traces read the flag as `AsDoubleValue` does: numbers, numeric strings, and bools.
+        let mut trace = with_receiver(create_test_trace(spans()), client_computed_top_level());
+        let root_idx = sampler.get_root_span_index(&trace).unwrap();
+        sampler.backfill_trace_metadata(&mut trace, root_idx);
+        assert_eq!(top_level_mark(&trace, 2), Some(1.0));
+        assert_eq!(top_level_mark(&trace, 3), Some(1.0));
+        assert_eq!(top_level_mark(&trace, 4), Some(1.0));
+        assert_eq!(top_level_mark(&trace, 5), None);
+
+        // OTLP traces read it as a number only, as Go reads span metrics.
+        let mut trace = with_receiver(create_otlp_test_trace(spans(), 1.0, 1), client_computed_top_level());
+        let root_idx = sampler.get_root_span_index(&trace).unwrap();
+        sampler.backfill_trace_metadata(&mut trace, root_idx);
+        assert_eq!(top_level_mark(&trace, 2), Some(1.0));
+        assert_eq!(top_level_mark(&trace, 3), None);
+        assert_eq!(top_level_mark(&trace, 4), None);
+        assert_eq!(top_level_mark(&trace, 5), None);
+    }
+
+    #[test]
+    fn backfill_computes_top_level_without_client_computed_top_level() {
+        let sampler = create_test_sampler();
+        for mut trace in [
+            create_test_trace(vec![
+                create_span_with_parent_and_service(1, 0, "svc", &[]),
+                create_span_with_parent_and_service(2, 1, "svc", &[]),
+            ]),
+            create_otlp_test_trace(
+                vec![
+                    create_span_with_parent_and_service(1, 0, "svc", &[]),
+                    create_span_with_parent_and_service(2, 1, "svc", &[]),
+                ],
+                1.0,
+                1,
+            ),
+        ] {
+            let root_idx = sampler.get_root_span_index(&trace).unwrap();
+            sampler.backfill_trace_metadata(&mut trace, root_idx);
+
+            assert_eq!(top_level_mark(&trace, 1), Some(1.0), "the root span is marked");
+            assert_eq!(top_level_mark(&trace, 2), None, "the same-service child is not marked");
+        }
+    }
+
+    #[test]
+    fn priority_sampler_counts_client_dropped_p0s_weight() {
+        let mut sampler = TraceSampler {
+            probabilistic_sampler_enabled: false,
+            ..create_test_sampler()
+        };
+        let mut metrics = HashMap::new();
+        metrics.insert(SAMPLING_PRIORITY_METRIC_KEY.to_string(), PRIORITY_AUTO_KEEP as f64);
+        let mut trace = with_receiver(
+            create_test_trace(vec![create_test_span_with_metrics(1, metrics)]),
+            ReceiverMetadata {
+                client_dropped_p0s_weight: 2.5,
+                ..ReceiverMetadata::default()
+            },
+        );
+
+        let outcome = sampler.run_samplers(&mut trace);
+
+        assert!(outcome.keep);
+        assert_eq!(outcome.sampler, telemetry::SamplerName::Priority);
+        // The root weighs 1, plus the payload's per-chunk dropped-P0 weight.
+        assert_eq!(sampler.priority_sampler.test_total_seen_weight(), 3.5);
     }
 
     #[test]

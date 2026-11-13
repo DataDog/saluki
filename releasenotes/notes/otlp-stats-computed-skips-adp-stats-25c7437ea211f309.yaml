@@ -1,0 +1,9 @@
+fixes:
+  - |
+    APM stats are no longer computed for OTLP traces whose resource sets ``_dd.stats_computed`` to any value other
+    than ``false``, because the client already computed them. This matches the Datadog Agent's trace-agent. Unlike the
+    trace-agent, Agent Data Plane doesn't fall back to the ``Datadog-Client-Computed-Stats`` request header when the
+    attribute is absent, so OTLP traces without the attribute still get stats computed.
+  - |
+    With ``otlp_config.traces.enable_otlp_compute_top_level_by_span_kind`` enabled, OTLP spans that carry a numeric
+    ``_dd.top_level`` of ``1`` are now marked top-level, as the trace-agent does.
