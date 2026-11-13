@@ -304,18 +304,127 @@ fn attributes_fixture() -> Vec<u8> {
         vec![kv("otel.event_name", string("from-attribute"))],
     ));
 
-    request(
-        vec![
+    // gap/scope-metadata: a record alias matches in any case, and defers only to a canonical key spelled exactly.
+    records.extend([
+        record(
+            27,
+            "record-alias-any-case",
+            vec![kv("OTEL.Library.Name", string("upper-alias"))],
+        ),
+        record(
+            28,
+            "record-alias-exact-canonical",
+            vec![
+                kv("otel.library.name", string("alias-name")),
+                kv("OTEL.SCOPE.NAME", string("upper-canonical")),
+            ],
+        ),
+    ]);
+
+    let resource_attributes = |extra: Vec<KeyValue>| {
+        let mut attributes = vec![
             kv("service.name", string("fixture-attributes")),
             kv("host.name", string("fixture-host")),
-        ],
-        InstrumentationScope {
-            name: "fixture-scope".to_string(),
-            version: "1.0.0".to_string(),
-            ..Default::default()
-        },
-        records,
-    )
+        ];
+        attributes.extend(extra);
+        attributes
+    };
+    let no_scope = InstrumentationScope::default;
+    let resources = vec![
+        resource_logs(
+            resource_attributes(vec![]),
+            vec![scope_logs(
+                InstrumentationScope {
+                    name: "fixture-scope".to_string(),
+                    version: "1.0.0".to_string(),
+                    ..Default::default()
+                },
+                records,
+            )],
+        ),
+        // gap/scope-metadata: a resource alias maps to its scope key, and overwrites a record's canonical key.
+        resource_logs(
+            resource_attributes(vec![
+                kv("otel.library.name", string("resource-alias")),
+                kv("otel.library.version", string("resource-alias-version")),
+            ]),
+            vec![scope_logs(
+                no_scope(),
+                vec![
+                    record(29, "resource-alias", vec![]),
+                    record(
+                        30,
+                        "resource-alias-over-record",
+                        vec![kv("otel.scope.name", string("record-canonical"))],
+                    ),
+                ],
+            )],
+        ),
+        // gap/scope-metadata: a resource alias defers to the resource's canonical key.
+        resource_logs(
+            resource_attributes(vec![
+                kv("otel.library.name", string("resource-alias")),
+                kv("otel.scope.name", string("resource-canonical")),
+            ]),
+            vec![scope_logs(
+                no_scope(),
+                vec![record(31, "resource-alias-and-canonical", vec![])],
+            )],
+        ),
+        // gap/scope-metadata: a resource alias matches only in lowercase.
+        resource_logs(
+            resource_attributes(vec![kv("OTEL.LIBRARY.NAME", string("resource-upper-alias"))]),
+            vec![scope_logs(
+                no_scope(),
+                vec![record(32, "resource-alias-lowercase-only", vec![])],
+            )],
+        ),
+        // gap/scope-metadata: a resource canonical key overwrites a record alias and a record canonical key.
+        resource_logs(
+            resource_attributes(vec![kv("otel.scope.name", string("resource-canonical"))]),
+            vec![scope_logs(
+                no_scope(),
+                vec![
+                    record(
+                        33,
+                        "resource-over-record-alias",
+                        vec![kv("otel.library.name", string("record-alias"))],
+                    ),
+                    record(
+                        34,
+                        "resource-over-record-canonical",
+                        vec![kv("otel.scope.name", string("record-canonical"))],
+                    ),
+                ],
+            )],
+        ),
+        // gap/scope-metadata: scope attributes overwrite resource and record values under their own keys, so an alias
+        // isn't mapped and `hostname` isn't prefixed, and the scope's name only fills in a missing key.
+        resource_logs(
+            resource_attributes(vec![kv("otel.scope.name", string("resource-canonical"))]),
+            vec![scope_logs(
+                InstrumentationScope {
+                    name: "scope-metadata-name".to_string(),
+                    attributes: vec![
+                        kv("otel.scope.name", string("scope-canonical")),
+                        kv("otel.library.version", string("scope-alias-version")),
+                        kv("hostname", string("scope-host")),
+                    ],
+                    ..Default::default()
+                },
+                vec![record(
+                    35,
+                    "scope-attributes-over-all",
+                    vec![kv("otel.scope.name", string("record-canonical"))],
+                )],
+            )],
+        ),
+    ];
+
+    ExportLogsServiceRequest {
+        resource_logs: resources,
+    }
+    .encode_to_vec()
 }
 
 /// Severity, timestamps, and bodies.
