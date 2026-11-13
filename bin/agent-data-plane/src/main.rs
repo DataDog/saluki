@@ -1,7 +1,4 @@
-//! Main benchmarking binary.
-//!
-//! This binary emulates the standalone DogStatsD binary, listening for DogStatsD over UDS, aggregating metrics over a
-//! 10 second window, and shipping those metrics to the Datadog Platform.
+//! Agent Data Plane binary.
 
 #![deny(warnings)]
 #![deny(missing_docs)]

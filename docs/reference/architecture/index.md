@@ -65,10 +65,14 @@ Slightly complex:
 
 ### Components
 
-Components are the discrete chunks of functionality that make up a topology, and are grouped into
-three categories: **sources**, **transforms**, and **destinations**. All components interact with
-each other over channels, which are the primary mechanism for sending data from one component to
-another.
+Components are the discrete chunks of functionality that make up a topology. The seven component
+types are: **sources**, **relays**, **decoders**, **transforms**, **encoders**, **forwarders**, and
+**destinations**. All components interact with each other over channels, which are the primary
+mechanism for sending data from one component to another.
+
+Sources, transforms, and destinations deal exclusively with the `Event` data model. Relays and
+forwarders deal with encoded payloads. Decoders convert payloads into events, and encoders convert
+events into payloads.
 
 Components implement specific traits (an `interface` in Go) in order to indicate what type of
 component they're, and these traits also requiring describing the input and/or output data types
@@ -135,15 +139,15 @@ unwrap `Event`s and access the true event, such as the actual `Metric` container
 
 ### Outputs
 
-Source and transform components can emit their data in one of two ways: using a default output, or a
+Sources, transforms, and relays can emit their data in one of two ways: using a default output, or a
 **named** output.
 
 Default outputs are exactly what they sound like, and are used as the primary output of a component.
-This is the pattern used when a component only emits a single event type, and has no specialization
+This is the pattern used when a component only emits a single data type, and has no specialization
 otherwise.
 
-For some components, however, they may emit multiple event types, or they may dynamically emit
-certain events/event types based on their configuration. In order to support this, Saluki has a
+For some components, however, they may emit multiple types, or they may dynamically emit
+certain data based on their configuration. In order to support this, Saluki has a
 concept of "named" outputs, where a component can have a dynamic number of outputs, each with a
 qualified name.
 
