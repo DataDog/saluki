@@ -1,21 +1,18 @@
 //! Characterization of the requests that the Datadog logs encoder builds.
 //!
 //! These tests run the encoder the way the topology does, wrapped in `BufferedIncrementalConfiguration`, and record
-//! what it does today: the request line and headers, compression, the 1000-log cap, splitting by compressed size, the
-//! handling of a single oversized log, and that no log is lost or reordered across requests. They don't describe what
+//! what it does today: the request line and headers, including the `dd-message-timestamp` of each request's last log,
+//! compression, the 1000-log cap, splitting by compressed size, the handling of a single oversized log, and that no
+//! log is lost or reordered across requests. They don't describe what
 //! the encoder should do. Where the target behavior differs, an ignored test states it, named after the step of the
 //! OTLP logs wire format work (DataDog/saluki#2970) that adopts it:
 //!
-//! - `intake-headers`: the target logs sender also sets `dd-message-timestamp`, after the static `DD-PROTOCOL`,
-//!   `DD-EVP-ORIGIN`, and `DD-EVP-ORIGIN-VERSION` headers that the encoder already sets. It also sets
-//!   `dd-current-timestamp` on each send attempt, which belongs to the forwarder rather than the encoder.
 //! - `logs-sender-batching`: the target logs sender batches up to 1000 logs or 5 MB of content before compression,
 //!   and drops a single log whose content is over that limit.
 //!
 //! Every test sends at most 1024 logs, so that they all go to the encoder in a single event buffer. The encoder handles
 //! a whole buffer before its flush timeout can fire, so the requests depend only on the logs, not on timing.
 
-use std::collections::BTreeMap;
 use std::time::Duration;
 
 use async_compression::tokio::bufread::GzipDecoder;
@@ -51,6 +48,14 @@ struct EncodedRequest {
 }
 
 impl EncodedRequest {
+    /// Returns the value of a header, if the request has it.
+    fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(header_name, _)| header_name == name)
+            .map(|(_, value)| value.as_str())
+    }
+
     /// Returns the messages of the logs in the request, parsed the way the fake intake parses them.
     fn messages(&self) -> Vec<String> {
         stele::Log::try_from_payload(&self.body)
@@ -123,10 +128,26 @@ async fn encode(compressor_kind: &str, logs: Vec<Log>) -> Vec<EncodedRequest> {
     requests
 }
 
+/// Returns the ingestion timestamp of the log at `index` of a test's logs, in nanoseconds.
+///
+/// Every log is a millisecond and a bit after the previous one, so the `dd-message-timestamp` of a request shows which
+/// log was last in it, and that the timestamp is truncated to milliseconds.
+fn ingestion_timestamp_ns(index: usize) -> u64 {
+    1_767_323_045_000_000_000 + index as u64 * 1_000_000 + 999
+}
+
+/// Returns the `dd-message-timestamp` that a request whose last log is at `index` should carry.
+fn message_timestamp_ms(index: usize) -> String {
+    (ingestion_timestamp_ns(index) / 1_000_000).to_string()
+}
+
 /// Returns `count` logs with distinct messages of about `len` bytes that compress well.
 fn compressible_logs(count: usize, len: usize) -> Vec<Log> {
     (0..count)
-        .map(|index| Log::new(format!("{:06}:{}", index, "a".repeat(len.saturating_sub(7)))))
+        .map(|index| {
+            Log::new(format!("{:06}:{}", index, "a".repeat(len.saturating_sub(7))))
+                .with_ingestion_timestamp(ingestion_timestamp_ns(index))
+        })
         .collect()
 }
 
@@ -135,7 +156,9 @@ fn compressible_logs(count: usize, len: usize) -> Vec<Log> {
 /// Each log's characters come from a generator seeded with its index, so every run produces the same logs.
 fn incompressible_logs(count: usize, len: usize) -> Vec<Log> {
     (0..count)
-        .map(|index| Log::new(incompressible_string(len, index as u64)))
+        .map(|index| {
+            Log::new(incompressible_string(len, index as u64)).with_ingestion_timestamp(ingestion_timestamp_ns(index))
+        })
         .collect()
 }
 
@@ -187,7 +210,8 @@ async fn request_line_and_headers() {
 
         assert_eq!(request.method, http::Method::POST);
         assert_eq!(request.path, "/api/v2/logs");
-        // The content headers and the static `DD-*` headers, but no `dd-message-timestamp` yet (`intake-headers`).
+        // The content headers and the static `DD-*` headers. The log has no ingestion time, so there's no
+        // `dd-message-timestamp`.
         assert_eq!(
             sorted(request.headers.clone()),
             sorted(vec![
@@ -235,6 +259,19 @@ async fn caps_requests_at_1000_logs() {
     let counts = requests.iter().map(|request| request.event_count).collect::<Vec<_>>();
     assert_eq!(counts, vec![1000, 1]);
     assert_eq!(all_messages(&requests), messages_of(&logs));
+
+    // Each request carries the ingestion time of its own last log.
+    let message_timestamps = requests
+        .iter()
+        .map(|request| request.header("dd-message-timestamp"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        message_timestamps,
+        vec![
+            Some(message_timestamp_ms(999).as_str()),
+            Some(message_timestamp_ms(1000).as_str())
+        ]
+    );
 }
 
 #[tokio::test]
@@ -254,6 +291,15 @@ async fn splits_requests_by_compressed_size() {
         counts
     );
     assert_eq!(counts.iter().sum::<usize>(), logs.len());
+    // Each request carries the timestamp of its last log.
+    let mut last_index = 0;
+    for (request, count) in requests.iter().zip(&counts) {
+        last_index += count;
+        assert_eq!(
+            request.header("dd-message-timestamp"),
+            Some(message_timestamp_ms(last_index - 1).as_str())
+        );
+    }
     for request in &requests {
         assert!(
             request.compressed_len <= DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT,
@@ -287,8 +333,12 @@ async fn drops_a_single_log_over_the_compressed_size_limit() {
     let recorder = TestRecorder::default();
     let _local = metrics::set_default_local_recorder(&recorder);
 
-    let oversized = incompressible_logs(1, DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT * 3 / 2).remove(0);
-    let logs = vec![Log::new("before"), oversized, Log::new("after")];
+    let oversized = incompressible_logs(2, DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT * 3 / 2).remove(1);
+    let logs = vec![
+        Log::new("before").with_ingestion_timestamp(ingestion_timestamp_ns(0)),
+        oversized,
+        Log::new("after").with_ingestion_timestamp(ingestion_timestamp_ns(2)),
+    ];
     let requests = encode("zstd", logs).await;
 
     // Before the compressor has written a block, the request builder doesn't estimate the compressed size, so the
@@ -296,6 +346,16 @@ async fn drops_a_single_log_over_the_compressed_size_limit() {
     // holds only the oversized log is dropped.
     let messages = requests.iter().map(EncodedRequest::messages).collect::<Vec<_>>();
     assert_eq!(messages, vec![vec!["before".to_string()], vec!["after".to_string()]]);
+
+    // The half that a split produces carries the ingestion time of its own last log.
+    assert_eq!(
+        requests[0].header("dd-message-timestamp"),
+        Some(message_timestamp_ms(0).as_str())
+    );
+    assert_eq!(
+        requests[1].header("dd-message-timestamp"),
+        Some(message_timestamp_ms(2).as_str())
+    );
 
     // The dropped log counts toward `component_events_dropped_total`.
     assert_eq!(encoder_failure_drops(&recorder), Some(1));
@@ -311,25 +371,33 @@ async fn sends_a_compressible_log_over_the_target_content_limit() {
 }
 
 #[tokio::test]
-#[ignore = "target for `intake-headers` (DataDog/saluki#2970)"]
-async fn target_intake_headers() {
-    let requests = encode("zstd", vec![Log::new("hello")]).await;
-    let headers = requests[0]
-        .headers
-        .iter()
-        .map(|(name, value)| (name.as_str(), value.as_str()))
-        .collect::<BTreeMap<_, _>>();
+async fn sends_the_intake_headers() {
+    let requests = encode(
+        "zstd",
+        vec![
+            Log::new("first").with_ingestion_timestamp(ingestion_timestamp_ns(1)),
+            Log::new("second").with_ingestion_timestamp(ingestion_timestamp_ns(0)),
+        ],
+    )
+    .await;
+    assert_eq!(requests.len(), 1);
+    let request = &requests[0];
 
-    assert_eq!(headers.get("dd-protocol"), Some(&"agent-json"));
-    assert_eq!(headers.get("dd-evp-origin"), Some(&"agent-data-plane"));
-    assert!(headers.contains_key("dd-evp-origin-version"));
-    let message_timestamp = headers
-        .get("dd-message-timestamp")
-        .expect("dd-message-timestamp should be set");
-    assert!(
-        message_timestamp.parse::<u64>().is_ok(),
-        "dd-message-timestamp should be in milliseconds"
+    assert_eq!(request.header("dd-protocol"), Some("agent-json"));
+    assert_eq!(request.header("dd-evp-origin"), Some("agent-data-plane"));
+    assert_eq!(request.header("dd-evp-origin-version"), Some("1.2.3"));
+    // The ingestion time of the last log, not the latest one, in milliseconds.
+    assert_eq!(
+        request.header("dd-message-timestamp"),
+        Some(message_timestamp_ms(0).as_str())
     );
+}
+
+#[tokio::test]
+async fn omits_the_message_timestamp_without_an_ingestion_time() {
+    let requests = encode("zstd", vec![Log::new("hello")]).await;
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].header("dd-message-timestamp"), None);
 }
 
 #[tokio::test]

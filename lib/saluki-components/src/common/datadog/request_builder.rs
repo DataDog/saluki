@@ -2,7 +2,7 @@
 
 use std::io;
 
-use http::{HeaderName, HeaderValue, Method, Request, Uri};
+use http::{HeaderMap, HeaderName, HeaderValue, Method, Request, Uri};
 use saluki_common::buf::{ChunkedBytesBuffer, FrozenChunkedBytesBuffer};
 use saluki_io::compression::*;
 use snafu::{ResultExt, Snafu};
@@ -86,6 +86,12 @@ pub trait EndpointEncoder: std::fmt::Debug {
     fn additional_headers(&self) -> &[(HeaderName, HeaderValue)] {
         &[]
     }
+
+    /// Adds HTTP headers that depend on the inputs of a request, given the inputs in the order they were encoded.
+    ///
+    /// Called once for every request, including each request that a split produces, with exactly the inputs that the
+    /// request holds. Defaults to adding no headers.
+    fn add_input_headers(&self, _inputs: &[Self::Input], _headers: &mut HeaderMap) {}
 }
 
 // Request builder errors.
@@ -551,12 +557,11 @@ where
         }
 
         let data_points_written = self.encoded_data_point_count(&self.encoded_inputs);
+        let request = self.create_request(compressed_buf, &self.encoded_inputs);
         let inputs_written = self.clear_encoded_inputs();
         debug!(encoder = E::encoder_name(), endpoint = ?self.encoder.endpoint_uri(), uncompressed_len, compressed_len, inputs_written, data_points_written, "Flushing request.");
 
-        vec![self
-            .create_request(compressed_buf)
-            .map(|req| (inputs_written, data_points_written, req))]
+        vec![request.map(|req| (inputs_written, data_points_written, req))]
     }
 
     /// Internal implementation of `flush`.
@@ -751,13 +756,13 @@ where
         let data_points_written = self.encoded_data_point_count(inputs);
 
         Some(
-            self.create_request(compressed_buf)
+            self.create_request(compressed_buf, inputs)
                 .map(|request| (inputs.len(), data_points_written, request)),
         )
     }
 
     fn create_request(
-        &self, buffer: FrozenChunkedBytesBuffer,
+        &self, buffer: FrozenChunkedBytesBuffer, inputs: &[E::Input],
     ) -> Result<Request<FrozenChunkedBytesBuffer>, RequestBuilderError<E>> {
         let mut builder = Request::builder()
             .method(self.encoder.endpoint_method())
@@ -772,7 +777,9 @@ where
             builder = builder.header(name, value);
         }
 
-        builder.body(buffer).context(Http)
+        let mut request = builder.body(buffer).context(Http)?;
+        self.encoder.add_input_headers(inputs, request.headers_mut());
+        Ok(request)
     }
 }
 
