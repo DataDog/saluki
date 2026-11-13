@@ -42,7 +42,7 @@ where
     }
 }
 
-use crate::correctness::analysis::TracesAnalysisOptions;
+use crate::steps::analysis::TracesAnalysisOptions;
 
 /// Analyzes traces for correctness.
 pub struct TracesAnalyzer {

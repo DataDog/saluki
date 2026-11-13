@@ -25,13 +25,9 @@ use crate::{
     core::ledger::{random_id, ResourceLedger},
     core::result::{TestResult, UNKNOWN_PHASE},
     core::tasks::CaseTasks,
-    correctness::{
-        analysis::{AnalysisMode, AnalysisRunner, TracesAnalysisOptions},
-        case::CorrectnessTestCase,
-        config::TargetConfig,
-        runner::make_error_result,
-    },
+    correctness::{case::CorrectnessTestCase, config::TargetConfig, runner::make_error_result},
     intake::IntakeClient,
+    steps::analysis::{AnalysisMode, AnalysisRunner, TracesAnalysisOptions},
     test::TestContext,
     traffic::{self, Side},
 };

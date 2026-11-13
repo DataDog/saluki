@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, path::PathBuf};
 use serde::Deserialize;
 
 use crate::config::{deserialize_env_map, CaseConfig};
-use crate::correctness::analysis::{AnalysisMode, LogsAnalysisOptions};
+use crate::steps::analysis::{AnalysisMode, LogsAnalysisOptions};
 
 /// The container runtime backend to use for a correctness test.
 #[derive(Clone, Deserialize, PartialEq, Eq)]

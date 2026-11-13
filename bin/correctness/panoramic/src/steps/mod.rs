@@ -11,6 +11,7 @@ use crate::core::record::StepStatus;
 use crate::core::registry::Registry;
 use crate::core::step::StepReport;
 
+pub(crate) mod analysis;
 mod file_contains;
 pub(crate) mod intake;
 mod intake_has_metric;
