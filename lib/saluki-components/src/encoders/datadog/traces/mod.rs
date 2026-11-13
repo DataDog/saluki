@@ -3,7 +3,7 @@ use std::{borrow::Cow, fmt::Write, time::Duration};
 use async_trait::async_trait;
 use datadog_protos::traces::builders::{idx::SpanKind, AgentPayloadBuilder};
 use http::{uri::PathAndQuery, HeaderName, HeaderValue, Method, Uri};
-use metrics::{Counter, Histogram};
+use metrics::{Counter, Gauge, Histogram};
 use piecemeal::{ScratchBuffer, ScratchWriter};
 use saluki_common::collections::{FastHashMap, FastIndexSet};
 use saluki_common::strings::StringBuilder;
@@ -234,6 +234,8 @@ struct TracePayloadTelemetry {
     events: Counter,
     bytes_uncompressed: Counter,
     payload_size: Histogram,
+    largest_payload_size: Gauge,
+    largest_payload_size_seen: usize,
 }
 
 impl TracePayloadTelemetry {
@@ -244,6 +246,8 @@ impl TracePayloadTelemetry {
             events: builder.register_counter("component_trace_events_encoded_total"),
             bytes_uncompressed: builder.register_counter("component_bytes_uncompressed_total"),
             payload_size: builder.register_histogram("component_payload_size_bytes"),
+            largest_payload_size: builder.register_gauge("component_payload_size_max_bytes"),
+            largest_payload_size_seen: 0,
         }
     }
 
@@ -256,10 +260,16 @@ impl TracePayloadTelemetry {
 
     /// Tracks a flushed payload, given its size before compression and the size of the request body.
     ///
-    /// The body size is recorded as a distribution, so that its maximum is the largest single payload.
-    fn track_payload(&self, uncompressed_len: usize, body_len: usize) {
+    /// The body size goes into a distribution, and the largest body seen so far goes into a gauge: exported
+    /// distributions keep their buckets, sum and count, but not the exact maximum.
+    fn track_payload(&mut self, uncompressed_len: usize, body_len: usize) {
         self.bytes_uncompressed.increment(uncompressed_len as u64);
         self.payload_size.record(body_len as f64);
+
+        if body_len > self.largest_payload_size_seen {
+            self.largest_payload_size_seen = body_len;
+            self.largest_payload_size.set(body_len as f64);
+        }
     }
 }
 
@@ -374,7 +384,7 @@ impl Encoder for DatadogTrace {
 
 async fn run_request_builder(
     mut trace_request_builder: RequestBuilder<TraceEndpointEncoder>, telemetry: ComponentTelemetry,
-    payload_telemetry: TracePayloadTelemetry, mut events_rx: Receiver<EventsBuffer>,
+    mut payload_telemetry: TracePayloadTelemetry, mut events_rx: Receiver<EventsBuffer>,
     payloads_tx: Sender<PayloadsBuffer>, flush_timeout: std::time::Duration,
 ) -> Result<(), GenericError> {
     let mut pending_flush = false;
@@ -1540,6 +1550,21 @@ mod tests {
     }
 
     #[test]
+    fn largest_payload_gauge_only_moves_up() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let mut telemetry = TracePayloadTelemetry::from_builder(&MetricsBuilder::default());
+
+        for (body_len, expected_largest) in [(100_000, 100_000.0), (3_000_000, 3_000_000.0), (50_000, 3_000_000.0)] {
+            telemetry.track_payload(body_len, body_len);
+            assert_eq!(
+                recorder.gauge("component_payload_size_max_bytes"),
+                Some(expected_largest)
+            );
+        }
+    }
+
+    #[test]
     fn trace_counts_follow_the_sampling_decision() {
         // A kept trace counts every span as a span, analyzed or not, and no events.
         let kept = make_sampled_trace(vec![make_span(1, true), make_span(2, false)], false);
@@ -1605,7 +1630,11 @@ mod tests {
             body_lens.push(request.body().len() as f64);
         }
         assert_eq!(body_lens.len(), 1);
-        assert_eq!(recorder.histogram("component_payload_size_bytes"), Some(body_lens));
+        assert_eq!(
+            recorder.histogram("component_payload_size_bytes"),
+            Some(body_lens.clone())
+        );
+        assert_eq!(recorder.gauge("component_payload_size_max_bytes"), Some(body_lens[0]));
 
         assert_eq!(recorder.counter("component_traces_encoded_total"), Some(3));
         assert_eq!(recorder.counter("component_spans_encoded_total"), Some(3));
