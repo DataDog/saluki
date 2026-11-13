@@ -185,7 +185,7 @@
 <a href=#185 id=185 data-nosnippet>185</a>
 <a href=#186 id=186 data-nosnippet>186</a>    <span class="attr">#[test]
 <a href=#187 id=187 data-nosnippet>187</a>    </span><span class="kw">fn </span>lower_severity_keys_pass_and_cross_cutting_keys_ignore_active_pipelines() {
-<a href=#188 id=188 data-nosnippet>188</a>        <span class="kw">let </span>system = system_with(<span class="macro">json!</span>({ <span class="string">"dogstatsd_queue_size"</span>: <span class="number">2048</span>, <span class="string">"min_tls_version"</span>: <span class="string">"tlsv1.3" </span>}));
+<a href=#188 id=188 data-nosnippet>188</a>        <span class="kw">let </span>system = system_with(<span class="macro">json!</span>({ <span class="string">"dogstatsd_pipeline_count"</span>: <span class="number">4</span>, <span class="string">"min_tls_version"</span>: <span class="string">"tlsv1.3" </span>}));
 <a href=#189 id=189 data-nosnippet>189</a>        system
 <a href=#190 id=190 data-nosnippet>190</a>            .check_compatibility(<span class="kw-2">&amp;</span>pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD]))
 <a href=#191 id=191 data-nosnippet>191</a>            .expect(<span class="string">"only high-severity incompatibilities fail the check"</span>);
