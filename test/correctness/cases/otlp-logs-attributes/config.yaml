@@ -4,7 +4,7 @@ analysis_mode: logs
 logs:
   # Every record carries a unique `fixture_id`, so records pair even when a gap changes their message or timestamp.
   identity_fields: ["fixture_id"]
-  min_count: 78
+  min_count: 81
   # Every difference ADP shows today, tagged with its gap from the OTLP logs parity plan (DataDog/saluki#2966). Remove
   # an entry in the change that fixes its gap.
   known_differences:
@@ -31,10 +31,6 @@ logs:
       when:
         fixture_id: [message-int, message-map]
       reason: ADP only honors string `message`/`log` attributes, and uses the body instead.
-    - gap: gap/event-name
-      paths: ["content.otel.event_name"]
-      kinds: [missing]
-      reason: ADP doesn't set `otel.event_name`.
     - gap: gap/scope-metadata
       paths: ["content.otel.scope.name", "content.otel.scope.version"]
       kinds: [missing]

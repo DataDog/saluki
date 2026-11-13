@@ -243,8 +243,8 @@ fn attributes_fixture() -> Vec<u8> {
     trace_fields.trace_id = (1..=16).collect();
     trace_fields.span_id = (1..=8).collect();
     records.push(trace_fields);
-    // gap/event-name: the event name is stored as `otel.event_name`.
-    let mut event = record(17, "event-name", vec![]);
+    // gap/event-name: the event name is stored as `otel.event_name`, overwriting an attribute with the same key.
+    let mut event = record(17, "event-name", vec![kv("otel.event_name", string("from-attribute"))]);
     event.event_name = "fixture.event".to_string();
     records.push(event);
     // gap/reserved-key-duplicates: when a reserved key repeats, in any case, the last message, status, and `ddtags`
@@ -297,6 +297,12 @@ fn attributes_fixture() -> Vec<u8> {
             ],
         ),
     ]);
+    // gap/event-name: without an event name, an `otel.event_name` attribute stays.
+    records.push(record(
+        26,
+        "event-name-unset",
+        vec![kv("otel.event_name", string("from-attribute"))],
+    ));
 
     request(
         vec![
