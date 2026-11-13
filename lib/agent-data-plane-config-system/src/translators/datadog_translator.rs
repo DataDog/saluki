@@ -994,6 +994,16 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         }
     }
 
+    fn consume_dogstatsd_queue_size(&mut self, value: i64) {
+        match usize::try_from(value) {
+            Ok(queue_size) => self.config.domains.dogstatsd.listeners.queue_size = queue_size,
+            Err(_) => self.record_error(TranslateError::new_with_message(
+                "dogstatsd_queue_size",
+                "queue size must be greater than or equal to 0",
+            )),
+        }
+    }
+
     fn consume_dogstatsd_so_rcvbuf(&mut self, value: i64) {
         // A negative receive buffer size is invalid and must be rejected.
         match usize::try_from(value) {
@@ -2304,6 +2314,26 @@ mod tests {
 
         let errors = errors.expect("a negative context expiry should record a translation error");
         assert!(errors.to_string().contains("dogstatsd_context_expiry_seconds"));
+        assert!(errors.to_string().contains("greater than or equal to 0"));
+    }
+
+    #[test]
+    fn dogstatsd_queue_size_defaults_to_the_schema_default_and_can_be_set() {
+        let (config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none());
+        assert_eq!(config.domains.dogstatsd.listeners.queue_size, 1024);
+
+        let (config, errors) = translate_explicit(json!({ "dogstatsd_queue_size": 4096 }));
+        assert!(errors.is_none());
+        assert_eq!(config.domains.dogstatsd.listeners.queue_size, 4096);
+    }
+
+    #[test]
+    fn negative_dogstatsd_queue_size_records_translation_error() {
+        let (_, errors) = translate_explicit(json!({ "dogstatsd_queue_size": -1 }));
+
+        let errors = errors.expect("a negative queue size should record a translation error");
+        assert!(errors.to_string().contains("dogstatsd_queue_size"));
         assert!(errors.to_string().contains("greater than or equal to 0"));
     }
 

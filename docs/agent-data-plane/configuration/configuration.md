@@ -103,7 +103,6 @@ architecture is fundamentally different or the feature is platform-specific.
 | `dogstatsd_packet_buffer_size`                                                           | Datagrams per packet buffer                        | ADP queues individual datagrams in its bounded I/O buffer pool.                                                                                                                                                                                                           |
 | `dogstatsd_pipeline_autoadjust`                                                          | Auto-adjust pipeline workers                       | ADP uses async tasks.                                                                                                                                                                                                                                                     |
 | `dogstatsd_pipeline_count`                                                               | Parallel processing pipelines                      | ADP uses async tasks.                                                                                                                                                                                                                                                     |
-| `dogstatsd_queue_size`                                                                   | Packet channel buffer size                         | ADP bounds datagram queues with `dogstatsd_buffer_count_max`.                                                                                                                                                                                                             |
 | `dogstatsd_stats_buffer`                                                                 | Internal stats buffer size                         | ADP does not expose the core agent's packet-per-second expvar endpoint, so there is no persistent stats endpoint buffer to configure.                                                                                                                                     |
 | `dogstatsd_stats_enable`                                                                 | Enable internal stats endpoint                     | See below                                                                                                                                                                                                                                                                 |
 | `dogstatsd_stats_port`                                                                   | Internal stats endpoint port                       | ADP does not expose the core agent's packet-per-second expvar endpoint, so `dogstatsd_stats_port` has no effect.                                                                                                                                                          |
@@ -446,6 +445,7 @@ default values.
 | `cri_socket_path`                                               | containerd/CRI socket path                      |
 | `dogstatsd_mapper_cache_size`                                   | Mapper result LRU cache size                    |
 | `dogstatsd_metrics_stats_enable`                                | Enable per-metric debug stats                   |
+| `dogstatsd_queue_size`                                          | Packet channel buffer size                      |
 | `dogstatsd_workers_count`                                       | Number of DSD processing workers                |
 | `env`                                                           | Agent environment name                          |
 | `experimental.metrics_endpoint_routing.metric_allowlist`        | Per-endpoint metric allow lists                 |
@@ -535,6 +535,12 @@ mapper, clear `dogstatsd_mapper_profiles` instead when running ADP.
 ### `dogstatsd_metrics_stats_enable`
 
 See `dogstatsd_stats_enable`
+
+### `dogstatsd_queue_size`
+
+ADP sizes the queue of packets waiting to be forwarded to `statsd_forward_host` from this setting: the queue
+holds a quarter of `dogstatsd_queue_size` packets, and at least 64. ADP bounds its queues of received datagrams
+with `dogstatsd_buffer_count_max` instead.
 
 ### `dogstatsd_workers_count`
 

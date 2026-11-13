@@ -703,6 +703,7 @@ fn dogstatsd_source_configuration(
         tcp_port: listeners.tcp_port,
         statsd_forward_host: listeners.forward_host.as_deref().map(MetaString::from),
         statsd_forward_port: listeners.forward_port,
+        queue_size: listeners.queue_size,
         socket_path: listeners.socket.clone(),
         socket_stream_path: listeners.stream_socket.clone(),
         stream_log_too_big: listeners.stream_log_too_big,

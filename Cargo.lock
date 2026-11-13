@@ -5843,6 +5843,7 @@ dependencies = [
  "stringtheory",
  "tempfile",
  "test-strategy",
+ "thingbuf",
  "tokio",
  "tokio-rustls",
  "tokio-util",
@@ -6804,6 +6805,16 @@ name = "thin-vec"
 version = "0.2.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "79def32ffcd477db1ff26f76dab9e3a91f0bd42a85ca96577089b24623056f9d"
+
+[[package]]
+name = "thingbuf"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "662b54ef6f7b4e71f683dadc787bbb2d8e8ef2f91b682ebed3164a5a7abca905"
+dependencies = [
+ "parking_lot",
+ "pin-project",
+]
 
 [[package]]
 name = "thiserror"
