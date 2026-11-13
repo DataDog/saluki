@@ -11,8 +11,8 @@ building application-specific binaries.
 
 ### Binaries
 
-- `bin/agent-data-plane`: the primary data plane binary, which provides a production-grade DogStatsD pipeline and an
-  experimental OTLP pipeline
+- `bin/agent-data-plane`: the primary data plane binary, which handles metrics, logs, events, service checks, and
+  traces via DogStatsD, OTLP, checks, and APM pipelines
 - `bin/correctness`: binaries used to run correctness tests against ADP and standalone DogStatsD
 
 ### Libraries
