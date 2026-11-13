@@ -228,7 +228,7 @@ pub struct DogStatsDConfiguration {
     /// Forwarding is enabled only when this value is non-zero and `statsd_forward_host` is set.
     pub statsd_forward_port: u16,
 
-    /// The size of the Agent's DogStatsD packet queue, from `dogstatsd_queue_size`.
+    /// The size of the DogStatsD packet queue, from `dogstatsd_queue_size`.
     ///
     /// The source doesn't queue received packets by count. It sizes the packet forwarder's queue from this value
     /// instead: a quarter of it, and at least 64 packets.
@@ -904,8 +904,8 @@ impl MemoryBounds for DogStatsDConfiguration {
             UsageExpr::config("dogstatsd_buffer_size", adjusted_buffer_size),
         ));
 
-        // The packet forwarder allocates a buffer for each queue slot the first time the slot is used, and keeps it. Every
-        // slot is used once forwarding is active, so this is steady-state usage rather than a worst case.
+        // Each packet forwarder queue slot keeps a buffer as large as the largest packet it has carried, up to a receive
+        // buffer. This is the worst case: slots are usually much smaller.
         if self.statsd_forward_target().is_some() {
             builder.firm().with_expr(UsageExpr::product(
                 "packet forwarder queue",

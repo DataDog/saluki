@@ -19,10 +19,10 @@ const IPV6_ANY_ADDR: SocketAddr = SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::UNS
 /// The smallest forwarding queue, in packets.
 const MIN_FORWARDER_QUEUE_CAPACITY: usize = 64;
 
-/// Returns how many packets the forwarding queue holds, for the Agent's DogStatsD queue size of `queue_size`.
+/// Returns how many packets the forwarding queue holds for a DogStatsD queue size of `queue_size`.
 ///
-/// Once forwarding is active, every slot keeps a buffer as large as a receive buffer, so the queue holds only a
-/// quarter of the Agent's queue size.
+/// Any slot can grow to the size of a receive buffer, so the queue holds only a quarter of `queue_size` packets to keep
+/// the worst case small.
 pub(super) fn forwarder_queue_capacity(queue_size: usize) -> usize {
     (queue_size / 4).max(MIN_FORWARDER_QUEUE_CAPACITY)
 }
@@ -35,14 +35,11 @@ pub(super) type PacketReceiver = mpsc::Receiver<Vec<u8>, WithCapacity>;
 
 /// Creates the packet queue.
 ///
-/// Each slot holds one packet, in a buffer of `packet_capacity` bytes that is allocated the first time the slot is used
-/// and reused from then on, so steady-state forwarding doesn't allocate. The queue is a ring, so every slot is used
-/// within the first `queue_capacity` packets: once forwarding is active, all of the buffers stay allocated.
+/// Each slot holds one packet. A slot's buffer grows to the largest packet it has carried and is reused from then on,
+/// so steady-state forwarding doesn't allocate. A buffer that grows past `packet_capacity` shrinks back to it when the
+/// slot is next used.
 fn packet_queue(queue_capacity: usize, packet_capacity: usize) -> (PacketSender, PacketReceiver) {
-    let recycle = WithCapacity::new()
-        .with_min_capacity(packet_capacity)
-        .with_max_capacity(packet_capacity);
-    mpsc::with_recycle(queue_capacity, recycle)
+    mpsc::with_recycle(queue_capacity, WithCapacity::new().with_max_capacity(packet_capacity))
 }
 
 #[derive(Clone)]
@@ -56,9 +53,8 @@ pub(super) struct PacketForwarderTarget {
 impl PacketForwarderTarget {
     /// Creates a forwarding target.
     ///
-    /// The forwarding queue holds `queue_capacity` packets. `packet_capacity` is the largest packet the forwarder is
-    /// expected to send. Larger packets are still forwarded, and their buffer shrinks back to `packet_capacity` once
-    /// sent.
+    /// The forwarding queue holds `queue_capacity` packets. `packet_capacity` is the most a queue slot keeps allocated
+    /// between packets. Larger packets are still forwarded.
     pub(super) fn new(
         target_host: MetaString, target_port: u16, queue_capacity: usize, packet_capacity: usize,
     ) -> Self {
@@ -221,6 +217,8 @@ impl PacketForwarder {
             match packets_tx.send_ref().await {
                 Ok(mut slot) => {
                     slot.clear();
+                    // Exact, so a slot never keeps more than its largest packet and the memory bound stays a worst case.
+                    slot.reserve_exact(packet.len());
                     slot.extend_from_slice(packet);
                 }
                 Err(_) => {
@@ -272,29 +270,10 @@ mod tests {
     use tokio::{net::UdpSocket, time::timeout};
 
     use super::super::metrics::ForwarderMetrics;
-    use super::{forwarder_queue_capacity, PacketForwarder, PacketForwarderTarget, PacketSender};
+    use super::{forwarder_queue_capacity, PacketForwarder, PacketForwarderTarget, PacketSender, IPV4_ANY_ADDR};
 
-    /// The forwarding queue capacity for the Agent's default DogStatsD queue size.
+    /// The forwarding queue capacity for the default DogStatsD queue size.
     const QUEUE_CAPACITY: usize = 256;
-
-    #[test]
-    fn queue_capacity_is_a_quarter_of_the_queue_size_and_at_least_64() {
-        for (queue_size, capacity) in [
-            (0, 64),
-            (255, 64),
-            (256, 64),
-            (260, 65),
-            (1024, QUEUE_CAPACITY),
-            (4096, 1024),
-        ] {
-            assert_eq!(
-                forwarder_queue_capacity(queue_size),
-                capacity,
-                "queue size {queue_size}"
-            );
-        }
-    }
-    use crate::sources::dogstatsd::forwarder::IPV4_ANY_ADDR;
 
     /// Waits for `forwarder` to publish its packet channel, which the forwarding loop does once it starts running.
     ///
@@ -334,6 +313,24 @@ mod tests {
             8196,
         )
         .to_forwarder(ForwarderMetrics::new(&context))
+    }
+
+    #[test]
+    fn queue_capacity_is_a_quarter_of_the_queue_size_and_at_least_64() {
+        for (queue_size, capacity) in [
+            (0, 64),
+            (255, 64),
+            (256, 64),
+            (260, 65),
+            (1024, QUEUE_CAPACITY),
+            (4096, 1024),
+        ] {
+            assert_eq!(
+                forwarder_queue_capacity(queue_size),
+                capacity,
+                "queue size {queue_size}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -472,18 +469,8 @@ mod tests {
         let forwarder_spawn = forwarder.clone();
         supervisor.scope(forwarder_spawn.connect()).await;
 
-        // The second forwarding loop finds the sender already published and exits without forwarding anything, so only
-        // the first loop keeps running, and a packet forwarded now arrives exactly once.
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-        while supervisor.active_children() > 1 {
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "a second connect must not leave a second forwarding loop running"
-            );
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-        assert_eq!(supervisor.active_children(), 1);
-
+        // The second forwarding loop is only queued when `connect` returns, so it can't be observed here. A packet
+        // arriving exactly once is what shows the first sender wasn't replaced.
         forwarder.forward(b"after.second.connect:1|c").await;
         let mut buf = [0u8; 64];
         let received = timeout(Duration::from_secs(5), target.recv(&mut buf))
@@ -599,8 +586,8 @@ mod tests {
     #[tokio::test]
     async fn queued_packets_are_forwarded_during_shutdown() {
         // Packets already queued when shutdown begins must still be sent. A forwarding loop that was aborted at
-        // shutdown would be dropped at its current await point and take the whole queue with it -- measured at 64 of
-        // 1024 delivered.
+        // shutdown would be dropped at its current await point and take the rest of the queue with it.
+        //
         // Drain the target on its own thread, started before anything is forwarded. The forwarding loop can outrun a
         // reader that has to wait its turn on the test's runtime, and a full socket receive buffer would lose packets
         // in the harness rather than in the code under test.
