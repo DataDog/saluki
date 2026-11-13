@@ -9,6 +9,7 @@ use std::{
 
 use async_trait::async_trait;
 use datadog_agent_apm::semantics::SemanticRegistryProvider;
+use metrics::Counter;
 use saluki_core::{
     accounting::{MemoryBounds, MemoryBoundsBuilder},
     components::{transforms::*, BuildContext},
@@ -21,12 +22,14 @@ use saluki_core::{
         origin::OriginTagCardinality,
         tags::TagSet,
     },
+    observability::ComponentMetricsExt as _,
     topology::OutputDefinition,
 };
 use saluki_env::{
     host::providers::BoxedHostProvider, workload::EntityId, EnvironmentProvider, HostProvider, WorkloadProvider,
 };
 use saluki_error::{ErrorContext as _, GenericError};
+use saluki_metrics::MetricsBuilder;
 use stringtheory::MetaString;
 use tokio::{select, time::interval};
 use tracing::{debug, error};
@@ -105,7 +108,8 @@ impl ApmStatsTransformConfiguration {
 
 #[async_trait]
 impl TransformBuilder for ApmStatsTransformConfiguration {
-    async fn build(&self, _context: BuildContext) -> Result<Box<dyn Transform + Send>, GenericError> {
+    async fn build(&self, context: BuildContext) -> Result<Box<dyn Transform + Send>, GenericError> {
+        let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
         let agent_hostname = MetaString::from(self.default_hostname.clone().unwrap_or_default());
         let concentrator = SpanConcentrator::new(
             self.compute_stats_by_span_kind,
@@ -121,6 +125,7 @@ impl TransformBuilder for ApmStatsTransformConfiguration {
             agent_env: self.agent_env.clone().into(),
             agent_hostname,
             workload_provider: self.workload_provider.clone(),
+            splits: metrics_builder.register_counter("component_stats_splits_total"),
         }))
     }
 
@@ -147,9 +152,19 @@ struct ApmStats {
     agent_env: MetaString,
     agent_hostname: MetaString,
     workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
+    splits: Counter,
 }
 
 impl ApmStats {
+    /// Splits flushed stats into events, counting a split whenever a flush needs more than one event.
+    fn split_flushed_stats(&self, client_payloads: Vec<ClientStatsPayload>) -> Vec<TraceStats> {
+        let events = split_into_trace_stats(client_payloads, MAX_STATS_GROUPS_PER_EVENT);
+        if events.len() > 1 {
+            self.splits.increment(1);
+        }
+        events
+    }
+
     fn process_trace(&mut self, trace: &Trace) {
         let root_span = trace
             .spans()
@@ -457,7 +472,7 @@ impl Transform for ApmStats {
                     if !stats_payloads.is_empty() {
                         debug!(stats_payloads = stats_payloads.len(), "Flushing APM stats.");
 
-                        let events = split_into_trace_stats(stats_payloads, MAX_STATS_GROUPS_PER_EVENT);
+                        let events = self.split_flushed_stats(stats_payloads);
                         let dispatcher = context.dispatcher().buffered()
                             .error_context("Default output should be available.")?;
 
@@ -541,6 +556,7 @@ mod tests {
     use saluki_core::data_model::event::trace::{AttributeValue, Span, TraceIngestInfo};
     use saluki_core::data_model::event::trace_stats::ClientGroupedStats;
     use saluki_core::data_model::event::trace_stats::ClientStatsBucket;
+    use saluki_metrics::test::TestRecorder;
 
     use super::aggregation::BUCKET_DURATION_NS;
     use super::span_concentrator::METRIC_PARTIAL_VERSION;
@@ -720,6 +736,7 @@ mod tests {
             agent_env: MetaString::from("none"),
             agent_hostname: MetaString::default(),
             workload_provider: None,
+            splits: Counter::noop(),
         };
 
         let span = make_test_span("test-service", "test-operation", "test-resource");
@@ -743,6 +760,7 @@ mod tests {
             agent_env: MetaString::from("none"),
             agent_hostname: MetaString::default(),
             workload_provider: None,
+            splits: Counter::noop(),
         };
 
         // Create a span with 0.5 sample rate (weight = 2.0)
@@ -1545,6 +1563,34 @@ mod tests {
     }
 
     #[test]
+    fn split_flushed_stats_counts_one_split_per_split_flush() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let now = now_nanos();
+        let transform = ApmStats {
+            concentrator: SpanConcentrator::new(true, true, &[], Default::default(), now),
+            flush_interval: DEFAULT_FLUSH_INTERVAL,
+            agent_env: MetaString::default(),
+            agent_hostname: MetaString::default(),
+            workload_provider: None,
+            splits: MetricsBuilder::default().register_counter("component_stats_splits_total"),
+        };
+        let flush = |groups: usize| vec![make_payload_with_buckets("host1", vec![make_bucket_with_stats(groups)])];
+
+        // A flush that fits in one event is not a split.
+        assert_eq!(
+            transform.split_flushed_stats(flush(MAX_STATS_GROUPS_PER_EVENT)).len(),
+            1
+        );
+        assert_eq!(recorder.counter("component_stats_splits_total"), Some(0));
+
+        // A flush is counted once however many events it splits into.
+        assert_eq!(transform.split_flushed_stats(flush(9000)).len(), 3);
+        assert_eq!(transform.split_flushed_stats(flush(4001)).len(), 2);
+        assert_eq!(recorder.counter("component_stats_splits_total"), Some(2));
+    }
+
+    #[test]
     fn split_into_trace_stats_marks_and_balances_by_group_count() {
         // The sizes the backend sees for a single client payload, using the production limit.
         let cases: [(usize, &[usize]); 4] = [
@@ -1693,6 +1739,7 @@ mod tests {
             agent_env: MetaString::default(),
             agent_hostname: MetaString::default(),
             workload_provider: None,
+            splits: Counter::noop(),
         };
 
         // Root span carries a span-level version attribute (set by otel_span_to_dd_span with

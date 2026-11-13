@@ -165,7 +165,7 @@ impl IncrementalEncoder for DatadogLogs {
         let maybe_requests = self.request_builder.flush().await;
         for maybe_request in maybe_requests {
             match maybe_request {
-                Ok((events, _data_points, request)) => {
+                Ok((events, _data_points, _uncompressed_len, request)) => {
                     let payload_meta = PayloadMetadata::from_event_count(events);
                     let http_payload = HttpPayload::new(payload_meta, request);
                     let payload = Payload::Http(http_payload);
