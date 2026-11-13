@@ -16,11 +16,13 @@ pub(super) mod writer;
 
 pub use self::capture::DogStatsDCaptureControl;
 pub(crate) use self::capture::TrafficCapture;
-pub use self::capture_api::DogStatsDCaptureAPIHandler;
+pub use self::capture_api::{
+    CaptureTriggerBody, CaptureTriggerResponseBody, DogStatsDCaptureAPIHandler, CAPTURE_TRIGGER_ROUTE,
+};
 pub(crate) use self::captured_tagger::{CapturedTaggerHandle, CapturedTaggerStore};
 pub use self::reader::{TimestampResolution, TrafficCaptureReader};
-pub use self::replay_api::DogStatsDReplayAPIHandler;
-pub use self::replay_control::{DogStatsDReplayControl, ReplaySession, DEFAULT_REPLAY_LOOPS};
+pub use self::replay_api::{DogStatsDReplayAPIHandler, ReplaySessionResponseBody, REPLAY_SESSION_ROUTE};
+pub use self::replay_control::{DogStatsDReplayControl, ReplayControlError, ReplaySession, DEFAULT_REPLAY_LOOPS};
 pub(crate) use self::writer::CaptureRecord;
 
 /// GID stamped onto replay-injected DogStatsD packets via `SCM_CREDENTIALS`.

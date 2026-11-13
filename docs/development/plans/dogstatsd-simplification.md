@@ -37,7 +37,8 @@ abstraction would have one caller.
   `file_header`. Three pull requests: source, replay, codec. Two rows were dropped: the `send_split` helper (the
   per-stream Antithesis assertions need literal messages, so it came out net-neutral) and the SO_REUSEPORT gate (not
   redundant: it logs a different, once-per-build warning and passes `None` streams on non-Linux).
-- [ ] **4. Bug fixes 1, 2, 4,** (4 already landed with the step 3 `file_header` change) each with a regression test (codec parity first).
+- [x] **4. Bug fixes 1, 2, 4,** each with a regression test. Most of bug 1 landed upstream first (#3071 and #3073);
+  the remaining service check gap is fixed here. Bug 4 landed with the step 3 `file_header` change.
 - [ ] **5. Inline connected-stream reads** and the context-struct collapse, with an SMP benchmark comparison.
 - [ ] **6. Capture/replay:** eager controls, marker-bit removal, typed errors, `EntityId` conversions, then relocation
   out of `sources/dogstatsd`.
