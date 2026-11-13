@@ -341,8 +341,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn s6_overlay_keeps_unix_line_endings() {
-        for (destination, _, bytes) in S6_OVERLAY {
+    fn container_scripts_keep_unix_line_endings() {
+        let scripts = S6_OVERLAY
+            .iter()
+            .map(|(destination, _, bytes)| (*destination, *bytes))
+            .chain([("senders.sh", super::super::millstone::SENDERS_SCRIPT)]);
+        for (destination, bytes) in scripts {
             assert!(bytes.starts_with(b"#!"), "{} has no interpreter line", destination);
             assert!(!bytes.contains(&b'\r'), "{} has a carriage return", destination);
         }
