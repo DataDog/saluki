@@ -1,4 +1,4 @@
-use std::{num::NonZeroUsize, sync::Arc, time::Duration};
+use std::{num::NonZeroUsize, time::Duration};
 
 use saluki_core::{
     components::ComponentContext,
@@ -46,16 +46,11 @@ impl ContextResolvers {
 
         let interner = GenericMapInterner::new(context_string_interner_size);
 
-        let origin_tags = maybe_origin_tags_resolver.clone();
-        let tags_resolver =
-            TagsResolverBuilder::new(format!("{}/dsd/tags", context.component_id()), interner.clone())?
-                .with_cached_tagsets_limit(cached_tagsets_limit)
-                .with_idle_tagsets_expiration(context_expiry_seconds)
-                .with_heap_allocations(allow_context_heap_allocations)
-                .with_origin_tags_resolver(maybe_origin_tags_resolver.map(
-                    |resolver| -> Arc<dyn saluki_core::data_model::origin::OriginTagsResolver> { Arc::new(resolver) },
-                ))
-                .build();
+        let tags_resolver = TagsResolverBuilder::new(format!("{}/dsd/tags", context.component_id()), interner.clone())?
+            .with_cached_tagsets_limit(cached_tagsets_limit)
+            .with_idle_tagsets_expiration(context_expiry_seconds)
+            .with_heap_allocations(allow_context_heap_allocations)
+            .build();
 
         let primary_resolver = ContextResolverBuilder::from_name(format!("{}/dsd/primary", context.component_id()))?
             .with_interner_capacity_bytes(context_string_interner_size)
@@ -78,7 +73,7 @@ impl ContextResolvers {
             primary: primary_resolver,
             no_agg: no_agg_resolver,
             tags: tags_resolver,
-            origin_tags,
+            origin_tags: maybe_origin_tags_resolver,
         })
     }
 
@@ -121,8 +116,8 @@ impl ContextResolvers {
     /// Resolves origin tags using the sender identity pinned when the packet was received.
     pub fn resolve_origin_tags(&self, origin: RawOrigin<'_>, process_origin: Option<&ProcessOrigin>) -> SharedTagSet {
         match &self.origin_tags {
-            Some(resolver) => resolver.resolve_origin_tags_with_process_origin(origin, process_origin),
-            None => self.tags.resolve_origin_tags(Some(origin)),
+            Some(resolver) => resolver.resolve_origin_tags(origin, process_origin),
+            None => SharedTagSet::default(),
         }
     }
 }
