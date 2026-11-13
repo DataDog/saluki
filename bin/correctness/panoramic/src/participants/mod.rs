@@ -3,6 +3,7 @@
 use crate::core::registry::Registry;
 
 mod agent_adp;
+mod datadog_agent;
 mod datadog_intake;
 
 /// Registers every participant type.
