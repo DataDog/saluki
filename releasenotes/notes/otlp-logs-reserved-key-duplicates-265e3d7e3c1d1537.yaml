@@ -1,0 +1,8 @@
+---
+fixes:
+  - |
+    OTLP logs handled natively now resolve repeated ``ddtags`` log attributes as the Datadog Agent does: only the
+    tags of the last ``ddtags`` attribute are added, rather than the tags of every one.
+  - |
+    OTLP logs handled natively now fall back to the log body when the message attribute is empty, as the Datadog
+    Agent does, rather than sending an empty message.
