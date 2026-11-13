@@ -20,14 +20,15 @@
 //!
 //! Output is captured line by line as it arrives: kept per process for steps, and written to
 //! `<log dir>/<participant>/<process>.log`. A participant whose processes are all supervised also gets its container
-//! log, which holds what the supervisor itself writes, as [`CONTAINER_LOG`]. Files to collect are copied to
-//! `<log dir>/<participant>/collected/<name>` after the procedure. Each carries its own retention, which
-//! [`retain`] applies to the outcome.
+//! log, which holds what the supervisor itself writes, as [`CONTAINER_LOG`]. A capture that stops while its
+//! participant runs is an observation error: a step that relies on having seen all of a process's output errors.
+//! Files to collect are copied to `<log dir>/<participant>/collected/<name>` after the procedure. Each carries its own
+//! retention, which [`retain`] applies to the outcome.
 
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use airlock::container::{Output, OutputStream};
@@ -149,6 +150,8 @@ struct Observed {
     /// Each process's output so far, line by line. The whole output is kept for the case's length, on purpose: steps
     /// match against all of it, and a case is bounded in time.
     output: BTreeMap<String, watch::Sender<Vec<String>>>,
+    /// Why the capture of a process's output stopped while the participant ran, for each process whose capture did.
+    capture_failures: Mutex<BTreeMap<String, String>>,
 }
 
 impl Observation {
@@ -161,6 +164,7 @@ impl Observation {
         Self(Arc::new(Observed {
             exit: watch::Sender::new(None),
             output,
+            capture_failures: Mutex::default(),
         }))
     }
 
@@ -186,7 +190,23 @@ impl Observation {
         self.0.output.get(process).map(watch::Sender::subscribe)
     }
 
-    fn line(&self, process: &str, line: String) {
+    /// Records that the capture of `process`'s output stopped, for the reason given, unless the participant has
+    /// exited: then the capture had nothing more to take.
+    pub(crate) fn capture_failed(&self, process: &str, why: String) {
+        if self.exit().is_none() {
+            let mut failures = self.0.capture_failures.lock().unwrap_or_else(|e| e.into_inner());
+            failures.entry(process.to_string()).or_insert(why);
+        }
+    }
+
+    /// Why the capture of `process`'s output stopped while the participant ran, or `None` if it did not.
+    pub(crate) fn capture_failure(&self, process: &str) -> Option<String> {
+        let failures = self.0.capture_failures.lock().unwrap_or_else(|e| e.into_inner());
+        failures.get(process).cloned()
+    }
+
+    /// Adds `line` to the output of `process`.
+    pub(crate) fn line(&self, process: &str, line: String) {
         if let Some(output) = self.0.output.get(process) {
             output.send_modify(|lines| lines.push(line));
         }
@@ -265,6 +285,13 @@ impl Sink {
         }
     }
 
+    /// Records that the capture stopped while the participant ran, so a step does not take the output as whole.
+    fn failed(&self, why: String) {
+        if let Some((observation, process)) = &self.process {
+            observation.capture_failed(process, why);
+        }
+    }
+
     /// Captures what the realization reports as the output of a participant's only process, until it ends, or until
     /// it is quiet for [`QUIET_TIME`] after `finish` fires, reading for at most [`DRAIN_TIME`] after that, even when
     /// chunks keep arriving.
@@ -295,6 +322,7 @@ impl Sink {
                 Ok(Output::Stderr(bytes)) => stderr.push(&bytes),
                 Err(e) => {
                     warn!(path = %self.path.display(), error = %e, "Stopped capturing output.");
+                    self.failed(format!("{:#}", e));
                     break;
                 }
             };
@@ -324,6 +352,7 @@ impl Sink {
         let mut lines = Lines::default();
         // The bytes of the file that arrived, from its start.
         let mut received = 0;
+        let mut read_failure = None;
         let read = async {
             let mut chunk = vec![0; 8192];
             loop {
@@ -335,12 +364,16 @@ impl Sink {
                     }
                     Err(e) => {
                         warn!(path, error = %e, "Stopped capturing a followed file.");
+                        read_failure = Some(e.to_string());
                         break;
                     }
                 }
             }
         };
         let (followed, ()) = tokio::join!(follow, read);
+        if let Some(why) = read_failure {
+            self.failed(why);
+        }
         match followed {
             // The follow ends this way when the participant exits.
             Err(HandleError::Software(e)) => debug!(path, error = %e, "Stopped following a file."),
@@ -354,6 +387,7 @@ impl Sink {
                     debug!(path, error = %e, "Stopped following a file.");
                 } else {
                     warn!(path, error = %e, "Failed to follow a file.");
+                    self.failed(e);
                 }
             }
             Ok(()) => {}

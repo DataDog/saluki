@@ -677,6 +677,28 @@ mod tests {
     }
 
     #[test]
+    fn every_real_participant_case_plans_for_every_os_it_declares() {
+        let cases = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../test");
+        let mut failures = Vec::new();
+        for suite in ["integration", "correctness"] {
+            for dir in case_dirs(&cases.join(suite).join("cases")) {
+                match config::is_legacy_case(&dir.join(case::CASE_FILE)) {
+                    Ok(false) => {}
+                    Ok(true) => continue,
+                    Err(e) => {
+                        failures.push(format!("{:#}", e));
+                        continue;
+                    }
+                }
+                if let Err(errors) = load_and_plan(&dir, &BTreeMap::new()) {
+                    failures.extend(errors.iter().map(ToString::to_string));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
     fn two_plans_of_one_example_serialize_to_the_same_json() {
         for dir in case_dirs(&testdata("examples")) {
             let dump = || serde_json::to_string_pretty(&load_and_plan(&dir, &BTreeMap::new()).unwrap()).unwrap();

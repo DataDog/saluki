@@ -14,7 +14,8 @@
 //! name, the environment each declared connection delivers, and each endpoint's address and readiness evidence. Then,
 //! across participants: each connection gets its route and its address as the consumer reaches it, every reference is
 //! checked against its place and filled in where planning knows its value, and the create and start orders are
-//! computed as levels, with what each consumer waits for. Last, each step of the procedure is built.
+//! computed as levels, with what each consumer waits for. Last, each step of the procedure is built, and what it uses
+//! and what its references name are checked.
 //!
 //! The plan owns everything the lifecycle acts on: the contents of every file and the operations steps call. After
 //! planning, nothing reads the loaded case or calls a participant type, except an operation a step calls.
@@ -25,6 +26,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use serde::Serialize;
+use serde_json::Value;
 
 use super::case::{is_name, CaseError, CaseInfo, LoadedCase, LoadedParticipant, Source, NAME_RULE};
 use super::participant::{Enclosure, Os, Realization, SpecContext};
@@ -34,9 +36,9 @@ use super::spec::{
     is_file_name, CollectFile, CommandSpec, Consumed, Contents, Evidence, ExitChannel, FileSource, HostMount,
     OutputChannel, ParticipantSpec, ProcessSpec, Program, DEFAULT_PROCESS,
 };
-use super::step::{Operation, ProcedureNode, Step, StepFields, StepPurpose};
+use super::step::{Need, Operation, ProcedureNode, Step, StepFields, StepPurpose};
 use super::template::Template;
-use super::wiring::{Gate, PlannedConnection, PlannedEndpoint, TypeWiring};
+use super::wiring::{Gate, PlannedConnection, PlannedEndpoint, TypeWiring, UnwiredUses};
 use super::{order, reference, wiring};
 
 /// Environment keys with this prefix are the harness's own.
@@ -248,8 +250,10 @@ pub(crate) fn plan(
 
     // Each phase across participants reads what the phase before it planned, so it runs only if that phase found no
     // problem. Otherwise it would report what is missing as a mistake of its own.
-    if problems.errors.is_empty() {
-        wiring::plan_connections(case, &mut participants, &consumes, &mut problems);
+    let planned_cleanly = problems.errors.is_empty();
+    let mut unwired = UnwiredUses::new();
+    if planned_cleanly {
+        unwired = wiring::plan_connections(case, &mut participants, &consumes, &mut problems);
     }
     let mut create_edges = BTreeSet::new();
     if problems.errors.is_empty() {
@@ -274,7 +278,9 @@ pub(crate) fn plan(
     let start_order = order("start", &start_edges);
     let gates = wiring::gates(&participants);
 
-    let procedure = build_procedure(case, registry, &mut problems);
+    let checked = planned_cleanly.then_some(&participants);
+    let procedure = build_procedure(case, registry, checked, &mut unwired, &mut problems);
+    wiring::report_unwired(&participants, unwired, &mut problems);
     if !problems.errors.is_empty() {
         return Err(problems.errors);
     }
@@ -326,9 +332,14 @@ fn lay_out(case: &LoadedCase, os: Os, problems: &mut Problems<'_>) -> BTreeMap<S
         .collect()
 }
 
+/// Builds each step of the procedure. Once the participants have planned without a problem, it also checks what each
+/// step needs and the references in its template fields against `participants`, and adds each endpoint a step uses
+/// and its participant does not wire to `unwired`.
 fn build_procedure(
-    case: &LoadedCase, registry: &Registry, problems: &mut Problems<'_>,
+    case: &LoadedCase, registry: &Registry, participants: Option<&BTreeMap<String, PlannedParticipant>>,
+    unwired: &mut UnwiredUses, problems: &mut Problems<'_>,
 ) -> Vec<ProcedureNode<PlannedStep>> {
+    let values = participants.map(reference::Values::of_plan);
     let mut procedure = Vec::new();
     for (index, node) in case.procedure.iter().enumerate() {
         let parallel = matches!(node, ProcedureNode::Parallel(_));
@@ -350,14 +361,49 @@ fn build_procedure(
                 );
                 continue;
             }
-            match factory.build(&entry.fields) {
-                Ok(step) => steps.push(PlannedStep {
-                    name: entry.step.clone(),
-                    fields: entry.fields.clone(),
-                    step,
-                }),
-                Err(message) => problems.push(Some(at), format!("{}: {}", entry.step, message)),
+            let template_fields = factory.template_fields();
+            for (field, value) in &entry.fields.0 {
+                let holds_reference = strings(value).iter().any(|text| text.contains("{{"));
+                if holds_reference && !template_fields.contains(&field.as_str()) {
+                    problems.push(
+                        Some(at.clone()),
+                        format!(
+                            "{}: '{}' holds no references, so it cannot contain '{{{{'",
+                            entry.step, field
+                        ),
+                    );
+                }
             }
+            let step = match factory.build(&entry.fields) {
+                Ok(step) => step,
+                Err(message) => {
+                    problems.push(Some(at), format!("{}: {}", entry.step, message));
+                    continue;
+                }
+            };
+            if let (Some(participants), Some(values)) = (participants, &values) {
+                let mut found = check_needs(step.as_ref(), &at, participants, unwired);
+                for field in template_fields {
+                    for text in entry.fields.0.get(*field).map(strings).unwrap_or_default() {
+                        match Template::parse(text) {
+                            Ok(template) => found.extend(
+                                reference::check_step_template(values, &template)
+                                    .into_iter()
+                                    .map(|message| format!("{}: {}", field, message)),
+                            ),
+                            Err(message) => found.push(format!("{}: {}", field, message)),
+                        }
+                    }
+                }
+                for message in found {
+                    problems.push(Some(at.clone()), format!("{}: {}", entry.step, message));
+                }
+            }
+            steps.push(PlannedStep {
+                name: entry.step.clone(),
+                fields: entry.fields.clone(),
+                step,
+            });
         }
         procedure.push(match node {
             ProcedureNode::Step(_) => match steps.pop() {
@@ -368,6 +414,76 @@ fn build_procedure(
         });
     }
     procedure
+}
+
+/// Checks that everything `step` needs exists in `participants`, and adds each endpoint it uses that its participant
+/// does not wire to `unwired`, as used by the step at `at`.
+///
+/// Returns the problems found.
+fn check_needs(
+    step: &dyn Step, at: &str, participants: &BTreeMap<String, PlannedParticipant>, unwired: &mut UnwiredUses,
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    for need in step.needs() {
+        let name = match &need {
+            Need::Participant(name)
+            | Need::Process(name, _)
+            | Need::Command(name, _)
+            | Need::Operation(name, _)
+            | Need::Endpoint(name, _, _) => name,
+        };
+        let Some(participant) = participants.get(name) else {
+            problems.push(format!("names participant '{}', which the case does not have", name));
+            continue;
+        };
+        let problem = match &need {
+            Need::Participant(_) => None,
+            Need::Process(_, process) => {
+                (!participant.processes.iter().any(|spec| spec.name() == process)).then(|| {
+                    let processes: Vec<&str> = participant.processes.iter().map(ProcessSpec::name).collect();
+                    format!(
+                        "participant '{}' has no process '{}': it has {}",
+                        name,
+                        process,
+                        super::case::join(&processes)
+                    )
+                })
+            }
+            Need::Command(_, command) => (!participant.commands.contains_key(command))
+                .then(|| format!("participant '{}' has no command '{}'", name, command)),
+            Need::Operation(_, operation) => (!participant.operations.contains_key(operation.as_str()))
+                .then(|| format!("participant '{}' offers no operation '{}'", name, operation)),
+            Need::Endpoint(_, endpoint, operation) => match participant.endpoints.get(endpoint) {
+                None => Some(format!("participant '{}' has no endpoint '{}'", name, endpoint)),
+                Some(planned) => {
+                    if planned.unwired.is_some() {
+                        let used = format!("{} ({})", at, step.name());
+                        unwired.entry((name.clone(), endpoint.clone())).or_default().push(used);
+                    }
+                    wiring::reach(
+                        *operation,
+                        planned.protocol,
+                        planned.tls,
+                        participant.realization.enclosure,
+                    )
+                    .err()
+                    .map(|why| format!("endpoint '{}' of participant '{}': {}", endpoint, name, why))
+                }
+            },
+        };
+        problems.extend(problem);
+    }
+    problems
+}
+
+/// Every string in `value`, however deep.
+fn strings(value: &Value) -> Vec<&str> {
+    match value {
+        Value::String(text) => vec![text.as_str()],
+        Value::Array(values) => values.iter().flat_map(strings).collect(),
+        Value::Object(values) => values.values().flat_map(strings).collect(),
+        Value::Null | Value::Bool(_) | Value::Number(_) => Vec::new(),
+    }
 }
 
 /// Collects the problems of one case on one subject OS.
