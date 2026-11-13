@@ -17,6 +17,7 @@ use crate::correctness::{case::CorrectnessTestCase, config::Config as Correctnes
 use crate::image_override::ImageOverrides;
 use crate::integration::{IntegrationSettings, IntegrationTestCase};
 use crate::participant_case::ParticipantCase;
+use crate::steps::intake::TagMatch;
 use crate::test::Test;
 
 /// A duration that can be parsed from human-readable strings like `10s`, `1m`, `500ms`.
@@ -542,17 +543,6 @@ impl AssertionConfig {
             | Self::IntakeHasMetric { timeout, .. } => timeout.0,
         }
     }
-}
-
-/// How an [`AssertionConfig::IntakeHasMetric`]'s `tags` must relate to an observed context's normalized tags.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum TagMatch {
-    /// Every expected tag is present; extra tags are allowed.
-    #[default]
-    Subset,
-    /// The context's tag set equals the expected set after sorting and deduplication.
-    Exact,
 }
 
 /// Metric type accepted by an [`AssertionConfig::IntakeHasMetric`].
