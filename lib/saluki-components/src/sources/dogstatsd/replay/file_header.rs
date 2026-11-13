@@ -15,35 +15,25 @@ pub(super) const MIN_NANO_VERSION: u8 = 3;
 
 pub(super) const VERSION_INDEX: usize = 4;
 pub(super) const DATADOG_HEADER: [u8; 8] = [0xD4, 0x74, 0xD0, 0x60, 0xF0, 0xFF, 0x00, 0x00];
-const ERR_HEADER_WRITE: &str = "capture file header could not be fully written to buffer";
 
 /// Returns whether the buffer begins with a valid Datadog capture header.
 pub(super) fn valid_header(buf: &[u8]) -> bool {
-    if buf.len() < DATADOG_HEADER.len() {
+    let Some(header) = buf.first_chunk::<{ DATADOG_HEADER.len() }>() else {
         return false;
-    }
+    };
 
-    for (index, expected) in DATADOG_HEADER.iter().enumerate() {
-        let actual = buf[index];
-        if index == VERSION_INDEX {
-            if actual & expected != *expected {
-                return false;
-            }
-        } else if actual != *expected {
-            return false;
-        }
-    }
-
-    true
+    // The version byte only has to carry the header's bits; the file version is OR'd into it.
+    let expected_version_bits = DATADOG_HEADER[VERSION_INDEX];
+    header[..VERSION_INDEX] == DATADOG_HEADER[..VERSION_INDEX]
+        && header[VERSION_INDEX] & expected_version_bits == expected_version_bits
+        && header[VERSION_INDEX + 1..] == DATADOG_HEADER[VERSION_INDEX + 1..]
 }
 
 /// Parses the Datadog capture file version from the given buffer.
+///
+/// The caller must first check the buffer with [`valid_header`].
 pub(super) fn file_version(buf: &[u8]) -> Result<u8, GenericError> {
-    if !valid_header(buf) {
-        return Err(generic_error!(
-            "Cannot verify file version from invalid capture header."
-        ));
-    }
+    debug_assert!(valid_header(buf), "file_version requires a valid capture header");
 
     let version = 0xF0 ^ buf[VERSION_INDEX];
     if version > DATADOG_FILE_VERSION {
@@ -57,12 +47,7 @@ pub(super) fn file_version(buf: &[u8]) -> Result<u8, GenericError> {
 pub(super) fn write_header<W: Write>(writer: &mut W) -> io::Result<()> {
     let mut header = DATADOG_HEADER;
     header[VERSION_INDEX] |= DATADOG_FILE_VERSION;
-    let written = writer.write(&header)?;
-    if written < DATADOG_HEADER.len() {
-        return Err(io::Error::new(io::ErrorKind::WriteZero, ERR_HEADER_WRITE));
-    }
-
-    Ok(())
+    writer.write_all(&header)
 }
 
 #[cfg(test)]
@@ -94,12 +79,7 @@ mod tests {
     #[test]
     fn test_header_format_error() {
         let test_cases = [
-            (
-                "No error but less bytes written than datadogHeader",
-                1,
-                None,
-                ErrorKind::WriteZero,
-            ),
+            ("No error but no bytes written", 0, None, ErrorKind::WriteZero),
             (
                 "Error and less bytes written than datadogHeader",
                 1,
@@ -124,6 +104,16 @@ mod tests {
     }
 
     #[test]
+    fn write_header_retries_short_writes() {
+        let mut writer = OneByteWriter(Vec::new());
+        write_header(&mut writer).expect("short writes should be retried");
+
+        let mut expected = Vec::new();
+        write_header(&mut expected).expect("header should write");
+        assert_eq!(writer.0, expected);
+    }
+
+    #[test]
     fn test_format_matcher() {
         assert!(valid_header(&DATADOG_HEADER));
 
@@ -142,6 +132,22 @@ mod tests {
                 Some(error) => Err(error),
                 None => Ok(self.bytes_to_write),
             }
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct OneByteWriter(Vec<u8>);
+
+    impl io::Write for OneByteWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            let Some(&byte) = buf.first() else {
+                return Ok(0);
+            };
+            self.0.push(byte);
+            Ok(1)
         }
 
         fn flush(&mut self) -> io::Result<()> {
