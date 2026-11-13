@@ -15,10 +15,7 @@ use bollard::{
         ContainerCreateBody, ContainerStateStatusEnum, EndpointSettings, HealthConfig, HealthStatusEnum, HostConfig,
         HostConfigCgroupnsModeEnum, Ipam, NetworkConnectRequest, NetworkCreateRequest, VolumeCreateRequest,
     },
-    query_parameters::{
-        CreateContainerOptionsBuilder, CreateImageOptions, ListContainersOptionsBuilder, LogsOptions,
-        RemoveContainerOptionsBuilder,
-    },
+    query_parameters::{CreateContainerOptionsBuilder, CreateImageOptions, LogsOptions},
     Docker,
 };
 use futures::{StreamExt as _, TryStreamExt as _};
@@ -29,7 +26,10 @@ use tokio::{
 };
 use tracing::{debug, error, trace, warn};
 
-use crate::config::{DatadogIntakeConfig, MillstoneConfig, TargetConfig};
+use crate::{
+    config::{DatadogIntakeConfig, MillstoneConfig, TargetConfig},
+    removal::Group,
+};
 
 const MILLSTONE_CONFIG_PATH_INTERNAL: &str = "/etc/millstone/config.toml";
 
@@ -554,44 +554,14 @@ impl Driver {
     async fn remove_isolation_group(docker: &Docker, isolation_group_id: &str) -> Result<(), GenericError> {
         let isolation_group_name = format!("airlock-{}", isolation_group_id);
         let isolation_group_label = format!("airlock-isolation-group={}", isolation_group_id);
-        let mut failures = Vec::new();
-
-        let list_filters: HashMap<&str, Vec<&str>> =
-            [("label", vec!["created_by=airlock", isolation_group_label.as_str()])]
-                .into_iter()
-                .collect();
-        let list_options = ListContainersOptionsBuilder::default()
-            .all(true)
-            .filters(&list_filters)
-            .build();
-        match docker.list_containers(Some(list_options)).await {
-            Ok(containers) => {
-                for container_id in containers.into_iter().filter_map(|container| container.id) {
-                    let remove_options = RemoveContainerOptionsBuilder::default().force(true).build();
-                    match docker.remove_container(&container_id, Some(remove_options)).await {
-                        Err(e) if !is_not_found(&e) => failures.push(format!("container '{}': {}", container_id, e)),
-                        _ => debug!("Removed container '{}'.", container_id),
-                    }
-                }
-            }
-            Err(e) => failures.push(format!("container list: {}", e)),
-        }
-
-        match docker
-            .remove_volume(
-                &isolation_group_name,
-                None::<bollard::query_parameters::RemoveVolumeOptions>,
-            )
-            .await
-        {
-            Err(e) if !is_not_found(&e) => failures.push(format!("volume '{}': {}", isolation_group_name, e)),
-            _ => debug!("Removed shared volume '{}'.", isolation_group_name),
-        }
-
-        match docker.remove_network(&isolation_group_name).await {
-            Err(e) if !is_not_found(&e) => failures.push(format!("network '{}': {}", isolation_group_name, e)),
-            _ => debug!("Removed shared network '{}'.", isolation_group_name),
-        }
+        let group = Group {
+            labels: &["created_by=airlock", isolation_group_label.as_str()],
+            volume: Some(&isolation_group_name),
+            network: &isolation_group_name,
+            owner_label: None,
+            remove_anonymous_volumes: false,
+        };
+        let failures = group.remove(docker, None).await;
 
         if failures.is_empty() {
             Ok(())
@@ -1339,11 +1309,6 @@ fn strip_ansi_codes(input: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Returns whether Docker reported a missing resource.
-fn is_not_found(error: &Error) -> bool {
-    matches!(error, Error::DockerResponseServerError { status_code: 404, .. })
-}
-
 /// Returns `true` if `error` is a transient error that can be retried.
 fn is_transient_error(error: &GenericError) -> bool {
     is_transient_hns_error(error)
@@ -1393,7 +1358,7 @@ fn transient_error_retry_backoff(attempt: u32, seed: &str) -> Duration {
 ///
 /// Each retry is logged at warning level so that runs which only passed because of a retry stay visible in CI output,
 /// rather than the mitigation quietly hiding how often the collision fires.
-async fn with_transient_error_retry<F, Fut, T>(
+pub(crate) async fn with_transient_error_retry<F, Fut, T>(
     operation: &str, seed: &str, mut run_attempt: F,
 ) -> Result<T, GenericError>
 where
@@ -1411,7 +1376,7 @@ where
 
                 let backoff = transient_error_retry_backoff(attempt, seed);
                 warn!(
-                    isolation_group = seed,
+                    seed,
                     error = %e,
                     "Transient error during {}. Retrying in {:?} (attempt {} of {}).",
                     operation,
@@ -1797,15 +1762,16 @@ mod tests {
             .iter()
             .map(|request| request.split('?').next().unwrap_or_default())
             .collect();
+        // Containers are removed concurrently, so either may be requested first.
+        let (listing, rest) = paths.split_at(1);
+        let (containers, rest) = rest.split_at(2);
+        assert_eq!(listing, ["GET /containers/json"]);
+        let mut containers = containers.to_vec();
+        containers.sort_unstable();
+        assert_eq!(containers, ["DELETE /containers/c1", "DELETE /containers/c2"]);
         assert_eq!(
-            paths,
-            [
-                "GET /containers/json",
-                "DELETE /containers/c1",
-                "DELETE /containers/c2",
-                "DELETE /volumes/airlock-ab12cd34",
-                "DELETE /networks/airlock-ab12cd34",
-            ]
+            rest,
+            ["DELETE /volumes/airlock-ab12cd34", "DELETE /networks/airlock-ab12cd34"]
         );
         for container_removal in &requests[1..3] {
             assert!(container_removal.contains("force=true"), "{container_removal}");
