@@ -146,7 +146,10 @@ pub struct EffectiveEventTypes {
 }
 
 impl EffectiveEventTypes {
-    /// Returns the event types the given component can receive, if it receives events.
+    /// Returns the event types that can arrive at the given component, if it receives events.
+    ///
+    /// This can include event types the component doesn't declare that it accepts: an edge only requires the upstream
+    /// and downstream event types to overlap, and event buffers are sent whole.
     pub fn input(&self, id: &ComponentId) -> Option<EventType> {
         self.inputs.get(id).copied()
     }
@@ -492,16 +495,17 @@ impl Graph {
         }
     }
 
-    /// Returns the event types that each component can actually receive and emit, given the current edges.
+    /// Returns the event types that can actually reach and leave each component, given the current edges.
     ///
     /// Components declare the event types they accept and emit, but those declarations are often broader than what
     /// flows through them in a given topology: a generic transform might accept every event type but only ever be
-    /// connected to a metrics source. This narrows each component's declared types by what its upstream components
-    /// can emit, so that per-edge costs (such as the size of the event buffers sent over an edge) can be estimated more
-    /// precisely.
+    /// connected to a metrics source. This works out what each component can receive from its upstream components, so
+    /// that per-edge costs (such as the size of the event buffers sent over an edge) can be estimated more precisely.
     ///
-    /// A transform whose declared output type is identical to its declared input type is assumed to only emit the
-    /// event types it receives. Components without inbound edges are assumed to receive their full declared input type.
+    /// A component can receive every event type its upstream components emit, even ones it doesn't declare: an edge
+    /// only requires the upstream and downstream event types to overlap, and event buffers are sent whole. A transform
+    /// whose declared output type is identical to its declared input type is assumed to emit whatever it receives.
+    /// Components without inbound edges are assumed to receive their full declared input type.
     ///
     /// Only components that handle events are included. Event types for inputs are keyed by the component, and event
     /// types for outputs are keyed by the component and combined across all of its outputs.
@@ -525,8 +529,8 @@ impl Graph {
             }
         }
 
-        // Narrowed types only ever grow from their initial state, and are bounded by the declared types, so this
-        // converges even if the graph contains a cycle.
+        // Effective types only ever grow from their initial state, and are bounded by the union of all declared types,
+        // so this converges even if the graph contains a cycle.
         let mut input_types: HashMap<ComponentId, EventType> = HashMap::new();
         loop {
             let mut changed = false;
@@ -551,11 +555,9 @@ impl Graph {
                         },
                     };
                 }
-                let effective_input = if has_inbound {
-                    declared_input & upstream
-                } else {
-                    declared_input
-                };
+                // Event buffers are sent whole, so everything upstream can emit can arrive here, whether or not this
+                // component declares that it accepts it.
+                let effective_input = if has_inbound { upstream } else { declared_input };
                 input_types.insert(id.clone(), effective_input);
 
                 if let Node::Transform { outputs, .. } = node {
@@ -564,7 +566,7 @@ impl Graph {
                             continue;
                         };
                         let effective_output = if declared_output == declared_input {
-                            declared_output & effective_input
+                            effective_input
                         } else {
                             declared_output
                         };
@@ -994,6 +996,60 @@ mod tests {
 
     fn pruned_ids(pruned: Vec<(ComponentId, ComponentType)>) -> HashSet<String> {
         pruned.into_iter().map(|(id, _)| id.to_string()).collect()
+    }
+
+    #[test]
+    fn effective_event_types_narrow_to_upstream_types() {
+        // A transform and destination that accept every event type, connected to a metrics-only source, only receive
+        // metrics.
+        let mut graph = Graph::default();
+        graph
+            .with_source("in", EventType::Metric)
+            .with_transform("chain", EventType::all_bits(), EventType::all_bits())
+            .with_destination("out", EventType::all_bits())
+            .with_edge("in", "chain")
+            .with_edge("chain", "out");
+
+        let types = graph.effective_event_types();
+        assert_eq!(types.input(&id("chain")), Some(EventType::Metric));
+        assert_eq!(types.output(&id("chain")), Some(EventType::Metric));
+        assert_eq!(types.input(&id("out")), Some(EventType::Metric));
+    }
+
+    #[test]
+    fn effective_event_types_include_upstream_types_the_receiver_does_not_accept() {
+        // Event buffers are sent whole, so a metrics-only destination connected to an output that also emits traces
+        // can receive trace buffers too.
+        let mut graph = Graph::default();
+        graph
+            .with_source("in", EventType::Metric | EventType::Trace)
+            .with_transform("filter", EventType::Metric, EventType::Metric)
+            .with_destination("out", EventType::Metric)
+            .with_edge("in", "filter")
+            .with_edge("filter", "out");
+
+        let types = graph.effective_event_types();
+        let both = EventType::Metric | EventType::Trace;
+        assert_eq!(types.input(&id("filter")), Some(both));
+        assert_eq!(types.output(&id("filter")), Some(both));
+        assert_eq!(types.input(&id("out")), Some(both));
+    }
+
+    #[test]
+    fn effective_event_types_use_declared_types_for_converting_transforms() {
+        // A transform that emits a different event type than it accepts is assumed to emit its declared output type.
+        let mut graph = Graph::default();
+        graph
+            .with_source("in", EventType::Trace)
+            .with_transform("stats", EventType::Trace, EventType::TraceStats)
+            .with_destination("out", EventType::TraceStats)
+            .with_edge("in", "stats")
+            .with_edge("stats", "out");
+
+        let types = graph.effective_event_types();
+        assert_eq!(types.input(&id("stats")), Some(EventType::Trace));
+        assert_eq!(types.output(&id("stats")), Some(EventType::TraceStats));
+        assert_eq!(types.input(&id("out")), Some(EventType::TraceStats));
     }
 
     #[test]
