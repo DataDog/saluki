@@ -1,8 +1,12 @@
-//! Telemetry received by a `datadog-intake` server, and its normalization.
-//!
-//! Deciding what the data must look like is left to the code that reads it.
+//! Telemetry received by a `datadog-intake` server, its normalization, and the criteria a metric is matched against.
 
 mod collected;
 pub use self::collected::CollectedData;
+
+mod criteria;
+pub use self::criteria::{MetricCriteria, TagMatch};
+
+#[cfg(test)]
+pub(crate) mod fixtures;
 
 pub mod metrics;
