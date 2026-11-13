@@ -321,7 +321,7 @@ impl HttpClientBuilder {
     /// Any ALPN protocols already present in `config` are discarded before the configuration is passed to
     /// `hyper-rustls`. [`Self::with_http_protocol`] remains the sole source of HTTP protocol selection:
     /// [`HttpProtocol::Auto`] advertises HTTP/2 with HTTP/1.1 fallback, while [`HttpProtocol::Http1`] enables only
-    /// HTTP/1.1 and does not advertise ALPN.
+    /// HTTP/1.1 and does not advertise ALPN. [`HttpProtocol::Http2`] advertises only HTTP/2.
     ///
     /// The supplied configuration is validated for FIPS compliance during [`Self::build`].
     pub fn with_client_tls_config(mut self, config: ClientConfig) -> Self {

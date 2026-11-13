@@ -346,6 +346,9 @@ pub enum HttpProtocol {
 
     /// Use HTTP/1.1 only.
     Http1,
+
+    /// Advertise HTTP/2 only.
+    Http2,
 }
 
 /// A connector that supports HTTP or HTTPS.
@@ -474,6 +477,7 @@ fn build_dns_resolver(error_telemetry: &Option<HttpTransactionErrorTelemetry>) -
 #[derive(Default)]
 pub struct HttpsCapableConnectorBuilder {
     connect_timeout: Option<Duration>,
+    tcp_nodelay: bool,
     tls_handshake_timeout: Option<Duration>,
     error_telemetry: Option<HttpTransactionErrorTelemetry>,
     conn_age_limit: Option<Duration>,
@@ -485,6 +489,14 @@ pub struct HttpsCapableConnectorBuilder {
 }
 
 impl HttpsCapableConnectorBuilder {
+    /// Sets the `TCP_NODELAY` option for TCP connections.
+    ///
+    /// Defaults to `false`.
+    pub fn with_tcp_nodelay(mut self, enabled: bool) -> Self {
+        self.tcp_nodelay = enabled;
+        self
+    }
+
     /// Sets the timeout when connecting to the remote host.
     ///
     /// Defaults to 30 seconds.
@@ -564,6 +576,7 @@ impl HttpsCapableConnectorBuilder {
         // wrap this in an HTTPS connector.
         let mut http_connector = HttpConnector::new_with_resolver(build_dns_resolver(&self.error_telemetry));
         http_connector.set_connect_timeout(Some(connect_timeout));
+        http_connector.set_nodelay(self.tcp_nodelay);
         http_connector.enforce_http(false);
 
         let inner_connector = InnerConnector {
@@ -594,6 +607,7 @@ fn http_protocol_alpns(protocol: HttpProtocol) -> Vec<Vec<u8>> {
     match protocol {
         HttpProtocol::Auto => vec![b"h2".to_vec(), b"http/1.1".to_vec()],
         HttpProtocol::Http1 => Vec::new(),
+        HttpProtocol::Http2 => vec![b"h2".to_vec()],
     }
 }
 
@@ -630,7 +644,42 @@ pub(super) fn check_connection_state(captured_conn: CaptureConnection) {
 mod tests {
     use std::{io, time::Duration};
 
-    use super::{await_handshake_with_deadline, http_protocol_alpns, HttpProtocol};
+    use http::Uri;
+    use hyper_rustls::MaybeHttpsStream;
+    use rustls::RootCertStore;
+    use saluki_tls::{initialize_default_crypto_provider, ClientTLSConfigBuilder};
+    use tokio::{net::TcpListener, time::timeout};
+    use tower::Service as _;
+
+    use super::{
+        await_handshake_with_deadline, http_protocol_alpns, HttpProtocol, HttpsCapableConnectorBuilder, Transport,
+    };
+
+    const TEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+    #[tokio::test]
+    async fn connector_applies_tcp_nodelay_to_the_client_socket() {
+        let _ = initialize_default_crypto_provider();
+        assert!(rustls::crypto::CryptoProvider::get_default().is_some());
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let uri: Uri = format!("http://{}", listener.local_addr().unwrap()).parse().unwrap();
+        for (builder, expected) in [
+            (HttpsCapableConnectorBuilder::default(), false),
+            (HttpsCapableConnectorBuilder::default().with_tcp_nodelay(true), true),
+        ] {
+            let tls = ClientTLSConfigBuilder::new().with_root_cert_store(RootCertStore::empty());
+            let mut connector = builder.build(tls.build().unwrap()).unwrap();
+            let connection = timeout(TEST_TIMEOUT, connector.call(uri.clone()))
+                .await
+                .unwrap()
+                .unwrap();
+            let MaybeHttpsStream::Http(Transport::Tcp(socket)) = connection.inner else {
+                panic!("expected a TCP connection");
+            };
+            assert_eq!(socket.inner().nodelay().unwrap(), expected);
+            let _ = timeout(TEST_TIMEOUT, listener.accept()).await.unwrap().unwrap();
+        }
+    }
 
     #[tokio::test(start_paused = true)]
     async fn handshake_deadline_of_zero_disables_the_timeout() {
@@ -730,6 +779,11 @@ mod tests {
         let alpn_protocols = http_protocol_alpns(HttpProtocol::Http1);
 
         assert!(alpn_protocols.is_empty());
+    }
+
+    #[test]
+    fn http2_protocol_advertises_only_h2_alpn() {
+        assert_eq!(http_protocol_alpns(HttpProtocol::Http2), vec![b"h2".to_vec()]);
     }
 
     // vsock takes priority over unix when both are configured, matching Agent behavior.

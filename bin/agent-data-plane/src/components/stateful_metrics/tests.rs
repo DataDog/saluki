@@ -1,4 +1,4 @@
-use std::{mem::replace, pin::Pin, sync::Arc};
+use std::{io, mem::replace, pin::Pin, sync::Arc};
 
 use agent_data_plane_config::{
     defaults::{
@@ -21,6 +21,7 @@ use foldspace_core::{
 use futures::Stream;
 use metrics::{Key, Label};
 use prost::Message as _;
+use rustls::{RootCertStore, ServerConfig};
 use saluki_common::sync::live::{channel, Live};
 use saluki_core::data_model::{event::metric::context::Context, tags::TagSet};
 use saluki_core::{
@@ -44,6 +45,7 @@ use saluki_core::{
 };
 use saluki_io::net::util::retry::{EventContainer, Retryable};
 use saluki_metrics::test::TestRecorder;
+use saluki_tls::{initialize_default_crypto_provider, load_platform_root_certificates, test_util::SelfSignedCert};
 use tempfile::TempDir;
 use tokio::{
     net::TcpListener,
@@ -52,6 +54,7 @@ use tokio::{
     task::JoinHandle,
     time::{advance, timeout},
 };
+use tokio_rustls::TlsAcceptor;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::{transport::Server, Request, Response, Status, Streaming};
 
@@ -127,6 +130,7 @@ async fn worker_for(configuration: StatefulMetricsConfiguration) -> StatefulMetr
         queue_for(&shared(), &addresses).await,
         MetricsBuilder::default(),
     )
+    .unwrap()
 }
 
 /// A worker whose core hands every payload waiting for an endpoint straight to the retry queue.
@@ -426,7 +430,8 @@ impl Harness {
             Duration::from_secs(2),
             queue_for(&shared(), &test_endpoints(1)).await,
             MetricsBuilder::default(),
-        );
+        )
+        .unwrap();
         let effects = worker.core.start();
         worker.apply(effects).await.unwrap();
         let mut harness = Self {
@@ -468,13 +473,13 @@ async fn grpc_sends_compressed_metrics_and_reuses_acknowledged_dictionary() {
     let mut harness = Harness::new().await;
     submit(&mut harness.worker, "requests").await;
     let first = harness.receive().await;
-    assert_eq!(first.batch_id, 1);
+    assert_eq!(first.batch_id, 0);
     assert!(has_name(&sequence(&first)));
     harness.ack(first.batch_id).await;
     assert!(harness.worker.is_drained());
     submit(&mut harness.worker, "requests").await;
     let second = harness.receive().await;
-    assert_eq!(second.batch_id, 2);
+    assert_eq!(second.batch_id, 1);
     assert!(!has_name(&sequence(&second)));
     harness.ack(second.batch_id).await;
 }
@@ -487,7 +492,7 @@ async fn grpc_disconnect_replays_the_unacknowledged_payload_without_reencoding()
     harness.ack(first.batch_id).await;
     submit(&mut harness.worker, "unconfirmed").await;
     let second = harness.receive().await;
-    assert_eq!(second.batch_id, 2);
+    assert_eq!(second.batch_id, 1);
     harness
         .replies
         .send(Err(Status::unavailable("disconnect")))
@@ -504,12 +509,12 @@ async fn grpc_disconnect_replays_the_unacknowledged_payload_without_reencoding()
     harness.progress().await;
     // The replacement stream is sent the same compressed bytes; they define the name they introduced.
     let replay = harness.receive().await;
-    assert_eq!(replay.batch_id, 1);
+    assert_eq!(replay.batch_id, 0);
     assert_eq!(replay.data, second.data);
     assert!(has_name(&sequence(&replay)));
     assert_eq!(harness.worker.core.encoding_count(), 2);
     assert_eq!(harness.worker.core.retry_stats().replayed_payloads, 1);
-    harness.ack(1).await;
+    harness.ack(0).await;
     assert!(harness.worker.is_drained());
 }
 
@@ -569,7 +574,7 @@ async fn invalid_ack_recovers_all_work_and_suspends() {
 async fn acknowledged_batches_are_not_retried() {
     let (mut worker, _wire, stream_id) = open_worker().await;
     submit(&mut worker, "acked").await;
-    worker.on_transport(ack(stream_id, 1)).await.unwrap();
+    worker.on_transport(ack(stream_id, 0)).await.unwrap();
     submit(&mut worker, "unacked").await;
     worker
         .fail(E0, MetricStreamFailureKind::Unavailable, "disconnect")
@@ -606,10 +611,10 @@ async fn full_transport_preserves_payload_without_failing_stream() {
     assert_eq!(worker.core.current_stream_id(E0), Some(stream_id));
     assert_eq!(worker.core.inflight_len(), 2);
     assert!(worker.queue.is_empty());
-    assert_eq!(receiver.try_recv().unwrap().batch_id, 1);
+    assert_eq!(receiver.try_recv().unwrap().batch_id, 0);
     assert_eq!(
         worker.transports[0].as_ref().unwrap().pending.front().unwrap().batch_id,
-        2
+        1
     );
     assert!(worker.endpoints[0].timers.is_empty());
 }
@@ -641,7 +646,7 @@ async fn inflight_window_keeps_remaining_work_in_queue() {
     buffer(&mut worker, "waiting").await;
     assert!(!worker.queue.is_empty());
     assert_eq!(worker.core.inflight_len(), MAX_INFLIGHT_BATCHES);
-    worker.on_transport(ack(id, 1)).await.unwrap();
+    worker.on_transport(ack(id, 0)).await.unwrap();
     worker.pump().await.unwrap();
     worker.flush().await.unwrap();
     assert!(worker.queue.is_empty());
@@ -669,7 +674,7 @@ async fn rotation_and_credentials_keep_payloads_for_replay() {
         assert_ne!(replacement, id);
         let mut wire = attach(&mut worker, E0, replacement).await;
         let replay = wire.try_recv().unwrap();
-        assert_eq!(replay.batch_id, 1);
+        assert_eq!(replay.batch_id, 0);
         assert!(has_name(&sequence(&replay)));
     }
 }
@@ -707,7 +712,7 @@ async fn invalid_credential_updates_preserve_delivery_and_shutdown_persistence()
         assert!(!worker.endpoints[0].suspended);
     }
 
-    worker.on_transport(ack(id, 1)).await.unwrap();
+    worker.on_transport(ack(id, 0)).await.unwrap();
     assert_eq!(worker.core.inflight_len(), 0);
     worker.shutdown().await.unwrap();
     let (mut restarted, _restarted_wire, _) = open_worker().await;
@@ -803,7 +808,7 @@ async fn shutdown_persists_unacknowledged_partial_and_queued_work_for_reencoding
     let (mut worker, _wire, id) = open_worker().await;
     worker.queue = persisted_queue(&settings).await;
     submit(&mut worker, "acknowledged").await;
-    worker.on_transport(ack(id, 1)).await.unwrap();
+    worker.on_transport(ack(id, 0)).await.unwrap();
     submit(&mut worker, "inflight").await;
     buffer(&mut worker, "partial").await;
     worker.accept([Event::Metric(Metric::gauge("fresh", (123, 1.0)))]).await;
@@ -813,7 +818,7 @@ async fn shutdown_persists_unacknowledged_partial_and_queued_work_for_reencoding
     restarted.pump().await.unwrap();
     restarted.flush().await.unwrap();
     let batch = wire.try_recv().unwrap();
-    assert_eq!(batch.batch_id, 1);
+    assert_eq!(batch.batch_id, 0);
     let decoded = sequence(&batch);
     let names: Vec<_> = decoded
         .data
@@ -1005,7 +1010,7 @@ async fn transport_backpressure_drains_in_order_without_an_ack() {
     let _request_sender = replace(&mut harness.worker.transports[0].as_mut().unwrap().sender, sender);
     submit(&mut harness.worker, "first").await;
     submit(&mut harness.worker, "second").await;
-    assert_eq!(receiver.try_recv().unwrap().batch_id, 1);
+    assert_eq!(receiver.try_recv().unwrap().batch_id, 0);
     // Cancel the event wait after it moves the pending payload into the available slot.
     assert!(timeout(
         Duration::from_millis(20),
@@ -1013,7 +1018,7 @@ async fn transport_backpressure_drains_in_order_without_an_ack() {
     )
     .await
     .is_err());
-    assert_eq!(receiver.try_recv().unwrap().batch_id, 2);
+    assert_eq!(receiver.try_recv().unwrap().batch_id, 1);
     assert!(harness.worker.transports[0].as_ref().unwrap().pending.is_empty());
     assert_eq!(harness.worker.core.inflight_len(), 2);
 }
@@ -1180,6 +1185,41 @@ impl EndpointHarness {
         }
     }
 
+    async fn tls(cert: &SelfSignedCert) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("https://{}", listener.local_addr().unwrap()).into();
+        let mut config = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(cert.cert_chain(), cert.private_key())
+            .unwrap();
+        // build_https_connector used to negotiate HTTP/1.1 while Tonic sent HTTP/2.
+        // Advertising only h2 must override this server's HTTP/1.1 preference.
+        config.alpn_protocols = vec![b"http/1.1".to_vec(), b"h2".to_vec()];
+        let acceptor = TlsAcceptor::from(Arc::new(config));
+        let (sessions, sessions_rx) = mpsc::channel(32);
+        let server = tokio::spawn(async move {
+            let incoming = async_stream::stream! {
+                loop {
+                    let (socket, _) = listener.accept().await.unwrap();
+                    if let Ok(stream) = acceptor.accept(socket).await {
+                        assert_eq!(stream.get_ref().1.alpn_protocol(), Some(b"h2".as_slice()));
+                        yield Ok::<_, io::Error>(stream);
+                    }
+                }
+            };
+            Server::builder()
+                .add_service(StatefulIntakeServer::new(SessionIntake { sessions }))
+                .serve_with_incoming(incoming)
+                .await
+                .unwrap();
+        });
+        Self {
+            endpoint,
+            sessions: sessions_rx,
+            server,
+        }
+    }
+
     async fn session(&mut self) -> TestSession {
         timeout(TEST_TIMEOUT, self.sessions.recv()).await.unwrap().unwrap()
     }
@@ -1223,16 +1263,16 @@ async fn down_endpoint_payloads_wait_in_the_core_without_blocking_others() {
         .unwrap();
     // The down endpoint's copy of later payloads waits in the core, compressed, not in its lane.
     submit(&mut worker, "second").await;
+    assert_eq!(healthy_wire.try_recv().unwrap().batch_id, 0);
     assert_eq!(healthy_wire.try_recv().unwrap().batch_id, 1);
-    assert_eq!(healthy_wire.try_recv().unwrap().batch_id, 2);
     assert!(worker.queue.is_empty());
+    worker.on_transport(ack_on(E0, healthy_stream, 0)).await.unwrap();
     worker.on_transport(ack_on(E0, healthy_stream, 1)).await.unwrap();
-    worker.on_transport(ack_on(E0, healthy_stream, 2)).await.unwrap();
     assert_eq!(worker.core.inflight_len(), 2);
     assert_eq!(worker.core.retry_stats().pending_copies, 2);
     assert!(!worker.can_pump());
     submit(&mut worker, "third").await;
-    assert_eq!(healthy_wire.try_recv().unwrap().batch_id, 3);
+    assert_eq!(healthy_wire.try_recv().unwrap().batch_id, 2);
 
     let effects = worker.core.handle_timer(down_stream, TimerKind::Reconnect);
     worker.apply(effects).await.unwrap();
@@ -1243,7 +1283,7 @@ async fn down_endpoint_payloads_wait_in_the_core_without_blocking_others() {
         assert!(has_name(&sequence(&batch)));
         replayed.push(batch.batch_id);
     }
-    assert_eq!(replayed, [1, 2, 3]);
+    assert_eq!(replayed, [0, 1, 2]);
     assert!(healthy_wire.try_recv().is_err());
     assert!(worker.queue.is_empty());
     assert_eq!(worker.core.encoding_count(), 3);
@@ -1262,12 +1302,12 @@ async fn down_endpoint_payloads_over_the_budget_wait_in_its_lane() {
         .await
         .unwrap();
     submit(&mut worker, "second").await;
+    assert_eq!(healthy_wire.try_recv().unwrap().batch_id, 0);
     assert_eq!(healthy_wire.try_recv().unwrap().batch_id, 1);
-    assert_eq!(healthy_wire.try_recv().unwrap().batch_id, 2);
     assert!(worker.queue.lane_is_empty(E0));
     assert!(!worker.queue.lane_is_empty(E1));
+    worker.on_transport(ack_on(E0, healthy_stream, 0)).await.unwrap();
     worker.on_transport(ack_on(E0, healthy_stream, 1)).await.unwrap();
-    worker.on_transport(ack_on(E0, healthy_stream, 2)).await.unwrap();
     assert_eq!(worker.core.inflight_len(), 0);
     assert_eq!(worker.core.retry_stats().returned_over_budget, 2);
 
@@ -1281,7 +1321,7 @@ async fn down_endpoint_payloads_over_the_budget_wait_in_its_lane() {
         assert!(has_name(&sequence(&batch)));
         resent.push(batch.batch_id);
     }
-    assert_eq!(resent, [1, 2]);
+    assert_eq!(resent, [0, 1]);
     assert!(worker.queue.is_empty());
     assert_eq!(worker.core.encoding_count(), 4, "lane batches are encoded again");
 }
@@ -1292,7 +1332,7 @@ async fn acknowledgement_deadlines_are_tracked_per_endpoint() {
     let opened = start_all(&mut worker).await;
     submit(&mut worker, "sent").await;
     assert!(worker.endpoints.iter().all(|endpoint| endpoint.ack_deadline.is_some()));
-    worker.on_transport(ack_on(E0, opened[0].1, 1)).await.unwrap();
+    worker.on_transport(ack_on(E0, opened[0].1, 0)).await.unwrap();
     assert_eq!(worker.endpoints[0].ack_deadline, None);
     let (endpoint, deadline) = worker.next_ack_deadline();
     assert_eq!(endpoint, E1);
@@ -1300,7 +1340,7 @@ async fn acknowledgement_deadlines_are_tracked_per_endpoint() {
     assert!(deadline.is_some());
     // The batch stays held until the second endpoint acknowledges it too.
     assert_eq!(worker.core.inflight_len(), 1);
-    worker.on_transport(ack_on(E1, opened[1].1, 1)).await.unwrap();
+    worker.on_transport(ack_on(E1, opened[1].1, 0)).await.unwrap();
     assert_eq!(worker.next_ack_deadline().1, None);
     assert!(worker.is_drained());
 }
@@ -1316,7 +1356,7 @@ async fn suspended_endpoint_keeps_its_lane_while_others_drain() {
         .unwrap();
     assert!(worker.endpoints[1].suspended);
     assert!(!worker.all_suspended());
-    worker.on_transport(ack_on(E0, opened[0].1, 1)).await.unwrap();
+    worker.on_transport(ack_on(E0, opened[0].1, 0)).await.unwrap();
     assert!(worker.is_drained());
     assert!(!worker.queue.lane_is_empty(E1));
     worker.update_credentials("new-key").await.unwrap();
@@ -1450,7 +1490,7 @@ async fn returned_batch_larger_than_a_lane_share_is_queued_as_ordered_chunks() {
         .await;
     worker.pump().await.unwrap();
     worker.flush().await.unwrap();
-    assert_eq!(healthy_wire.try_recv().unwrap().batch_id, 1);
+    assert_eq!(healthy_wire.try_recv().unwrap().batch_id, 0);
     worker
         .fail(E1, MetricStreamFailureKind::Unavailable, "disconnect")
         .await
@@ -1621,7 +1661,7 @@ async fn destination_sends_every_payload_to_every_endpoint_and_replays_only_to_t
     send_metrics(&control, 123).await;
     let first = healthy_session.receive().await;
     let copy = flaky_session.receive().await;
-    assert_eq!(first.batch_id, 1);
+    assert_eq!(first.batch_id, 0);
     assert_eq!(sequence(&first), sequence(&copy));
     flaky_session
         .replies
@@ -1631,7 +1671,7 @@ async fn destination_sends_every_payload_to_every_endpoint_and_replays_only_to_t
     healthy_session.acknowledge(&first).await;
     let mut reconnected = flaky.session().await;
     let replay = reconnected.receive().await;
-    assert_eq!(replay.batch_id, 1);
+    assert_eq!(replay.batch_id, 0);
     assert_eq!(sequence(&replay), sequence(&copy));
     reconnected.acknowledge(&replay).await;
     control.signal_shutdown();
@@ -2006,4 +2046,127 @@ async fn retry_telemetry_reports_retention_replays_and_returns() {
         Some(0.0)
     );
     assert_eq!(queued_names(&mut worker).await, ["requests"]);
+}
+
+// Other tests may have already initialized these process-wide TLS resources.
+fn initialize_tls() {
+    let _ = initialize_default_crypto_provider();
+    let _ = load_platform_root_certificates();
+}
+
+async fn tls_worker(harness: &EndpointHarness, trusted: &SelfSignedCert) -> StatefulMetricsWorker {
+    let mut roots = RootCertStore::empty();
+    roots.add(trusted.cert_chain().pop().unwrap()).unwrap();
+    let mut worker = worker().await;
+    worker.endpoints[0].address = Endpoint::from_shared(harness.endpoint.to_string()).unwrap();
+    worker.https_connector =
+        Some(build_https_connector(ClientTLSConfigBuilder::new().with_root_cert_store(roots)).unwrap());
+    let effects = worker.core.start();
+    worker.apply(effects).await.unwrap();
+    worker
+}
+
+#[tokio::test]
+async fn https_negotiates_http2_and_reuses_acknowledged_dictionary() {
+    initialize_tls();
+    let cert = SelfSignedCert::new(["127.0.0.1"]);
+    let mut harness = EndpointHarness::tls(&cert).await;
+    let mut worker = tls_worker(&harness, &cert).await;
+    let event = timeout(TEST_TIMEOUT, next_transport_event(&mut worker.transports))
+        .await
+        .unwrap();
+    assert!(matches!(event.kind, TransportEventKind::Opened(_)));
+    worker.on_transport(event).await.unwrap();
+    let mut session = harness.session().await;
+    assert_eq!(session.key, "test-key");
+    for expected_definition in [true, false] {
+        submit(&mut worker, "encrypted.requests").await;
+        let batch = session.receive().await;
+        assert_eq!(has_name(&sequence(&batch)), expected_definition);
+        session.acknowledge(&batch).await;
+        let event = timeout(TEST_TIMEOUT, next_transport_event(&mut worker.transports))
+            .await
+            .unwrap();
+        assert!(matches!(event.kind, TransportEventKind::Ack(_)));
+        worker.on_transport(event).await.unwrap();
+        assert!(worker.is_drained());
+    }
+}
+
+#[tokio::test]
+async fn https_rejects_untrusted_certificates() {
+    initialize_tls();
+    let cert = SelfSignedCert::new(["127.0.0.1"]);
+    let mut harness = EndpointHarness::tls(&cert).await;
+    let mut config = configuration(1, 512);
+    config.endpoints = vec![harness.endpoint.clone()];
+    let mut worker = worker_for(config).await;
+    let effects = worker.core.start();
+    worker.apply(effects).await.unwrap();
+    let event = timeout(TEST_TIMEOUT, next_transport_event(&mut worker.transports))
+        .await
+        .unwrap();
+    let TransportEventKind::Failed(status) = event.kind else {
+        panic!("untrusted server was accepted")
+    };
+    assert_eq!(status.code(), tonic::Code::Unavailable);
+    assert!(status.message().contains("UnknownIssuer"), "{status}");
+    assert!(harness.sessions.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn https_rejects_certificate_hostname_mismatches() {
+    initialize_tls();
+    let cert = SelfSignedCert::localhost();
+    let mut harness = EndpointHarness::tls(&cert).await;
+    let mut worker = tls_worker(&harness, &cert).await;
+    let event = timeout(TEST_TIMEOUT, next_transport_event(&mut worker.transports))
+        .await
+        .unwrap();
+    let TransportEventKind::Failed(status) = event.kind else {
+        panic!("wrong server identity was accepted")
+    };
+    assert_eq!(status.code(), tonic::Code::Unavailable);
+    assert!(status.message().contains("NotValidForName"), "{status}");
+    assert!(harness.sessions.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn https_and_http_endpoints_receive_the_same_payload() {
+    initialize_tls();
+    let cert = SelfSignedCert::new(["127.0.0.1"]);
+    let mut encrypted = EndpointHarness::tls(&cert).await;
+    let mut plaintext = EndpointHarness::new().await;
+    let mut roots = RootCertStore::empty();
+    roots.add(cert.cert_chain().pop().unwrap()).unwrap();
+    let mut worker = worker_with(2, 512).await;
+    worker.endpoints[0].address = Endpoint::from_shared(encrypted.endpoint.to_string()).unwrap();
+    worker.endpoints[1].address = Endpoint::from_shared(plaintext.endpoint.to_string()).unwrap();
+    worker.https_connector =
+        Some(build_https_connector(ClientTLSConfigBuilder::new().with_root_cert_store(roots)).unwrap());
+    let effects = worker.core.start();
+    worker.apply(effects).await.unwrap();
+    for _ in 0..2 {
+        let event = timeout(TEST_TIMEOUT, next_transport_event(&mut worker.transports))
+            .await
+            .unwrap();
+        assert!(matches!(event.kind, TransportEventKind::Opened(_)));
+        worker.on_transport(event).await.unwrap();
+    }
+    let mut encrypted_session = encrypted.session().await;
+    let mut plaintext_session = plaintext.session().await;
+    submit(&mut worker, "both.endpoints").await;
+    let encrypted_batch = encrypted_session.receive().await;
+    let plaintext_batch = plaintext_session.receive().await;
+    assert_eq!(sequence(&encrypted_batch), sequence(&plaintext_batch));
+    encrypted_session.acknowledge(&encrypted_batch).await;
+    plaintext_session.acknowledge(&plaintext_batch).await;
+    for _ in 0..2 {
+        let event = timeout(TEST_TIMEOUT, next_transport_event(&mut worker.transports))
+            .await
+            .unwrap();
+        assert!(matches!(event.kind, TransportEventKind::Ack(_)));
+        worker.on_transport(event).await.unwrap();
+    }
+    assert!(worker.is_drained());
 }

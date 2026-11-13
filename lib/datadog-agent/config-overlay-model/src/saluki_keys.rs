@@ -44,13 +44,13 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
         yaml_path: "data_plane.experimental.stateful_metrics.additional_endpoints",
         description: "Further stateful series gRPC intake endpoints",
         default: "[]",
-        documentation: Some("List of distinct http://host:port endpoints that also receive every stateful metrics payload, using the primary API key. Requires data_plane.experimental.stateful_metrics.endpoint and a restart. Retry memory and disk budgets are split between a shared queue and one retry lane per endpoint. Removing an additional endpoint discards its persisted retries at startup with a warning."),
+        documentation: Some("List of distinct HTTP or HTTPS origins that also receive every stateful metrics payload, using the primary API key. Requires data_plane.experimental.stateful_metrics.endpoint and a restart. Retry memory and disk budgets are split between a shared queue and one retry lane per endpoint. Removing an additional endpoint discards its persisted retries at startup with a warning."),
     },
     SalukiKey {
         yaml_path: "data_plane.experimental.stateful_metrics.endpoint",
         description: "Experimental stateful series gRPC intake endpoint",
         default: "unset (disabled)",
-        documentation: Some("Set an http://host:port endpoint for stateful metrics integration testing. Sketches continue over HTTP. Requires a restart; unset preserves existing delivery."),
+        documentation: Some("Set an HTTP or HTTPS origin for stateful metrics delivery. HTTPS verifies server certificates using platform trust roots. Sketches continue over HTTP. Requires a restart; unset preserves existing delivery."),
     },
     SalukiKey {
         yaml_path: "experimental.metrics_endpoint_routing.metric_allowlist",
