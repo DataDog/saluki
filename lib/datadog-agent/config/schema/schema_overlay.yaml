@@ -30,6 +30,9 @@
 #
 # - support: none + planned: true requires issue; the build rejects entries that omit it
 # - pipelines: [cross_cutting] must appear alone; cross_cutting mixed with other tokens is rejected
+#
+# Pipeline tokens: dogstatsd, checks, otlp (the OTLP receiver, natively or in proxy mode), traces
+# (native trace processing), logs (native OTLP logs processing, not check logs), and cross_cutting.
 # - support: unknown entries without severity produce no runtime classifier entry and are docs-only
 inventory:
   additional_endpoints:
