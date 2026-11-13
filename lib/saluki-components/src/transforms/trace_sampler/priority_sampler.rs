@@ -125,6 +125,10 @@ impl PrioritySampler {
     pub(super) fn test_size(&self) -> i64 {
         self.sampler.size()
     }
+
+    pub(super) fn test_total_seen_weight(&self) -> f32 {
+        self.sampler.total_seen_weight()
+    }
 }
 
 #[cfg(test)]
