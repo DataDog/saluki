@@ -564,12 +564,15 @@ impl TopologyBuildState {
 
         // Adjust the bounds related to event buffers themselves.
         //
-        // We calculate the maximum number of event buffers by adding up the total capacity of all event-consuming components, plus the count
-        // of non-destination components. This is the effective upper bound because once all component channels are full, sending
-        // components can only allocate one more event buffer before being blocked on sending, which is then the effective upper bound.
+        // We calculate the maximum number of event buffers by adding up, for every event-consuming component, the capacity
+        // of its interconnect plus the one buffer it can hold while processing it (which frees up a slot in the
+        // interconnect), and then one more buffer for every event-producing component. This is the effective upper bound
+        // because once all component channels are full, sending components can only allocate one more event buffer before
+        // being blocked on sending.
         //
-        // Buffers in a component's interconnect hold the event types that component can receive, and the extra buffer
-        // held by a sending component holds the event types it can emit.
+        // Buffers in a component's interconnect, and the buffer it's processing, hold the event types that component can
+        // receive. The extra buffer held by a sending component holds the event types it can emit. A transform that
+        // forwards the buffer it's processing is counted twice, which overestimates its usage by one buffer.
         //
         // TODO: Somewhat fragile. Need to revisit this.
         // TODO: Add a firm subitem for payloads when we have payload interconnects.
@@ -585,7 +588,10 @@ impl TopologyBuildState {
             let input_types = event_types.input(component_id).unwrap_or_else(EventType::all_bits);
             firm.with_expr(UsageExpr::product(
                 "events",
-                UsageExpr::constant("interconnect capacity", interconnect_capacity),
+                UsageExpr::constant(
+                    "interconnect capacity plus buffer being processed",
+                    interconnect_capacity + 1,
+                ),
                 event_buffer_usage(input_types),
             ));
         }
@@ -1177,7 +1183,7 @@ mod tests {
     use super::{TopologyBlueprint, TopologyReady, WorkerPoolConfiguration};
     use crate::accounting::{ComponentRegistry, MemoryBounds, MemoryBoundsBuilder, MemoryLimiter};
     use crate::components::BuildContext;
-    use crate::data_model::event::{eventd::EventD, metric::Metric};
+    use crate::data_model::event::{eventd::EventD, metric::Metric, trace::Trace, trace_stats::TraceStats};
     use crate::runtime::{self, state::ResourceRegistry, Name};
     use crate::test_support::wait_until;
     use crate::topology::{ids::get_component_relative_identifier, topology_identifier, ComponentId};
@@ -2234,9 +2240,12 @@ mod tests {
         let expected_min = total_interconnect_capacity * std::mem::size_of::<EventsBuffer>();
 
         // Firm: the maximum number of in-flight event buffers, each sized as one events-buffer container plus the
-        // events it holds at the default per-buffer capacity. Every component only deals in event-D events, so each
-        // buffer is sized for event-D events alone. The firm total is additive with the minimum.
-        let max_in_flight = ((transforms + destinations) * interconnect_capacity) + sources + decoders + transforms;
+        // events it holds at the default per-buffer capacity. Every consuming component can hold a full interconnect
+        // plus the buffer it's processing, and every producing component can hold one more buffer. Every component only
+        // deals in event-D events, so each buffer is sized for event-D events alone. The firm total is additive with the
+        // minimum.
+        let max_in_flight =
+            ((transforms + destinations) * (interconnect_capacity + 1)) + sources + decoders + transforms;
         let per_buffer =
             std::mem::size_of::<EventsBuffer>() + (std::mem::size_of::<EventD>() * DEFAULT_EVENTS_BUFFER_CAPACITY);
         let expected_firm = expected_min + (max_in_flight * per_buffer);
@@ -2284,8 +2293,57 @@ mod tests {
         let metrics_buffer =
             std::mem::size_of::<EventsBuffer>() + (std::mem::size_of::<Metric>() * DEFAULT_EVENTS_BUFFER_CAPACITY);
         let expected_min = interconnect_capacity * std::mem::size_of::<EventsBuffer>();
-        // The encoder's interconnect, plus one outbound buffer for the source.
-        let expected_firm = expected_min + (interconnect_capacity + 1) * metrics_buffer;
+        // The encoder's interconnect plus the buffer it's processing, and one outbound buffer for the source.
+        let expected_firm = expected_min + (interconnect_capacity + 2) * metrics_buffer;
+
+        let bounds = {
+            let guard = blueprint.build_state.lock().expect("topology blueprint mutex poisoned");
+            guard
+                .as_ref()
+                .expect("topology blueprint already initialized")
+                .component_registry
+                .as_bounds()
+        };
+
+        assert_eq!(bounds.total_minimum_required_bytes(), expected_min);
+        assert_eq!(bounds.total_firm_limit_bytes(), expected_firm);
+    }
+
+    #[test]
+    fn recalculate_bounds_sizes_buffers_being_processed_by_input_type() {
+        // A transform that turns traces into trace stats holds a buffer of traces while it builds a buffer of trace
+        // stats, so both count: its interconnect and the buffer it's processing at the size of traces, and its outbound
+        // buffer at the size of trace stats.
+        let interconnect_capacity = 4usize;
+        let component_registry = ComponentRegistry::default();
+        let mut blueprint = TopologyBlueprint::new("test", &component_registry);
+        blueprint
+            .with_interconnect_capacity(NonZeroUsize::new(interconnect_capacity).unwrap())
+            .add_source("source", TestSourceBuilder::default_output(EventType::Trace))
+            .unwrap()
+            .add_transform(
+                "stats",
+                TestTransformBuilder::default_output(EventType::Trace, EventType::TraceStats),
+            )
+            .unwrap()
+            .add_destination(
+                "destination",
+                TestDestinationBuilder::with_input_type(EventType::TraceStats),
+            )
+            .unwrap()
+            .connect_components_in_order(["source", "stats", "destination"])
+            .unwrap();
+
+        let buffer_of =
+            |item_size: usize| std::mem::size_of::<EventsBuffer>() + item_size * DEFAULT_EVENTS_BUFFER_CAPACITY;
+        let traces_buffer = buffer_of(std::mem::size_of::<Trace>());
+        let stats_buffer = buffer_of(std::mem::size_of::<TraceStats>());
+        let expected_min = interconnect_capacity * 2 * std::mem::size_of::<EventsBuffer>();
+        let expected_firm = expected_min
+            // The transform's interconnect and the buffer it's processing, plus the source's outbound buffer.
+            + ((interconnect_capacity + 1) + 1) * traces_buffer
+            // The destination's interconnect and the buffer it's processing, plus the transform's outbound buffer.
+            + ((interconnect_capacity + 1) + 1) * stats_buffer;
 
         let bounds = {
             let guard = blueprint.build_state.lock().expect("topology blueprint mutex poisoned");
@@ -2327,8 +2385,9 @@ mod tests {
         let metrics_buffer =
             std::mem::size_of::<EventsBuffer>() + (std::mem::size_of::<Metric>() * DEFAULT_EVENTS_BUFFER_CAPACITY);
         let expected_min = interconnect_capacity * 2 * std::mem::size_of::<EventsBuffer>();
-        // Two interconnects (transform and destination), plus one outbound buffer each for the source and transform.
-        let expected_firm = expected_min + ((interconnect_capacity * 2) + 2) * metrics_buffer;
+        // Two interconnects (transform and destination) plus the buffer each is processing, and one outbound buffer each
+        // for the source and transform.
+        let expected_firm = expected_min + (((interconnect_capacity + 1) * 2) + 2) * metrics_buffer;
 
         let bounds = {
             let guard = blueprint.build_state.lock().expect("topology blueprint mutex poisoned");
