@@ -513,6 +513,75 @@ fn resource_host_fixture() -> Vec<u8> {
         )],
     ));
 
+    // Resource attributes that become tags: `service.namespace`, and `container.image.tags` values and precedence.
+    let tag_cases: Vec<(&str, Vec<KeyValue>)> = vec![
+        ("tags-service-namespace", vec![kv("service.namespace", string("shop"))]),
+        (
+            "tags-service-namespace-empty",
+            vec![kv("service.namespace", string(""))],
+        ),
+        (
+            "tags-image-tags-array",
+            vec![kv("container.image.tags", array(vec![string("v1"), string("latest")]))],
+        ),
+        ("tags-image-tags-string", vec![kv("container.image.tags", string("v1"))]),
+        (
+            "tags-image-tags-empty-array",
+            vec![kv("container.image.tags", array(vec![]))],
+        ),
+        (
+            "tags-image-tags-empty-first",
+            vec![kv("container.image.tags", array(vec![string(""), string("latest")]))],
+        ),
+        (
+            "tags-image-tags-int-first",
+            vec![kv("container.image.tags", array(vec![int(1)]))],
+        ),
+        (
+            "tags-image-tag-then-tags",
+            vec![
+                kv("container.image.tag", string("old")),
+                kv("container.image.tags", array(vec![string("new")])),
+            ],
+        ),
+        (
+            "tags-image-tags-then-tag",
+            vec![
+                kv("container.image.tags", array(vec![string("new")])),
+                kv("container.image.tag", string("old")),
+            ],
+        ),
+        (
+            "tags-duplicate-container-id",
+            vec![
+                kv("container.id", string("first-container")),
+                kv("container.id", string("second-container")),
+            ],
+        ),
+        (
+            "tags-duplicate-custom",
+            vec![
+                kv("datadog.container.tag.team", string("first-team")),
+                kv("datadog.container.tag.team", string("second-team")),
+            ],
+        ),
+        (
+            "tags-custom-before-semconv",
+            vec![
+                kv("datadog.container.tag.image_tag", string("custom")),
+                kv("container.image.tags", array(vec![string("v1")])),
+            ],
+        ),
+    ];
+    for (index, (id, mut attributes)) in tag_cases.into_iter().enumerate() {
+        attributes.push(kv("service.name", string("fixture-tags")));
+        attributes.push(kv("host.name", string("tags-host")));
+        resources.push(resource_logs(
+            attributes,
+            vec![scope_logs(no_scope(), vec![record(20 + index as u64, id, vec![])])],
+        ));
+    }
+
     ExportLogsServiceRequest {
         resource_logs: resources,
     }

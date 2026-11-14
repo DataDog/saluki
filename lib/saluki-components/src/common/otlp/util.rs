@@ -136,27 +136,33 @@ pub fn get_string_attribute<'a>(attributes: &'a [otlp_common::KeyValue], key: &s
 /// Extracts container tags from OTLP resource attributes and inserts them into the provided TagSet.
 ///
 /// Tags come from semantic-convention mappings and `datadog.container.tag.` prefixed attributes,
-/// ranked by the `TAG_SOURCE_*` precedences; empty values produce no tag.
+/// ranked by the `TAG_SOURCE_*` precedences; empty values produce no tag. A later
+/// semantic-convention attribute replaces an earlier one that maps to the same tag, while the first
+/// custom attribute for a tag wins.
 pub fn extract_container_tags_from_resource_attributes(attributes: &[otlp_common::KeyValue], tags: &mut TagSet) {
     let mut resolved: FastHashMap<&str, (u8, &str)> = FastHashMap::default();
 
     for kv in attributes {
-        let Some(Value::StringValue(s_val)) = kv.value.as_ref().and_then(|v| v.value.as_ref()) else {
-            continue;
-        };
-        if s_val.is_empty() {
-            continue;
-        }
+        let value = kv.value.as_ref().and_then(|v| v.value.as_ref());
 
-        // Semantic Conventions
-        if let Some(datadog_key) = CONTAINER_MAPPINGS.get(kv.key.as_str()) {
-            insert_winning_tag(&mut resolved, datadog_key, TAG_SOURCE_SEMANTIC_CONVENTION, s_val);
+        // Semantic conventions. `container.image.tags` is mapped here rather than in
+        // `CONTAINER_MAPPINGS`, which traces also use: trace resource arrays reach container-tag
+        // extraction as JSON strings, so traces can't read its first element.
+        let mapped = match CONTAINER_MAPPINGS.get(kv.key.as_str()) {
+            Some(datadog_key) => non_empty_string(value).map(|s_val| (*datadog_key, s_val)),
+            None if kv.key == CONTAINER_IMAGE_TAGS => first_element_or_string(value).map(|s_val| ("image_tag", s_val)),
+            None => None,
+        };
+        if let Some((datadog_key, s_val)) = mapped {
+            insert_winning_tag(&mut resolved, datadog_key, TAG_SOURCE_SEMANTIC_CONVENTION, s_val, true);
         }
 
         // Custom (datadog.container.tag namespace)
         if let Some(custom_key) = kv.key.strip_prefix(CUSTOM_CONTAINER_TAG_PREFIX) {
-            if !custom_key.is_empty() {
-                insert_winning_tag(&mut resolved, custom_key, TAG_SOURCE_CUSTOM, s_val);
+            if let Some(Value::StringValue(s_val)) = value {
+                if !custom_key.is_empty() && !s_val.is_empty() {
+                    insert_winning_tag(&mut resolved, custom_key, TAG_SOURCE_CUSTOM, s_val, false);
+                }
             }
         }
     }
@@ -189,6 +195,7 @@ pub fn extract_container_tags_from_attributes_map(
                 datadog_key,
                 TAG_SOURCE_SEMANTIC_CONVENTION,
                 str_val.as_ref(),
+                false,
             );
         }
 
@@ -199,13 +206,14 @@ pub fn extract_container_tags_from_attributes_map(
                 key.as_ref(),
                 TAG_SOURCE_DATADOG_CONVENTION,
                 str_val.as_ref(),
+                false,
             );
         }
 
         // Custom (datadog.container.tag namespace)
         if let Some(custom_key) = key.strip_prefix(CUSTOM_CONTAINER_TAG_PREFIX) {
             if !custom_key.is_empty() {
-                insert_winning_tag(&mut resolved, custom_key, TAG_SOURCE_CUSTOM, str_val.as_ref());
+                insert_winning_tag(&mut resolved, custom_key, TAG_SOURCE_CUSTOM, str_val.as_ref(), false);
             }
         }
     }
@@ -215,14 +223,32 @@ pub fn extract_container_tags_from_attributes_map(
     }
 }
 
-/// Records a tag for `tag_key` unless a higher-precedence source already claimed it.
+/// Returns a non-empty string value.
+fn non_empty_string(value: Option<&Value>) -> Option<&str> {
+    match value? {
+        Value::StringValue(s_val) if !s_val.is_empty() => Some(s_val),
+        _ => None,
+    }
+}
+
+/// Returns the first element of an array value, or else the value itself, as a non-empty string.
+fn first_element_or_string(value: Option<&Value>) -> Option<&str> {
+    match value? {
+        Value::ArrayValue(array) => non_empty_string(array.values.first()?.value.as_ref()),
+        value => non_empty_string(Some(value)),
+    }
+}
+
+/// Records a tag for `tag_key` unless a higher-precedence source already claimed it. With
+/// `replace_equal`, the tag also replaces one from the same source.
 fn insert_winning_tag<'a>(
     resolved: &mut FastHashMap<&'a str, (u8, &'a str)>, tag_key: &'a str, source: u8, value: &'a str,
+    replace_equal: bool,
 ) {
     resolved
         .entry(tag_key)
         .and_modify(|existing| {
-            if existing.0 < source {
+            if existing.0 < source || (replace_equal && existing.0 == source) {
                 *existing = (source, value);
             }
         })
@@ -518,7 +544,7 @@ pub fn attributes_to_source(attributes: &FastHashMap<MetaString, AttributeValue>
 #[cfg(test)]
 mod tests {
     use otlp_protos::opentelemetry::proto::{
-        common::v1::{any_value::Value, AnyValue, KeyValue},
+        common::v1::{any_value::Value, AnyValue, ArrayValue, KeyValue},
         resource::v1::Resource,
     };
     use stringtheory::interning::GenericMapInterner;
@@ -755,6 +781,126 @@ mod tests {
         let mut got: Vec<String> = tags.into_iter().map(|tag| tag.as_str().to_string()).collect();
         got.sort();
         assert_eq!(got, vec!["container_id:from-semconv"]);
+    }
+
+    fn attribute(key: &str, value: Value) -> KeyValue {
+        KeyValue {
+            key: key.to_string(),
+            value: Some(AnyValue { value: Some(value) }),
+        }
+    }
+
+    fn string_array(values: &[&str]) -> Value {
+        Value::ArrayValue(ArrayValue {
+            values: values
+                .iter()
+                .map(|value| AnyValue {
+                    value: Some(Value::StringValue(value.to_string())),
+                })
+                .collect(),
+        })
+    }
+
+    fn resource_container_tags(attributes: Vec<KeyValue>) -> Vec<String> {
+        let mut tags = TagSet::default();
+        extract_container_tags_from_resource_attributes(&attributes, &mut tags);
+        let mut got: Vec<String> = tags.into_iter().map(|tag| tag.as_str().to_string()).collect();
+        got.sort();
+        got
+    }
+
+    #[test]
+    fn resource_extraction_maps_container_image_tags() {
+        let cases: Vec<(&str, Vec<KeyValue>, Vec<&str>)> = vec![
+            (
+                "array takes the first element",
+                vec![attribute(CONTAINER_IMAGE_TAGS, string_array(&["v1", "latest"]))],
+                vec!["image_tag:v1"],
+            ),
+            (
+                "string value",
+                vec![string_attribute(CONTAINER_IMAGE_TAGS, "v1")],
+                vec!["image_tag:v1"],
+            ),
+            (
+                "empty array",
+                vec![attribute(CONTAINER_IMAGE_TAGS, string_array(&[]))],
+                vec![],
+            ),
+            (
+                "empty first element",
+                vec![attribute(CONTAINER_IMAGE_TAGS, string_array(&["", "latest"]))],
+                vec![],
+            ),
+            (
+                "non-string first element",
+                vec![attribute(
+                    CONTAINER_IMAGE_TAGS,
+                    Value::ArrayValue(ArrayValue {
+                        values: vec![AnyValue {
+                            value: Some(Value::IntValue(1)),
+                        }],
+                    }),
+                )],
+                vec![],
+            ),
+            (
+                "only container.image.tags reads arrays",
+                vec![attribute(CONTAINER_NAME, string_array(&["web"]))],
+                vec![],
+            ),
+            (
+                "later container.image.tags wins",
+                vec![
+                    string_attribute("container.image.tag", "old"),
+                    attribute(CONTAINER_IMAGE_TAGS, string_array(&["new"])),
+                ],
+                vec!["image_tag:new"],
+            ),
+            (
+                "later container.image.tag wins",
+                vec![
+                    attribute(CONTAINER_IMAGE_TAGS, string_array(&["new"])),
+                    string_attribute("container.image.tag", "old"),
+                ],
+                vec!["image_tag:old"],
+            ),
+            (
+                "empty later value doesn't replace",
+                vec![
+                    string_attribute("container.image.tag", "old"),
+                    attribute(CONTAINER_IMAGE_TAGS, string_array(&[""])),
+                ],
+                vec!["image_tag:old"],
+            ),
+            (
+                "semantic convention beats custom",
+                vec![
+                    attribute(CONTAINER_IMAGE_TAGS, string_array(&["v1"])),
+                    string_attribute("datadog.container.tag.image_tag", "custom"),
+                ],
+                vec!["image_tag:v1"],
+            ),
+        ];
+
+        for (name, attributes, expected) in cases {
+            assert_eq!(resource_container_tags(attributes), expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn resource_extraction_keeps_last_duplicate_semantic_convention_and_first_custom() {
+        let attributes = vec![
+            string_attribute(CONTAINER_ID, "first"),
+            string_attribute(CONTAINER_ID, "second"),
+            string_attribute("datadog.container.tag.team", "first"),
+            string_attribute("datadog.container.tag.team", "second"),
+        ];
+
+        assert_eq!(
+            resource_container_tags(attributes),
+            vec!["container_id:second", "team:first"]
+        );
     }
 
     #[test]
