@@ -10,4 +10,5 @@ pub mod scrubber;
 pub mod strings;
 pub mod sync;
 pub mod task;
+pub mod throttle;
 pub mod time;
