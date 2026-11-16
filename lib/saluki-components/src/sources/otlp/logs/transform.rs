@@ -164,6 +164,14 @@ pub fn flatten_attribute(base_key: &str, av: &otlp_common::AnyValue, depth: usiz
     vec![(base_key.to_string(), to_leaf_json(av))]
 }
 
+/// Returns whether `key` is one of the `reserved` keys, ignoring ASCII case.
+///
+/// Only ASCII letters are folded. Go's `strings.ToLower` also turns the dotted `İ` (U+0130) into `i`, so a key such
+/// as `TRACEİD` is reserved under Go's matching. We choose to ignore that edge case.
+fn is_reserved(key: &str, reserved: &[&str]) -> bool {
+    reserved.iter().any(|reserved| reserved.eq_ignore_ascii_case(key))
+}
+
 // Helper to insert safely avoid overwriting fields that are already set
 fn safe_insert(map: &mut HashMap<MetaString, JsonValue>, key: &str, value: JsonValue) {
     if key == "hostname" || key == "service" {
@@ -174,7 +182,7 @@ fn safe_insert(map: &mut HashMap<MetaString, JsonValue>, key: &str, value: JsonV
 }
 
 pub fn transform_log_record(
-    mut lr: LogRecord, resource: &Resource, scope: Option<&otlp_common::InstrumentationScope>,
+    lr: LogRecord, resource: &Resource, scope: Option<&otlp_common::InstrumentationScope>,
     record_host: Option<MetaString>, record_service: Option<MetaString>, mut tags: TagSet,
 ) -> Log {
     // Build additional properties map with resource, scope and record attributes
@@ -183,11 +191,11 @@ pub fn transform_log_record(
     // Single-pass over record attributes: handle special keys and flatten others
     let mut status_text_from_attrs: Option<String> = None;
     let mut msg_from_attrs: Option<String> = None;
-    for kv in lr.attributes.iter_mut() {
-        kv.key.make_ascii_lowercase();
+    for kv in &lr.attributes {
+        // Reserved keys match in any case, but every other key keeps its original spelling.
         match kv.key.as_str() {
             // Message keys
-            k if MESSAGE_KEYS.contains(&k) => {
+            k if is_reserved(k, MESSAGE_KEYS) => {
                 if let Some(av) = kv.value.as_ref() {
                     if let Some(OtlpStringValue(s)) = av.value.as_ref() {
                         msg_from_attrs = Some(s.clone());
@@ -195,7 +203,7 @@ pub fn transform_log_record(
                 }
             }
             // Status/severity text from attributes
-            k if STATUS_KEYS.contains(&k) => {
+            k if is_reserved(k, STATUS_KEYS) => {
                 if let Some(av) = kv.value.as_ref() {
                     if let Some(OtlpStringValue(s)) = av.value.as_ref() {
                         status_text_from_attrs = Some(s.clone());
@@ -203,7 +211,7 @@ pub fn transform_log_record(
                 }
             }
             // Trace correlation from attributes
-            k if TRACE_ID_ATTR_KEYS.contains(&k) => {
+            k if is_reserved(k, TRACE_ID_ATTR_KEYS) => {
                 if let Some(av) = kv.value.as_ref() {
                     if let Some(OtlpStringValue(trace_hex)) = av.value.as_ref() {
                         if !additional_properties.contains_key("dd.trace_id") {
@@ -223,7 +231,7 @@ pub fn transform_log_record(
                 }
             }
             // Span correlation from attributes
-            k if SPAN_ID_ATTR_KEYS.contains(&k) => {
+            k if is_reserved(k, SPAN_ID_ATTR_KEYS) => {
                 if let Some(av) = kv.value.as_ref() {
                     if let Some(OtlpStringValue(span_hex)) = av.value.as_ref() {
                         if !additional_properties.contains_key("dd.span_id") {
@@ -241,7 +249,7 @@ pub fn transform_log_record(
                 }
             }
             // ddtags aggregation
-            k if k == DDTAGS_ATTR => {
+            k if k.eq_ignore_ascii_case(DDTAGS_ATTR) => {
                 if let Some(av) = kv.value.as_ref() {
                     if let Some(OtlpStringValue(s)) = av.value.as_ref() {
                         for raw in s.split(',') {
@@ -364,7 +372,91 @@ pub fn transform_log_record(
 
 #[cfg(test)]
 mod tests {
-    use super::{derive_status, status_from_severity_number};
+    use otlp_common::{any_value::Value, AnyValue, KeyValue, KeyValueList};
+    use otlp_protos::opentelemetry::proto::logs::v1::LogRecord;
+    use otlp_protos::opentelemetry::proto::resource::v1::Resource;
+    use saluki_core::data_model::tags::TagSet;
+    use serde_json::json;
+
+    use super::*;
+
+    fn string(value: &str) -> AnyValue {
+        AnyValue {
+            value: Some(Value::StringValue(value.to_string())),
+        }
+    }
+
+    fn key_value(key: &str, value: AnyValue) -> KeyValue {
+        KeyValue {
+            key: key.to_string(),
+            value: Some(value),
+        }
+    }
+
+    fn transform_attributes(attributes: Vec<KeyValue>) -> Log {
+        let lr = LogRecord {
+            attributes,
+            ..Default::default()
+        };
+        transform_log_record(lr, &Resource::default(), None, None, None, TagSet::default())
+    }
+
+    #[test]
+    fn ordinary_attribute_keys_keep_their_spelling() {
+        let log = transform_attributes(vec![
+            key_value("RequestID", string("abc")),
+            // Only the lowercase spellings are special to the rendered content, so these are ordinary attributes.
+            key_value("Hostname", string("attribute-host")),
+            key_value("Service", string("attribute-service")),
+            key_value(
+                "nested_Map",
+                AnyValue {
+                    value: Some(Value::KvlistValue(KeyValueList {
+                        values: vec![key_value("InnerKey", string("inner"))],
+                    })),
+                },
+            ),
+        ]);
+
+        let props = log.additional_properties();
+        assert_eq!(props.get("RequestID"), Some(&json!("abc")));
+        assert_eq!(props.get("nested_Map.InnerKey"), Some(&json!("inner")));
+        assert_eq!(props.get("Hostname"), Some(&json!("attribute-host")));
+        assert_eq!(props.get("Service"), Some(&json!("attribute-service")));
+        assert!(!props.contains_key("requestid"));
+        assert!(!props.contains_key("nested_map.InnerKey"));
+        assert!(!props.contains_key("hostname"));
+        assert!(!props.contains_key("service"));
+    }
+
+    #[test]
+    fn reserved_attribute_keys_match_in_any_case() {
+        let log = transform_attributes(vec![
+            key_value("MESSAGE", string("from attribute")),
+            key_value("Level", string("warn")),
+            key_value("TraceID", string("0802030405060708000000000a000000")),
+            key_value("Span_ID", string("000000000a000000")),
+            key_value("DDTags", string("team:a,env:prod")),
+        ]);
+
+        assert_eq!(log.message(), "from attribute");
+        assert_eq!(log.status(), "warn");
+        assert!(log.tags().has_tag("team:a"));
+        assert!(log.tags().has_tag("env:prod"));
+
+        let props = log.additional_properties();
+        assert_eq!(props.get("dd.trace_id"), Some(&json!("167772160")));
+        assert_eq!(
+            props.get("otel.trace_id"),
+            Some(&json!("0802030405060708000000000a000000"))
+        );
+        assert_eq!(props.get("dd.span_id"), Some(&json!("167772160")));
+        assert_eq!(props.get("otel.span_id"), Some(&json!("000000000a000000")));
+        // Reserved keys are consumed, so none of them appear as attributes under any spelling.
+        let mut keys = props.keys().map(|key| key.as_ref()).collect::<Vec<_>>();
+        keys.sort_unstable();
+        assert_eq!(keys, ["dd.span_id", "dd.trace_id", "otel.span_id", "otel.trace_id"]);
+    }
 
     #[test]
     fn derive_status_follows_the_reference_precedence() {
