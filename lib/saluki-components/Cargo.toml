@@ -104,6 +104,7 @@ zstd = { workspace = true }
 
 [dev-dependencies]
 async-compression = { workspace = true, features = ["gzip", "tokio"] }
+criterion = { workspace = true }
 datadog-agent-apm = { workspace = true, features = ["test-util"] }
 proptest = { workspace = true }
 saluki-config = { workspace = true, features = ["test-util"] }
@@ -116,3 +117,7 @@ tempfile = { workspace = true }
 test-strategy = { workspace = true }
 tokio = { workspace = true, features = ["time", "io-util", "net", "rt", "test-util"] }
 tracing-subscriber = { workspace = true, features = ["fmt"] }
+
+[[bench]]
+name = "v04_decoder"
+harness = false

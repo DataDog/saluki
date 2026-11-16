@@ -583,14 +583,28 @@ fn oversize_array_header_rejected() {
 }
 
 #[test]
-fn implausible_array_count_rejected() {
-    // Under MAX_SIZE, but a tiny payload can't possibly back 1000 elements.
+fn array_count_beyond_remaining_bytes_is_short_input() {
+    // Under MAX_SIZE, but more elements than bytes remain: the reference returns `msgp.ErrShortBytes`.
     let mut buf = Vec::new();
     encode::write_array_len(&mut buf, 1000).unwrap();
-    encode::write_uint(&mut buf, 0).unwrap(); // far fewer bytes than 1000 elements require
+    encode::write_uint(&mut buf, 0).unwrap();
     let mut r = buf.as_slice();
     let err = read::read_array_len(&mut r, "test").unwrap_err();
-    assert!(matches!(err, DecodeError::ImplausibleHeaderCount { len: 1000, .. }));
+    assert!(matches!(err, DecodeError::ShortBytes { context: "test" }), "{err:?}");
+}
+
+#[test]
+fn implausible_array_count_rejected() {
+    // Fewer elements than bytes remain, but more than the per-element minimum allows.
+    let mut buf = Vec::new();
+    encode::write_array_len(&mut buf, 3).unwrap();
+    buf.extend_from_slice(&[0; 10]);
+    let mut r = buf.as_slice();
+    let err = read::read_array_len_with_minimum(&mut r, 4, "test").unwrap_err();
+    assert!(
+        matches!(err, DecodeError::ImplausibleHeaderCount { len: 3, .. }),
+        "{err:?}"
+    );
 }
 
 #[test]
@@ -640,13 +654,21 @@ fn implausibly_small_spans_rejected() {
 
 #[test]
 fn implausible_map_count_rejected() {
-    // Under MAX_SIZE, but a tiny payload can't possibly back 1000 entries.
+    // More entries than bytes remain is short input; fewer, but under two bytes per entry, is implausible.
     let mut buf = Vec::new();
     encode::write_map_len(&mut buf, 1000).unwrap();
-    encode::write_uint(&mut buf, 0).unwrap(); // far fewer bytes than 1000 entries require
-    let mut r = buf.as_slice();
-    let err = read::read_map_len(&mut r, "test").unwrap_err();
-    assert!(matches!(err, DecodeError::ImplausibleHeaderCount { len: 1000, .. }));
+    encode::write_uint(&mut buf, 0).unwrap();
+    let err = read::read_map_len(&mut buf.as_slice(), "test").unwrap_err();
+    assert!(matches!(err, DecodeError::ShortBytes { context: "test" }), "{err:?}");
+
+    let mut buf = Vec::new();
+    encode::write_map_len(&mut buf, 2).unwrap();
+    buf.extend_from_slice(&[0; 3]);
+    let err = read::read_map_len(&mut buf.as_slice(), "test").unwrap_err();
+    assert!(
+        matches!(err, DecodeError::ImplausibleHeaderCount { len: 2, .. }),
+        "{err:?}"
+    );
 }
 
 #[test]
@@ -840,4 +862,30 @@ proptest! {
         // exhaustive but catches simple robustness regressions on every test run.
         let _ = decode_v1_payload(&input);
     }
+}
+
+#[test]
+fn truncated_v1_payload_is_short_input() {
+    let mut buf = Vec::new();
+    encode::write_map_len(&mut buf, 2).unwrap();
+    encode::write_uint(&mut buf, 2).unwrap(); // container ID
+    buf.extend_from_slice(&[0xa5, b'a', b'b']); // a 5-byte string cut after 2 bytes
+    let err = decode_v1_payload(&buf).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            DecodeError::ShortBytes {
+                context: "container ID"
+            }
+        ),
+        "{err:?}"
+    );
+
+    // A wrong type is still a decoding error.
+    let mut buf = Vec::new();
+    encode::write_map_len(&mut buf, 1).unwrap();
+    encode::write_uint(&mut buf, 2).unwrap();
+    encode::write_bool(&mut buf, true).unwrap();
+    let err = decode_v1_payload(&buf).unwrap_err();
+    assert!(matches!(err, DecodeError::Msgpack { .. }), "{err:?}");
 }

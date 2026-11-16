@@ -1,12 +1,22 @@
-//! Errors produced while decoding the v1.0 APM trace wire format.
+//! Errors produced while decoding the Datadog APM trace wire formats.
 
 use snafu::Snafu;
 
-/// An error encountered while decoding a v1.0 tracer payload.
+/// An error encountered while decoding a tracer payload.
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]
 pub enum DecodeError {
-    /// A low-level MessagePack read failed (truncated input, wrong marker type, invalid UTF-8, and so on).
+    /// The input ended before the value being read was complete.
+    ///
+    /// The counterpart of the reference decoder's `msgp.ErrShortBytes`, which the receiver counts apart from other
+    /// decoding errors (`reason:msgp_short_bytes`).
+    #[snafu(display("failed to read {context}: unexpected end of input"))]
+    ShortBytes {
+        /// The field or structure being read when the input ran out.
+        context: &'static str,
+    },
+
+    /// A low-level MessagePack read failed (wrong marker type, invalid UTF-8, out-of-range number, and so on).
     ///
     /// `context` names the field or structure being read when the failure occurred, and `detail`
     /// carries the underlying MessagePack decoder message.
