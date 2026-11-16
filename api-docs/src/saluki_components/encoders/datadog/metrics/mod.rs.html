@@ -1072,7 +1072,7 @@
 <a href=#1072 id=1072 data-nosnippet>1072</a>    <span class="kw">let </span>maybe_requests = request_builder.flush().<span class="kw">await</span>;
 <a href=#1073 id=1073 data-nosnippet>1073</a>    <span class="kw">for </span>maybe_request <span class="kw">in </span>maybe_requests {
 <a href=#1074 id=1074 data-nosnippet>1074</a>        <span class="kw">match </span>maybe_request {
-<a href=#1075 id=1075 data-nosnippet>1075</a>            <span class="prelude-val">Ok</span>((events, data_points, request)) =&gt; {
+<a href=#1075 id=1075 data-nosnippet>1075</a>            <span class="prelude-val">Ok</span>((events, data_points, _uncompressed_len, request)) =&gt; {
 <a href=#1076 id=1076 data-nosnippet>1076</a>                requests_flushed += <span class="number">1</span>;
 <a href=#1077 id=1077 data-nosnippet>1077</a>
 <a href=#1078 id=1078 data-nosnippet>1078</a>                flush_payload(request, events, data_points, payloads_tx, payload_info).<span class="kw">await</span><span class="question-mark">?</span>;
@@ -3304,7 +3304,7 @@
 <a href=#3304 id=3304 data-nosnippet>3304</a>            <span class="kw">while let </span><span class="prelude-val">Some</span>(metric) = pending.take() {
 <a href=#3305 id=3305 data-nosnippet>3305</a>                <span class="kw">if let </span><span class="prelude-val">Some</span>(returned) = builder.encode(metric).<span class="kw">await</span>.expect(<span class="string">"encode should not error"</span>) {
 <a href=#3306 id=3306 data-nosnippet>3306</a>                    <span class="kw">for </span>request <span class="kw">in </span>builder.flush().<span class="kw">await </span>{
-<a href=#3307 id=3307 data-nosnippet>3307</a>                        <span class="kw">let </span>(<span class="kw">_</span>, points, <span class="kw">_</span>) = request.expect(<span class="string">"request should build"</span>);
+<a href=#3307 id=3307 data-nosnippet>3307</a>                        <span class="kw">let </span>(<span class="kw">_</span>, points, <span class="kw">_</span>, <span class="kw">_</span>) = request.expect(<span class="string">"request should build"</span>);
 <a href=#3308 id=3308 data-nosnippet>3308</a>                        <span class="macro">assert!</span>(
 <a href=#3309 id=3309 data-nosnippet>3309</a>                            points &lt;= <span class="number">10_000</span>,
 <a href=#3310 id=3310 data-nosnippet>3310</a>                            <span class="string">"payload carried {} points, over the 10000 limit"</span>,
@@ -3317,7 +3317,7 @@
 <a href=#3317 id=3317 data-nosnippet>3317</a>            }
 <a href=#3318 id=3318 data-nosnippet>3318</a>        }
 <a href=#3319 id=3319 data-nosnippet>3319</a>        <span class="kw">for </span>request <span class="kw">in </span>builder.flush().<span class="kw">await </span>{
-<a href=#3320 id=3320 data-nosnippet>3320</a>            <span class="kw">let </span>(<span class="kw">_</span>, points, <span class="kw">_</span>) = request.expect(<span class="string">"request should build"</span>);
+<a href=#3320 id=3320 data-nosnippet>3320</a>            <span class="kw">let </span>(<span class="kw">_</span>, points, <span class="kw">_</span>, <span class="kw">_</span>) = request.expect(<span class="string">"request should build"</span>);
 <a href=#3321 id=3321 data-nosnippet>3321</a>            <span class="macro">assert!</span>(
 <a href=#3322 id=3322 data-nosnippet>3322</a>                points &lt;= <span class="number">10_000</span>,
 <a href=#3323 id=3323 data-nosnippet>3323</a>                <span class="string">"final payload carried {} points, over the 10000 limit"</span>,
