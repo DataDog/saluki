@@ -3,7 +3,6 @@
 //! This module provides an LRU cache that maps `ServiceSignature` (service name + env)
 //! to their computed `Signature` hashes. This allows efficient lookup of sampling rates
 //! by service when building the rates-by-service response.
-//!
 use lru_slab::LruSlab;
 use saluki_common::collections::FastHashMap;
 use stringtheory::MetaString;

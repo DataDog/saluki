@@ -602,9 +602,6 @@ impl TraceSampler {
                 return SamplerOutcome::new(true, PRIORITY_AUTO_KEEP, "", Some(root_span_idx), sampler_name, true);
             }
 
-            // The OTLP rate decision is probabilistic: its keeps and its drops both record
-            // under the probabilistic sampler, never the no-priority bucket.
-            sampler_name = telemetry::SamplerName::Probabilistic;
             // some sampling happens upstream in the otlp receiver in the agent: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/api/otlp.go#L572
             let root_trace_id = trace.trace_id_low;
             let priority = if sample_by_rate(root_trace_id, receiver_sampling_rate) {
@@ -614,6 +611,13 @@ impl TraceSampler {
             };
             // The receiver's decision is the chunk's priority, so the priority sampler counts the trace, and publishes
             // a rate for its service, as the trace-agent's does for an OTLP chunk.
+            // The receiver marks only a keep with the probabilistic decision maker, so a drop records under the
+            // priority sampler, as `traceChunkContainsProbabilitySamplingV1` reads it in the trace-agent.
+            sampler_name = if priority == PRIORITY_AUTO_KEEP || Self::trace_chunk_contains_probability_sampling(trace) {
+                telemetry::SamplerName::Probabilistic
+            } else {
+                telemetry::SamplerName::Priority
+            };
             let client_dropped_p0s_weight = trace.payload.receiver().client_dropped_p0s_weight;
             if self
                 .priority_sampler
@@ -1322,8 +1326,20 @@ mod tests {
 
             let outcome = sampler.run_samplers(&mut trace);
 
-            assert_eq!(outcome.keep, trace_id == OTLP_RECEIVER_KEPT_TRACE_ID);
-            assert_eq!(outcome.sampler, telemetry::SamplerName::Probabilistic);
+            let kept = trace_id == OTLP_RECEIVER_KEPT_TRACE_ID;
+            assert_eq!(outcome.keep, kept);
+            // `_dd.p.dm:-9` marks only a kept chunk, so a drop records under the priority sampler (`otlp.go`
+            // `createChunks`, `agent.go` `runSamplersV1`).
+            let expected = if kept {
+                telemetry::SamplerName::Probabilistic
+            } else {
+                telemetry::SamplerName::Priority
+            };
+            assert_eq!(outcome.sampler, expected, "trace {trace_id}");
+            assert_eq!(
+                outcome.priority,
+                if kept { PRIORITY_AUTO_KEEP } else { PRIORITY_AUTO_DROP }
+            );
             assert_eq!(
                 sampler.priority_sampler.test_total_seen_weight(),
                 1.0,
@@ -2177,12 +2193,10 @@ mod tests {
         assert_eq!(priority, PRIORITY_AUTO_DROP);
     }
 
-    /// Rare sampler should catch OTLP traces without a sampling priority on their first occurrence,
-    /// matching the Go agent behavior: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/agent/agent.go#L1129-L1140
     #[test]
-    fn otlp_rate_decisions_record_under_the_probabilistic_sampler() {
-        // Keeps and drops from the OTLP rate decision both belong to the probabilistic sampler;
-        // the drop must not fall through to the no-priority bucket.
+    fn otlp_rate_drops_record_under_the_priority_sampler() {
+        // The drop is the chunk's priority, without the probabilistic decision maker, so it records under the
+        // priority sampler, as in the trace-agent, never under the no-priority bucket.
         let mut sampler = create_test_sampler();
         sampler.probabilistic_sampler_enabled = false;
         sampler.error_sampling_enabled = false;
@@ -2199,11 +2213,13 @@ mod tests {
 
         let decisions = sampler.telemetry.snapshot_decisions();
         let (key, counts) = decisions.iter().next().unwrap();
-        assert_eq!(key.sampler, telemetry::SamplerName::Probabilistic);
+        assert_eq!(key.sampler, telemetry::SamplerName::Priority);
         assert_eq!(counts.seen, 1);
         assert_eq!(counts.kept, 0);
     }
 
+    /// Rare sampler should catch OTLP traces without a sampling priority on their first occurrence,
+    /// matching the Go agent behavior: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/agent/agent.go#L1129-L1140
     #[test]
     fn rare_sampler_catches_otlp_no_priority_trace() {
         let mut sampler = create_sampler_with_rare_enabled();
