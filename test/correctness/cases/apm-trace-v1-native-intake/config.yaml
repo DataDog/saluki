@@ -31,6 +31,10 @@ comparison:
     DD_DATA_PLANE_EXPERIMENTAL_APM_ENABLED: "true"
     DD_DATA_PLANE_EXPERIMENTAL_APM_PROXY_DESTINATION: "http://127.0.0.1:8127"
     DD_DATA_PLANE_EXPERIMENTAL_APM_NATIVE_TRACE_INTAKE: "true"
+    # The trace-agent behind ADP sends nowhere, so that traces it processed never reach the intake: if native intake
+    # didn't activate and ADP proxied `/v1.0/traces` to it, the comparison would have no spans or stats and the case
+    # would fail. ADP doesn't read `apm_config.apm_dd_url`, and sends to `dd_url`.
+    DD_APM_DD_URL: "http://127.0.0.1:9"
     # ADP takes over the trace-agent's receiver (TCP and UDS), so the trace-agent has to move to the proxy destination.
     # `ADP_DD_*` variables only reach ADP (see `docker/cont-init.d/99-agent-data-plane.sh`), while the plain variable is
     # seen by the trace-agent.
