@@ -11,6 +11,9 @@
 .upload-test-results:
   variables:
     NEXTEST_PROFILE: "ci"
+  id_tokens:
+    DD_STS_OIDC_TOKEN:
+      aud: dd-sts
   after_script:
     - bash ci/tooling/upload-test-results.sh target/nextest/ci/junit.xml
   artifacts:
