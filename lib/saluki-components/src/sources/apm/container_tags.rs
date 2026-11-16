@@ -1,8 +1,9 @@
-//! `Datadog-Container-Tags-Hash`, which the trace-agent adds to its `/info` response.
+//! The container of a tracer, and its tags.
 //!
-//! The header hashes the tags that identify the service of the tracer's container, so that a tracer can tell when its
-//! container's identity changes. The trace-agent finds the container as its ID provider does, and reads its tags from
-//! the tagger at high cardinality.
+//! The trace-agent finds the container of a tracer as its ID provider does, and reads its tags from the tagger at high
+//! cardinality. It reports them as the `_dd.tags.container` of the tracer's trace payloads and, hashed, as the
+//! `Datadog-Container-Tags-Hash` of its `/info` response: the hash covers the tags that identify the service of the
+//! container, so that a tracer can tell when its container's identity changes.
 
 use std::sync::Arc;
 
@@ -12,6 +13,7 @@ use saluki_core::data_model::origin::{OriginTagCardinality, RawOrigin};
 use saluki_env::workload::{CaptureEntityResolver, EntityId, WorkloadProvider};
 use saluki_io::net::ConnectionAddress;
 use sha2::{Digest as _, Sha256};
+use stringtheory::MetaString;
 
 use super::{CONTAINER_ID_HEADER, ENTITY_ID_HEADER};
 
@@ -69,6 +71,37 @@ impl ContainerTagsHasher {
             .map(|tag| tag.as_str().to_string());
         let hash = hash_service_tags(tags);
         HeaderValue::from_str(&hash).expect("a hex digest is a valid header value")
+    }
+
+    /// Returns the ID of the container of the tracer that sent a request with `headers`, over `connection`, as the
+    /// trace-agent's `GetContainerID` finds it.
+    ///
+    /// shortcut: a tracer identified only by its cgroup inode or External Data gets no ID unless they resolve to a
+    /// container ID; upgrade when the workload provider can map an inode to its container ID.
+    pub(super) fn container_id(
+        &self, headers: &HeaderMap, connection: Option<&ConnectInfo<ConnectionAddress>>,
+    ) -> Option<MetaString> {
+        self.container_entity(headers, connection)?.try_into_container()
+    }
+
+    /// Returns the tags of the container `container_id`, comma-joined as the trace-agent writes `_dd.tags.container`.
+    ///
+    /// Empty when the container has no tags, or ADP runs without the core Agent.
+    pub(super) fn container_tags(&self, container_id: &MetaString) -> MetaString {
+        let tags = self.workload_provider.as_ref().and_then(|provider| {
+            provider.get_tags_for_entity(&EntityId::Container(container_id.clone()), OriginTagCardinality::High)
+        });
+        let Some(tags) = tags else {
+            return MetaString::empty();
+        };
+        let mut joined = String::new();
+        for tag in &tags {
+            if !joined.is_empty() {
+                joined.push(',');
+            }
+            joined.push_str(tag.as_str());
+        }
+        MetaString::from(joined)
     }
 
     /// Finds the container of the tracer, in the trace-agent's order: the container ID in its Local Data, its
