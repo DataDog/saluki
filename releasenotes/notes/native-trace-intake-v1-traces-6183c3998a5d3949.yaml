@@ -4,5 +4,6 @@ features:
     ``/v1.0/traces`` itself instead of forwarding it to the trace-agent. Traces sent there are processed, sampled,
     turned into APM stats, and sent to Datadog by Agent Data Plane. The endpoint applies ``apm_config.max_payload_size``,
     ``apm_config.decoders``, ``apm_config.decoder_timeout`` and ``apm_config.receiver_timeout``, and answers with the
-    same status codes as the trace-agent. The response doesn't report sampling rates yet. The other trace endpoints
-    are still forwarded to the trace-agent.
+    same status codes as the trace-agent. As the trace-agent does, it answers with the priority sampler's rates by
+    service in ``rate_by_service``, echoes ``Datadog-Rates-Payload-Version``, and answers ``{}`` to a tracer that
+    already has the current rates. The other trace endpoints are still forwarded to the trace-agent.

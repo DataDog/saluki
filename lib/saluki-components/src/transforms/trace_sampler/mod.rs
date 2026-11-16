@@ -46,6 +46,7 @@ use crate::common::datadog::{
     TAG_DECISION_MAKER, TAG_ORIGIN,
 };
 use crate::config::AgentEnv;
+use crate::transforms::ServiceRates;
 
 // Sampling priority constants (matching datadog-agent)
 const PRIORITY_AUTO_DROP: i32 = 0;
@@ -122,6 +123,9 @@ pub struct TraceSamplerConfiguration {
     /// Only priority and error sampling targets and rare sampling can change. For each field left unset by the remote
     /// configuration, the sampler uses its local setting.
     pub remote_sampling: TraceSamplingSubscription,
+
+    /// Where the priority sampler publishes its rates by service, which the trace intake answers tracers with.
+    pub service_rates: ServiceRates,
 }
 
 impl TraceSamplerConfiguration {
@@ -147,6 +151,7 @@ impl TraceSamplerConfiguration {
                 self.extra_sample_rate,
                 self.target_traces_per_second,
                 self.max_catalog_entries,
+                self.service_rates.clone(),
             ),
             no_priority_sampler: score_sampler::NoPrioritySampler::new(
                 self.target_traces_per_second,
@@ -214,7 +219,9 @@ impl MemoryBounds for TraceSamplerConfiguration {
             .with_map::<signature::ServiceSignature, signature::Signature>(
                 "priority sampler catalog entries",
                 catalog_capacity,
-            );
+            )
+            // Each cataloged service is published under its environment and possibly an empty one, plus the default.
+            .with_map::<String, (f64, bool)>("priority sampler published rates", 2 * catalog_capacity + 1);
 
         // Decision keys span the same (service, env) universe as the catalog, across a handful
         // of samplers. The window resets every ten seconds, so steady-state growth follows active
@@ -600,7 +607,18 @@ impl TraceSampler {
             sampler_name = telemetry::SamplerName::Probabilistic;
             // some sampling happens upstream in the otlp receiver in the agent: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/api/otlp.go#L572
             let root_trace_id = trace.trace_id_low;
-            if sample_by_rate(root_trace_id, receiver_sampling_rate) {
+            let priority = if sample_by_rate(root_trace_id, receiver_sampling_rate) {
+                PRIORITY_AUTO_KEEP
+            } else {
+                PRIORITY_AUTO_DROP
+            };
+            // The receiver's decision is the chunk's priority, so the priority sampler counts the trace, and publishes
+            // a rate for its service, as the trace-agent's does for an OTLP chunk.
+            let client_dropped_p0s_weight = trace.payload.receiver().client_dropped_p0s_weight;
+            if self
+                .priority_sampler
+                .sample(now, trace, root_span_idx, priority, client_dropped_p0s_weight)
+            {
                 if let Some(root_span) = trace.spans_mut().get_mut(root_span_idx) {
                     root_span.attributes.remove(PROB_RATE_KEY);
                 }
@@ -883,6 +901,7 @@ pub(crate) fn sampler_configuration(agent_env: AgentEnv) -> TraceSamplerConfigur
         analyzed_rate_by_service: HashMap::new(),
         max_events_per_second: 0.0,
         remote_sampling: TraceSamplingSubscription::default(),
+        service_rates: ServiceRates::default(),
     }
 }
 
@@ -916,7 +935,13 @@ mod tests {
             probabilistic_sampler_enabled: true,
             probabilistic: probabilistic::ProbabilisticSampler::new(0, false),
             error_sampler: errors::ErrorsSampler::new(10.0, 1.0),
-            priority_sampler: priority_sampler::PrioritySampler::new(MetaString::from("agent-env"), 1.0, 10.0, 5000),
+            priority_sampler: priority_sampler::PrioritySampler::new(
+                MetaString::from("agent-env"),
+                1.0,
+                10.0,
+                5000,
+                ServiceRates::default(),
+            ),
             no_priority_sampler: score_sampler::NoPrioritySampler::new(10.0, 1.0),
             rare_sampler: rare_sampler::RareSampler::new(
                 false,
@@ -1279,6 +1304,31 @@ mod tests {
 
             assert_eq!(top_level_mark(&trace, 1), Some(1.0), "the root span is marked");
             assert_eq!(top_level_mark(&trace, 2), None, "the same-service child is not marked");
+        }
+    }
+
+    // In the trace-agent, the OTLP receiver's decision is the chunk's priority, which `runSamplersV1` hands to the
+    // priority sampler, so OTLP services take part in the rates it publishes.
+    #[test]
+    fn otlp_receiver_decisions_feed_the_priority_sampler() {
+        for trace_id in [OTLP_RECEIVER_KEPT_TRACE_ID, OTLP_RECEIVER_DROPPED_TRACE_ID] {
+            let mut sampler = TraceSampler {
+                probabilistic_sampler_enabled: false,
+                error_sampling_enabled: false,
+                ..create_test_sampler()
+            };
+            let mut trace =
+                create_otlp_test_trace(vec![create_test_span(1, 0)], OTLP_TEST_RECEIVER_SAMPLING_RATE, trace_id);
+
+            let outcome = sampler.run_samplers(&mut trace);
+
+            assert_eq!(outcome.keep, trace_id == OTLP_RECEIVER_KEPT_TRACE_ID);
+            assert_eq!(outcome.sampler, telemetry::SamplerName::Probabilistic);
+            assert_eq!(
+                sampler.priority_sampler.test_total_seen_weight(),
+                1.0,
+                "trace {trace_id}"
+            );
         }
     }
 

@@ -14,7 +14,7 @@ use saluki_components::sources::{
     ApmConfiguration, InfoCacheObfuscation, InfoConfiguration, InfoJsonObfuscation, InfoObfuscation, InfoReplaceRule,
     InfoTagFilter, InfoTagFilters, TraceIntakeConfiguration, TracerFlareConfiguration,
 };
-use saluki_components::transforms::HistogramConfiguration;
+use saluki_components::transforms::{HistogramConfiguration, ServiceRates};
 use saluki_env::workload::CaptureEntityResolver;
 use saluki_env::WorkloadProvider;
 use saluki_error::GenericError;
@@ -25,19 +25,20 @@ use super::{forwarder_configuration, trace_tag_replacer_configuration};
 const DEFAULT_SITE: &str = "datadoghq.com";
 
 /// Builds the source inputs with the effective listen host, the tracer container resolver, the API key tracer flares
-/// are sent with, and what `/info` reports.
+/// are sent with, what `/info` reports, and the sampling rates the native intake sends back to tracers.
 pub(crate) fn apm_source_configuration(
     config: &SalukiConfiguration, containerized: bool,
     capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
     workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>, api_key: Live<String>,
     agent_client: Option<RemoteAgentClientConfiguration>, semantic_registry: SemanticRegistryProvider,
+    service_rates: ServiceRates,
 ) -> Result<ApmConfiguration, GenericError> {
     let apm = &config.domains.apm;
     let shared = &config.shared;
     let (bind_host, non_local_traffic) = apm.listen_host(&shared.bind_host, containerized);
 
     let trace_intake = if apm.native_trace_intake {
-        Some(trace_intake_configuration(config)?)
+        Some(trace_intake_configuration(config, service_rates)?)
     } else {
         None
     };
@@ -64,7 +65,9 @@ pub(crate) fn apm_source_configuration(
 }
 
 /// Builds the native trace intake settings, with the receiver limits resolved as the trace-agent resolves them.
-fn trace_intake_configuration(config: &SalukiConfiguration) -> Result<TraceIntakeConfiguration, GenericError> {
+fn trace_intake_configuration(
+    config: &SalukiConfiguration, service_rates: ServiceRates,
+) -> Result<TraceIntakeConfiguration, GenericError> {
     let apm = &config.domains.apm;
     let parallelism = std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN);
     // The trace-agent sends its receiver histograms through DogStatsD, which summarizes them with these settings.
@@ -86,6 +89,7 @@ fn trace_intake_configuration(config: &SalukiConfiguration) -> Result<TraceIntak
             .features
             .contains(&traces::ApmFeature::TooManyRequests),
         histogram,
+        service_rates,
     })
 }
 
@@ -239,6 +243,7 @@ mod tests {
             Live::new_fixed(String::new()),
             None,
             SemanticRegistryProvider::default(),
+            ServiceRates::default(),
         )
         .unwrap()
     }
@@ -261,6 +266,7 @@ mod tests {
             Live::new_fixed("api-key".to_string()),
             None,
             SemanticRegistryProvider::default(),
+            ServiceRates::default(),
         )
         .unwrap();
 

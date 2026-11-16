@@ -1,0 +1,7 @@
+fixes:
+  - |
+    The trace sampler now counts the OTLP traces that the OTLP receiver's sampling rate decides in its priority
+    sampler, as the trace-agent does, so their services share the target TPS with Datadog services and get their own
+    rate. Kept root spans of these traces now carry ``_sampling_priority_rate_v1``. Sampling decisions are unchanged.
+    The priority sampler also keeps a rate the tracer already set in ``_dd.agent_psr``, ``_dd.rule_psr`` or
+    ``_sampling_priority_rate_v1`` instead of setting its own in ``_sampling_priority_rate_v1``.
