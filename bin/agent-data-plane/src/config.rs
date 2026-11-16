@@ -628,22 +628,40 @@ mod tests {
 
     #[test]
     fn logs_pipeline_is_active_only_when_otlp_logs_are_handled_natively() {
-        // (checks, dogstatsd, otlp, otlp proxy, otlp proxy traces, expected native OTLP logs)
+        // (case, checks, dogstatsd, otlp, proxied signals, expected native OTLP logs)
         let cases = [
-            ("OTLP native", (false, false, true, false, false), true),
-            ("OTLP native with checks", (true, false, true, false, false), true),
-            ("OTLP proxy", (false, false, true, true, true), false),
+            ("OTLP native", false, false, true, proxy(false, false, false), true),
             (
-                "OTLP proxy with native traces",
-                (false, false, true, true, false),
+                "OTLP native with checks",
+                true,
+                false,
+                true,
+                proxy(false, false, false),
+                true,
+            ),
+            (
+                "OTLP logs proxied",
+                false,
+                false,
+                true,
+                proxy(true, false, false),
                 false,
             ),
-            ("OTLP disabled", (false, true, false, false, false), false),
-            ("checks only", (true, false, false, false, false), false),
+            // Proxying any signal proxies logs too.
+            (
+                "OTLP traces proxied",
+                false,
+                false,
+                true,
+                proxy(false, false, true),
+                false,
+            ),
+            ("OTLP disabled", false, true, false, proxy(false, false, false), false),
+            ("checks only", true, false, false, proxy(false, false, false), false),
         ];
 
-        for (name, (checks, dogstatsd, otlp, proxy, proxy_traces), native) in cases {
-            let config = pipeline_configuration(checks, dogstatsd, otlp, proxy, proxy_traces);
+        for (name, checks, dogstatsd, otlp, otlp_proxy, native) in cases {
+            let config = pipeline_configuration(checks, dogstatsd, otlp, otlp_proxy);
             let dp = DataPlaneConfiguration::from_configuration(&config);
 
             assert_eq!(dp.otlp_logs_native(), native, "{name}");
