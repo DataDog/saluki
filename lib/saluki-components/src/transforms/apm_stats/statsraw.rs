@@ -261,6 +261,14 @@ fn ns_timestamp_to_float(ns: u64) -> f64 {
 }
 
 fn round(f: f64) -> u64 {
+    // As the trace-agent's `round`, out-of-range values are clamped: a sum of huge durations reaches 2^64, where
+    // rounding up would overflow.
+    if f.is_nan() || f <= 0.0 {
+        return 0;
+    }
+    if f >= u64::MAX as f64 {
+        return u64::MAX;
+    }
     let i = f as u64;
     let frac = f - (i as f64);
     if rand::rng().random::<f64>() < frac {
@@ -304,6 +312,14 @@ mod tests {
         assert_eq!(round(0.0), 0);
         assert_eq!(round(1.0), 1);
         assert_eq!(round(100.0), 100);
+    }
+
+    #[test]
+    fn test_round_clamps_out_of_range_values() {
+        assert_eq!(round(-1.5), 0);
+        assert_eq!(round(f64::NAN), 0);
+        assert_eq!(round(2.0 * u64::MAX as f64), u64::MAX);
+        assert_eq!(round(f64::INFINITY), u64::MAX);
     }
 
     #[test]
