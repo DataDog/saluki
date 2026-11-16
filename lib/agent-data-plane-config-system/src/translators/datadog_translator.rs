@@ -3687,19 +3687,18 @@ mod tests {
     }
 
     #[test]
-    fn logs_agent_enablement_follows_the_streamed_values() {
-        // The Agent streams both keys, at their defaults unless configured.
-        let (config, errors) = translate_stream(&[
-            ("logs_enabled", json!(false), StreamProvenance::Default),
-            ("log_enabled", json!(false), StreamProvenance::Default),
-        ]);
+    fn logs_agent_is_enabled_by_either_logs_enabled_or_log_enabled() {
+        // Like the Datadog Agent, the deprecated `log_enabled` isn't a former name of `logs_enabled`: either key being
+        // `true` enables the logs agent, whichever of the two is read last.
+        let (config, errors) = translate_explicit(json!({}));
         assert!(errors.is_none());
         assert!(!config.control.logs_enabled);
 
-        let (config, errors) = translate_stream(&[
-            ("logs_enabled", json!(false), StreamProvenance::Default),
-            ("log_enabled", json!(true), StreamProvenance::Explicit),
-        ]);
+        let (config, errors) = translate_explicit(json!({ "logs_enabled": true, "log_enabled": false }));
+        assert!(errors.is_none());
+        assert!(config.control.logs_enabled);
+
+        let (config, errors) = translate_explicit(json!({ "logs_enabled": false, "log_enabled": true }));
         assert!(errors.is_none());
         assert!(config.control.logs_enabled);
     }
