@@ -5,8 +5,8 @@
 //! it the relay.
 //!
 //! With [`trace_intake`](ApmConfiguration::trace_intake) set, the source serves `/v1.0/traces` itself, and emits the
-//! traces it decodes on its `traces` output. Otherwise it emits nothing there, and every trace payload is forwarded to
-//! the trace-agent.
+//! traces it decodes on its `traces` output, and its receiver telemetry on its `metrics` output. Otherwise it has no
+//! `metrics` output and emits nothing on `traces`, and every trace payload is forwarded to the trace-agent.
 //!
 //! The relay serves `/info` itself, and so owns `Datadog-Agent-State`, the hash of the `/info` body that every
 //! response carries: it replaces the trace-agent's on the responses it forwards.
@@ -68,6 +68,9 @@ use self::opm::OrgPropagationMarkerFetcher;
 
 mod proxy;
 use self::proxy::{Destination, TraceAgentProxy};
+
+mod receiver_telemetry;
+use self::receiver_telemetry::{ReceiverTelemetry, WINDOW};
 
 mod tracer_flare;
 pub use self::tracer_flare::TracerFlareConfiguration;
@@ -262,6 +265,14 @@ impl MemoryBounds for ApmConfiguration {
             .minimum()
             .with_single_value::<Apm>("component struct")
             .with_single_value::<ApmState>("component struct");
+        if self.trace_intake.is_some() {
+            builder
+                .minimum()
+                .with_map::<receiver_telemetry::ReceiverTags, receiver_telemetry::TagStats>(
+                    "receiver telemetry window",
+                    receiver_telemetry::MAX_TAG_KEYS + 1,
+                );
+        }
     }
 }
 
@@ -270,7 +281,17 @@ impl SourceBuilder for ApmConfiguration {
     fn outputs(&self) -> &[OutputDefinition<EventType>] {
         static OUTPUTS: LazyLock<Vec<OutputDefinition<EventType>>> =
             LazyLock::new(|| vec![OutputDefinition::named_output("traces", EventType::Trace)]);
-        &OUTPUTS
+        static INTAKE_OUTPUTS: LazyLock<Vec<OutputDefinition<EventType>>> = LazyLock::new(|| {
+            vec![
+                OutputDefinition::named_output("traces", EventType::Trace),
+                OutputDefinition::named_output("metrics", EventType::Metric),
+            ]
+        });
+        if self.trace_intake.is_some() {
+            &INTAKE_OUTPUTS
+        } else {
+            &OUTPUTS
+        }
     }
 
     async fn build(&self, context: BuildContext) -> Result<Box<dyn Source + Send>, GenericError> {
@@ -310,7 +331,9 @@ impl SourceBuilder for ApmConfiguration {
         let (intake, traces_rx) = match self.trace_intake.clone() {
             Some(config) => {
                 let (traces_tx, traces_rx) = mpsc::channel(config.decoders.get());
-                (Some(TraceIntake::new(config, traces_tx)), Some(traces_rx))
+                let intake = TraceIntake::new(config, traces_tx);
+                let telemetry = intake.telemetry();
+                (Some(intake), Some((traces_rx, telemetry)))
             }
             None => (None, None),
         };
@@ -342,7 +365,7 @@ impl SourceBuilder for ApmConfiguration {
 /// Receives requests via HTTP, on TCP and/or a Unix domain socket, and proxies them to the trace-agent.
 pub struct Apm {
     intake: Option<TraceIntake>,
-    traces_rx: Option<mpsc::Receiver<Vec<Trace>>>,
+    traces_rx: Option<(mpsc::Receiver<Vec<Trace>>, Arc<ReceiverTelemetry>)>,
     tcp_endpoint: Option<ListenAddress>,
     uds_endpoint: Option<ListenAddress>,
     proxy: TraceAgentProxy,
@@ -421,11 +444,14 @@ impl Source for Apm {
         // The dispatcher stops once the servers exit and drop the intake's senders, so that the traces of every
         // payload already accepted reach the pipeline. Thus, it has no timeout of its own, and is halted with the source
         // if the component's shutdown timeout expires.
-        if let Some(traces_rx) = traces_rx {
-            runtime::worker("traces_dispatcher", dispatch_traces(traces_rx, context.clone()))
-                .with_shutdown_timeout(Duration::MAX)
-                .needed()
-                .spawn();
+        if let Some((traces_rx, telemetry)) = traces_rx {
+            runtime::worker(
+                "traces_dispatcher",
+                dispatch_traces(traces_rx, telemetry, context.clone()),
+            )
+            .with_shutdown_timeout(Duration::MAX)
+            .needed()
+            .spawn();
         }
 
         health.mark_ready();
@@ -473,25 +499,49 @@ impl Source for Apm {
     }
 }
 
-/// Dispatches the traces of each accepted payload on the `traces` output, until every sender is gone.
+/// Dispatches the traces of each accepted payload on the `traces` output, and the receiver telemetry of each window on
+/// the `metrics` output, until every sender is gone.
 async fn dispatch_traces(
-    mut traces_rx: mpsc::Receiver<Vec<Trace>>, context: SourceContext,
+    mut traces_rx: mpsc::Receiver<Vec<Trace>>, telemetry: Arc<ReceiverTelemetry>, context: SourceContext,
 ) -> Result<(), GenericError> {
-    while let Some(traces) = traces_rx.recv().await {
-        let mut dispatcher = context
-            .dispatcher()
-            .buffered_named("traces")
-            .error_context("The traces output should exist.")?;
-        for trace in traces {
-            if let Err(error) = dispatcher.push(Event::Trace(trace)).await {
-                error!(%error, "Failed to dispatch trace event.");
-            }
-        }
-        if let Err(error) = dispatcher.flush().await {
-            error!(%error, "Failed to flush trace events.");
+    let mut window = tokio::time::interval_at(tokio::time::Instant::now() + WINDOW, WINDOW);
+    loop {
+        select! {
+            maybe_traces = traces_rx.recv() => {
+                let Some(traces) = maybe_traces else { break };
+                let mut dispatcher = context
+                    .dispatcher()
+                    .buffered_named("traces")
+                    .error_context("The traces output should exist.")?;
+                for trace in traces {
+                    if let Err(error) = dispatcher.push(Event::Trace(trace)).await {
+                        error!(%error, "Failed to dispatch trace event.");
+                    }
+                }
+                if let Err(error) = dispatcher.flush().await {
+                    error!(%error, "Failed to flush trace events.");
+                }
+            },
+            _ = window.tick() => dispatch_receiver_telemetry(&telemetry, &context).await?,
         }
     }
+    // The servers are gone, so the last window is complete.
+    dispatch_receiver_telemetry(&telemetry, &context).await?;
     debug!("Traces dispatcher stopped.");
+    Ok(())
+}
+
+async fn dispatch_receiver_telemetry(
+    telemetry: &ReceiverTelemetry, context: &SourceContext,
+) -> Result<(), GenericError> {
+    let events = telemetry.take_window_events();
+    let dispatcher = context
+        .dispatcher()
+        .buffered_named("metrics")
+        .error_context("The metrics output should exist.")?;
+    if let Err(error) = dispatcher.send_all(events).await {
+        error!(%error, "Failed to dispatch receiver telemetry.");
+    }
     Ok(())
 }
 
@@ -783,6 +833,7 @@ mod tests {
                     decoder_timeout: Duration::from_secs(1),
                     receiver_timeout: Duration::from_secs(5),
                     reject_with_too_many_requests: false,
+                    histogram: crate::transforms::HistogramConfiguration::default(),
                 },
                 traces_tx,
             )),
@@ -1388,6 +1439,7 @@ mod tests {
             decoder_timeout: Duration::from_secs(5),
             receiver_timeout: Duration::from_secs(5),
             reject_with_too_many_requests: false,
+            histogram: crate::transforms::HistogramConfiguration::default(),
         });
         // A full output blocks the dispatcher, so that accepted payloads wait in its queue.
         let (control, mut outputs) = TestComponentDriver::options()
@@ -1424,6 +1476,43 @@ mod tests {
         }
         assert_eq!(dispatched, accepted);
         shutdown.await.unwrap().expect("the source should stop cleanly");
+
+        // The last telemetry window is reported once the accepted payloads are dispatched.
+        let metrics = outputs.named_output("metrics").collect_events().await;
+        let payload_accepted: f64 = metrics
+            .iter()
+            .filter_map(|event| event.try_as_metric())
+            .filter(|metric| metric.context().name() == "datadog.trace_agent.receiver.payload_accepted")
+            .filter_map(|metric| match metric.values() {
+                saluki_core::data_model::event::metric::MetricValues::Counter(points) => {
+                    Some(points.into_iter().map(|(_, value)| value).sum::<f64>())
+                }
+                _ => None,
+            })
+            .sum();
+        assert_eq!(payload_accepted, accepted as f64, "{metrics:?}");
+    }
+
+    #[test]
+    fn only_the_native_trace_intake_has_a_metrics_output() {
+        // Proxied payloads are counted by the trace-agent, so the relay alone reports no receiver telemetry.
+        let has_metrics = |config: &ApmConfiguration| {
+            config
+                .outputs()
+                .iter()
+                .any(|output| output.output_name() == Some("metrics"))
+        };
+        let mut config = test_config(None, false, 0);
+        assert!(!has_metrics(&config));
+        config.trace_intake = Some(TraceIntakeConfiguration {
+            max_request_bytes: 1024,
+            decoders: std::num::NonZeroUsize::MIN,
+            decoder_timeout: Duration::from_secs(1),
+            receiver_timeout: Duration::from_secs(1),
+            reject_with_too_many_requests: false,
+            histogram: crate::transforms::HistogramConfiguration::default(),
+        });
+        assert!(has_metrics(&config));
     }
 
     #[tokio::test]

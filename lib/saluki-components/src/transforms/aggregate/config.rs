@@ -3,8 +3,8 @@ use stringtheory::MetaString;
 use tracing::error;
 
 /// A histogram statistic to calculate.
-#[derive(Clone)]
-#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
+#[derive(Clone, Debug)]
+#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
 pub enum HistogramStatistic {
     /// Total count of values in the histogram.
     Count,
@@ -97,8 +97,8 @@ fn percentile_suffix(percentile: u32) -> MetaString {
 }
 
 /// Statistics to calculate over histograms, and how to copy them to distributions.
-#[derive(Clone)]
-#[cfg_attr(test, derive(Debug, PartialEq))]
+#[derive(Clone, Debug)]
+#[cfg_attr(test, derive(PartialEq))]
 pub struct HistogramConfiguration {
     statistics: Vec<HistogramStatistic>,
     copy_to_distribution: bool,
