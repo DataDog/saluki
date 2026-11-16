@@ -371,6 +371,11 @@ pub struct DogStatsDConfiguration {
     /// decoding behavior of the Datadog Agent.
     pub permissive_decoding: bool,
 
+    /// Whether timing (`ms`) metrics carry the `millisecond` unit.
+    ///
+    /// When `false`, timing metrics are sent without a unit. No other metric type carries a unit.
+    pub set_timing_unit: bool,
+
     /// The minimum sample rate allowed for metrics.
     ///
     /// When metrics are sent with a sample rate _lower_ than this value then it will be clamped to this value. This is
@@ -510,6 +515,7 @@ impl DogStatsDConfiguration {
             cached_tagsets_limit: 500_000,
             context_expiry_seconds: 20,
             permissive_decoding: true,
+            set_timing_unit: false,
             minimum_sample_rate: 0.000000003845,
             enable_payloads: EnablePayloadsConfiguration {
                 series: true,
@@ -816,7 +822,8 @@ impl SourceBuilder for DogStatsDConfiguration {
             .with_timestamps(self.no_aggregation_pipeline_support)
             .with_permissive_mode(self.permissive_decoding)
             .with_minimum_sample_rate(self.minimum_sample_rate)
-            .with_client_origin_detection(self.origin_enrichment.origin_detection_client);
+            .with_client_origin_detection(self.origin_enrichment.origin_detection_client)
+            .with_timing_unit(self.set_timing_unit);
 
         let codec = DogStatsDCodec::from_configuration(codec_config);
         let eol_required = self.eol_required();

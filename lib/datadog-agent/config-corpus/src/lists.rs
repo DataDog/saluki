@@ -12,7 +12,7 @@
 use std::fmt;
 
 /// The Agent commit these lists were last checked against.
-pub const REVIEWED_AT_AGENT_COMMIT: &str = "a682da124ffbc9ec820c118e3b2daaadff97623c";
+pub const REVIEWED_AT_AGENT_COMMIT: &str = "72cc7f34878cff03a4cc37be298d8902e0e492d1";
 
 /// Declares a string enum with its full list and its string forms.
 macro_rules! string_enum {
@@ -139,7 +139,7 @@ string_enum! {
         /// `map[string]interface{}` (getter-map.md §2.1). It keeps only the section's configured leaves, plus
         /// sections declared with a nil value, so schema defaults are absent. It is never a default getter.
         ReadConfigSection => "ReadConfigSection",
-        /// `cfg.IsConfigured(key)` (`nodetreemodel/config.go:930`), returning `bool` (getter-map.md §2.1). It
+        /// `cfg.IsConfigured(key)` (`nodetreemodel/config.go:956`), returning `bool` (getter-map.md §2.1). It
         /// reports whether the user set the key, not the key's value. It is never a default getter.
         IsConfigured => "IsConfigured",
     }

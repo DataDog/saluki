@@ -1212,8 +1212,8 @@ mod tests {
                 json!({"data_plane": {"otlp": {"enabled": true}}}),
             ),
             (
-                "data_plane.otlp: {enabled: true, proxy.enabled: false}\n",
-                json!({"data_plane": {"otlp": {"enabled": true, "proxy": {"enabled": false}}}}),
+                "data_plane.experimental.otlp: {proxy.logs: true, proxy.metrics: false}\n",
+                json!({"data_plane": {"experimental": {"otlp": {"proxy": {"logs": true, "metrics": false}}}}}),
             ),
             // Case folds at every level, including inside a dotted key.
             ("Log_Level: debug\n", json!({"log_level": "debug"})),
@@ -1227,10 +1227,11 @@ mod tests {
             ),
             // Spellings of different leaves in one section merge by key.
             (
-                "data_plane.api_listen_address: a\ndata_plane: {otlp: {enabled: true}}\nDATA_PLANE.otlp.proxy.enabled: false\n",
+                "data_plane.api_listen_address: a\ndata_plane: {otlp: {enabled: true}}\nDATA_PLANE.experimental.otlp.proxy.logs: false\n",
                 json!({"data_plane": {
                     "api_listen_address": "a",
-                    "otlp": {"enabled": true, "proxy": {"enabled": false}},
+                    "otlp": {"enabled": true},
+                    "experimental": {"otlp": {"proxy": {"logs": false}}},
                 }}),
             ),
             // The keys of a leaf's value are rendered, and the leaf itself moves.
