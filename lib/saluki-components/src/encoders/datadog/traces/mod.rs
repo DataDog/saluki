@@ -773,7 +773,7 @@ fn resolve_hostname_from_payload<'a>(
     }
     match source {
         Some(src) => match src.kind {
-            OtlpSourceKind::HostnameKind => Some(src.identifier.as_str()),
+            OtlpSourceKind::Hostname => Some(src.identifier.as_str()),
             _ => Some(""),
         },
         None => default_hostname,
@@ -794,7 +794,7 @@ fn resolve_container_tags_from_attrs(
     }
     let mut container_tags = TagSet::default();
     extract_container_tags_from_attributes_map(attributes, &mut container_tags);
-    let is_fargate_source = source.is_some_and(|src| src.kind == OtlpSourceKind::AwsEcsFargateKind);
+    let is_fargate_source = source.is_some_and(|src| src.kind == OtlpSourceKind::AwsEcsFargate);
     if container_tags.is_empty() && !is_fargate_source {
         return None;
     }
@@ -1210,11 +1210,11 @@ mod tests {
     #[test]
     fn resolve_hostname_from_payload_prefers_payload_then_source_then_default() {
         let host_source = OtlpSource {
-            kind: OtlpSourceKind::HostnameKind,
+            kind: OtlpSourceKind::Hostname,
             identifier: "resolved-host".to_string(),
         };
         let fargate_source = OtlpSource {
-            kind: OtlpSourceKind::AwsEcsFargateKind,
+            kind: OtlpSourceKind::AwsEcsFargate,
             identifier: "task-arn".to_string(),
         };
 

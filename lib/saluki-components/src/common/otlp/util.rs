@@ -27,9 +27,9 @@ pub const DEPLOYMENT_ENVIRONMENT_KEY: &str = "deployment.environment";
 #[derive(Debug, Clone, PartialEq)]
 pub enum SourceKind {
     /// Hostname-based source.
-    HostnameKind,
+    Hostname,
     /// AWS ECS Fargate source.
-    AwsEcsFargateKind,
+    AwsEcsFargate,
 }
 
 /// Represents the source of telemetry data.
@@ -51,8 +51,8 @@ impl Source {
 impl SourceKind {
     fn as_str(&self) -> &'static str {
         match self {
-            SourceKind::HostnameKind => "host",
-            SourceKind::AwsEcsFargateKind => "task_arn",
+            SourceKind::Hostname => "host",
+            SourceKind::AwsEcsFargate => "task_arn",
         }
     }
 }
@@ -459,14 +459,14 @@ pub fn resource_to_metric_source(
     if get_string_attribute(attributes, AWS_ECS_LAUNCHTYPE) == Some("fargate") {
         if let Some(task_arn) = get_string_attribute(attributes, AWS_ECS_TASK_ARN) {
             return Some(Source {
-                kind: SourceKind::AwsEcsFargateKind,
+                kind: SourceKind::AwsEcsFargate,
                 identifier: task_arn.to_string(),
             });
         }
     }
 
     hostname_from_attributes(attributes).map(|identifier| Source {
-        kind: SourceKind::HostnameKind,
+        kind: SourceKind::Hostname,
         identifier,
     })
 }
@@ -488,7 +488,7 @@ pub fn resource_to_source(resource: &otlp_protos::opentelemetry::proto::resource
     {
         if let Some(task_arn) = get_string_attribute(attributes, AWS_ECS_TASK_ARN) {
             return Some(Source {
-                kind: SourceKind::AwsEcsFargateKind,
+                kind: SourceKind::AwsEcsFargate,
                 identifier: task_arn.to_string(),
             });
         }
@@ -497,7 +497,7 @@ pub fn resource_to_source(resource: &otlp_protos::opentelemetry::proto::resource
     // Hostname from attributes
     if let Some(host_name) = get_string_attribute(attributes, opentelemetry_semantic_conventions::resource::HOST_NAME) {
         return Some(Source {
-            kind: SourceKind::HostnameKind,
+            kind: SourceKind::Hostname,
             identifier: host_name.to_string(),
         });
     }
@@ -524,7 +524,7 @@ pub fn attributes_to_source(attributes: &FastHashMap<MetaString, AttributeValue>
     {
         if let Some(task_arn) = get(AWS_ECS_TASK_ARN) {
             return Some(Source {
-                kind: SourceKind::AwsEcsFargateKind,
+                kind: SourceKind::AwsEcsFargate,
                 identifier: task_arn.to_string(),
             });
         }
@@ -533,7 +533,7 @@ pub fn attributes_to_source(attributes: &FastHashMap<MetaString, AttributeValue>
     // Hostname from attributes
     if let Some(host_name) = get(opentelemetry_semantic_conventions::resource::HOST_NAME) {
         return Some(Source {
-            kind: SourceKind::HostnameKind,
+            kind: SourceKind::Hostname,
             identifier: host_name.to_string(),
         });
     }
@@ -569,7 +569,7 @@ mod tests {
 
     fn assert_hostname(attributes: Vec<KeyValue>, expected: &str) {
         let source = metric_source(attributes).expect("hostname source should resolve");
-        assert_eq!(source.kind, SourceKind::HostnameKind);
+        assert_eq!(source.kind, SourceKind::Hostname);
         assert_eq!(source.identifier, expected);
     }
 
@@ -1007,7 +1007,7 @@ mod tests {
         ])
         .expect("Fargate source should resolve");
 
-        assert_eq!(source.kind, SourceKind::AwsEcsFargateKind);
+        assert_eq!(source.kind, SourceKind::AwsEcsFargate);
         assert_eq!(source.identifier, "task-arn");
     }
 
@@ -1119,11 +1119,11 @@ mod tests {
         };
 
         let logs_source = resource_to_source(&resource).expect("logs source should resolve");
-        assert_eq!(logs_source.kind, SourceKind::HostnameKind);
+        assert_eq!(logs_source.kind, SourceKind::Hostname);
         assert_eq!(logs_source.identifier, "host-name");
 
         let metric_source = resource_to_metric_source(&resource).expect("metric source should resolve");
-        assert_eq!(metric_source.kind, SourceKind::HostnameKind);
+        assert_eq!(metric_source.kind, SourceKind::Hostname);
         assert_eq!(metric_source.identifier, "vm-id");
     }
 }
