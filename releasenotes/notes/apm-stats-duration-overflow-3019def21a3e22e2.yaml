@@ -1,4 +1,6 @@
 fixes:
   - |
-    APM stats no longer stop when a bucket's span durations add up to more than 2^64 nanoseconds, as tracers sending
-    huge durations could cause. The total is capped instead, as the trace-agent caps it.
+    APM stats no longer stop when a span's start and duration add up to more than the largest timestamp, or when a
+    bucket's span durations add up to more than 2^64 nanoseconds, as tracers sending huge or negative timestamps could
+    cause. As in the trace-agent, such a span counts in the oldest or the current bucket, and the duration total is
+    capped.
