@@ -950,7 +950,7 @@ fn encode_etp_attribute_value<S: ScratchBuffer>(
 /// Resolves the hostname to report for a trace.
 ///
 /// `tracer_hostname` is the hostname the trace carries. Without one, OTLP traces report none: the translator already
-/// applied the Agent's source cascade, so an empty hostname means a serverless resource. Other traces fall back to
+/// applied its source cascade, so an empty hostname means a serverless resource. Other traces fall back to
 /// `default_hostname`.
 fn resolve_hostname<'a>(
     tracer_hostname: Option<&'a str>, is_otlp: bool, default_hostname: Option<&'a str>, ignore_missing_fields: bool,

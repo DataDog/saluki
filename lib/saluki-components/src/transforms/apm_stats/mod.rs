@@ -1926,7 +1926,7 @@ mod tests {
                 .to_string()
         };
 
-        // The payload hostname beats the root span's `_dd.hostname`, as in the Go trace agent.
+        // The payload hostname beats the root span's `_dd.hostname`.
         assert_eq!(hostname(&trace_with("payload-host", Some("root-host"))), "payload-host");
         assert_eq!(hostname(&trace_with("", Some("root-host"))), "root-host");
         assert_eq!(hostname(&trace_with("", None)), "agent-host");

@@ -165,7 +165,7 @@ fn extract_resource_meta(
     }
 }
 
-/// Resolves the payload hostname the way the Agent's OTLP receiver does.
+/// Resolves the payload hostname from the resource's source.
 ///
 /// A hostname source gives its identifier, a serverless source gives no hostname, and a resource with no source gets
 /// `default_hostname`. When missing Datadog fields are ignored, only an explicit `datadog.host.name` counts.
@@ -329,7 +329,7 @@ impl OtlpTracesTranslator {
         }
     }
 
-    /// Sets the hostname of traces whose resource carries no source, such as the Agent's own hostname.
+    /// Sets the hostname of traces whose resource carries no source, such as the host the data plane runs on.
     ///
     /// Defaults to an empty hostname.
     pub fn with_default_hostname(mut self, default_hostname: MetaString) -> Self {

@@ -1,9 +1,8 @@
 //! Resolves the source of OTLP telemetry from its resource attributes.
 //!
-//! This ports `SourceFromAttrs` from the Datadog Agent's OTLP attribute mapping. A source is the entity that emitted
-//! the telemetry: a host, or a serverless resource such as an AWS Lambda function. Detectors run in the Agent's order,
-//! and the first one that matches wins. Resources that match none of them fall back to the hostname cascade shared
-//! with metrics.
+//! A source is the entity that emitted the telemetry: a host, or a serverless resource such as an AWS Lambda function.
+//! Detectors run in a fixed order, and the first one that matches wins. Resources that match none of them fall back to
+//! the hostname cascade shared with metrics.
 //!
 //! Only traces use this resolver today. Metrics and logs still use the narrower resolvers in [`super::util`].
 
