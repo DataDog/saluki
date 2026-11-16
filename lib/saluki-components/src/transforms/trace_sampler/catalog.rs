@@ -4,10 +4,9 @@
 //! to their computed `Signature` hashes. This allows efficient lookup of sampling rates
 //! by service when building the rates-by-service response.
 //!
-//! Note: This module is infrastructure for the priority sampler. The types aren't yet
-//! integrated into the main sampling pipeline.
 use lru_slab::LruSlab;
 use saluki_common::collections::FastHashMap;
+use stringtheory::MetaString;
 use tracing::warn;
 
 use super::signature::{ServiceSignature, Signature};
@@ -94,6 +93,34 @@ impl ServiceKeyCatalog {
 
         hash
     }
+
+    /// Returns the rate of every cataloged service, as the trace-agent's `ratesByService`.
+    ///
+    /// A service whose signature has no rate left in `rates` is dropped from the catalog. A service in the agent's
+    /// environment is also given under an empty environment, and the default rate under the empty service and
+    /// environment.
+    pub fn rates_by_service(
+        &mut self, agent_env: &str, rates: &FastHashMap<Signature, f64>, default_rate: f64,
+    ) -> FastHashMap<ServiceSignature, f64> {
+        let mut by_service = FastHashMap::with_capacity_and_hasher(rates.len() + 1, Default::default());
+        let mut stale = Vec::new();
+        for (key, &slot) in &self.items {
+            let Some(&rate) = rates.get(&self.entries.peek(slot).sig) else {
+                stale.push(slot);
+                continue;
+            };
+            if key.env() == agent_env {
+                by_service.insert(ServiceSignature::new(key.name().clone(), MetaString::empty()), rate);
+            }
+            by_service.insert(key.clone(), rate);
+        }
+        for slot in stale {
+            let removed = self.entries.remove(slot);
+            self.items.remove(&removed.key);
+        }
+        by_service.insert(ServiceSignature::default(), default_rate);
+        by_service
+    }
 }
 
 #[cfg(test)]
@@ -172,6 +199,54 @@ mod tests {
         expected.insert(ServiceSignature::new("service4", "env4"), sig4);
         expected.insert(ServiceSignature::new("service5", "env5"), sig5);
         catalog_contains(&catalog, &expected);
+    }
+
+    // `TestCatalogEnvMatchAgent` and `TestServiceKeyCatalogRatesByService` in `catalog_test.go`.
+    #[test]
+    fn test_service_key_catalog_rates_by_service() {
+        let mut catalog = ServiceKeyCatalog::with_max_entries(0);
+        let sig1 = catalog.register(ServiceSignature::new("service1", "testEnv"));
+        let sig2 = catalog.register(ServiceSignature::new("service2", "testEnv"));
+        let mut rates = FastHashMap::default();
+        rates.insert(sig1, 0.3);
+        rates.insert(sig2, 0.7);
+        let expected = |entries: &[(&str, &str, f64)]| -> FastHashMap<ServiceSignature, f64> {
+            entries
+                .iter()
+                .map(|(name, env, rate)| (ServiceSignature::new(*name, *env), *rate))
+                .collect()
+        };
+
+        assert_eq!(
+            catalog.rates_by_service("testEnv", &rates, 0.2),
+            expected(&[
+                ("service1", "testEnv", 0.3),
+                ("service1", "", 0.3),
+                ("service2", "testEnv", 0.7),
+                ("service2", "", 0.7),
+                ("", "", 0.2),
+            ])
+        );
+        assert_eq!(
+            catalog.rates_by_service("", &rates, 0.2),
+            expected(&[
+                ("service1", "testEnv", 0.3),
+                ("service2", "testEnv", 0.7),
+                ("", "", 0.2)
+            ])
+        );
+
+        rates.remove(&sig1);
+        assert_eq!(
+            catalog.rates_by_service("", &rates, 0.2),
+            expected(&[("service2", "testEnv", 0.7), ("", "", 0.2)])
+        );
+        assert_eq!(catalog.items.len(), 1, "a service without a rate leaves the catalog");
+        assert_eq!(catalog.entries.len(), 1);
+
+        rates.remove(&sig2);
+        assert_eq!(catalog.rates_by_service("", &rates, 0.2), expected(&[("", "", 0.2)]));
+        assert!(catalog.items.is_empty());
     }
 
     #[test]

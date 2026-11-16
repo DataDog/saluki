@@ -19,6 +19,9 @@
 //! | The payload doesn't decode | 400 |
 //! | Accepted | 200 |
 //!
+//! Accepted payloads, and those refused for want of a decoder, are answered with the
+//! [sampling rates by service](crate::common::traces::rates) the priority sampler publishes.
+//!
 //! Each outcome but the cross-site rejection is counted in the [receiver telemetry](super::receiver_telemetry), as
 //! the trace-agent counts it.
 
@@ -45,7 +48,7 @@ use super::container_tags::ContainerTagsHasher;
 use super::receiver_telemetry::{DropReason, ReceiverTags, ReceiverTelemetry};
 use crate::common::traces::normalize::{truncate_utf8_str, MAX_SERVICE_LEN};
 use crate::decoders::datadog::{decode_v1_payload, first_span, resolve_process_tags, resolve_sdk_otlp_export};
-use crate::transforms::HistogramConfiguration;
+use crate::transforms::{HistogramConfiguration, ServiceRates};
 
 const SEC_FETCH_SITE_HEADER: HeaderName = HeaderName::from_static("sec-fetch-site");
 const PROCESS_TAGS_HEADER: HeaderName = HeaderName::from_static("x-datadog-process-tags");
@@ -64,10 +67,10 @@ const SEND_REAL_HTTP_STATUS_HEADER: HeaderName = HeaderName::from_static("datado
 /// Longest `Datadog-Meta-*` value kept, in bytes, as the trace-agent bounds them.
 const MAX_META_VALUE_LEN: usize = 200;
 
-/// Body of an accepted payload until the receiver reports sampling rates.
-///
-/// Encoded as the trace-agent writes it, with a trailing newline.
-const RATE_BY_SERVICE_BODY: &str = "{\"rate_by_service\":{}}\n";
+const RATES_PAYLOAD_VERSION_HEADER: HeaderName = HeaderName::from_static("datadog-rates-payload-version");
+
+/// Body sent to a client that already has the current rates.
+const UNCHANGED_RATES_BODY: &[u8] = b"{}";
 
 /// Settings of the native trace intake.
 #[derive(Clone, Debug)]
@@ -91,6 +94,9 @@ pub struct TraceIntakeConfiguration {
     /// How the receiver telemetry reports its `serve_traces_ms` histogram, as DogStatsD reports histograms
     /// (`histogram_aggregates`, `histogram_percentiles`, `histogram_copy_to_distribution`).
     pub histogram: HistogramConfiguration,
+
+    /// The sampling rates by service the trace sampler publishes, sent back to tracers.
+    pub service_rates: ServiceRates,
 }
 
 /// An intake endpoint version, as the trace-agent's `Version`.
@@ -165,7 +171,8 @@ impl TraceIntake {
                     StatusCode::OK
                 };
                 self.telemetry.record(header_tags(version, headers, connection), |stats| stats.payload_refused += 1);
-                return rate_by_service(status);
+                // The trace-agent writes the status before the rates, so the version header it sets after is dropped.
+                return self.rate_by_service(status, headers, false).0;
             },
         };
 
@@ -240,6 +247,7 @@ impl TraceIntake {
         // The trace-agent counts the dropped P0s the client reports separately from the per-chunk weight.
         let dropped_p0_traces = header_count(headers, &DROPPED_P0_TRACES_HEADER);
         let dropped_p0_spans = header_count(headers, &DROPPED_P0_SPANS_HEADER);
+        let (response, response_bytes) = self.rate_by_service(StatusCode::OK, headers, true);
         self.telemetry.record(ReceiverTags::from_receiver(&receiver), |stats| {
             stats.traces_received += trace_count as i64;
             stats.traces_bytes += body_len as i64;
@@ -247,11 +255,40 @@ impl TraceIntake {
             stats.payload_accepted += 1;
             stats.client_dropped_p0_traces += dropped_p0_traces.unwrap_or(0);
             stats.client_dropped_p0_spans += dropped_p0_spans.unwrap_or(0);
+            stats.rate_response_bytes(response_bytes);
             // Recorded once the traces are handed over, as the trace-agent's deferred timer is.
             stats.serve_time(start.elapsed(), true);
         });
 
-        rate_by_service(StatusCode::OK)
+        response
+    }
+
+    /// Answers with the sampling rates by service, as `httpRateByService`, and returns the body's length.
+    ///
+    /// A client that sends the version of the rates it has gets the current version back, if `send_version`, and `{}`
+    /// rather than the rates when it already has them.
+    fn rate_by_service(&self, status: StatusCode, headers: &HeaderMap, send_version: bool) -> (Response, usize) {
+        let rates = self.config.service_rates.load();
+        let client_version = headers
+            .get(&RATES_PAYLOAD_VERSION_HEADER)
+            .map(HeaderValue::as_bytes)
+            .unwrap_or_default();
+        let mut response_headers = HeaderMap::with_capacity(2);
+        response_headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        let body = if client_version.is_empty() {
+            rates.body.clone()
+        } else {
+            if send_version {
+                response_headers.insert(RATES_PAYLOAD_VERSION_HEADER, rates.version.clone());
+            }
+            if client_version == rates.version.as_bytes() {
+                Bytes::from_static(UNCHANGED_RATES_BODY)
+            } else {
+                rates.body.clone()
+            }
+        };
+        let len = body.len();
+        ((status, response_headers, body).into_response(), len)
     }
 
     /// Counts a payload that couldn't be read or decoded, as the trace-agent does.
@@ -453,19 +490,7 @@ async fn read_body(
         .unwrap_or(Err(BodyError::Timeout))
 }
 
-/// Answers with the sampling rates by service, as the trace-agent does.
-///
-/// shortcut: the rates are always empty; APMSP-4286 reports the sampler's rates.
-fn rate_by_service(status: StatusCode) -> Response {
-    (
-        status,
-        [(CONTENT_TYPE, HeaderValue::from_static("application/json"))],
-        RATE_BY_SERVICE_BODY,
-    )
-        .into_response()
-}
-
-/// Answers with an error, as the trace-agent does.
+/// Answers with an error, as Go's `http.Error` does.
 fn http_error(status: StatusCode, message: &str) -> Response {
     (
         status,
@@ -493,6 +518,7 @@ mod tests {
     use saluki_io::net::ProcessCredentials;
 
     use super::*;
+    use crate::common::traces::rates::RateByService;
 
     const LIMIT: u64 = 4096;
 
@@ -504,6 +530,7 @@ mod tests {
             receiver_timeout: Duration::from_secs(5),
             reject_with_too_many_requests: false,
             histogram: HistogramConfiguration::default(),
+            service_rates: ServiceRates::default(),
         }
     }
 
@@ -580,7 +607,7 @@ mod tests {
 
         assert_eq!(status, StatusCode::OK);
         assert_eq!(headers[CONTENT_TYPE], "application/json");
-        assert_eq!(body, RATE_BY_SERVICE_BODY);
+        assert_eq!(body, "{\"rate_by_service\":{}}\n");
         let traces = traces.try_recv().expect("the traces should be handed over");
         assert_eq!(traces.len(), 2);
         assert!(Arc::ptr_eq(
@@ -591,6 +618,111 @@ mod tests {
         assert_eq!(receiver.endpoint_version, "v1.0");
         // Resolved from the first span, as in the trace-agent.
         assert_eq!(receiver.process_tags, "entrypoint.name:app");
+    }
+
+    /// Returns an intake whose sampler has published one rate, and that rate's version.
+    fn intake_with_rates(config: TraceIntakeConfiguration) -> (TraceIntake, mpsc::Receiver<Vec<Trace>>, String) {
+        let service_rates = ServiceRates::default();
+        RateByService::new(service_rates.clone()).set_all([("service:web,env:prod".to_string(), 0.5)]);
+        let version = service_rates.load().version.to_str().unwrap().to_string();
+        let (intake, traces) = intake(TraceIntakeConfiguration {
+            service_rates,
+            ..config
+        });
+        (intake, traces, version)
+    }
+
+    const PUBLISHED_RATES_BODY: &str = "{\"rate_by_service\":{\"service:web,env:prod\":0.5}}\n";
+
+    #[tokio::test]
+    async fn an_accepted_payload_gets_the_rates_unless_the_client_has_their_version() {
+        let (intake, _traces, version) = intake_with_rates(config());
+        let cases = [
+            (None, None, PUBLISHED_RATES_BODY),
+            (Some(""), None, PUBLISHED_RATES_BODY),
+            (Some("stale"), Some(version.as_str()), PUBLISHED_RATES_BODY),
+            (Some(version.as_str()), Some(version.as_str()), "{}"),
+        ];
+        for (sent, echoed, expected_body) in cases {
+            let headers: Vec<_> = sent.map(|v| ("Datadog-Rates-Payload-Version", v)).into_iter().collect();
+
+            let (status, response_headers, body) = send(&intake, sized_request(&headers, v1_payload(None, 1))).await;
+
+            assert_eq!(status, StatusCode::OK, "sent {sent:?}");
+            assert_eq!(response_headers[CONTENT_TYPE], "application/json");
+            assert_eq!(
+                response_headers
+                    .get(&RATES_PAYLOAD_VERSION_HEADER)
+                    .map(|v| v.to_str().unwrap()),
+                echoed,
+                "sent {sent:?}"
+            );
+            assert_eq!(body, expected_body, "sent {sent:?}");
+        }
+    }
+
+    // `TestHTTPRateByService` in `responses_test.go`.
+    #[tokio::test]
+    async fn a_client_version_gets_the_empty_version_before_the_first_rates() {
+        let (intake, _traces) = intake(config());
+        let headers = [("Datadog-Rates-Payload-Version", "abc")];
+
+        let (_, response_headers, body) = send(&intake, sized_request(&headers, v1_payload(None, 1))).await;
+
+        assert_eq!(response_headers[&RATES_PAYLOAD_VERSION_HEADER], "");
+        assert_eq!(body, "{\"rate_by_service\":{}}\n");
+    }
+
+    #[tokio::test]
+    async fn a_refused_payload_gets_the_rates_without_their_version() {
+        let (intake, _traces, version) = intake_with_rates(config());
+        let _busy = intake.decoders.clone().acquire_owned().await.unwrap();
+
+        for (sent, expected_body) in [("stale", PUBLISHED_RATES_BODY), (version.as_str(), "{}")] {
+            let headers = [("Datadog-Rates-Payload-Version", sent)];
+            let (status, response_headers, body) = send(&intake, sized_request(&headers, v1_payload(None, 1))).await;
+
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(response_headers[CONTENT_TYPE], "application/json");
+            assert!(!response_headers.contains_key(&RATES_PAYLOAD_VERSION_HEADER));
+            assert_eq!(body, expected_body, "sent {sent:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_size_of_the_rates_sent_is_reported_by_endpoint() {
+        let (intake, _traces, version) = intake_with_rates(config());
+        send(&intake, sized_request(&[], v1_payload(None, 1))).await;
+        let headers = [("Datadog-Rates-Payload-Version", version.as_str())];
+        send(&intake, sized_request(&headers, v1_payload(None, 1))).await;
+
+        let events = intake.telemetry.take_window_events();
+        let find = |name: &str| {
+            events
+                .iter()
+                .filter_map(|event| event.try_as_metric())
+                .find(|metric| metric.context().name() == name)
+                .unwrap_or_else(|| panic!("{name} is missing"))
+        };
+        let max = find("datadog.trace_agent.receiver.rate_response_bytes.max");
+        let tags: Vec<_> = max
+            .context()
+            .tags()
+            .into_iter()
+            .map(|tag| tag.as_str().to_string())
+            .collect();
+        assert_eq!(
+            tags,
+            [
+                "endpoint_version:v1.0",
+                "connection_type:unknown",
+                "service:checkout-service",
+                "endpoint:traces_v1.0"
+            ]
+        );
+        assert_eq!(*max.values(), MetricValues::gauge(PUBLISHED_RATES_BODY.len() as f64));
+        let count = find("datadog.trace_agent.receiver.rate_response_bytes.count");
+        assert_eq!(*count.values(), MetricValues::rate(2.0, Duration::from_secs(1)));
     }
 
     /// Returns the value of each counter the intake reported, by name, with its tags in order.
@@ -830,7 +962,7 @@ mod tests {
 
             assert_eq!(status, *expected, "feature 429: {feature_429}, headers: {headers:?}");
             assert_eq!(response_headers[CONTENT_TYPE], "application/json");
-            assert_eq!(body, RATE_BY_SERVICE_BODY);
+            assert_eq!(body, "{\"rate_by_service\":{}}\n");
             assert!(traces.try_recv().is_err(), "a refused payload is dropped");
             let counters = counters(&intake);
             assert_eq!(

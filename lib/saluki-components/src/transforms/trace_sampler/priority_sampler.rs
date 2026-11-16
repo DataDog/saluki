@@ -1,4 +1,8 @@
 //! Priority sampler for trace sampling based on service rates.
+//!
+//! Mirrors the trace-agent's `PrioritySampler` (`pkg/trace/sampler/prioritysampler.go`): it keeps the decision the
+//! tracer made, and feeds the auto-priority traces into a TPS feedback loop whose rates, by service and environment,
+//! it publishes to the [`ServiceRates`] the trace intake answers tracers with.
 #![allow(dead_code)]
 use std::time::SystemTime;
 
@@ -14,27 +18,32 @@ use super::{
     signature::{ServiceSignature, Signature},
     PRIORITY_AUTO_DROP, PRIORITY_AUTO_KEEP, PRIORITY_USER_KEEP,
 };
-use crate::common::datadog::get_trace_env;
+use crate::common::traces::rates::{RateByService, ServiceRates};
+use crate::common::datadog::{as_double_value, get_trace_env};
 
 const DEPRECATED_RATE_KEY: &str = "_sampling_priority_rate_v1";
+const AGENT_RATE_KEY: &str = "_dd.agent_psr";
+const RULE_RATE_KEY: &str = "_dd.rule_psr";
 
 /// Priority sampler for traces with sampling priority set by the tracer.
 pub struct PrioritySampler {
     agent_env: MetaString,
     sampler: Sampler,
     catalog: ServiceKeyCatalog,
+    rate_by_service: RateByService,
 }
 // the logic for this class is taken from here: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/sampler/prioritysampler.go#L39
-// note that any logic involving tracers were removed because ADP does not currently support tracers.
 impl PrioritySampler {
     /// Creates a new priority sampler with the given configuration.
     pub(super) fn new(
         agent_env: MetaString, extra_sample_rate: f64, target_tps: f64, max_catalog_entries: usize,
+        service_rates: ServiceRates,
     ) -> Self {
         PrioritySampler {
             agent_env,
             sampler: Sampler::new(extra_sample_rate, target_tps),
             catalog: ServiceKeyCatalog::with_max_entries(max_catalog_entries),
+            rate_by_service: RateByService::new(service_rates),
         }
     }
 
@@ -82,7 +91,9 @@ impl PrioritySampler {
         let svc_sig = ServiceSignature::new(service_name, sampler_env);
         let signature = self.catalog.register(svc_sig);
 
-        let _ = self.sampler.count_weighted_sig(now, &signature, weight);
+        if self.sampler.count_weighted_sig(now, &signature, weight) {
+            self.update_rates();
+        }
 
         if sampled {
             self.apply_rate(trace, root_idx, &signature);
@@ -91,13 +102,29 @@ impl PrioritySampler {
         sampled
     }
 
+    /// Publishes the rates of every cataloged service, as the trace-agent's `updateRates`.
+    fn update_rates(&mut self) {
+        let (rates, default_rate) = self.sampler.get_all_signature_sample_rates();
+        let by_service = self.catalog.rates_by_service(&self.agent_env, &rates, default_rate);
+        self.rate_by_service.set_all(
+            by_service
+                .into_iter()
+                .map(|(service, rate)| (service.to_string(), rate)),
+        );
+    }
+
     fn apply_rate(&self, trace: &mut Trace, root_idx: usize, signature: &Signature) -> f64 {
         let root = &mut trace.spans_mut()[root_idx];
         if root.parent_id() != 0 {
             return 1.0;
         }
 
-        // ignore the tracer specific logic
+        // A rate the tracer already applied wins, as in the trace-agent's `applyRateV1`.
+        for key in [AGENT_RATE_KEY, RULE_RATE_KEY, DEPRECATED_RATE_KEY] {
+            if let Some(rate) = root.attributes.get(key).and_then(as_double_value) {
+                return rate;
+            }
+        }
 
         let rate = self.sampler.get_signature_sample_rate(signature);
         root.attributes.insert(
@@ -146,7 +173,13 @@ mod tests {
     const PRIORITY_USER_DROP: i32 = -1;
 
     fn get_test_priority_sampler(target_tps: f64) -> PrioritySampler {
-        PrioritySampler::new(MetaString::from("agent-env"), 1.0, target_tps, 5000)
+        PrioritySampler::new(
+            MetaString::from("agent-env"),
+            1.0,
+            target_tps,
+            5000,
+            ServiceRates::default(),
+        )
     }
 
     fn get_test_trace_with_service(service: &str, trace_id: u64) -> (Trace, usize) {
@@ -197,6 +230,70 @@ mod tests {
                 "priority {} should sample={}",
                 priority, expected_sampled
             );
+        }
+    }
+
+    fn published_body(rates: &ServiceRates) -> String {
+        String::from_utf8(rates.load().body.to_vec()).unwrap()
+    }
+
+    // `updateRates` in `prioritysampler.go`: rates are published each time the sliding window moves.
+    #[test]
+    fn rates_are_published_when_the_window_moves() {
+        let rates = ServiceRates::default();
+        let mut sampler = PrioritySampler::new(MetaString::from("agent-env"), 1.0, 10.0, 5000, rates.clone());
+        let start = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+
+        let (mut trace, root_idx) = get_test_trace_with_service("web", 1);
+        sampler.sample(start, &mut trace, root_idx, PRIORITY_AUTO_KEEP, 0.0);
+        // As in the trace-agent, the window first moves before anything is counted, so only the default is known.
+        let first = rates.load().version.clone();
+        assert_ne!(first, "");
+        assert_eq!(published_body(&rates), "{\"rate_by_service\":{\"service:,env:\":1}}\n");
+
+        let (mut trace, root_idx) = get_test_trace_with_service("web", 2);
+        sampler.sample(start + BUCKET_DURATION, &mut trace, root_idx, PRIORITY_AUTO_KEEP, 0.0);
+        assert_ne!(rates.load().version, first);
+        // The service runs in the agent's environment, so it is also published under an empty one.
+        assert_eq!(
+            published_body(&rates),
+            "{\"rate_by_service\":{\"service:,env:\":1,\"service:web,env:\":1,\"service:web,env:agent-env\":1}}\n"
+        );
+    }
+
+    #[test]
+    fn manual_priorities_are_not_published() {
+        let rates = ServiceRates::default();
+        let mut sampler = PrioritySampler::new(MetaString::from("agent-env"), 1.0, 10.0, 5000, rates.clone());
+        let start = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        for (i, priority) in [PRIORITY_USER_KEEP, PRIORITY_USER_DROP].into_iter().enumerate() {
+            let (mut trace, root_idx) = get_test_trace_with_service("manual", i as u64);
+            sampler.sample(start + BUCKET_DURATION * i as u32, &mut trace, root_idx, priority, 0.0);
+        }
+        assert!(
+            sampler
+                .catalog
+                .rates_by_service("agent-env", &FastHashMap::default(), 0.0)
+                .len()
+                == 1
+        );
+    }
+
+    // `applyRateV1` in `prioritysampler.go`.
+    #[test]
+    fn a_rate_the_tracer_applied_is_kept() {
+        for key in [AGENT_RATE_KEY, RULE_RATE_KEY, DEPRECATED_RATE_KEY] {
+            let mut sampler = get_test_priority_sampler(0.0);
+            let (mut trace, root_idx) = get_test_trace_with_service("web", 1);
+            trace.spans_mut()[root_idx]
+                .attributes
+                .insert(MetaString::from(key), AttributeValue::Float(0.25));
+
+            sampler.sample(SystemTime::now(), &mut trace, root_idx, PRIORITY_AUTO_KEEP, 0.0);
+
+            let attributes = &trace.spans()[root_idx].attributes;
+            let expected_deprecated = (key == DEPRECATED_RATE_KEY).then_some(&AttributeValue::Float(0.25));
+            assert_eq!(attributes.get(DEPRECATED_RATE_KEY), expected_deprecated, "{key}");
         }
     }
 

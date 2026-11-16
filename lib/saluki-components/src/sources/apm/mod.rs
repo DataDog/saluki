@@ -841,6 +841,7 @@ mod tests {
                     receiver_timeout: Duration::from_secs(5),
                     reject_with_too_many_requests: false,
                     histogram: crate::transforms::HistogramConfiguration::default(),
+                    service_rates: crate::transforms::ServiceRates::default(),
                 },
                 traces_tx,
             )),
@@ -1447,6 +1448,7 @@ mod tests {
             receiver_timeout: Duration::from_secs(5),
             reject_with_too_many_requests: false,
             histogram: crate::transforms::HistogramConfiguration::default(),
+            service_rates: crate::transforms::ServiceRates::default(),
         });
         // A full output blocks the dispatcher, so that accepted payloads wait in its queue.
         let (control, mut outputs) = TestComponentDriver::options()
@@ -1518,6 +1520,7 @@ mod tests {
             receiver_timeout: Duration::from_secs(1),
             reject_with_too_many_requests: false,
             histogram: crate::transforms::HistogramConfiguration::default(),
+            service_rates: crate::transforms::ServiceRates::default(),
         });
         assert!(has_metrics(&config));
     }

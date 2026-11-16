@@ -53,6 +53,14 @@ impl ServiceSignature {
         }
     }
 
+    pub(super) fn name(&self) -> &MetaString {
+        &self.name
+    }
+
+    pub(super) fn env(&self) -> &str {
+        &self.env
+    }
+
     /// Computes FNV-1a hash matching Go's `ServiceSignature.Hash()`.
     ///
     /// The hash is computed over: `name + "," + env`

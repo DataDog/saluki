@@ -11,7 +11,7 @@ use saluki_components::{
     transforms::{
         ApmStatsTransformConfiguration, CreditCardObfuscationConfig, EsObfuscationConfig, HttpObfuscationConfig,
         MemcachedObfuscationConfig, MongoObfuscationConfig, ObfuscationConfig, OpenSearchObfuscationConfig,
-        RedisObfuscationConfig, ReplaceRule, SqlObfuscationConfig, TraceSamplerConfiguration,
+        RedisObfuscationConfig, ReplaceRule, ServiceRates, SqlObfuscationConfig, TraceSamplerConfiguration,
         TraceTagReplacerConfiguration, ValkeyObfuscationConfig,
     },
 };
@@ -42,6 +42,7 @@ pub(crate) fn trace_configuration(
 /// Builds the trace sampler settings.
 pub(crate) fn trace_sampler_configuration(
     traces: &traces::Domain, agent_env: AgentEnv, remote_sampling: TraceSamplingSubscription,
+    service_rates: ServiceRates,
 ) -> TraceSamplerConfiguration {
     TraceSamplerConfiguration {
         probabilistic_sampler_enabled: traces.probabilistic_sampler.enabled,
@@ -65,6 +66,7 @@ pub(crate) fn trace_sampler_configuration(
         analyzed_rate_by_service: traces.analyzed_rate_by_service.clone(),
         max_events_per_second: traces.max_events_per_second,
         remote_sampling,
+        service_rates,
     }
 }
 
@@ -248,7 +250,12 @@ mod tests {
 
     #[test]
     fn trace_sampler_configuration_comes_from_resolved_configuration() {
-        let config = trace_sampler_configuration(&distinct_traces(), agent_env(), TraceSamplingSubscription::default());
+        let config = trace_sampler_configuration(
+            &distinct_traces(),
+            agent_env(),
+            TraceSamplingSubscription::default(),
+            ServiceRates::default(),
+        );
 
         assert!(config.probabilistic_sampler_enabled);
         assert_eq!(13, config.probabilistic_hash_seed);
@@ -286,7 +293,12 @@ mod tests {
             features: vec![traces::ApmFeature::Other("table_names".to_owned())],
             ..Default::default()
         };
-        let config = trace_sampler_configuration(&traces, agent_env(), TraceSamplingSubscription::default());
+        let config = trace_sampler_configuration(
+            &traces,
+            agent_env(),
+            TraceSamplingSubscription::default(),
+            ServiceRates::default(),
+        );
 
         assert!(!config.probabilistic_full_trace_id);
     }
