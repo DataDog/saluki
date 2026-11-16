@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use saluki_error::GenericError;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use stringtheory::MetaString;
 use tokio::fs;
 use tokio::sync::mpsc::{self, Receiver, Sender};
@@ -81,9 +81,22 @@ impl LocalAutodiscoveryProvider {
 
 #[derive(Debug, Deserialize)]
 struct LocalCheckConfig {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     init_config: BTreeMap<String, serde_json::Value>,
-    instances: Vec<BTreeMap<String, serde_json::Value>>,
+    #[serde(deserialize_with = "null_as_default")]
+    instances: Vec<Option<BTreeMap<String, serde_json::Value>>>,
+}
+
+/// Deserializes YAML null as the default value.
+///
+/// Check configurations commonly leave a value blank, as in `init_config:` or a bare `-` instance, and the Agent reads
+/// those as empty. serde-saphyr rejects null for maps and sequences, so they're read as `Option` instead.
+fn null_as_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 /// Parse a YAML file into a Config object.
@@ -107,7 +120,7 @@ async fn parse_config_file(path: &PathBuf, check_name: &str) -> Result<(String, 
         .into_iter()
         .map(|instance| {
             let mut result = BTreeMap::new();
-            for (key, value) in instance {
+            for (key, value) in instance.unwrap_or_default() {
                 result.insert(key.into(), value);
             }
             Data { value: result }
@@ -385,6 +398,24 @@ mod tests {
 
         // Parsing a config without `init_config` yields an empty hash map for that field.
         assert!(config.init_config.value.is_empty());
+    }
+
+    #[test]
+    fn test_null_values_read_as_empty() {
+        let cases = [
+            ("init_config:\ninstances:\n  -\n", 1),
+            ("init_config: ~\ninstances: [null, {}]\n", 2),
+            ("init_config: null\ninstances:\n", 0),
+        ];
+
+        for (yaml, instance_count) in cases {
+            let config: LocalCheckConfig = crate::autodiscovery::yaml_from_str(yaml).unwrap();
+            assert!(config.init_config.is_empty(), "{yaml:?}");
+            assert_eq!(config.instances.len(), instance_count, "{yaml:?}");
+            assert!(config.instances.into_iter().all(|i| i.unwrap_or_default().is_empty()));
+        }
+
+        assert!(crate::autodiscovery::yaml_from_str::<LocalCheckConfig>("init_config:\n").is_err());
     }
 
     #[tokio::test]
