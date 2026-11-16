@@ -55,7 +55,6 @@
 //!   a collection header that declares more entries than bytes remain.
 //!
 //! Unknown fields are skipped with a nesting limit of 64, where the reference's `msgp.Skip` allows 100,000.
-//! `meta_struct`, `span_links` and `span_events` are skipped too, until they are decoded.
 //!
 //! # Performance
 //!
@@ -65,7 +64,9 @@
 use std::sync::Arc;
 
 use saluki_common::collections::FastHashMap;
-use saluki_core::data_model::event::trace::{AttributeValue, PayloadFields, Span, Trace, TraceIngestInfo};
+use saluki_core::data_model::event::trace::{
+    AttributeValue, PayloadFields, Span, SpanEvent, SpanLink, Trace, TraceIngestInfo,
+};
 use stringtheory::MetaString;
 
 use super::error::DecodeError;
@@ -90,6 +91,12 @@ const MIN_BYTES_PER_SPAN: usize = 21;
 
 /// A plausible minimum wire size for a trace chunk, used only to bound pre-allocations.
 const MIN_BYTES_PER_CHUNK: usize = 1;
+
+/// A plausible minimum wire size for a span link or span event, used only to bound pre-allocations.
+const MIN_BYTES_PER_LINK_OR_EVENT: usize = 8;
+
+/// Maximum span event attribute nesting depth, the reference's `maxAnyValueDepth`.
+const MAX_ANY_VALUE_DEPTH: usize = 64;
 
 const TAG_CONVERTED_V1: MetaString = MetaString::from_static("_dd.convertedv1");
 const CONVERTED_V1_VALUE: MetaString = MetaString::from_static("v04");
@@ -288,6 +295,8 @@ fn decode_span<'a>(
     let mut duration = 0;
     let mut error = false;
     let mut attributes = FastHashMap::default();
+    let mut links = Vec::new();
+    let mut events = Vec::new();
     let mut fields = PromotedSpanFields::default();
 
     let num_fields = read::v0_read_map_len(r, "span")?;
@@ -317,6 +326,9 @@ fn decode_span<'a>(
             b"error" => error = read::v0_parse_i32(r, "span error")? != 0,
             b"meta" => decode_meta(r, strings, &mut attributes, &mut fields, promoted)?,
             b"metrics" => decode_metrics(r, strings, &mut attributes, promoted)?,
+            b"meta_struct" => decode_meta_struct(r, strings, &mut attributes)?,
+            b"span_links" => decode_span_links(r, strings, &mut links)?,
+            b"span_events" => decode_span_events(r, strings, &mut events)?,
             _ => read::skip_value(r, "span field")?,
         }
     }
@@ -334,6 +346,8 @@ fn decode_span<'a>(
         i32::from(error),
     )
     .with_attributes(attributes)
+    .with_span_links(links)
+    .with_span_events(events)
     .with_env(fields.env)
     .with_version(fields.version)
     .with_component(fields.component)
@@ -436,6 +450,198 @@ fn decode_metrics<'a>(
         attributes.insert(strings.get(key_bytes), AttributeValue::Float(value));
     }
     Ok(())
+}
+
+/// Decodes a span's `meta_struct` map, whose values are opaque `bin` blobs, into its attributes. Unlike `meta` and
+/// `metrics`, a `nil` map is an error, as it is in the reference.
+fn decode_meta_struct<'a>(
+    r: &mut &'a [u8], strings: &mut Strings<'a>, attributes: &mut FastHashMap<MetaString, AttributeValue>,
+) -> Result<(), DecodeError> {
+    let len = read::v0_read_map_len(r, "span meta_struct")?;
+    if len == 0 {
+        return Ok(());
+    }
+    read::v0_check_slab_count(len, r, "span meta_struct")?;
+    attributes.reserve(len as usize);
+    for _ in 0..len {
+        let key = strings.read(r, "span meta_struct key")?;
+        let value = read::read_bytes(r, "span meta_struct value")?;
+        attributes.insert(key, AttributeValue::Bytes(value));
+    }
+    Ok(())
+}
+
+/// Decodes a span's `span_links` list, dropping `nil` entries. A later `span_links` field replaces an earlier one.
+fn decode_span_links<'a>(
+    r: &mut &'a [u8], strings: &mut Strings<'a>, links: &mut Vec<SpanLink>,
+) -> Result<(), DecodeError> {
+    let len = read::v0_read_array_len(r, "span links")?;
+    links.clear();
+    links.reserve((len as usize).min(r.len() / MIN_BYTES_PER_LINK_OR_EVENT));
+    for _ in 0..len {
+        if read::peek_is_nil(r) {
+            read::skip_nil(r);
+            continue;
+        }
+        links.push(decode_span_link(r, strings)?);
+    }
+    Ok(())
+}
+
+/// Decodes one span link, mirroring `SpanLink.UnmarshalMsgConverted`.
+fn decode_span_link<'a>(r: &mut &'a [u8], strings: &mut Strings<'a>) -> Result<SpanLink, DecodeError> {
+    let mut trace_id_low = 0;
+    let mut trace_id_high = 0;
+    let mut span_id = 0;
+    let mut attributes = FastHashMap::default();
+    let mut tracestate = MetaString::empty();
+    let mut flags = 0;
+
+    let num_fields = read::v0_read_map_len(r, "span link")?;
+    for _ in 0..num_fields {
+        match read::v0_read_map_key(r, "span link field name")? {
+            b"trace_id" => trace_id_low = read::v0_parse_u64(r, "span link trace_id")?,
+            b"trace_id_high" => trace_id_high = read::v0_read_u64(r, "span link trace_id_high")?,
+            b"span_id" => span_id = read::v0_parse_u64(r, "span link span_id")?,
+            b"attributes" => {
+                let len = read::v0_read_map_len(r, "span link attributes")?;
+                read::v0_check_slab_count(len, r, "span link attributes")?;
+                attributes.reserve(len as usize);
+                for _ in 0..len {
+                    let key = strings.read(r, "span link attribute key")?;
+                    let value = strings.read(r, "span link attribute value")?;
+                    attributes.insert(key, AttributeValue::String(value));
+                }
+            }
+            b"tracestate" => tracestate = strings.read(r, "span link tracestate")?,
+            b"flags" => flags = read::v0_read_u32(r, "span link flags")?,
+            _ => read::skip_value(r, "span link field")?,
+        }
+    }
+
+    Ok(SpanLink::new(trace_id_low, span_id)
+        .with_trace_id_high(trace_id_high)
+        .with_attributes(attributes)
+        .with_tracestate(tracestate)
+        .with_flags(flags))
+}
+
+/// Decodes a span's `span_events` list, dropping `nil` entries. A later `span_events` field replaces an earlier one.
+fn decode_span_events<'a>(
+    r: &mut &'a [u8], strings: &mut Strings<'a>, events: &mut Vec<SpanEvent>,
+) -> Result<(), DecodeError> {
+    let len = read::v0_read_array_len(r, "span events")?;
+    events.clear();
+    events.reserve((len as usize).min(r.len() / MIN_BYTES_PER_LINK_OR_EVENT));
+    for _ in 0..len {
+        if read::peek_is_nil(r) {
+            read::skip_nil(r);
+            continue;
+        }
+        events.push(decode_span_event(r, strings)?);
+    }
+    Ok(())
+}
+
+/// Decodes one span event, mirroring `SpanEvent.UnmarshalMsgConverted`.
+fn decode_span_event<'a>(r: &mut &'a [u8], strings: &mut Strings<'a>) -> Result<SpanEvent, DecodeError> {
+    let mut time = 0;
+    let mut name = MetaString::empty();
+    let mut attributes = FastHashMap::default();
+
+    let num_fields = read::v0_read_map_len(r, "span event")?;
+    for _ in 0..num_fields {
+        match read::v0_read_map_key(r, "span event field name")? {
+            b"time_unix_nano" => time = read::v0_read_u64(r, "span event time_unix_nano")?,
+            b"name" => name = strings.read(r, "span event name")?,
+            b"attributes" => {
+                let len = read::v0_read_map_len(r, "span event attributes")?;
+                read::v0_check_slab_count(len, r, "span event attributes")?;
+                attributes.reserve(len as usize);
+                for _ in 0..len {
+                    let key = strings.read(r, "span event attribute key")?;
+                    if read::peek_is_nil(r) {
+                        read::skip_nil(r);
+                        continue;
+                    }
+                    if let Some(value) = decode_any_value(r, strings, 0)? {
+                        attributes.insert(key, value);
+                    }
+                }
+            }
+            _ => read::skip_value(r, "span event field")?,
+        }
+    }
+
+    Ok(SpanEvent::new(time, name).with_attributes(attributes))
+}
+
+/// Decodes a span event attribute value, a map holding a `type` and the matching `*_value` field, mirroring
+/// `AnyValue.UnmarshalMsgConverted`.
+///
+/// Returns `None` for an unknown type. The reference keeps such a value as an empty `AnyValue`, which has no
+/// equivalent here.
+fn decode_any_value<'a>(
+    r: &mut &'a [u8], strings: &mut Strings<'a>, depth: usize,
+) -> Result<Option<AttributeValue>, DecodeError> {
+    if depth > MAX_ANY_VALUE_DEPTH {
+        return Err(DecodeError::DepthExceeded {
+            max: MAX_ANY_VALUE_DEPTH,
+        });
+    }
+
+    let mut value_type = 0;
+    let mut string_value = MetaString::empty();
+    let mut bool_value = false;
+    let mut int_value = 0;
+    let mut double_value = 0.0;
+    let mut array_value = Vec::new();
+
+    let num_fields = read::v0_read_map_len(r, "span event attribute")?;
+    for _ in 0..num_fields {
+        match read::v0_read_map_key(r, "span event attribute field name")? {
+            b"type" => value_type = read::v0_parse_i32(r, "span event attribute type")?,
+            b"string_value" => string_value = strings.read(r, "span event attribute string_value")?,
+            b"bool_value" => bool_value = read::read_bool(r, "span event attribute bool_value")?,
+            b"int_value" => int_value = read::v0_read_i64(r, "span event attribute int_value")?,
+            b"double_value" => double_value = read::v0_read_f64(r, "span event attribute double_value")?,
+            b"array_value" => {
+                array_value.clear();
+                if read::peek_is_nil(r) {
+                    read::skip_nil(r);
+                    continue;
+                }
+                let num_array_fields = read::v0_read_map_len(r, "span event attribute array_value")?;
+                for _ in 0..num_array_fields {
+                    if read::v0_read_map_key(r, "span event attribute array_value field name")? != b"values" {
+                        read::skip_value(r, "span event attribute array_value field")?;
+                        continue;
+                    }
+                    let len = read::v0_read_array_len(r, "span event attribute array values")?;
+                    array_value.clear();
+                    for _ in 0..len {
+                        if read::peek_is_nil(r) {
+                            read::skip_nil(r);
+                            continue;
+                        }
+                        if let Some(value) = decode_any_value(r, strings, depth + 1)? {
+                            array_value.push(value);
+                        }
+                    }
+                }
+            }
+            _ => read::skip_value(r, "span event attribute field")?,
+        }
+    }
+
+    Ok(match value_type {
+        0 => Some(AttributeValue::String(string_value)),
+        1 => Some(AttributeValue::Bool(bool_value)),
+        2 => Some(AttributeValue::Int(int_value)),
+        3 => Some(AttributeValue::Float(double_value)),
+        4 => Some(AttributeValue::Array(array_value)),
+        _ => None,
+    })
 }
 
 /// Maps a `span.kind` value to the span kind, defaulting to internal as the reference does.
