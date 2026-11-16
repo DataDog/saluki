@@ -20,8 +20,8 @@
 <a href=#20 id=20 data-nosnippet>20</a>
 <a href=#21 id=21 data-nosnippet>21</a>    <span class="doccomment">/// The unit of the metric values, if known.
 <a href=#22 id=22 data-nosnippet>22</a>    ///
-<a href=#23 id=23 data-nosnippet>23</a>    /// This is set for DogStatsD timing metrics (`ms` type), which carry an implicit unit of `"millisecond"`. For all
-<a href=#24 id=24 data-nosnippet>24</a>    /// other metric types the unit is empty.
+<a href=#23 id=23 data-nosnippet>23</a>    /// The DogStatsD source sets this to `"millisecond"` for timing metrics (`ms` type) when configured to. Otherwise,
+<a href=#24 id=24 data-nosnippet>24</a>    /// the unit is empty.
 <a href=#25 id=25 data-nosnippet>25</a>    </span><span class="kw">pub </span>unit: MetaString,
 <a href=#26 id=26 data-nosnippet>26</a>}
 <a href=#27 id=27 data-nosnippet>27</a>
