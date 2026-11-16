@@ -199,7 +199,7 @@ impl ApmStats {
             .unwrap_or("");
 
         for span in trace.spans() {
-            if let Some(stat_span) = self.concentrator.new_stat_span_from_span(span) {
+            if let Some(stat_span) = self.concentrator.new_stat_span_from_span(span, trace.ingest_info()) {
                 self.concentrator
                     .add_span(&stat_span, trace_weight, &payload_key, &infra_tags, origin);
             }
@@ -708,7 +708,12 @@ mod tests {
             Some(meta),
         );
         control
-            .send_event(Event::Trace(Trace::new(vec![span], TraceIngestInfo::Datadog)))
+            .send_event(Event::Trace(Trace::new(
+                vec![span],
+                TraceIngestInfo::Otlp {
+                    receiver_sampling_rate: 1.0,
+                },
+            )))
             .await;
 
         // Closing the input makes the run loop flush and stop.
@@ -909,7 +914,7 @@ mod tests {
         let infra_tags = InfraTags::default();
 
         for span in trace.spans() {
-            if let Some(stat_span) = concentrator.new_stat_span_from_span(span) {
+            if let Some(stat_span) = concentrator.new_stat_span_from_span(span, TraceIngestInfo::Datadog) {
                 concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
             }
         }
@@ -950,7 +955,7 @@ mod tests {
         let infra_tags = InfraTags::default();
 
         for span in trace.spans() {
-            if let Some(stat_span) = concentrator.new_stat_span_from_span(span) {
+            if let Some(stat_span) = concentrator.new_stat_span_from_span(span, TraceIngestInfo::Datadog) {
                 concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
             }
         }
@@ -986,7 +991,7 @@ mod tests {
         let infra_tags = InfraTags::default();
 
         for span in &spans {
-            if let Some(stat_span) = concentrator.new_stat_span_from_span(span) {
+            if let Some(stat_span) = concentrator.new_stat_span_from_span(span, TraceIngestInfo::Datadog) {
                 concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
             }
         }
@@ -1069,7 +1074,12 @@ mod tests {
         let infra_tags = InfraTags::default();
 
         for span in &spans {
-            if let Some(stat_span) = concentrator.new_stat_span_from_span(span) {
+            if let Some(stat_span) = concentrator.new_stat_span_from_span(
+                span,
+                TraceIngestInfo::Otlp {
+                    receiver_sampling_rate: 1.0,
+                },
+            ) {
                 concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
             }
         }
@@ -1122,7 +1132,12 @@ mod tests {
             };
             let infra_tags = InfraTags::default();
 
-            if let Some(stat_span) = concentrator.new_stat_span_from_span(&span) {
+            if let Some(stat_span) = concentrator.new_stat_span_from_span(
+                &span,
+                TraceIngestInfo::Otlp {
+                    receiver_sampling_rate: 1.0,
+                },
+            ) {
                 concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
             }
 
@@ -1136,7 +1151,12 @@ mod tests {
             let client_span = Span::new("myservice", "postgres.query", "SELECT ...", "db", 2, 1, now, 75, 0)
                 .with_attributes(client_attrs);
 
-            if let Some(stat_span) = concentrator.new_stat_span_from_span(&client_span) {
+            if let Some(stat_span) = concentrator.new_stat_span_from_span(
+                &client_span,
+                TraceIngestInfo::Otlp {
+                    receiver_sampling_rate: 1.0,
+                },
+            ) {
                 concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
             }
 
@@ -1167,7 +1187,12 @@ mod tests {
             };
             let infra_tags = InfraTags::default();
 
-            if let Some(stat_span) = concentrator.new_stat_span_from_span(&span) {
+            if let Some(stat_span) = concentrator.new_stat_span_from_span(
+                &span,
+                TraceIngestInfo::Otlp {
+                    receiver_sampling_rate: 1.0,
+                },
+            ) {
                 concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
             }
 
@@ -1181,7 +1206,12 @@ mod tests {
             let client_span = Span::new("myservice", "postgres.query", "SELECT ...", "db", 2, 1, now, 75, 0)
                 .with_attributes(client_attrs);
 
-            if let Some(stat_span) = concentrator.new_stat_span_from_span(&client_span) {
+            if let Some(stat_span) = concentrator.new_stat_span_from_span(
+                &client_span,
+                TraceIngestInfo::Otlp {
+                    receiver_sampling_rate: 1.0,
+                },
+            ) {
                 concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
             }
 
@@ -1230,7 +1260,12 @@ mod tests {
             };
             let infra_tags = InfraTags::default();
 
-            if let Some(stat_span) = concentrator.new_stat_span_from_span(&client_span) {
+            if let Some(stat_span) = concentrator.new_stat_span_from_span(
+                &client_span,
+                TraceIngestInfo::Otlp {
+                    receiver_sampling_rate: 1.0,
+                },
+            ) {
                 concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
             }
 
@@ -1277,7 +1312,12 @@ mod tests {
             };
             let infra_tags = InfraTags::default();
 
-            if let Some(stat_span) = concentrator.new_stat_span_from_span(&client_span) {
+            if let Some(stat_span) = concentrator.new_stat_span_from_span(
+                &client_span,
+                TraceIngestInfo::Otlp {
+                    receiver_sampling_rate: 1.0,
+                },
+            ) {
                 concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
             }
 
@@ -1339,7 +1379,7 @@ mod tests {
             let infra_tags = InfraTags::default();
 
             for span in &spans {
-                if let Some(stat_span) = concentrator.new_stat_span_from_span(span) {
+                if let Some(stat_span) = concentrator.new_stat_span_from_span(span, TraceIngestInfo::Datadog) {
                     concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
                 }
             }
