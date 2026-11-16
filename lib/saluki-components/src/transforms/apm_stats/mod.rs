@@ -283,9 +283,15 @@ impl ApmStats {
         };
         let hostname = tracer_hostname.cloned().unwrap_or_else(|| self.agent_hostname.clone());
 
-        // The root span's `version` attribute takes priority: for OTLP traces it already prefers the span's version
+        // Datadog traces read the version, git commit SHA and language from the tracer payload alone, as
+        // `processedTraceV1` does (agent.go): the `version` and `_dd.git.commit.sha` attributes a v0.x payload's spans
+        // keep are ignored. The container's tags fill in what the payload leaves empty.
+        let is_datadog = trace.ingest_info() == TraceIngestInfo::Datadog;
+
+        // For OTLP traces, the root span's `version` attribute takes priority: it already prefers the span's version
         // over the resource's. The payload's version comes next, then the container's `version` tag.
         let version = root_span
+            .filter(|_| !is_datadog)
             .and_then(|s| {
                 s.attributes
                     .get("version")
@@ -310,22 +316,34 @@ impl ApmStats {
                 .unwrap_or_default()
         };
 
-        // The commit SHA set on the tracer payload wins over the root span's, and both win over the container's tag.
-        let git_commit_sha = trace
-            .attributes
-            .get(TAG_GIT_COMMIT_SHA)
-            .and_then(AttributeValue::as_string)
-            .filter(|s| !s.is_empty())
-            .or_else(|| {
-                root_span.and_then(|s| {
-                    s.attributes
-                        .get(TAG_GIT_COMMIT_SHA)
-                        .and_then(AttributeValue::as_string)
-                        .filter(|s| !s.is_empty())
+        // For OTLP traces, the commit SHA set on the tracer payload wins over the root span's. Datadog traces carry their
+        // tracer payload attributes on the receiver metadata, and a payload SHA that's present wins even when empty, as
+        // in `processedTraceV1` (agent.go). The container's tag comes last.
+        let git_commit_sha = if is_datadog {
+            trace
+                .payload
+                .receiver()
+                .payload_attributes
+                .iter()
+                .find(|(key, _)| key == TAG_GIT_COMMIT_SHA)
+                .and_then(|(_, value)| value.as_string())
+        } else {
+            trace
+                .attributes
+                .get(TAG_GIT_COMMIT_SHA)
+                .and_then(AttributeValue::as_string)
+                .filter(|s| !s.is_empty())
+                .or_else(|| {
+                    root_span.and_then(|s| {
+                        s.attributes
+                            .get(TAG_GIT_COMMIT_SHA)
+                            .and_then(AttributeValue::as_string)
+                            .filter(|s| !s.is_empty())
+                    })
                 })
-            })
-            .cloned()
-            .unwrap_or_else(|| MetaString::from(container_version.git_commit_sha));
+        }
+        .cloned()
+        .unwrap_or_else(|| MetaString::from(container_version.git_commit_sha));
 
         let image_tag = root_span
             .and_then(|s| {
@@ -337,7 +355,7 @@ impl ApmStats {
             .cloned()
             .unwrap_or_else(|| MetaString::from(container_version.image_tag));
 
-        let lang = if !trace.payload.language_name.is_empty() {
+        let lang = if is_datadog || !trace.payload.language_name.is_empty() {
             trace.payload.language_name.clone()
         } else {
             root_span
@@ -1904,7 +1922,10 @@ mod tests {
         );
         let root_span = Span::new("svc", "op", "res", "web", 1, 0, now, 1_000_000, 0).with_attributes(attrs);
 
-        let mut trace = Trace::new(vec![root_span], TraceIngestInfo::Datadog);
+        let otlp = TraceIngestInfo::Otlp {
+            receiver_sampling_rate: 1.0,
+        };
+        let mut trace = Trace::new(vec![root_span], otlp);
         // Simulate OTLP resource extraction: payload.app_version comes from resource attrs only.
         trace.payload.app_version = MetaString::from("resource-v1");
 
@@ -1957,15 +1978,46 @@ mod tests {
     }
 
     #[test]
+    fn datadog_payload_git_commit_sha_wins_over_container_tags_even_when_empty() {
+        let transform = transform_with_workload_provider(None);
+        // `processedTraceV1` (agent.go) lets a payload attribute that's present override the container's SHA, even an
+        // empty one; only an absent attribute falls back to the container's tag.
+        let git_commit_sha = |payload_sha: Option<&str>| {
+            let mut trace = Trace::new(vec![make_test_span("svc", "op", "res")], TraceIngestInfo::Datadog);
+            let mut receiver = ReceiverMetadata::new();
+            receiver.payload_attributes = payload_sha
+                .map(|sha| {
+                    vec![(
+                        MetaString::from(TAG_GIT_COMMIT_SHA),
+                        AttributeValue::String(MetaString::from(sha)),
+                    )]
+                })
+                .unwrap_or_default();
+            trace.payload.receiver = Some(Arc::new(receiver));
+            transform
+                .build_payload_key(&trace, "", CONTAINER_VERSION)
+                .git_commit_sha
+        };
+
+        assert_eq!(git_commit_sha(Some("")), "");
+        assert_eq!(git_commit_sha(None), "container-sha");
+        assert_eq!(git_commit_sha(Some("payload-sha")), "payload-sha");
+    }
+
+    #[test]
     fn trace_version_data_wins_over_container_tags() {
         let transform = transform_with_workload_provider(None);
+        // The span and tracer payload attributes apply to OTLP traces; Datadog traces read the payload alone.
+        let otlp = TraceIngestInfo::Otlp {
+            receiver_sampling_rate: 1.0,
+        };
 
         // The payload version and the root span's image tag and commit SHA win over the container's tags.
         let span = make_test_span("svc", "op", "res").with_attributes(string_attributes(&[
             (TAG_GIT_COMMIT_SHA, "span-sha"),
             ("_dd.image_tag", "span-image"),
         ]));
-        let mut trace = Trace::new(vec![span], TraceIngestInfo::Datadog);
+        let mut trace = Trace::new(vec![span], otlp);
         trace.payload.app_version = MetaString::from("payload-v");
         let key = transform.build_payload_key(&trace, "", CONTAINER_VERSION);
         assert_eq!(key.version, "payload-v");
@@ -1983,7 +2035,7 @@ mod tests {
             (TAG_GIT_COMMIT_SHA, ""),
             ("_dd.image_tag", ""),
         ]));
-        let mut trace = Trace::new(vec![span], TraceIngestInfo::Datadog);
+        let mut trace = Trace::new(vec![span], otlp);
         trace.attributes = Arc::new(string_attributes(&[(TAG_GIT_COMMIT_SHA, "")]));
         let key = transform.build_payload_key(&trace, "", CONTAINER_VERSION);
         assert_eq!(key.version, "container-v");
@@ -2099,6 +2151,45 @@ mod tests {
         );
         let key = transform.build_payload_key(&trace, "", ContainerVersionData::default());
         assert_eq!(key.hostname.as_ref(), "agent-host");
+    }
+
+    #[test]
+    fn datadog_traces_aggregate_under_the_payload_fields_not_the_span_attributes() {
+        let now = now_nanos();
+        let transform = ApmStats {
+            concentrator: SpanConcentrator::new(true, true, &[], Default::default(), now),
+            flush_interval: DEFAULT_FLUSH_INTERVAL,
+            agent_env: MetaString::default(),
+            agent_hostname: MetaString::default(),
+            workload_provider: None,
+            splits: Counter::noop(),
+        };
+        // A v0.4 root span keeps the tags the decoder promoted from it, here from an earlier span than the one the
+        // payload's fields come from.
+        let attrs = FastHashMap::from_iter(
+            [
+                ("version", "root-version"),
+                ("_dd.git.commit.sha", "root-sha"),
+                ("language", "root-language"),
+            ]
+            .map(|(key, value)| (MetaString::from(key), AttributeValue::String(MetaString::from(value)))),
+        );
+        let root_span = Span::new("svc", "op", "res", "web", 1, 0, now, 1_000_000, 0).with_attributes(attrs);
+        let mut trace = Trace::new(vec![root_span], TraceIngestInfo::Datadog);
+        trace.payload.app_version = MetaString::from("payload-version");
+        let mut receiver = ReceiverMetadata::new();
+        receiver.payload_attributes = vec![(
+            MetaString::from("_dd.git.commit.sha"),
+            AttributeValue::String(MetaString::from("payload-sha")),
+        )];
+        trace.payload.receiver = Some(Arc::new(receiver));
+
+        let key = transform.build_payload_key(&trace, "", ContainerVersionData::default());
+
+        assert_eq!(key.version, "payload-version");
+        assert_eq!(key.git_commit_sha, "payload-sha");
+        // No `Datadog-Meta-Lang` header: the language stays empty, as `TracerPayload.LanguageName()` would be.
+        assert_eq!(key.lang, "");
     }
 
     proptest! {
