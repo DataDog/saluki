@@ -8,6 +8,7 @@
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, LazyLock};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use axum::extract::{ConnectInfo, Request as AxumRequest, State};
@@ -66,6 +67,15 @@ const CONTAINER_ID_HEADER: HeaderName = HeaderName::from_static("datadog-contain
 /// Header a tracer sends its origin in (for example, `ci-<container ID>` or `in-<cgroup inode>`), which the trace-agent
 /// prefers over `Datadog-Container-ID`.
 const ENTITY_ID_HEADER: HeaderName = HeaderName::from_static("datadog-entity-id");
+
+/// Delay before the first retry of the org propagation marker fetch, doubled for each later retry.
+const ORG_PROP_MARKER_BASE_RETRY_DELAY: Duration = Duration::from_secs(1);
+
+/// Delay before the first retry of the Agent version fetch.
+const AGENT_VERSION_MIN_RETRY_DELAY: Duration = Duration::from_secs(1);
+
+/// Longest delay between retries of the Agent version fetch.
+const AGENT_VERSION_MAX_RETRY_DELAY: Duration = Duration::from_secs(60);
 
 /// Configuration for the APM relay.
 ///
@@ -382,7 +392,7 @@ impl Relay for ApmRelay {
         let mut agent_version_pending = true;
 
         // As in the trace-agent, the marker is fetched once, with the API key current at each attempt.
-        let org_prop_marker = org_prop_marker.fetch_with_retries(std::time::Duration::from_secs(1));
+        let org_prop_marker = org_prop_marker.fetch_with_retries(ORG_PROP_MARKER_BASE_RETRY_DELAY);
         pin!(org_prop_marker);
         let mut org_prop_marker_pending = true;
 
@@ -429,8 +439,8 @@ async fn fetch_agent_version_with_retry(
     let version = fetch
         .retry(
             ExponentialBuilder::default()
-                .with_min_delay(std::time::Duration::from_secs(1))
-                .with_max_delay(std::time::Duration::from_secs(60))
+                .with_min_delay(AGENT_VERSION_MIN_RETRY_DELAY)
+                .with_max_delay(AGENT_VERSION_MAX_RETRY_DELAY)
                 .without_max_times(),
         )
         .notify(|error, delay| {
