@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use axum::extract::{ConnectInfo, Request as AxumRequest, State};
+use axum::middleware::{from_fn_with_state, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::any;
 use axum::Router;
@@ -496,44 +497,47 @@ impl ApmRelayAPIHandler {
         }
     }
 
-    async fn handle_info(
-        State(RelayState {
-            info,
-            container_tags,
-            metrics,
-            ..
-        }): State<RelayState>,
-        request: AxumRequest,
+    async fn handle_info(State(RelayState { info, .. }): State<RelayState>) -> Response {
+        info.response()
+    }
+
+    async fn handle_services() -> Response {
+        "OK\n".into_response()
+    }
+
+    async fn handle_tracer_flare(
+        State(RelayState { tracer_flare, .. }): State<RelayState>, request: AxumRequest,
+    ) -> Response {
+        tracer_flare.forward(request).await.into_response()
+    }
+
+    /// Counts a request for an endpoint the relay serves itself.
+    async fn count_served_locally(
+        State(RelayState { metrics, .. }): State<RelayState>, request: AxumRequest, next: Next,
     ) -> Response {
         metrics.requests_served_locally_total().increment(1);
+        next.run(request).await
+    }
+
+    /// Sets `Datadog-Agent-State` and `Datadog-Agent-Version` on a response the relay served itself.
+    async fn set_agent_headers(
+        State(RelayState { info, .. }): State<RelayState>, request: AxumRequest, next: Next,
+    ) -> Response {
+        let mut response = next.run(request).await;
+        info.set_headers(response.headers_mut());
+        response
+    }
+
+    /// Sets `Datadog-Container-Tags-Hash` to the hash of the tags of the container of the tracer that sent `request`.
+    async fn add_container_tags_hash(
+        State(RelayState { container_tags, .. }): State<RelayState>, request: AxumRequest, next: Next,
+    ) -> Response {
         let hash = container_tags.header_value(
             request.headers(),
             request.extensions().get::<ConnectInfo<ConnectionAddress>>(),
         );
-        let mut response = info.response();
+        let mut response = next.run(request).await;
         response.headers_mut().insert(CONTAINER_TAGS_HASH_HEADER, hash);
-        response
-    }
-
-    async fn handle_services(State(RelayState { info, metrics, .. }): State<RelayState>) -> Response {
-        metrics.requests_served_locally_total().increment(1);
-        let mut response = "OK\n".into_response();
-        info.set_headers(response.headers_mut());
-        response
-    }
-
-    async fn handle_tracer_flare(
-        State(RelayState {
-            tracer_flare,
-            info,
-            metrics,
-            ..
-        }): State<RelayState>,
-        request: AxumRequest,
-    ) -> Response {
-        metrics.requests_served_locally_total().increment(1);
-        let mut response = tracer_flare.forward(request).await.into_response();
-        info.set_headers(response.headers_mut());
         response
     }
 }
@@ -578,15 +582,27 @@ impl APIHandler for ApmRelayAPIHandler {
     }
 
     /// Forwards requests for endpoints not handled here to the trace-agent.
+    ///
+    /// As in the trace-agent, only `/info` carries `Datadog-Container-Tags-Hash`, and every other endpoint served here
+    /// carries `Datadog-Agent-State` and `Datadog-Agent-Version` instead.
     fn generate_routes(&self) -> Router<Self::State> {
-        Router::new()
-            .route("/info", any(Self::handle_info))
+        let state = &self.state;
+        let with_agent_headers = Router::new()
             .route("/services", any(Self::handle_services))
             .route("/v0.1/services", any(Self::handle_services))
             .route("/v0.2/services", any(Self::handle_services))
             .route("/v0.3/services", any(Self::handle_services))
             .route("/v0.4/services", any(Self::handle_services))
             .route("/tracer_flare/v1", any(Self::handle_tracer_flare))
+            .route_layer(from_fn_with_state(state.clone(), Self::set_agent_headers));
+
+        Router::new()
+            .route(
+                "/info",
+                any(Self::handle_info).layer(from_fn_with_state(state.clone(), Self::add_container_tags_hash)),
+            )
+            .merge(with_agent_headers)
+            .route_layer(from_fn_with_state(state.clone(), Self::count_served_locally))
             .fallback(Self::proxy_request)
     }
 }
@@ -889,9 +905,10 @@ mod tests {
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         assert!(!response.headers().contains_key(info::AGENT_STATE_HEADER));
 
-        // An endpoint the relay serves itself carries them too.
+        // An endpoint the relay serves itself carries them too, but only `/info` carries the container tags hash.
         let response = send(&router, "PUT", "/v0.4/services").await;
         assert_eq!(response.headers()[info::AGENT_STATE_HEADER], state.as_str());
+        assert!(!response.headers().contains_key(CONTAINER_TAGS_HASH_HEADER));
 
         // Once the Agent version is known, the payload and the headers follow it.
         info.set_agent_version(RunningAgentVersion {
