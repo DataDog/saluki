@@ -6,33 +6,11 @@ Apply these rules to files under `lib/saluki-env`. This crate reads cgroups, pro
 metadata, and it converts autodiscovery configurations. Bugs here are often silent. The result is missing container
 tags, not an error.
 
-- A cgroup can disappear during a walk of the hierarchy. Below the root, skip a path that the code can't read, and don't
-  stop the walk with `?`. Remove aliases only after a walk where `TraversalResult::is_complete` is true. A path that no
-  longer exists, or that the code could never read, keeps the walk complete on purpose. (A removed cgroup stopped a
-  walk, and the poller removed the aliases of running containers: #2460.)
-- A line in `/proc/<pid>/cgroup` can hold a relative path, such as `0::/../docker-<id>.scope`. Flag code that joins such
-  a path to the cgroupfs root. The container ID can also be in an ancestor, such as `<id>.scope/init`.
-  `try_cgroup_from_path` and `get_cgroup_by_pid` get the ID from `extract_container_id_from_path`, which checks the
-  ancestors. Flag a change that makes either one match only the leaf name. (The code matched only the leaf name, so
-  workloads in nested cgroups got no container: #2464.)
-- The lookup of the process's own container reads `/proc/self/cgroup` and `/sys/fs/cgroup`, not the configured roots,
-  and `get_container_id_from_cgroup_lines` matches only the leaf name. Don't flag these choices, which are on purpose.
-  In a private cgroup namespace, `/proc/self/cgroup` reads `0::/`, so under cgroups v2, `resolve_self_container` falls
-  back to the controller inode. (ADP's own telemetry had no container tags: #2550.)
-- The procfs and cgroupfs filesystems are separate mounts. Choose each root from its own configured value, then its own
-  feature: the cgroupfs root from `Feature::HostMappedCgroupfs`, not from `Feature::HostMappedProcfs`. If the mount list
-  shows a hierarchy twice, use the mount under the configured cgroupfs root. (The cgroupfs root followed the procfs
-  feature: #2549.)
-- A collector that emits `MetadataOperation::add_alias` also emits `remove_alias` or `delete` when the cgroup, task, or
-  container no longer exists. This includes the PIDs that an initial scan adds. Stale aliases keep their container IDs
-  in the fixed-size `GenericMapInterner`, and when it's full, container IDs and origin tags fail to intern. (The cgroups
-  collector never removed aliases, and the interner became full on busy nodes: #772.)
-- A containerd call whose response grows with the number of containers, such as a list, sets
-  `max_decoding_message_size`. (Container list responses reached about 15 MB, over the 4 MiB default: #881.)
-- A conversion between two autodiscovery types that this crate defines, such as `From<Config> for CheckConfig`, maps
-  each field of its source. Match the source with a struct pattern that names each field and has no `..`, and bind a
-  field that the target doesn't use as `field: _`. Then a new field that nobody maps makes the build fail.
-  (`CheckConfig` had 4 of the 16 fields of `Config`: #2424.)
-- A test of behavior that depends on detected features builds the detector with
-  `FeatureDetector::from_detected_features`. A test that reads cgroupfs or procfs uses a `tempdir` fixture, not the real
-  `/proc` or `/sys/fs/cgroup`. A path string that the code only parses is fine.
+- Code in this crate SHOULD strive, as much as reasonably possible, to gracefully handle environmental differences
+  and incompatibilities, in a way that does not interrupt overall operation but does not go unnoticed. For example,
+  failing to query the tags for an entity for unexpected reasons can cause metrics correctness issues, and so so we
+  should alert the operator but we should not degrade in such a way that other operations fail, since transient
+  errors are expected more often in this area.
+- Unbounded growth of metadata can occur rapidly, so all metadata operations that store state should either be bounded
+  in time (such as by using a cache with an expiration/TTL) or have matching/paired codepaths that clean up the state
+  at the earliest opportunity.

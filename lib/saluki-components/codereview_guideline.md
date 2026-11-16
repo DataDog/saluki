@@ -11,39 +11,10 @@ Apply these rules to files under `lib/saluki-components`.
 - A component runs until the topology stops it. Flag a `run` that returns early for a check that `build` can make.
   Examples are taking a receiver or a subscription, building TLS material, and validating configuration. Do that check
   in `build`, so that the topology build reports the error. Binding a listener in `run`, before `health.mark_ready()`,
-  is fine. (A checks source stopped itself when it had no autodiscovery subscription: #823.)
-- Take the hostname that `HostProvider::get_hostname` resolves from the `EnvironmentProvider`. A constructor can take
-  the provider, as `HostEnrichment::from_environment_provider` in `src/transforms/host_enrichment/` does. Get the
-  hostname when the component builds, not in the binary before it builds the topology, so that the blueprint doesn't
-  call external resources. Flag a component that reads a `hostname` setting or detects the hostname itself. (The APM
-  configuration read a `hostname` key: #1095.)
-- Outside tests, start the name of each `ContextResolverBuilder` and `TagsResolverBuilder` with the component ID, as
-  `src/sources/dogstatsd/resolver.rs` does. Two resolvers with one name report their metrics as one. A rename changes
-  the `resolver_id` tag, which remap rules in `bin/agent-data-plane/src/state/metrics/rules/` match. Update those rules
-  in the same change.
-- The builder of a caching context resolver calls `with_idle_context_expiration`. The builder of a tags resolver that
-  goes to `with_tags_resolver` calls `with_idle_tagsets_expiration`. (The shared DogStatsD tags resolver had no
-  expiration, so it held tag sets until it reached its limit: #838.)
-- Use `Trace::ingest_info` to tell OTLP traces from native Datadog traces. Flag code that detects OTLP input from span
-  attributes, such as `otel.trace_id`. Flag an OTLP-only field, such as `_dd.otlp_sr`, on a native trace. (The
-  sampler treated native traces with an `otel.trace_id` tag as OTLP traces, and the encoder added `_dd.otlp_sr` to
-  native traces: #2854.)
-- Flag an encoder that builds a whole batch and checks its byte limits only afterward. Stop adding inputs before the
-  uncompressed size or the estimated compressed size passes its limit. Split a payload that still comes out too large.
-  (The V3 encoder checked byte limits only after it built a batch, which raised peak memory: #2230.)
-- `RequestBuilder` in `src/common/datadog/request_builder.rs` uses `CompressionEstimator` only as a hint to flush
-  early. It checks the real compressed size when it finishes a payload. Flag a guard, a hard limit, or a `panic!` that
-  depends on the estimate. Also flag a request to flush before the builder writes the first input. Fix the estimate
-  instead. (An estimate asked for a flush of an empty payload: #1310.)
-- Clamp a configured payload limit to the limit for its payload type with `clamp_payload_limits` from
-  `src/common/datadog/mod.rs`. The events, service checks, and metrics encoders do this. Then a user setting can't
-  cause payloads that the intake rejects. (New payload limit settings had no upper bound: #1715.)
-- Write a payload prefix or an input separator only after the request builder accepts the input. A rejected input
-  leaves the payload unchanged. (Rejected inputs left framing such as `,]` and `[[[` in requests, and the intake dropped
-  those requests: #3023.)
-- `generate_retry_queue_id` in `src/common/datadog/io.rs` names the retry queue of each endpoint and its directory on
-  disk. For an additional endpoint, it hashes the raw configured URL and the position of the API key. Then the ID
-  stays the same when a key rotates. Flag an additional-endpoint ID that depends on the API key value or on the
-  normalized URL. Flag a change to how the code derives the ID if the pull request description doesn't say so. After
-  such a change, the retry queue doesn't load the transactions that it stored under the old ID. (Queue IDs changed
-  when a key rotated, and two URLs that normalized to one host shared a queue: #1739.)
+  is fine.
+- Components should always prefer to acquire environment-based configuration from `EnvironmentProvider` instead of
+  passing it through their configuration directly. For example, take the hostname of the current host from
+  `HostProvider::get_hostname`, accessed through `EnvironmentProvider::host`.
+- For encoders that have payload size limits, ensure that they build their payloads incrementally, if possible, to minimize
+  the chance of having the payload rejected. If payloads can be split, then this applies doubly so as incremental encoding
+  provides a chance to opportunistically split payloads and avoid costly re-encoding.

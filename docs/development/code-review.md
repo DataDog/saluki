@@ -91,52 +91,12 @@ Reviewers apply these rules to pull requests that change `lib/saluki-io`:
 Apply these rules to files under `lib/saluki-io`: buffers, the DogStatsD codec, listeners, the HTTP client, compression,
 and retry queues.
 
-- A frame comes only from `ReadCursor::take`, which advances the buffer in the same call. Flag a change under `src/buf/`
-  that returns unread bytes that outlive the cursor, or that advances the buffer later, such as in a drop guard. Also
-  flag a change that makes `ReadCursor::new` public, because then a cursor can advance a read index that isn't the
-  buffer's own.
-- `Buf::chunk()` returns only the first contiguous slice of a buffer. For `VecDeque<u8>`, which this crate implements
-  `ReadIoBuffer` for, that slice ends at the wrap point. A chained or chunked buffer, such as
-  `FrozenChunkedBytesBuffer`, returns only its first chunk. Flag new code in this crate that reads a whole frame or
-  value from `chunk()` of such a buffer. (The capture framer couldn't see a frame that wrapped, so the capture buffer
-  grew without limit: #2823.)
-- The `permissive` field of `DogStatsDCodecConfiguration` sets which defects the parsers accept. In permissive mode, a
-  parser skips an empty field, such as `||`, and parses the rest of the line. A metric also skips an empty value in a
-  list of values, such as `1::2`. An event or a service check ignores an invalid or unknown optional field, and a metric
-  ignores a malformed `c:` or `e:` field. Strict mode rejects the line for each of these defects. Flag a permissive path
-  that rejects the whole line for one of them. A bad sample rate (`@`) or timestamp (`T`) rejects a metric in both
-  modes, as the Datadog Agent does. In both modes, the metric parser skips an optional field that it doesn't know, so
-  don't flag that. (Permissive mode rejected payloads that the Datadog Agent keeps: #3072.)
-- The metric, event, and service check parsers in `src/deser/codec/dogstatsd/` each have their own field loop. Flag a
-  loop that stops at a defect with `break` or an early `return` and still keeps the line. The decoder discards the input
-  that the parser leaves unread, so it loses the rest of the line without an error. Flag a skip of a malformed field
-  that doesn't check `permissive`, for example a skip of every short field. Strict mode then keeps the malformed field.
-  (An empty field dropped the tags after it: #3071. A draft of that fix skipped every field shorter than two bytes,
-  which let a malformed `|T|` through in strict mode.)
-- `permissive`, the tag limits, and client origin detection apply in all three parsers. When a change adds a setting
-  that more than one parser reads, or changes how one parser uses a setting, check the other parsers. (The parsers read
-  `c:`, `e:`, and `card:` when the Agent configuration turned off client origin detection: #1524.)
-- `CompressionEstimator` gives a hint, not a limit. `would_write_exceed_threshold` returns `false` until the compressor
-  writes its first block, and the caller checks the real compressed size later. After the first block, it adds the
-  uncompressed length of the next write to the compressed estimate, which is the intended worst case. Flag a change that
-  asks for a flush before the first block. Also flag a comparison of an uncompressed length alone with the compressed
-  limit, such as `len > threshold`. (Estimates before the first block caused flushes at about 2% of the limit: #503. A
-  `len > threshold` check asked for a flush before the first write, and the caller panicked: #1310.)
-- Set `SO_REUSEPORT` on any listener, and `SO_REUSEADDR` on a UDP socket, only when the listener binds several sockets
-  to one port, as `bind_udp_sockets` does. On a single socket, these options let a second process that also sets them
-  bind the same port and silently take part of the traffic. On Unix, `TcpListener::bind` sets `SO_REUSEADDR`, so that a
-  restarted process can bind the port again at once. Don't flag it. When a diff moves socket setup, compare the options
-  of each listener type before and after. (A refactor set the reuse options on every UDP bind: #3070.)
-- Each connection attempt and each TLS handshake has a timeout. Through a proxy, `hyper_http_proxy::ProxyConnector` does
-  a separate TLS handshake in the `CONNECT` tunnel, with its own TLS config from `HttpClientBuilder::build`. Flag a
-  timeout or a certificate check for direct connections that the tunnel config doesn't also get. The tunnel config keeps
-  platform roots and full verification on purpose, even when the direct config is insecure or comes from
-  `with_client_tls_config`. (The handshake in a proxy tunnel had no timeout: #2309.)
-- Flag a new `hyper-util` client builder that sets `pool_idle_timeout` without `pool_timer`: the idle timeout has no
-  effect without a timer. `HttpClientBuilder::default` sets both.
-- A retry path puts an entry back in the queue only after a transient error. Flag a path that re-queues an entry after a
-  permanent error, such as a persisted entry that the queue can't decode. That entry fails on every attempt and blocks
-  the queue. (A corrupt persisted entry went back in the queue and deadlocked the process: #1184.)
+- Prefer exposing builder methods for core primitives (HTTP client, server, etc) while ensuring that a sensible default
+  exists: for example, HTTP requests should always have a default timeout, but must be configurable.
+- All codecs must be both property and fuzz tested at the raw input boundary: this ensures a minimum baseline of coverage.
+- Helpers and primitives should strive to defer choices around memory management and allocations to the caller: for example,
+  don't allocate on behalf of the caller if we could just as easily accept a mutable reference to a buffer.
+
 <!-- /review -->
 
 ### Components
@@ -153,42 +113,14 @@ Apply these rules to files under `lib/saluki-components`.
 - A component runs until the topology stops it. Flag a `run` that returns early for a check that `build` can make.
   Examples are taking a receiver or a subscription, building TLS material, and validating configuration. Do that check
   in `build`, so that the topology build reports the error. Binding a listener in `run`, before `health.mark_ready()`,
-  is fine. (A checks source stopped itself when it had no autodiscovery subscription: #823.)
-- Take the hostname that `HostProvider::get_hostname` resolves from the `EnvironmentProvider`. A constructor can take
-  the provider, as `HostEnrichment::from_environment_provider` in `src/transforms/host_enrichment/` does. Get the
-  hostname when the component builds, not in the binary before it builds the topology, so that the blueprint doesn't
-  call external resources. Flag a component that reads a `hostname` setting or detects the hostname itself. (The APM
-  configuration read a `hostname` key: #1095.)
-- Outside tests, start the name of each `ContextResolverBuilder` and `TagsResolverBuilder` with the component ID, as
-  `src/sources/dogstatsd/resolver.rs` does. Two resolvers with one name report their metrics as one. A rename changes
-  the `resolver_id` tag, which remap rules in `bin/agent-data-plane/src/state/metrics/rules/` match. Update those rules
-  in the same change.
-- The builder of a caching context resolver calls `with_idle_context_expiration`. The builder of a tags resolver that
-  goes to `with_tags_resolver` calls `with_idle_tagsets_expiration`. (The shared DogStatsD tags resolver had no
-  expiration, so it held tag sets until it reached its limit: #838.)
-- Use `Trace::ingest_info` to tell OTLP traces from native Datadog traces. Flag code that detects OTLP input from span
-  attributes, such as `otel.trace_id`. Flag an OTLP-only field, such as `_dd.otlp_sr`, on a native trace. (The
-  sampler treated native traces with an `otel.trace_id` tag as OTLP traces, and the encoder added `_dd.otlp_sr` to
-  native traces: #2854.)
-- Flag an encoder that builds a whole batch and checks its byte limits only afterward. Stop adding inputs before the
-  uncompressed size or the estimated compressed size passes its limit. Split a payload that still comes out too large.
-  (The V3 encoder checked byte limits only after it built a batch, which raised peak memory: #2230.)
-- `RequestBuilder` in `src/common/datadog/request_builder.rs` uses `CompressionEstimator` only as a hint to flush
-  early. It checks the real compressed size when it finishes a payload. Flag a guard, a hard limit, or a `panic!` that
-  depends on the estimate. Also flag a request to flush before the builder writes the first input. Fix the estimate
-  instead. (An estimate asked for a flush of an empty payload: #1310.)
-- Clamp a configured payload limit to the limit for its payload type with `clamp_payload_limits` from
-  `src/common/datadog/mod.rs`. The events, service checks, and metrics encoders do this. Then a user setting can't
-  cause payloads that the intake rejects. (New payload limit settings had no upper bound: #1715.)
-- Write a payload prefix or an input separator only after the request builder accepts the input. A rejected input
-  leaves the payload unchanged. (Rejected inputs left framing such as `,]` and `[[[` in requests, and the intake dropped
-  those requests: #3023.)
-- `generate_retry_queue_id` in `src/common/datadog/io.rs` names the retry queue of each endpoint and its directory on
-  disk. For an additional endpoint, it hashes the raw configured URL and the position of the API key. Then the ID
-  stays the same when a key rotates. Flag an additional-endpoint ID that depends on the API key value or on the
-  normalized URL. Flag a change to how the code derives the ID if the pull request description doesn't say so. After
-  such a change, the retry queue doesn't load the transactions that it stored under the old ID. (Queue IDs changed
-  when a key rotated, and two URLs that normalized to one host shared a queue: #1739.)
+  is fine.
+- Components should always prefer to acquire environment-based configuration from `EnvironmentProvider` instead of
+  passing it through their configuration directly. For example, take the hostname of the current host from
+  `HostProvider::get_hostname`, accessed through `EnvironmentProvider::host`.
+- For encoders that have payload size limits, ensure that they build their payloads incrementally, if possible, to minimize
+  the chance of having the payload rejected. If payloads can be split, then this applies doubly so as incremental encoding
+  provides a chance to opportunistically split payloads and avoid costly re-encoding.
+
 <!-- /review -->
 
 ### Environment and workloads
@@ -200,36 +132,15 @@ Apply these rules to files under `lib/saluki-env`. This crate reads cgroups, pro
 metadata, and it converts autodiscovery configurations. Bugs here are often silent. The result is missing container
 tags, not an error.
 
-- A cgroup can disappear during a walk of the hierarchy. Below the root, skip a path that the code can't read, and don't
-  stop the walk with `?`. Remove aliases only after a walk where `TraversalResult::is_complete` is true. A path that no
-  longer exists, or that the code could never read, keeps the walk complete on purpose. (A removed cgroup stopped a
-  walk, and the poller removed the aliases of running containers: #2460.)
-- A line in `/proc/<pid>/cgroup` can hold a relative path, such as `0::/../docker-<id>.scope`. Flag code that joins such
-  a path to the cgroupfs root. The container ID can also be in an ancestor, such as `<id>.scope/init`.
-  `try_cgroup_from_path` and `get_cgroup_by_pid` get the ID from `extract_container_id_from_path`, which checks the
-  ancestors. Flag a change that makes either one match only the leaf name. (The code matched only the leaf name, so
-  workloads in nested cgroups got no container: #2464.)
-- The lookup of the process's own container reads `/proc/self/cgroup` and `/sys/fs/cgroup`, not the configured roots,
-  and `get_container_id_from_cgroup_lines` matches only the leaf name. Don't flag these choices, which are on purpose.
-  In a private cgroup namespace, `/proc/self/cgroup` reads `0::/`, so under cgroups v2, `resolve_self_container` falls
-  back to the controller inode. (ADP's own telemetry had no container tags: #2550.)
-- The procfs and cgroupfs filesystems are separate mounts. Choose each root from its own configured value, then its own
-  feature: the cgroupfs root from `Feature::HostMappedCgroupfs`, not from `Feature::HostMappedProcfs`. If the mount list
-  shows a hierarchy twice, use the mount under the configured cgroupfs root. (The cgroupfs root followed the procfs
-  feature: #2549.)
-- A collector that emits `MetadataOperation::add_alias` also emits `remove_alias` or `delete` when the cgroup, task, or
-  container no longer exists. This includes the PIDs that an initial scan adds. Stale aliases keep their container IDs
-  in the fixed-size `GenericMapInterner`, and when it's full, container IDs and origin tags fail to intern. (The cgroups
-  collector never removed aliases, and the interner became full on busy nodes: #772.)
-- A containerd call whose response grows with the number of containers, such as a list, sets
-  `max_decoding_message_size`. (Container list responses reached about 15 MB, over the 4 MiB default: #881.)
-- A conversion between two autodiscovery types that this crate defines, such as `From<Config> for CheckConfig`, maps
-  each field of its source. Match the source with a struct pattern that names each field and has no `..`, and bind a
-  field that the target doesn't use as `field: _`. Then a new field that nobody maps makes the build fail.
-  (`CheckConfig` had 4 of the 16 fields of `Config`: #2424.)
-- A test of behavior that depends on detected features builds the detector with
-  `FeatureDetector::from_detected_features`. A test that reads cgroupfs or procfs uses a `tempdir` fixture, not the real
-  `/proc` or `/sys/fs/cgroup`. A path string that the code only parses is fine.
+- Code in this crate SHOULD strive, as much as reasonably possible, to gracefully handle environmental differences
+  and incompatibilities, in a way that does not interrupt overall operation but does not go unnoticed. For example,
+  failing to query the tags for an entity for unexpected reasons can cause metrics correctness issues, and so so we
+  should alert the operator but we should not degrade in such a way that other operations fail, since transient
+  errors are expected more often in this area.
+- Unbounded growth of metadata can occur rapidly, so all metadata operations that store state should either be bounded
+  in time (such as by using a cache with an expiration/TTL) or have matching/paired codepaths that clean up the state
+  at the earliest opportunity.
+
 <!-- /review -->
 
 ### Agent Data Plane
@@ -239,45 +150,20 @@ Reviewers apply these rules to pull requests that change `bin/agent-data-plane`:
 <!-- review:agent-data-plane -->
 Apply these rules to files under `bin/agent-data-plane`.
 
-- `create_topology` in `src/cli/run.rs` adds different components for each combination of pipeline settings. Examples
-  are DogStatsD only, OTLP only, OTLP proxy mode, standalone mode, and DogStatsD with and without the no-aggregation
-  pipeline. In each combination that the change affects, the blueprint adds each component once and connects all of
-  them. Each ID passed to the `connect_components` methods, such as `dsd_in.metrics`, names a component and output that
-  the combination adds. ADP finds these errors only when it starts, and then exits. (Enabling OTLP made ADP fail to
-  start: #1061.)
-- Don't ask for a unit test of the wiring in `create_topology`. If no case under `test/` starts ADP with a combination
-  that the change affects, ask for an integration test case.
+- The Agent Data Plane crate is, primarily, the point at which we assemble various components and types into our topology
+  and so shouldn't be a spot where we're adding unit tests. The major exception to this is code that lives in internal
+  modules. If you would reach for a unit test when making a change to how the topology is configured or how we handle
+  decisions made during bootstrap or configuration loading, that's likely a signal to create an integration test instead.
 - Flag a stage that records state, such as a first-seen set, before a stage that can drop the event. Flag a filter that
   runs before the mapping or split that it depends on. A destination that measures input, such as `dsd_stats_out` on
-  `dsd_in.metrics`, connects to the raw source output. (Onboarding tags ran before the sampler, so services whose first
-  trace it dropped never showed as onboarded: #3131.)
-- In `src/main.rs`, in `AdpLocalConfig`, and in `handle_run_command` before `RemoteAgent::start` returns, ADP has only
-  the bootstrap configuration from `datadog.yaml` and the environment. Flag a decision there on a key that the Core
-  Agent can set, such as `data_plane.enabled`. That key keeps its default there unless a local source sets it. Read the
-  key from `agent.config()` after `start` returns. Logging is the exception, because `start` reloads it from the Core
-  Agent configuration. The `config`, `debug`, and `dogstatsd` subcommands read only the local configuration by design.
-- A command that runs until a signal stops it waits on `saluki_app::util::wait_for_shutdown_signal`, not on
-  `tokio::signal::ctrl_c` alone. Process managers and container runtimes stop ADP with SIGTERM, or with
-  `CTRL_BREAK_EVENT` on Windows. (`systemctl stop` killed ADP before it drained the topology: #2322.)
-- Flag a new `std::process::exit` call in a subcommand handler. It exits without running `Drop`, so ADP can lose the
-  `error!` line before it. Return a `Result` or an exit code from the handler, and pass it through `run_inner` to
-  `async_main`. `async_main` exits only after it drops the `BootstrapGuard`. In a handler that already calls
-  `std::process::exit`, report it as Not blocking. (Disabled ADP sometimes exited before it flushed its logs: #1201.)
-- The remap rules in `src/state/metrics/rules/` and the status sections in `src/internal/status.rs` match tag values
-  that come from component IDs, such as `component_id:dsd_agg` and `resolver_id:dsd_in/dsd/primary`. Update the rules
-  and sections that match a component ID or a resolver ID that the change renames. Also update them when the change
-  moves a counter to another component, such as from `dsd_agg` to `dsd_no_agg_split`. This rule also applies to these
-  changes in `lib/saluki-components`, such as a new resolver name. (A resolver ID change left the
-  `aggregator.dogstatsd_contexts` rule with no match: #715.)
-- Flag a remap rule that counts series that measure something else in an Agent metric, such as
-  `purpose:api_key_validation` requests. Reject those series with `rejecting_tags` on every rule for that name. A
-  rejected series goes to the next rule for its name. Don't flag a rule that merges counters across components or
-  listeners to match the Agent's tags. A merged gauge keeps only its last value, so flag a rule that merges gauge
-  series. (The transaction rules counted API key validation errors in `transactions.errors`: #3031.)
-- Flag a remap rule that adds a `remote_agent` tag. The Remote Agent Registry adds that tag.
-- A metric that a remap rule or a status section reads doesn't register at `debug` or `trace`, for example with
-  `register_debug_counter`. `metrics_level` defaults to `info`, so such a metric doesn't reach its readers. (Tag
-  filterlist counters that registered at `debug` were missing in production: #1822.)
+  `dsd_in.metrics`, connects to the raw source output.
+- Ensure that identifiying tags (such as `component_id` or `resolver_id`) in metric remapping rules are updated if and
+  when the corresponding component's ID changed as part of topology construction.
+- Ensure that metric remap rules are arranged from highest to lowest specificity when there are multiple rules for the
+  same "base" series: for example, a remap rule that matches `my_counter` directly coming before a rule that matched
+  `my_counter` with a specific tag value would cause the second rule to never fire.
+- Ensure that metrics referenced in a remap rule or a status section are registered at `info` level, and not `debug`
+  or `trace`, otherwise they won't be picked up by default.
 <!-- /review -->
 
 ### GitHub workflows
