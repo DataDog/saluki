@@ -224,8 +224,8 @@ impl SpanConcentrator {
             return true;
         }
         if self.compute_stats_by_span_kind {
-            if let Some(kind) = span.attributes.get(TAG_SPAN_KIND).and_then(AttributeValue::as_string) {
-                return compute_stats_for_span_kind(kind);
+            if let Some(kind) = span_kind(span) {
+                return compute_stats_for_span_kind(&kind);
             }
         }
         false
@@ -240,12 +240,7 @@ impl SpanConcentrator {
             return None;
         }
 
-        let span_kind = span
-            .attributes
-            .get(TAG_SPAN_KIND)
-            .and_then(AttributeValue::as_string)
-            .cloned()
-            .unwrap_or_default();
+        let span_kind = span_kind(span).unwrap_or_default();
         let status_code = get_status_code(&span.attributes);
         let grpc_status_code = get_grpc_status_code(&span.attributes).to_metastring();
         let is_top_level = span
@@ -348,6 +343,30 @@ fn align_ts(ts: u64, bsize: u64) -> u64 {
     ts - ts % bsize
 }
 
+/// Returns the kind of a span.
+///
+/// A span that carries its kind as a field, as a v1.0 tracer payload does, is read as the reference agent's
+/// `NewStatSpanFromV1` reads it (`InternalSpan.SpanKind`). Otherwise, as for OTLP spans, the kind is the `span.kind`
+/// attribute.
+fn span_kind(span: &Span) -> Option<MetaString> {
+    let name = match span.kind {
+        0 => {
+            return span
+                .attributes
+                .get(TAG_SPAN_KIND)
+                .and_then(AttributeValue::as_string)
+                .cloned()
+        }
+        1 => "internal",
+        2 => "server",
+        3 => "client",
+        4 => "producer",
+        5 => "consumer",
+        _ => "unknown",
+    };
+    Some(MetaString::from_static(name))
+}
+
 pub const fn compute_stats_for_span_kind(kind: &str) -> bool {
     kind.eq_ignore_ascii_case("server")
         || kind.eq_ignore_ascii_case("client")
@@ -372,6 +391,20 @@ mod tests {
     use datadog_agent_apm::semantics::{test_util::registry_json, Registry};
 
     use super::*;
+
+    #[test]
+    fn span_kind_prefers_the_kind_field_then_the_attribute() {
+        let mut attrs = FastHashMap::default();
+        attrs.insert(
+            MetaString::from(TAG_SPAN_KIND),
+            AttributeValue::String(MetaString::from("client")),
+        );
+        let span = Span::default().with_attributes(attrs);
+        assert_eq!(span_kind(&span).as_deref(), Some("client"));
+        assert_eq!(span_kind(&span.clone().with_kind(2)).as_deref(), Some("server"));
+        assert_eq!(span_kind(&Span::default().with_kind(9)).as_deref(), Some("unknown"));
+        assert_eq!(span_kind(&Span::default()), None);
+    }
 
     #[test]
     fn refresh_registry_rebuilds_peer_tag_keys_after_registry_change() {
