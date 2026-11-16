@@ -141,6 +141,19 @@ pub fn get_trace_env(trace: &Trace, root_span_idx: usize) -> Option<&MetaString>
     None
 }
 
+/// Returns the hostname a trace reports, if any.
+///
+/// The payload hostname wins. The root span's `_dd.hostname` applies only when the payload hostname is empty, as
+/// `Agent.setPayloadAttributes` does in the Go trace agent (`pkg/trace/agent/agent.go`).
+pub fn get_tracer_hostname<'a>(trace: &'a Trace, root_span: Option<&'a Span>) -> Option<&'a MetaString> {
+    if !trace.payload.hostname.is_empty() {
+        return Some(&trace.payload.hostname);
+    }
+    root_span
+        .and_then(|span| span.attributes.get("_dd.hostname").and_then(AttributeValue::as_string))
+        .filter(|hostname| !hostname.is_empty())
+}
+
 /// Finds the index of the root span within the given spans.
 ///
 /// Scans backwards for the first span with a zero parent ID (clients often report the root last),
