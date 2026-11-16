@@ -23,7 +23,8 @@ use crate::common::otlp::traces::transform::{
     otel_span_to_dd_span, otel_span_to_dd_span_v1, otlp_value_to_string, SpanConversion, SpanNaming,
 };
 use crate::common::otlp::util::{
-    get_string_attribute, set_resource_attributes, write_infra_tag_attributes, SourceKind,
+    get_string_attribute, is_datadog_container_tag_attribute, set_resource_attributes, write_infra_tag_attributes,
+    SourceKind,
 };
 use crate::common::otlp::Metrics;
 
@@ -360,6 +361,15 @@ impl OtlpTracesTranslator {
             interner,
             string_builder,
         );
+
+        // Datadog-convention container tag keys, such as `kube_namespace`, are consumed as container tags before span
+        // conversion, so they never reach span meta. `resource_meta` already holds them for the trace's container
+        // tags, so only the resource that span conversion sees drops them. The V1 receive path doesn't consume them.
+        if !receive_v1 {
+            resource
+                .attributes
+                .retain(|attribute| !is_datadog_container_tag_attribute(attribute));
+        }
 
         // Span conversion maps resource attributes onto every span, so it must see the enriched custom tags too.
         set_resource_attributes(
@@ -1187,6 +1197,79 @@ mod tests {
         // convention key is consumed as a container tag and must not be duplicated onto spans.
         assert_eq!(span_attr(&traces[0], "team").as_deref(), Some("checkout"));
         assert_eq!(span_attr(&traces[0], "kube_namespace"), None);
+    }
+
+    /// Resource attributes holding the same container identity under Datadog and OTel convention keys.
+    fn container_convention_resource_attributes() -> Vec<KeyValue> {
+        vec![
+            string_kv("kube_namespace", "payments"),
+            string_kv("pod_name", "web-1"),
+            string_kv("container_id", "abc123"),
+            string_kv("container.id", "abc123"),
+            string_kv("k8s.namespace.name", "payments"),
+        ]
+    }
+
+    fn translate_with_settings(settings: OtlpTracesSettings, resource_spans: ResourceSpans) -> Vec<Trace> {
+        let mut translator = OtlpTracesTranslator::new(
+            settings,
+            MAX_RESOURCE_LEN,
+            SemanticRegistryProvider::default(),
+            OtlpOriginTagResolver::new(Arc::new(TestWorkloadProvider::new())),
+        );
+        translator
+            .translate_spans(resource_spans, &Metrics::for_tests())
+            .filter_map(Event::try_into_trace)
+            .collect()
+    }
+
+    #[test]
+    fn translate_spans_consumes_datadog_convention_container_keys_before_span_conversion() {
+        let mut resource_attributes = container_convention_resource_attributes();
+        // Only string values are consumed as container tags.
+        resource_attributes.push(int_kv("region", 7));
+        let rs = build_resource_spans(resource_attributes, vec![span([1u8; 16], [1u8; 8], vec![])]);
+
+        let traces = translate(rs);
+        assert_eq!(traces.len(), 1);
+
+        // Datadog convention keys stay out of span meta, while OTel convention keys still reach it.
+        assert_eq!(span_attr(&traces[0], "kube_namespace"), None);
+        assert_eq!(span_attr(&traces[0], "pod_name"), None);
+        assert_eq!(span_attr(&traces[0], "container_id"), None);
+        assert_eq!(span_attr(&traces[0], "container.id").as_deref(), Some("abc123"));
+        assert_eq!(span_attr(&traces[0], "k8s.namespace.name").as_deref(), Some("payments"));
+        assert_eq!(span_attr(&traces[0], "region").as_deref(), Some("7"));
+
+        // The trace's own attributes keep them, so the encoder still emits them as container tags.
+        assert_eq!(attr(&traces[0], "kube_namespace").as_deref(), Some("payments"));
+        assert_eq!(attr(&traces[0], "pod_name").as_deref(), Some("web-1"));
+        assert_eq!(attr(&traces[0], "container_id").as_deref(), Some("abc123"));
+        let mut tags = TagSet::default();
+        extract_container_tags_from_attributes_map(&traces[0].attributes, &mut tags);
+        let tags: Vec<_> = tags.into_iter().map(|tag| tag.as_str().to_string()).collect();
+        assert!(tags.contains(&"kube_namespace:payments".to_string()), "got {tags:?}");
+        assert!(tags.contains(&"pod_name:web-1".to_string()), "got {tags:?}");
+    }
+
+    #[test]
+    fn translate_spans_leaves_container_keys_on_spans_on_the_v1_receive_path() {
+        let rs = build_resource_spans(
+            container_convention_resource_attributes(),
+            vec![span([1u8; 16], [1u8; 8], vec![])],
+        );
+
+        let traces = translate_with_settings(
+            OtlpTracesSettings {
+                disable_receive_resource_spans_v2: true,
+                ..translator_config()
+            },
+            rs,
+        );
+        assert_eq!(traces.len(), 1);
+        assert_eq!(span_attr(&traces[0], "kube_namespace").as_deref(), Some("payments"));
+        assert_eq!(span_attr(&traces[0], "pod_name").as_deref(), Some("web-1"));
+        assert_eq!(span_attr(&traces[0], "container_id").as_deref(), Some("abc123"));
     }
 
     #[test]
