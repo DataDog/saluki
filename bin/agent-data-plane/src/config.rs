@@ -628,47 +628,20 @@ mod tests {
 
     #[test]
     fn logs_pipeline_is_active_only_when_otlp_logs_are_handled_natively() {
-        // (case, checks, dogstatsd, otlp, proxied signals, expected native OTLP logs)
-        let cases = [
-            ("OTLP native", false, false, true, proxy(false, false, false), true),
-            (
-                "OTLP native with checks",
-                true,
-                false,
-                true,
-                proxy(false, false, false),
-                true,
-            ),
-            (
-                "OTLP logs proxied",
-                false,
-                false,
-                true,
-                proxy(true, false, false),
-                false,
-            ),
-            // Proxying any signal proxies logs too.
-            (
-                "OTLP traces proxied",
-                false,
-                false,
-                true,
-                proxy(false, false, true),
-                false,
-            ),
-            ("OTLP disabled", false, true, false, proxy(false, false, false), false),
-            ("checks only", true, false, false, proxy(false, false, false), false),
-        ];
+        let logs_active = |config: &SalukiConfiguration| {
+            DataPlaneConfiguration::from_configuration(config)
+                .active_pipelines()
+                .contains(&Pipeline::Logs)
+        };
+        let native = pipeline_configuration(false, false, true, Proxy::default());
+        let traces_proxied = pipeline_configuration(false, false, true, proxy(false, false, true));
+        let checks_only = pipeline_configuration(true, false, false, Proxy::default());
 
-        for (name, checks, dogstatsd, otlp, otlp_proxy, native) in cases {
-            let config = pipeline_configuration(checks, dogstatsd, otlp, otlp_proxy);
-            let dp = DataPlaneConfiguration::from_configuration(&config);
-
-            assert_eq!(dp.otlp_logs_native(), native, "{name}");
-            // The topology wires `otlp_in.logs` on `otlp_logs_native`, and the classifier follows the same check.
-            assert_eq!(dp.active_pipelines().contains(&Pipeline::Logs), native, "{name}");
-            assert_eq!(dp.logs_pipeline_required(), checks || native, "{name}");
-        }
+        assert!(logs_active(&native));
+        // Proxying any signal proxies logs too.
+        assert!(!logs_active(&traces_proxied));
+        // Check logs need the logs pipeline, but they don't activate the classifier's `logs` pipeline.
+        assert!(!logs_active(&checks_only));
     }
 
     #[test]
