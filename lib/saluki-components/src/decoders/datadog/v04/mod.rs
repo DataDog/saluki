@@ -425,6 +425,7 @@ fn decode_meta<'a>(
         }
         attributes.insert(strings.get(key_bytes), AttributeValue::String(value));
     }
+    read::release_unused_capacity(attributes);
     Ok(())
 }
 
@@ -452,6 +453,7 @@ fn decode_metrics<'a>(
         }
         attributes.insert(strings.get(key_bytes), AttributeValue::Float(value));
     }
+    read::release_unused_capacity(attributes);
     Ok(())
 }
 
@@ -471,6 +473,7 @@ fn decode_meta_struct<'a>(
         let value = read::read_bytes(r, "span meta_struct value")?;
         attributes.insert(key, AttributeValue::Bytes(value));
     }
+    read::release_unused_capacity(attributes);
     Ok(())
 }
 
@@ -519,6 +522,7 @@ fn decode_span_link<'a>(r: &mut &'a [u8], strings: &mut Strings<'a>) -> Result<S
                     let value = strings.read(r, "span link attribute value")?;
                     attributes.insert(key, AttributeValue::String(value));
                 }
+                read::release_unused_capacity(&mut attributes);
             }
             b"tracestate" => tracestate = strings.read(r, "span link tracestate")?,
             b"flags" => flags = read::v0_read_u32(r, "span link flags")?,
@@ -579,6 +583,7 @@ fn decode_span_event<'a>(r: &mut &'a [u8], strings: &mut Strings<'a>) -> Result<
                         attributes.insert(key, value);
                     }
                 }
+                read::release_unused_capacity(&mut attributes);
             }
             _ => read::skip_value(r, "span event field")?,
         }

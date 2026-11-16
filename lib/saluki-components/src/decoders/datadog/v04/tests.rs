@@ -1052,6 +1052,26 @@ fn nil_entries_do_not_keep_preallocated_capacity() {
 }
 
 #[test]
+fn attribute_maps_of_repeated_keys_do_not_keep_preallocated_capacity() {
+    // One span whose `meta` holds 1,024 `nil: nil` entries, which collapse into one `"": ""` attribute.
+    let mut bytes = vec![0x91, 0x91, 0x81, 0xa4];
+    bytes.extend_from_slice(b"meta");
+    bytes.push(0xde);
+    bytes.extend_from_slice(&1024u16.to_be_bytes());
+    bytes.resize(bytes.len() + 2 * 1024, 0xc0);
+
+    let decoded = decode_v04_payload(&bytes).unwrap();
+    let attributes = &decoded.traces[0].spans()[0].attributes;
+    // The `_dd.convertedv1` attribute is added after the map.
+    assert_eq!(attributes.len(), 2);
+    assert!(
+        attributes.capacity() <= 16,
+        "attribute capacity {}",
+        attributes.capacity()
+    );
+}
+
+#[test]
 fn nil_heavy_payloads_allocate_in_proportion_to_their_size() {
     // 100 chunks of 5,000 `nil` spans: about 500 KB that decode to 100 empty traces.
     let bytes = payload((0..100).map(|_| vec![V::Nil; 5000]).collect());
@@ -1204,6 +1224,11 @@ fn span_strategy() -> impl Strategy<Value = V> {
 }
 
 proptest! {
+    /// Mutated and truncated payloads decode or fail, without panicking.
+    ///
+    /// The allocation bound checked here is a loose sanity ceiling, not a regression guard: it is far above what a
+    /// decode needs. `nil_heavy_payloads_allocate_in_proportion_to_their_size` and
+    /// `nil_entries_do_not_keep_preallocated_capacity` guard the allocation behavior.
     #[test]
     fn property_test_mutated_full_payloads_never_panic(
         chunks in prop::collection::vec(prop::collection::vec(span_strategy(), 0..4), 0..4),
@@ -1224,7 +1249,7 @@ proptest! {
         if truncate {
             mutated.truncate(truncate_at.index(mutated.len() + 1));
         }
-        // Any outcome is fine as long as decoding returns without holding an outsized amount of memory.
+        // Any outcome is fine. The peak is only checked against a loose ceiling, to catch a runaway allocation.
         let (_, peak) = alloc_tracking::peak_during(|| decode_v04_payload(&mutated));
         let bound = 2 * read::MAX_PREALLOCATED_ELEMENTS * std::mem::size_of::<Span>() + 2048 * mutated.len();
         prop_assert!(peak <= bound, "peak {} bytes for {} bytes (bound {})", peak, mutated.len(), bound);

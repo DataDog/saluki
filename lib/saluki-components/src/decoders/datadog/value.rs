@@ -112,6 +112,7 @@ pub fn read_attributes_map(
         map.insert(key, value);
         i += 3;
     }
+    read::release_unused_capacity(&mut map);
     Ok(map)
 }
 
