@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use http::{uri::PathAndQuery, HeaderName, HeaderValue, Method, Uri};
+use http::{uri::PathAndQuery, HeaderMap, HeaderName, HeaderValue, Method, Uri};
 use saluki_common::iter::ReusableDeduplicator;
 use saluki_core::{
     accounting::{MemoryBounds, MemoryBoundsBuilder},
@@ -44,6 +44,7 @@ static CONTENT_TYPE_JSON: HeaderValue = HeaderValue::from_static("application/js
 static DD_PROTOCOL_HEADER: HeaderName = HeaderName::from_static("dd-protocol");
 static DD_EVP_ORIGIN_HEADER: HeaderName = HeaderName::from_static("dd-evp-origin");
 static DD_EVP_ORIGIN_VERSION_HEADER: HeaderName = HeaderName::from_static("dd-evp-origin-version");
+static DD_MESSAGE_TIMESTAMP_HEADER: HeaderName = HeaderName::from_static("dd-message-timestamp");
 
 /// The `DD-PROTOCOL` value of the JSON envelope, under which the intake reads only the envelope fields.
 static AGENT_JSON_PROTOCOL: HeaderValue = HeaderValue::from_static("agent-json");
@@ -352,6 +353,15 @@ impl EndpointEncoder for LogsEndpointEncoder {
 
     fn additional_headers(&self) -> &[(HeaderName, HeaderValue)] {
         &self.headers
+    }
+
+    fn add_input_headers(&self, inputs: &[Self::Input], headers: &mut HeaderMap) {
+        // `dd-message-timestamp` is when the last log of the request entered the pipeline, in milliseconds. It's left
+        // out when that log's source didn't record it.
+        if let Some(timestamp_ns) = inputs.last().and_then(Log::ingestion_timestamp) {
+            let timestamp_ms = timestamp_ns / 1_000_000;
+            headers.insert(DD_MESSAGE_TIMESTAMP_HEADER.clone(), HeaderValue::from(timestamp_ms));
+        }
     }
 }
 
