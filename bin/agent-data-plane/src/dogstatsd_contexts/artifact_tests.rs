@@ -103,24 +103,21 @@ fn expected_fixture_records() -> Vec<AgentContextRecord> {
 #[test]
 fn streams_exact_agent_schema_for_every_metric_type() {
     let cases = [
-        (AggregateMetricType::Counter, None, "Counter"),
-        (AggregateMetricType::Rate, None, "Rate"),
-        (AggregateMetricType::Gauge, None, "Gauge"),
-        (AggregateMetricType::Set, None, "Set"),
-        (AggregateMetricType::Distribution, None, "Distribution"),
-        (AggregateMetricType::Histogram, None, "Histogram"),
-        (AggregateMetricType::Histogram, Some("second"), "Histogram"),
-        (AggregateMetricType::Histogram, Some("millisecond"), "Historate"),
+        (AggregateMetricType::Counter, "Counter"),
+        (AggregateMetricType::Rate, "Rate"),
+        (AggregateMetricType::Gauge, "Gauge"),
+        (AggregateMetricType::Set, "Set"),
+        (AggregateMetricType::Distribution, "Distribution"),
+        (AggregateMetricType::Histogram, "Histogram"),
     ];
     let snapshot: Vec<_> = cases
         .iter()
         .enumerate()
-        .map(|(index, (metric_type, unit, _))| {
+        .map(|(index, (metric_type, _))| {
             snapshot_entry(
                 Box::leak(format!("metric.{index}").into_boxed_str()),
                 (index == 0).then_some("node-a"),
                 *metric_type,
-                unit.unwrap_or_default(),
                 &["client:value", "bare"],
                 &["origin:value"],
             )
@@ -136,7 +133,7 @@ fn streams_exact_agent_schema_for_every_metric_type() {
     assert_eq!(lines.len(), cases.len());
     assert_eq!(output.bytes().filter(|byte| *byte == b'\n').count(), cases.len());
     assert!(output.ends_with('\n'));
-    for (index, ((_, _, expected_type), line)) in cases.iter().zip(&lines).enumerate() {
+    for (index, ((_, expected_type), line)) in cases.iter().zip(&lines).enumerate() {
         let expected_host = if index == 0 { "node-a" } else { "" };
         let expected = json!({
             "Name": format!("metric.{index}"),
@@ -164,7 +161,6 @@ fn plain_stream_round_trips_through_reader_and_report() {
             "shared.metric",
             Some("node-a"),
             AggregateMetricType::Gauge,
-            "",
             &["env:prod", "service:web"],
             &["pod_name:web-a"],
         ),
@@ -172,7 +168,6 @@ fn plain_stream_round_trips_through_reader_and_report() {
             "shared.metric",
             None,
             AggregateMetricType::Counter,
-            "",
             &["env:staging", "service:web"],
             &["pod_name:web-b"],
         ),
@@ -223,7 +218,6 @@ fn surfaces_a_partial_writer_failure_with_record_and_path_context() {
         "write.failure",
         None,
         AggregateMetricType::Gauge,
-        "",
         &["env:test"],
         &[],
     )];
@@ -248,7 +242,6 @@ fn publishes_a_decodable_mode_0600_dump_and_replaces_the_canonical_artifact() {
             "published.metric",
             Some("node-a"),
             AggregateMetricType::Histogram,
-            "millisecond",
             &["env:prod"],
             &["pod_name:web-a"],
         ),
@@ -256,7 +249,6 @@ fn publishes_a_decodable_mode_0600_dump_and_replaces_the_canonical_artifact() {
             "published.metric",
             None,
             AggregateMetricType::Distribution,
-            "",
             &["env:staging"],
             &["pod_name:web-b"],
         ),
@@ -370,13 +362,13 @@ impl io::Write for FailAfterBytes {
 }
 
 fn snapshot_entry(
-    name: &'static str, host: Option<&'static str>, metric_type: AggregateMetricType, unit: &'static str,
-    metric_tags: &[&'static str], origin_tags: &[&'static str],
+    name: &'static str, host: Option<&'static str>, metric_type: AggregateMetricType, metric_tags: &[&'static str],
+    origin_tags: &[&'static str],
 ) -> AggregateContextSnapshotEntry {
     let context = Context::from_static_parts(name, metric_tags)
         .with_host(host.map(MetaString::from_static))
         .with_origin_tags(origin_tags.iter().map(|tag| Tag::from_static(tag)).collect::<TagSet>());
-    AggregateContextSnapshotEntry::for_test(context, metric_type, MetaString::from_static(unit))
+    AggregateContextSnapshotEntry::for_test(context, metric_type)
 }
 
 #[test]
