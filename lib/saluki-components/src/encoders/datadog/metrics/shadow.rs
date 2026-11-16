@@ -139,9 +139,9 @@ impl<'a> SketchShadowState<'a> {
             }
         }
         // Splitting can discard a V2 subrequest without returning an error.
-        baseline_failed |= requests.iter().map(|(events, _, _)| *events).sum::<usize>() != metrics.len();
+        baseline_failed |= requests.iter().map(|(events, _, _, _)| *events).sum::<usize>() != metrics.len();
         let request_count = requests.len();
-        for (request_index, (events, points, request)) in requests.into_iter().enumerate() {
+        for (request_index, (events, points, _uncompressed_len, request)) in requests.into_iter().enumerate() {
             enqueue_sketch_request(
                 request,
                 events,

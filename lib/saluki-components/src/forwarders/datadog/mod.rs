@@ -278,6 +278,7 @@ fn get_dd_endpoint_name(uri: &Uri) -> Option<MetaString> {
         "/api/v1/check_run" => Some(MetaString::from_static("check_run_v1")),
         "/api/v1/events_batch" => Some(MetaString::from_static("events_batch_v1")),
         "/api/v0.2/traces" => Some(MetaString::from_static("traces_v0.2")),
+        "/api/v0.2/stats" => Some(MetaString::from_static("stats_v0.2")),
         _ => None,
     }
 }
@@ -297,7 +298,7 @@ mod tests {
     fn dd_endpoint_names_map_from_request_path() {
         // Each intake path maps to the telemetry endpoint name the forwarder tags transactions with; the query and
         // authority are ignored (only the path matters), and unknown paths map to `None`.
-        let cases: [(Uri, Option<&str>); 12] = [
+        let cases: [(Uri, Option<&str>); 13] = [
             (Uri::from_static("/api/v2/logs"), Some("logs_v2")),
             (Uri::from_static("/api/v1/series"), Some("series_v1")),
             (Uri::from_static("/api/v2/series"), Some("series_v2")),
@@ -308,6 +309,7 @@ mod tests {
             (Uri::from_static("/api/v1/check_run"), Some("check_run_v1")),
             (Uri::from_static("/api/v1/events_batch"), Some("events_batch_v1")),
             (Uri::from_static("/api/v0.2/traces"), Some("traces_v0.2")),
+            (Uri::from_static("/api/v0.2/stats"), Some("stats_v0.2")),
             (
                 Uri::from_static("https://app.datadoghq.com/api/v2/series"),
                 Some("series_v2"),
