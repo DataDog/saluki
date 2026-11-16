@@ -80,7 +80,7 @@ fn apply_static_metric_tags(metrics: &mut OtlpMetricsSettings, static_tags: Vec<
 
 /// Configuration for the OTLP source.
 pub struct OtlpConfiguration {
-    /// Hostname of metrics whose resource carries none.
+    /// Hostname of metrics and traces whose resource carries none.
     pub default_hostname: MetaString,
 
     /// Receiver settings.
@@ -129,6 +129,7 @@ impl OtlpConfiguration {
             self.semantic_registry.clone(),
             origin_tag_resolver,
         )
+        .with_default_hostname(self.default_hostname.clone())
     }
 
     fn metrics_translator_config(&self) -> metrics::config::OtlpMetricsTranslatorConfig {
