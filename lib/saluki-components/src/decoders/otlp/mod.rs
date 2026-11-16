@@ -16,6 +16,7 @@ use saluki_core::{
 };
 use saluki_env::workload::WorkloadProvider;
 use saluki_error::GenericError;
+use stringtheory::MetaString;
 use tokio::{
     select,
     time::{interval, MissedTickBehavior},
@@ -43,6 +44,9 @@ pub struct OtlpDecoderConfiguration {
 
     /// Supplies attribute mappings for trace translation. Defaults to embedded mappings without remote updates.
     semantic_registry: SemanticRegistryProvider,
+
+    /// Hostname of traces whose resource carries no source. Defaults to empty.
+    default_hostname: MetaString,
 }
 
 impl OtlpDecoderConfiguration {
@@ -58,7 +62,16 @@ impl OtlpDecoderConfiguration {
             origin_tag_resolver: OtlpOriginTagResolver::new(Arc::new(workload_provider)),
             max_resource_len: usize::MAX,
             semantic_registry: SemanticRegistryProvider::default(),
+            default_hostname: MetaString::default(),
         }
+    }
+
+    /// Sets the hostname of traces whose resource carries no source, such as the host the data plane runs on.
+    ///
+    /// Defaults to an empty hostname.
+    pub fn with_default_hostname(mut self, default_hostname: MetaString) -> Self {
+        self.default_hostname = default_hostname;
+        self
     }
 
     /// Sets the maximum length of a span's resource name, in bytes.
@@ -113,6 +126,7 @@ impl OtlpDecoderConfiguration {
             self.semantic_registry.clone(),
             self.origin_tag_resolver.clone(),
         )
+        .with_default_hostname(self.default_hostname.clone())
     }
 }
 
@@ -245,5 +259,40 @@ mod tests {
 
         publisher.assign([("a", custom_status_code_registry())]);
         assert_eq!(translate_custom_status_code(&mut translator, &metrics), Some(418.0));
+    }
+
+    #[test]
+    fn default_hostname_reaches_traces_without_a_source() {
+        use otlp_protos::opentelemetry::proto::trace::v1::{ResourceSpans, ScopeSpans, Span};
+        use saluki_core::data_model::event::Event;
+
+        let traces = OtlpTracesSettings {
+            string_interner_size: std::num::NonZeroUsize::new(64 * 1024).unwrap(),
+            ..traces_settings()
+        };
+        let mut translator =
+            OtlpDecoderConfiguration::new(traces, saluki_env::workload::providers::NoopWorkloadProvider)
+                .with_default_hostname(MetaString::from("data-plane-host"))
+                .traces_translator();
+        let resource_spans = ResourceSpans {
+            scope_spans: vec![ScopeSpans {
+                spans: vec![Span {
+                    trace_id: vec![1; 16],
+                    span_id: vec![1; 8],
+                    name: "span".to_owned(),
+                    end_time_unix_nano: 2,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let hostnames: Vec<String> = translator
+            .translate_spans(resource_spans, &Metrics::for_tests())
+            .filter_map(Event::try_into_trace)
+            .map(|trace| trace.payload.hostname.to_string())
+            .collect();
+        assert_eq!(hostnames, ["data-plane-host"]);
     }
 }

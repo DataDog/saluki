@@ -1051,12 +1051,6 @@ async fn add_otlp_pipeline_to_blueprint(
 
         let config = config_system.config();
         let otlp_relay_config = OtlpRelayConfiguration::new(otlp_receiver(&config.domains.otlp.receiver));
-        let otlp_decoder_config = OtlpDecoderConfiguration::new(
-            otlp_traces_settings(&config.domains.otlp.traces, &config.domains.traces.features),
-            env_provider.workload().clone(),
-        )
-        .with_max_resource_len(config.domains.traces.max_resource_len)
-        .with_semantic_registry(semantic_registry);
 
         let local_agent_otlp_forwarder_config =
             OtlpForwarderConfiguration::new(config.domains.otlp.traces.internal_port, core_agent_otlp_grpc_endpoint);
@@ -1071,6 +1065,19 @@ async fn add_otlp_pipeline_to_blueprint(
         if proxy_traces {
             blueprint.connect_components("otlp_relay_in.traces", "local_agent_otlp_out")?;
         } else {
+            let default_hostname = env_provider
+                .host()
+                .get_hostname()
+                .await
+                .error_context("Failed to get default hostname for OTLP traces decoder.")?;
+            let otlp_decoder_config = OtlpDecoderConfiguration::new(
+                otlp_traces_settings(&config.domains.otlp.traces, &config.domains.traces.features),
+                env_provider.workload().clone(),
+            )
+            .with_max_resource_len(config.domains.traces.max_resource_len)
+            .with_semantic_registry(semantic_registry)
+            .with_default_hostname(MetaString::from(default_hostname));
+
             blueprint
                 .add_decoder("otlp_traces_decode", otlp_decoder_config)?
                 // Traces to decoder, then to the trace pipeline: obfuscation, enrichment, encoding, stats, forwarding.
