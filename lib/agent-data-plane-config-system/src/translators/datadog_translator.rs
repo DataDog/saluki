@@ -1314,10 +1314,6 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     fn consume_log_enabled(&mut self, value: bool) {
         // Like the Datadog Agent, the deprecated `log_enabled` enables the logs agent alongside `logs_enabled`, so
         // either key being `true` is enough, whichever order they're read in.
-        if value {
-            // Matches the warning the Datadog Agent logs when it uses `log_enabled`.
-            warn!(r#""log_enabled" is deprecated, use "logs_enabled" instead"#);
-        }
         self.config.control.logs_enabled |= value;
     }
 

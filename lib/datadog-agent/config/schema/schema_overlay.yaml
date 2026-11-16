@@ -1824,7 +1824,7 @@ inventory:
     documentation: |-
       The core Agent treats `log_enabled` as a deprecated spelling of `logs_enabled`: the logs agent
       runs when either key is `true`, and the Agent logs a deprecation warning when `log_enabled` is
-      `true`. ADP reads it the same way, including the warning.
+      `true`. ADP reads it the same way, but doesn't log the warning.
 
       ADP doesn't yet act on the result. The core Agent refuses to start its OTLP receiver when
       `otlp_config.logs.enabled` is `true` but the logs agent isn't enabled. ADP doesn't apply this
