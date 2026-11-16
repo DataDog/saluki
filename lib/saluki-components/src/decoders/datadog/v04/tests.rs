@@ -10,8 +10,10 @@ use rmp::encode;
 use saluki_core::data_model::event::trace::{AttributeValue, Span, Trace};
 use stringtheory::MetaString;
 
-use super::{decode_v04_payload, DecodeError};
-use crate::decoders::datadog::DecodedV1;
+use super::{
+    decode_span_events, decode_span_links, decode_span_list, decode_v04_payload, ChunkPromoted, DecodeError, Strings,
+};
+use crate::decoders::datadog::{read, DecodedV1};
 
 /// A MessagePack value. Integers use the smallest encoding unless written as `Raw`.
 #[derive(Clone, Debug)]
@@ -724,7 +726,7 @@ fn collection_counts_are_bounded() {
 
 proptest! {
     #[test]
-    fn property_test_arbitrary_bytes_never_panic(bytes in prop::collection::vec(any::<u8>(), 0..512)) {
+    fn property_test_arbitrary_bytes_never_panic(bytes in prop::collection::vec(any::<u8>(), 0..4096)) {
         // Any outcome is fine as long as decoding returns. Each decoded chunk takes at least one byte.
         if let Ok(decoded) = decode_v04_payload(&bytes) {
             prop_assert!(decoded.traces.len() <= bytes.len());
@@ -968,5 +970,265 @@ fn meta_struct_maps_to_bytes_attributes() {
     for value in [V::Map(vec![(s("k"), s("v"))]), V::Nil] {
         let error = decode_err(vec![vec![obj(vec![("meta_struct", value.clone())])]]);
         assert!(matches!(error, DecodeError::Msgpack { .. }), "{value:?}: {error:?}");
+    }
+}
+
+/// Tracks the live heap bytes allocated by the current thread, so a test can bound what a decode allocates.
+mod alloc_tracking {
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::cell::Cell;
+
+    struct Tracking;
+
+    #[global_allocator]
+    static ALLOCATOR: Tracking = Tracking;
+
+    thread_local! {
+        static LIVE: Cell<isize> = const { Cell::new(0) };
+        static PEAK: Cell<isize> = const { Cell::new(0) };
+    }
+
+    fn record(delta: isize) {
+        let _ = LIVE.try_with(|live| {
+            let now = live.get() + delta;
+            live.set(now);
+            let _ = PEAK.try_with(|peak| peak.set(peak.get().max(now)));
+        });
+    }
+
+    unsafe impl GlobalAlloc for Tracking {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            let ptr = unsafe { System.alloc(layout) };
+            if !ptr.is_null() {
+                record(layout.size() as isize);
+            }
+            ptr
+        }
+
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            unsafe { System.dealloc(ptr, layout) };
+            record(-(layout.size() as isize));
+        }
+
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            let new = unsafe { System.realloc(ptr, layout, new_size) };
+            if !new.is_null() {
+                record(new_size as isize - layout.size() as isize);
+            }
+            new
+        }
+    }
+
+    /// Runs `f` and returns its result with the peak bytes it held at once, including what the result keeps.
+    pub fn peak_during<T>(f: impl FnOnce() -> T) -> (T, usize) {
+        let base = LIVE.with(Cell::get);
+        PEAK.with(|peak| peak.set(base));
+        let result = f();
+        let peak = PEAK.with(Cell::get);
+        (result, (peak - base).max(0) as usize)
+    }
+}
+
+#[test]
+fn nil_entries_do_not_keep_preallocated_capacity() {
+    let mut nils = vec![0xdd];
+    nils.extend_from_slice(&5001u32.to_be_bytes());
+    nils.resize(nils.len() + 5000, 0xc0);
+    nils.push(0x80);
+
+    let mut strings = Strings::default();
+    let mut r = nils.as_slice();
+    let spans = decode_span_list(&mut r, &mut strings, &mut ChunkPromoted::default()).unwrap();
+    assert_eq!(spans.len(), 1);
+    assert!(spans.capacity() <= 4, "span capacity {}", spans.capacity());
+
+    let mut links = Vec::new();
+    decode_span_links(&mut nils.as_slice(), &mut strings, &mut links).unwrap();
+    assert_eq!(links.len(), 1);
+    assert!(links.capacity() <= 4, "link capacity {}", links.capacity());
+
+    let mut events = Vec::new();
+    decode_span_events(&mut nils.as_slice(), &mut strings, &mut events).unwrap();
+    assert_eq!(events.len(), 1);
+    assert!(events.capacity() <= 4, "event capacity {}", events.capacity());
+}
+
+#[test]
+fn nil_heavy_payloads_allocate_in_proportion_to_their_size() {
+    // 100 chunks of 5,000 `nil` spans: about 500 KB that decode to 100 empty traces.
+    let bytes = payload((0..100).map(|_| vec![V::Nil; 5000]).collect());
+    let (decoded, peak) = alloc_tracking::peak_during(|| decode_v04_payload(&bytes).unwrap());
+    assert_eq!(decoded.traces.len(), 100);
+    // One chunk's capped pre-allocation at a time, plus the traces themselves.
+    let bound = read::MAX_PREALLOCATED_ELEMENTS * std::mem::size_of::<Span>() + 16 * bytes.len();
+    assert!(
+        peak <= bound,
+        "peak {peak} bytes for a {}-byte payload (bound {bound})",
+        bytes.len()
+    );
+
+    // A list header claiming far more spans than decode fails without reserving for the claim.
+    let mut bytes = vec![0x91, 0xdd];
+    bytes.extend_from_slice(&1_000_000u32.to_be_bytes());
+    bytes.resize(bytes.len() + 1_000_000, 0xc1);
+    let (result, peak) = alloc_tracking::peak_during(|| decode_v04_payload(&bytes));
+    assert!(result.is_err());
+    let bound = 2 * read::MAX_PREALLOCATED_ELEMENTS * std::mem::size_of::<Span>();
+    assert!(peak <= bound, "peak {peak} bytes (bound {bound})");
+}
+
+#[test]
+fn float_reads_check_the_length_first_as_msgp_does() {
+    let f32_bytes = 0.5f32.to_be_bytes();
+    let mut float32 = vec![0xca];
+    float32.extend_from_slice(&f32_bytes);
+    assert_eq!(read::v0_read_f64(&mut float32.as_slice(), "test").unwrap(), 0.5);
+
+    let short: [&[u8]; 4] = [&[], &[0x01], &[0xcb, 0, 0, 0, 0, 0, 0, 0], &[0xca, 0, 0]];
+    for bytes in short {
+        let error = read::v0_read_f64(&mut &bytes[..], "test").unwrap_err();
+        assert!(matches!(error, DecodeError::ShortBytes { .. }), "{bytes:?}: {error:?}");
+    }
+
+    // With nine bytes or more, a non-float marker is a type error.
+    let error = read::v0_read_f64(&mut &[0x01; 9][..], "test").unwrap_err();
+    assert!(matches!(error, DecodeError::Msgpack { .. }), "{error:?}");
+}
+
+fn any_value_strategy() -> impl Strategy<Value = V> {
+    let leaf = prop_oneof![
+        "[ -~]{0,30}".prop_map(|v| any_value(vec![("type", V::Int(0)), ("string_value", V::Str(v))])),
+        any::<bool>().prop_map(|v| any_value(vec![("type", V::Int(1)), ("bool_value", V::Bool(v))])),
+        any::<i64>().prop_map(|v| any_value(vec![("type", V::Int(2)), ("int_value", V::Int(v))])),
+        any::<f64>().prop_map(|v| any_value(vec![("type", V::Int(3)), ("double_value", V::F64(v))])),
+        Just(V::Nil),
+    ];
+    leaf.prop_recursive(4, 32, 4, |inner| {
+        prop::collection::vec(inner, 0..4).prop_map(|values| {
+            any_value(vec![
+                ("type", V::Int(4)),
+                ("array_value", obj(vec![("values", V::Arr(values))])),
+            ])
+        })
+    })
+}
+
+fn string_map_strategy() -> impl Strategy<Value = V> {
+    let key = prop_oneof![
+        Just("env".to_string()),
+        Just("version".to_string()),
+        Just("span.kind".to_string()),
+        Just("_dd.p.tid".to_string()),
+        Just("_dd.p.dm".to_string()),
+        Just("_dd.origin".to_string()),
+        "[a-z.]{1,12}",
+    ];
+    prop::collection::vec((key, "[ -~]{0,40}"), 0..6)
+        .prop_map(|entries| V::Map(entries.into_iter().map(|(k, v)| (V::Str(k), V::Str(v))).collect()))
+}
+
+fn link_strategy() -> impl Strategy<Value = V> {
+    prop_oneof![
+        1 => Just(V::Nil),
+        4 => (any::<u64>(), any::<u64>(), any::<u64>(), string_map_strategy(), "[ -~]{0,20}", any::<u32>()).prop_map(
+            |(trace_id, trace_id_high, span_id, attributes, tracestate, flags)| {
+                obj(vec![
+                    ("trace_id", V::Uint(trace_id)),
+                    ("trace_id_high", V::Uint(trace_id_high)),
+                    ("span_id", V::Uint(span_id)),
+                    ("attributes", attributes),
+                    ("tracestate", V::Str(tracestate)),
+                    ("flags", V::Uint(u64::from(flags))),
+                ])
+            }
+        ),
+    ]
+}
+
+fn event_strategy() -> impl Strategy<Value = V> {
+    prop_oneof![
+        1 => Just(V::Nil),
+        4 => (any::<u64>(), "[ -~]{0,20}", prop::collection::vec(("[a-z]{1,8}", any_value_strategy()), 0..4)).prop_map(
+            |(time, name, attributes)| {
+                obj(vec![
+                    ("time_unix_nano", V::Uint(time)),
+                    ("name", V::Str(name)),
+                    ("attributes", V::Map(attributes.into_iter().map(|(k, v)| (V::Str(k), v)).collect())),
+                ])
+            }
+        ),
+    ]
+}
+
+fn span_strategy() -> impl Strategy<Value = V> {
+    let ids = (
+        any::<u64>(),
+        any::<u64>(),
+        any::<u64>(),
+        any::<i64>(),
+        any::<i64>(),
+        0i64..2,
+    );
+    let names = ("[a-z-]{0,30}", "[a-z.]{0,20}", "[ -~]{0,60}", "[a-z]{0,8}");
+    let maps = (
+        string_map_strategy(),
+        prop::collection::vec(("[a-z_.]{1,20}", any::<f64>()), 0..4),
+        prop::collection::vec(("[a-z]{1,8}", prop::collection::vec(any::<u8>(), 0..16)), 0..3),
+    );
+    let lists = (
+        prop::collection::vec(link_strategy(), 0..3),
+        prop::collection::vec(event_strategy(), 0..3),
+    );
+    prop_oneof![
+        1 => Just(V::Nil),
+        6 => (ids, names, maps, lists).prop_map(
+            |((trace_id, span_id, parent_id, start, duration, error), (service, name, resource, span_type), (meta, metrics, meta_struct), (links, events))| {
+                obj(vec![
+                    ("service", V::Str(service)),
+                    ("name", V::Str(name)),
+                    ("resource", V::Str(resource)),
+                    ("trace_id", V::Uint(trace_id)),
+                    ("span_id", V::Uint(span_id)),
+                    ("parent_id", V::Uint(parent_id)),
+                    ("start", V::Int(start)),
+                    ("duration", V::Int(duration)),
+                    ("error", V::Int(error)),
+                    ("meta", meta),
+                    ("metrics", V::Map(metrics.into_iter().map(|(k, v)| (V::Str(k), V::F64(v))).collect())),
+                    ("type", V::Str(span_type)),
+                    ("meta_struct", V::Map(meta_struct.into_iter().map(|(k, v)| (V::Str(k), V::Bin(v))).collect())),
+                    ("span_links", V::Arr(links)),
+                    ("span_events", V::Arr(events)),
+                ])
+            }
+        ),
+    ]
+}
+
+proptest! {
+    #[test]
+    fn property_test_mutated_full_payloads_never_panic(
+        chunks in prop::collection::vec(prop::collection::vec(span_strategy(), 0..4), 0..4),
+        truncate_at in any::<prop::sample::Index>(),
+        truncate in any::<bool>(),
+        flips in prop::collection::vec((any::<prop::sample::Index>(), 1u8..=255), 0..6),
+    ) {
+        let bytes = payload(chunks.clone());
+        let decoded = decode_v04_payload(&bytes);
+        prop_assert!(decoded.is_ok(), "the unmutated payload must decode: {:?}", decoded.err());
+        prop_assert_eq!(decoded.unwrap().traces.len(), chunks.len());
+
+        let mut mutated = bytes;
+        for (index, mask) in &flips {
+            let i = index.index(mutated.len());
+            mutated[i] ^= mask;
+        }
+        if truncate {
+            mutated.truncate(truncate_at.index(mutated.len() + 1));
+        }
+        // Any outcome is fine as long as decoding returns without holding an outsized amount of memory.
+        let (_, peak) = alloc_tracking::peak_during(|| decode_v04_payload(&mutated));
+        let bound = 2 * read::MAX_PREALLOCATED_ELEMENTS * std::mem::size_of::<Span>() + 2048 * mutated.len();
+        prop_assert!(peak <= bound, "peak {} bytes for {} bytes (bound {})", peak, mutated.len(), bound);
     }
 }

@@ -86,15 +86,6 @@ const SPAN_KIND_CLIENT: u32 = 3;
 const SPAN_KIND_PRODUCER: u32 = 4;
 const SPAN_KIND_CONSUMER: u32 = 5;
 
-/// A plausible minimum wire size for a span, used only to bound pre-allocations.
-const MIN_BYTES_PER_SPAN: usize = 21;
-
-/// A plausible minimum wire size for a trace chunk, used only to bound pre-allocations.
-const MIN_BYTES_PER_CHUNK: usize = 1;
-
-/// A plausible minimum wire size for a span link or span event, used only to bound pre-allocations.
-const MIN_BYTES_PER_LINK_OR_EVENT: usize = 8;
-
 /// Maximum span event attribute nesting depth, the reference's `maxAnyValueDepth`.
 const MAX_ANY_VALUE_DEPTH: usize = 64;
 
@@ -119,7 +110,7 @@ pub fn decode_v04_payload(bytes: &[u8]) -> Result<DecodedV1, DecodeError> {
     let mut strings = Strings::default();
 
     let num_chunks = read::v0_read_array_len(&mut r, "trace list")?;
-    let mut traces = Vec::with_capacity((num_chunks as usize).min(r.len() / MIN_BYTES_PER_CHUNK));
+    let mut traces = Vec::with_capacity(read::preallocation(num_chunks));
     let mut promoted = PayloadPromoted::default();
     for _ in 0..num_chunks {
         traces.push(decode_chunk(&mut r, &mut strings, &mut promoted)?);
@@ -257,19 +248,8 @@ impl RootPriority {
 fn decode_chunk<'a>(
     r: &mut &'a [u8], strings: &mut Strings<'a>, payload: &mut PayloadPromoted,
 ) -> Result<Trace, DecodeError> {
-    let num_spans = read::v0_read_array_len(r, "span list")?;
-    let mut spans = Vec::with_capacity((num_spans as usize).min(r.len() / MIN_BYTES_PER_SPAN));
     let mut promoted = ChunkPromoted::default();
-    let mut root = RootPriority::default();
-    for _ in 0..num_spans {
-        if read::peek_is_nil(r) {
-            read::skip_nil(r);
-            continue;
-        }
-        let span = decode_span(r, strings, &mut promoted)?;
-        root.reconcile(&mut promoted, span.parent_id());
-        spans.push(span);
-    }
+    let spans = decode_span_list(r, strings, &mut promoted)?;
 
     let mut trace = Trace::new(spans, TraceIngestInfo::Datadog);
     trace.trace_id_low = promoted.trace_id_low;
@@ -279,6 +259,31 @@ fn decode_chunk<'a>(
     trace.origin = std::mem::take(&mut promoted.origin);
     payload.apply(&mut promoted);
     Ok(trace)
+}
+
+/// Decodes a chunk's list of spans, dropping `nil` entries and reconciling the chunk priority after each span.
+fn decode_span_list<'a>(
+    r: &mut &'a [u8], strings: &mut Strings<'a>, promoted: &mut ChunkPromoted,
+) -> Result<Vec<Span>, DecodeError> {
+    let num_spans = read::v0_read_array_len(r, "span list")?;
+    let mut spans = Vec::with_capacity(read::preallocation(num_spans));
+    let mut root = RootPriority::default();
+    let mut skipped_nil = false;
+    for _ in 0..num_spans {
+        if read::peek_is_nil(r) {
+            read::skip_nil(r);
+            skipped_nil = true;
+            continue;
+        }
+        let span = decode_span(r, strings, promoted)?;
+        root.reconcile(promoted, span.parent_id());
+        spans.push(span);
+    }
+    // `nil` spans take one wire byte each, so the capacity reserved for them is released rather than kept.
+    if skipped_nil {
+        spans.shrink_to_fit();
+    }
+    Ok(spans)
 }
 
 /// Decodes one span, a map keyed by field name, mirroring `InternalSpan.UnmarshalMsgConverted`.
@@ -387,7 +392,7 @@ fn decode_meta<'a>(
         return Ok(());
     }
     read::v0_check_slab_count(len, r, "span meta")?;
-    attributes.reserve(len as usize);
+    attributes.reserve(read::preallocation(len));
     for _ in 0..len {
         let key_bytes = read::v0_read_str_bytes(r, "span meta key")?;
         let value_bytes = read::v0_read_str_bytes(r, "span meta value")?;
@@ -439,7 +444,7 @@ fn decode_metrics<'a>(
         return Ok(());
     }
     read::v0_check_slab_count(len, r, "span metrics")?;
-    attributes.reserve(len as usize);
+    attributes.reserve(read::preallocation(len));
     for _ in 0..len {
         let key_bytes = read::v0_read_str_bytes(r, "span metrics key")?;
         let value = read::v0_parse_f64(r, "span metrics value")?;
@@ -462,7 +467,7 @@ fn decode_meta_struct<'a>(
         return Ok(());
     }
     read::v0_check_slab_count(len, r, "span meta_struct")?;
-    attributes.reserve(len as usize);
+    attributes.reserve(read::preallocation(len));
     for _ in 0..len {
         let key = strings.read(r, "span meta_struct key")?;
         let value = read::read_bytes(r, "span meta_struct value")?;
@@ -476,14 +481,18 @@ fn decode_span_links<'a>(
     r: &mut &'a [u8], strings: &mut Strings<'a>, links: &mut Vec<SpanLink>,
 ) -> Result<(), DecodeError> {
     let len = read::v0_read_array_len(r, "span links")?;
-    links.clear();
-    links.reserve((len as usize).min(r.len() / MIN_BYTES_PER_LINK_OR_EVENT));
+    *links = Vec::with_capacity(read::preallocation(len));
+    let mut skipped_nil = false;
     for _ in 0..len {
         if read::peek_is_nil(r) {
             read::skip_nil(r);
+            skipped_nil = true;
             continue;
         }
         links.push(decode_span_link(r, strings)?);
+    }
+    if skipped_nil {
+        links.shrink_to_fit();
     }
     Ok(())
 }
@@ -506,7 +515,7 @@ fn decode_span_link<'a>(r: &mut &'a [u8], strings: &mut Strings<'a>) -> Result<S
             b"attributes" => {
                 let len = read::v0_read_map_len(r, "span link attributes")?;
                 read::v0_check_slab_count(len, r, "span link attributes")?;
-                attributes.reserve(len as usize);
+                attributes.reserve(read::preallocation(len));
                 for _ in 0..len {
                     let key = strings.read(r, "span link attribute key")?;
                     let value = strings.read(r, "span link attribute value")?;
@@ -531,14 +540,18 @@ fn decode_span_events<'a>(
     r: &mut &'a [u8], strings: &mut Strings<'a>, events: &mut Vec<SpanEvent>,
 ) -> Result<(), DecodeError> {
     let len = read::v0_read_array_len(r, "span events")?;
-    events.clear();
-    events.reserve((len as usize).min(r.len() / MIN_BYTES_PER_LINK_OR_EVENT));
+    *events = Vec::with_capacity(read::preallocation(len));
+    let mut skipped_nil = false;
     for _ in 0..len {
         if read::peek_is_nil(r) {
             read::skip_nil(r);
+            skipped_nil = true;
             continue;
         }
         events.push(decode_span_event(r, strings)?);
+    }
+    if skipped_nil {
+        events.shrink_to_fit();
     }
     Ok(())
 }
@@ -557,7 +570,7 @@ fn decode_span_event<'a>(r: &mut &'a [u8], strings: &mut Strings<'a>) -> Result<
             b"attributes" => {
                 let len = read::v0_read_map_len(r, "span event attributes")?;
                 read::v0_check_slab_count(len, r, "span event attributes")?;
-                attributes.reserve(len as usize);
+                attributes.reserve(read::preallocation(len));
                 for _ in 0..len {
                     let key = strings.read(r, "span event attribute key")?;
                     if read::peek_is_nil(r) {

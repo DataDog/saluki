@@ -261,7 +261,7 @@ fn decode_string_table(r: &mut &[u8], strings: &mut StringTable) -> Result<(), D
 /// Decodes the list of trace chunks (field 11 of the tracer payload).
 fn decode_chunk_list(r: &mut &[u8], strings: &mut StringTable) -> Result<Vec<DecodedChunk>, DecodeError> {
     let num_chunks = read::read_array_len_with_minimum(r, MIN_BYTES_PER_TRACE_CHUNK, "trace chunk list")?;
-    let mut chunks = Vec::with_capacity(num_chunks as usize);
+    let mut chunks = Vec::with_capacity(read::preallocation(num_chunks));
     for _ in 0..num_chunks {
         chunks.push(decode_chunk(r, strings)?);
     }
@@ -312,7 +312,7 @@ fn decode_chunk(r: &mut &[u8], strings: &mut StringTable) -> Result<DecodedChunk
 /// Decodes the list of spans within a trace chunk (field 4).
 fn decode_span_list(r: &mut &[u8], strings: &mut StringTable) -> Result<Vec<Span>, DecodeError> {
     let num_spans = read::read_array_len_with_minimum(r, MIN_BYTES_PER_SPAN, "span list")?;
-    let mut spans = Vec::with_capacity(num_spans as usize);
+    let mut spans = Vec::with_capacity(read::preallocation(num_spans));
     for _ in 0..num_spans {
         spans.push(decode_span(r, strings)?);
     }
@@ -377,7 +377,7 @@ fn decode_span(r: &mut &[u8], strings: &mut StringTable) -> Result<Span, DecodeE
 /// Decodes the list of span links within a span (field 11).
 fn decode_span_link_list(r: &mut &[u8], strings: &mut StringTable) -> Result<Vec<SpanLink>, DecodeError> {
     let num_links = read::read_array_len(r, "span link list")?;
-    let mut links = Vec::with_capacity(num_links as usize);
+    let mut links = Vec::with_capacity(read::preallocation(num_links));
     for _ in 0..num_links {
         links.push(decode_span_link(r, strings)?);
     }
@@ -419,7 +419,7 @@ fn decode_span_link(r: &mut &[u8], strings: &mut StringTable) -> Result<SpanLink
 /// Decodes the list of span events within a span (field 12).
 fn decode_span_event_list(r: &mut &[u8], strings: &mut StringTable) -> Result<Vec<SpanEvent>, DecodeError> {
     let num_events = read::read_array_len(r, "span event list")?;
-    let mut events = Vec::with_capacity(num_events as usize);
+    let mut events = Vec::with_capacity(read::preallocation(num_events));
     for _ in 0..num_events {
         events.push(decode_span_event(r, strings)?);
     }
