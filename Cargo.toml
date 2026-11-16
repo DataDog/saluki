@@ -233,7 +233,7 @@ tower-http = { version = "0.7", default-features = false }
 bollard = { version = "0.21", default-features = false }
 home = { version = "0.5", default-features = false }
 reqwest = { version = "0.13", default-features = false }
-lading-payload = { git = "https://github.com/DataDog/lading", rev = "4dbacec20b11eff23e0edd7fcc91300124663157" }
+lading-payload = { git = "https://github.com/DataDog/lading", rev = "0024adc7932c2d159ca03cbf6f8934c0c0db97a3" }
 # `comments` is enabled explicitly (and turned off at runtime with `emit_comments: false`) because kube-client enables
 # it through feature unification in workspace builds; doing so keeps our YAML parsing identical in every build.
 serde-saphyr = { version = "2.0", default-features = false, features = ["comments","deserialize", "serialize"] }
