@@ -181,11 +181,11 @@
 <a href=#181 id=181 data-nosnippet>181</a>
 <a href=#182 id=182 data-nosnippet>182</a>        <span class="kw">let </span>host = <span class="kw">match </span>source {
 <a href=#183 id=183 data-nosnippet>183</a>            <span class="prelude-val">Some</span>(Source {
-<a href=#184 id=184 data-nosnippet>184</a>                kind: SourceKind::HostnameKind,
+<a href=#184 id=184 data-nosnippet>184</a>                kind: SourceKind::Hostname,
 <a href=#185 id=185 data-nosnippet>185</a>                identifier,
 <a href=#186 id=186 data-nosnippet>186</a>            }) =&gt; <span class="prelude-val">Some</span>(MetaString::from(identifier)),
 <a href=#187 id=187 data-nosnippet>187</a>            <span class="prelude-val">Some</span>(Source {
-<a href=#188 id=188 data-nosnippet>188</a>                kind: SourceKind::AwsEcsFargateKind,
+<a href=#188 id=188 data-nosnippet>188</a>                kind: SourceKind::AwsEcsFargate,
 <a href=#189 id=189 data-nosnippet>189</a>                ..
 <a href=#190 id=190 data-nosnippet>190</a>            }) =&gt; <span class="prelude-val">None</span>,
 <a href=#191 id=191 data-nosnippet>191</a>            <span class="prelude-val">None </span>=&gt; <span class="prelude-val">Some</span>(<span class="self">self</span>.default_hostname.clone()),
