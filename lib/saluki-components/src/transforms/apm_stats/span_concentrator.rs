@@ -320,13 +320,7 @@ impl SpanConcentrator {
     fn add_span_internal(
         &mut self, s: &StatSpan, weight: f64, agg_key: &PayloadAggregationKey, tags: &InfraTags, origin: &str, now: u64,
     ) {
-        let end = s.start + s.duration;
-        let mut btime = (end - end % self.bsize).max(self.oldest_ts);
-        // As the trace-agent's `addSpan`, a span that ends in the future counts in the current bucket: a bucket ahead
-        // of the clock would only be flushed once the clock reaches it.
-        if btime > now {
-            btime = align_ts(now, self.bsize).max(self.oldest_ts);
-        }
+        let btime = bucket_time(s.start, s.duration, self.bsize, self.oldest_ts, now);
 
         let b = self
             .buckets
@@ -348,6 +342,22 @@ impl SpanConcentrator {
 #[inline]
 fn align_ts(ts: u64, bsize: u64) -> u64 {
     ts - ts % bsize
+}
+
+/// Returns the start of the bucket a span counts in, as the trace-agent's `addSpan` computes it.
+///
+/// The trace-agent's stat spans hold `int64` times, so a start past `i64::MAX` is negative there, and the end wraps
+/// rather than overflows; `%` truncates toward zero in both languages. An end before the oldest bucket counts in the
+/// oldest bucket, and an end in the future in the current one: a bucket ahead of the clock would only be flushed once
+/// the clock reaches it. The result is never below the oldest bucket, which is never negative.
+fn bucket_time(start: u64, duration: u64, bsize: u64, oldest_ts: u64, now: u64) -> u64 {
+    let (bsize, oldest_ts, now) = (bsize as i64, oldest_ts as i64, now as i64);
+    let end = (start as i64).wrapping_add(duration as i64);
+    let mut btime = (end - end % bsize).max(oldest_ts);
+    if btime > now {
+        btime = (now - now % bsize).max(oldest_ts);
+    }
+    btime as u64
 }
 
 /// Returns the kind of a span, of a trace ingested through `ingest_info`.
@@ -489,6 +499,38 @@ mod tests {
 
         let names: Vec<&str> = concentrator.peer_tag_keys.keys().iter().map(|k| k.as_ref()).collect();
         assert_eq!(names, ["custom.remote.service", "peer.service"]);
+    }
+
+    #[test]
+    fn spans_whose_end_overflows_count_as_the_trace_agent_counts_them() {
+        const B: u64 = BUCKET_DURATION_NS;
+        let now = 1_000 * B + 3;
+        let oldest = 998 * B;
+        // `-1` to the trace-agent: the end is `9`, before the oldest bucket.
+        assert_eq!(bucket_time(u64::MAX, 10, B, oldest, now), oldest);
+        // The end wraps past `i64::MAX` to a negative time.
+        assert_eq!(bucket_time(i64::MAX as u64 - 5, 10, B, oldest, now), oldest);
+        // An end past `i64::MAX` without wrapping is negative too.
+        assert_eq!(bucket_time(i64::MAX as u64 + 1, 0, B, oldest, now), oldest);
+        // Near `i64::MAX` without wrapping, the end is in the future.
+        assert_eq!(bucket_time(i64::MAX as u64 - 20, 10, B, oldest, now), 1_000 * B);
+        assert_eq!(bucket_time(999 * B + 1, 10, B, oldest, now), 999 * B);
+
+        // A `/v0.4` span with `start: -1` decodes to `u64::MAX`, and is aggregated rather than panicking.
+        let mut concentrator = SpanConcentrator::new(true, true, &[], Default::default(), now);
+        let measured = FastHashMap::from_iter([(MetaString::from("_dd.measured"), AttributeValue::Float(1.0))]);
+        let span = Span::new("svc", "op", "res", "web", 1, 0, u64::MAX, 10, 0).with_attributes(measured);
+        let stat_span = concentrator.new_stat_span_from_span(&span, OTLP).unwrap();
+        concentrator.add_span(
+            &stat_span,
+            1.0,
+            &PayloadAggregationKey::default(),
+            &InfraTags::default(),
+            "",
+            now,
+        );
+        let buckets: Vec<_> = concentrator.buckets.keys().copied().collect();
+        assert_eq!(buckets, [align_ts(now, B)]);
     }
 
     // `TestConcentratorFutureClamp` in `concentrator_test.go`.

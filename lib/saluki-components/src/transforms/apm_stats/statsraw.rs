@@ -169,9 +169,11 @@ impl RawBucket {
             gs.errors += weight;
         }
 
-        gs.duration += (span.duration as f64) * weight;
+        // The trace-agent's stat spans hold an `int64` duration, so a duration past `i64::MAX` counts as negative.
+        let duration = span.duration as i64;
+        gs.duration += (duration as f64) * weight;
 
-        let trunc_dur = ns_timestamp_to_float(span.duration);
+        let trunc_dur = ns_timestamp_to_float(duration);
         if span.error != 0 {
             gs.err_distribution
                 .get_or_insert_with(|| Box::new(ApmDDSketch::default()))
@@ -248,7 +250,7 @@ pub(super) fn new_aggregation_from_span(
     }
 }
 // Convert a nanosec timestamp into a float nanosecond timestamp truncated to a fixed precision.
-fn ns_timestamp_to_float(ns: u64) -> f64 {
+fn ns_timestamp_to_float(ns: i64) -> f64 {
     let f = ns as f64;
     let bits = f.to_bits();
     // IEEE-754
@@ -295,16 +297,19 @@ mod tests {
 
     #[test]
     fn test_ns_timestamp_to_float() {
-        let ns: u64 = 1_000_000_000;
+        let ns: i64 = 1_000_000_000;
         let truncated = ns_timestamp_to_float(ns);
         let relative_error = ((truncated - ns as f64) / (ns as f64)).abs();
         assert!(relative_error < 0.001, "relative error too large: {}", relative_error);
 
         assert_eq!(ns_timestamp_to_float(0), 0.0);
 
-        let small: u64 = 1000;
+        let small: i64 = 1000;
         let truncated_small = ns_timestamp_to_float(small);
         assert!(truncated_small > 0.0);
+
+        // A duration past `i64::MAX` is negative to the trace-agent, as `int64` stat span durations are.
+        assert!(ns_timestamp_to_float(u64::MAX as i64) < 0.0);
     }
 
     #[test]
