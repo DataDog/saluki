@@ -17,6 +17,7 @@ use crate::decoders::datadog::DecodedV1;
 #[derive(Clone, Debug)]
 enum V {
     Nil,
+    Bool(bool),
     Int(i64),
     Uint(u64),
     F64(f64),
@@ -51,6 +52,7 @@ fn f64_map(entries: &[(&str, f64)]) -> V {
 fn write(out: &mut Vec<u8>, value: &V) {
     match value {
         V::Nil => encode::write_nil(out).unwrap(),
+        V::Bool(b) => encode::write_bool(out, *b).unwrap(),
         V::Int(i) => {
             encode::write_sint(out, *i).unwrap();
         }
@@ -773,5 +775,198 @@ proptest! {
             }
         }
         prop_assert_eq!(trace.trace_id_low, spans.last().map_or(0, |span| span.2));
+    }
+}
+
+#[test]
+fn span_links_match_reference() {
+    // TestConvertedSpanLinks, with a `nil` link dropped as in TestSpanUnmarshalMsgConvertedDropsNilLinksAndEvents.
+    let link = obj(vec![
+        ("trace_id", V::Uint(0xAABB)),
+        ("trace_id_high", V::Uint(0x1234)),
+        ("span_id", V::Uint(1111)),
+        ("attributes", str_map(&[("link.attr", "link.value")])),
+        ("tracestate", s("test=state")),
+        ("flags", V::Uint(1)),
+    ]);
+    let trace = decode_one(obj(vec![("span_links", V::Arr(vec![V::Nil, link, obj(vec![])]))]));
+    let links = trace.spans()[0].span_links();
+    assert_eq!(links.len(), 2);
+    let link = &links[0];
+    assert_eq!((link.trace_id_high(), link.trace_id()), (0x1234, 0xAABB));
+    assert_eq!(link.span_id(), 1111);
+    assert_eq!(link.tracestate(), "test=state");
+    assert_eq!(link.flags(), 1);
+    assert_eq!(link.attributes().len(), 1);
+    assert_eq!(link.attributes().get("link.attr"), Some(&string_attr("link.value")));
+
+    // `trace_id_high` and `flags` are strict unsigned reads, unlike the IDs.
+    for (field, value) in [
+        ("trace_id_high", V::Int(-1)),
+        ("flags", V::Uint(u64::from(u32::MAX) + 1)),
+    ] {
+        let error = decode_err(vec![vec![obj(vec![(
+            "span_links",
+            V::Arr(vec![obj(vec![(field, value)])]),
+        )])]]);
+        assert!(matches!(error, DecodeError::Msgpack { .. }), "{field}: {error:?}");
+    }
+    // A `nil` list is an error, unlike a `nil` meta map.
+    let error = decode_err(vec![vec![obj(vec![("span_links", V::Nil)])]]);
+    assert!(
+        matches!(
+            error,
+            DecodeError::Msgpack {
+                context: "span links",
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+}
+
+fn any_value(fields: Vec<(&str, V)>) -> V {
+    obj(fields)
+}
+
+#[test]
+fn span_events_match_reference() {
+    // TestConvertedSpanEvents.
+    let array = any_value(vec![
+        ("type", V::Int(4)),
+        (
+            "array_value",
+            obj(vec![(
+                "values",
+                V::Arr(vec![
+                    any_value(vec![("type", V::Int(0)), ("string_value", s("array.value"))]),
+                    any_value(vec![("type", V::Int(2)), ("int_value", V::Int(100))]),
+                    any_value(vec![("type", V::Int(1)), ("bool_value", V::Bool(true))]),
+                    any_value(vec![("type", V::Int(3)), ("double_value", V::F64(2.5))]),
+                ]),
+            )]),
+        ),
+    ]);
+    let event = obj(vec![
+        ("time_unix_nano", V::Uint(171615)),
+        ("name", s("span-name")),
+        (
+            "attributes",
+            V::Map(vec![
+                (
+                    s("event.attr"),
+                    any_value(vec![("type", V::Int(0)), ("string_value", s("event.value"))]),
+                ),
+                (
+                    s("event.bool"),
+                    any_value(vec![("type", V::Int(1)), ("bool_value", V::Bool(true))]),
+                ),
+                (
+                    s("event.int"),
+                    any_value(vec![("type", V::Int(2)), ("int_value", V::Int(42))]),
+                ),
+                (
+                    s("event.double"),
+                    any_value(vec![("type", V::Int(3)), ("double_value", V::F64(2.5))]),
+                ),
+                (s("event.array"), array),
+            ]),
+        ),
+    ]);
+    let trace = decode_one(obj(vec![("span_events", V::Arr(vec![V::Nil, event]))]));
+    let events = trace.spans()[0].span_events();
+    assert_eq!(events.len(), 1);
+    let event = &events[0];
+    assert_eq!(event.time_unix_nano(), 171615);
+    assert_eq!(event.name(), "span-name");
+    let attributes = event.attributes();
+    assert_eq!(attributes.len(), 5);
+    assert_eq!(attributes.get("event.attr"), Some(&string_attr("event.value")));
+    assert_eq!(attributes.get("event.bool"), Some(&AttributeValue::Bool(true)));
+    assert_eq!(attributes.get("event.int"), Some(&AttributeValue::Int(42)));
+    assert_eq!(attributes.get("event.double"), Some(&AttributeValue::Float(2.5)));
+    assert_eq!(
+        attributes.get("event.array"),
+        Some(&AttributeValue::Array(vec![
+            string_attr("array.value"),
+            AttributeValue::Int(100),
+            AttributeValue::Bool(true),
+            AttributeValue::Float(2.5),
+        ]))
+    );
+}
+
+#[test]
+fn span_event_attributes_drop_nil_and_unknown_values() {
+    // TestSpanEventUnmarshalMsgConvertedDropsNilEntries, plus an unknown type and a `float32` double.
+    let array = any_value(vec![
+        ("type", V::Int(4)),
+        (
+            "array_value",
+            obj(vec![(
+                "values",
+                V::Arr(vec![
+                    V::Nil,
+                    any_value(vec![("type", V::Int(0)), ("string_value", s("x"))]),
+                    V::Nil,
+                    any_value(vec![("type", V::Int(9))]),
+                ]),
+            )]),
+        ),
+    ]);
+    let event = obj(vec![(
+        "attributes",
+        V::Map(vec![
+            (
+                s("keepStr"),
+                any_value(vec![("type", V::Int(0)), ("string_value", s("keep"))]),
+            ),
+            (s("nilAttr"), V::Nil),
+            (s("unknownType"), any_value(vec![("type", V::Int(9))])),
+            (
+                s("float32"),
+                any_value(vec![("type", V::Int(3)), ("double_value", V::F32(0.5))]),
+            ),
+            (s("arr"), array),
+        ]),
+    )]);
+    let trace = decode_one(obj(vec![("span_events", V::Arr(vec![event]))]));
+    let attributes = trace.spans()[0].span_events()[0].attributes();
+    assert_eq!(attributes.len(), 3, "{attributes:?}");
+    assert_eq!(attributes.get("keepStr"), Some(&string_attr("keep")));
+    assert_eq!(attributes.get("float32"), Some(&AttributeValue::Float(0.5)));
+    assert_eq!(
+        attributes.get("arr"),
+        Some(&AttributeValue::Array(vec![string_attr("x")]))
+    );
+
+    // Nesting is bounded.
+    let mut nested = any_value(vec![("type", V::Int(0))]);
+    for _ in 0..70 {
+        nested = any_value(vec![
+            ("type", V::Int(4)),
+            ("array_value", obj(vec![("values", V::Arr(vec![nested]))])),
+        ]);
+    }
+    let event = obj(vec![("attributes", V::Map(vec![(s("deep"), nested)]))]);
+    let error = decode_err(vec![vec![obj(vec![("span_events", V::Arr(vec![event]))])]]);
+    assert!(matches!(error, DecodeError::DepthExceeded { max: 64 }), "{error:?}");
+}
+
+#[test]
+fn meta_struct_maps_to_bytes_attributes() {
+    let trace = decode_one(obj(vec![
+        ("meta", str_map(&[("bts", "text")])),
+        ("meta_struct", V::Map(vec![(s("bts"), V::Bin(b"bar".to_vec()))])),
+    ]));
+    assert_eq!(
+        attr(&trace.spans()[0], "bts"),
+        Some(&AttributeValue::Bytes(b"bar".to_vec()))
+    );
+
+    // Values are `bin` only, and a `nil` map is an error.
+    for value in [V::Map(vec![(s("k"), s("v"))]), V::Nil] {
+        let error = decode_err(vec![vec![obj(vec![("meta_struct", value.clone())])]]);
+        assert!(matches!(error, DecodeError::Msgpack { .. }), "{value:?}: {error:?}");
     }
 }

@@ -522,6 +522,52 @@ pub fn v0_parse_f64(r: &mut &[u8], context: &'static str) -> Result<f64, DecodeE
     })
 }
 
+/// Reads a `uint64` as `msgp.ReadUint64Bytes`: a non-negative integer of any width. `nil` and
+/// negative integers are errors.
+pub fn v0_read_u64(r: &mut &[u8], context: &'static str) -> Result<u64, DecodeError> {
+    match r.first() {
+        None => Err(DecodeError::ShortBytes { context }),
+        Some(&b) if is_int_marker(b) => match read_wire_int(r, context)? {
+            WireInt::Signed(i) => u64::try_from(i).map_err(|_| invalid(context, "negative integer for a uint")),
+            WireInt::Unsigned(u) => Ok(u),
+        },
+        Some(&b) => Err(invalid(context, format!("expected a uint, found marker {b:#04x}"))),
+    }
+}
+
+/// Reads a `uint32` as `msgp.ReadUint32Bytes`.
+pub fn v0_read_u32(r: &mut &[u8], context: &'static str) -> Result<u32, DecodeError> {
+    u32::try_from(v0_read_u64(r, context)?).map_err(|_| invalid(context, "integer overflows uint32"))
+}
+
+/// Reads an `int64` as `msgp.ReadInt64Bytes`: an integer of any width up to `i64::MAX`.
+pub fn v0_read_i64(r: &mut &[u8], context: &'static str) -> Result<i64, DecodeError> {
+    match r.first() {
+        None => Err(DecodeError::ShortBytes { context }),
+        Some(&b) if is_int_marker(b) => match read_wire_int(r, context)? {
+            WireInt::Signed(i) => Ok(i),
+            WireInt::Unsigned(u) => i64::try_from(u).map_err(|_| invalid(context, "uint64 overflows int64")),
+        },
+        Some(&b) => Err(invalid(context, format!("expected an int, found marker {b:#04x}"))),
+    }
+}
+
+/// Reads a `float64` as `msgp.ReadFloat64Bytes`: a `float64` or a `float32`, but not an integer.
+pub fn v0_read_f64(r: &mut &[u8], context: &'static str) -> Result<f64, DecodeError> {
+    match r.first() {
+        None => Err(DecodeError::ShortBytes { context }),
+        Some(0xcb) => {
+            *r = &r[1..];
+            Ok(f64::from_be_bytes(take_array(r, context)?))
+        }
+        Some(0xca) => {
+            *r = &r[1..];
+            Ok(f64::from(f32::from_be_bytes(take_array(r, context)?)))
+        }
+        Some(&b) => Err(invalid(context, format!("expected a float, found marker {b:#04x}"))),
+    }
+}
+
 /// Reads the length of a `str` or `bin` value, or returns `None` if the next value is neither.
 fn read_str_or_bin_len(r: &mut &[u8], context: &'static str) -> Result<Option<usize>, DecodeError> {
     let Some(&marker) = r.first() else {
