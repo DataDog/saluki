@@ -39,7 +39,7 @@ use tokio::{
 use tracing::{debug, error};
 
 use crate::common::datadog::{
-    get_root_span_index, get_tracer_hostname,
+    get_tracer_hostname,
     io::RB_BUFFER_CHUNK_SIZE,
     request_builder::{EndpointEncoder, RequestBuilder},
     telemetry::ComponentTelemetry,
@@ -628,16 +628,8 @@ impl TraceEndpointEncoder {
         } else {
             None
         };
-        // The root span is only needed when the payload carries no hostname.
-        let root_span = trace
-            .payload
-            .hostname
-            .is_empty()
-            .then(|| get_root_span_index(trace.spans()))
-            .flatten()
-            .and_then(|idx| trace.spans().get(idx));
         let hostname_str: Option<&str> = resolve_hostname(
-            get_tracer_hostname(trace, root_span).map(|hostname| hostname.as_ref()),
+            get_tracer_hostname(trace).map(|hostname| hostname.as_ref()),
             matches!(trace.ingest_info(), TraceIngestInfo::Otlp { .. }),
             Some(self.default_hostname.as_ref()),
             self.ignore_missing_datadog_fields,

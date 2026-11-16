@@ -264,7 +264,7 @@ impl ApmStats {
                 }
             });
 
-        let hostname = get_tracer_hostname(trace, root_span)
+        let hostname = get_tracer_hostname(trace)
             .cloned()
             .unwrap_or_else(|| self.agent_hostname.clone());
 
@@ -1896,7 +1896,7 @@ mod tests {
     }
 
     #[test]
-    fn test_hostname_prefers_payload_then_root_span_then_agent() {
+    fn hostname_prefers_payload_then_root_span_then_agent() {
         let now = now_nanos();
         let transform = ApmStats {
             concentrator: SpanConcentrator::new(true, true, &[], Default::default(), now),
@@ -1930,6 +1930,31 @@ mod tests {
         assert_eq!(hostname(&trace_with("payload-host", Some("root-host"))), "payload-host");
         assert_eq!(hostname(&trace_with("", Some("root-host"))), "root-host");
         assert_eq!(hostname(&trace_with("", None)), "agent-host");
+    }
+
+    #[test]
+    fn otlp_trace_without_a_hostname_is_attributed_to_the_configured_hostname() {
+        let now = now_nanos();
+        let transform = ApmStats {
+            concentrator: SpanConcentrator::new(true, true, &[], Default::default(), now),
+            flush_interval: DEFAULT_FLUSH_INTERVAL,
+            agent_env: MetaString::default(),
+            agent_hostname: MetaString::from("agent-host"),
+            workload_provider: None,
+            splits: Counter::noop(),
+        };
+
+        // A serverless OTLP resource reports no hostname, so its stats use the configured one. The trace payload
+        // itself stays empty.
+        let span = Span::new("svc", "op", "res", "web", 1, 0, now, 1_000_000, 0);
+        let trace = Trace::new(
+            vec![span],
+            TraceIngestInfo::Otlp {
+                receiver_sampling_rate: 1.0,
+            },
+        );
+        let key = transform.build_payload_key(&trace, "", ContainerVersionData::default());
+        assert_eq!(key.hostname.as_ref(), "agent-host");
     }
 
     proptest! {
