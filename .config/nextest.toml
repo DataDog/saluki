@@ -1,0 +1,4 @@
+# The `ci` profile is selected in CI by setting `NEXTEST_PROFILE=ci`. It writes a JUnit report to
+# `target/nextest/ci/junit.xml`, which CI uploads to Datadog Test Optimization.
+[profile.ci.junit]
+path = "junit.xml"
