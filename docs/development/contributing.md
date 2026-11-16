@@ -28,6 +28,19 @@ For example, if you're working on changes to a component that requires adding ne
 supporting changes and then the final change that makes the component use the new functionality. Stack dependent PRs
 on top of each other so that each one can be reviewed on its own.
 
+Reviewers check the scope of each PR:
+
+<!-- review:scope -->
+- Large refactors that a pull request makes possible belong in later pull requests. Don't flag their absence.
+- Flag code that nothing in the pull request uses, such as a speculative helper or a feature that no caller connects.
+  This is fine when the pull request description names the stacked pull request that uses the code.
+- If the change leaves a known hazard or a known performance gap, suggest a `TODO` comment that names it, or an issue,
+  in a "Not blocking:" comment. Skip this when the pull request description already names the gap and the pull request
+  that closes it.
+- Flag a pull request title that doesn't describe what the code does. We squash-merge, so the title becomes the
+  commit title on `main`.
+<!-- /review -->
+
 ### Testing
 
 We generally require unit tests for bug fixes, as well as new features. See [Testing](./testing.md) for the kinds of
@@ -109,6 +122,12 @@ configuration, metrics, telemetry, defaults, performance characteristics, error 
 A note isn't needed for changes with no observable effect on the shipped binary: tests, documentation, CI
 configuration, developer tooling, dependency bumps that change no behavior, and pure refactors.
 
+Some features aren't ready for users to turn on yet. The diff, the docs, or the note says so, for example "not intended
+for production traffic." For such a feature, the note only says that the feature exists, without its configuration keys
+or defaults. A change that only makes such a feature work as intended doesn't need a note. An experimental feature that
+users can turn on still names its keys, such as `experimental.metrics_endpoint_routing.metric_allowlist`. The Datadog
+Agent changelog links to the Agent Data Plane GitHub release, so Datadog Agent users read these notes too.
+
 ### Create the note
 
 ```shell
@@ -188,6 +207,15 @@ After the first review, make follow-up reviews easier:
   conversation.
 - In a stack of PRs, restacking after a change lower in the stack rewrites the branches above it. That's expected:
   keep the rewrite to the restack itself, and push feedback fixes as their own commits.
+
+### Responding to AI review
+
+Treat a comment from an AI reviewer like any other review comment:
+
+- Answer each thread. Say what you changed, or give a short reason why you didn't. Don't resolve a thread without a
+  reply.
+- Apply a nit only if it follows our conventions, not only because a reviewer asked for it.
+- If an agent replies for you, the reply says that an agent wrote it.
 
 ## Merging to `main`
 

@@ -199,6 +199,63 @@ your code agrees with your own assumptions about the dependency; a real round-tr
 works. Reserve mocks and test doubles for the specific branch or failure mode that real infrastructure genuinely cannot
 trigger deterministically, but not as a default first choice.
 
+## Flaky tests
+
+A flaky test passes or fails by chance, and people learn to ignore its failures. These patterns caused flaky tests in
+Saluki. A pull request number at the end of a rule points to the fix for a flaky test that the rule guards against.
+
+### Process-wide state
+
+<!-- review:process-wide-state -->
+Every test in a process sees the same environment variables and other process-wide state. `cargo test` runs the tests
+of one binary on threads of one process, so a change in one test reaches every test that runs at the same time.
+`make test` runs `cargo nextest`, which runs each test in its own process, so CI doesn't show the race.
+
+- Pass values to the code under test instead of changing the process environment, when the code allows it.
+- A test that changes environment variables holds `saluki_config::test_env_lock`, from the `test-util` feature of
+  `saluki-config`. All such tests share this one lock. `ConfigurationLoader::for_tests` takes the lock itself, so a
+  test that already holds the lock waits forever. Pass variables through its `env_vars` argument instead, and don't
+  hold the lock around that call.
+- When a test changes other process-wide state, and another test in the same binary reads that state, the two tests
+  share one lock. A `static` mutex inside each test function is a different mutex in each function, so the tests still
+  run at the same time.
+- Setup that every test does the same way needs no lock when a second call does no harm. An example is a call to
+  `saluki_tls::initialize_default_crypto_provider()` whose error the test ignores. Each top-level file in a crate's
+  `tests/` directory builds a separate binary, so a file that holds one test needs no lock either.
+- A test result doesn't depend on variables that the machine already sets. CI runners set their own, such as proxy
+  variables. (Configuration tests read the CI runner's proxy variables and failed on `main`: #2235.)
+<!-- /review -->
+
+### Ports
+
+<!-- review:ports -->
+Don't reserve a port by binding port `0` and then releasing it for the code under test. Another test can take the port
+in the gap, and then the bind fails. Let the code under test bind port `0` itself and publish the address that it
+bound. For example, `HttpServer` asserts its `BoundListenAddress` in the dataspace when you set a server identifier with
+`with_server_id`, and the test reads the address through `TestSupervisor::dataspace`. (A relay test failed in CI
+because its server couldn't bind the port that the test released: #3142.)
+<!-- /review -->
+
+### Timing
+
+<!-- review:timing -->
+A test that sleeps for a fixed time and then expects background work to finish fails on a slow or busy machine. Wait
+for the effect under a deadline instead:
+
+- Poll the condition, for example with `ComponentControl::wait_until`.
+- Wait for a signal from the code under test, such as a message on a channel.
+- When the code waits only on Tokio timers, use Tokio's paused time, with `#[tokio::test(start_paused = true)]`.
+
+Under paused time, Tokio skips to the next timer when every task waits. Code that waits on real I/O or on a blocking
+thread looks idle to Tokio, so a deadline can expire before that code finishes. Code that reads `std::time::Instant`
+ignores paused time, so a rate limiter that uses it can refill while the test runs. To test a burst limit, set a
+refill rate so low that nothing refills during the test.
+
+Don't assume that a fixed number of short sleeps takes a fixed time. Windows timers round up to about 15.6 ms, so 60
+sleeps of 5 ms take about 0.9 s, not 0.3 s. End the loop when the event count reaches its target, or when a deadline
+passes. (A supervisor test used up its restart budget this way on Windows: #2978.)
+<!-- /review -->
+
 ## Regression tests and ported tests should name their source
 
 When you add a regression test for a bug you just fixed, write a comment that names the exact historical failure mode,
@@ -218,3 +275,26 @@ statistical baseline or regression threshold, and it invites duplication.
 
 You **SHOULD** write a proper benchmark, whether through an actual benchmarking crate like `criterion` or through
 [SMP](./testing.md#benchmark-tests-single-machine-performance-smp) for full-system throughput/memory regressions.
+
+## Review checklist
+
+Reviewers check the tests in a pull request, and the tests that its production changes need. The rules in
+[Flaky tests](#flaky-tests) also apply.
+
+<!-- review:review-checklist -->
+- Flag a property test whose name doesn't start with `property_test_`. The Make targets select property tests by this
+  name, so a property test with another name can run in the unit test job instead.
+- Report a new test function whose name starts with `test_` as a nit.
+- Flag a test that can't fail when the production behavior that it covers regresses. Examples are a test with no
+  assertions, a property test with no `prop_assert!`, an assertion inside an `if let` with no `else`, a test that
+  asserts only on values that it built, a test that restates a constant, and a test of a test helper. An `#[ignore]`
+  test that only prints a fact about the code, such as the size of a type, needs no assertion.
+- Flag a new test that repeats the coverage of an existing test. Also flag four or more near-identical test functions
+  that one table-driven test can replace.
+- Flag new production behavior that has no unit test, including new input forms such as short-form aliases. Don't ask
+  for a direct test of trivial logic, such as a getter or a single comparison.
+- Flag a test that drives a component's run loop with a hand-built context instead of `TestComponentDriver`. A
+  hand-built context is fine for a branch that the driver can't reach, such as an output with no downstream component.
+  For a supervised worker that isn't a whole component, flag a bare `Supervisor` where `TestSupervisor` works.
+- Flag setup or assertions copied from a neighboring test that don't apply to the behavior under test.
+<!-- /review -->

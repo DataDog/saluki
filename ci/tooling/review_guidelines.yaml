@@ -1,0 +1,168 @@
+# Layout of the generated `codereview_guideline.md` files. See "Edit the guidelines" in docs/development/code-review.md.
+#
+# Each entry under `files` is one generated file:
+#
+# - `path`: where the file goes. The root file applies to every pull request. A file in a subdirectory applies only to
+#   pull requests that change files under that directory.
+# - `title`: the `##` heading at the top of the file. The review action joins every file that applies in path order, so
+#   the root file can come before or after a scoped file, and each file needs a heading of its own.
+# - `sections`: the regions to include, in order. `region` is `<page>.md#<name>`, for a region of a page in
+#   docs/development. With `level`, a heading of that level comes before the region: its text is `heading`, or the
+#   heading above the region in the docs page when `heading` isn't set.
+#
+# `ignore_names` lists Rust names that the guidelines mention on purpose even though they don't exist in the code, such
+# as examples of names to avoid. `check` doesn't warn about them.
+
+ignore_names:
+  - EventPriority
+
+files:
+  - path: codereview_guideline.md
+    title: Saluki review guidelines
+    sections:
+      - region: how-we-review.md#preamble
+      - region: how-we-review.md#writing-findings
+        level: 2
+        heading: How to write a finding
+      - region: how-we-review.md#severity
+        level: 2
+      - region: how-we-review.md#do-not-flag
+        level: 2
+        heading: What not to flag
+      - region: code-review.md#checklist-intro
+        level: 2
+        heading: Project-specific review checklist
+      - region: style-guide.md#layering
+        level: 3
+        heading: Saluki and ADP layering
+      - region: conventions.md#generated-files
+        level: 3
+        heading: Generated and vendored files
+      - region: conventions.md#agent-parity
+        level: 3
+        heading: Matching the Datadog Agent
+      - region: conventions.md#reuse
+        level: 3
+        heading: Reuse what exists
+      - region: conventions.md#api-routes
+        level: 3
+        heading: API routes and control plane workers
+      - region: conventions.md#hot-paths
+        level: 3
+        heading: Hot paths and memory
+      - region: conventions.md#concurrency
+        level: 3
+        heading: Concurrency and lifecycle
+      - region: style-guide.md#error-handling
+        level: 3
+        heading: Error handling
+      - region: style-guide.md#log-messages
+        level: 3
+        heading: Log messages
+      - region: conventions.md#telemetry
+        level: 3
+        heading: Internal telemetry
+      - region: conventions.md#numbers
+        level: 3
+        heading: Numbers and identity
+      - region: conventions.md#security
+        level: 3
+        heading: Security
+      - region: style-guide.md#api-design
+        level: 3
+        heading: API design and naming
+      - region: style-guide.md#nits
+        level: 3
+        heading: Nits
+      - region: testing-patterns.md#review-checklist
+        level: 3
+        heading: Tests
+      - region: testing-patterns.md#process-wide-state
+        level: 4
+      - region: testing-patterns.md#ports
+        level: 4
+      - region: testing-patterns.md#timing
+        level: 4
+      - region: style-guide.md#comments-and-docs
+        level: 3
+        heading: Comments and documentation
+      - region: conventions.md#build-plumbing
+        level: 3
+        heading: Build and release plumbing
+      - region: contributing.md#scope
+        level: 3
+        heading: Scope
+
+  - path: lib/datadog-agent/config/codereview_guideline.md
+    title: Configuration system review checklist
+    sections:
+      - region: configuration-system.md#config-schema
+
+  - path: lib/agent-data-plane-config/codereview_guideline.md
+    title: Configuration model review checklist
+    sections:
+      - region: configuration-system.md#config-model
+
+  - path: lib/agent-data-plane-config-system/codereview_guideline.md
+    title: Configuration translation review checklist
+    sections:
+      - region: configuration-system.md#config-translation
+      - region: configuration-system.md#config-stream
+        level: 3
+
+  - path: lib/datadog-agent/runtime/codereview_guideline.md
+    title: Remote agent runtime review checklist
+    sections:
+      - region: configuration-system.md#remote-agent-runtime
+      - region: configuration-system.md#config-stream
+        level: 3
+
+  - path: lib/saluki-config/codereview_guideline.md
+    title: Configuration library review checklist
+    sections:
+      - region: configuration-system.md#config-library
+
+  - path: lib/saluki-core/codereview_guideline.md
+    title: Core crate review checklist
+    sections:
+      - region: conventions.md#saluki-core
+
+  - path: lib/saluki-io/codereview_guideline.md
+    title: I/O crate review checklist
+    sections:
+      - region: code-review.md#saluki-io
+
+  - path: lib/saluki-components/codereview_guideline.md
+    title: Components review checklist
+    sections:
+      - region: code-review.md#saluki-components
+
+  - path: lib/saluki-env/codereview_guideline.md
+    title: Environment and workload review checklist
+    sections:
+      - region: code-review.md#saluki-env
+
+  - path: bin/agent-data-plane/codereview_guideline.md
+    title: Agent Data Plane review checklist
+    sections:
+      - region: code-review.md#agent-data-plane
+
+  - path: bin/correctness/codereview_guideline.md
+    title: Correctness tooling review checklist
+    sections:
+      - region: testing.md#correctness-tooling
+
+  - path: test/codereview_guideline.md
+    title: Test case review checklist
+    sections:
+      - region: testing.md#test-cases
+
+  - path: .github/codereview_guideline.md
+    title: GitHub workflow review checklist
+    sections:
+      - region: code-review.md#github
+
+  - path: .gitlab/codereview_guideline.md
+    title: GitLab CI review checklist
+    sections:
+      - region: code-review.md#gitlab
