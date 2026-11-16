@@ -1,0 +1,10 @@
+# Sets two YAML values above their schema maximum, with schema.enforce unset.
+# Shows that by default schema validation only warns: both values keep their file source.
+name: schema-violation-kept-without-enforce
+group: behavior
+why: [schema-violation-kept-by-default]
+yaml: |
+  log_file_max_rolls: 2000
+  apm_config:
+    extra_sample_rate: 150
+keys: [log_file_max_rolls, apm_config.extra_sample_rate]

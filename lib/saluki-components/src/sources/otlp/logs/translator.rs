@@ -4,6 +4,7 @@ use opentelemetry_semantic_conventions::resource::{HOST_NAME, SERVICE_NAME};
 use otlp_protos::opentelemetry::proto::common::v1::InstrumentationScope;
 use otlp_protos::opentelemetry::proto::logs::v1::{LogRecord, ResourceLogs as OtlpResourceLogs, ScopeLogs};
 use otlp_protos::opentelemetry::proto::resource::v1::Resource;
+use saluki_common::time::get_unix_timestamp_nanos;
 use saluki_core::data_model::{
     event::log::Log,
     origin::OriginTagsResolver,
@@ -121,7 +122,8 @@ impl ResourceLogsIter {
                         record_host,
                         record_service,
                         self.attribute_tags.clone(),
-                    );
+                    )
+                    .with_ingestion_timestamp(get_unix_timestamp_nanos());
 
                     return Some(log);
                 }
@@ -500,6 +502,24 @@ mod tests {
             props.get("otel.severity_number"),
             Some(&JsonValue::String("5".to_string()))
         );
+    }
+
+    #[test]
+    fn test_translated_logs_get_an_ingestion_timestamp() {
+        let before = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+        let log = translate_log(otlp_logs_v1::LogRecord::default(), empty_resource(), None);
+        let after = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+
+        let ingestion_timestamp = log
+            .ingestion_timestamp()
+            .expect("translated logs should have an ingestion time");
+        assert!((before..=after).contains(&ingestion_timestamp));
     }
 
     #[test]

@@ -16,6 +16,7 @@ use saluki_core::{
 };
 use saluki_error::{generic_error, GenericError};
 use stringtheory::MetaString;
+use tracing::error;
 
 /// The compiled form of one [`ReplaceRule`].
 #[derive(Clone, Debug)]
@@ -48,6 +49,13 @@ pub struct ReplaceRule {
 
 /// Tags that hold stack traces, replaced whole when stack trace removal is enabled.
 const STACK_TRACE_TAGS: [&str; 2] = ["error.stack", "exception.stacktrace"];
+
+/// The span tag holding the env.
+///
+/// Stats and sampling can take their env from this tag, so no rule may rewrite it: rules named `env` are dropped at
+/// build time, and `*` rules skip it. Span-event attributes named `env` aren't the span env, so `*` rules still rewrite
+/// them.
+const ENV_TAG: &str = "env";
 
 /// Trace tag replacer configuration.
 pub struct TraceTagReplacerConfiguration {
@@ -109,12 +117,14 @@ impl TraceTagReplacer {
     }
 
     fn replace_everywhere(&self, span: &mut Span, re: &Regex, repl: &str) {
-        rewrite_non_hidden(span.attributes.iter_mut(), re, repl);
+        rewrite_attributes(span.attributes.iter_mut(), re, repl, |key| {
+            key != ENV_TAG && !is_hidden(key)
+        });
 
         self.replace_resource(span, re, repl);
 
         for event in span.span_events_mut() {
-            rewrite_non_hidden(event.attributes_mut().iter_mut(), re, repl);
+            rewrite_attributes(event.attributes_mut().iter_mut(), re, repl, |key| !is_hidden(key));
         }
     }
 
@@ -151,15 +161,20 @@ impl SynchronousTransform for TraceTagReplacer {
     }
 }
 
-fn rewrite_non_hidden<'a, I>(entries: I, re: &Regex, repl: &str)
+fn is_hidden(key: &str) -> bool {
+    key.starts_with('_')
+}
+
+/// Rewrites the value of every entry whose key passes `replaceable`.
+fn rewrite_attributes<'a, I, F>(entries: I, re: &Regex, repl: &str, replaceable: F)
 where
     I: Iterator<Item = (&'a MetaString, &'a mut AttributeValue)>,
+    F: Fn(&str) -> bool,
 {
     for (key, value) in entries {
-        if key.as_ref().starts_with('_') {
-            continue;
+        if replaceable(key.as_ref()) {
+            replace_in_place(value, re, repl);
         }
-        replace_in_place(value, re, repl);
     }
 }
 
@@ -214,6 +229,9 @@ fn replace_str(value: &str, re: &Regex, repl: &str) -> Option<String> {
 
 /// Compiles the raw rules into their working form.
 ///
+/// Rules named `env` are compiled, so an invalid pattern still fails, then dropped with an error log: replacing the span
+/// env would change the env that stats and sampling use.
+///
 /// # Errors
 ///
 /// Returns an error if a rule's `pattern` fails to compile, naming the rule. Startup fails rather
@@ -230,6 +248,16 @@ fn compile_rules(rules: &[ReplaceRule]) -> Result<Vec<CompiledRule>, GenericErro
                 e
             )
         })?;
+        if rule.name == ENV_TAG {
+            error!(
+                config_key = "apm_config.replace_tags",
+                pattern = %rule.pattern,
+                "Ignoring the replace rule for \"env\": replace rules cannot change the env, as it is used for sampling \
+                 and stats. Set the env in the tracer instead, see \
+                 https://docs.datadoghq.com/getting_started/tracing/#environment-name."
+            );
+            continue;
+        }
         let target = match rule.name.as_str() {
             "*" => RuleTarget::All,
             "resource.name" => RuleTarget::Resource,
@@ -692,5 +720,84 @@ mod tests {
             message
         );
         assert!(message.contains("http.url"), "error names the rule: {}", message);
+    }
+
+    // Ported from the Go trace agent's `TestCompileReplaceRulesDropsEnv` and `TestReplacerWildcardEnv`
+    // (datadog-agent 927a054f307, https://github.com/DataDog/datadog-agent/pull/59980). Replacing the span env changed
+    // the env used for stats and sampling, so tracers received sample rates for an env they didn't know.
+
+    #[test]
+    fn env_rules_are_dropped_and_other_rules_kept_in_order() {
+        let rules = raw_rules(&[
+            ("http.url", "guid", "[REDACTED]"),
+            ("env", ".*", "myenv"),
+            ("*", "secret", "?"),
+            ("env", "prod", "production"),
+        ]);
+
+        let compiled = compile_rules(&rules).expect("rules compile");
+        let targets = compiled.iter().map(|rule| rule.target.clone()).collect::<Vec<_>>();
+        assert_eq!(targets, [RuleTarget::Tag("http.url".to_owned()), RuleTarget::All]);
+
+        let only_env = compile_rules(&raw_rules(&[("env", ".*", "myenv")])).expect("rules compile");
+        assert!(only_env.is_empty(), "a rule set of only env rules compiles to nothing");
+    }
+
+    #[test]
+    fn env_rule_leaves_span_and_span_event_env_untouched() {
+        let mut span = span_with(
+            "res",
+            attrs(&[("env", "prod")]),
+            vec![event(1, "e", &[("env", "prod")])],
+        );
+
+        replacer(&[("env", "prod", "production")]).replace_span(&mut span);
+
+        assert_eq!(string_attr(&span, "env"), Some("prod"));
+        assert_eq!(event_string_attr(&span, "env"), Some("prod"));
+    }
+
+    #[test]
+    fn env_rule_with_invalid_pattern_still_fails_compilation() {
+        let err = compile_rules(&raw_rules(&[("env", "(", "myenv")])).expect_err("invalid env pattern must fail");
+        let message = format!("{}", err);
+        assert!(message.contains("'env'"), "error names the rule: {}", message);
+    }
+
+    #[test]
+    fn wildcard_rule_skips_span_env_but_rewrites_other_tags_resource_and_event_env() {
+        let mut span = span_with(
+            "prod-resource",
+            attrs(&[("env", "prod"), ("custom.tag", "prod-value")]),
+            vec![event(1, "e", &[("env", "prod")])],
+        );
+
+        replacer(&[("*", "prod", "stage")]).replace_span(&mut span);
+
+        assert_eq!(string_attr(&span, "env"), Some("prod"));
+        assert_eq!(string_attr(&span, "custom.tag"), Some("stage-value"));
+        assert_eq!(span.resource(), "stage-resource");
+        assert_eq!(
+            event_string_attr(&span, "env"),
+            Some("stage"),
+            "span event attributes are not the span env"
+        );
+    }
+
+    #[test]
+    fn wildcard_rule_skips_numeric_span_env() {
+        let mut tags = FastHashMap::default();
+        tags.insert(MetaString::from("env"), AttributeValue::Float(1.0));
+        tags.insert(MetaString::from("latency"), AttributeValue::Float(1.0));
+        let mut span = span_with("res", tags, vec![]);
+
+        replacer(&[("*", "1", "prod")]).replace_span(&mut span);
+
+        assert_eq!(attr(&span, "env"), Some(&AttributeValue::Float(1.0)));
+        assert_eq!(
+            string_attr(&span, "latency"),
+            Some("prod"),
+            "other numeric tags are still replaced"
+        );
     }
 }

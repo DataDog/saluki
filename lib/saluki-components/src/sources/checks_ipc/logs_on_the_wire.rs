@@ -45,6 +45,9 @@ fn entry(message: &str, status: &str) -> String {
     )
 }
 
+/// Placeholder for the `dd-message-timestamp` header, which holds when the last log of a request was converted.
+const INGESTION_TIME: &str = "<ingestion-time-ms>";
+
 /// A request the logs encoder produced, with its body decompressed.
 #[derive(Debug, PartialEq)]
 struct WireRequest {
@@ -65,15 +68,21 @@ fn log_data(level: i32, message: &str) -> Data {
 ///
 /// The encoder compresses with zstd, as it does by default. Its flush timeout is long enough that it flushes only when
 /// it stops, so the logs from one call share a request unless they exceed a payload limit.
+///
+/// The source sets each log's ingestion time when it converts it, so the `dd-message-timestamp` header is checked to be
+/// within that conversion, and replaced with [`INGESTION_TIME`].
 async fn encode_check_data(data: impl IntoIterator<Item = Data>) -> Vec<WireRequest> {
+    let converted_after_ms = Utc::now().timestamp_millis();
     let events = data
         .into_iter()
         .filter_map(|data| check_data_to_event(data, &MetaString::from_static(DEFAULT_HOSTNAME)))
         .collect::<Vec<_>>();
+    let converted_before_ms = Utc::now().timestamp_millis();
 
     let encoder = BufferedIncrementalConfiguration::new(
         DatadogLogsConfiguration::new("zstd", 3)
             .with_default_hostname(DEFAULT_HOSTNAME)
+            .with_origin("agent-data-plane", "1.2.3")
             .with_clock(fixed_clock),
         Duration::from_secs(60),
     );
@@ -100,6 +109,15 @@ async fn encode_check_data(data: impl IntoIterator<Item = Data>) -> Vec<WireRequ
                 .iter()
                 .map(|(name, value)| {
                     let value = value.to_str().expect("header value should be text");
+                    if name == "dd-message-timestamp" {
+                        let ingestion_ms = value.parse::<i64>().expect("dd-message-timestamp should be a number");
+                        assert!(
+                            (converted_after_ms..=converted_before_ms).contains(&ingestion_ms),
+                            "dd-message-timestamp {} should be when the logs were converted",
+                            ingestion_ms
+                        );
+                        return (name.to_string(), INGESTION_TIME.to_string());
+                    }
                     (name.to_string(), value.to_string())
                 })
                 .collect(),
@@ -137,6 +155,10 @@ async fn request() {
         headers: vec![
             ("content-type".to_string(), "application/json".to_string()),
             ("content-encoding".to_string(), "zstd".to_string()),
+            ("dd-protocol".to_string(), "agent-json".to_string()),
+            ("dd-evp-origin".to_string(), "agent-data-plane".to_string()),
+            ("dd-evp-origin-version".to_string(), "1.2.3".to_string()),
+            ("dd-message-timestamp".to_string(), INGESTION_TIME.to_string()),
         ],
         body: [
             "[",
