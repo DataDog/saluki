@@ -93,7 +93,7 @@ and retry queues.
 
 - Prefer exposing builder methods for core primitives (HTTP client, server, etc) while ensuring that a sensible default
   exists: for example, HTTP requests should always have a default timeout, but must be configurable.
-- All codecs must be both property and fuzz tested at the raw input boundary: this ensures a minimum baseline of coverage.
+- All encoders and decoders must be both property and fuzz tested at the raw input boundary: this ensures a minimum baseline of coverage.
 - Helpers and primitives should strive to defer choices around memory management and allocations to the caller: for example,
   don't allocate on behalf of the caller if we could just as easily accept a mutable reference to a buffer.
 
@@ -134,11 +134,11 @@ tags, not an error.
 
 - Code in this crate SHOULD strive, as much as reasonably possible, to gracefully handle environmental differences
   and incompatibilities, in a way that does not interrupt overall operation but does not go unnoticed. For example,
-  failing to query the tags for an entity for unexpected reasons can cause metrics correctness issues, and so so we
+  failing to query the tags for an entity for unexpected reasons can cause metrics correctness issues, and so we
   should alert the operator but we should not degrade in such a way that other operations fail, since transient
   errors are expected more often in this area.
 - Unbounded growth of metadata can occur rapidly, so all metadata operations that store state should either be bounded
-  in time (such as by using a cache with an expiration/TTL) or have matching/paired codepaths that clean up the state
+  in time (such as by using a cache with an expiration/TTL) or have matching/paired code paths that clean up the state
   at the earliest opportunity.
 
 <!-- /review -->
@@ -157,7 +157,7 @@ Apply these rules to files under `bin/agent-data-plane`.
 - Flag a stage that records state, such as a first-seen set, before a stage that can drop the event. Flag a filter that
   runs before the mapping or split that it depends on. A destination that measures input, such as `dsd_stats_out` on
   `dsd_in.metrics`, connects to the raw source output.
-- Ensure that identifiying tags (such as `component_id` or `resolver_id`) in metric remapping rules are updated if and
+- Ensure that identifying tags (such as `component_id` or `resolver_id`) in metric remapping rules are updated if and
   when the corresponding component's ID changed as part of topology construction.
 - Ensure that metric remap rules are arranged from highest to lowest specificity when there are multiple rules for the
   same "base" series: for example, a remap rule that matches `my_counter` directly coming before a rule that matched
@@ -177,7 +177,7 @@ Most of these changes take effect only after they merge, so pull request checks 
 
 - When creating a new workflow, check for existing workflows of the same category (opening PRs to bump dependencies, etc)
   and ensure the same patterns are followed so that our workflows stay consistent.
-- Workflows that need to push commits, or open/label pull requests, MUST get a Github token from the
+- Workflows that need to push commits, or open/label pull requests, MUST get a GitHub token from the
   `DataDog/dd-octo-sts-action` action. This action requires a corresponding policy (under `.github/chainguard/`) that describes
   when the policy applies (the "claim") and the permissions granted if the claim is validated.
 - Use the `DataDog/commit-headless` action to properly commit changes based on an acquired `dd-octo-sts` token.
@@ -186,7 +186,7 @@ Most of these changes take effect only after they merge, so pull request checks 
   by a specific workflow.
 - Workflows that create resources, like issues or pull requests, should ensure that they clean up older/superseded resources
   where possible: for example, when a workflow opens PRs to bump dependencies, it should close older PRs (potentially by
-  findign open PRs with the labels it sets) if the new PR would supersede them.
+  finding open PRs with the labels it sets) if the new PR would supersede them.
 - Workflows must pin each action they depend on, as well as reusable workflows, to a full commit SHA, with its version in a
 - trailing comment such as `# v7.0.1`. Renovate reads that comment to update the pin.
 - In a trust policy, `subject_pattern` and each value under `claim_pattern` are regular expressions, and `subject` is
@@ -196,7 +196,7 @@ Most of these changes take effect only after they merge, so pull request checks 
   with the workflow's event triggers (the values under `on:`) and the subject pattern will change depending on event type. For
   example, the subject pattern for a workflow that targets PRs themselves will be different than the subject pattern for a
   workflow that only runs on pushes/merges to `main`.
-- Workflow jobs that depend on the artifacts of another job must list that job under `needs:` to ensure ther workflow
+- Workflow jobs that depend on the artifacts of another job must list that job under `needs:` to ensure the workflow
   waits for the dependent job to complete.
 - Release branches are `releases/X.Y.x`, release tags are `X.Y.Z` with no `v` prefix, and backport labels are
   `backport/X.Y.x`.

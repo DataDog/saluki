@@ -8,7 +8,7 @@ Most of these changes take effect only after they merge, so pull request checks 
 
 - When creating a new workflow, check for existing workflows of the same category (opening PRs to bump dependencies, etc)
   and ensure the same patterns are followed so that our workflows stay consistent.
-- Workflows that need to push commits, or open/label pull requests, MUST get a Github token from the
+- Workflows that need to push commits, or open/label pull requests, MUST get a GitHub token from the
   `DataDog/dd-octo-sts-action` action. This action requires a corresponding policy (under `.github/chainguard/`) that describes
   when the policy applies (the "claim") and the permissions granted if the claim is validated.
 - Use the `DataDog/commit-headless` action to properly commit changes based on an acquired `dd-octo-sts` token.
@@ -17,7 +17,7 @@ Most of these changes take effect only after they merge, so pull request checks 
   by a specific workflow.
 - Workflows that create resources, like issues or pull requests, should ensure that they clean up older/superseded resources
   where possible: for example, when a workflow opens PRs to bump dependencies, it should close older PRs (potentially by
-  findign open PRs with the labels it sets) if the new PR would supersede them.
+  finding open PRs with the labels it sets) if the new PR would supersede them.
 - Workflows must pin each action they depend on, as well as reusable workflows, to a full commit SHA, with its version in a
 - trailing comment such as `# v7.0.1`. Renovate reads that comment to update the pin.
 - In a trust policy, `subject_pattern` and each value under `claim_pattern` are regular expressions, and `subject` is
@@ -27,7 +27,7 @@ Most of these changes take effect only after they merge, so pull request checks 
   with the workflow's event triggers (the values under `on:`) and the subject pattern will change depending on event type. For
   example, the subject pattern for a workflow that targets PRs themselves will be different than the subject pattern for a
   workflow that only runs on pushes/merges to `main`.
-- Workflow jobs that depend on the artifacts of another job must list that job under `needs:` to ensure ther workflow
+- Workflow jobs that depend on the artifacts of another job must list that job under `needs:` to ensure the workflow
   waits for the dependent job to complete.
 - Release branches are `releases/X.Y.x`, release tags are `X.Y.Z` with no `v` prefix, and backport labels are
   `backport/X.Y.x`.

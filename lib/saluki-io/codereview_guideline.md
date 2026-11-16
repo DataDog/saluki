@@ -7,6 +7,6 @@ and retry queues.
 
 - Prefer exposing builder methods for core primitives (HTTP client, server, etc) while ensuring that a sensible default
   exists: for example, HTTP requests should always have a default timeout, but must be configurable.
-- All codecs must be both property and fuzz tested at the raw input boundary: this ensures a minimum baseline of coverage.
+- All encoders and decoders must be both property and fuzz tested at the raw input boundary: this ensures a minimum baseline of coverage.
 - Helpers and primitives should strive to defer choices around memory management and allocations to the caller: for example,
   don't allocate on behalf of the caller if we could just as easily accept a mutable reference to a buffer.
