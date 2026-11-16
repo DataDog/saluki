@@ -1,8 +1,10 @@
 //! Decoders for the Datadog APM trace wire formats.
 //!
-//! [`decode_v04_payload`](datadog::decode_v04_payload) decodes the v0.4 MessagePack `[][]Span` format into the same
-//! output as the v1.0 decoder; see its module for how it matches the trace-agent. The rest of this page covers the
-//! v1.0 format (also called the `idx`/`etp` format).
+//! [`decode_v04_payload`](datadog::decode_v04_payload) decodes the v0.4 MessagePack `[][]Span` format, and
+//! [`decode_v04_json`](datadog::decode_v04_json) the same format in JSON, into the same output as the v1.0 decoder;
+//! see their modules for how they match the trace-agent. [`convert_tracer_payload`](datadog::convert_tracer_payload)
+//! converts the classic tracer payload model the same way. The rest of this page covers the v1.0 format (also called
+//! the `idx`/`etp` format).
 //!
 //! The v1.0 trace API (`Content-Type: application/msgpack`, endpoint `v1.0`) sends a tracer payload
 //! in a custom MessagePack layout rather than protobuf-over-msgpack. Its defining traits:
@@ -25,7 +27,9 @@ use saluki_core::data_model::event::trace::{
 };
 use stringtheory::MetaString;
 
+mod convert;
 mod error;
+mod json;
 mod read;
 mod string_table;
 mod v04;
@@ -34,7 +38,9 @@ mod value;
 #[cfg(test)]
 mod tests;
 
+pub use self::convert::convert_tracer_payload;
 pub use self::error::DecodeError;
+pub use self::json::{decode_v04_any, decode_v04_json};
 use self::string_table::StringTable;
 pub use self::v04::decode_v04_payload;
 use crate::common::traces::attribute_as_string;

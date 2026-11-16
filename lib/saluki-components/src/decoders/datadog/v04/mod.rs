@@ -72,10 +72,10 @@ use super::read;
 use super::DecodedV1;
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;
 
 /// No sampling priority, as the trace-agent marks it.
-const PRIORITY_NONE: i32 = i8::MIN as i32;
+pub(super) const PRIORITY_NONE: i32 = i8::MIN as i32;
 
 /// The OTel span kinds, as `Span::kind` stores them.
 const SPAN_KIND_INTERNAL: u32 = 1;
@@ -87,10 +87,10 @@ const SPAN_KIND_CONSUMER: u32 = 5;
 /// Maximum span event attribute nesting depth, as in the trace-agent.
 const MAX_ANY_VALUE_DEPTH: usize = 64;
 
-const TAG_CONVERTED_V1: MetaString = MetaString::from_static("_dd.convertedv1");
+pub(super) const TAG_CONVERTED_V1: MetaString = MetaString::from_static("_dd.convertedv1");
 const CONVERTED_V1_VALUE: MetaString = MetaString::from_static("v04");
-const TAG_GIT_COMMIT_SHA: MetaString = MetaString::from_static("_dd.git.commit.sha");
-const TAG_APM_MODE: MetaString = MetaString::from_static("_dd.apm_mode");
+pub(super) const TAG_GIT_COMMIT_SHA: MetaString = MetaString::from_static("_dd.git.commit.sha");
+pub(super) const TAG_APM_MODE: MetaString = MetaString::from_static("_dd.apm_mode");
 const KEY_SAMPLING_PRIORITY: &[u8] = b"_sampling_priority_v1";
 
 /// Decodes a v0.4 MessagePack trace payload into unified trace events.
@@ -169,17 +169,17 @@ impl<'a> Strings<'a> {
 }
 
 /// Fields promoted from a chunk's spans to the chunk.
-struct ChunkPromoted {
-    trace_id_low: u64,
-    trace_id_high: u64,
-    env: MetaString,
-    app_version: MetaString,
-    git_commit_sha: MetaString,
-    hostname: MetaString,
-    origin: MetaString,
-    apm_mode: MetaString,
-    sampling_mechanism: u32,
-    sampling_priority: i32,
+pub(super) struct ChunkPromoted {
+    pub(super) trace_id_low: u64,
+    pub(super) trace_id_high: u64,
+    pub(super) env: MetaString,
+    pub(super) app_version: MetaString,
+    pub(super) git_commit_sha: MetaString,
+    pub(super) hostname: MetaString,
+    pub(super) origin: MetaString,
+    pub(super) apm_mode: MetaString,
+    pub(super) sampling_mechanism: u32,
+    pub(super) sampling_priority: i32,
 }
 
 impl Default for ChunkPromoted {
@@ -201,17 +201,17 @@ impl Default for ChunkPromoted {
 
 /// Fields promoted from the chunks to the payload.
 #[derive(Default)]
-struct PayloadPromoted {
-    env: MetaString,
-    app_version: MetaString,
-    git_commit_sha: MetaString,
-    hostname: MetaString,
-    apm_mode: MetaString,
+pub(super) struct PayloadPromoted {
+    pub(super) env: MetaString,
+    pub(super) app_version: MetaString,
+    pub(super) git_commit_sha: MetaString,
+    pub(super) hostname: MetaString,
+    pub(super) apm_mode: MetaString,
 }
 
 impl PayloadPromoted {
     /// Takes every non-empty field of a decoded chunk.
-    fn apply(&mut self, chunk: &mut ChunkPromoted) {
+    pub(super) fn apply(&mut self, chunk: &mut ChunkPromoted) {
         for (to, from) in [
             (&mut self.env, &mut chunk.env),
             (&mut self.app_version, &mut chunk.app_version),
@@ -228,12 +228,12 @@ impl PayloadPromoted {
 
 /// Root sampling state: once a root span has a priority, it overrides the later spans'.
 #[derive(Default)]
-struct RootPriority {
+pub(super) struct RootPriority {
     priority: Option<i32>,
 }
 
 impl RootPriority {
-    fn reconcile(&mut self, promoted: &mut ChunkPromoted, parent_id: u64) {
+    pub(super) fn reconcile(&mut self, promoted: &mut ChunkPromoted, parent_id: u64) {
         if parent_id == 0 && promoted.sampling_priority != PRIORITY_NONE {
             self.priority = Some(promoted.sampling_priority);
         } else if let Some(priority) = self.priority {
@@ -660,7 +660,7 @@ fn decode_any_value<'a>(
 }
 
 /// Maps a `span.kind` value to the span kind, defaulting to internal as the trace-agent does.
-fn span_kind(value: &[u8]) -> u32 {
+pub(super) fn span_kind(value: &[u8]) -> u32 {
     match value {
         b"server" => SPAN_KIND_SERVER,
         b"client" => SPAN_KIND_CLIENT,

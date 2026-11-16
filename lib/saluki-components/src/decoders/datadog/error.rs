@@ -15,6 +15,20 @@ pub enum DecodeError {
         context: &'static str,
     },
 
+    /// A JSON body ended before its first value was complete.
+    ///
+    /// The counterpart of the `io.EOF` and `io.ErrUnexpectedEOF` that the reference's JSON decoder returns, which the
+    /// receiver counts apart from other decoding errors (`error:unexpected-eof`).
+    #[snafu(display("unexpected end of JSON input"))]
+    UnexpectedEof,
+
+    /// A JSON body isn't valid JSON, or isn't a list of lists of spans.
+    #[snafu(display("failed to decode JSON: {detail}"))]
+    Json {
+        /// What was wrong with the body.
+        detail: String,
+    },
+
     /// A low-level MessagePack read failed (wrong marker type, invalid UTF-8, out-of-range number, and so on).
     ///
     /// `context` names the field or structure being read when the failure occurred, and `detail`

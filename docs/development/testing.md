@@ -44,6 +44,32 @@ cargo nextest run -p architecture-tests
 Failures report a dependency route or source location. Inspect symbol matches before changing code: unrelated names
 can produce false positives.
 
+### Trace-agent reference fixtures
+
+Some trace decoder tests compare Saluki's output with what the trace-agent itself produces from the same input, rather
+than with our reading of its code. `test/trace-agent-oracle/` generates those fixtures from a checkout of
+`datadog-agent`, which it never writes to:
+
+- `oracle_test.go` is a Go test that `go test -overlay` adds to the checkout's `pkg/trace/api` package. For each case,
+  it decodes the body with the receiver's `decodeConvertedTracerPayload` and dumps the resulting tracer payload, or
+  classifies the error as `httpDecodingError` does.
+- `v04_json_cases.py` holds the cases of `lib/saluki-components/src/decoders/datadog/testdata/v04_json_cases.json`,
+  the v0.4 JSON decoder's fixtures, and turns the oracle's output into that file.
+- `regenerate.sh` runs both, with the Go toolchain that the checkout pins in `.go-version`.
+
+To add a case, add it to `v04_json_cases.py` and regenerate, then run the decoder tests:
+
+```shell
+test/trace-agent-oracle/regenerate.sh ~/dd/datadog-agent
+cargo nextest run -p saluki-components -E 'test(/decoders::datadog::json/)'
+```
+
+Don't edit the fixtures by hand. To cover another endpoint, such as `/v0.1/spans` or `/v0.7/traces`, add its version
+to the `version` switch in `oracle_test.go`, write a cases script for it beside `v04_json_cases.py` that sets each
+case's `version`, and run it from `regenerate.sh`. The v1.0 decoder's
+fixtures, `testdata/v1_decoder_cases.json`, were produced by the reference Go encoder when that decoder was added,
+with a generator that isn't in the repository.
+
 ## Correctness tests (panoramic)
 
 These tests serve to answer the question: *Does ADP produce the same output as the Datadog Agent for a given workload?*
@@ -298,5 +324,6 @@ test/
 ├── correctness/           : correctness test configs
 ├── antithesis/            : antithesis harness and scenarios
 ├── integration/           : integration test configs
+├── trace-agent-oracle/    : trace decoder fixtures from the trace-agent's own code
 └── smp/                   : smp experiments
 ```
