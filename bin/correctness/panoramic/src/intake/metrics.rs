@@ -75,8 +75,8 @@ impl fmt::Display for NormalizedMetricContext {
 /// - Context tags are sorted lexicographically, in ascending order, and deduplicated.
 /// - Tag sorting/deduplication is case-sensitive.
 /// - Raw values are sorted by timestamp in ascending order.
-/// - Normalized value is the latest seen value for gauges, the accumulated sum of values for counters, rates, and
-///   sketches.
+/// - Normalized value is the value with the latest timestamp for gauges (the largest, if several share it), the
+///   accumulated sum of values for counters, rates, and sketches.
 ///
 /// # Raw values vs normalized value
 ///
@@ -162,9 +162,10 @@ impl NormalizedMetric {
 /// - Raw values for the same group, split across multiple metric entries, are combined. Values with the same timestamp
 ///   are all kept.
 /// - Raw values are sorted by timestamp in ascending order. The sort is stable, so values with the same timestamp stay
-///   in dump order, and a gauge resolves them by taking the one dumped last.
-/// - Normalized value is the latest seen value for gauges, the accumulated sum of values for counters, rates, and
-///   sketches.
+///   in dump order.
+/// - Normalized value is the value with the latest timestamp for gauges, the accumulated sum of values for counters,
+///   rates, and sketches. Gauge values that share the latest timestamp resolve to the largest of them, since their
+///   dump order follows payload arrival order, which concurrent requests make nondeterministic.
 /// - A group fails to normalize if it mixes value types (including within one entry) or holds rates with different
 ///   intervals.
 pub struct NormalizedMetrics {
@@ -296,10 +297,11 @@ fn try_normalize_values(raw_values: &[(u64, MetricValue)]) -> Result<MetricValue
     let mut values = raw_values.iter();
 
     // We take the first value as the initial value, and then keep merging subsequent values into it.
-    let (_, first_value) = values.next().unwrap();
+    let (first_ts, first_value) = values.next().unwrap();
+    let mut current_ts = *first_ts;
     let mut current_value = first_value.clone();
 
-    for (_, new_value) in values {
+    for (new_ts, new_value) in values {
         match (&mut current_value, new_value) {
             (MetricValue::Count { value: value_a }, MetricValue::Count { value: value_b }) => {
                 *value_a += value_b;
@@ -321,13 +323,17 @@ fn try_normalize_values(raw_values: &[(u64, MetricValue)]) -> Result<MetricValue
                 *value_a += value_b;
             }
             (MetricValue::Gauge { value: value_a }, MetricValue::Gauge { value: value_b }) => {
-                *value_a = *value_b;
+                if *new_ts > current_ts || value_b.total_cmp(value_a).is_gt() {
+                    *value_a = *value_b;
+                }
             }
             (MetricValue::Sketch { sketch: sketch_a }, MetricValue::Sketch { sketch: sketch_b }) => {
                 sketch_a.merge(sketch_b);
             }
             _ => return Err(generic_error!("Cannot normalize values of different types.")),
         }
+
+        current_ts = *new_ts;
     }
 
     Ok(current_value)
@@ -492,7 +498,7 @@ mod tests {
     }
 
     #[test]
-    fn a_gauge_takes_its_latest_timestamp_and_resolves_ties_by_dump_order() {
+    fn a_gauge_takes_its_latest_timestamp_and_resolves_ties_by_largest_value() {
         let normalized_value = |entries: &[(u64, f64)]| {
             let metrics = entries
                 .iter()
@@ -511,14 +517,20 @@ mod tests {
             MetricValue::Gauge { value: 2.0 }
         );
 
-        // Equal timestamps are all kept, and the one dumped last wins.
+        // Equal timestamps resolve to the largest value, whatever the dump order.
         assert_eq!(
             normalized_value(&[(10, 1.0), (10, 2.0)]),
             MetricValue::Gauge { value: 2.0 }
         );
         assert_eq!(
             normalized_value(&[(10, 2.0), (10, 1.0)]),
-            MetricValue::Gauge { value: 1.0 }
+            MetricValue::Gauge { value: 2.0 }
+        );
+
+        // A larger value at an earlier timestamp doesn't win a later tie.
+        assert_eq!(
+            normalized_value(&[(10, 9.0), (20, 1.0), (20, 2.0)]),
+            MetricValue::Gauge { value: 2.0 }
         );
     }
 
