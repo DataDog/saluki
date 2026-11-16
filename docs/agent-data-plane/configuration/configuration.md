@@ -526,18 +526,17 @@ relay applies the limit to the connections it receives from ADP. As in the trace
 
 With the experimental native trace intake
 (`data_plane.experimental.apm.native_trace_intake`), ADP applies the timeout to the trace
-endpoints it serves, `/v1.0/traces`, as the trace-agent does: a payload that waits longer for
-a free decoder is read, dropped, and answered with `200 OK`, or with `429 Too Many Requests`
-when `apm_config.features` contains `429` or the tracer sends `Datadog-Send-Real-Http-Status`.
+payloads it serves, as the trace-agent does: a payload that waits longer for a free decoder is
+read, dropped, and answered with `200 OK`, or with `429 Too Many Requests` when
+`apm_config.features` contains `429` or the tracer sends `Datadog-Send-Real-Http-Status`.
 The trace-agent behind the APM relay applies the timeout to the trace endpoints ADP forwards
 to it.
 
 ### `apm_config.decoders`
 
 With the experimental native trace intake
-(`data_plane.experimental.apm.native_trace_intake`), ADP decodes at most this many payloads
-at once on the trace endpoints it serves, `/v1.0/traces`. The trace-agent behind the APM
-relay applies the limit to the trace endpoints ADP forwards to it. As in the trace-agent, `0` means half the available parallelism, and at
+(`data_plane.experimental.apm.native_trace_intake`), ADP decodes at most this many of the
+trace payloads it serves at once. The trace-agent behind the APM relay applies the limit to the trace endpoints ADP forwards to it. As in the trace-agent, `0` means half the available parallelism, and at
 least one. ADP reads a negative value as `0`, with a warning, where the trace-agent fails to
 start.
 
@@ -560,6 +559,9 @@ ADP recognizes these values:
   (`data_plane.experimental.apm.native_trace_intake`), as they do in the trace-agent. The
   trace-agent behind the APM relay applies every feature to the trace endpoints ADP forwards
   to it.
+- `disable-convert-traces` makes the trace-agent decode trace payloads into its legacy span
+  model. The native trace intake has no such model, so ADP ignores the feature for the traces
+  it serves, with a warning at startup, and processes them as the trace-agent does by default.
 
 Every other value is ignored by ADP, without a warning: the flag inventory is not stable across
 agent versions, so unrecognized entries are inert rather than errors.
@@ -610,10 +612,9 @@ trace-agent, the limit defaults to `0` in a container when the key is unset.
 
 ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
 `/info` response. With the experimental native trace intake
-(`data_plane.experimental.apm.native_trace_intake`), ADP also rejects a payload on the trace
-endpoints it serves, `/v1.0/traces`, with `413 Payload Too Large` once it reaches the limit,
-as the trace-agent does. The trace-agent behind the relay enforces the limit on the requests
-ADP forwards to it.
+(`data_plane.experimental.apm.native_trace_intake`), ADP also rejects a trace payload it
+serves with `413 Payload Too Large` once it reaches the limit, as the trace-agent does. The
+trace-agent behind the relay enforces the limit on the requests ADP forwards to it.
 
 ### `apm_config.obfuscation.sql_exec_plan.enabled`
 
@@ -632,8 +633,8 @@ relay; ADP doesn't apply it to the traces it receives over OTLP.
 ADP reads this key to describe the trace-agent's configuration to tracers in the APM relay's
 `/info` response. With the experimental native trace intake
 (`data_plane.experimental.apm.native_trace_intake`), ADP applies the timeout to the trace
-endpoints it serves, `/v1.0/traces`, as the trace-agent does: a request still waiting for a
-decoder is answered with `429 Too Many Requests`, and a body not read in time with
+payloads it serves, as the trace-agent does: a request still waiting for a decoder is
+answered with `429 Too Many Requests`, and a body not read in time with
 `408 Request Timeout`. The trace-agent behind the relay applies it to the requests ADP
 forwards to it.
 
@@ -1125,6 +1126,10 @@ Prefer an `http://` destination. Over a `unix://` destination, the trace-agent a
 
 > [!WARNING]
 > Settings under `experimental` are unstable and may change, move, or be removed. Do not rely on backward compatibility.
+
+### `data_plane.experimental.apm.native_trace_intake`
+
+ADP serves `/v1.0/traces`, and MessagePack payloads on `/v0.4/traces`, `/v0.3/traces` and `/v0.2/traces`, itself. As the trace-agent does, `/v0.2/traces` rejects MessagePack with `415 Unsupported Media Type`. ADP still forwards JSON payloads, and the other trace endpoints, to the trace-agent behind the APM relay.
 
 ### `data_plane.otlp.receiver_grpc_endpoint_temporary`
 

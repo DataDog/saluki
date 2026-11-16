@@ -4,9 +4,11 @@
 //! does not handle itself are forwarded to the relocated trace-agent, so the documentation, metrics, and logs still call
 //! it the relay.
 //!
-//! With [`trace_intake`](ApmConfiguration::trace_intake) set, the source serves `/v1.0/traces` itself, and emits the
-//! traces it decodes on its `traces` output, and its receiver telemetry on its `metrics` output. Otherwise it has no
-//! `metrics` output and emits nothing on `traces`, and every trace payload is forwarded to the trace-agent.
+//! With [`trace_intake`](ApmConfiguration::trace_intake) set, the source serves `/v1.0/traces`, and the MessagePack
+//! payloads of `/v0.4/traces`, `/v0.3/traces` and `/v0.2/traces`, itself. It emits the traces it decodes on its
+//! `traces` output, and its receiver telemetry on its `metrics` output. Payloads in other media types are still
+//! forwarded to the trace-agent. Without it, the source has no `metrics` output and emits nothing on `traces`, and every
+//! trace payload is forwarded to the trace-agent.
 //!
 //! The relay serves `/info` itself, and so owns `Datadog-Agent-State`, the hash of the `/info` body that every
 //! response carries: it replaces the trace-agent's on the responses it forwards.
@@ -665,18 +667,33 @@ impl ApmAPIHandler {
         response
     }
 
+    async fn handle_traces_v02(state: State<ApmState>, request: AxumRequest) -> Response {
+        Self::handle_traces(state, EndpointVersion::V02, request).await
+    }
+
+    async fn handle_traces_v03(state: State<ApmState>, request: AxumRequest) -> Response {
+        Self::handle_traces(state, EndpointVersion::V03, request).await
+    }
+
+    async fn handle_traces_v04(state: State<ApmState>, request: AxumRequest) -> Response {
+        Self::handle_traces(state, EndpointVersion::V04, request).await
+    }
+
     async fn handle_traces_v1(state: State<ApmState>, request: AxumRequest) -> Response {
         Self::handle_traces(state, EndpointVersion::V10, request).await
     }
 
-    async fn handle_traces(
-        State(ApmState {
-            intake, container_tags, ..
-        }): State<ApmState>, version: EndpointVersion,
-        request: AxumRequest,
-    ) -> Response {
-        let intake = intake.expect("trace routes are only registered with the native trace intake");
-        intake.handle(version, request, &container_tags).await
+    async fn handle_traces(State(state): State<ApmState>, version: EndpointVersion, request: AxumRequest) -> Response {
+        let intake = state
+            .intake
+            .as_ref()
+            .expect("trace routes are only registered with the native trace intake");
+        // shortcut: payloads the intake can't decode yet (JSON on the v0.x endpoints) are forwarded to the
+        // trace-agent, as they are without the native intake. Drop once the intake decodes them (APMSP-4289).
+        if !intake.serves(version, request.headers()) {
+            return Self::proxy_request(State(state), request).await;
+        }
+        intake.handle(version, request, &state.container_tags).await
     }
 }
 
@@ -728,7 +745,11 @@ impl APIHandler for ApmAPIHandler {
         let with_agent_headers = Router::new();
         // Without the native trace intake, the trace endpoints are forwarded to the trace-agent like any other.
         let with_agent_headers = if state.intake.is_some() {
-            with_agent_headers.route("/v1.0/traces", any(Self::handle_traces_v1))
+            with_agent_headers
+                .route("/v0.2/traces", any(Self::handle_traces_v02))
+                .route("/v0.3/traces", any(Self::handle_traces_v03))
+                .route("/v0.4/traces", any(Self::handle_traces_v04))
+                .route("/v1.0/traces", any(Self::handle_traces_v1))
         } else {
             with_agent_headers
         };
@@ -810,6 +831,84 @@ mod tests {
         })
     }
 
+    /// A router with the native trace intake, whose trace-agent is unreachable.
+    fn native_intake_router(info: Info) -> (Router, mpsc::Receiver<Vec<Trace>>) {
+        let (traces_tx, traces_rx) = mpsc::channel(1);
+        let router = build_router(ApmState {
+            intake: Some(TraceIntake::new(
+                TraceIntakeConfiguration {
+                    max_request_bytes: 1024,
+                    decoders: std::num::NonZeroUsize::MIN,
+                    decoder_timeout: Duration::from_secs(1),
+                    receiver_timeout: Duration::from_secs(5),
+                    reject_with_too_many_requests: false,
+                    histogram: crate::transforms::HistogramConfiguration::default(),
+                    service_rates: crate::transforms::ServiceRates::default(),
+                },
+                traces_tx,
+            )),
+            proxy: unreachable_proxy(),
+            tracer_flare: unreachable_tracer_flare(),
+            info,
+            container_tags: ContainerTagsHasher::default(),
+            capture_entity_resolver: None,
+            metrics: Metrics::new("dd_traces_in", "sources"),
+        });
+        (router, traces_rx)
+    }
+
+    #[tokio::test]
+    async fn the_native_intake_serves_v0_msgpack_traces_and_forwards_the_rest() {
+        let send = |router: Router, path: &'static str, content_type: Option<&'static str>, body: Vec<u8>| async move {
+            let mut builder = Request::builder().method("PUT").uri(path);
+            if let Some(content_type) = content_type {
+                builder = builder.header("Content-Type", content_type);
+            }
+            let response = router
+                .oneshot(builder.body(axum::body::Body::from(body)).unwrap())
+                .await
+                .unwrap();
+            let status = response.status();
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            (status, body)
+        };
+        // An empty v0.4 payload: a MessagePack array with no traces.
+        let empty = vec![0x90];
+        let (router, _traces) = native_intake_router(test_info());
+
+        let cases = [
+            (
+                "/v0.4/traces",
+                Some("application/msgpack"),
+                StatusCode::OK,
+                Some("{\"rate_by_service\":{}}\n"),
+            ),
+            (
+                "/v0.3/traces",
+                Some("application/msgpack"),
+                StatusCode::OK,
+                Some("OK\n"),
+            ),
+            (
+                "/v0.2/traces",
+                Some("application/msgpack"),
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                None,
+            ),
+            // No native JSON decoder yet: the trace-agent, unreachable here, gets these.
+            ("/v0.4/traces", Some("application/json"), StatusCode::BAD_GATEWAY, None),
+            ("/v0.3/traces", None, StatusCode::BAD_GATEWAY, None),
+            ("/v0.2/traces", Some("text/json"), StatusCode::BAD_GATEWAY, None),
+        ];
+        for (path, content_type, expected_status, expected_body) in cases {
+            let (status, body) = send(router.clone(), path, content_type, empty.clone()).await;
+            assert_eq!(status, expected_status, "{path} {content_type:?}");
+            if let Some(expected_body) = expected_body {
+                assert_eq!(body, expected_body.as_bytes(), "{path} {content_type:?}");
+            }
+        }
+    }
+
     #[tokio::test]
     async fn serves_v1_traces_only_with_the_native_trace_intake() {
         let send = |router: Router| async move {
@@ -830,28 +929,8 @@ mod tests {
         let response = send(test_router()).await;
         assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
 
-        let (traces_tx, _traces_rx) = mpsc::channel(1);
         let info = test_info();
-        let router = build_router(ApmState {
-            intake: Some(TraceIntake::new(
-                TraceIntakeConfiguration {
-                    max_request_bytes: 1024,
-                    decoders: std::num::NonZeroUsize::MIN,
-                    decoder_timeout: Duration::from_secs(1),
-                    receiver_timeout: Duration::from_secs(5),
-                    reject_with_too_many_requests: false,
-                    histogram: crate::transforms::HistogramConfiguration::default(),
-                    service_rates: crate::transforms::ServiceRates::default(),
-                },
-                traces_tx,
-            )),
-            proxy: unreachable_proxy(),
-            tracer_flare: unreachable_tracer_flare(),
-            info: info.clone(),
-            container_tags: ContainerTagsHasher::default(),
-            capture_entity_resolver: None,
-            metrics: Metrics::new("dd_traces_in", "sources"),
-        });
+        let (router, _traces_rx) = native_intake_router(info.clone());
         let response = send(router).await;
         assert_eq!(response.status(), StatusCode::OK);
         // Served responses carry the relay's own agent state, as every trace-agent response does.

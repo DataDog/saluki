@@ -9,6 +9,7 @@
 //!
 //! | Condition | Status |
 //! |---|---|
+//! | A MessagePack body sent to `/v0.2/traces` | 415 |
 //! | `Sec-Fetch-Site: cross-site` | 403 |
 //! | `receiver_timeout` elapses waiting for a decoder | 429, no body |
 //! | `decoder_timeout` elapses waiting for a decoder | 200, or 429 with feature `429` or `Datadog-Send-Real-Http-Status`, after draining the body |
@@ -19,8 +20,14 @@
 //! | The payload doesn't decode | 400 |
 //! | Accepted | 200 |
 //!
-//! Accepted payloads, and those refused for want of a decoder, are answered with the
-//! [sampling rates by service](crate::common::traces::rates) the priority sampler publishes.
+//! Accepted payloads, and those refused for want of a decoder, are answered as the trace-agent answers them: `OK` on
+//! `/v0.2/traces` and `/v0.3/traces`, and the [sampling rates by service](crate::common::traces::rates) the priority
+//! sampler publishes on the other endpoints.
+//!
+//! # Media types
+//!
+//! `/v1.0/traces` decodes any body as v1.0. The v0.x endpoints only decode MessagePack bodies, as the trace-agent
+//! does; [`TraceIntake::serves`] leaves every other body to the trace-agent.
 //!
 //! Each outcome but the cross-site rejection is counted in the [receiver telemetry](super::receiver_telemetry), as
 //! the trace-agent counts it.
@@ -47,7 +54,9 @@ use tracing::debug;
 use super::container_tags::ContainerTagsHasher;
 use super::receiver_telemetry::{DropReason, ReceiverTags, ReceiverTelemetry};
 use crate::common::traces::normalize::{truncate_utf8_str, MAX_SERVICE_LEN};
-use crate::decoders::datadog::{decode_v1_payload, first_span, resolve_process_tags, resolve_sdk_otlp_export};
+use crate::decoders::datadog::{
+    decode_v04_payload, decode_v1_payload, first_span, resolve_process_tags, resolve_sdk_otlp_export, DecodeError,
+};
 use crate::transforms::{HistogramConfiguration, ServiceRates};
 
 const SEC_FETCH_SITE_HEADER: HeaderName = HeaderName::from_static("sec-fetch-site");
@@ -102,6 +111,12 @@ pub struct TraceIntakeConfiguration {
 /// An intake endpoint version, as the trace-agent's `Version`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum EndpointVersion {
+    /// `/v0.2/traces`.
+    V02,
+    /// `/v0.3/traces`.
+    V03,
+    /// `/v0.4/traces`.
+    V04,
     /// `/v1.0/traces`.
     V10,
 }
@@ -109,9 +124,38 @@ pub(super) enum EndpointVersion {
 impl EndpointVersion {
     fn as_str(self) -> &'static str {
         match self {
+            Self::V02 => "v0.2",
+            Self::V03 => "v0.3",
+            Self::V04 => "v0.4",
             Self::V10 => "v1.0",
         }
     }
+
+    /// Returns whether the endpoint rejects MessagePack bodies, as `handleWithVersion` does below v0.3.
+    fn rejects_msgpack(self) -> bool {
+        matches!(self, Self::V02)
+    }
+
+    /// Returns whether the endpoint answers `OK` rather than the rates, as `replyOK` does below v0.4.
+    fn replies_ok(self) -> bool {
+        matches!(self, Self::V02 | Self::V03)
+    }
+}
+
+/// Body of the `415 Unsupported Media Type` answer to a MessagePack body on an endpoint that doesn't take one, as
+/// `httpFormatError` writes it.
+const UNSUPPORTED_MSGPACK_MESSAGE: &str = "unsupported media type: \"application/msgpack\"";
+
+/// Body of the `400 Bad Request` answer to a MessagePack body that ends early, `msgp.ErrShortBytes`'s message.
+const MSGP_SHORT_BYTES_MESSAGE: &str = "msgp: too few bytes left to read object";
+
+/// Returns whether a request's body is MessagePack, as the trace-agent's `getMediaType` reads `Content-Type`.
+///
+/// Only a bare `application/msgpack`, in any case and with surrounding whitespace, counts. Go also reads one with
+/// parameters as MessagePack, if they parse; such a request isn't served natively, so the trace-agent still answers it
+/// as Go does.
+fn is_msgpack(headers: &HeaderMap) -> bool {
+    header_str(headers, &CONTENT_TYPE).is_some_and(|value| value.trim().eq_ignore_ascii_case("application/msgpack"))
 }
 
 /// Handles trace intake requests, and hands their traces to the source.
@@ -138,6 +182,17 @@ impl TraceIntake {
         Arc::clone(&self.telemetry)
     }
 
+    /// Returns whether the intake serves a request to the endpoint of `version`, rather than the trace-agent.
+    ///
+    /// shortcut: the v0.x endpoints only serve MessagePack bodies, and leave JSON and every other media type to the
+    /// trace-agent behind the relay, since there is no native JSON decoder yet. Serve JSON once it exists (APMSP-4289).
+    pub(super) fn serves(&self, version: EndpointVersion, headers: &HeaderMap) -> bool {
+        match version {
+            EndpointVersion::V10 => true,
+            EndpointVersion::V02 | EndpointVersion::V03 | EndpointVersion::V04 => is_msgpack(headers),
+        }
+    }
+
     /// Handles a trace payload sent to the endpoint of `version`.
     pub(super) async fn handle(
         &self, version: EndpointVersion, request: AxumRequest, container_tags: &ContainerTagsHasher,
@@ -147,6 +202,14 @@ impl TraceIntake {
         let (parts, body) = request.into_parts();
         let headers = &parts.headers;
 
+        if version.rejects_msgpack() && is_msgpack(headers) {
+            debug!(
+                "Rejecting a MessagePack payload sent to the {} endpoint.",
+                version.as_str()
+            );
+            self.telemetry.record_format_error(version.as_str());
+            return http_error(StatusCode::UNSUPPORTED_MEDIA_TYPE, UNSUPPORTED_MSGPACK_MESSAGE);
+        }
         if header_str(headers, &SEC_FETCH_SITE_HEADER) == Some("cross-site") {
             return http_error(StatusCode::FORBIDDEN, "cross-site request rejected");
         }
@@ -172,7 +235,7 @@ impl TraceIntake {
                 };
                 self.telemetry.record(header_tags(version, headers, connection), |stats| stats.payload_refused += 1);
                 // The trace-agent writes the status before the rates, so the version header it sets after is dropped.
-                return self.rate_by_service(status, headers, false).0;
+                return self.reply_ok(version, status, headers, false).0;
             },
         };
 
@@ -189,6 +252,8 @@ impl TraceIntake {
 
         let decoded = match version {
             EndpointVersion::V10 => decode_v1_payload(&body),
+            // `/v0.2/traces` never gets here: its MessagePack bodies are rejected above.
+            EndpointVersion::V02 | EndpointVersion::V03 | EndpointVersion::V04 => decode_v04_payload(&body),
         };
         // The decoded traces own their data, so the body is released before they wait for the pipeline, as the
         // trace-agent releases its buffer before sending the payload on.
@@ -197,13 +262,35 @@ impl TraceIntake {
             Ok(decoded) => decoded,
             Err(error) => {
                 debug!(%error, "Cannot decode {version:?} traces payload.");
-                self.record_rejection(version, headers, connection, start, DropReason::DecodingError);
-                return http_error(StatusCode::BAD_REQUEST, &error.to_string());
+                // `msgp.ErrShortBytes` is counted apart, and answered with its own message.
+                let (reason, message) = match error {
+                    DecodeError::ShortBytes { .. } => (DropReason::MsgpShortBytes, MSGP_SHORT_BYTES_MESSAGE.into()),
+                    error => (DropReason::DecodingError, error.to_string()),
+                };
+                self.record_rejection(version, headers, connection, start, reason);
+                return http_error(StatusCode::BAD_REQUEST, &message);
             }
         };
         let mut traces = decoded.traces;
 
-        // A v1.0 payload's own container ID wins over the request's.
+        // A v0.x payload has no tracer fields of its own: as `decodeConvertedTracerPayload`, they come from the
+        // request headers, as sent.
+        if version != EndpointVersion::V10 {
+            let header = |name: &HeaderName| shared_meta(header_str(headers, name).unwrap_or_default());
+            let (lang, lang_version, tracer_version) = (
+                header(&LANG_HEADER),
+                header(&LANG_VERSION_HEADER),
+                header(&TRACER_VERSION_HEADER),
+            );
+            for trace in &mut traces {
+                trace.payload.language_name = lang.clone();
+                trace.payload.language_version = lang_version.clone();
+                trace.payload.tracer_version = tracer_version.clone();
+            }
+        }
+
+        // A v1.0 payload's own container ID wins over the request's. A v0.x payload has none, so its container is
+        // the request's, as `decodeConvertedTracerPayload` sets it.
         let payload_container_id = traces.first().map(|trace| trace.payload.container_id.clone());
         let container = match payload_container_id {
             Some(container_id) if !container_id.is_empty() => {
@@ -247,7 +334,7 @@ impl TraceIntake {
         // The trace-agent counts the dropped P0s the client reports separately from the per-chunk weight.
         let dropped_p0_traces = header_count(headers, &DROPPED_P0_TRACES_HEADER);
         let dropped_p0_spans = header_count(headers, &DROPPED_P0_SPANS_HEADER);
-        let (response, response_bytes) = self.rate_by_service(StatusCode::OK, headers, true);
+        let (response, response_bytes) = self.reply_ok(version, StatusCode::OK, headers, true);
         self.telemetry.record(ReceiverTags::from_receiver(&receiver), |stats| {
             stats.traces_received += trace_count as i64;
             stats.traces_bytes += body_len as i64;
@@ -261,6 +348,18 @@ impl TraceIntake {
         });
 
         response
+    }
+
+    /// Answers a payload as the trace-agent does, with `OK` or the rates by version, and returns the body's length.
+    fn reply_ok(
+        &self, version: EndpointVersion, status: StatusCode, headers: &HeaderMap, send_version: bool,
+    ) -> (Response, usize) {
+        if version.replies_ok() {
+            // As in the trace-agent, with the `Content-Type` its server sniffs from the body.
+            const OK_BODY: &str = "OK\n";
+            return ((status, OK_BODY).into_response(), OK_BODY.len());
+        }
+        self.rate_by_service(status, headers, send_version)
     }
 
     /// Answers with the sampling rates by service, as the trace-agent does, and returns the body's length.
@@ -591,12 +690,215 @@ mod tests {
     }
 
     async fn send(intake: &TraceIntake, request: AxumRequest) -> (StatusCode, HeaderMap, String) {
-        let response = intake
-            .handle(EndpointVersion::V10, request, &ContainerTagsHasher::default())
-            .await;
+        send_to(intake, EndpointVersion::V10, request).await
+    }
+
+    async fn send_to(
+        intake: &TraceIntake, version: EndpointVersion, request: AxumRequest,
+    ) -> (StatusCode, HeaderMap, String) {
+        let response = intake.handle(version, request, &ContainerTagsHasher::default()).await;
         let (parts, body) = response.into_parts();
         let body = body.collect().await.unwrap().to_bytes();
         (parts.status, parts.headers, String::from_utf8(body.to_vec()).unwrap())
+    }
+
+    /// Builds a v0.4 payload of `chunks` chunks of one root span each, from service `web` in env `prod`.
+    fn v04_payload(chunks: u32) -> Vec<u8> {
+        let mut buf = Vec::new();
+        encode::write_array_len(&mut buf, chunks).unwrap();
+        for chunk in 0..chunks {
+            encode::write_array_len(&mut buf, 1).unwrap();
+            encode::write_map_len(&mut buf, 5).unwrap();
+            encode::write_str(&mut buf, "service").unwrap();
+            encode::write_str(&mut buf, "web").unwrap();
+            encode::write_str(&mut buf, "name").unwrap();
+            encode::write_str(&mut buf, "http.request").unwrap();
+            encode::write_str(&mut buf, "trace_id").unwrap();
+            encode::write_uint(&mut buf, u64::from(chunk) + 1).unwrap();
+            encode::write_str(&mut buf, "span_id").unwrap();
+            encode::write_uint(&mut buf, 1).unwrap();
+            encode::write_str(&mut buf, "meta").unwrap();
+            encode::write_map_len(&mut buf, 1).unwrap();
+            encode::write_str(&mut buf, "env").unwrap();
+            encode::write_str(&mut buf, "prod").unwrap();
+        }
+        buf
+    }
+
+    const MSGPACK: (&str, &str) = ("Content-Type", "application/msgpack");
+
+    #[test]
+    fn the_v0_endpoints_only_serve_msgpack_bodies() {
+        let (intake, _traces) = intake(config());
+        let content_type = |value: Option<&str>| {
+            let mut headers = HeaderMap::new();
+            if let Some(value) = value {
+                headers.insert(CONTENT_TYPE, HeaderValue::from_str(value).unwrap());
+            }
+            headers
+        };
+        let msgpack = ["application/msgpack", "Application/MsgPack", " application/msgpack "];
+        let other = [
+            None,
+            Some(""),
+            Some("application/json"),
+            Some("text/json"),
+            Some("application/octet-stream"),
+            // Go reads these as MessagePack too; they are left to the trace-agent, which answers them as Go does.
+            Some("application/msgpack; charset=utf-8"),
+        ];
+        for version in [EndpointVersion::V02, EndpointVersion::V03, EndpointVersion::V04] {
+            for value in msgpack {
+                assert!(
+                    intake.serves(version, &content_type(Some(value))),
+                    "{version:?} {value:?}"
+                );
+            }
+            for value in other {
+                assert!(!intake.serves(version, &content_type(value)), "{version:?} {value:?}");
+            }
+        }
+        for value in other {
+            assert!(intake.serves(EndpointVersion::V10, &content_type(value)), "{value:?}");
+        }
+    }
+
+    // `TestHandleWithVersionRejectCrossSite` and the v0.2 case of `TestReceiverMsgpackDecoder` in `api_test.go`.
+    #[tokio::test]
+    async fn a_msgpack_payload_on_v02_is_an_unsupported_media_type() {
+        let (intake, mut traces) = intake(config());
+
+        // As `handleWithVersion`, the media type is checked before the cross-site header.
+        let headers = [MSGPACK, ("Sec-Fetch-Site", "cross-site")];
+        let (status, response_headers, body) =
+            send_to(&intake, EndpointVersion::V02, sized_request(&headers, v04_payload(1))).await;
+
+        assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        assert_eq!(response_headers[CONTENT_TYPE], "text/plain; charset=utf-8");
+        assert_eq!(response_headers[X_CONTENT_TYPE_OPTIONS], "nosniff");
+        assert_eq!(body, "unsupported media type: \"application/msgpack\"\n");
+        assert!(traces.try_recv().is_err());
+        let counters = counters(&intake);
+        let (tags, errors) = counter(&counters, "datadog.trace_agent.receiver.error");
+        assert_eq!(tags, ["error:format-error", "version:v0.2"]);
+        assert_eq!(errors, 1.0);
+    }
+
+    #[tokio::test]
+    async fn v03_answers_ok_and_v04_the_rates() {
+        let (intake, mut traces, version) = intake_with_rates(config());
+        let headers = [MSGPACK, ("Datadog-Rates-Payload-Version", "stale")];
+
+        let (status, response_headers, body) =
+            send_to(&intake, EndpointVersion::V03, sized_request(&headers, v04_payload(1))).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(response_headers[CONTENT_TYPE], "text/plain; charset=utf-8");
+        assert!(!response_headers.contains_key(&RATES_PAYLOAD_VERSION_HEADER));
+        assert_eq!(body, "OK\n");
+        assert_eq!(traces.try_recv().unwrap().len(), 1);
+
+        let (status, response_headers, body) =
+            send_to(&intake, EndpointVersion::V04, sized_request(&headers, v04_payload(1))).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(response_headers[CONTENT_TYPE], "application/json");
+        assert_eq!(response_headers[&RATES_PAYLOAD_VERSION_HEADER], version.as_str());
+        assert_eq!(body, PUBLISHED_RATES_BODY);
+        assert_eq!(traces.try_recv().unwrap().len(), 1);
+
+        // `replyOK` sizes `OK` too.
+        let events = intake.telemetry.take_window_events();
+        let endpoints: Vec<_> = events
+            .iter()
+            .filter_map(|event| event.try_as_metric())
+            .filter(|metric| metric.context().name() == "datadog.trace_agent.receiver.rate_response_bytes.max")
+            .map(|metric| {
+                let endpoint = metric
+                    .context()
+                    .tags()
+                    .into_iter()
+                    .find_map(|tag| tag.as_str().strip_prefix("endpoint:").map(String::from));
+                (endpoint.unwrap(), metric.values().clone())
+            })
+            .collect();
+        assert_eq!(endpoints.len(), 2);
+        assert!(endpoints.contains(&("traces_v0.3".to_string(), MetricValues::gauge(3.0))));
+        assert!(endpoints.contains(&(
+            "traces_v0.4".to_string(),
+            MetricValues::gauge(PUBLISHED_RATES_BODY.len() as f64)
+        )));
+    }
+
+    #[tokio::test]
+    async fn a_refused_v03_payload_gets_ok() {
+        let (intake, _traces) = intake(config());
+        let _busy = intake.decoders.clone().acquire_owned().await.unwrap();
+
+        let (status, response_headers, body) =
+            send_to(&intake, EndpointVersion::V03, sized_request(&[MSGPACK], v04_payload(1))).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(response_headers[CONTENT_TYPE], "text/plain; charset=utf-8");
+        assert_eq!(body, "OK\n");
+    }
+
+    #[tokio::test]
+    async fn a_v04_payload_takes_its_tracer_fields_and_container_from_the_headers() {
+        let container_tags = ContainerTagsHasher::new(None, Some(Arc::new(TaggingProvider)));
+        let (intake, mut traces) = intake(config());
+        let long_lang = "l".repeat(MAX_META_VALUE_LEN + 1);
+        let headers = [
+            MSGPACK,
+            ("Datadog-Meta-Lang", long_lang.as_str()),
+            ("Datadog-Meta-Lang-Version", "3.12"),
+            ("Datadog-Meta-Tracer-Version", "2.0.0"),
+            ("Datadog-Container-ID", "from-header"),
+        ];
+
+        let request = sized_request(&headers, v04_payload(2));
+        let response = intake.handle(EndpointVersion::V04, request, &container_tags).await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let traces = traces.try_recv().unwrap();
+        assert_eq!(traces.len(), 2);
+        for trace in &traces {
+            // Set as sent, where the telemetry tags are truncated.
+            assert_eq!(trace.payload.language_name, long_lang.as_str());
+            assert_eq!(trace.payload.language_version, "3.12");
+            assert_eq!(trace.payload.tracer_version, "2.0.0");
+            assert_eq!(trace.payload.container_id, "from-header");
+            // Promoted from the spans by the decoder.
+            assert_eq!(trace.payload.env, "prod");
+        }
+        let receiver = traces[0].payload.receiver();
+        assert_eq!(receiver.endpoint_version, "v0.4");
+        assert_eq!(receiver.lang.len(), MAX_META_VALUE_LEN);
+        assert_eq!(receiver.service, "web");
+        assert!(receiver.container_tags.contains("container_id:from-header"));
+    }
+
+    #[tokio::test]
+    async fn a_payload_that_ends_early_is_counted_as_msgp_short_bytes() {
+        for (version, payload) in [
+            (EndpointVersion::V04, v04_payload(2)),
+            (EndpointVersion::V10, v1_payload(None, 2)),
+        ] {
+            let (intake, _traces) = intake(config());
+            let truncated = payload[..payload.len() - 3].to_vec();
+            let headers = [MSGPACK, ("X-Datadog-Trace-Count", "2")];
+
+            let (status, _, body) = send_to(&intake, version, sized_request(&headers, truncated)).await;
+
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{version:?}");
+            assert_eq!(body, "msgp: too few bytes left to read object\n", "{version:?}");
+            let counters = counters(&intake);
+            let (tags, errors) = counter(&counters, "datadog.trace_agent.receiver.error");
+            let version_tag = format!("v:{}", version.as_str());
+            assert_eq!(tags, ["handler:traces", version_tag.as_str(), "error:decoding-error"]);
+            assert_eq!(errors, 1.0);
+            let (tags, dropped) = counter(&counters, "datadog.trace_agent.normalizer.traces_dropped");
+            assert_eq!(tags.last().unwrap(), "reason:msgp_short_bytes", "{version:?}");
+            assert_eq!(dropped, 2.0);
+        }
     }
 
     #[tokio::test]
