@@ -10,6 +10,7 @@ use super::{
     proxy::ProxyConfiguration,
     retry::RetryConfiguration,
     routing::RoutingTargetCatalog,
+    sketch_shadow::sketch_shadow_eligible,
 };
 
 const fn default_api_key_validation_interval_mins() -> i64 {
@@ -269,12 +270,13 @@ pub struct ForwarderConfiguration {
 impl ForwarderConfiguration {
     /// Replaces every configured endpoint with a single destination.
     ///
-    /// Neither dual shipping, the alternate metrics intakes, nor routing targets apply to the destination, and a
+    /// Dual shipping, alternate metrics intakes, routing targets, and sketch shadowing do not apply, and a
     /// destination that does not accept V3 series payloads gets none of the configured V3 series routing.
     pub(crate) fn for_single_destination(mut self, destination: &SingleDestination) -> Self {
         self.endpoint = EndpointConfiguration::for_single_destination(destination);
         self.opw_metrics = OpwMetricsConfiguration::default();
         self.routing_targets = None;
+        self.v3_api.sketches.shadow_sample_rate = 0.0;
         if !destination.accepts_v3_series {
             self.use_v3_api.series = UseV3ApiSeriesConfig {
                 enabled: V3SeriesMode::Disabled,
@@ -389,6 +391,18 @@ impl ForwarderConfiguration {
         self.opw_metrics
             .selected_endpoint()
             .map(|selected| selected.use_v3_series)
+    }
+
+    /// Returns whether this metrics destination needs a sketch shadow worker.
+    pub(crate) fn endpoint_supports_sketch_shadow(
+        &self, endpoint: &RoutableEndpoint, has_metrics_primary: bool,
+    ) -> bool {
+        // An alternate metrics intake replaces the normal primary for all metric traffic.
+        if self.compressor_disables_metrics_v3() || (has_metrics_primary && endpoint.route() == EndpointRoute::Primary)
+        {
+            return false;
+        }
+        sketch_shadow_eligible(endpoint.endpoint(), &self.v3_api.sketches)
     }
 
     /// Returns whether the configured metrics compressor is incompatible with Metrics V3.
@@ -698,6 +712,7 @@ mod tests {
     fn a_single_destination_keeps_configured_v3_series_routing_when_it_accepts_v3() {
         let mut config = forwarder_configuration();
         config.use_v3_api.series.enabled = V3SeriesMode::Enabled;
+        config.v3_api.sketches.shadow_sample_rate = 1.0;
         let destination = SingleDestination {
             url: "https://mrf.example.com".to_string(),
             api_key: "mrf-api-key".to_string(),
@@ -706,5 +721,6 @@ mod tests {
         let config = config.for_single_destination(&destination);
 
         assert_eq!(V3SeriesMode::Enabled, config.use_v3_api.series.enabled);
+        assert_eq!(0.0, config.v3_api.sketches.shadow_sample_rate);
     }
 }

@@ -1748,6 +1748,18 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.shared.metrics_encoding.v3_api.compression_level = value as i32;
     }
 
+    fn consume_serializer_experimental_use_v3_api_sketches_beta_route(&mut self, value: String) {
+        self.config.shared.metrics_encoding.v3_api.sketches.beta_route = value;
+    }
+
+    fn consume_serializer_experimental_use_v3_api_sketches_shadow_sample_rate(&mut self, value: f64) {
+        self.config.shared.metrics_encoding.v3_api.sketches.shadow_sample_rate = value;
+    }
+
+    fn consume_serializer_experimental_use_v3_api_sketches_shadow_sites(&mut self, value: Vec<String>) {
+        self.config.shared.metrics_encoding.v3_api.sketches.shadow_sites = value;
+    }
+
     fn consume_serializer_experimental_use_v3_api_sketches_endpoints(&mut self, value: Vec<String>) {
         self.config.shared.metrics_encoding.v3_api.sketches.endpoints = value;
     }
