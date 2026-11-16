@@ -161,12 +161,6 @@ impl SemanticRegistryProvider {
     /// coalesced, so a rejection can hide an accepted registry the caller hasn't seen yet. The registry therefore
     /// isn't guaranteed to differ from the previous one, which Remote Configuration may also publish again, for example
     /// after its worker restarts.
-    ///
-    /// A clone only notices updates published after it was created or last waited, so a caller should take a snapshot
-    /// after creating the clone it waits on. A default provider waits indefinitely, so a caller may `select!` on this.
-    ///
-    /// This takes `&mut self` because the provider tracks which update it has observed. Each task that waits holds its
-    /// own clone.
     pub async fn changed(&mut self) {
         // The rejection itself is reported to the Agent by the client; `snapshot` keeps the last accepted registry.
         let _ = self.subscription.changed().await;
