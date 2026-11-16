@@ -2,7 +2,7 @@
 //!
 //! This mirrors the trace-agent's `TracesDropped` and `SpansMalformed` counters (`pkg/trace/info/stats.go`), which it
 //! publishes as `datadog.trace_agent.normalizer.traces_dropped` and `datadog.trace_agent.normalizer.spans_malformed`
-//! with a `reason` tag, plus the tracer tags of the payload. As with the trace sampler, counts accumulate for one
+//! with a `reason` tag, plus the receiver tags of the payload (`info.Tags`). As with the trace sampler, counts accumulate for one
 //! window and are reported through the transform's metrics output, so the metrics reach the backend under their
 //! published names.
 
@@ -149,7 +149,9 @@ impl ReasonCounts {
     }
 }
 
-/// The tracer tags a count is reported under, the subset of the reference's `info.Tags` a trace carries.
+/// The tags a count is reported under, the reference's `info.Tags` that the receiver resolved for the payload.
+///
+/// As in the reference, the language and tracer tags come from the request headers rather than the payload body.
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
 pub(super) struct TracerTags {
     lang: MetaString,
@@ -159,25 +161,27 @@ pub(super) struct TracerTags {
     tracer_version: MetaString,
     endpoint_version: MetaString,
     connection_type: MetaString,
+    service: MetaString,
 }
 
 impl TracerTags {
     fn from_payload(payload: &PayloadFields) -> Self {
         let receiver = payload.receiver();
         Self {
-            lang: payload.language_name.clone(),
-            lang_version: payload.language_version.clone(),
+            lang: receiver.lang.clone(),
+            lang_version: receiver.lang_version.clone(),
             lang_vendor: receiver.lang_vendor.clone(),
             interpreter: receiver.interpreter.clone(),
-            tracer_version: payload.tracer_version.clone(),
+            tracer_version: receiver.tracer_version.clone(),
             endpoint_version: receiver.endpoint_version.clone(),
             connection_type: receiver.connection_type.clone(),
+            service: receiver.service.clone(),
         }
     }
 
     /// Assembles the tag set with the given reason, omitting empty tags as the reference's `Tags.toArray` does.
     fn tag_set(&self, reason: &str) -> TagSet {
-        let mut tag_set = TagSet::with_capacity(8);
+        let mut tag_set = TagSet::with_capacity(9);
         for (name, value) in [
             ("lang", &self.lang),
             ("lang_version", &self.lang_version),
@@ -186,6 +190,7 @@ impl TracerTags {
             ("tracer_version", &self.tracer_version),
             ("endpoint_version", &self.endpoint_version),
             ("connection_type", &self.connection_type),
+            ("service", &self.service),
         ] {
             if !value.is_empty() {
                 tag_set.insert_tag(MetaString::from(format!("{}:{}", name, value)));
@@ -280,9 +285,13 @@ mod tests {
     #[test]
     fn window_reports_non_zero_counts_with_tracer_tags() {
         let payload = PayloadFields {
-            language_name: MetaString::from("python"),
-            tracer_version: MetaString::from("2.0.0"),
+            // The body's language and tracer version don't tag the counts: the request headers do.
+            language_name: MetaString::from("body-lang"),
+            tracer_version: MetaString::from("body-version"),
             receiver: Some(Arc::new(ReceiverMetadata {
+                lang: MetaString::from("python"),
+                tracer_version: MetaString::from("2.0.0"),
+                service: MetaString::from("checkout"),
                 interpreter: MetaString::from("CPython"),
                 endpoint_version: MetaString::from("v0.4"),
                 connection_type: MetaString::from("uds"),
@@ -310,6 +319,7 @@ mod tests {
                 "tracer_version:2.0.0",
                 "endpoint_version:v0.4",
                 "connection_type:uds",
+                "service:checkout",
                 "reason:trace_id_zero"
             ],
             1.0
@@ -323,6 +333,7 @@ mod tests {
                 "tracer_version:2.0.0",
                 "endpoint_version:v0.4",
                 "connection_type:uds",
+                "service:checkout",
                 "reason:service_empty"
             ],
             2.0
@@ -338,7 +349,10 @@ mod tests {
         let mut window = NormalizerWindow::default();
         for i in 0..=MAX_TAG_KEYS {
             let payload = PayloadFields {
-                tracer_version: MetaString::from(i.to_string()),
+                receiver: Some(Arc::new(ReceiverMetadata {
+                    tracer_version: MetaString::from(i.to_string()),
+                    ..ReceiverMetadata::new()
+                })),
                 ..PayloadFields::default()
             };
             window.record(&payload, &counts);

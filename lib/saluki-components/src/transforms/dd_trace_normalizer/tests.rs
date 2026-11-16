@@ -3,10 +3,12 @@
 //! Each test is named after its Go counterpart. The V1 tests port directly; the V0-only tests whose behavior also
 //! lives in the V1 path (`normalizeTraceChunkV1` and `normalizeV1`) are adapted to the V1 span shape.
 
+use std::sync::Arc;
+
 use saluki_common::collections::FastHashMap;
 use saluki_core::components::test_util::TestComponentDriver;
 use saluki_core::data_model::event::metric::MetricValues;
-use saluki_core::data_model::event::trace::{SpanLink, TraceIngestInfo};
+use saluki_core::data_model::event::trace::{ReceiverMetadata, SpanLink, TraceIngestInfo};
 use saluki_core::data_model::event::Event;
 
 use super::*;
@@ -534,8 +536,13 @@ async fn transform_drops_invalid_chunks_and_reports_telemetry() {
         .await
         .expect("the normalizer should start");
 
-    let mut valid = new_test_trace(vec![new_test_span_v1().with_name("")]);
-    valid.payload.language_name = MetaString::from("go");
+    let mut valid = new_test_trace(vec![new_test_span_v1().with_name("").with_service("")]);
+    // The `Datadog-Meta-Lang` header, not the body, tags the counts and names the fallback service.
+    valid.payload.language_name = MetaString::from("python");
+    valid.payload.receiver = Some(Arc::new(ReceiverMetadata {
+        lang: MetaString::from("go"),
+        ..ReceiverMetadata::new()
+    }));
     let mut invalid = new_test_trace(vec![new_test_span_v1()]);
     invalid.trace_id_low = 0;
     control.send_event(Event::Trace(valid)).await;
@@ -548,6 +555,7 @@ async fn transform_drops_invalid_chunks_and_reports_telemetry() {
         panic!("expected a trace: {:?}", traces[0]);
     };
     assert_eq!(trace.spans()[0].name(), "unnamed_operation");
+    assert_eq!(trace.spans()[0].service(), "unnamed-go-service");
 
     let metrics = outputs.named_output("metrics").collect_events().await;
     let counter = |name: &str, tags: &[&str]| {
