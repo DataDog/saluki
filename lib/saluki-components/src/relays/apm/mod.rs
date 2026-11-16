@@ -17,7 +17,7 @@ use axum::routing::any;
 use axum::Router;
 use backon::{ExponentialBuilder, Retryable as _};
 use datadog_agent_apm::semantics::SemanticRegistryProvider;
-use datadog_agent_commons::ipc::client::fetch_agent_version;
+use datadog_agent_commons::ipc::client::{fetch_agent_version, RunningAgentVersion};
 use datadog_agent_commons::ipc::config::RemoteAgentClientConfiguration;
 use http::{HeaderName, HeaderValue};
 use metrics::Counter;
@@ -433,7 +433,7 @@ impl Relay for ApmRelay {
 /// Returns `None` without a client configuration, when ADP runs without the core Agent.
 async fn fetch_agent_version_with_retry(
     agent_client: Option<RemoteAgentClientConfiguration>,
-) -> Option<datadog_agent_commons::ipc::client::RunningAgentVersion> {
+) -> Option<RunningAgentVersion> {
     let agent_client = agent_client?;
     let fetch = || fetch_agent_version(&agent_client);
     let version = fetch
@@ -894,7 +894,7 @@ mod tests {
         assert_eq!(response.headers()[info::AGENT_STATE_HEADER], state.as_str());
 
         // Once the Agent version is known, the payload and the headers follow it.
-        info.set_agent_version(datadog_agent_commons::ipc::client::RunningAgentVersion {
+        info.set_agent_version(RunningAgentVersion {
             version: "7.81.0".to_string(),
             commit: "abc1234".to_string(),
         });
