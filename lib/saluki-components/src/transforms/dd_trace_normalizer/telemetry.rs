@@ -5,18 +5,20 @@
 //! tag, plus the receiver tags of the payload. As with the trace sampler, counts accumulate for one window and are
 //! reported through the transform's metrics output, so the metrics reach the backend under their published names.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use saluki_common::collections::FastHashMap;
 use saluki_core::data_model::{
     event::{
-        metric::{context::Context, Metric},
+        metric::{context::Context, Metric, MetricMetadata, MetricValues},
         trace::PayloadFields,
         Event,
     },
     tags::TagSet,
 };
 use stringtheory::MetaString;
+
+use crate::common::traces::telemetry_window_interval;
 
 /// How long a telemetry window accumulates counts before reporting.
 pub(super) const WINDOW: Duration = Duration::from_secs(10);
@@ -201,9 +203,18 @@ impl TracerTags {
 }
 
 /// Counts accumulated over one telemetry window, keyed by tracer tags.
-#[derive(Default)]
 pub(super) struct NormalizerWindow {
+    started: Instant,
     counts: FastHashMap<TracerTags, ReasonCounts>,
+}
+
+impl Default for NormalizerWindow {
+    fn default() -> Self {
+        Self {
+            started: Instant::now(),
+            counts: FastHashMap::default(),
+        }
+    }
 }
 
 impl NormalizerWindow {
@@ -219,8 +230,11 @@ impl NormalizerWindow {
         self.counts.entry(tags).or_default().merge(counts);
     }
 
-    /// Reports every non-zero count as a delta counter, then resets the window.
+    /// Reports every non-zero count as a rate over the window, as DogStatsD flushes the reference's counts, then resets
+    /// the window.
     pub(super) fn take_window_events(&mut self) -> Vec<Event> {
+        let interval = telemetry_window_interval(self.started);
+        self.started = Instant::now();
         let mut events = Vec::new();
         for (tags, counts) in self.counts.drain() {
             for (reason, count) in DropReason::ALL.iter().zip(counts.dropped) {
@@ -229,6 +243,7 @@ impl NormalizerWindow {
                         METRIC_TRACES_DROPPED,
                         tags.tag_set(reason.as_str()),
                         count,
+                        interval,
                     ));
                 }
             }
@@ -238,6 +253,7 @@ impl NormalizerWindow {
                         METRIC_SPANS_MALFORMED,
                         tags.tag_set(reason.as_str()),
                         count,
+                        interval,
                     ));
                 }
             }
@@ -246,15 +262,19 @@ impl NormalizerWindow {
     }
 }
 
-fn counter_event(name: &'static str, tags: TagSet, count: u64) -> Event {
-    Event::Metric(Metric::counter(Context::from_parts(name, tags), count as f64))
+fn counter_event(name: &'static str, tags: TagSet, count: u64, interval: Duration) -> Event {
+    Event::Metric(Metric::from_parts(
+        Context::from_parts(MetaString::from_static(name), tags),
+        MetricValues::rate(count as f64, interval),
+        MetricMetadata::default(),
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
-    use saluki_core::data_model::event::{metric::MetricValues, trace::ReceiverMetadata};
+    use saluki_core::data_model::event::trace::ReceiverMetadata;
 
     use super::*;
 
@@ -266,7 +286,7 @@ mod tests {
             metric.context().name() == name
                 && metric.context().tags().len() == tags.len()
                 && tags.iter().all(|tag| metric.context().tags().has_tag(tag))
-                && *metric.values() == MetricValues::counter(value)
+                && *metric.values() == MetricValues::rate(value, Duration::from_secs(1))
         })
     }
 
@@ -338,6 +358,24 @@ mod tests {
             2.0
         ));
         assert!(window.take_window_events().is_empty(), "the window resets");
+    }
+
+    #[test]
+    fn counts_are_rates_over_the_measured_window() {
+        let mut counts = ReasonCounts::default();
+        counts.drop(DropReason::SpanIdZero);
+        // As when a slow dispatch delays the window's report.
+        let mut window = NormalizerWindow {
+            started: Instant::now() - Duration::from_millis(13_400),
+            ..NormalizerWindow::default()
+        };
+        window.record(&PayloadFields::default(), &counts);
+
+        let events = window.take_window_events();
+        assert_eq!(
+            *events[0].try_as_metric().unwrap().values(),
+            MetricValues::rate(1.0, Duration::from_secs(13))
+        );
     }
 
     #[test]

@@ -15,7 +15,7 @@
 //! window only holds the combinations seen during it.
 
 use std::sync::{Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ddsketch::DDSketch;
 use saluki_common::collections::FastHashMap;
@@ -26,6 +26,7 @@ use saluki_core::data_model::event::Event;
 use saluki_core::data_model::tags::TagSet;
 use stringtheory::MetaString;
 
+use crate::common::traces::telemetry_window_interval;
 use crate::transforms::HistogramConfiguration;
 
 /// How long a telemetry window accumulates counts before reporting.
@@ -164,11 +165,21 @@ impl TagStats {
     }
 }
 
-#[derive(Default)]
 struct Window {
+    started: Instant,
     stats: FastHashMap<ReceiverTags, TagStats>,
     /// `receiver.error` counts, keyed by endpoint version and error tag, which the reference doesn't tag by tracer.
     errors: FastHashMap<(&'static str, &'static str), i64>,
+}
+
+impl Default for Window {
+    fn default() -> Self {
+        Self {
+            started: Instant::now(),
+            stats: FastHashMap::default(),
+            errors: FastHashMap::default(),
+        }
+    }
 }
 
 /// Receiver telemetry shared by every request handler.
@@ -205,8 +216,11 @@ impl ReceiverTelemetry {
     }
 
     /// Reports the window's counts, in the order of the reference's `publishAndReset`, then resets the window.
+    ///
+    /// Counts are reported as rates over the window, as DogStatsD flushes the trace-agent's counts.
     pub(super) fn take_window_events(&self) -> Vec<Event> {
         let window = std::mem::take(&mut *self.window.lock().unwrap_or_else(PoisonError::into_inner));
+        let interval = telemetry_window_interval(window.started);
         let mut events = Vec::new();
 
         for (tags, mut stats) in window.stats {
@@ -215,7 +229,7 @@ impl ReceiverTelemetry {
             // positive.
             let mut count = |name: &'static str, value: i64, always: bool| {
                 if always || value > 0 {
-                    events.push(counter(name, tag_set.clone(), value));
+                    events.push(counter(name, tag_set.clone(), value, interval));
                 }
             };
             count("datadog.trace_agent.receiver.trace", stats.traces_received, true);
@@ -259,7 +273,7 @@ impl ReceiverTelemetry {
             for (reason, value) in DropReason::ALL.iter().zip(stats.traces_dropped) {
                 if value > 0 {
                     let tag_set = tags.tag_set(Some(reason.reason_tag()));
-                    events.push(counter(METRIC_TRACES_DROPPED, tag_set, value));
+                    events.push(counter(METRIC_TRACES_DROPPED, tag_set, value, interval));
                 }
             }
 
@@ -272,7 +286,7 @@ impl ReceiverTelemetry {
                         MetaString::from_static(METRIC_SERVE_TRACES_MS),
                         tags.tag_set(Some(success)),
                     );
-                    self.push_histogram(&mut events, context, histogram);
+                    self.push_histogram(&mut events, context, histogram, interval);
                 }
             }
         }
@@ -282,14 +296,14 @@ impl ReceiverTelemetry {
             tag_set.insert_tag(MetaString::from_static("handler:traces"));
             tag_set.insert_tag(MetaString::from(format!("v:{version}")));
             tag_set.insert_tag(MetaString::from(format!("error:{error}")));
-            events.push(counter(METRIC_ERROR, tag_set, value));
+            events.push(counter(METRIC_ERROR, tag_set, value, interval));
         }
 
         events
     }
 
     /// Reports a histogram as DogStatsD's aggregation reports one.
-    fn push_histogram(&self, events: &mut Vec<Event>, context: Context, histogram: &mut Histogram) {
+    fn push_histogram(&self, events: &mut Vec<Event>, context: Context, histogram: &mut Histogram, interval: Duration) {
         if self.histogram.copy_to_distribution() {
             let mut sketch = DDSketch::default();
             for sample in histogram.samples() {
@@ -307,7 +321,7 @@ impl ReceiverTelemetry {
         for statistic in self.histogram.statistics() {
             let value = statistic.value_from_histogram(&summary);
             let values = if statistic.is_rate_statistic() {
-                MetricValues::rate(value, WINDOW)
+                MetricValues::rate(value, interval)
             } else {
                 MetricValues::gauge(value)
             };
@@ -321,16 +335,20 @@ impl ReceiverTelemetry {
     }
 }
 
-fn counter(name: &'static str, tags: TagSet, value: i64) -> Event {
-    Event::Metric(Metric::counter(
+fn counter(name: &'static str, tags: TagSet, value: i64, interval: Duration) -> Event {
+    Event::Metric(Metric::from_parts(
         Context::from_parts(MetaString::from_static(name), tags),
-        value as f64,
+        MetricValues::rate(value as f64, interval),
+        MetricMetadata::default(),
     ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The interval of a window reported as soon as it starts.
+    const SECOND: Duration = Duration::from_secs(1);
 
     /// Returns each metric's name, tags in order, and values.
     fn metrics(events: &[Event]) -> Vec<(String, Vec<String>, MetricValues)> {
@@ -404,7 +422,7 @@ mod tests {
         for ((name, tags, values), (expected_name, expected_value)) in reported.iter().zip(expected) {
             assert_eq!(name, expected_name);
             assert_eq!(tags, &expected_tags);
-            assert_eq!(*values, MetricValues::counter(expected_value), "{name}");
+            assert_eq!(*values, MetricValues::rate(expected_value, SECOND), "{name}");
         }
         assert!(telemetry.take_window_events().is_empty(), "the window resets");
     }
@@ -438,11 +456,11 @@ mod tests {
             dropped_tags,
             &["lang:go", "endpoint_version:v1.0", "reason:unexpected_eof"]
         );
-        assert_eq!(*dropped, MetricValues::counter(3.0));
+        assert_eq!(*dropped, MetricValues::rate(3.0, SECOND));
 
         let (_, error_tags, errors) = find("datadog.trace_agent.receiver.error");
         assert_eq!(error_tags, &["handler:traces", "v:v1.0", "error:unexpected-eof"]);
-        assert_eq!(*errors, MetricValues::counter(2.0));
+        assert_eq!(*errors, MetricValues::rate(2.0, SECOND));
 
         // The serve time is summarized as DogStatsD summarizes histograms.
         let (_, serve_tags, avg) = find("datadog.trace_agent.receiver.serve_traces_ms.avg");
@@ -454,11 +472,31 @@ mod tests {
         );
         assert_eq!(
             find("datadog.trace_agent.receiver.serve_traces_ms.count").2,
-            MetricValues::rate(2.0, WINDOW)
+            MetricValues::rate(2.0, SECOND)
         );
         assert!(!reported
             .iter()
             .any(|(_, tags, _)| tags.iter().any(|tag| tag == "success:true")));
+    }
+
+    #[test]
+    fn counts_are_rates_over_the_measured_window() {
+        let telemetry = ReceiverTelemetry::new(HistogramConfiguration::default());
+        assert!(
+            telemetry.take_window_events().is_empty(),
+            "an empty window reports nothing"
+        );
+
+        // As when a slow dispatch delays the window's report.
+        telemetry.window.lock().unwrap().started = Instant::now() - Duration::from_millis(13_400);
+        telemetry.record(tags(), |stats| stats.payload_accepted += 4);
+
+        let reported = metrics(&telemetry.take_window_events());
+        let (_, _, accepted) = reported
+            .iter()
+            .find(|(name, _, _)| name == "datadog.trace_agent.receiver.payload_accepted")
+            .unwrap();
+        assert_eq!(*accepted, MetricValues::rate(4.0, Duration::from_secs(13)));
     }
 
     #[test]

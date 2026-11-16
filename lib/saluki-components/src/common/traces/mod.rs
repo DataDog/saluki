@@ -1,6 +1,7 @@
 //! Trace helpers shared by the Datadog and OTLP trace pipelines.
 
 use std::borrow::Cow;
+use std::time::{Duration, Instant};
 
 use saluki_core::data_model::event::trace::AttributeValue;
 
@@ -38,4 +39,13 @@ fn format_float(f: f64) -> String {
     // Rust's `Display` already prints the shortest round-tripping form without an exponent, and `NaN` as the
     // trace-agent does.
     f.to_string()
+}
+
+/// Returns the interval of a telemetry window that started at `started`, for reporting its counts as rates.
+///
+/// The trace-agent's counts reach the backend as DogStatsD rates over the flush interval, so trace telemetry reports
+/// counts as rates over the window it measured. The interval is rounded to whole seconds, at least one, because the
+/// encoder sends whole seconds: the backend then recovers the exact count from the rate.
+pub(crate) fn telemetry_window_interval(started: Instant) -> Duration {
+    Duration::from_secs(started.elapsed().as_secs_f64().round().max(1.0) as u64)
 }

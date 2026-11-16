@@ -44,6 +44,7 @@ use saluki_io::net::server::http::HttpServer;
 use saluki_io::net::{ConnectionAddress, ListenAddress};
 use saluki_metrics::static_metrics;
 use tokio::sync::mpsc;
+use tokio::time::MissedTickBehavior;
 use tokio::{pin, select};
 use tracing::{debug, error, warn};
 
@@ -504,7 +505,9 @@ impl Source for Apm {
 async fn dispatch_traces(
     mut traces_rx: mpsc::Receiver<Vec<Trace>>, telemetry: Arc<ReceiverTelemetry>, context: SourceContext,
 ) -> Result<(), GenericError> {
+    // A dispatch that blocks past a tick delays the next window rather than bursting short ones.
     let mut window = tokio::time::interval_at(tokio::time::Instant::now() + WINDOW, WINDOW);
+    window.set_missed_tick_behavior(MissedTickBehavior::Delay);
     loop {
         select! {
             maybe_traces = traces_rx.recv() => {
@@ -535,6 +538,9 @@ async fn dispatch_receiver_telemetry(
     telemetry: &ReceiverTelemetry, context: &SourceContext,
 ) -> Result<(), GenericError> {
     let events = telemetry.take_window_events();
+    if events.is_empty() {
+        return Ok(());
+    }
     let dispatcher = context
         .dispatcher()
         .buffered_named("metrics")
@@ -1484,7 +1490,7 @@ mod tests {
             .filter_map(|event| event.try_as_metric())
             .filter(|metric| metric.context().name() == "datadog.trace_agent.receiver.payload_accepted")
             .filter_map(|metric| match metric.values() {
-                saluki_core::data_model::event::metric::MetricValues::Counter(points) => {
+                saluki_core::data_model::event::metric::MetricValues::Rate(points, _) => {
                     Some(points.into_iter().map(|(_, value)| value).sum::<f64>())
                 }
                 _ => None,
