@@ -198,10 +198,11 @@ impl ApmStats {
             .map(|s| s.as_ref())
             .unwrap_or("");
 
+        let now = now_nanos();
         for span in trace.spans() {
             if let Some(stat_span) = self.concentrator.new_stat_span_from_span(span, trace.ingest_info()) {
                 self.concentrator
-                    .add_span(&stat_span, trace_weight, &payload_key, &infra_tags, origin);
+                    .add_span(&stat_span, trace_weight, &payload_key, &infra_tags, origin, now);
             }
         }
     }
@@ -933,7 +934,7 @@ mod tests {
 
         for span in trace.spans() {
             if let Some(stat_span) = concentrator.new_stat_span_from_span(span, TraceIngestInfo::Datadog) {
-                concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
+                concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "", now_nanos());
             }
         }
 
@@ -974,7 +975,7 @@ mod tests {
 
         for span in trace.spans() {
             if let Some(stat_span) = concentrator.new_stat_span_from_span(span, TraceIngestInfo::Datadog) {
-                concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
+                concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "", now_nanos());
             }
         }
 
@@ -1010,7 +1011,7 @@ mod tests {
 
         for span in &spans {
             if let Some(stat_span) = concentrator.new_stat_span_from_span(span, TraceIngestInfo::Datadog) {
-                concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
+                concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "", now_nanos());
             }
         }
 
@@ -1098,7 +1099,7 @@ mod tests {
                     receiver_sampling_rate: 1.0,
                 },
             ) {
-                concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
+                concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "", now_nanos());
             }
         }
 
@@ -1156,7 +1157,7 @@ mod tests {
                     receiver_sampling_rate: 1.0,
                 },
             ) {
-                concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
+                concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "", now_nanos());
             }
 
             // Client span with span.kind=client but no _top_level or _dd.measured
@@ -1175,7 +1176,7 @@ mod tests {
                     receiver_sampling_rate: 1.0,
                 },
             ) {
-                concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
+                concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "", now_nanos());
             }
 
             let stats = concentrator.flush(now + BUCKET_DURATION_NS * 3, true);
@@ -1211,7 +1212,7 @@ mod tests {
                     receiver_sampling_rate: 1.0,
                 },
             ) {
-                concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
+                concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "", now_nanos());
             }
 
             // Client span with span.kind=client
@@ -1230,7 +1231,7 @@ mod tests {
                     receiver_sampling_rate: 1.0,
                 },
             ) {
-                concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
+                concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "", now_nanos());
             }
 
             let stats = concentrator.flush(now + BUCKET_DURATION_NS * 3, true);
@@ -1284,7 +1285,7 @@ mod tests {
                     receiver_sampling_rate: 1.0,
                 },
             ) {
-                concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
+                concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "", now_nanos());
             }
 
             let stats = concentrator.flush(now + BUCKET_DURATION_NS * 3, true);
@@ -1336,7 +1337,7 @@ mod tests {
                     receiver_sampling_rate: 1.0,
                 },
             ) {
-                concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
+                concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "", now_nanos());
             }
 
             let stats = concentrator.flush(now + BUCKET_DURATION_NS * 3, true);
@@ -1398,7 +1399,7 @@ mod tests {
 
             for span in &spans {
                 if let Some(stat_span) = concentrator.new_stat_span_from_span(span, TraceIngestInfo::Datadog) {
-                    concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
+                    concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "", now_nanos());
                 }
             }
 

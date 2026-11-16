@@ -136,11 +136,12 @@ impl SpanConcentrator {
         self.new_stat_span(span, span_kind(span, ingest_info))
     }
 
+    /// Aggregates a span into the bucket its end time falls in, at `now` (Unix nanoseconds).
     pub fn add_span(
         &mut self, stat_span: &StatSpan, weight: f64, payload_key: &PayloadAggregationKey, infra_tags: &InfraTags,
-        origin: &str,
+        origin: &str, now: u64,
     ) {
-        self.add_span_internal(stat_span, weight, payload_key, infra_tags, origin);
+        self.add_span_internal(stat_span, weight, payload_key, infra_tags, origin, now);
     }
 
     /// Updates the peer tag names used to group subsequent spans when the provider's registry changes.
@@ -317,10 +318,15 @@ impl SpanConcentrator {
     }
 
     fn add_span_internal(
-        &mut self, s: &StatSpan, weight: f64, agg_key: &PayloadAggregationKey, tags: &InfraTags, origin: &str,
+        &mut self, s: &StatSpan, weight: f64, agg_key: &PayloadAggregationKey, tags: &InfraTags, origin: &str, now: u64,
     ) {
         let end = s.start + s.duration;
-        let btime = (end - end % self.bsize).max(self.oldest_ts);
+        let mut btime = (end - end % self.bsize).max(self.oldest_ts);
+        // As the trace-agent's `addSpan`, a span that ends in the future counts in the current bucket: a bucket ahead
+        // of the clock would only be flushed once the clock reaches it.
+        if btime > now {
+            btime = align_ts(now, self.bsize).max(self.oldest_ts);
+        }
 
         let b = self
             .buckets
@@ -485,6 +491,29 @@ mod tests {
         assert_eq!(names, ["custom.remote.service", "peer.service"]);
     }
 
+    // `TestConcentratorFutureClamp` in `concentrator_test.go`.
+    #[test]
+    fn a_span_that_ends_in_the_future_counts_in_the_current_bucket() {
+        let now = 1_000 * BUCKET_DURATION_NS + 3;
+        let mut concentrator = SpanConcentrator::new(true, true, &[], Default::default(), now);
+        let measured = FastHashMap::from_iter([(MetaString::from("_dd.measured"), AttributeValue::Float(1.0))]);
+        let span = Span::new("svc", "op", "res", "web", 1, 0, now + 1_000 * BUCKET_DURATION_NS, 75, 0)
+            .with_attributes(measured);
+        let stat_span = concentrator.new_stat_span_from_span(&span, OTLP).unwrap();
+
+        concentrator.add_span(
+            &stat_span,
+            1.0,
+            &PayloadAggregationKey::default(),
+            &InfraTags::default(),
+            "",
+            now,
+        );
+
+        let buckets: Vec<_> = concentrator.buckets.keys().copied().collect();
+        assert_eq!(buckets, [1_000 * BUCKET_DURATION_NS]);
+    }
+
     #[test]
     fn peer_tag_ips_quantize_into_one_aggregation_group() {
         let now = 1_000_000_000u64;
@@ -517,7 +546,7 @@ mod tests {
             let stat_span = concentrator
                 .new_stat_span_from_span(&span, OTLP)
                 .expect("client span with peer tags should produce stats");
-            concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
+            concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "", now);
         }
 
         let payloads = concentrator.flush(now + BUCKET_DURATION_NS * 3, true);
