@@ -105,3 +105,4 @@ in this guide.
 Write plans for work that spans several pull requests in `docs/development/plans/`, one file per effort. Plans aren't
 published to the docs site and aren't linted. Keep a plan current as work lands, move anything of lasting value into
 the relevant page of this guide, and delete the plan in the final pull request of the effort.
+
