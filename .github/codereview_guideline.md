@@ -6,41 +6,30 @@ Apply these rules to files under `.github`, such as workflows and `dd-octo-sts` 
 
 Most of these changes take effect only after they merge, so pull request checks don't test them. Read each changed line.
 
-- A new workflow follows the closest existing workflow. A workflow that opens pull requests works like
-  `workflows/update-agent-version.yml`. It gets its token from `DataDog/dd-octo-sts-action` and sets the Git
-  identity. It signs commits with `DataDog/commit-headless`. When a new pull request replaces an older one, the
-  workflow closes the older one by label, as `update-agent-version.yml` and `bump-adp-version.yml` do. Flag a separate
-  script that finds, closes, or labels pull requests or issues. Do that work with GitHub API calls in
-  `actions/github-script`. A script that `make` also runs, such as `ci/tooling/update-apm-semantics.sh`, is fine.
-- A job that pushes commits, or opens or labels pull requests, gets its token from `DataDog/dd-octo-sts-action`, with
-  a policy in `chainguard/`. Each job and each policy grant only the permissions that the job uses. Policy
-  `permissions:` keys use underscores, such as `pull_requests`. Workflow keys use hyphens, such as `pull-requests`. A
-  job that calls a reusable workflow grants every permission that the jobs of that workflow request. When that
-  workflow is in another repository and the pull request adds or changes the call, ask which permissions its jobs
-  need, such as `id-token: write`. (The code review job didn't grant `id-token: write`, so the workflow failed at
-  startup: #2907.)
-- Pin each action and reusable workflow in `uses:` to a full commit SHA, with its version in a trailing comment such
-  as `# v7.0.1`. Renovate reads that comment to update the pin.
+- When creating a new workflow, check for existing workflows of the same category (opening PRs to bump dependencies, etc)
+  and ensure the same patterns are followed so that our workflows stay consistent.
+- Workflows that need to push commits, or open/label pull requests, MUST get a Github token from the
+  `DataDog/dd-octo-sts-action` action. This action requires a corresponding policy (under `.github/chainguard/`) that describes
+  when the policy applies (the "claim") and the permissions granted if the claim is validated.
+- Use the `DataDog/commit-headless` action to properly commit changes based on an acquired `dd-octo-sts` token.
+- Use labels on automatically created pull requests to both identify the PRs as a result of automation, as well as categorizing
+  and grouping equivalent PRs: for example, a common pattern is to add a label of `ci/<workflow name>` to identify PRs created
+  by a specific workflow.
+- Workflows that create resources, like issues or pull requests, should ensure that they clean up older/superseded resources
+  where possible: for example, when a workflow opens PRs to bump dependencies, it should close older PRs (potentially by
+  findign open PRs with the labels it sets) if the new PR would supersede them.
+- Workflows must pin each action they depend on, as well as reusable workflows, to a full commit SHA, with its version in a
+- trailing comment such as `# v7.0.1`. Renovate reads that comment to update the pin.
 - In a trust policy, `subject_pattern` and each value under `claim_pattern` are regular expressions, and `subject` is
   an exact string. Write `refs/.*`, not the glob `refs/*`. A subject that needs a wildcard goes in `subject_pattern`.
   (A policy used the glob `refs/*` and needed a second fix: #1465.)
-- Each trigger in `on:` whose runs request a token matches the `event_name` pattern and the subject of the policy
-  that those runs use. Runs on `pull_request`, `pull_request_review`, and `pull_request_target` have the subject
-  `repo:DataDog/saluki:pull_request`. Runs on `push`, `release`, `schedule`, and `workflow_dispatch` have
-  `repo:DataDog/saluki:ref:<ref>`. A job with `environment:` has the subject `repo:DataDog/saluki:environment:<name>`
-  on every trigger. (The pull request title check also ran on `pull_request`, which its policy rejected: #1185.)
-- On `pull_request` and `pull_request_review`, the `ref` claim and the ref in `job_workflow_ref` are
-  `refs/pull/<n>/merge`. On `pull_request`, match the branch with `head_ref`. On `pull_request_target`, both are
-  `refs/heads/main`, whatever branch the pull request targets. (The `slapr` policy required `refs/heads/main` in
-  `job_workflow_ref`, so its pull request runs got no token: #1458.)
-- Each `steps.<id>.outputs.<name>` names a step with that `id:` earlier in the same job. For a `run:` or
-  `actions/github-script` step, that step writes `<name>` to `$GITHUB_OUTPUT` or calls `core.setOutput`, directly or
-  in a repository script that it runs. A wrong name gives an empty string, so an `if:` that reads it skips the step
-  without an error. (The Agent version workflow read `steps.changes`, but the step ID was `compare`, so it pushed no
-  branch and opened no pull request: #1027 and #1028.)
-- A job that reads the outputs or artifacts of another job lists that job under `needs:`. The job that produces each
-  output maps it under its own `outputs:`. (The docs publish job didn't wait for the API docs job: #933.)
+- For `dd-octo-sts` policies, pay attention to the `subject_pattern` and `claim_pattern.event_name`. These must be aligned
+  with the workflow's event triggers (the values under `on:`) and the subject pattern will change depending on event type. For
+  example, the subject pattern for a workflow that targets PRs themselves will be different than the subject pattern for a
+  workflow that only runs on pushes/merges to `main`.
+- Workflow jobs that depend on the artifacts of another job must list that job under `needs:` to ensure ther workflow
+  waits for the dependent job to complete.
 - Release branches are `releases/X.Y.x`, release tags are `X.Y.Z` with no `v` prefix, and backport labels are
-  `backport/X.Y.x`. (The bump workflow built `release/1.5.x` and opened no pull request for the patch: #2372.)
+  `backport/X.Y.x`.
 - Don't flag untrusted checkouts or script injection under `pull_request_target`, because CodeQL reports them. A job
   that checks out only commits already on `main` or a `releases/*` branch, as `backport.yml` does, is fine.
