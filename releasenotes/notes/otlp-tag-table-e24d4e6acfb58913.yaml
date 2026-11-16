@@ -1,0 +1,12 @@
+---
+fixes:
+  - |
+    OTLP metrics and logs now get a ``service.namespace`` tag from the ``service.namespace`` resource attribute,
+    matching the Datadog Agent.
+  - |
+    OTLP metrics and logs now get an ``image_tag`` tag from the ``container.image.tags`` resource attribute, using
+    its first element when it's an array, matching the Datadog Agent. When both ``container.image.tags`` and
+    ``container.image.tag`` are set, the attribute that comes later wins, as in the Agent.
+  - |
+    When a container resource attribute such as ``container.id`` appears more than once on OTLP metrics and logs, the
+    last value now becomes the tag instead of the first, matching the Datadog Agent.
