@@ -25,6 +25,18 @@ use super::error::DecodeError;
 /// [`check_slab_count`].
 pub const MAX_SIZE: u32 = 25_000_000;
 
+/// Maximum number of elements pre-allocated from a wire count.
+///
+/// A count only proves that as many bytes remain, and a decoded element is far larger than one wire byte, so sizing a
+/// collection from the count alone would let a small payload reserve many times its size. Collections start at most
+/// this large and grow as elements actually decode.
+pub const MAX_PREALLOCATED_ELEMENTS: usize = 1024;
+
+/// Returns the capacity to pre-allocate for a collection whose header declares `count` elements.
+pub fn preallocation(count: u32) -> usize {
+    (count as usize).min(MAX_PREALLOCATED_ELEMENTS)
+}
+
 /// Conservative lower bound on the wire size of one array element: every element is at least a
 /// one-byte `nil` or fixint.
 const MIN_BYTES_PER_ARRAY_ELEMENT: u32 = 1;
@@ -553,18 +565,23 @@ pub fn v0_read_i64(r: &mut &[u8], context: &'static str) -> Result<i64, DecodeEr
 }
 
 /// Reads a `float64` as `msgp.ReadFloat64Bytes`: a `float64` or a `float32`, but not an integer.
+///
+/// Like the reference, it checks the length before the marker: with fewer than nine bytes left, anything but a
+/// complete `float32` is short input, whatever its marker.
 pub fn v0_read_f64(r: &mut &[u8], context: &'static str) -> Result<f64, DecodeError> {
-    match r.first() {
-        None => Err(DecodeError::ShortBytes { context }),
-        Some(0xcb) => {
+    if r.len() < 9 && !(r.len() >= 5 && r[0] == 0xca) {
+        return Err(DecodeError::ShortBytes { context });
+    }
+    match r[0] {
+        0xcb => {
             *r = &r[1..];
             Ok(f64::from_be_bytes(take_array(r, context)?))
         }
-        Some(0xca) => {
+        0xca => {
             *r = &r[1..];
             Ok(f64::from(f32::from_be_bytes(take_array(r, context)?)))
         }
-        Some(&b) => Err(invalid(context, format!("expected a float, found marker {b:#04x}"))),
+        b => Err(invalid(context, format!("expected a float, found marker {b:#04x}"))),
     }
 }
 

@@ -104,7 +104,7 @@ pub fn read_attributes_map(
     }
 
     let mut map = FastHashMap::default();
-    map.reserve((len / 3) as usize);
+    map.reserve(read::preallocation(len / 3));
     let mut i = 0;
     while i < len {
         let key = read_streaming_string(r, strings, context)?;
@@ -140,7 +140,7 @@ fn read_any_value_depth(r: &mut &[u8], strings: &mut StringTable, depth: usize) 
             if len % 2 != 0 {
                 return Err(DecodeError::InvalidArrayValueLen { len });
             }
-            let mut values = Vec::with_capacity((len / 2) as usize);
+            let mut values = Vec::with_capacity(read::preallocation(len / 2));
             let mut i = 0;
             while i < len {
                 values.push(read_any_value_depth(r, strings, depth + 1)?);
@@ -154,7 +154,7 @@ fn read_any_value_depth(r: &mut &[u8], strings: &mut StringTable, depth: usize) 
             if len % 3 != 0 {
                 return Err(DecodeError::InvalidAttributeArrayLen { len });
             }
-            let mut entries = Vec::with_capacity((len / 3) as usize);
+            let mut entries = Vec::with_capacity(read::preallocation(len / 3));
             let mut i = 0;
             while i < len {
                 let key = read_streaming_string(r, strings, "AnyValue keyValueList key")?;
