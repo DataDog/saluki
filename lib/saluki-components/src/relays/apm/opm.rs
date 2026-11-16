@@ -5,6 +5,7 @@
 
 use std::time::Duration;
 
+use backon::{ExponentialBuilder, Retryable as _};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use bytes::Bytes;
 use http::{Request, StatusCode, Uri};
@@ -67,59 +68,72 @@ impl OrgPropagationMarkerFetcher {
     /// `base_delay` apart.
     ///
     /// Returns `None` once every attempt failed, as the trace-agent then gives up.
-    pub(super) async fn fetch_with_retries(mut self, base_delay: Duration) -> Option<String> {
-        for attempt in 0..=MAX_RETRIES {
-            if attempt > 0 {
-                tokio::time::sleep(base_delay * (1 << (attempt - 1))).await;
+    pub(super) async fn fetch_with_retries(self, base_delay: Duration) -> Option<String> {
+        let Self {
+            client,
+            endpoint,
+            api_key,
+            request_timeout,
+        } = self;
+        let (endpoint, api_key) = (endpoint.as_str(), &api_key);
+        // The closure owns the client, as a borrowed one would keep the future from being `Send`.
+        let fetch = move || fetch_marker(client.clone(), endpoint, api_key, request_timeout);
+        let result = fetch
+            .retry(
+                ExponentialBuilder::default()
+                    .with_min_delay(base_delay)
+                    .with_factor(2.0)
+                    .with_max_times(MAX_RETRIES as usize),
+            )
+            .notify(|error, delay| {
+                warn!(%error, "Failed to fetch the org propagation marker. Retrying in {delay:?}...");
+            })
+            .await;
+        match result {
+            Ok(marker) => {
+                debug!(marker, "Fetched the org propagation marker.");
+                Some(marker)
             }
-            match self.fetch().await {
-                Ok(marker) => {
-                    debug!(marker, "Fetched the org propagation marker.");
-                    return Some(marker);
-                }
-                Err(error) => warn!(
+            Err(error) => {
+                warn!(
                     %error,
-                    "Org propagation marker fetch attempt {}/{} failed.",
-                    attempt + 1,
+                    "Org propagation marker fetch failed after {} attempts; `/info` reports none.",
                     MAX_RETRIES + 1
-                ),
+                );
+                None
             }
         }
-        warn!(
-            "Org propagation marker fetch failed after {} attempts; `/info` reports none.",
-            MAX_RETRIES + 1
-        );
-        None
     }
+}
 
-    async fn fetch(&mut self) -> Result<String, GenericError> {
-        let uri: Uri = self
-            .endpoint
-            .parse()
-            .with_error_context(|| format!("The validate endpoint `{}` is not a valid URL.", self.endpoint))?;
-        let request = Request::get(uri)
-            .header(DD_API_KEY_HEADER, self.api_key.load().as_ref())
-            .body(Empty::<Bytes>::new())
-            .error_context("Failed to build the validate request.")?;
+/// Fetches the marker of the key in `api_key` from `endpoint`, once, within `request_timeout`.
+async fn fetch_marker(
+    mut client: HttpClient, endpoint: &str, api_key: &ApiKeyCell, request_timeout: Duration,
+) -> Result<String, GenericError> {
+    let uri: Uri = endpoint
+        .parse()
+        .with_error_context(|| format!("The validate endpoint `{endpoint}` is not a valid URL."))?;
+    let request = Request::get(uri)
+        .header(DD_API_KEY_HEADER, api_key.load().as_ref())
+        .body(Empty::<Bytes>::new())
+        .error_context("Failed to build the validate request.")?;
 
-        // The client's timeout ends once the headers arrive, whereas the trace-agent's also bounds the body.
-        let client = &mut self.client;
-        let (status, body) = tokio::time::timeout(self.request_timeout, async move {
-            let response = client.send(request).await?;
-            let status = response.status();
-            let body = response
-                .into_body()
-                .collect()
-                .await
-                .error_context("Failed to read the validate response.")?
-                .to_bytes();
-            Ok::<_, GenericError>((status, body))
-        })
-        .await
-        .map_err(|_| generic_error!("timed out after {:?}", self.request_timeout))??;
-        let org_uuid = parse_validate_response(status, &body)?;
-        Ok(compute_marker(&org_uuid))
-    }
+    // The client's timeout ends once the headers arrive, whereas the trace-agent's also bounds the body.
+    let (status, body) = tokio::time::timeout(request_timeout, async {
+        let response = client.send(request).await?;
+        let status = response.status();
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .error_context("Failed to read the validate response.")?
+            .to_bytes();
+        Ok::<_, GenericError>((status, body))
+    })
+    .await
+    .map_err(|_| generic_error!("timed out after {:?}", request_timeout))??;
+    let org_uuid = parse_validate_response(status, &body)?;
+    Ok(compute_marker(&org_uuid))
 }
 
 /// The part of the `/api/v2/validate` response the marker comes from.
