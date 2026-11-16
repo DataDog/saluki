@@ -307,7 +307,9 @@ impl Transform for DatadogTraceNormalizer {
         health.mark_ready();
         debug!("Datadog trace normalizer transform started.");
 
+        // A dispatch that blocks past a tick delays the next window rather than bursting short ones.
         let mut window = tokio::time::interval_at(tokio::time::Instant::now() + WINDOW, WINDOW);
+        window.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         loop {
             select! {

@@ -602,7 +602,7 @@ mod tests {
             .iter()
             .filter_map(|event| {
                 let metric = event.try_as_metric()?;
-                let MetricValues::Counter(points) = metric.values() else {
+                let MetricValues::Rate(points, _) = metric.values() else {
                     return None;
                 };
                 let tags = metric.context().tags().into_iter().map(|tag| tag.as_str().to_string());

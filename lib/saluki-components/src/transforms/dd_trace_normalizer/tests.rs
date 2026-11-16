@@ -572,7 +572,7 @@ async fn transform_drops_invalid_chunks_and_reports_telemetry() {
             "datadog.trace_agent.normalizer.spans_malformed",
             &["lang:go", "reason:span_name_empty"]
         ),
-        Some(MetricValues::counter(1.0)),
+        Some(MetricValues::rate(1.0, std::time::Duration::from_secs(1))),
         "{metrics:?}"
     );
     assert_eq!(
@@ -580,7 +580,7 @@ async fn transform_drops_invalid_chunks_and_reports_telemetry() {
             "datadog.trace_agent.normalizer.traces_dropped",
             &["reason:trace_id_zero"]
         ),
-        Some(MetricValues::counter(1.0)),
+        Some(MetricValues::rate(1.0, std::time::Duration::from_secs(1))),
         "{metrics:?}"
     );
 }
