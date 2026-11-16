@@ -1226,8 +1226,12 @@ mod tests {
     #[test]
     fn translate_spans_consumes_datadog_convention_container_keys_before_span_conversion() {
         let mut resource_attributes = container_convention_resource_attributes();
-        // Only string values are consumed as container tags.
-        resource_attributes.push(int_kv("region", 7));
+        // Generic-looking names are Datadog-convention keys too, so a string value is consumed like any other.
+        resource_attributes.push(string_kv("region", "us-east-1"));
+        resource_attributes.push(string_kv("zone", "us-east-1a"));
+        // Only non-empty string values are consumed as container tags.
+        resource_attributes.push(int_kv("cloud_provider", 7));
+        resource_attributes.push(string_kv("kube_node", ""));
         let rs = build_resource_spans(resource_attributes, vec![span([1u8; 16], [1u8; 8], vec![])]);
 
         let traces = translate(rs);
@@ -1239,7 +1243,10 @@ mod tests {
         assert_eq!(span_attr(&traces[0], "container_id"), None);
         assert_eq!(span_attr(&traces[0], "container.id").as_deref(), Some("abc123"));
         assert_eq!(span_attr(&traces[0], "k8s.namespace.name").as_deref(), Some("payments"));
-        assert_eq!(span_attr(&traces[0], "region").as_deref(), Some("7"));
+        assert_eq!(span_attr(&traces[0], "region"), None);
+        assert_eq!(span_attr(&traces[0], "zone"), None);
+        assert_eq!(span_attr(&traces[0], "cloud_provider").as_deref(), Some("7"));
+        assert_eq!(span_attr(&traces[0], "kube_node").as_deref(), Some(""));
 
         // The trace's own attributes keep them, so the encoder still emits them as container tags.
         assert_eq!(attr(&traces[0], "kube_namespace").as_deref(), Some("payments"));

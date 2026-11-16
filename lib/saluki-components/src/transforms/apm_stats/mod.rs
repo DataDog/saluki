@@ -1784,7 +1784,7 @@ mod tests {
     // Span conversion extracts no peer tag keys of its own, so a peer tag set only on the OTLP resource reaches span
     // meta through the generic resource-attribute loop, and the concentrator reads it from there.
     #[test]
-    fn test_peer_tag_set_only_on_otlp_resource_reaches_stats() {
+    fn peer_tag_set_only_on_otlp_resource_reaches_stats() {
         use otlp_protos::opentelemetry::proto::common::v1::{any_value::Value, AnyValue, KeyValue};
         use otlp_protos::opentelemetry::proto::resource::v1::Resource;
         use otlp_protos::opentelemetry::proto::trace::v1::span::SpanKind;
