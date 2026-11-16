@@ -30,6 +30,22 @@ pub enum SourceKind {
     Hostname,
     /// AWS ECS Fargate source.
     AwsEcsFargate,
+    /// AWS Lambda source.
+    AwsLambda,
+    /// Azure Container Apps source.
+    AzureContainerApps,
+    /// Azure App Service source.
+    AzureAppService,
+    /// Azure Functions source.
+    AzureFunctions,
+    /// Google Cloud Run service source.
+    GcpCloudRun,
+    /// Google Cloud Functions (v2) source.
+    GcpCloudFunctions,
+    /// Google Cloud Run job source.
+    GcpCloudRunJobs,
+    /// GKE Autopilot source.
+    GkeAutopilot,
 }
 
 /// Represents the source of telemetry data.
@@ -53,6 +69,14 @@ impl SourceKind {
         match self {
             SourceKind::Hostname => "host",
             SourceKind::AwsEcsFargate => "task_arn",
+            SourceKind::AwsLambda => "aws_lambda",
+            SourceKind::AzureContainerApps => "azure_container_apps",
+            SourceKind::AzureAppService => "azure_app_service",
+            SourceKind::AzureFunctions => "azure_functions",
+            SourceKind::GcpCloudRun => "gcp_cloud_run",
+            SourceKind::GcpCloudFunctions => "gcp_cloud_functions",
+            SourceKind::GcpCloudRunJobs => "gcp_cloud_run_jobs",
+            SourceKind::GkeAutopilot => "gke_autopilot",
         }
     }
 }
@@ -392,7 +416,7 @@ fn ec2_hostname(attributes: &[otlp_common::KeyValue]) -> Option<&str> {
 }
 
 /// Resolves the hostname for a GCP resource.
-fn gcp_hostname(attributes: &[otlp_common::KeyValue]) -> Option<String> {
+pub(super) fn gcp_hostname(attributes: &[otlp_common::KeyValue]) -> Option<String> {
     let host_name = get_string_attribute(attributes, HOST_NAME)?;
     let cloud_account_id = get_string_attribute(attributes, CLOUD_ACCOUNT_ID)?;
     let host_name = if host_name.matches('.').count() >= 3 {
@@ -442,7 +466,7 @@ fn unsanitized_hostname_from_attributes(attributes: &[otlp_common::KeyValue]) ->
 }
 
 /// Resolves a valid hostname from resource attributes.
-fn hostname_from_attributes(attributes: &[otlp_common::KeyValue]) -> Option<String> {
+pub(super) fn hostname_from_attributes(attributes: &[otlp_common::KeyValue]) -> Option<String> {
     let hostname = unsanitized_hostname_from_attributes(attributes)?;
     (!INVALID_HOSTNAMES.contains(&hostname.as_str())).then_some(hostname)
 }

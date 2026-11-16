@@ -6,6 +6,7 @@ pub mod attributes;
 pub mod origin;
 pub mod receiver;
 pub mod semantics;
+pub mod source;
 pub mod traces;
 pub mod util;
 
