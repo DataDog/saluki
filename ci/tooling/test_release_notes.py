@@ -261,11 +261,97 @@ class ReleaseNoteRenderingTest(unittest.TestCase):
 
         self.assertEqual(rendered, "## Bug Fixes\n\n- First release note.\n")
 
+    def commit_to(self, ref, message, parent, files=()):
+        """Commit the current notes plus `files` onto `ref`, then remove `files` from the working tree."""
+        for name in files:
+            (self.repository / name).write_text(f"{message}\n", encoding="utf-8")
+        self.run_git("add", "--all")
+        tree = self.run_git("write-tree").stdout.strip()
+        commit = self.run_git("commit-tree", tree, "-p", parent, input=f"{message}\n").stdout.strip()
+        self.run_git("update-ref", ref, commit)
+        for name in files:
+            (self.repository / name).unlink()
+        return commit
+
+    def note(self, name, text):
+        (self.repository / "releasenotes/notes" / name).write_text(f"fixes:\n  - {text}\n", encoding="utf-8")
+
+    def render_with_real_reno(self, version):
+        """Render with Reno, and return the reStructuredText that would reach pandoc and the Reno command."""
+        seen = {}
+
+        def run_except_pandoc(command, **kwargs):
+            if command[0] == "pandoc":
+                seen["rst"] = kwargs["input"]
+                return subprocess.CompletedProcess(command, 0, "rendered", "")
+            if command[1:2] == ["report"]:
+                seen["command"] = command
+            return self.real_run(command, **kwargs)
+
+        with unittest.mock.patch.object(subject.subprocess, "run", side_effect=run_except_pandoc):
+            subject.render_release_notes(version, self.repository)
+        return seen.get("rst", ""), seen["command"]
+
+    def tag_each_line_on_its_release_branch(self):
+        """Cut 1.9.x and 1.10.x to their own branches and tag there, so 1.9.0 is not in 1.10.0's history."""
+        configured = self.commit("Add release note configuration")
+        self.note("first-0123456789abcdef.yaml", "Shipped in 1.9.0.")
+        cut_19 = self.commit("First note", configured)
+        tag_19 = self.commit_to("refs/heads/releases/1.9.x", "Cut 1.9", cut_19, files=("target-1.9",))
+        self.run_git("update-ref", "refs/tags/1.9.0", tag_19)
+        self.note("second-fedcba9876543210.yaml", "Shipped in 1.10.0.")
+        cut_110 = self.commit("Second note", cut_19)
+        tag_110 = self.commit_to("refs/heads/releases/1.10.x", "Cut 1.10", cut_110, files=("target-1.10",))
+        self.run_git("update-ref", "refs/tags/1.10.0", tag_110)
+
+    def test_a_release_line_cut_before_its_tag_does_not_repeat_the_previous_lines_notes(self):
+        self.tag_each_line_on_its_release_branch()
+
+        rst, _ = self.render_with_real_reno("1.9.0")
+        self.assertIn("Shipped in 1.9.0.", rst)
+
+        rst, _ = self.render_with_real_reno("1.10.0")
+        self.assertIn("Shipped in 1.10.0.", rst)
+        self.assertNotIn("Shipped in 1.9.0.", rst)
+        # The ignored notes go into a temporary configuration, never into the checkout's.
+        self.assertNotIn("ignore_notes", (self.repository / "releasenotes/config.yaml").read_text(encoding="utf-8"))
+
+    def test_renders_from_a_linked_worktree(self):
+        self.tag_each_line_on_its_release_branch()
+        worktree = Path(self.temporary_directory.name) / "linked-worktree"
+        self.run_git("worktree", "add", "--quiet", "--detach", str(worktree), "1.10.0")
+        self.repository = worktree
+
+        rst, _ = self.render_with_real_reno("1.10.0")
+
+        self.assertIn("Shipped in 1.10.0.", rst)
+        self.assertNotIn("Shipped in 1.9.0.", rst)
+
+    def test_lines_tagged_on_main_render_as_before(self):
+        configured = self.commit("Add release note configuration")
+        self.note("first-0123456789abcdef.yaml", "Shipped in 1.9.0.")
+        tag_19 = self.commit("First note", configured)
+        self.run_git("update-ref", "refs/tags/1.9.0", tag_19)
+        self.note("backported-00112233445566aa.yaml", "Backported to 1.9.1.")
+        backport_source = self.commit("Backported note", tag_19)
+        tag_191 = self.commit_to("refs/heads/releases/1.9.x", "Backport", tag_19, files=("backport",))
+        self.run_git("update-ref", "refs/tags/1.9.1", tag_191)
+        tag_110 = self.commit("Release 1.10.0", backport_source)
+        self.run_git("update-ref", "refs/tags/1.10.0", tag_110)
+
+        rst, command = self.render_with_real_reno("1.10.0")
+
+        self.assertIn("Backported to 1.9.1.", rst)
+        self.assertNotIn("Shipped in 1.9.0.", rst)
+        self.assertEqual(command[1:], ["report", "--ignore-cache", "--no-show-source", "--version", "1.10.0",
+                                       "--branch", "1.10.0"])
+
     def test_includes_subprocess_stderr_in_render_errors(self):
         errors = (
             ([subprocess.CalledProcessError(1, ["git"], stderr="tag lookup failed")], "tag lookup failed"),
             (
                 [
+                    unittest.mock.Mock(stdout="", stderr=""),
                     unittest.mock.Mock(stdout="", stderr=""),
                     unittest.mock.Mock(stdout="", stderr=""),
                     subprocess.CalledProcessError(1, ["reno"], stderr="reno report failed"),
@@ -274,6 +360,7 @@ class ReleaseNoteRenderingTest(unittest.TestCase):
             ),
             (
                 [
+                    unittest.mock.Mock(stdout="", stderr=""),
                     unittest.mock.Mock(stdout="", stderr=""),
                     unittest.mock.Mock(stdout="", stderr=""),
                     unittest.mock.Mock(stdout="Release notes\n=============\n", stderr=""),
@@ -293,12 +380,13 @@ class ReleaseNoteRenderingTest(unittest.TestCase):
             unittest.mock.Mock(stdout="", stderr=""),
             unittest.mock.Mock(stdout="", stderr=""),
             unittest.mock.Mock(stdout="", stderr=""),
+            unittest.mock.Mock(stdout="", stderr=""),
         ]
         with unittest.mock.patch.object(subject.shutil, "which", return_value="/home/runner/.local/bin/reno"):
             with unittest.mock.patch.object(subject.subprocess, "run", side_effect=completed) as run:
                 self.assertEqual(subject.render_release_notes("1.6.0", Path("/repo")), "")
 
-        self.assertEqual(run.call_args_list[2].args[0][0], "/home/runner/.local/bin/reno")
+        self.assertEqual(run.call_args_list[3].args[0][0], "/home/runner/.local/bin/reno")
 
     def test_writes_render_to_standard_output_for_dash_output(self):
         arguments = unittest.mock.Mock(version="1.6.0", repository=Path("/repo"), output=Path("-"))

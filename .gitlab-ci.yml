@@ -60,9 +60,8 @@ variables:
   SALUKI_BUILDCACHE_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/buildcache-ci:latest"
   SPDX_LICENSES_IMAGE: "registry.ddbuild.io/images/spdx-license-list-data:3.28.0"
 
-  # Converged Datadog Agent-specific variables, which control how we build the converged Datadog Agent image that we
-  # publicly publish.
-  PUBLIC_DSD_VERSION: "7.85.4"
+  # Agent image tag for the SMP benchmark (.gitlab/benchmark.yml) only. Build and test jobs read the Agent from
+  # `.agent-pin.json`.
   PUBLIC_DD_AGENT_VERSION: "7.85.4-full"
 
   # Base images to copy Agent Data Plane into, depending on whether the image is meant for our internal environment or

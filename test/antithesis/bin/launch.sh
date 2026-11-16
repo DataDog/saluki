@@ -65,6 +65,13 @@ if [[ -n "$(git -C "$REPO_ROOT" status --porcelain 2>/dev/null)" ]]; then
 fi
 export ANTITHESIS_IMAGE_TAG="$GIT_SHA"
 
+# The scenarios build for linux/amd64 with the Agent debug package pinned in
+# `.agent-pin.json`. Exported so the Make build and the rendered compose agree.
+PIN_READER=(python3 "$REPO_ROOT/ci/tooling/agent_pin.py")
+AGENT_DEBUG_DEB_URL="$("${PIN_READER[@]}" get integration.antithesis_debug_debs.amd64.url --pin "$REPO_ROOT/.agent-pin.json")"
+AGENT_DEBUG_DEB_SHA256="$("${PIN_READER[@]}" get integration.antithesis_debug_debs.amd64.sha256 --pin "$REPO_ROOT/.agent-pin.json")"
+export AGENT_DEBUG_DEB_URL AGENT_DEBUG_DEB_SHA256
+
 WEBHOOK="${WEBHOOK:-${SCENARIO_WEBHOOK:-run_test}}"
 DURATION="${DURATION:-30}"
 TEST_NAME="${TEST_NAME:-${SCENARIO_TEST_NAME:?launch.env must set SCENARIO_TEST_NAME}}"
@@ -146,6 +153,7 @@ cmd=(snouty launch
   "${FAULTS[@]}"
   "$@")
 
+printf 'agent debug package: %s (sha256 %s)\n' "$AGENT_DEBUG_DEB_URL" "$AGENT_DEBUG_DEB_SHA256"
 printf 'build:'; printf ' %q' "${build[@]}"; printf '\n'
 printf 'render:'; printf ' %q' "${render[@]}"; printf ' > %q\n' "$LAUNCH_DIR/docker-compose.yaml"
 printf 'launch:'; printf ' %q' "${cmd[@]}"; printf '\n'

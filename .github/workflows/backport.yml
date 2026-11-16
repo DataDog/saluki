@@ -331,6 +331,14 @@ jobs:
             exit 1
           fi
 
+          # Each release line keeps its own Agent pin and `target`, so a backport must not carry `main`'s pin, or
+          # another line's, across. The Agent pin workflow checks the backport PR against the release branch too.
+          if git diff --name-only HEAD~1 HEAD -- .agent-pin.json | grep -q .; then
+            echo "reason=agent-pin" >> "$GITHUB_OUTPUT"
+            echo "::error::$MERGE_SHA changes .agent-pin.json, which must not cross release lines."
+            exit 1
+          fi
+
           # Retitle the commit to match the backport PR title, keeping the body and `-x` trailer.
           body="$(git log -1 --format=%B | tail -n +2)"
           printf '%s (backport %s)\n%s\n' "$PR_TITLE" "$TARGET" "$body" | git commit --amend --quiet -F -
@@ -415,7 +423,13 @@ jobs:
             const runUrl = process.env.RUN_URL;
 
             let message;
-            if (reason === 'empty') {
+            if (reason === 'agent-pin') {
+              message = `⚠️ Automatic backport to \`${targetBranch}\` failed: this PR changes \`.agent-pin.json\`. ` +
+                'Each release line keeps its own Agent pin and target, so backport the change without it. Before ' +
+                `pushing, run \`git checkout origin/${targetBranch} -- .agent-pin.json\` (or \`git rm ` +
+                '.agent-pin.json` if the release branch has none) and `git commit --amend --no-edit`.\n\n' +
+                `${process.env.MANUAL_STEPS}\n\nWorkflow logs: ${runUrl}`;
+            } else if (reason === 'empty') {
               message = `The changes from this PR already appear to be present on \`${targetBranch}\`, so there ` +
                 `is nothing to backport. Workflow logs: ${runUrl}`;
             } else {

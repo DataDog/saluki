@@ -32,6 +32,10 @@
     # `panoramic list --json` reports per test.
     PANORAMIC_IMAGE_OVERRIDES: "millstone=${SALUKI_IMAGE_REPO_BASE}/correctness-tools:${CI_COMMIT_SHA},datadog-intake=${SALUKI_IMAGE_REPO_BASE}/correctness-tools:${CI_COMMIT_SHA},comparison=${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}-${PARENT_PIPELINE_ID}"
   script:
+    # Log which Agent the bundled image was built on.
+    - BUNDLED_IMAGE="${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}-${PARENT_PIPELINE_ID}"
+    - docker pull --quiet "${BUNDLED_IMAGE}"
+    - docker inspect --format 'Bundled Agent image {{ index .Config.Labels "agent.image" }}' "${BUNDLED_IMAGE}"
     - target/release/panoramic run -d $(pwd)/test/correctness/cases -t ${CORRECTNESS_TEST_CASE} --no-tui
 
 # Added when the test's config.yaml names a saluki-images/ baseline (a

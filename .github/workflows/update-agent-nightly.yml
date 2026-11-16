@@ -1,0 +1,113 @@
+name: Update Agent Nightly
+
+# Proposes a newer Datadog Agent `main` nightly for `.agent-pin.json` on `main`.
+#
+# `discover` runs `ci/tooling/discover_agent_pin.py nightly` with a read-only token. It matches the floating Windows
+# nightly image to the Linux nightly built from the same commit and pipeline, then downloads and hashes the macOS and
+# debug packages. A failed or partial discovery never proposes a pin. Every run reports the merged pin's age, measured
+# from its `built_at`.
+#
+# `propose` alone exchanges an OIDC token for write access. It keeps one bot branch and at most one open pull request,
+# and refreshes that pull request only while it holds nothing but the bot's own pin update. The bot branch moves only
+# by fast-forward. See `ci/tooling/propose_agent_pin.py`.
+#
+# It runs daily at 12:30 UTC, after the Linux images and packages have usually been published, and on manual dispatch.
+# To recover a missed nightly, dispatch it with the ltsc2022 child digest from the upstream Windows build job's push
+# log.
+
+on:
+  schedule:
+    - cron: "30 12 * * *"
+  workflow_dispatch:
+    inputs:
+      windows_digest:
+        description: Windows ltsc2022 child digest (sha256:...) from an upstream build log, to recover a missed nightly
+        required: false
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: update-agent-nightly
+  cancel-in-progress: false
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    outputs:
+      status: ${{ steps.discover.outputs.status }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Report the merged pin's age
+        run: |
+          if [ -f .agent-pin.json ]; then
+            python3 ci/tooling/agent_pin.py age | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "main has no .agent-pin.json yet; discovery proposes the first pin." | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Discover a newer complete nightly
+        id: discover
+        env:
+          # Read-only; raises the GitHub API rate limit for the Agent commit comparison.
+          GITHUB_TOKEN: ${{ github.token }}
+          WINDOWS_DIGEST: ${{ inputs.windows_digest }}
+        run: |
+          python3 ci/tooling/discover_agent_pin.py nightly \
+            --merged-pin .agent-pin.json \
+            --base-branch main \
+            --output-dir "$RUNNER_TEMP/candidate" \
+            ${WINDOWS_DIGEST:+--windows-digest "$WINDOWS_DIGEST"}
+          jq -r '"Discovery: \(.status)" + (if .reason then " (\(.reason))" else "" end)' \
+            "$RUNNER_TEMP/candidate/summary.json" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - if: steps.discover.outputs.status == 'candidate'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: agent-nightly-candidate
+          path: ${{ runner.temp }}/candidate/
+          retention-days: 7
+
+  propose:
+    needs: discover
+    if: needs.discover.outputs.status == 'candidate'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Get access token from dd-octo-sts
+        uses: DataDog/dd-octo-sts-action@c85802a58e202b7e764b5441e4378c76043c8108 # v1.0.5
+        id: octo-sts
+        with:
+          scope: DataDog/saluki
+          policy: self.update-agent-nightly.create-pr
+
+      # Only the tooling is used from this checkout; the write token stays out of git's configuration.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: agent-nightly-candidate
+          path: ${{ runner.temp }}/candidate
+
+      - name: Open or refresh the pull request
+        env:
+          GITHUB_TOKEN: ${{ steps.octo-sts.outputs.token }}
+        run: |
+          python3 ci/tooling/propose_agent_pin.py \
+            --repository "${{ github.repository }}" \
+            --base main \
+            --branch ci/update-agent-nightly \
+            --candidate-dir "$RUNNER_TEMP/candidate" \
+            --label ci/update-agent-nightly \
+            --label automated

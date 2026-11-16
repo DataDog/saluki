@@ -28,7 +28,8 @@ build-bundled-agent-adp-image:
   timeout: 10m
   script:
     - |
-      DD_AGENT_IMAGE="registry.datadoghq.com/agent:${PUBLIC_DD_AGENT_VERSION}"
+      DD_AGENT_IMAGE=$(jq -er '.integration.linux.image' .agent-pin.json) || exit 1
+      echo "Pinned Agent $(jq -er '.integration.version' .agent-pin.json): ${DD_AGENT_IMAGE}"
       if [ "${AGENT_NIGHTLY}" = "true" ]; then # for nightly run, use latest Agent
         DD_AGENT_IMAGE="${NIGHTLY_AGENT_IMAGE:-datadog/agent-dev:master-py3-full}"
         AGENT_IMAGE_REPO="${DD_AGENT_IMAGE%:*}"
@@ -47,6 +48,7 @@ build-bundled-agent-adp-image:
       --build-arg DD_AGENT_IMAGE="${DD_AGENT_IMAGE}"
       --build-arg ADP_IMAGE=${ADP_FULL_IMAGE_TAG}
       --build-arg BUILD_PROFILE=release
+      --label agent.image="${DD_AGENT_IMAGE}"
       --label git.repository=${CI_PROJECT_NAME}
       --label git.branch=${CI_COMMIT_REF_NAME}
       --label git.commit=${CI_COMMIT_SHA}
@@ -131,6 +133,7 @@ test-integration:
     # share the integration test configurations between CI and local test runs. The correctness-tools image provides
     # the intake sidecar that opted-in test cases run.
     - docker pull ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}-${CI_PIPELINE_ID}
+    - docker inspect --format 'Bundled Agent image {{ index .Config.Labels "agent.image" }}' ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}-${CI_PIPELINE_ID}
     - docker tag ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}-${CI_PIPELINE_ID} saluki-images/datadog-agent:testing-devel
     - docker pull ${SALUKI_IMAGE_REPO_BASE}/correctness-tools:${CI_COMMIT_SHA}
     - docker tag ${SALUKI_IMAGE_REPO_BASE}/correctness-tools:${CI_COMMIT_SHA} saluki-images/correctness-tools:latest

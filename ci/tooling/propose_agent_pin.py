@@ -1,0 +1,181 @@
+#!/usr/bin/env python3
+"""Open or refresh the bot pull request that proposes a discovered `.agent-pin.json`.
+
+Each base branch has one bot branch and at most one open pull request. The tool refreshes that pull request only
+while every change on it is the bot's own pin update. Once anyone adds a commit or touches another file, the pull
+request keeps its candidate and blocks newer proposals until it merges or closes.
+
+The bot branch only moves forward. A refresh adds a commit on top of the head the ownership check inspected, and the
+ref update is a fast-forward, never a force push. If someone pushes after the check, the update is no longer a
+fast-forward, GitHub rejects it, and the run fails without touching their commit.
+
+Commits are created through GitHub's API without custom author information, so GitHub signs them as the app that
+owns the token. The token comes from `GITHUB_TOKEN`.
+"""
+
+import argparse
+import base64
+import json
+import os
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+PIN_PATH = ".agent-pin.json"
+
+
+class ProposeError(Exception):
+    """GitHub rejected a request, or returned something unexpected."""
+
+
+class GitHubApi:
+    def __init__(self, token):
+        self.token = token
+
+    def request(self, method, path, body=None, allow_404=False):
+        url = path if path.startswith("https://") else f"https://api.github.com{path}"
+        data = json.dumps(body).encode() if body is not None else None
+        request = urllib.request.Request(url, method=method, data=data)
+        request.add_header("Accept", "application/vnd.github+json")
+        request.add_header("Authorization", f"Bearer {self.token}")
+        request.add_header("X-GitHub-Api-Version", "2022-11-28")
+        if body is not None:
+            request.add_header("Content-Type", "application/json")
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                payload = response.read()
+        except urllib.error.HTTPError as error:
+            if allow_404 and error.code == 404:
+                return None
+            raise ProposeError(f"{method} {path} returned HTTP {error.code}: {error.read()[:500]!r}") from error
+        return json.loads(payload) if payload else None
+
+
+def is_bot_commit(commit):
+    """Return whether a commit was authored by a bot and signed by GitHub, as the API-created commits are."""
+    author = commit.get("author") or {}
+    verified = (commit.get("commit") or {}).get("verification", {}).get("verified")
+    return author.get("type") == "Bot" and verified is True
+
+
+def foreign_changes(files, commits):
+    """Return why changes on the bot branch are not the bot's own pin update, or `None`."""
+    other_files = sorted(entry["filename"] for entry in files if entry.get("filename") != PIN_PATH)
+    if other_files:
+        return f"it changes files other than {PIN_PATH}: {', '.join(other_files)}"
+    foreign = [commit["sha"][:12] for commit in commits if not is_bot_commit(commit)]
+    if foreign:
+        return f"it has commits the automation did not make: {', '.join(foreign)}"
+    return None
+
+
+def write_commit(api, repository, branch, parent_sha, pin_text, message, exists):
+    """Commit the pin on top of `parent_sha` and move `branch` to that commit.
+
+    An existing branch moves only by fast-forward, so the update fails if the branch no longer points at
+    `parent_sha`.
+    """
+    parent_tree = api.request("GET", f"/repos/{repository}/git/commits/{parent_sha}")["tree"]["sha"]
+    entry = {"path": PIN_PATH, "mode": "100644", "type": "blob", "content": pin_text}
+    tree = api.request("POST", f"/repos/{repository}/git/trees", {"base_tree": parent_tree, "tree": [entry]})["sha"]
+    commit = api.request(
+        "POST", f"/repos/{repository}/git/commits", {"message": message, "tree": tree, "parents": [parent_sha]}
+    )
+    if not commit.get("verification", {}).get("verified"):
+        raise ProposeError(f"GitHub did not sign commit {commit.get('sha')}; not pushing it")
+    if exists:
+        api.request("PATCH", f"/repos/{repository}/git/refs/heads/{branch}", {"sha": commit["sha"], "force": False})
+    else:
+        api.request("POST", f"/repos/{repository}/git/refs", {"ref": f"refs/heads/{branch}", "sha": commit["sha"]})
+    return commit["sha"]
+
+
+def read_pin_at(api, repository, ref):
+    document = api.request("GET", f"/repos/{repository}/contents/{PIN_PATH}?ref={urllib.parse.quote(ref)}",
+                           allow_404=True)
+    if document is None:
+        return None
+    return json.loads(base64.b64decode(document["content"]))
+
+
+def propose(api, repository, base, branch, pin_text, title, body, labels):
+    """Open, refresh or hold the bot pull request. Returns `opened`, `refreshed`, `unchanged` or `held`."""
+    owner = repository.split("/", 1)[0]
+    base_sha = api.request("GET", f"/repos/{repository}/git/ref/heads/{base}")["object"]["sha"]
+    query = urllib.parse.urlencode({"state": "open", "base": base, "head": f"{owner}:{branch}"})
+    open_prs = api.request("GET", f"/repos/{repository}/pulls?{query}")
+
+    if open_prs:
+        pr = open_prs[0]
+        number = pr["number"]
+        head_sha = pr["head"]["sha"]
+        files = api.request("GET", f"/repos/{repository}/pulls/{number}/files?per_page=100")
+        commits = api.request("GET", f"/repos/{repository}/pulls/{number}/commits?per_page=100")
+        if not commits or commits[-1]["sha"] != head_sha:
+            raise ProposeError(f"{pr['html_url']} changed while it was being inspected; try again")
+        problem = foreign_changes(files, commits)
+        if problem:
+            print(f"[*] Holding {pr['html_url']}: {problem}. Newer candidates wait until it merges or closes.")
+            return "held"
+        if read_pin_at(api, repository, head_sha) == json.loads(pin_text):
+            print(f"[*] {pr['html_url']} already proposes this pin.")
+            return "unchanged"
+        write_commit(api, repository, branch, head_sha, pin_text, title, exists=True)
+        api.request("PATCH", f"/repos/{repository}/pulls/{number}", {"title": title, "body": body})
+        print(f"[*] Refreshed {pr['html_url']}")
+        return "refreshed"
+
+    # A leftover branch is reused without a force push. If it is already part of the base, the new commit starts from
+    # the base; otherwise it goes on top of the branch's own commits.
+    existing = api.request("GET", f"/repos/{repository}/git/ref/heads/{branch}", allow_404=True)
+    parent_sha = base_sha
+    if existing is not None:
+        comparison = api.request("GET", f"/repos/{repository}/compare/{base_sha}...{existing['object']['sha']}")
+        problem = foreign_changes(comparison.get("files", []), comparison.get("commits", []))
+        if problem:
+            print(f"[*] Not overwriting branch {branch}: {problem}.")
+            return "held"
+        if comparison.get("ahead_by", 0) > 0:
+            parent_sha = existing["object"]["sha"]
+    write_commit(api, repository, branch, parent_sha, pin_text, title, exists=existing is not None)
+    pr = api.request("POST", f"/repos/{repository}/pulls", {"title": title, "head": branch, "base": base, "body": body})
+    api.request("POST", f"/repos/{repository}/issues/{pr['number']}/labels", {"labels": labels})
+    print(f"[*] Opened {pr['html_url']}")
+    return "opened"
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--repository", required=True, help="owner/name")
+    parser.add_argument("--base", required=True, help="Branch the pull request targets")
+    parser.add_argument("--branch", required=True, help="Bot branch that carries the proposal")
+    parser.add_argument("--candidate-dir", type=Path, required=True, help="Output directory of discover_agent_pin.py")
+    parser.add_argument("--label", action="append", default=[], dest="labels")
+    arguments = parser.parse_args(argv)
+
+    token = os.environ.get("GITHUB_TOKEN")
+    if not token:
+        print("error: GITHUB_TOKEN is not set", file=sys.stderr)
+        return 1
+    candidate = arguments.candidate_dir
+    try:
+        propose(
+            GitHubApi(token),
+            arguments.repository,
+            arguments.base,
+            arguments.branch,
+            (candidate / "agent-pin.json").read_text(encoding="utf-8"),
+            (candidate / "pr-title.txt").read_text(encoding="utf-8").strip(),
+            (candidate / "pr-body.md").read_text(encoding="utf-8"),
+            arguments.labels,
+        )
+    except (ProposeError, OSError, KeyError, json.JSONDecodeError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
