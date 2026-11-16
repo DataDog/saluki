@@ -28,7 +28,7 @@ build-bundled-agent-adp-image:
   timeout: 10m
   script:
     - |
-      DD_AGENT_IMAGE="registry.datadoghq.com/agent:${PUBLIC_DD_AGENT_VERSION}"
+      DD_AGENT_IMAGE="${AGENT_PIN_LINUX_IMAGE}"
       if [ "${AGENT_NIGHTLY}" = "true" ]; then # for nightly run, use latest Agent
         DD_AGENT_IMAGE="${NIGHTLY_AGENT_IMAGE:-datadog/agent-dev:master-py3-full}"
         AGENT_IMAGE_REPO="${DD_AGENT_IMAGE%:*}"
@@ -130,6 +130,7 @@ test-integration:
     # the intake sidecar that opted-in test cases run.
     - docker pull ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}-${CI_PIPELINE_ID}
     - docker tag ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}-${CI_PIPELINE_ID} saluki-images/datadog-agent:testing-devel
+    - docker run --rm --entrypoint agent saluki-images/datadog-agent:testing-devel version
     - docker pull ${SALUKI_IMAGE_REPO_BASE}/correctness-tools:${CI_COMMIT_SHA}
     - docker tag ${SALUKI_IMAGE_REPO_BASE}/correctness-tools:${CI_COMMIT_SHA} saluki-images/correctness-tools:latest
     - make test-integration-quick
@@ -153,6 +154,7 @@ test-integration:
     when: always
   variables:
     PANORAMIC_LOG_DIR: integration-logs
+    MACOS_TEST_AGENT_VERSION: "${AGENT_PIN_VERSION}"
   before_script:
     # Defensive: clean up any leftover Agent/ADP processes from prior runs on this shared
     # runner. All test-Agent ports are shifted out of the canonical range (see
@@ -190,8 +192,12 @@ test-integration-macos-arm64:
   extends:
     - .macos-arm64-test-job
     - .test-integration-macos-base
+  variables:
+    MACOS_TEST_AGENT_DMG_URL: "${AGENT_PIN_MACOS_DMG_URL_ARM64}"
 
 test-integration-macos-amd64:
   extends:
     - .macos-amd64-test-job
     - .test-integration-macos-base
+  variables:
+    MACOS_TEST_AGENT_DMG_URL: "${AGENT_PIN_MACOS_DMG_URL_X86_64}"

@@ -96,7 +96,7 @@ test-integration-windows-amd64:
   script:
     - *windows-build-image-pull-script
     - |
-      $WindowsAdpBaseImage = "registry.datadoghq.com/agent:7.85.2-ltsc2022"
+      $WindowsAdpBaseImage = $env:AGENT_PIN_WINDOWS_IMAGE
       if ($env:AGENT_NIGHTLY -eq "true") { # for nightly run, use latest Agent
         if ($env:NIGHTLY_WINDOWS_AGENT_IMAGE) {
           $WindowsAdpBaseImage = $env:NIGHTLY_WINDOWS_AGENT_IMAGE
@@ -109,6 +109,10 @@ test-integration-windows-amd64:
         Write-Host "Pinned nightly Agent image to digest: $WindowsAdpBaseImage"
       }
       Write-Host "Using WINDOWS_ADP_BASE_IMAGE=$WindowsAdpBaseImage"
+      docker pull $WindowsAdpBaseImage
+      if ($LASTEXITCODE -ne 0) { throw "Failed to pull pinned Agent image" }
+      docker run --rm --entrypoint "C:\Program Files\Datadog\Datadog Agent\bin\agent.exe" $WindowsAdpBaseImage version
+      if ($LASTEXITCODE -ne 0) { throw "Failed to run pinned Agent binary" }
     - >
       docker run --rm
       -m 24576M
@@ -127,6 +131,7 @@ test-integration-windows-amd64:
       -e RUSTUP_HOME="c:\mnt\.ci-cache\rustup"
       -e CARGO_TARGET_DIR="c:\mnt\target\windows-ci"
       -e WINDOWS_ADP_BASE_IMAGE="$WindowsAdpBaseImage"
+      -e DD_AGENT_VERSION
       -e PROTOC_VERSION="${WINDOWS_PROTOC_VERSION}"
       -e PROTOC_SHA256="${WINDOWS_PROTOC_SHA256}"
       -e PANORAMIC_LOG_DIR="c:\mnt\integration-logs"

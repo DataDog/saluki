@@ -700,16 +700,18 @@ test-integration-macos-run: ## Runs the macOS host-process integration tests usi
 		$(if $(PANORAMIC_LOG_DIR),-l $(PANORAMIC_LOG_DIR))
 
 .PHONY: provision-macos-test-env
-provision-macos-test-env: ## Installs the pinned Datadog Agent ($(MACOS_TEST_AGENT_VERSION)) into $(MACOS_TEST_AGENT_INSTALL_DIR) (a sandbox under /tmp) and bootstraps the IPC cert. Idempotent: re-uses the install if it already matches the pinned version.
+provision-macos-test-env: ## Installs the pinned Datadog Agent ($(MACOS_TEST_AGENT_VERSION)) into $(MACOS_TEST_AGENT_INSTALL_DIR) (a sandbox under /tmp) and bootstraps the IPC cert. Re-uses the install when its version and DMG URL match.
 	@echo "[*] Provisioning macOS test environment..."
 	@if [ "$(shell uname -s)" != "Darwin" ]; then \
 		echo "provision-macos-test-env only runs on macOS hosts" >&2; exit 1; \
 	fi
+	@# `agent version` omits the pipeline ID; track the extracted artifact instead.
 	@if [ -x $(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent ] && \
-	   [ "$$($(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent version 2>/dev/null | awk '{print $$2}')" = "$(MACOS_TEST_AGENT_VERSION)" ]; then \
+	   [ "$$(cat $(MACOS_TEST_AGENT_INSTALL_DIR)/.saluki-test-agent-pin 2>/dev/null)" = "$(MACOS_TEST_AGENT_VERSION) $(MACOS_TEST_AGENT_DMG_URL)" ]; then \
 		echo "[*] Datadog Agent $(MACOS_TEST_AGENT_VERSION) already extracted to $(MACOS_TEST_AGENT_INSTALL_DIR)"; \
 	else \
 		echo "[*] Installing Datadog Agent $(MACOS_TEST_AGENT_VERSION) into $(MACOS_TEST_AGENT_INSTALL_DIR)..."; \
+		echo "[*] Agent DMG: $(MACOS_TEST_AGENT_DMG_URL)"; \
 		mkdir -p $(MACOS_TEST_AGENT_DMG_DIR); \
 		DMG_PATH=$(MACOS_TEST_AGENT_DMG_DIR)/datadog-agent-$(MACOS_TEST_AGENT_VERSION).dmg; \
 		if [ ! -f "$$DMG_PATH" ]; then \
@@ -744,7 +746,8 @@ provision-macos-test-env: ## Installs the pinned Datadog Agent ($(MACOS_TEST_AGE
 		mkdir -p $$(dirname $(MACOS_TEST_AGENT_INSTALL_DIR)); \
 		mv "$$PAYLOAD_DIR" $(MACOS_TEST_AGENT_INSTALL_DIR); \
 		rm -rf "$$EXPAND_DIR"; \
-		test -x $(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent; \
+		test -x $(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent || exit 1; \
+		printf '%s\n' "$(MACOS_TEST_AGENT_VERSION) $(MACOS_TEST_AGENT_DMG_URL)" > $(MACOS_TEST_AGENT_INSTALL_DIR)/.saluki-test-agent-pin; \
 	fi
 	@if [ ! -f $(MACOS_TEST_AGENT_INSTALL_DIR)/etc/ipc_cert.pem ] || [ ! -f $(MACOS_TEST_AGENT_INSTALL_DIR)/etc/auth_token ]; then \
 		echo "[*] Bootstrapping IPC cert + auth_token by running the Agent briefly..."; \
@@ -776,6 +779,7 @@ provision-macos-test-env: ## Installs the pinned Datadog Agent ($(MACOS_TEST_AGE
 	fi
 	@echo "[*] macOS test environment ready."
 	@echo "[*] Agent binary: $(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent"
+	@$(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent version
 
 .PHONY: test-integration-macos-ci
 test-integration-macos-ci: build-panoramic build-adp-host provision-macos-test-env test-integration-macos-run ## CI entry point: builds binaries, ensures Agent + cert are provisioned, then runs the `mac`-runtime integration tests

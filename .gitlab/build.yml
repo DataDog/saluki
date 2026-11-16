@@ -17,8 +17,9 @@
     - ci/tooling/get-temporary-aws-credentials.sh
     - 'echo "Building ADP image. (version: ${ADP_IMAGE_VERSION}, target: ${BUILD_TARGET}, profile: ${BUILD_PROFILE})"'
     # Bake the Agent version into the binary so version gates work without a runtime env var.
-    # Use "nightly" for nightly CI (dev Agent); the pinned public release version otherwise.
-    - if [ -n "${AGENT_NIGHTLY}" ]; then DD_AGENT_VERSION="nightly"; else DD_AGENT_VERSION="${PUBLIC_DD_AGENT_VERSION}"; fi
+    # An explicit pin takes precedence over scheduled nightly and public-release defaults.
+    - if [ -n "${AGENT_PIN_VERSION}" ]; then DD_AGENT_VERSION="${AGENT_PIN_VERSION}"; elif [ -n "${AGENT_NIGHTLY}" ]; then DD_AGENT_VERSION="nightly"; else DD_AGENT_VERSION="${PUBLIC_DD_AGENT_VERSION}"; fi
+    - echo "Building against DD_AGENT_VERSION=${DD_AGENT_VERSION}"
     - docker buildx build
       --file ./docker/Dockerfile.agent-data-plane
       --output push-by-digest=true,type=image,push=true

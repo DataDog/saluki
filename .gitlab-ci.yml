@@ -65,6 +65,14 @@ variables:
   PUBLIC_DSD_VERSION: "7.85.2"
   PUBLIC_DD_AGENT_VERSION: "7.85.2-full"
 
+  # One Agent pipeline across all integration platforms and correctness tests.
+  AGENT_PIN_VERSION: "7.87.0-devel+git.702.4b0a850.pipeline.153386252"
+  AGENT_PIN_LINUX_IMAGE: "datadog/agent-dev@sha256:a3e194ebbc2f11bfa1936a402d028186650f28005b71a5a7db5f335fd4f2f576"
+  AGENT_PIN_WINDOWS_IMAGE: "datadog/agent-dev@sha256:56c854561e28e23f02080cdbfac80815f00c1a4375db020bd5768d70def55e3a"
+  AGENT_PIN_MACOS_DMG_URL_ARM64: "https://s3.amazonaws.com/dd-agent-macostesting/ci/datadog-agent/pipeline-153386252-arm64/datadog-agent-7-latest.dmg"
+  AGENT_PIN_MACOS_DMG_URL_X86_64: "https://s3.amazonaws.com/dd-agent-macostesting/ci/datadog-agent/pipeline-153386252-x64/datadog-agent-7-latest.dmg"
+  DD_AGENT_VERSION: "${AGENT_PIN_VERSION}"
+
   # Base images to copy Agent Data Plane into, depending on whether the image is meant for our internal environment or
   # public registries.
   ADP_INTERNAL_BASE_IMAGE: "${GBI_BASE_IMAGE}"
