@@ -1,10 +1,18 @@
-//! Low-level MessagePack read helpers for the v1.0 APM trace wire format.
+//! Low-level MessagePack read helpers for the Datadog APM trace wire formats.
 //!
 //! Each helper operates on a `&mut &[u8]` cursor: reads advance the slice in place, mirroring the
 //! byte-slice threading (`o []byte`) used by the reference Go decoder. Failures are mapped to
-//! [`DecodeError`] with a static context string naming the field being read.
+//! [`DecodeError`] with a static context string naming the field being read. Input that ends early
+//! maps to [`DecodeError::ShortBytes`], so that callers can count it apart, as the reference counts
+//! `msgp.ErrShortBytes`.
+//!
+//! The `v0_*` helpers reproduce the reference's v0.x reads (`parseUint64Bytes` and friends in
+//! `pkg/proto/pbgo/trace/idx/span.go`, and the `msgp.Read*Bytes` functions it calls), including
+//! which numeric types they tolerate and which failures count as short input.
 
 use std::fmt::Display;
+
+use rmp::decode::{bytes::BytesReadError, DecodeStringError, NumValueReadError, ValueReadError};
 
 use super::error::DecodeError;
 
@@ -30,12 +38,53 @@ const MIN_BYTES_PER_MAP_ENTRY: u32 = 2;
 /// Bounds recursion so a deeply nested unknown field cannot overflow the stack. Matches default OTel limit.
 const MAX_SKIP_DEPTH: usize = 64;
 
-/// Builds a closure that maps a MessagePack decoder error into a [`DecodeError::Msgpack`] carrying
-/// the given static context.
-fn mp<E: Display>(context: &'static str) -> impl FnOnce(E) -> DecodeError {
-    move |e| DecodeError::Msgpack {
+/// An `rmp` read error that can tell whether the input ran out. Reading from a byte slice can only fail to read a
+/// marker or data when the slice is exhausted.
+trait ReadError: Display {
+    fn is_short(&self) -> bool;
+}
+
+impl ReadError for ValueReadError {
+    fn is_short(&self) -> bool {
+        matches!(self, Self::InvalidMarkerRead(_) | Self::InvalidDataRead(_))
+    }
+}
+
+impl ReadError for NumValueReadError {
+    fn is_short(&self) -> bool {
+        matches!(self, Self::InvalidMarkerRead(_) | Self::InvalidDataRead(_))
+    }
+}
+
+impl ReadError for DecodeStringError<'_, BytesReadError> {
+    fn is_short(&self) -> bool {
+        matches!(
+            self,
+            Self::InvalidMarkerRead(_) | Self::InvalidDataRead(_) | Self::BufferSizeTooSmall(_)
+        )
+    }
+}
+
+/// Builds a closure that maps an `rmp` decoder error into a [`DecodeError`] carrying the given static
+/// context: [`DecodeError::ShortBytes`] when the input ran out, [`DecodeError::Msgpack`] otherwise.
+fn mp<E: ReadError>(context: &'static str) -> impl FnOnce(E) -> DecodeError {
+    move |e| {
+        if e.is_short() {
+            DecodeError::ShortBytes { context }
+        } else {
+            DecodeError::Msgpack {
+                context,
+                detail: e.to_string(),
+            }
+        }
+    }
+}
+
+/// Builds a [`DecodeError::Msgpack`] for a value of the wrong type or out of range.
+fn invalid(context: &'static str, detail: impl Into<String>) -> DecodeError {
+    DecodeError::Msgpack {
         context,
-        detail: e.to_string(),
+        detail: detail.into(),
     }
 }
 
@@ -49,11 +98,15 @@ fn mp<E: Display>(context: &'static str) -> impl FnOnce(E) -> DecodeError {
 ///
 /// # Errors
 ///
-/// Returns an error if `len * min_bytes_per_entry` exceeds the number of bytes remaining on the
-/// cursor.
+/// Returns [`DecodeError::ShortBytes`] if `len` exceeds the number of bytes remaining on the cursor,
+/// as the reference's `readBoundedHeaderBytes` does, or [`DecodeError::ImplausibleHeaderCount`] if
+/// only `len * min_bytes_per_entry` does.
 fn check_slab_count(
     len: u32, min_bytes_per_entry: u32, remaining: &[u8], context: &'static str,
 ) -> Result<(), DecodeError> {
+    if u64::from(len) > remaining.len() as u64 {
+        return Err(DecodeError::ShortBytes { context });
+    }
     if u64::from(len) * u64::from(min_bytes_per_entry) > remaining.len() as u64 {
         return Err(DecodeError::ImplausibleHeaderCount {
             context,
@@ -160,15 +213,7 @@ pub fn read_str<'a>(r: &mut &'a [u8], context: &'static str) -> Result<&'a str, 
 /// Reads a binary blob, copying it into an owned `Vec<u8>`.
 pub fn read_bytes(r: &mut &[u8], context: &'static str) -> Result<Vec<u8>, DecodeError> {
     let len = rmp::decode::read_bin_len(r).map_err(mp(context))? as usize;
-    if r.len() < len {
-        return Err(DecodeError::Msgpack {
-            context,
-            detail: format!("expected {len} bytes but only {} remain", r.len()),
-        });
-    }
-    let (head, tail) = (*r).split_at(len);
-    *r = tail;
-    Ok(head.to_vec())
+    Ok(take(r, len, context)?.to_vec())
 }
 
 /// Returns `true` if the next value on the cursor is encoded as a MessagePack string.
@@ -212,32 +257,26 @@ fn is_fixstr(b: u8) -> bool {
     b & 0xe0 == 0xa0
 }
 
+/// Takes the next `n` bytes off the cursor, returning [`DecodeError::ShortBytes`] if fewer remain.
+fn take<'a>(r: &mut &'a [u8], n: usize, context: &'static str) -> Result<&'a [u8], DecodeError> {
+    if r.len() < n {
+        return Err(DecodeError::ShortBytes { context });
+    }
+    let (head, tail) = r.split_at(n);
+    *r = tail;
+    Ok(head)
+}
+
 /// Advances the cursor by `n` bytes, returning an error if fewer remain.
 fn advance(r: &mut &[u8], n: usize, context: &'static str) -> Result<(), DecodeError> {
-    if r.len() < n {
-        return Err(DecodeError::Msgpack {
-            context,
-            detail: format!("expected {n} bytes but only {} remain", r.len()),
-        });
-    }
-    *r = &r[n..];
-    Ok(())
+    take(r, n, context).map(|_| ())
 }
 
 /// Reads `n` big-endian length bytes into a `usize`.
 fn read_len(r: &mut &[u8], n: usize, context: &'static str) -> Result<usize, DecodeError> {
-    if r.len() < n {
-        return Err(DecodeError::Msgpack {
-            context,
-            detail: format!("expected {n} length bytes but only {} remain", r.len()),
-        });
-    }
-    let mut len = 0usize;
-    for &b in &r[..n] {
-        len = (len << 8) | b as usize;
-    }
-    *r = &r[n..];
-    Ok(len)
+    Ok(take(r, n, context)?
+        .iter()
+        .fold(0usize, |len, &b| (len << 8) | b as usize))
 }
 
 /// Skips over a single MessagePack value of any type without interpreting it.
@@ -263,10 +302,7 @@ fn skip_value_depth(r: &mut &[u8], context: &'static str, depth: usize) -> Resul
         return Err(DecodeError::DepthExceeded { max: MAX_SKIP_DEPTH });
     }
 
-    let marker = rmp::decode::read_marker(r).map_err(|e| DecodeError::Msgpack {
-        context,
-        detail: e.0.to_string(),
-    })?;
+    let marker = rmp::decode::read_marker(r).map_err(|_| DecodeError::ShortBytes { context })?;
 
     match marker {
         Null | True | False | FixPos(_) | FixNeg(_) => Ok(()),
@@ -336,4 +372,217 @@ fn skip_seq(r: &mut &[u8], count: usize, context: &'static str, depth: usize) ->
         skip_value_depth(r, context, depth + 1)?;
     }
     Ok(())
+}
+
+/// Element-count limit of the reference's v0.x decoders (`maxCollectionSize`), which matches the
+/// `msgp:limit` directive on its generated decoders.
+pub const V0_MAX_COLLECTION_SIZE: u32 = 500_000;
+
+/// Reads an array header as the reference's `safeReadHeaderBytes(bts, msgp.ReadArrayHeaderBytes)`
+/// does: `nil` is a type error, a count over [`V0_MAX_COLLECTION_SIZE`] is too long, and a count
+/// over the remaining bytes is short input.
+pub fn v0_read_array_len(r: &mut &[u8], context: &'static str) -> Result<u32, DecodeError> {
+    let len = rmp::decode::read_array_len(r).map_err(mp(context))?;
+    v0_check_header_len(len, r, context)
+}
+
+/// Reads a map header as the reference's `safeReadHeaderBytes(bts, msgp.ReadMapHeaderBytes)` does.
+pub fn v0_read_map_len(r: &mut &[u8], context: &'static str) -> Result<u32, DecodeError> {
+    let len = rmp::decode::read_map_len(r).map_err(mp(context))?;
+    v0_check_header_len(len, r, context)
+}
+
+fn v0_check_header_len(len: u32, remaining: &[u8], context: &'static str) -> Result<u32, DecodeError> {
+    if len > V0_MAX_COLLECTION_SIZE {
+        return Err(DecodeError::OversizeHeader {
+            context,
+            len,
+            max: V0_MAX_COLLECTION_SIZE,
+        });
+    }
+    if u64::from(len) > remaining.len() as u64 {
+        return Err(DecodeError::ShortBytes { context });
+    }
+    Ok(len)
+}
+
+/// Checks a map's entry count against the remaining bytes, as the reference's `checkSlabCount` does
+/// before it pre-allocates the entries: each entry takes at least two bytes.
+pub fn v0_check_slab_count(len: u32, remaining: &[u8], context: &'static str) -> Result<(), DecodeError> {
+    if u64::from(len) * u64::from(MIN_BYTES_PER_MAP_ENTRY) > remaining.len() as u64 {
+        return Err(DecodeError::ImplausibleHeaderCount {
+            context,
+            len,
+            remaining: remaining.len(),
+        });
+    }
+    Ok(())
+}
+
+/// Returns `true` if the next value on the cursor is `nil`. Does not advance the cursor.
+pub fn peek_is_nil(r: &&[u8]) -> bool {
+    r.first() == Some(&0xc0)
+}
+
+/// Consumes a `nil` the caller has already peeked.
+pub fn skip_nil(r: &mut &[u8]) {
+    debug_assert!(peek_is_nil(r));
+    *r = &r[1..];
+}
+
+/// An integer as the reference's `msgp.NextType` classifies it: signed (`IntType`, which includes
+/// positive fixints) or unsigned (`UintType`, the `uint8` to `uint64` markers).
+enum WireInt {
+    Signed(i64),
+    Unsigned(u64),
+}
+
+fn is_int_marker(b: u8) -> bool {
+    matches!(b, 0x00..=0x7f | 0xe0..=0xff | 0xcc..=0xd3)
+}
+
+fn take_array<const N: usize>(r: &mut &[u8], context: &'static str) -> Result<[u8; N], DecodeError> {
+    Ok(take(r, N, context)?.try_into().expect("take returns exactly N bytes"))
+}
+
+/// Reads an integer of any width. The caller has checked that the next marker is an integer.
+fn read_wire_int(r: &mut &[u8], context: &'static str) -> Result<WireInt, DecodeError> {
+    let marker = take(r, 1, context)?[0];
+    Ok(match marker {
+        0x00..=0x7f => WireInt::Signed(i64::from(marker)),
+        0xe0..=0xff => WireInt::Signed(i64::from(marker as i8)),
+        0xcc => WireInt::Unsigned(u64::from(take_array::<1>(r, context)?[0])),
+        0xcd => WireInt::Unsigned(u64::from(u16::from_be_bytes(take_array(r, context)?))),
+        0xce => WireInt::Unsigned(u64::from(u32::from_be_bytes(take_array(r, context)?))),
+        0xcf => WireInt::Unsigned(u64::from_be_bytes(take_array(r, context)?)),
+        0xd0 => WireInt::Signed(i64::from(take_array::<1>(r, context)?[0] as i8)),
+        0xd1 => WireInt::Signed(i64::from(i16::from_be_bytes(take_array(r, context)?))),
+        0xd2 => WireInt::Signed(i64::from(i32::from_be_bytes(take_array(r, context)?))),
+        0xd3 => WireInt::Signed(i64::from_be_bytes(take_array(r, context)?)),
+        other => unreachable!("read_wire_int called on marker {other:#04x}"),
+    })
+}
+
+/// The leading step of the reference's `parseXBytes` helpers: `nil` reads as zero, and a value that
+/// isn't an integer is a type error. An empty cursor is a type error too, not short input, because
+/// `msgp.NextType` reports it as an invalid type.
+fn v0_parse_int(r: &mut &[u8], context: &'static str) -> Result<Option<WireInt>, DecodeError> {
+    match r.first() {
+        Some(0xc0) => {
+            skip_nil(r);
+            Ok(None)
+        }
+        Some(&b) if is_int_marker(b) => read_wire_int(r, context).map(Some),
+        Some(&b) => Err(invalid(context, format!("expected an integer, found marker {b:#04x}"))),
+        None => Err(invalid(context, "expected an integer, found the end of input")),
+    }
+}
+
+/// Reads a `uint64` as the reference's `parseUint64Bytes`: `nil` is zero, and a signed integer is
+/// reinterpreted as unsigned, since some tracers have no unsigned types.
+pub fn v0_parse_u64(r: &mut &[u8], context: &'static str) -> Result<u64, DecodeError> {
+    Ok(match v0_parse_int(r, context)? {
+        None => 0,
+        Some(WireInt::Signed(i)) => i as u64,
+        Some(WireInt::Unsigned(u)) => u,
+    })
+}
+
+/// Reads an `int64` as the reference's `parseInt64Bytes`: `nil` is zero, and an unsigned integer
+/// above `i64::MAX` is an error.
+pub fn v0_parse_i64(r: &mut &[u8], context: &'static str) -> Result<i64, DecodeError> {
+    match v0_parse_int(r, context)? {
+        None => Ok(0),
+        Some(WireInt::Signed(i)) => Ok(i),
+        Some(WireInt::Unsigned(u)) => i64::try_from(u).map_err(|_| invalid(context, "found uint64, overflows int64")),
+    }
+}
+
+/// Reads an `int32` as the reference's `parseInt32Bytes`: `nil` is zero, and a value outside the
+/// `int32` range is an error.
+pub fn v0_parse_i32(r: &mut &[u8], context: &'static str) -> Result<i32, DecodeError> {
+    match v0_parse_int(r, context)? {
+        None => Ok(0),
+        Some(WireInt::Signed(i)) => i32::try_from(i).map_err(|_| invalid(context, "integer overflows int32")),
+        Some(WireInt::Unsigned(u)) => i32::try_from(u).map_err(|_| invalid(context, "found uint32, overflows int32")),
+    }
+}
+
+/// Reads a `float64` as the reference's `parseFloat64Bytes`: `nil` is zero and integers of any width
+/// convert, but a `float32` is a type error, as `msgp.NextType` reports it as `Float32Type`.
+pub fn v0_parse_f64(r: &mut &[u8], context: &'static str) -> Result<f64, DecodeError> {
+    if r.first() == Some(&0xcb) {
+        *r = &r[1..];
+        return Ok(f64::from_be_bytes(take_array(r, context)?));
+    }
+    Ok(match v0_parse_int(r, context)? {
+        None => 0.0,
+        Some(WireInt::Signed(i)) => i as f64,
+        Some(WireInt::Unsigned(u)) => u as f64,
+    })
+}
+
+/// Reads the length of a `str` or `bin` value, or returns `None` if the next value is neither.
+fn read_str_or_bin_len(r: &mut &[u8], context: &'static str) -> Result<Option<usize>, DecodeError> {
+    let Some(&marker) = r.first() else {
+        return Ok(None);
+    };
+    let width = match marker {
+        0xa0..=0xbf => {
+            *r = &r[1..];
+            return Ok(Some(usize::from(marker & 0x1f)));
+        }
+        0xd9 | 0xc4 => 1,
+        0xda | 0xc5 => 2,
+        0xdb | 0xc6 => 4,
+        _ => return Ok(None),
+    };
+    *r = &r[1..];
+    read_len(r, width, context).map(Some)
+}
+
+/// Reads a string's raw bytes as the reference's `parseStringBytesRef`: `nil` is the empty string,
+/// and both `str` and `bin` values are accepted. The bytes may not be valid UTF-8. An empty cursor
+/// is a type error, as `msgp.NextType` reports it as an invalid type.
+pub fn v0_read_str_bytes<'a>(r: &mut &'a [u8], context: &'static str) -> Result<&'a [u8], DecodeError> {
+    if peek_is_nil(r) {
+        skip_nil(r);
+        return Ok(&[]);
+    }
+    match read_str_or_bin_len(r, context)? {
+        Some(len) => take(r, len, context),
+        None => Err(invalid(context, "expected a string")),
+    }
+}
+
+/// Reads a map key's raw bytes as `msgp.ReadMapKeyZC`: a `str` or `bin` value. `nil` is an error.
+pub fn v0_read_map_key<'a>(r: &mut &'a [u8], context: &'static str) -> Result<&'a [u8], DecodeError> {
+    if r.is_empty() {
+        return Err(DecodeError::ShortBytes { context });
+    }
+    match read_str_or_bin_len(r, context)? {
+        Some(len) => take(r, len, context),
+        None => Err(invalid(context, "expected a string map key")),
+    }
+}
+
+/// Converts bytes to a string as the reference's `repairUTF8` does: each byte that doesn't start a
+/// valid UTF-8 sequence becomes one U+FFFD replacement character. This differs from
+/// `String::from_utf8_lossy`, which replaces a whole invalid sequence with a single character.
+pub fn repair_utf8(mut bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() + 2);
+    loop {
+        match simdutf8::compat::from_utf8(bytes) {
+            Ok(valid) => {
+                out.push_str(valid);
+                return out;
+            }
+            Err(e) => {
+                let (valid, rest) = bytes.split_at(e.valid_up_to());
+                out.push_str(simdutf8::basic::from_utf8(valid).expect("prefix is valid UTF-8"));
+                out.push(char::REPLACEMENT_CHARACTER);
+                bytes = &rest[1..];
+            }
+        }
+    }
 }

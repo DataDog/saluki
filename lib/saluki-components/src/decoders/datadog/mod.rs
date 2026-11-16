@@ -1,4 +1,8 @@
-//! Decoder for the Datadog v1.0 APM trace wire format (also called the `idx`/`etp` format).
+//! Decoders for the Datadog APM trace wire formats.
+//!
+//! [`decode_v04_payload`](datadog::decode_v04_payload) decodes the v0.4 MessagePack `[][]Span` format into the same output as the v1.0 decoder;
+//! see its module for how it mirrors the reference. The rest of this page covers the v1.0 format (also called the
+//! `idx`/`etp` format).
 //!
 //! The v1.0 trace API (`Content-Type: application/msgpack`, endpoint `v1.0`) sends a tracer payload
 //! in a custom MessagePack layout rather than protobuf-over-msgpack. Its defining traits:
@@ -24,6 +28,7 @@ use stringtheory::MetaString;
 mod error;
 mod read;
 mod string_table;
+mod v04;
 mod value;
 
 #[cfg(test)]
@@ -31,6 +36,7 @@ mod tests;
 
 pub use self::error::DecodeError;
 use self::string_table::StringTable;
+pub use self::v04::decode_v04_payload;
 use crate::common::traces::attribute_as_string;
 
 /// Plausible minimum average wire size of a trace chunk containing a span list and 16-byte trace ID.
@@ -39,7 +45,7 @@ const MIN_BYTES_PER_TRACE_CHUNK: u32 = 22;
 /// Plausible minimum average wire size of a span containing a random span ID and epoch-nanosecond start time.
 const MIN_BYTES_PER_SPAN: u32 = 21;
 
-/// A decoded v1.0 tracer payload.
+/// A decoded tracer payload, from the v1.0 format or from the v0.4 format by [`decode_v04_payload`].
 #[derive(Debug)]
 pub struct DecodedV1 {
     /// One trace per trace chunk. Each trace's attributes are its chunk's attributes only.
