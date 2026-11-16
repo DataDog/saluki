@@ -103,14 +103,17 @@ pub(super) enum DropReason {
     PayloadTooLarge,
     Timeout,
     UnexpectedEof,
+    /// The MessagePack body ended before the value being read was complete, the reference's `msgp.ErrShortBytes`.
+    MsgpShortBytes,
 }
 
 impl DropReason {
-    const ALL: [Self; 4] = [
+    const ALL: [Self; 5] = [
         Self::DecodingError,
         Self::PayloadTooLarge,
         Self::Timeout,
         Self::UnexpectedEof,
+        Self::MsgpShortBytes,
     ];
 
     /// Returns the `reason` tag of `normalizer.traces_dropped`.
@@ -120,13 +123,16 @@ impl DropReason {
             Self::PayloadTooLarge => "reason:payload_too_large",
             Self::Timeout => "reason:timeout",
             Self::UnexpectedEof => "reason:unexpected_eof",
+            Self::MsgpShortBytes => "reason:msgp_short_bytes",
         }
     }
 
     /// Returns the `error` tag value of `receiver.error`, as `httpDecodingError` names it.
+    ///
+    /// `httpDecodingError` doesn't single out `msgp.ErrShortBytes`, so it is a `decoding-error` there.
     pub(super) fn error_tag(self) -> &'static str {
         match self {
-            Self::DecodingError => "decoding-error",
+            Self::DecodingError | Self::MsgpShortBytes => "decoding-error",
             Self::PayloadTooLarge => "payload-too-large",
             Self::Timeout => "timeout",
             Self::UnexpectedEof => "unexpected-eof",
@@ -177,6 +183,8 @@ struct Window {
     stats: FastHashMap<ReceiverTags, TagStats>,
     /// `receiver.error` counts, keyed by endpoint version and error tag, which the reference doesn't tag by tracer.
     errors: FastHashMap<(&'static str, &'static str), i64>,
+    /// `receiver.error` counts of payloads in a media type their endpoint doesn't take, keyed by endpoint version.
+    format_errors: FastHashMap<&'static str, i64>,
 }
 
 impl Default for Window {
@@ -185,6 +193,7 @@ impl Default for Window {
             started: Instant::now(),
             stats: FastHashMap::default(),
             errors: FastHashMap::default(),
+            format_errors: FastHashMap::default(),
         }
     }
 }
@@ -220,6 +229,13 @@ impl ReceiverTelemetry {
     pub(super) fn record_error(&self, version: &'static str, reason: DropReason) {
         let mut window = self.window.lock().unwrap_or_else(PoisonError::into_inner);
         *window.errors.entry((version, reason.error_tag())).or_default() += 1;
+    }
+
+    /// Counts a `receiver.error` for a payload in a media type the endpoint of `version` doesn't take, as
+    /// `httpFormatError` does.
+    pub(super) fn record_format_error(&self, version: &'static str) {
+        let mut window = self.window.lock().unwrap_or_else(PoisonError::into_inner);
+        *window.format_errors.entry(version).or_default() += 1;
     }
 
     /// Reports the window's counts, in the order of the reference's `publishAndReset`, then resets the window.
@@ -312,6 +328,14 @@ impl ReceiverTelemetry {
             tag_set.insert_tag(MetaString::from_static("handler:traces"));
             tag_set.insert_tag(MetaString::from(format!("v:{version}")));
             tag_set.insert_tag(MetaString::from(format!("error:{error}")));
+            events.push(counter(METRIC_ERROR, tag_set, value, interval));
+        }
+
+        // `httpFormatError` tags its count differently from `httpDecodingError`.
+        for (version, value) in window.format_errors {
+            let mut tag_set = TagSet::with_capacity(2);
+            tag_set.insert_tag(MetaString::from_static("error:format-error"));
+            tag_set.insert_tag(MetaString::from(format!("version:{version}")));
             events.push(counter(METRIC_ERROR, tag_set, value, interval));
         }
 
