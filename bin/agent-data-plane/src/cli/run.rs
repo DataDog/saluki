@@ -1012,6 +1012,13 @@ async fn add_apm_pipeline_to_blueprint(
     if DataPlaneConfiguration::from_configuration(&config).native_trace_intake_enabled() {
         // Datadog traces are normalized, then join the shared trace pipeline that OTLP traces also feed.
         let traces = &config.domains.traces;
+        if traces.features.contains(&ApmFeature::DisableConvertTraces) {
+            // The trace-agent's feature selects its legacy V0 processing path, which ADP doesn't have.
+            warn!(
+                "`apm_config.features` contains `disable-convert-traces`, which the native trace intake ignores: \
+                 trace payloads are processed as the trace-agent processes them without it."
+            );
+        }
         let dd_traces_normalize_config = DatadogTraceNormalizerConfiguration::new()
             .with_component2name(traces.features.contains(&ApmFeature::Component2Name));
         blueprint

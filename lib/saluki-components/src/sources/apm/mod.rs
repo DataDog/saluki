@@ -4,8 +4,9 @@
 //! does not handle itself are forwarded to the relocated trace-agent, so the documentation, metrics, and logs still call
 //! it the relay.
 //!
-//! The source declares a `traces` output for the traces it will decode from the trace intake endpoints, but emits
-//! nothing on it yet: every trace payload is still forwarded to the trace-agent.
+//! With [`trace_intake`](ApmConfiguration::trace_intake) set, the source serves `/v1.0/traces` itself, and emits the
+//! traces it decodes on its `traces` output. Otherwise it emits nothing there, and every trace payload is forwarded to
+//! the trace-agent.
 //!
 //! The relay serves `/info` itself, and so owns `Datadog-Agent-State`, the hash of the `/info` body that every
 //! response carries: it replaces the trace-agent's on the responses it forwards.
@@ -31,7 +32,8 @@ use saluki_common::sync::live::Live;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::components::sources::{Source, SourceBuilder, SourceContext};
 use saluki_core::components::BuildContext;
-use saluki_core::data_model::event::EventType;
+use saluki_core::data_model::event::trace::Trace;
+use saluki_core::data_model::event::{Event, EventType};
 use saluki_core::runtime;
 use saluki_core::topology::OutputDefinition;
 use saluki_env::workload::{CaptureEntityResolver, EntityId};
@@ -41,8 +43,9 @@ use saluki_io::net::dns::resolve_host;
 use saluki_io::net::server::http::HttpServer;
 use saluki_io::net::{ConnectionAddress, ListenAddress};
 use saluki_metrics::static_metrics;
+use tokio::sync::mpsc;
 use tokio::{pin, select};
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 
 mod container_tags;
 use self::container_tags::{ContainerTagsHasher, CONTAINER_TAGS_HASH_HEADER};
@@ -51,6 +54,10 @@ mod forwarding;
 
 mod info;
 use self::info::Info;
+
+mod intake;
+pub use self::intake::TraceIntakeConfiguration;
+use self::intake::{EndpointVersion, TraceIntake};
 
 mod opm;
 pub use self::info::{
@@ -147,6 +154,11 @@ pub struct ApmConfiguration {
     ///
     /// The request uses the HTTP client settings and the API key of [`tracer_flare`](Self::tracer_flare).
     pub validate_endpoint: String,
+
+    /// Settings of the native trace intake, which serves the trace endpoints rather than forwarding them.
+    ///
+    /// `None` forwards every trace payload to the trace-agent.
+    pub trace_intake: Option<TraceIntakeConfiguration>,
 }
 
 #[static_metrics(prefix = component, labels(component_id, component_type))]
@@ -292,7 +304,19 @@ impl SourceBuilder for ApmConfiguration {
         let semantic_registry_updates = self.semantic_registry.clone();
         let info = Info::new(self.info.clone(), self.semantic_registry.clone());
 
+        // Decoded payloads wait in a short queue while the source dispatches them, so that a slow pipeline holds back
+        // the decoders, as the trace-agent's unbuffered channel (`apm_config.trace_buffer` defaults to 0) does. Each
+        // decoder can have one payload waiting.
+        let queue_len = self.trace_intake.as_ref().map_or(1, |config| config.decoders.get());
+        let (traces_tx, traces_rx) = mpsc::channel(queue_len);
+        let intake = self
+            .trace_intake
+            .clone()
+            .map(|config| TraceIntake::new(config, traces_tx));
+
         Ok(Box::new(Apm {
+            intake,
+            traces_rx,
             tcp_endpoint,
             uds_endpoint,
             proxy,
@@ -316,6 +340,8 @@ impl SourceBuilder for ApmConfiguration {
 ///
 /// Receives requests via HTTP, on TCP and/or a Unix domain socket, and proxies them to the trace-agent.
 pub struct Apm {
+    intake: Option<TraceIntake>,
+    traces_rx: mpsc::Receiver<Vec<Trace>>,
     tcp_endpoint: Option<ListenAddress>,
     uds_endpoint: Option<ListenAddress>,
     proxy: TraceAgentProxy,
@@ -334,6 +360,8 @@ pub struct Apm {
 impl Source for Apm {
     async fn run(self: Box<Self>, mut context: SourceContext) -> Result<(), GenericError> {
         let Self {
+            intake,
+            mut traces_rx,
             tcp_endpoint,
             uds_endpoint,
             proxy,
@@ -354,6 +382,7 @@ impl Source for Apm {
         let mut health = context.take_health_handle();
         let worker_pool = context.topology_context().global_thread_pool().clone();
         let api_handler = ApmAPIHandler::new(ApmState {
+            intake,
             metrics,
             proxy,
             tracer_flare: tracer_flare.clone(),
@@ -424,12 +453,32 @@ impl Source for Apm {
                         info.set_org_prop_marker(marker);
                     }
                 },
+                Some(traces) = traces_rx.recv() => dispatch_traces(&context, traces).await,
             }
         }
 
         debug!("APM relay stopped.");
 
         Ok(())
+    }
+}
+
+/// Dispatches the traces of one payload on the `traces` output.
+async fn dispatch_traces(context: &SourceContext, traces: Vec<Trace>) {
+    let mut dispatcher = match context.dispatcher().buffered_named("traces") {
+        Ok(dispatcher) => dispatcher,
+        Err(error) => {
+            error!(%error, "Failed to get the traces output.");
+            return;
+        }
+    };
+    for trace in traces {
+        if let Err(error) = dispatcher.push(Event::Trace(trace)).await {
+            error!(%error, "Failed to dispatch trace event.");
+        }
+    }
+    if let Err(error) = dispatcher.flush().await {
+        error!(%error, "Failed to flush trace events.");
     }
 }
 
@@ -458,6 +507,7 @@ async fn fetch_agent_version_with_retry(
 /// Shared HTTP handler state.
 #[derive(Clone)]
 struct ApmState {
+    intake: Option<TraceIntake>,
     proxy: TraceAgentProxy,
     tracer_flare: TracerFlareProxy,
     info: Info,
@@ -544,6 +594,20 @@ impl ApmAPIHandler {
         response.headers_mut().insert(CONTAINER_TAGS_HASH_HEADER, hash);
         response
     }
+
+    async fn handle_traces_v1(state: State<ApmState>, request: AxumRequest) -> Response {
+        Self::handle_traces(state, EndpointVersion::V10, request).await
+    }
+
+    async fn handle_traces(
+        State(ApmState {
+            intake, container_tags, ..
+        }): State<ApmState>, version: EndpointVersion,
+        request: AxumRequest,
+    ) -> Response {
+        let intake = intake.expect("trace routes are only registered with the native trace intake");
+        intake.handle(version, request, &container_tags).await
+    }
 }
 
 /// Sets `Datadog-Container-ID` to the container of the tracer that sent `request`, when the tracer is connected over the
@@ -591,7 +655,14 @@ impl APIHandler for ApmAPIHandler {
     /// carries `Datadog-Agent-State` and `Datadog-Agent-Version` instead.
     fn generate_routes(&self) -> Router<Self::State> {
         let state = &self.state;
-        let with_agent_headers = Router::new()
+        let with_agent_headers = Router::new();
+        // Without the native trace intake, the trace endpoints are forwarded to the trace-agent like any other.
+        let with_agent_headers = if state.intake.is_some() {
+            with_agent_headers.route("/v1.0/traces", any(Self::handle_traces_v1))
+        } else {
+            with_agent_headers
+        };
+        let with_agent_headers = with_agent_headers
             .route("/services", any(Self::handle_services))
             .route("/v0.1/services", any(Self::handle_services))
             .route("/v0.2/services", any(Self::handle_services))
@@ -659,6 +730,7 @@ mod tests {
 
     fn test_router() -> Router {
         build_router(ApmState {
+            intake: None,
             proxy: unreachable_proxy(),
             tracer_flare: unreachable_tracer_flare(),
             info: test_info(),
@@ -666,6 +738,56 @@ mod tests {
             capture_entity_resolver: None,
             metrics: Metrics::new("dd_traces_in", "sources"),
         })
+    }
+
+    #[tokio::test]
+    async fn serves_v1_traces_only_with_the_native_trace_intake() {
+        let send = |router: Router| async move {
+            router
+                .oneshot(
+                    Request::builder()
+                        .method("PUT")
+                        .uri("/v1.0/traces")
+                        // An empty tracer payload: a MessagePack map with no fields.
+                        .body(axum::body::Body::from(vec![0x80]))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+        };
+
+        // Without it, the request is proxied, and the trace-agent is unreachable.
+        let response = send(test_router()).await;
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+
+        let (traces_tx, _traces_rx) = mpsc::channel(1);
+        let info = test_info();
+        let router = build_router(ApmState {
+            intake: Some(TraceIntake::new(
+                TraceIntakeConfiguration {
+                    max_request_bytes: 1024,
+                    decoders: std::num::NonZeroUsize::MIN,
+                    decoder_timeout: Duration::from_secs(1),
+                    receiver_timeout: Duration::from_secs(5),
+                    reject_with_too_many_requests: false,
+                },
+                traces_tx,
+            )),
+            proxy: unreachable_proxy(),
+            tracer_flare: unreachable_tracer_flare(),
+            info: info.clone(),
+            container_tags: ContainerTagsHasher::default(),
+            capture_entity_resolver: None,
+            metrics: Metrics::new("dd_traces_in", "sources"),
+        });
+        let response = send(router).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        // Served responses carry the relay's own agent state, as every trace-agent response does.
+        let mut expected = http::HeaderMap::new();
+        info.set_headers(&mut expected);
+        for header in [info::AGENT_STATE_HEADER, info::AGENT_VERSION_HEADER] {
+            assert_eq!(response.headers().get(&header), expected.get(&header), "{header}");
+        }
     }
 
     /// Resolves every process to the same container.
@@ -873,6 +995,7 @@ mod tests {
         let _recorder_guard = metrics::set_default_local_recorder(&recorder);
         let info = test_info();
         let router = build_router(ApmState {
+            intake: None,
             proxy: spawn_trace_agent_with_state().await,
             tracer_flare: unreachable_tracer_flare(),
             info: info.clone(),
@@ -1091,6 +1214,7 @@ mod tests {
 
         relay_router
             .set(build_router(ApmState {
+                intake: None,
                 proxy: TraceAgentProxy::from_destination(&format!("http://{bound_addr}"))
                     .expect("destination should parse"),
                 tracer_flare: unreachable_tracer_flare(),
@@ -1188,6 +1312,7 @@ mod tests {
     fn test_config(bind_host: Option<&str>, non_local_traffic: bool, receiver_port: u16) -> ApmConfiguration {
         init_tls();
         ApmConfiguration {
+            trace_intake: None,
             receiver_socket: String::new(),
             proxy_destination: "http://127.0.0.1:8127".to_string(),
             capture_entity_resolver: None,
