@@ -91,20 +91,16 @@ const WINDOWS_ENV_ALIASES: &[(&str, &str)] = &[
     ("DD_DATA_PLANE_DOGSTATSD_ENABLED", "DD_DATA_PLANE__DOGSTATSD__ENABLED"),
     ("DD_DATA_PLANE_OTLP_ENABLED", "DD_DATA_PLANE__OTLP__ENABLED"),
     (
-        "DD_DATA_PLANE_OTLP_PROXY_ENABLED",
-        "DD_DATA_PLANE__OTLP__PROXY__ENABLED",
+        "DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_TRACES",
+        "DD_DATA_PLANE__EXPERIMENTAL__OTLP__PROXY__TRACES",
     ),
     (
-        "DD_DATA_PLANE_OTLP_PROXY_TRACES_ENABLED",
-        "DD_DATA_PLANE__OTLP__PROXY__TRACES__ENABLED",
+        "DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_METRICS",
+        "DD_DATA_PLANE__EXPERIMENTAL__OTLP__PROXY__METRICS",
     ),
     (
-        "DD_DATA_PLANE_OTLP_PROXY_METRICS_ENABLED",
-        "DD_DATA_PLANE__OTLP__PROXY__METRICS__ENABLED",
-    ),
-    (
-        "DD_DATA_PLANE_OTLP_PROXY_LOGS_ENABLED",
-        "DD_DATA_PLANE__OTLP__PROXY__LOGS__ENABLED",
+        "DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_LOGS",
+        "DD_DATA_PLANE__EXPERIMENTAL__OTLP__PROXY__LOGS",
     ),
     ("DD_DATA_PLANE_LOG_FILE", "DD_DATA_PLANE__LOG_FILE"),
 ];
@@ -2358,9 +2354,12 @@ while :; do sleep 1; done"#
             ("DD_DATA_PLANE_STANDALONE_MODE".to_string(), "true".to_string()),
             ("DD_DATA_PLANE_DOGSTATSD_ENABLED".to_string(), "false".to_string()),
             ("DD_DATA_PLANE_OTLP_ENABLED".to_string(), "true".to_string()),
-            ("DD_DATA_PLANE_OTLP_PROXY_ENABLED".to_string(), "false".to_string()),
             (
-                "DD_DATA_PLANE_OTLP_PROXY_TRACES_ENABLED".to_string(),
+                "DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_METRICS".to_string(),
+                "true".to_string(),
+            ),
+            (
+                "DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_TRACES".to_string(),
                 "false".to_string(),
             ),
         ]);
@@ -2381,11 +2380,11 @@ while :; do sleep 1; done"#
             Some(&"true".to_string())
         );
         assert_eq!(
-            normalized.get("DD_DATA_PLANE__OTLP__PROXY__ENABLED"),
-            Some(&"false".to_string())
+            normalized.get("DD_DATA_PLANE__EXPERIMENTAL__OTLP__PROXY__METRICS"),
+            Some(&"true".to_string())
         );
         assert_eq!(
-            normalized.get("DD_DATA_PLANE__OTLP__PROXY__TRACES__ENABLED"),
+            normalized.get("DD_DATA_PLANE__EXPERIMENTAL__OTLP__PROXY__TRACES"),
             Some(&"false".to_string())
         );
         // Without an explicit DD_DATA_PLANE_REMOTE_AGENT_ENABLED in the input, the normalized

@@ -161,7 +161,8 @@ The target runs [`regenerate.sh`](regenerate.sh), which:
 2. fetches that commit into `target/config-recorder/datadog-agent`, or reuses the checkout when it
    is already there;
 3. copies `go/` into the checkout as `cmd/config-recorder/`;
-4. runs the Agent's schema codegen and core schema merge in a pinned Python image;
+4. runs the Agent's schema codegen, compresses the schemas the Agent embeds for validation, and
+   merges the core schema, in a pinned Python image;
 5. runs `gofmt`, `go vet`, `go test`, `go build` and the recorder in a pinned Go image;
 6. replaces `corpus.jsonl` only if every step succeeded.
 
@@ -210,7 +211,7 @@ When a check fails because the corpus is stale, regenerate it with `make build-a
 - `corpus_lines_read_strictly`: an independent strict reader of the whole file. It catches a corpus
   that breaks the record format: encoding, line order, canonical JSON, unknown or `null` members,
   bad values, and the consistency rules between lines.
-- `corpus_within_size_cap`: the file is over 512,000 bytes.
+- `corpus_within_size_cap`: the file is over 560,000 bytes.
 - `depth_group_within_budget`: the `depth` group's corpus lines are over their 80,000-byte budget;
   see `docs/case.md` §3.2.1 for which variants to cut.
 - `corpus_pin_matches_vendored_schema`: the header's `agent_commit` is not `_version.txt`, or

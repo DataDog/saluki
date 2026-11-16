@@ -180,13 +180,16 @@ fn attributes_fixture() -> Vec<u8> {
                 kv("attr_bytes_binary", bytes(&[0, 159, 146, 150])),
             ],
         ),
-        // gap/attribute-key-case: only reserved keys are matched case-insensitively; others keep their spelling.
+        // gap/attribute-key-case: only reserved keys are matched case-insensitively; others keep their spelling, so
+        // `Hostname` and `Service` stay in the content next to `hostname` and `service`.
         record(
             5,
             "key-spelling",
             vec![
                 kv("RequestID", string("r-1")),
                 kv("nested_Map", map(vec![kv("InnerKey", int(1))])),
+                kv("Hostname", string("record-hostname")),
+                kv("Service", string("record-service")),
             ],
         ),
         // gap/as-string-coercion: empty values become "" in the Agent.
@@ -244,6 +247,56 @@ fn attributes_fixture() -> Vec<u8> {
     let mut event = record(17, "event-name", vec![]);
     event.event_name = "fixture.event".to_string();
     records.push(event);
+    // gap/reserved-key-duplicates: when a reserved key repeats, in any case, the last message, status, and `ddtags`
+    // win, even when the last one is empty or has no value, and the first trace and span IDs that decode win.
+    records.extend([
+        record(
+            18,
+            "duplicate-message",
+            vec![kv("message", string("first")), kv("MESSAGE", string("second"))],
+        ),
+        record(
+            19,
+            "duplicate-message-empty-last",
+            vec![kv("msg", string("first")), kv("Message", string(""))],
+        ),
+        record(
+            20,
+            "duplicate-message-missing-last",
+            vec![kv("message", string("first")), kv("MESSAGE", empty())],
+        ),
+        record(
+            21,
+            "duplicate-status",
+            vec![kv("status", string("info")), kv("Level", string("error"))],
+        ),
+        record(
+            22,
+            "duplicate-status-missing-last",
+            vec![kv("severity", string("error")), kv("LEVEL", empty())],
+        ),
+        record(
+            23,
+            "duplicate-ddtags",
+            vec![kv("ddtags", string("team:a")), kv("DDTags", string("team:b"))],
+        ),
+        record(
+            24,
+            "duplicate-ddtags-missing-last",
+            vec![kv("ddtags", string("team:a")), kv("DDTAGS", empty())],
+        ),
+        record(
+            25,
+            "duplicate-trace-ids",
+            vec![
+                kv("trace_id", string("not-hex")),
+                kv("TraceID", string("0102030405060708090a0b0c0d0e0f10")),
+                kv("Trace_Id", string("1112131415161718191a1b1c1d1e1f20")),
+                kv("SpanID", string("0102030405060708")),
+                kv("span_id", string("1112131415161718")),
+            ],
+        ),
+    ]);
 
     request(
         vec![
@@ -512,6 +565,75 @@ fn resource_host_fixture() -> Vec<u8> {
             vec![record(16, "status-scope-attribute", vec![])],
         )],
     ));
+
+    // Resource attributes that become tags: `service.namespace`, and `container.image.tags` values and precedence.
+    let tag_cases: Vec<(&str, Vec<KeyValue>)> = vec![
+        ("tags-service-namespace", vec![kv("service.namespace", string("shop"))]),
+        (
+            "tags-service-namespace-empty",
+            vec![kv("service.namespace", string(""))],
+        ),
+        (
+            "tags-image-tags-array",
+            vec![kv("container.image.tags", array(vec![string("v1"), string("latest")]))],
+        ),
+        ("tags-image-tags-string", vec![kv("container.image.tags", string("v1"))]),
+        (
+            "tags-image-tags-empty-array",
+            vec![kv("container.image.tags", array(vec![]))],
+        ),
+        (
+            "tags-image-tags-empty-first",
+            vec![kv("container.image.tags", array(vec![string(""), string("latest")]))],
+        ),
+        (
+            "tags-image-tags-int-first",
+            vec![kv("container.image.tags", array(vec![int(1)]))],
+        ),
+        (
+            "tags-image-tag-then-tags",
+            vec![
+                kv("container.image.tag", string("old")),
+                kv("container.image.tags", array(vec![string("new")])),
+            ],
+        ),
+        (
+            "tags-image-tags-then-tag",
+            vec![
+                kv("container.image.tags", array(vec![string("new")])),
+                kv("container.image.tag", string("old")),
+            ],
+        ),
+        (
+            "tags-duplicate-container-id",
+            vec![
+                kv("container.id", string("first-container")),
+                kv("container.id", string("second-container")),
+            ],
+        ),
+        (
+            "tags-duplicate-custom",
+            vec![
+                kv("datadog.container.tag.team", string("first-team")),
+                kv("datadog.container.tag.team", string("second-team")),
+            ],
+        ),
+        (
+            "tags-custom-before-semconv",
+            vec![
+                kv("datadog.container.tag.image_tag", string("custom")),
+                kv("container.image.tags", array(vec![string("v1")])),
+            ],
+        ),
+    ];
+    for (index, (id, mut attributes)) in tag_cases.into_iter().enumerate() {
+        attributes.push(kv("service.name", string("fixture-tags")));
+        attributes.push(kv("host.name", string("tags-host")));
+        resources.push(resource_logs(
+            attributes,
+            vec![scope_logs(no_scope(), vec![record(20 + index as u64, id, vec![])])],
+        ));
+    }
 
     ExportLogsServiceRequest {
         resource_logs: resources,

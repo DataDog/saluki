@@ -25,7 +25,7 @@ static DEFAULT_SOURCE: MetaString = MetaString::from_static("otlp_log_ingestion"
 /// text, then the name of the severity number's range, taking the first that isn't empty. Attribute and severity
 /// text are used as they are, without normalization. A severity number of 0 has no name, so a log with nothing else
 /// gets an empty status.
-pub fn derive_status(status: Option<String>, severity_text: &str, severity_number: i32) -> MetaString {
+pub fn derive_status(status: Option<&str>, severity_text: &str, severity_number: i32) -> MetaString {
     match status {
         Some(status) if !status.is_empty() => MetaString::from(status),
         _ if !severity_text.is_empty() => MetaString::from(severity_text),
@@ -164,6 +164,26 @@ pub fn flatten_attribute(base_key: &str, av: &otlp_common::AnyValue, depth: usiz
     vec![(base_key.to_string(), to_leaf_json(av))]
 }
 
+/// Returns whether `key` is one of the `reserved` keys, ignoring ASCII case.
+///
+/// Only ASCII letters are folded. Go's `strings.ToLower` also turns the dotted `İ` (U+0130) into `i`, so a key such
+/// as `TRACEİD` is reserved under Go's matching. We choose to ignore that edge case.
+fn is_reserved(key: &str, reserved: &[&str]) -> bool {
+    reserved.iter().any(|reserved| reserved.eq_ignore_ascii_case(key))
+}
+
+/// Returns an attribute's string value, or an empty string for any other value.
+///
+/// Converting other values to strings, as `pcommon.Value.AsString` does, is still missing. Until then, a non-string
+/// message, status, or `ddtags` attribute counts as empty, and so does a non-string duplicate that comes after a string
+/// one.
+fn string_value_or_empty(kv: &otlp_common::KeyValue) -> &str {
+    match kv.value.as_ref().and_then(|av| av.value.as_ref()) {
+        Some(OtlpStringValue(s)) => s,
+        _ => "",
+    }
+}
+
 // Helper to insert safely avoid overwriting fields that are already set
 fn safe_insert(map: &mut HashMap<MetaString, JsonValue>, key: &str, value: JsonValue) {
     if key == "hostname" || key == "service" {
@@ -174,36 +194,26 @@ fn safe_insert(map: &mut HashMap<MetaString, JsonValue>, key: &str, value: JsonV
 }
 
 pub fn transform_log_record(
-    mut lr: LogRecord, resource: &Resource, scope: Option<&otlp_common::InstrumentationScope>,
+    lr: LogRecord, resource: &Resource, scope: Option<&otlp_common::InstrumentationScope>,
     record_host: Option<MetaString>, record_service: Option<MetaString>, mut tags: TagSet,
 ) -> Log {
     // Build additional properties map with resource, scope and record attributes
     let mut additional_properties = HashMap::new();
 
-    // Single-pass over record attributes: handle special keys and flatten others
-    let mut status_text_from_attrs: Option<String> = None;
-    let mut msg_from_attrs: Option<String> = None;
-    for kv in lr.attributes.iter_mut() {
-        kv.key.make_ascii_lowercase();
+    // Single-pass over record attributes: handle special keys and flatten others. When a reserved key repeats, the
+    // last message, status, and `ddtags` win, and the first trace and span IDs that decode win.
+    let mut status_from_attrs: Option<&str> = None;
+    let mut msg_from_attrs: Option<&str> = None;
+    let mut ddtags_from_attrs: Option<&str> = None;
+    for kv in &lr.attributes {
+        // Reserved keys match in any case, but every other key keeps its original spelling.
         match kv.key.as_str() {
             // Message keys
-            k if MESSAGE_KEYS.contains(&k) => {
-                if let Some(av) = kv.value.as_ref() {
-                    if let Some(OtlpStringValue(s)) = av.value.as_ref() {
-                        msg_from_attrs = Some(s.clone());
-                    }
-                }
-            }
+            k if is_reserved(k, MESSAGE_KEYS) => msg_from_attrs = Some(string_value_or_empty(kv)),
             // Status/severity text from attributes
-            k if STATUS_KEYS.contains(&k) => {
-                if let Some(av) = kv.value.as_ref() {
-                    if let Some(OtlpStringValue(s)) = av.value.as_ref() {
-                        status_text_from_attrs = Some(s.clone());
-                    }
-                }
-            }
+            k if is_reserved(k, STATUS_KEYS) => status_from_attrs = Some(string_value_or_empty(kv)),
             // Trace correlation from attributes
-            k if TRACE_ID_ATTR_KEYS.contains(&k) => {
+            k if is_reserved(k, TRACE_ID_ATTR_KEYS) => {
                 if let Some(av) = kv.value.as_ref() {
                     if let Some(OtlpStringValue(trace_hex)) = av.value.as_ref() {
                         if !additional_properties.contains_key("dd.trace_id") {
@@ -223,7 +233,7 @@ pub fn transform_log_record(
                 }
             }
             // Span correlation from attributes
-            k if SPAN_ID_ATTR_KEYS.contains(&k) => {
+            k if is_reserved(k, SPAN_ID_ATTR_KEYS) => {
                 if let Some(av) = kv.value.as_ref() {
                     if let Some(OtlpStringValue(span_hex)) = av.value.as_ref() {
                         if !additional_properties.contains_key("dd.span_id") {
@@ -241,18 +251,7 @@ pub fn transform_log_record(
                 }
             }
             // ddtags aggregation
-            k if k == DDTAGS_ATTR => {
-                if let Some(av) = kv.value.as_ref() {
-                    if let Some(OtlpStringValue(s)) = av.value.as_ref() {
-                        for raw in s.split(',') {
-                            let t = raw.trim();
-                            if !t.is_empty() {
-                                tags.insert_tag(t);
-                            }
-                        }
-                    }
-                }
-            }
+            k if k.eq_ignore_ascii_case(DDTAGS_ATTR) => ddtags_from_attrs = Some(string_value_or_empty(kv)),
             // Default: flatten map and insert safely
             _ => {
                 if let Some(av) = kv.value.as_ref() {
@@ -263,6 +262,16 @@ pub fn transform_log_record(
                         }
                     }
                 }
+            }
+        }
+    }
+
+    // The resource tags are already in `tags`, so this only adds the last `ddtags` attribute.
+    if let Some(ddtags) = ddtags_from_attrs {
+        for raw in ddtags.split(',') {
+            let t = raw.trim();
+            if !t.is_empty() {
+                tags.insert_tag(t);
             }
         }
     }
@@ -313,7 +322,7 @@ pub fn transform_log_record(
     }
 
     // Derive status once using attribute-provided status, severity text and number
-    let status = derive_status(status_text_from_attrs, lr.severity_text.as_str(), lr.severity_number);
+    let status = derive_status(status_from_attrs, lr.severity_text.as_str(), lr.severity_number);
     // The Agent sends the derived status in place of any resource or scope attribute named `status`. The encoder
     // writes additional properties over the status, so the attribute must not be among them.
     additional_properties.remove("status");
@@ -346,10 +355,15 @@ pub fn transform_log_record(
         }
     }
 
-    // Message: prefer attributes, else body
+    // Message: prefer attributes, else body. An empty message attribute also falls back to the body.
     let message = match msg_from_attrs {
-        Some(m) => m,
-        None => lr.body.as_ref().map(any_value_to_message_string).unwrap_or_default(),
+        Some(m) if !m.is_empty() => MetaString::from(m),
+        _ => lr
+            .body
+            .as_ref()
+            .map(any_value_to_message_string)
+            .map(MetaString::from)
+            .unwrap_or_default(),
     };
 
     // Build Log
@@ -364,7 +378,276 @@ pub fn transform_log_record(
 
 #[cfg(test)]
 mod tests {
-    use super::{derive_status, status_from_severity_number};
+    use otlp_common::{any_value::Value, AnyValue, KeyValue, KeyValueList};
+    use otlp_protos::opentelemetry::proto::logs::v1::LogRecord;
+    use otlp_protos::opentelemetry::proto::resource::v1::Resource;
+    use saluki_core::data_model::tags::TagSet;
+    use serde_json::json;
+
+    use super::*;
+
+    fn string(value: &str) -> AnyValue {
+        AnyValue {
+            value: Some(Value::StringValue(value.to_string())),
+        }
+    }
+
+    fn key_value(key: &str, value: AnyValue) -> KeyValue {
+        KeyValue {
+            key: key.to_string(),
+            value: Some(value),
+        }
+    }
+
+    fn transform_attributes(attributes: Vec<KeyValue>) -> Log {
+        let lr = LogRecord {
+            attributes,
+            ..Default::default()
+        };
+        transform_log_record(lr, &Resource::default(), None, None, None, TagSet::default())
+    }
+
+    #[test]
+    fn ordinary_attribute_keys_keep_their_spelling() {
+        let log = transform_attributes(vec![
+            key_value("RequestID", string("abc")),
+            // Only the lowercase spellings are special to the rendered content, so these are ordinary attributes.
+            key_value("Hostname", string("attribute-host")),
+            key_value("Service", string("attribute-service")),
+            key_value(
+                "nested_Map",
+                AnyValue {
+                    value: Some(Value::KvlistValue(KeyValueList {
+                        values: vec![key_value("InnerKey", string("inner"))],
+                    })),
+                },
+            ),
+        ]);
+
+        let props = log.additional_properties();
+        assert_eq!(props.get("RequestID"), Some(&json!("abc")));
+        assert_eq!(props.get("nested_Map.InnerKey"), Some(&json!("inner")));
+        assert_eq!(props.get("Hostname"), Some(&json!("attribute-host")));
+        assert_eq!(props.get("Service"), Some(&json!("attribute-service")));
+        assert!(!props.contains_key("requestid"));
+        assert!(!props.contains_key("nested_map.InnerKey"));
+        assert!(!props.contains_key("hostname"));
+        assert!(!props.contains_key("service"));
+    }
+
+    #[test]
+    fn reserved_attribute_keys_match_in_any_case() {
+        let log = transform_attributes(vec![
+            key_value("MESSAGE", string("from attribute")),
+            key_value("Level", string("warn")),
+            key_value("TraceID", string("0802030405060708000000000a000000")),
+            key_value("Span_ID", string("000000000a000000")),
+            key_value("DDTags", string("team:a,env:prod")),
+        ]);
+
+        assert_eq!(log.message(), "from attribute");
+        assert_eq!(log.status(), "warn");
+        assert!(log.tags().has_tag("team:a"));
+        assert!(log.tags().has_tag("env:prod"));
+
+        let props = log.additional_properties();
+        assert_eq!(props.get("dd.trace_id"), Some(&json!("167772160")));
+        assert_eq!(
+            props.get("otel.trace_id"),
+            Some(&json!("0802030405060708000000000a000000"))
+        );
+        assert_eq!(props.get("dd.span_id"), Some(&json!("167772160")));
+        assert_eq!(props.get("otel.span_id"), Some(&json!("000000000a000000")));
+        // Reserved keys are consumed, so none of them appear as attributes under any spelling.
+        let mut keys = props.keys().map(|key| key.as_ref()).collect::<Vec<_>>();
+        keys.sort_unstable();
+        assert_eq!(keys, ["dd.span_id", "dd.trace_id", "otel.span_id", "otel.trace_id"]);
+    }
+
+    #[test]
+    fn duplicate_reserved_keys_resolve_as_the_reference() {
+        const TRACE_A: &str = "0802030405060708000000000a000000";
+        const TRACE_B: &str = "000000000000000000000000000000FF";
+        const SPAN_A: &str = "000000000a000000";
+        const SPAN_B: &str = "00000000000000FF";
+
+        struct Case {
+            name: &'static str,
+            attributes: &'static [(&'static str, Option<&'static str>)],
+            message: &'static str,
+            status: &'static str,
+            tags: &'static [&'static str],
+            trace_id: Option<&'static str>,
+            span_id: Option<&'static str>,
+        }
+
+        // Every record has the body `body`, the severity text `notice`, and the resource tag `res:tag`.
+        let cases = [
+            Case {
+                name: "the last message wins",
+                attributes: &[
+                    ("message", Some("first")),
+                    ("MESSAGE", Some("second")),
+                    ("Log", Some("third")),
+                ],
+                message: "third",
+                status: "notice",
+                tags: &["res:tag"],
+                trace_id: None,
+                span_id: None,
+            },
+            Case {
+                name: "an empty last message falls back to the body",
+                attributes: &[("msg", Some("first")), ("Message", Some(""))],
+                message: "body",
+                status: "notice",
+                tags: &["res:tag"],
+                trace_id: None,
+                span_id: None,
+            },
+            Case {
+                name: "a last message without a value falls back to the body",
+                attributes: &[("message", Some("first")), ("MESSAGE", None)],
+                message: "body",
+                status: "notice",
+                tags: &["res:tag"],
+                trace_id: None,
+                span_id: None,
+            },
+            Case {
+                name: "the last status wins",
+                attributes: &[
+                    ("status", Some("info")),
+                    ("Level", Some("warn")),
+                    ("SYSLOG.SEVERITY", Some("error")),
+                ],
+                message: "body",
+                status: "error",
+                tags: &["res:tag"],
+                trace_id: None,
+                span_id: None,
+            },
+            Case {
+                name: "an empty last status falls back to the severity text",
+                attributes: &[("severity", Some("error")), ("LEVEL", Some(""))],
+                message: "body",
+                status: "notice",
+                tags: &["res:tag"],
+                trace_id: None,
+                span_id: None,
+            },
+            Case {
+                name: "a last status without a value falls back to the severity text",
+                attributes: &[("status", Some("warn")), ("Level", None)],
+                message: "body",
+                status: "notice",
+                tags: &["res:tag"],
+                trace_id: None,
+                span_id: None,
+            },
+            Case {
+                name: "the last ddtags wins after the resource tags",
+                attributes: &[("ddtags", Some("a:1,b:2")), ("DDTags", Some("c:3"))],
+                message: "body",
+                status: "notice",
+                tags: &["c:3", "res:tag"],
+                trace_id: None,
+                span_id: None,
+            },
+            Case {
+                name: "an empty last ddtags leaves only the resource tags",
+                attributes: &[("ddtags", Some("a:1")), ("DDTAGS", Some(""))],
+                message: "body",
+                status: "notice",
+                tags: &["res:tag"],
+                trace_id: None,
+                span_id: None,
+            },
+            Case {
+                name: "a last ddtags without a value leaves only the resource tags",
+                attributes: &[("ddtags", Some("a:1")), ("DDTags", None)],
+                message: "body",
+                status: "notice",
+                tags: &["res:tag"],
+                trace_id: None,
+                span_id: None,
+            },
+            Case {
+                name: "the first trace ID wins",
+                attributes: &[("traceid", Some(TRACE_A)), ("Trace_Id", Some(TRACE_B))],
+                message: "body",
+                status: "notice",
+                tags: &["res:tag"],
+                trace_id: Some(TRACE_A),
+                span_id: None,
+            },
+            Case {
+                name: "a trace ID that doesn't decode is skipped",
+                attributes: &[("trace_id", Some("not-hex")), ("OtelTraceID", Some(TRACE_B))],
+                message: "body",
+                status: "notice",
+                tags: &["res:tag"],
+                trace_id: Some(TRACE_B),
+                span_id: None,
+            },
+            Case {
+                name: "the first span ID wins",
+                attributes: &[("spanid", Some(SPAN_A)), ("SPAN_ID", Some(SPAN_B))],
+                message: "body",
+                status: "notice",
+                tags: &["res:tag"],
+                trace_id: None,
+                span_id: Some(SPAN_A),
+            },
+            Case {
+                name: "a span ID that doesn't decode is skipped",
+                attributes: &[("span_id", Some("0a")), ("ContextMap.SpanID", Some(SPAN_B))],
+                message: "body",
+                status: "notice",
+                tags: &["res:tag"],
+                trace_id: None,
+                span_id: Some(SPAN_B),
+            },
+        ];
+
+        for case in cases {
+            let lr = LogRecord {
+                attributes: case
+                    .attributes
+                    .iter()
+                    .map(|(key, value)| KeyValue {
+                        key: key.to_string(),
+                        value: value.map(string),
+                    })
+                    .collect(),
+                body: Some(string("body")),
+                severity_text: "notice".to_string(),
+                ..Default::default()
+            };
+            let mut tags = TagSet::default();
+            tags.insert_tag("res:tag");
+            let log = transform_log_record(lr, &Resource::default(), None, None, None, tags);
+
+            assert_eq!(log.message(), case.message, "{}: message", case.name);
+            assert_eq!(log.status(), case.status, "{}: status", case.name);
+            let mut tags = log.tags().into_iter().map(|tag| tag.as_str()).collect::<Vec<_>>();
+            tags.sort_unstable();
+            assert_eq!(tags, case.tags, "{}: tags", case.name);
+            let props = log.additional_properties();
+            assert_eq!(
+                props.get("otel.trace_id"),
+                case.trace_id.map(|id| json!(id)).as_ref(),
+                "{}: trace ID",
+                case.name
+            );
+            assert_eq!(
+                props.get("otel.span_id"),
+                case.span_id.map(|id| json!(id)).as_ref(),
+                "{}: span ID",
+                case.name
+            );
+        }
+    }
 
     #[test]
     fn derive_status_follows_the_reference_precedence() {
@@ -388,7 +671,7 @@ mod tests {
 
         for (status, severity_text, severity_number, expected) in cases {
             assert_eq!(
-                derive_status(status.map(String::from), severity_text, severity_number),
+                derive_status(status, severity_text, severity_number),
                 expected,
                 "derive_status({:?}, {:?}, {})",
                 status,

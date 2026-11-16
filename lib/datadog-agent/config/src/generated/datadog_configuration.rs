@@ -225,6 +225,10 @@ pub struct DatadogConfiguration {
     pub dogstatsd_require_listener: bool,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
+    pub dogstatsd_set_timing_unit: bool,
+
+    #[serde(default)]
     #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub dogstatsd_so_rcvbuf: i64,
 
@@ -653,6 +657,7 @@ impl Default for DatadogConfiguration {
             dogstatsd_port: defaults::default_u64::<i64, 8125>(),
             dogstatsd_queue_size: defaults::default_u64::<i64, 1024>(),
             dogstatsd_require_listener: Default::default(),
+            dogstatsd_set_timing_unit: Default::default(),
             dogstatsd_so_rcvbuf: Default::default(),
             dogstatsd_socket: platform_defaults::dogstatsd_socket(),
             dogstatsd_stream_log_too_big: Default::default(),
@@ -1247,6 +1252,9 @@ pub struct DataPlane {
     #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub enabled: bool,
 
+    #[serde(default)]
+    pub experimental: DataPlaneExperimental,
+
     #[serde(default = "defaults::datadog_configuration_data_plane_log_file")]
     #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub log_file: String,
@@ -1283,6 +1291,7 @@ impl Default for DataPlane {
             api_listen_address: defaults::datadog_configuration_data_plane_api_listen_address(),
             dogstatsd: Default::default(),
             enabled: Default::default(),
+            experimental: Default::default(),
             log_file: defaults::datadog_configuration_data_plane_log_file(),
             otlp: Default::default(),
             remote_agent_enabled: defaults::default_bool::<true>(),
@@ -1315,139 +1324,72 @@ impl Default for DataPlaneDogstatsd {
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DataPlaneOtlp {
+pub struct DataPlaneExperimental {
     #[serde(default)]
-    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
-    pub enabled: bool,
-
-    #[serde(default)]
-    pub proxy: DataPlaneOtlpProxy,
+    pub otlp: DataPlaneExperimentalOtlp,
 }
 
-impl Default for DataPlaneOtlp {
+impl Default for DataPlaneExperimental {
     fn default() -> Self {
-        Self {
-            enabled: Default::default(),
-            proxy: Default::default(),
-        }
+        Self { otlp: Default::default() }
     }
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DataPlaneOtlpProxy {
+pub struct DataPlaneExperimentalOtlp {
     #[serde(default)]
-    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
-    pub enabled: bool,
-
-    #[serde(default)]
-    pub logs: DataPlaneOtlpProxyLogs,
-
-    #[serde(default)]
-    pub metrics: DataPlaneOtlpProxyMetrics,
-
-    #[serde(default)]
-    pub receiver: DataPlaneOtlpProxyReceiver,
-
-    #[serde(default)]
-    pub traces: DataPlaneOtlpProxyTraces,
+    pub proxy: DataPlaneExperimentalOtlpProxy,
 }
 
-impl Default for DataPlaneOtlpProxy {
+impl Default for DataPlaneExperimentalOtlp {
+    fn default() -> Self {
+        Self { proxy: Default::default() }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct DataPlaneExperimentalOtlpProxy {
+    #[serde(
+        default = "defaults::datadog_configuration_data_plane_experimental_otlp_proxy_agent_receiver_grpc_endpoint"
+    )]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
+    pub agent_receiver_grpc_endpoint: String,
+
+    #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
+    pub logs: bool,
+
+    #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
+    pub metrics: bool,
+
+    #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
+    pub traces: bool,
+}
+
+impl Default for DataPlaneExperimentalOtlpProxy {
     fn default() -> Self {
         Self {
-            enabled: Default::default(),
+            agent_receiver_grpc_endpoint: defaults::datadog_configuration_data_plane_experimental_otlp_proxy_agent_receiver_grpc_endpoint(),
             logs: Default::default(),
             metrics: Default::default(),
-            receiver: Default::default(),
             traces: Default::default(),
         }
     }
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DataPlaneOtlpProxyLogs {
-    #[serde(default = "defaults::default_bool::<true>")]
-    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
-    pub enabled: bool,
-}
-
-impl Default for DataPlaneOtlpProxyLogs {
-    fn default() -> Self {
-        Self {
-            enabled: defaults::default_bool::<true>(),
-        }
-    }
-}
-
-#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DataPlaneOtlpProxyMetrics {
-    #[serde(default = "defaults::default_bool::<true>")]
-    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
-    pub enabled: bool,
-}
-
-impl Default for DataPlaneOtlpProxyMetrics {
-    fn default() -> Self {
-        Self {
-            enabled: defaults::default_bool::<true>(),
-        }
-    }
-}
-
-#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DataPlaneOtlpProxyReceiver {
+pub struct DataPlaneOtlp {
     #[serde(default)]
-    pub protocols: DataPlaneOtlpProxyReceiverProtocols,
-}
-
-impl Default for DataPlaneOtlpProxyReceiver {
-    fn default() -> Self {
-        Self {
-            protocols: Default::default(),
-        }
-    }
-}
-
-#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DataPlaneOtlpProxyReceiverProtocols {
-    #[serde(default)]
-    pub grpc: DataPlaneOtlpProxyReceiverProtocolsGrpc,
-}
-
-impl Default for DataPlaneOtlpProxyReceiverProtocols {
-    fn default() -> Self {
-        Self { grpc: Default::default() }
-    }
-}
-
-#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DataPlaneOtlpProxyReceiverProtocolsGrpc {
-    #[serde(
-        default = "defaults::datadog_configuration_data_plane_otlp_proxy_receiver_protocols_grpc_endpoint"
-    )]
-    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
-    pub endpoint: String,
-}
-
-impl Default for DataPlaneOtlpProxyReceiverProtocolsGrpc {
-    fn default() -> Self {
-        Self {
-            endpoint: defaults::datadog_configuration_data_plane_otlp_proxy_receiver_protocols_grpc_endpoint(),
-        }
-    }
-}
-
-#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DataPlaneOtlpProxyTraces {
-    #[serde(default = "defaults::default_bool::<true>")]
     #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub enabled: bool,
 }
 
-impl Default for DataPlaneOtlpProxyTraces {
+impl Default for DataPlaneOtlp {
     fn default() -> Self {
         Self {
-            enabled: defaults::default_bool::<true>(),
+            enabled: Default::default(),
         }
     }
 }
@@ -2181,6 +2123,12 @@ impl Default for SerializerExperimentalUseV3Api {
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct SerializerExperimentalUseV3ApiSketches {
+    #[serde(
+        default = "defaults::datadog_configuration_serializer_experimental_use_v3_api_sketches_beta_route"
+    )]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
+    pub beta_route: String,
+
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
     #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub endpoints: Vec<String>,
@@ -2196,15 +2144,30 @@ pub struct SerializerExperimentalUseV3ApiSketches {
     #[serde(default)]
     #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub max_uncompressed_payload_size: i64,
+
+    #[serde(
+        default = "defaults::datadog_configuration_serializer_experimental_use_v3_api_sketches_shadow_sample_rate"
+    )]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_f64")]
+    pub shadow_sample_rate: f64,
+
+    #[serde(
+        default = "defaults::datadog_configuration_serializer_experimental_use_v3_api_sketches_shadow_sites"
+    )]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
+    pub shadow_sites: Vec<String>,
 }
 
 impl Default for SerializerExperimentalUseV3ApiSketches {
     fn default() -> Self {
         Self {
+            beta_route: defaults::datadog_configuration_serializer_experimental_use_v3_api_sketches_beta_route(),
             endpoints: Default::default(),
             max_compressed_payload_size: Default::default(),
             max_points_per_payload: Default::default(),
             max_uncompressed_payload_size: Default::default(),
+            shadow_sample_rate: defaults::datadog_configuration_serializer_experimental_use_v3_api_sketches_shadow_sample_rate(),
+            shadow_sites: defaults::datadog_configuration_serializer_experimental_use_v3_api_sketches_shadow_sites(),
         }
     }
 }
@@ -2478,7 +2441,7 @@ pub mod defaults {
     pub(super) fn datadog_configuration_data_plane_secure_api_listen_address() -> String {
         "tcp://0.0.0.0:5101".to_string()
     }
-    pub(super) fn datadog_configuration_data_plane_otlp_proxy_receiver_protocols_grpc_endpoint() -> String {
+    pub(super) fn datadog_configuration_data_plane_experimental_otlp_proxy_agent_receiver_grpc_endpoint() -> String {
         "127.0.0.1:4319".to_string()
     }
     pub(super) fn datadog_configuration_otlp_config_metrics_tag_cardinality() -> String {
@@ -2510,6 +2473,17 @@ pub mod defaults {
     }
     pub(super) fn datadog_configuration_otlp_config_traces_probabilistic_sampler_sampling_percentage() -> f64 {
         100_f64
+    }
+    pub(super) fn datadog_configuration_serializer_experimental_use_v3_api_sketches_beta_route() -> String {
+        "/api/intake/metrics/v3beta/sketches".to_string()
+    }
+    pub(super) fn datadog_configuration_serializer_experimental_use_v3_api_sketches_shadow_sample_rate() -> f64 {
+        0_f64
+    }
+    pub(super) fn datadog_configuration_serializer_experimental_use_v3_api_sketches_shadow_sites() -> Vec<
+        String,
+    > {
+        vec!["datadoghq.com".to_string()]
     }
     pub(super) fn datadog_configuration_use_v3_api_series_enabled() -> String {
         "datadog_only".to_string()

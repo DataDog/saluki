@@ -793,6 +793,22 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.control.enabled = value;
     }
 
+    fn consume_data_plane_experimental_otlp_proxy_agent_receiver_grpc_endpoint(&mut self, value: String) {
+        self.config.domains.otlp.proxy.grpc_endpoint = value;
+    }
+
+    fn consume_data_plane_experimental_otlp_proxy_logs(&mut self, value: bool) {
+        self.config.domains.otlp.proxy.logs_enabled = value;
+    }
+
+    fn consume_data_plane_experimental_otlp_proxy_metrics(&mut self, value: bool) {
+        self.config.domains.otlp.proxy.metrics_enabled = value;
+    }
+
+    fn consume_data_plane_experimental_otlp_proxy_traces(&mut self, value: bool) {
+        self.config.domains.otlp.proxy.traces_enabled = value;
+    }
+
     fn consume_data_plane_log_file(&mut self, value: String) {
         let provenance = self.sources.provenance("data_plane.log_file");
         self.config.control.logging.file = ConfigValue::new(value, provenance);
@@ -800,26 +816,6 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
 
     fn consume_data_plane_otlp_enabled(&mut self, value: bool) {
         self.config.control.otlp = value;
-    }
-
-    fn consume_data_plane_otlp_proxy_enabled(&mut self, value: bool) {
-        self.config.domains.otlp.proxy.enabled = value;
-    }
-
-    fn consume_data_plane_otlp_proxy_logs_enabled(&mut self, value: bool) {
-        self.config.domains.otlp.proxy.logs_enabled = value;
-    }
-
-    fn consume_data_plane_otlp_proxy_metrics_enabled(&mut self, value: bool) {
-        self.config.domains.otlp.proxy.metrics_enabled = value;
-    }
-
-    fn consume_data_plane_otlp_proxy_receiver_protocols_grpc_endpoint(&mut self, value: String) {
-        self.config.domains.otlp.proxy.grpc_endpoint = value;
-    }
-
-    fn consume_data_plane_otlp_proxy_traces_enabled(&mut self, value: bool) {
-        self.config.domains.otlp.proxy.traces_enabled = value;
     }
 
     fn consume_data_plane_remote_agent_enabled(&mut self, value: bool) {
@@ -1018,6 +1014,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
                 "queue size must be greater than or equal to 0",
             )),
         }
+    }
+
+    fn consume_dogstatsd_set_timing_unit(&mut self, value: bool) {
+        self.config.domains.dogstatsd.listeners.set_timing_unit = value;
     }
 
     fn consume_dogstatsd_so_rcvbuf(&mut self, value: i64) {
@@ -1748,6 +1748,18 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.shared.metrics_encoding.v3_api.compression_level = value as i32;
     }
 
+    fn consume_serializer_experimental_use_v3_api_sketches_beta_route(&mut self, value: String) {
+        self.config.shared.metrics_encoding.v3_api.sketches.beta_route = value;
+    }
+
+    fn consume_serializer_experimental_use_v3_api_sketches_shadow_sample_rate(&mut self, value: f64) {
+        self.config.shared.metrics_encoding.v3_api.sketches.shadow_sample_rate = value;
+    }
+
+    fn consume_serializer_experimental_use_v3_api_sketches_shadow_sites(&mut self, value: Vec<String>) {
+        self.config.shared.metrics_encoding.v3_api.sketches.shadow_sites = value;
+    }
+
     fn consume_serializer_experimental_use_v3_api_sketches_endpoints(&mut self, value: Vec<String>) {
         self.config.shared.metrics_encoding.v3_api.sketches.endpoints = value;
     }
@@ -2085,6 +2097,43 @@ mod tests {
         assert!(rc.enabled);
         assert!(rc.apm_sampling_enabled);
         assert!(!rc.apm_semantics_enabled);
+    }
+
+    #[test]
+    fn otlp_proxy_keys_translate() {
+        // Set one signal at a time to catch swapped translations.
+        for (logs, metrics, traces) in [(true, false, false), (false, true, false), (false, false, true)] {
+            let (config, errors) = translate_explicit(json!({
+                "data_plane": { "experimental": { "otlp": { "proxy": {
+                    "logs": logs,
+                    "metrics": metrics,
+                    "traces": traces,
+                    "agent_receiver_grpc_endpoint": "127.0.0.1:5000"
+                }}}}
+            }));
+            assert!(errors.is_none(), "translation should succeed: {errors:?}");
+
+            let proxy = &config.domains.otlp.proxy;
+            assert_eq!(
+                (proxy.logs_enabled, proxy.metrics_enabled, proxy.traces_enabled),
+                (logs, metrics, traces)
+            );
+            assert_eq!(proxy.grpc_endpoint, "127.0.0.1:5000");
+            assert!(proxy.enabled());
+        }
+    }
+
+    #[test]
+    fn otlp_proxy_keys_default_from_the_schema() {
+        let (config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none(), "translation should succeed: {errors:?}");
+
+        let proxy = &config.domains.otlp.proxy;
+        assert!(!proxy.logs_enabled);
+        assert!(!proxy.metrics_enabled);
+        assert!(!proxy.traces_enabled);
+        assert!(!proxy.enabled());
+        assert_eq!(proxy.grpc_endpoint, "127.0.0.1:4319");
     }
 
     #[test]
@@ -2508,6 +2557,17 @@ mod tests {
         let expected =
             cfg!(any(target_os = "linux", target_os = "aix")).then(|| "/var/run/datadog/dsd.socket".to_string());
         assert_eq!(config.domains.dogstatsd.listeners.socket, expected);
+    }
+
+    #[test]
+    fn dogstatsd_set_timing_unit_translates() {
+        let (config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none());
+        assert!(!config.domains.dogstatsd.listeners.set_timing_unit);
+
+        let (config, errors) = translate_explicit(json!({ "dogstatsd_set_timing_unit": true }));
+        assert!(errors.is_none());
+        assert!(config.domains.dogstatsd.listeners.set_timing_unit);
     }
 
     #[test]

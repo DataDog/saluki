@@ -136,6 +136,9 @@ pub struct Listeners {
     /// schema)
     pub permissive_decoding: bool,
 
+    /// Whether timing (`ms`) metrics carry the `millisecond` unit.
+    pub set_timing_unit: bool,
+
     /// Host that received metrics are additionally forwarded to.
     pub forward_host: Option<String>,
 
@@ -170,6 +173,7 @@ impl Default for Listeners {
             eol_required: Vec::new(),
             stream_log_too_big: false,
             require_listener: false,
+            set_timing_unit: false,
             forward_host: None,
             forward_port: 0,
             queue_size: 0,

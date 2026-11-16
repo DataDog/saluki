@@ -1,0 +1,12 @@
+# Enables schema.enforce by env beside an out-of-range env integer and two in-range env numbers.
+# Shows that env values are validated after conversion: the out-of-range one reverts to its
+# default, streamed as config-post-init, and the in-range ones keep their env source.
+name: schema-enforce-env-reverts-invalid
+group: behavior
+why: [schema-enforce-reverts-invalid-to-default, schema-enforce-env-values-validated]
+env:
+  DD_SCHEMA_ENFORCE: "true"
+  DD_LOG_FILE_MAX_ROLLS: "2000"
+  DD_DOGSTATSD_PORT: "8130"
+  DD_APM_MAX_TPS: "50"
+keys: [log_file_max_rolls, dogstatsd_port, apm_config.max_traces_per_second]

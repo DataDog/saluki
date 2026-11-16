@@ -562,7 +562,7 @@ untrusted,https://github.com/briansmith/untrusted,ISC,Brian Smith <brian@briansm
 url,https://github.com/servo/rust-url,MIT OR Apache-2.0,The rust-url developers
 utf8-width,https://github.com/magiclen/utf8-width,MIT,Magic Len <len@magiclen.org>
 utf8_iter,https://github.com/hsivonen/utf8_iter,Apache-2.0 OR MIT,Henri Sivonen <hsivonen@hsivonen.fi>
-uuid,https://github.com/uuid-rs/uuid,Apache-2.0 OR MIT,"Ashley Mannix<ashleymannix@live.com.au>, Dylan DPC<dylan.dpc@gmail.com>, Hunar Roop Kahlon<hunar.roop@gmail.com>"
+uuid,https://github.com/uuid-rs/uuid,Apache-2.0 OR MIT,The uuid Authors
 valuable,https://github.com/tokio-rs/valuable,MIT,The valuable Authors
 vergen,https://github.com/rustyhorde/vergen,MIT OR Apache-2.0,Jason Ozias <jason.g.ozias@gmail.com>
 vergen-lib,https://github.com/rustyhorde/vergen,MIT OR Apache-2.0,Jason Ozias <jason.g.ozias@gmail.com>

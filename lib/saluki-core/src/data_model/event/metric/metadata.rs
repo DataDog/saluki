@@ -20,8 +20,8 @@ pub struct MetricMetadata {
 
     /// The unit of the metric values, if known.
     ///
-    /// This is set for DogStatsD timing metrics (`ms` type), which carry an implicit unit of `"millisecond"`. For all
-    /// other metric types the unit is empty.
+    /// The DogStatsD source sets this to `"millisecond"` for timing metrics (`ms` type) when configured to. Otherwise,
+    /// the unit is empty.
     pub unit: MetaString,
 }
 

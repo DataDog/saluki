@@ -21,12 +21,19 @@ use super::routing::RoutingTargetId;
 /// The official Datadog sites with no subdomain, such as `datadoghq.com`, as a regex alternation.
 const DD_SITE_PATTERN: &str = r"datad(?:oghq|0g)\.(?:com|eu)|ddog-gov\.com";
 
+/// An optional region prefix, such as `us3.`.
+const DD_REGION_PATTERN: &str = r"(?:[a-z]{2,}\d{1,2}\.)?";
+
 /// An official Datadog application host, such as `app.datadoghq.com` or `app.us5.datadoghq.com`.
 static DD_URL_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(&format!(r"^app(\.mrf)?\.([a-z]{{2,}}\d{{1,2}}\.)?({DD_SITE_PATTERN})$")).unwrap());
+    LazyLock::new(|| Regex::new(&format!(r"^app(\.mrf)?\.{DD_REGION_PATTERN}({DD_SITE_PATTERN})$")).unwrap());
 
 /// An official Datadog site with no subdomain, such as `datadoghq.com`.
 static DD_SITE_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!("^({DD_SITE_PATTERN})$")).unwrap());
+
+/// The site suffix of a configured or resolved endpoint, including its region.
+static DD_SITE_SUFFIX_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(&format!(r"(?:^|\.)(?P<site>{DD_REGION_PATTERN}(?:{DD_SITE_PATTERN}))$")).unwrap());
 
 /// Per-endpoint V3 protocol settings.
 ///
@@ -183,6 +190,15 @@ fn host_matches(regex: &Regex, host: &str) -> bool {
 
 pub(crate) fn is_datadog_url(url: &Url) -> bool {
     url.host_str().is_some_and(is_datadog_host)
+}
+
+/// Extracts the Datadog site from configured or version-prefixed endpoint URLs.
+pub(crate) fn extract_datadog_site(url: &Url) -> Option<String> {
+    let host = url.host_str()?.trim_end_matches('.').to_ascii_lowercase();
+    DD_SITE_SUFFIX_REGEX
+        .captures(&host)?
+        .name("site")
+        .map(|site| site.as_str().to_owned())
 }
 
 /// Error type for invalid endpoints.
@@ -659,6 +675,26 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    #[test]
+    fn extracts_datadog_sites_from_endpoint_urls() {
+        for (url, expected) in [
+            ("https://app.datadoghq.com", Some("datadoghq.com")),
+            ("https://APP.DATADOGHQ.COM./", Some("datadoghq.com")),
+            ("https://agent.datad0g.com.", Some("datad0g.com")),
+            ("https://1-9-0-adp.agent.us3.datadoghq.com", Some("us3.datadoghq.com")),
+            ("https://app.datadoghq.eu", Some("datadoghq.eu")),
+            ("https://app.ddog-gov.com", Some("ddog-gov.com")),
+            ("https://notdatadoghq.com", None),
+            ("https://app.datadoghq.com.example.org", None),
+        ] {
+            assert_eq!(
+                extract_datadog_site(&Url::parse(url).unwrap()).as_deref(),
+                expected,
+                "{url}"
+            );
+        }
     }
 
     #[test]

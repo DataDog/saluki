@@ -407,7 +407,8 @@ mod tests {
         //
         // The first exec is curl waiting out its `--max-time` for a Core Agent that accepted the connection but never
         // answered. Later execs never finish, so they add no observation of the target: the action fails only if the
-        // first attempt observed curl's own timeout. A 3 s step gets a short attempt; a 10.5 s step gets a full one.
+        // first attempt observed curl's own timeout. An 8 s step gets a short attempt; a 10.5 s step gets a full one.
+        // Both leave seconds after the first attempt, so a stalled test machine still launches the second exec.
         let set = |target_os, timeout| async move {
             let docker = FakeDocker::start(Duration::from_millis(50), |index, command| match index {
                 0 => Exec::Exits {
@@ -423,9 +424,9 @@ mod tests {
         };
 
         let outcomes = futures::future::join_all([
-            set(ContainerOs::Linux, Duration::from_secs(3)),
+            set(ContainerOs::Linux, Duration::from_secs(8)),
             set(ContainerOs::Linux, Duration::from_millis(10_500)),
-            set(ContainerOs::Windows, Duration::from_secs(3)),
+            set(ContainerOs::Windows, Duration::from_secs(8)),
             set(ContainerOs::Windows, Duration::from_millis(10_500)),
         ])
         .await;
