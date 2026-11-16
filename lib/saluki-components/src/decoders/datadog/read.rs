@@ -10,7 +10,9 @@
 //! `pkg/proto/pbgo/trace/idx/span.go`, and the `msgp.Read*Bytes` functions it calls), including
 //! which numeric types they tolerate and which failures count as short input.
 
+use std::collections::HashMap;
 use std::fmt::Display;
+use std::hash::{BuildHasher, Hash};
 
 use rmp::decode::{bytes::BytesReadError, DecodeStringError, NumValueReadError, ValueReadError};
 
@@ -35,6 +37,17 @@ pub const MAX_PREALLOCATED_ELEMENTS: usize = 1024;
 /// Returns the capacity to pre-allocate for a collection whose header declares `count` elements.
 pub fn preallocation(count: u32) -> usize {
     (count as usize).min(MAX_PREALLOCATED_ELEMENTS)
+}
+
+/// Releases the capacity a map reserved with [`preallocation`] when far fewer entries decoded.
+///
+/// Repeated keys, `nil` ones included, collapse into one entry, so a map can end up with one entry and the capacity of
+/// [`MAX_PREALLOCATED_ELEMENTS`], kept for as long as its span lives. A map that holds what its header declared isn't
+/// touched.
+pub fn release_unused_capacity<K: Eq + Hash, V, S: BuildHasher>(map: &mut HashMap<K, V, S>) {
+    if map.len() * 4 < map.capacity() {
+        map.shrink_to_fit();
+    }
 }
 
 /// Conservative lower bound on the wire size of one array element: every element is at least a
