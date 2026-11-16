@@ -6,6 +6,13 @@ analysis_mode: traces
 # spans or APM stats that reach the intake comes from ADP.
 # The body is the v0.4 corpus: the trace-agent decodes MessagePack `/v0.3/traces` payloads as v0.4 ones, and only
 # answers them differently.
+# The corpus's span durations reach `i64::MAX`, so the stats' summed durations pass 2^64. ADP caps them at the largest
+# value, as the trace-agent does since DataDog/datadog-agent#59657 (`round` in `statsraw.go`), but the baseline
+# trace-agent, from the test image, predates it and wraps them. The hits, errors and latency distributions are still
+# compared.
+# TODO: Drop once the test image's trace-agent includes DataDog/datadog-agent#59657.
+additional_span_ignore_fields:
+  - duration_ns
 millstone:
   image: saluki-images/correctness-tools:latest
   config_path: millstone.yaml
