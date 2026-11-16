@@ -152,6 +152,9 @@ impl TraceIntake {
         let decoded = match version {
             EndpointVersion::V10 => decode_v1_payload(&body),
         };
+        // The decoded traces own their data, so the body is released before they wait for the pipeline, as the
+        // trace-agent returns its buffer to the pool before `sendPayload`.
+        drop(body);
         let decoded = match decoded {
             Ok(decoded) => decoded,
             Err(error) => {
@@ -164,9 +167,12 @@ impl TraceIntake {
 
         // A v1.0 payload's own container ID wins over the request's.
         let payload_container_id = traces.first().map(|trace| trace.payload.container_id.clone());
-        let container_id = match payload_container_id {
-            Some(container_id) if !container_id.is_empty() => Some(container_id),
-            Some(_) => container_tags.container_id(headers, connection),
+        let container = match payload_container_id {
+            Some(container_id) if !container_id.is_empty() => {
+                let tags = container_tags.container_tags(&container_id);
+                Some((container_id, tags))
+            }
+            Some(_) => container_tags.container(headers, connection),
             None => None,
         };
 
@@ -177,10 +183,12 @@ impl TraceIntake {
             header_str(headers, &PROCESS_TAGS_HEADER),
         );
         receiver.sdk_otlp_export = resolve_sdk_otlp_export(&decoded.payload_attributes, first_span(&traces));
-        if let Some(container_id) = &container_id {
-            receiver.container_tags = container_tags.container_tags(container_id);
-        }
         receiver.payload_attributes = decoded.payload_attributes.into_iter().collect();
+
+        let container_id = container.map(|(container_id, tags)| {
+            receiver.container_tags = tags;
+            container_id
+        });
 
         let receiver = Arc::new(receiver);
         for trace in &mut traces {
@@ -368,7 +376,7 @@ mod tests {
     use rmp::encode;
     use saluki_core::data_model::origin::OriginTagCardinality;
     use saluki_core::data_model::tags::{SharedTagSet, Tag, TagSet};
-    use saluki_env::workload::origin::ResolvedOrigin;
+    use saluki_env::workload::origin::{ResolvedExternalData, ResolvedOrigin};
     use saluki_env::workload::{EntityId, WorkloadProvider};
     use saluki_io::net::ProcessCredentials;
 
@@ -664,13 +672,16 @@ mod tests {
         assert_eq!(truncate_utf8(&odd).len(), MAX_META_VALUE_LEN - 1);
     }
 
-    /// Tags every container with its own ID.
+    /// Tags every container with its own ID, tags cgroup inode 42 as the tagger tags its container `from-inode`, and
+    /// resolves any External Data to the container `from-external-data`.
     struct TaggingProvider;
 
     impl WorkloadProvider for TaggingProvider {
         fn get_tags_for_entity(&self, entity_id: &EntityId, _: OriginTagCardinality) -> Option<SharedTagSet> {
-            let EntityId::Container(container_id) = entity_id else {
-                return None;
+            let container_id = match entity_id {
+                EntityId::Container(container_id) => container_id.to_string(),
+                EntityId::ContainerInode(42) => "from-inode".to_string(),
+                _ => return None,
             };
             let mut tags = TagSet::default();
             tags.insert_tag(Tag::from(format!("container_id:{container_id}")));
@@ -679,7 +690,41 @@ mod tests {
         }
 
         fn get_resolved_origin(&self, _: saluki_core::data_model::origin::RawOrigin<'_>) -> Option<ResolvedOrigin> {
-            None
+            Some(ResolvedOrigin::from_parts(
+                None,
+                None,
+                None,
+                None,
+                Some(ResolvedExternalData::new(
+                    EntityId::PodUid("pod".into()),
+                    EntityId::Container("from-external-data".into()),
+                )),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn the_request_container_is_found_from_its_inode_or_external_data() {
+        let container_tags = ContainerTagsHasher::new(None, Some(Arc::new(TaggingProvider)));
+        let (intake, mut traces) = intake(config());
+
+        let cases = [
+            (("Datadog-Entity-ID", "in-42"), "from-inode"),
+            (("Datadog-External-Env", "it-false,cn-app,pu-pod"), "from-external-data"),
+        ];
+        for (header, expected) in cases {
+            let request = sized_request(&[header], v1_payload(None, 1));
+            let response = intake.handle(EndpointVersion::V10, request, &container_tags).await;
+            assert_eq!(response.status(), StatusCode::OK);
+
+            let traces = traces.try_recv().unwrap();
+            assert_eq!(traces[0].payload.container_id, expected, "{header:?}");
+            let mut tags: Vec<_> = traces[0].payload.receiver().container_tags.split(',').collect();
+            tags.sort_unstable();
+            assert_eq!(
+                tags,
+                [format!("container_id:{expected}").as_str(), "kube_namespace:prod"]
+            );
         }
     }
 
