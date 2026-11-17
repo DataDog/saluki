@@ -90,17 +90,6 @@ impl ClientSpanCounters {
         counters.insert(key.into_boxed_str(), counter.clone());
         counter
     }
-
-    /// Test-only helper whose counters aren't backed by a recorder.
-    #[cfg(test)]
-    pub(super) fn for_tests() -> Self {
-        Self::new(MetricsBuilder::default())
-    }
-
-    #[cfg(test)]
-    pub(super) fn series_count(&self) -> usize {
-        self.counters.read().unwrap().len()
-    }
 }
 
 /// Registers the span counter for a client. `version` is the normalized SDK version, without its `otlp-` prefix.
@@ -239,7 +228,7 @@ mod tests {
         counters.for_client("Go", "1.0").increment(1);
         counters.for_client("go", "1.0").increment(1);
 
-        assert_eq!(counters.series_count(), 1);
+        assert_eq!(counters.counters.read().unwrap().len(), 1);
     }
 
     #[test]
@@ -255,7 +244,7 @@ mod tests {
         // A client registered before the cap is reached keeps its own series.
         counters.for_client("go", "1").increment(1);
 
-        assert_eq!(counters.series_count(), 2);
+        assert_eq!(counters.counters.read().unwrap().len(), 2);
         assert_eq!(
             spans(
                 &recorder,

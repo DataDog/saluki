@@ -164,7 +164,7 @@ impl Metrics {
             logs_received: Counter::noop(),
             logs_dropped_render_failure: Counter::noop(),
             bytes_received: Counter::noop(),
-            spans_received: ClientSpanCounters::for_tests(),
+            spans_received: ClientSpanCounters::new(MetricsBuilder::default()),
             traces_dropped_span_id_zero: Counter::noop(),
             spans_dropped_span_id_zero: Counter::noop(),
             metrics_errors_decode: Counter::noop(),
