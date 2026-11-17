@@ -18,6 +18,7 @@
 //! | `receiver_timeout` elapses reading the body | 408 |
 //! | The body ends early, or ends before its JSON value does | 400 `unexpected-eof` |
 //! | The payload doesn't decode | 400 |
+//! | The strings every trace carries, times the traces, exceed 512 times the body (at least 1 MiB) | 400, a limit the trace-agent doesn't have |
 //! | Accepted | 200 |
 //!
 //! Accepted payloads, and those refused for want of a decoder, are answered as the trace-agent answers them: `OK` on
@@ -50,7 +51,7 @@ use bytes::{Bytes, BytesMut};
 use http::header::{CONTENT_LENGTH, CONTENT_TYPE, X_CONTENT_TYPE_OPTIONS};
 use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use http_body_util::BodyExt as _;
-use saluki_core::data_model::event::trace::{ReceiverMetadata, Trace};
+use saluki_core::data_model::event::trace::{PayloadFields, ReceiverMetadata, Trace};
 use saluki_io::net::ConnectionAddress;
 use stringtheory::MetaString;
 use tokio::select;
@@ -63,8 +64,8 @@ use super::media_type::{payload_format, PayloadFormat};
 use super::receiver_telemetry::{DropReason, ReceiverTags, ReceiverTelemetry};
 use crate::common::traces::normalize::{truncate_utf8_str, MAX_SERVICE_LEN};
 use crate::decoders::datadog::{
-    decode_v01_json, decode_v04_any, decode_v04_json, decode_v04_payload, decode_v05_payload, decode_v1_payload,
-    first_span, resolve_process_tags, resolve_sdk_otlp_export, DecodeError,
+    attribute_string_bytes, decode_v01_json, decode_v04_any, decode_v04_json, decode_v04_payload, decode_v05_payload,
+    decode_v1_payload, first_span, resolve_process_tags, resolve_sdk_otlp_export, resolved_limit, DecodeError,
 };
 use crate::transforms::{HistogramConfiguration, ServiceRates};
 
@@ -323,6 +324,19 @@ impl TraceIntake {
             container_id
         });
 
+        // Every trace carries the payload's fields and receiver metadata, and the encoder writes them into each trace's
+        // payload, so they are bounded once per trace, as the decoders bound the strings references resolve to.
+        if let Some(first) = traces.first() {
+            let per_trace = per_trace_string_bytes(&first.payload, container_id.as_ref(), &receiver);
+            let limit = resolved_limit(body_len);
+            if per_trace.saturating_mul(traces.len()) > limit {
+                let error = DecodeError::ResolvedStringsTooLarge { limit };
+                debug!(%error, "Cannot decode {version:?} traces payload.");
+                self.record_rejection(version, headers, connection, start, DropReason::DecodingError);
+                return http_error(StatusCode::BAD_REQUEST, &error.to_string());
+            }
+        }
+
         let receiver = Arc::new(receiver);
         let mut spans = 0;
         for trace in &mut traces {
@@ -442,6 +456,69 @@ fn shared_meta(value: &str) -> MetaString {
         return MetaString::empty();
     }
     MetaString::try_inline(value).unwrap_or_else(|| MetaString::from(Arc::<str>::from(value)))
+}
+
+/// Returns the bytes of the strings every trace of a payload carries: its payload fields, with the container ID it
+/// will be given, and its receiver metadata.
+///
+/// The fields are destructured exhaustively so that a new one has to be accounted for here.
+fn per_trace_string_bytes(
+    payload: &PayloadFields, container_id: Option<&MetaString>, receiver: &ReceiverMetadata,
+) -> usize {
+    let PayloadFields {
+        container_id: payload_container_id,
+        language_name,
+        language_version,
+        tracer_version: payload_tracer_version,
+        runtime_id,
+        env,
+        hostname,
+        app_version,
+        receiver: _,
+    } = payload;
+    let ReceiverMetadata {
+        client_dropped_p0s_weight: _,
+        client_computed_stats: _,
+        client_computed_top_level: _,
+        container_tags,
+        process_tags,
+        sdk_otlp_export,
+        lang,
+        lang_version,
+        tracer_version,
+        service,
+        interpreter,
+        lang_vendor,
+        endpoint_version,
+        connection_type,
+        payload_attributes,
+    } = receiver;
+    let strings = [
+        container_id.unwrap_or(payload_container_id),
+        language_name,
+        language_version,
+        payload_tracer_version,
+        runtime_id,
+        env,
+        hostname,
+        app_version,
+        container_tags,
+        process_tags,
+        sdk_otlp_export,
+        lang,
+        lang_version,
+        tracer_version,
+        service,
+        interpreter,
+        lang_vendor,
+        endpoint_version,
+        connection_type,
+    ];
+    strings.iter().map(|s| s.len()).sum::<usize>()
+        + payload_attributes
+            .iter()
+            .map(|(key, value)| key.len() + attribute_string_bytes(value))
+            .sum::<usize>()
 }
 
 /// Returns a header's value parsed as a signed 64-bit count, if it parses.
@@ -1142,6 +1219,123 @@ mod tests {
             let (tags, dropped) = counter(&counters, "datadog.trace_agent.normalizer.traces_dropped");
             assert_eq!(tags.last().unwrap(), "reason:decoding_error", "{version:?}");
             assert_eq!(dropped, 2000.0);
+        }
+    }
+
+    /// Builds a payload of `chunks` chunks of one span each, from service `web`, whose first span also carries
+    /// `first_meta`.
+    fn payload_with_first_meta(version: EndpointVersion, first_meta: (&str, &str), chunks: u32) -> Vec<u8> {
+        let mut buf = Vec::new();
+        if version == EndpointVersion::V05 {
+            encode::write_array_len(&mut buf, 2).unwrap();
+            encode::write_array_len(&mut buf, 5).unwrap();
+            for string in ["", "web", "http.request", first_meta.0, first_meta.1] {
+                encode::write_str(&mut buf, string).unwrap();
+            }
+        }
+        encode::write_array_len(&mut buf, chunks).unwrap();
+        for chunk in 0..chunks {
+            encode::write_array_len(&mut buf, 1).unwrap();
+            let meta = if chunk == 0 { 1 } else { 0 };
+            if version == EndpointVersion::V05 {
+                encode::write_array_len(&mut buf, 12).unwrap();
+                // Service, name, resource, then the trace, span and parent IDs, start, duration and error.
+                for value in [1, 2, 2, u64::from(chunk) + 1, 1, 0, 0, 0, 0] {
+                    encode::write_uint(&mut buf, value).unwrap();
+                }
+                encode::write_map_len(&mut buf, meta).unwrap();
+                if meta == 1 {
+                    encode::write_uint(&mut buf, 3).unwrap();
+                    encode::write_uint(&mut buf, 4).unwrap();
+                }
+                encode::write_map_len(&mut buf, 0).unwrap();
+                encode::write_uint(&mut buf, 0).unwrap();
+            } else {
+                encode::write_map_len(&mut buf, 4).unwrap();
+                encode::write_str(&mut buf, "service").unwrap();
+                encode::write_str(&mut buf, "web").unwrap();
+                encode::write_str(&mut buf, "trace_id").unwrap();
+                encode::write_uint(&mut buf, u64::from(chunk) + 1).unwrap();
+                encode::write_str(&mut buf, "span_id").unwrap();
+                encode::write_uint(&mut buf, 1).unwrap();
+                encode::write_str(&mut buf, "meta").unwrap();
+                encode::write_map_len(&mut buf, meta).unwrap();
+                if meta == 1 {
+                    encode::write_str(&mut buf, first_meta.0).unwrap();
+                    encode::write_str(&mut buf, first_meta.1).unwrap();
+                }
+            }
+        }
+        buf
+    }
+
+    #[tokio::test]
+    async fn strings_every_trace_carries_are_bounded_once_per_trace() {
+        // One 64 KiB string, sent once and carried by each of 2,000 traces, is more than 512 times the payload's size.
+        const CHUNKS: u32 = 2000;
+        let large = "x".repeat(64 << 10);
+        let config = || TraceIntakeConfiguration {
+            max_request_bytes: 1 << 20,
+            ..config()
+        };
+        let normal_meta = ("_dd.tags.process", "entrypoint.name:app");
+        let cases = [
+            ("span process tags", ("_dd.tags.process", large.as_str()), None),
+            ("span SDK export", ("_dd.sdk.otlp_export", large.as_str()), None),
+            (
+                "header lang version",
+                normal_meta,
+                Some(("Datadog-Meta-Lang-Version", large.as_str())),
+            ),
+            (
+                "header process tags",
+                ("other", "tag"),
+                Some(("X-Datadog-Process-Tags", large.as_str())),
+            ),
+            (
+                "header container ID",
+                normal_meta,
+                Some(("Datadog-Container-ID", large.as_str())),
+            ),
+        ];
+        for version in [EndpointVersion::V04, EndpointVersion::V05] {
+            for (name, first_meta, header) in cases {
+                let (intake, mut traces) = intake(config());
+                let mut headers = vec![MSGPACK, ("X-Datadog-Trace-Count", "2000")];
+                headers.extend(header);
+                let payload = payload_with_first_meta(version, first_meta, CHUNKS);
+
+                let (status, _, body) = send_to(&intake, version, sized_request(&headers, payload)).await;
+
+                assert_eq!(status, StatusCode::BAD_REQUEST, "{version:?} {name}");
+                assert!(body.starts_with("string references resolve to more than"), "{body}");
+                assert!(traces.try_recv().is_err(), "{version:?} {name}");
+                let counters = counters(&intake);
+                let (tags, errors) = counter(&counters, "datadog.trace_agent.receiver.error");
+                assert_eq!(tags.last().unwrap(), "error:decoding-error", "{version:?} {name}");
+                assert_eq!(errors, 1.0);
+                let (tags, dropped) = counter(&counters, "datadog.trace_agent.normalizer.traces_dropped");
+                assert_eq!(tags.last().unwrap(), "reason:decoding_error", "{version:?} {name}");
+                assert_eq!(dropped, f64::from(CHUNKS));
+            }
+
+            // The same payload, with strings of the usual sizes, is accepted.
+            let (intake, mut traces) = intake(config());
+            let headers = [
+                MSGPACK,
+                ("Datadog-Meta-Lang", "python"),
+                ("Datadog-Meta-Lang-Version", "3.12.1"),
+                ("Datadog-Meta-Tracer-Version", "2.14.0"),
+                (
+                    "Datadog-Container-ID",
+                    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                ),
+                ("X-Datadog-Process-Tags", "entrypoint.name:app,entrypoint.workdir:/srv"),
+            ];
+            let payload = payload_with_first_meta(version, ("_dd.sdk.otlp_export", "true"), CHUNKS);
+            let (status, _, _) = send_to(&intake, version, sized_request(&headers, payload)).await;
+            assert_eq!(status, StatusCode::OK, "{version:?}");
+            assert_eq!(traces.try_recv().unwrap().len(), CHUNKS as usize, "{version:?}");
         }
     }
 

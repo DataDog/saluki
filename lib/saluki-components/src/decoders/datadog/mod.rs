@@ -52,6 +52,7 @@ mod tests;
 pub use self::convert::convert_tracer_payload;
 pub use self::error::DecodeError;
 pub use self::json::{decode_v01_json, decode_v04_any, decode_v04_json};
+pub use self::read::resolved_limit;
 use self::read::ResolvedBytes;
 use self::string_table::StringTable;
 pub use self::v04::decode_v04_payload;
@@ -290,7 +291,7 @@ fn charge_per_trace(
 }
 
 /// Returns the bytes of the strings and byte strings an attribute value holds.
-fn attribute_string_bytes(value: &AttributeValue) -> usize {
+pub fn attribute_string_bytes(value: &AttributeValue) -> usize {
     match value {
         AttributeValue::String(s) => s.len(),
         AttributeValue::Bytes(bytes) => bytes.len(),

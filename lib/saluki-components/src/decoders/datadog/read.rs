@@ -70,12 +70,18 @@ pub struct ResolvedBytes {
     limit: usize,
 }
 
+/// Returns the bound on the strings a payload of `payload_len` bytes may resolve to: 512 times its length, and at least
+/// 1 MiB.
+pub fn resolved_limit(payload_len: usize) -> usize {
+    payload_len
+        .saturating_mul(RESOLVED_BYTES_PER_PAYLOAD_BYTE)
+        .max(MIN_RESOLVED_BYTES)
+}
+
 impl ResolvedBytes {
     /// Creates the budget of a payload of `payload_len` bytes.
     pub fn for_payload(payload_len: usize) -> Self {
-        let limit = payload_len
-            .saturating_mul(RESOLVED_BYTES_PER_PAYLOAD_BYTE)
-            .max(MIN_RESOLVED_BYTES);
+        let limit = resolved_limit(payload_len);
         Self {
             remaining: Cell::new(limit),
             limit,
