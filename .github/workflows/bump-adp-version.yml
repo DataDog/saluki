@@ -165,10 +165,14 @@ jobs:
       - name: Update Cargo.lock
         run: cargo update -p agent-data-plane --quiet
 
+      # `X.Y.0` is tagged on its release branch, so the tag's commit isn't the head of `main`. Sign against the head
+      # of the branch this job checked out.
       - name: Create remote branch
+        id: branch
         run: |
           BRANCH_NAME=bump-adp-version-${{ steps.version.outputs.new_version }}
           git push origin HEAD:refs/heads/${BRANCH_NAME}
+          echo "head_sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
 
       - name: Commit Changes
         id: commit
@@ -182,7 +186,7 @@ jobs:
         with:
           token: "${{ steps.octo-sts.outputs.token }}"
           branch: bump-adp-version-${{ steps.version.outputs.new_version }}
-          head-sha: ${{ github.sha }}
+          head-sha: ${{ steps.branch.outputs.head_sha }}
           command: push
           commits: "${{ steps.commit.outputs.commit_sha }}"
 

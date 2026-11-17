@@ -26,6 +26,7 @@ import urllib.request
 from pathlib import Path
 
 VERSION_FILE = ".datadog-agent-version.json"
+PAGE_SIZE = 100
 
 
 class ProposeError(Exception):
@@ -53,6 +54,18 @@ class GitHubApi:
                 return None
             raise ProposeError(f"{method} {path} returned HTTP {error.code}: {error.read()[:500]!r}") from error
         return json.loads(payload) if payload else None
+
+
+def list_all(api, path):
+    """Return every item of a paginated GitHub list endpoint."""
+    items = []
+    page = 1
+    while True:
+        batch = api.request("GET", f"{path}?per_page={PAGE_SIZE}&page={page}")
+        items.extend(batch)
+        if len(batch) < PAGE_SIZE:
+            return items
+        page += 1
 
 
 def is_bot_commit(commit):
@@ -126,8 +139,8 @@ def propose(api, repository, base, branch, version_text, title, body, labels):
         pr = open_prs[0]
         number = pr["number"]
         head_sha = pr["head"]["sha"]
-        files = api.request("GET", f"/repos/{repository}/pulls/{number}/files?per_page=100")
-        commits = api.request("GET", f"/repos/{repository}/pulls/{number}/commits?per_page=100")
+        files = list_all(api, f"/repos/{repository}/pulls/{number}/files")
+        commits = list_all(api, f"/repos/{repository}/pulls/{number}/commits")
         if not commits or commits[-1]["sha"] != head_sha:
             raise ProposeError(f"{pr['html_url']} changed while it was being inspected; try again")
         problem = foreign_changes(files, commits)

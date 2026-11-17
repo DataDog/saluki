@@ -47,6 +47,7 @@ class FakeApi:
         self.parents = {BOT_HEAD: [OLD_BASE_SHA if behind_by else BASE_SHA], BASE_SHA: [OLD_BASE_SHA]}
         self.created = 0
         self.writes = []
+        self.pages_read = 0
 
     def is_ancestor(self, ancestor, descendant):
         pending = [descendant]
@@ -62,6 +63,12 @@ class FakeApi:
         self.parents[sha] = [parent]
         self.branch_head = sha
 
+    def page(self, path, items):
+        query = dict(part.split("=") for part in path.split("?", 1)[1].split("&"))
+        size, number = int(query["per_page"]), int(query["page"])
+        self.pages_read += 1
+        return items[(number - 1) * size:number * size]
+
     def request(self, method, path, body=None, allow_404=False):
         if method != "GET":
             self.writes.append((method, path, body))
@@ -73,11 +80,11 @@ class FakeApi:
         if path.startswith(f"/repos/{REPOSITORY}/pulls?"):
             pr = {"number": 5, "html_url": "https://example.test/pull/5", "head": {"sha": self.branch_head}}
             return [pr] if self.open_pr else []
-        if path.endswith("/files?per_page=100"):
-            return self.files
-        if path.endswith("/commits?per_page=100"):
-            commits = self.commits
-            if self.after_inspection:
+        if "/files?" in path:
+            return self.page(path, self.files)
+        if "/commits?" in path:
+            commits = self.page(path, self.commits)
+            if self.after_inspection and len(commits) < subject.PAGE_SIZE:
                 self.after_inspection(self)
             return commits
         if path.startswith(f"/repos/{REPOSITORY}/contents/"):
@@ -158,6 +165,12 @@ class ProposeTest(unittest.TestCase):
         with self.assertRaisesRegex(subject.ProposeError, "changed while it was being inspected"):
             self.propose(api)
         self.assertEqual(api.writes, [])
+
+    def test_reads_every_page_of_a_long_pull_request(self):
+        commits = [commit(f"d{n:039x}") for n in range(1, 150)] + [commit(BOT_HEAD)]
+        api = FakeApi(open_pr=True, commits=commits)
+        self.assertEqual(self.propose(api), "refreshed")
+        self.assertEqual(api.pages_read, 3)
 
     def test_leaves_an_unchanged_proposal_alone(self):
         api = FakeApi(open_pr=True, branch_version_file=NEW_VERSION_FILE)
