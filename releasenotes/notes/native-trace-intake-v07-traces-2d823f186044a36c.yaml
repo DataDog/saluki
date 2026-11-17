@@ -1,0 +1,13 @@
+features:
+  - |
+    The experimental native trace intake, enabled with ``data_plane.experimental.apm.native_trace_intake``, now serves
+    ``/v0.7/traces`` itself, rather than forwarding it to the trace-agent. As the trace-agent does, it decodes the
+    body as a MessagePack tracer payload whatever its ``Content-Type``, keeps the tracer's language, language
+    version, tracer version and container ID that the payload carries, and answers with the sampling rates by
+    service. The ``Datadog-Meta-*`` headers only tag its receiver telemetry, which is tagged ``v0.7``, and the
+    request's own container isn't looked up.
+fixes:
+  - |
+    The experimental native trace intake no longer holds a copy of a JSON or v0.7 payload's container ID, tracer
+    fields, env, hostname and app version for each of its traces while it decodes the payload, nor a copy of a v1.0
+    payload's string for each reference to it: every trace and reference shares one.
