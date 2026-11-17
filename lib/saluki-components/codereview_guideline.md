@@ -5,16 +5,16 @@
 Apply these rules to files under `lib/saluki-components`.
 
 - Flag a new async `Transform` that only changes events in place and awaits nothing but its input. Make it a
-  `SynchronousTransform`, so that `ChainedConfiguration` can run it in one component together with the other
-  synchronous transforms. An async transform that also waits on something else, such as configuration updates or a
-  timer, is fine.
-- A component runs until the topology stops it. Flag a `run` that returns early for a check that `build` can make.
-  Examples are taking a receiver or a subscription, building TLS material, and validating configuration. Do that check
-  in `build`, so that the topology build reports the error. Binding a listener in `run`, before `health.mark_ready()`,
-  is fine.
+  `SynchronousTransform`, so that `ChainedConfiguration` can run it in one component together with the other synchronous
+  transforms. An async transform that also waits on something else, such as configuration updates or a timer, is fine.
+- A component should run until the topology stops it. Flag any `run` implementation that returns early when the early
+  return could be moved to `build` instead. For example, consuming a receiver or a subscription, building TLS material,
+  and validating configuration. Do that check in `build`, so that the topology build reports the error. Binding a
+  listener in `run`, before `health.mark_ready()`, is the main exception, which will eventually be removed once the
+  codebase fully migrates to the resource registry.
 - Components should always prefer to acquire environment-based configuration from `EnvironmentProvider` instead of
   passing it through their configuration directly. For example, take the hostname of the current host from
   `HostProvider::get_hostname`, accessed through `EnvironmentProvider::host`.
-- For encoders that have payload size limits, ensure that they build their payloads incrementally, if possible, to minimize
-  the chance of having the payload rejected. If payloads can be split, then this applies doubly so as incremental encoding
-  provides a chance to opportunistically split payloads and avoid costly re-encoding.
+- For encoders that have payload size limits, ensure that they build their payloads incrementally, if possible, to
+  minimize the chance of having the payload rejected. If payloads can be split, then this applies doubly so as
+  incremental encoding provides a chance to opportunistically split payloads and avoid costly re-encoding.

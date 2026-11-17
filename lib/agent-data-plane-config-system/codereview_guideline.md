@@ -6,55 +6,49 @@ Apply these rules to files under `lib/agent-data-plane-config-system`. This crat
 environment, layers the Core Agent stream over them, and translates the result into `SalukiConfiguration`.
 
 - A recorded `TranslateError` is a startup error, and it also rejects the whole live update. To recover from a bad
-  value, log a warning and use what the Agent uses, such as the default. (A `replace_tags` rule without a `name` or
-  `pattern` stopped ADP from starting, but the trace-agent only logs it: #2817.)
+  value, log a warning and use what the Agent uses, such as the default.
 - A key in the vendored schema is a Datadog key, whatever its prefix. The translator gets its value through its
-  `consume_<key>` method, and its `support` in `lib/datadog-agent/config/schema/schema_overlay.yaml` says what ADP
-  does with it. Any other key is a `SalukiOnly` field. Flag a `SalukiOnly` field for a schema key. Also flag a change
-  to what ADP does with a Datadog key that doesn't update its `support`.
+  `consume_<key>` method, and its `support` in `lib/datadog-agent/config/schema/schema_overlay.yaml` says what ADP does
+  with it. Any other key is a `SalukiOnly` field. Flag a `SalukiOnly` field for a schema key. Also flag a change to what
+  ADP does with a Datadog key that doesn't update its `support`.
 - `SalukiOnly` field names and nesting match the key path exactly. A mismatch doesn't fail: the value doesn't arrive,
-  and the model keeps its default. Flag `#[serde(rename)]` and `#[serde(alias)]` on these fields. Also flag a new
-  field without a test that sets the real key and checks the model field.
+  and the model keeps its default. Flag `#[serde(rename)]` and `#[serde(alias)]` on these fields. Also flag a new field
+  without a test that sets the real key and checks the model field.
 - A `SALUKI_KEYS` entry in `lib/datadog-agent/config-overlay-model/src/saluki_keys.rs` has the same path as its
-  `SalukiOnly` field. Its displayed default is a string, not the constant. Check that it matches the effective
-  default, such as the constant in `lib/agent-data-plane-config/src/defaults.rs`. Flag a change to the path or the
-  default of a key that doesn't update its entry.
-- A change to the source or model type of a key keeps each input form that the last release accepted, and each
-  effective default. A move of a key between `SalukiOnly` and the schema does too. Ask the author to list the input
-  forms, and check that a test covers each one. (The migrated `dogstatsd_string_interner_size_bytes` rejected
-  `12MiB`, which the last release accepted: #2222.)
+  `SalukiOnly` field. Its displayed default is a string, not the constant. Check that it matches the effective default,
+  such as the constant in `lib/agent-data-plane-config/src/defaults.rs`. Flag a change to the path or the default of a
+  key that doesn't update its entry.
+- A change to the source or model type of a key keeps each input form that the last release accepted, and each effective
+  default. A move of a key between `SalukiOnly` and the schema does too. Ask the author to list the input forms, and
+  check that a test covers each one.
 - In connected mode, ADP layers the Core Agent stream over the local sources. In the local sources, the environment
-  overrides `datadog.yaml`. A value that the stream marks as a default doesn't hide a value that a local input set.
-  Flag a change to this order that the pull request doesn't explain. (The environment outranked the stream, so ADP
-  used an unresolved secret placeholder from `DD_API_KEY` as its API key: #1674.)
+  overrides `datadog.yaml`. A value that the stream marks as a default doesn't hide a value that a local input set. Flag
+  a change to this order that the pull request doesn't explain.
 - Corpus replay compares each modeled setting with what the recorded Agent read. When a change makes a replay check
-  fail, fix ADP, or add an entry to `src/corpus_replay/expected.rs`. The `Cause` of the entry says why ADP differs.
-  Flag an `intentional` entry for an ADP bug, and an entry whose `Cause` doesn't explain the difference. Flag a new
-  recording of the corpus that only makes an ADP change pass. Don't flag a missing tracking issue on a `known_bug`
-  entry: the replay test fails without one.
+  fail, fix ADP, or add an entry to `src/corpus_replay/expected.rs`. The `Cause` of the entry says why ADP differs. Flag
+  an `intentional` entry for an ADP bug, and an entry whose `Cause` doesn't explain the difference. Flag a new recording
+  of the corpus that only makes an ADP change pass. Don't flag a missing tracking issue on a `known_bug` entry: the
+  replay test fails without one.
 
 ### Core Agent configuration stream
 
 Apply these rules to files under `lib/agent-data-plane-config-system` and `lib/datadog-agent/runtime` that read the
 Core Agent configuration stream or its values.
 
-- The Core Agent streams every key that it knows. A key that nobody set arrives with its default, which for many
-  string keys is an empty string that the Agent treats as unset. `setting_to_config_setting` gives each
-  `ConfigSetting` a `Provenance`, and marks the Agent sources in `AGENT_UNSET_SOURCES` as defaults. For a Datadog
-  schema key, flag code that decides from presence, such as `is_some()` or `contains_key`. Also flag code that treats
-  `Some("")` as a configured value. (ADP tried to start a UDS listener for the empty default of `dogstatsd_socket`:
-  #1099.)
-- A Saluki-only key isn't in the Agent's schema, so the Agent streams it only when an input set it.
-  `SalukiOnly::seed` copies each value that is present, which is correct for these keys. Don't flag it.
-- When two keys set one value, the stream sends both keys, even if nobody set one of them. An Agent older than the
-  rename of a key (7.87 for `metric_filterlist`) also streams the key under its former name. `overlay_agent_layer` in
+- The Core Agent streams every key that it knows. A key that nobody set arrives with its default, which for many string
+  keys is an empty string that the Agent treats as unset. `setting_to_config_setting` gives each `ConfigSetting` a
+  `Provenance`, and marks the Agent sources in `AGENT_UNSET_SOURCES` as defaults. For a Datadog schema key, flag code
+  that decides from presence, such as `is_some()` or `contains_key`. Also flag code that treats `Some("")` as a
+  configured value.
+- A Saluki-only key isn't in the Agent's schema, so the Agent streams it only when an input set it. `SalukiOnly::seed`
+  copies each value that is present, which is correct for these keys. Don't flag it.
+- When two keys set one underlying value, the stream sends both keys, even if nobody set one of them. An Agent older
+  than the rename of a key also streams the key under its former name. `overlay_agent_layer` in
   `lib/agent-data-plane-config-system/src/system.rs` resolves the pair. Flag a fallback that fails or picks the wrong
-  value when both keys arrive. Choose the key by provenance. (A serde `rename` with an `alias` failed when the stream
-  sent both retry queue size keys: #1203.)
+  value when both keys arrive. Choose the key by provenance.
 - A setting key is flat and can be dotted, and its value is the whole value of one setting. Expand the key into
   sections, and insert the value whole. A map key in the value, such as an intake URL in `additional_endpoints`, can
-  contain periods. (Secrets resolution split `https://foo.bar.com` at its periods and didn't set the real key:
-  #347.)
+  contain periods.
 - In connected mode, `ConfigurationSystem::connected` in `lib/agent-data-plane-config-system/src/system.rs` waits for
-  the first snapshot from the stream, and translates it. `RemoteAgent::start` doesn't return until then. Flag a
-  change that removes this wait, or that returns a configuration before the first snapshot translates.
+  the first snapshot from the stream, and translates it. `RemoteAgent::start` doesn't return until then. Flag a change
+  that removes this wait, or that returns a configuration before the first snapshot translates.

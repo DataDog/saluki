@@ -8,17 +8,12 @@ Apply these rules to files under `lib/agent-data-plane-config`, the typed config
 - A field whose meaning depends on whether an input set it is a `ConfigValue<T>`, and its readers call
   `is_explicit()`. A model method, such as `Endpoints::primary_endpoint`, resolves the provenance, so that components
   get only the effective value. Flag code that compares a value with its default to decide whether someone set it.
-  (The streamed default `dd_url` overrode `site`, and ADP sent all traffic to the US1 intake. The #2028 fix compared
-  `dd_url` with its default. That can't tell an explicit default from an unset key, so the model now uses provenance:
-  #2279.)
 - Use `Option<T>` only when absence has a meaning, not to defer a default. Prefer `ConfigValue<T>` to
   `ConfigValue<Option<T>>`.
 - Define each Saluki-only default once, in `src/defaults.rs`, and use that constant everywhere that the default
   appears. A witnessed field's `Default` holds only a placeholder, because translation always writes the default from
-  the generated schema. Flag a Datadog schema default that the model restates. (ADP's own default for
-  `forwarder_high_prio_buffer_size` was 16, and the Agent's was 100: #1844.)
+  the generated schema. Flag a Datadog schema default that the model restates.
 - A Saluki-only default is a value that its consumer accepts. For example, a connect target has no default port `0`.
   If no default works, use `Option<T>`, and report an error when the value is missing.
 - A field that a consumer divides by, or uses as a window or bucket width, has a type that rejects `0`, such as
-  `NonZeroU64`. A number in a fixed unit has the unit in its name, such as `window_duration_seconds`. (A sub-second
-  aggregation window made the aggregate transform divide by zero and panic: #1772.)
+  `NonZeroU64`. A number in a fixed unit has the unit in its name, such as `window_duration_seconds`.

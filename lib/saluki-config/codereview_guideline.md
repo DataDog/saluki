@@ -9,4 +9,3 @@ Apply these rules to files under `lib/saluki-config`, a general-purpose configur
   consumer in this repository, but they serve external clients. Don't flag them as unused. Flag a change that
   removes them, or that removes their unit tests, because those tests are their only coverage.
 - A setting key is flat and can be dotted. Expand it into nested maps, as `upsert` does, and insert the value whole.
-  (Snapshot parsing kept each dotted key as one flat key, so nested settings were missing: #1125.)

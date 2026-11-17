@@ -10,31 +10,27 @@ overlay, the code generators, and the decoders for Datadog keys.
   update. Flag a change to these files that doesn't update `_version.txt`.
 - Don't flag a hand edit or a stale file under `src/generated/`. The `check-schema-overlay` CI job regenerates these
   files and fails on any difference.
-- The generated `DatadogConfiguration` reads each key in the Agent's canonical shape. Flag a generator change that
-  emits a serde `rename` or `alias`, for example for a `renamed_from` name. The environment and file readers, and
-  `overlay_agent_layer` for the stream, resolve former names before deserialization. (A `rename` with an `alias`
-  failed when the stream sent both retry queue size keys: #1203.)
+- The generated `DatadogConfiguration` reads each key in the Agent's canonical shape. Flag a generator change that emits
+  a serde `rename` or `alias`, for example for a `renamed_from` name. The environment and file readers, and
+  `overlay_agent_layer` for the stream, resolve former names before deserialization.
 - Check each `support` value and each `excluded` entry in `schema/schema_overlay.yaml` against what ADP does with the
   key:
-  - `full`: ADP reads the key, accepts each value that the Agent accepts, and does what the Agent does. If ADP
-    rejects some values, such as TLS versions below 1.2, or differs in some cases, the key is `partial`. Its
-    `documentation` describes the difference.
-  - `none`: setting the key changes what users observe, and ADP doesn't do the same. Choose `severity` from that
-    effect, and give an experimental key `low` at most. ADP doesn't start when an input sets a `high` key for an
-    active pipeline. (`high` entries for the `dogstatsd_experimental_http` keys stopped startup, but that traffic
-    never reaches ADP: #2358.)
-  - `unknown`: ADP's compatibility with the key isn't known yet. With a `severity`, the startup check applies the key
-    to every pipeline. So ADP doesn't start when an input sets an `unknown` key with `severity: high`.
-  - `excluded`: the feature behind the key doesn't affect what ADP does. A `none` entry for such a key shows
-    operators an incompatibility warning that isn't true. Flag a key under `excluded` that ADP reads or must honor.
-    (`cmd_host` was under `excluded`, so ADP ignored it and couldn't reach an Agent that listened on `::1`: #3113.)
-- Scalar leaves use the `cast_de` coercions for every source, including the Core Agent stream. Flag scalar coercion
-  that only one source gets. Don't flag a per-key `env_parser` transform, such as `comma_separated`: as in the Agent,
-  it applies only to environment strings. (Permissive scalar coercion applied only to environment variables: #2325.)
+  - `full`: ADP reads the key, accepts each value that the Agent accepts, and does what the Agent does. If ADP rejects
+    some values, such as TLS versions below 1.2, or differs in some cases, the key is `partial`. Its `documentation`
+    describes the difference.
+  - `none`: setting the key changes what users observe, and ADP doesn't do the same. Choose `severity` from that effect,
+    and give an experimental key `low` at most. ADP doesn't start when an input sets a `high` key for an active
+    pipeline.
+  - `unknown`: ADP's compatibility with the key isn't known yet. With a `severity`, the startup check applies the key to
+    every pipeline. So ADP doesn't start when an input sets an `unknown` key with `severity: high`.
+  - `excluded`: the feature behind the key doesn't affect what ADP does. A `none` entry for such a key shows operators
+    an incompatibility warning that isn't true. Flag a key under `excluded` that ADP reads or must honor.
+- Scalar leaves use the `cast_de` coercions for every source, including the Core Agent stream. Flag scalar coercion that
+  only one source gets. Don't flag a per-key `env_parser` transform, such as `comma_separated`: as in the Agent, it
+  applies only to environment strings.
 - A decoder accepts each form that the Agent accepts for the key, and a test covers each form. The stream sends some
-  forms of its own. A map that the Agent read from the environment arrives as a JSON string. (The stream sent
-  `DD_ADDITIONAL_ENDPOINTS` in this form, so ADP rejected its initial configuration and restarted in a loop: #2700.)
-  An empty collection arrives as `null`, and a duration as integer nanoseconds. Other forms include:
+  forms of its own. A map that the Agent read from the environment arrives as a JSON string. An empty collection arrives
+  as `null`, and a duration as integer nanoseconds. Other forms include:
   - a scalar or a list
   - a quoted number, a `0x` integer, or a leading-zero octal integer
   - a byte size such as `12mb` or `12MB`

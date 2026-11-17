@@ -96,7 +96,6 @@ and retry queues.
 - All encoders and decoders must be both property and fuzz tested at the raw input boundary: this ensures a minimum baseline of coverage.
 - Helpers and primitives should strive to defer choices around memory management and allocations to the caller: for example,
   don't allocate on behalf of the caller if we could just as easily accept a mutable reference to a buffer.
-
 <!-- /review -->
 
 ### Components
@@ -107,20 +106,19 @@ Reviewers apply these rules to pull requests that change `lib/saluki-components`
 Apply these rules to files under `lib/saluki-components`.
 
 - Flag a new async `Transform` that only changes events in place and awaits nothing but its input. Make it a
-  `SynchronousTransform`, so that `ChainedConfiguration` can run it in one component together with the other
-  synchronous transforms. An async transform that also waits on something else, such as configuration updates or a
-  timer, is fine.
-- A component runs until the topology stops it. Flag a `run` that returns early for a check that `build` can make.
-  Examples are taking a receiver or a subscription, building TLS material, and validating configuration. Do that check
-  in `build`, so that the topology build reports the error. Binding a listener in `run`, before `health.mark_ready()`,
-  is fine.
+  `SynchronousTransform`, so that `ChainedConfiguration` can run it in one component together with the other synchronous
+  transforms. An async transform that also waits on something else, such as configuration updates or a timer, is fine.
+- A component should run until the topology stops it. Flag any `run` implementation that returns early when the early
+  return could be moved to `build` instead. For example, consuming a receiver or a subscription, building TLS material,
+  and validating configuration. Do that check in `build`, so that the topology build reports the error. Binding a
+  listener in `run`, before `health.mark_ready()`, is the main exception, which will eventually be removed once the
+  codebase fully migrates to the resource registry.
 - Components should always prefer to acquire environment-based configuration from `EnvironmentProvider` instead of
   passing it through their configuration directly. For example, take the hostname of the current host from
   `HostProvider::get_hostname`, accessed through `EnvironmentProvider::host`.
-- For encoders that have payload size limits, ensure that they build their payloads incrementally, if possible, to minimize
-  the chance of having the payload rejected. If payloads can be split, then this applies doubly so as incremental encoding
-  provides a chance to opportunistically split payloads and avoid costly re-encoding.
-
+- For encoders that have payload size limits, ensure that they build their payloads incrementally, if possible, to
+  minimize the chance of having the payload rejected. If payloads can be split, then this applies doubly so as
+  incremental encoding provides a chance to opportunistically split payloads and avoid costly re-encoding.
 <!-- /review -->
 
 ### Environment and workloads
@@ -140,7 +138,6 @@ tags, not an error.
 - Unbounded growth of metadata can occur rapidly, so all metadata operations that store state should either be bounded
   in time (such as by using a cache with an expiration/TTL) or have matching/paired code paths that clean up the state
   at the earliest opportunity.
-
 <!-- /review -->
 
 ### Agent Data Plane
@@ -175,27 +172,26 @@ Apply these rules to files under `.github`, such as workflows and `dd-octo-sts` 
 
 Most of these changes take effect only after they merge, so pull request checks don't test them. Read each changed line.
 
-- When creating a new workflow, check for existing workflows of the same category (opening PRs to bump dependencies, etc)
-  and ensure the same patterns are followed so that our workflows stay consistent.
+- When creating a new workflow, check for existing workflows of the same category (opening PRs to bump dependencies,
+  etc) and ensure the same patterns are followed so that our workflows stay consistent.
 - Workflows that need to push commits, or open/label pull requests, MUST get a GitHub token from the
-  `DataDog/dd-octo-sts-action` action. This action requires a corresponding policy (under `.github/chainguard/`) that describes
-  when the policy applies (the "claim") and the permissions granted if the claim is validated.
+  `DataDog/dd-octo-sts-action` action. This action requires a corresponding policy (under `.github/chainguard/`) that
+  describes when the policy applies (the "claim") and the permissions granted if the claim is validated.
 - Use the `DataDog/commit-headless` action to properly commit changes based on an acquired `dd-octo-sts` token.
-- Use labels on automatically created pull requests to both identify the PRs as a result of automation, as well as categorizing
-  and grouping equivalent PRs: for example, a common pattern is to add a label of `ci/<workflow name>` to identify PRs created
-  by a specific workflow.
-- Workflows that create resources, like issues or pull requests, should ensure that they clean up older/superseded resources
-  where possible: for example, when a workflow opens PRs to bump dependencies, it should close older PRs (potentially by
-  finding open PRs with the labels it sets) if the new PR would supersede them.
-- Workflows must pin each action they depend on, as well as reusable workflows, to a full commit SHA, with its version in a
-- trailing comment such as `# v7.0.1`. Renovate reads that comment to update the pin.
-- In a trust policy, `subject_pattern` and each value under `claim_pattern` are regular expressions, and `subject` is
-  an exact string. Write `refs/.*`, not the glob `refs/*`. A subject that needs a wildcard goes in `subject_pattern`.
-  (A policy used the glob `refs/*` and needed a second fix: #1465.)
-- For `dd-octo-sts` policies, pay attention to the `subject_pattern` and `claim_pattern.event_name`. These must be aligned
-  with the workflow's event triggers (the values under `on:`) and the subject pattern will change depending on event type. For
-  example, the subject pattern for a workflow that targets PRs themselves will be different than the subject pattern for a
-  workflow that only runs on pushes/merges to `main`.
+- Use labels on automatically created pull requests to both identify the PRs as a result of automation, as well as
+  categorizing and grouping equivalent PRs: for example, a common pattern is to add a label of `ci/<workflow name>` to
+  identify PRs created by a specific workflow.
+- Workflows that create resources, like issues or pull requests, should ensure that they clean up older/superseded
+  resources where possible: for example, when a workflow opens PRs to bump dependencies, it should close older PRs
+  (potentially by finding open PRs with the labels it sets) if the new PR would supersede them.
+- Workflows must pin each action they depend on, as well as reusable workflows, to a full commit SHA, with its version
+  in a trailing comment such as `# v7.0.1`. Renovate reads that comment to update the pin.
+- In a trust policy, `subject_pattern` and each value under `claim_pattern` are regular expressions, and `subject` is an
+  exact string.
+- For `dd-octo-sts` policies, pay attention to the `subject_pattern` and `claim_pattern.event_name`. These must be
+  aligned with the workflow's event triggers (the values under `on:`) and the subject pattern will change depending on
+  event type. For example, the subject pattern for a workflow that targets PRs themselves will be different than the
+  subject pattern for a workflow that only runs on pushes/merges to `main`.
 - Workflow jobs that depend on the artifacts of another job must list that job under `needs:` to ensure the workflow
   waits for the dependent job to complete.
 - Release branches are `releases/X.Y.x`, release tags are `X.Y.Z` with no `v` prefix, and backport labels are
