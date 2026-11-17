@@ -115,7 +115,8 @@ pub fn decode_v1_payload(bytes: &[u8]) -> Result<DecodedV1, DecodeError> {
         trace.origin = chunk.origin;
         trace.payload = payload_fields.clone();
         trace.attributes = Arc::new(chunk.attributes);
-        trace.priority = Some(chunk.priority);
+        // As the reference's `GetSamplingPriorityV1`, which reads `PriorityNone` as no priority.
+        trace.priority = (chunk.priority != v04::PRIORITY_NONE).then_some(chunk.priority);
         trace.dropped_trace = chunk.dropped_trace;
         trace.sampling_mechanism = chunk.sampling_mechanism;
         traces.push(trace);
