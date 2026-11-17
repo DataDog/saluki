@@ -27,9 +27,10 @@
 //!
 //! # Media types
 //!
-//! `/v1.0/traces` decodes any body as v1.0, `/v0.5/traces` any body as a v0.5 dictionary payload, and `/v0.1/spans`
-//! and `/spans` any body but MessagePack as a JSON span list, grouped into traces by trace ID. The other v0.x endpoints
-//! decode a body by its [format](super::media_type), as the trace-agent does:
+//! `/v1.0/traces` decodes any body as v1.0, `/v0.7/traces` any body as a MessagePack `TracerPayload`, `/v0.5/traces`
+//! any body as a v0.5 dictionary payload, and `/v0.1/spans` and `/spans` any body but MessagePack as a JSON span list,
+//! grouped into traces by trace ID. The other v0.x endpoints decode a body by its [format](super::media_type), as the
+//! trace-agent does:
 //!
 //! | `Content-Type` | Decoded as |
 //! |---|---|
@@ -65,7 +66,8 @@ use super::receiver_telemetry::{DropReason, ReceiverTags, ReceiverTelemetry};
 use crate::common::traces::normalize::{truncate_utf8_str, MAX_SERVICE_LEN};
 use crate::decoders::datadog::{
     attribute_string_bytes, decode_v01_json, decode_v04_any, decode_v04_json, decode_v04_payload, decode_v05_payload,
-    decode_v1_payload, first_span, resolve_process_tags, resolve_sdk_otlp_export, resolved_limit, DecodeError,
+    decode_v07_payload, decode_v1_payload, first_span, resolve_process_tags, resolve_sdk_otlp_export, resolved_limit,
+    DecodeError,
 };
 use crate::transforms::{HistogramConfiguration, ServiceRates};
 
@@ -131,6 +133,8 @@ pub(super) enum EndpointVersion {
     V04,
     /// `/v0.5/traces`.
     V05,
+    /// `/v0.7/traces`.
+    V07,
     /// `/v1.0/traces`.
     V10,
 }
@@ -143,6 +147,7 @@ impl EndpointVersion {
             Self::V03 => "v0.3",
             Self::V04 => "v0.4",
             Self::V05 => "v0.5",
+            Self::V07 => "v0.7",
             Self::V10 => "v1.0",
         }
     }
@@ -256,6 +261,8 @@ impl TraceIntake {
             (EndpointVersion::V01, _) => decode_v01_json(&body),
             // As in the trace-agent, a v0.5 payload is decoded whatever the media type.
             (EndpointVersion::V05, _) => decode_v05_payload(&body),
+            // As `decodeConvertedTracerPayload`'s `V07` case, which decodes a `TracerPayload` whatever the media type.
+            (EndpointVersion::V07, _) => decode_v07_payload(&body),
             // `/v0.2/traces` never gets here with MessagePack: it is rejected above.
             (_, PayloadFormat::MessagePack) => decode_v04_payload(&body),
             (_, PayloadFormat::Json) => decode_v04_json(&body),
@@ -281,9 +288,9 @@ impl TraceIntake {
         };
         let mut traces = decoded.traces;
 
-        // A v0.x payload has no tracer fields of its own: as in the trace-agent, they come from the request headers,
-        // as sent.
-        if version != EndpointVersion::V10 {
+        // A v0.x payload other than v0.7 has no tracer fields of its own: as in the trace-agent, they come from the
+        // request headers, as sent. The receiver telemetry takes them from the headers for every version.
+        if !matches!(version, EndpointVersion::V07 | EndpointVersion::V10) {
             let header = |name: &HeaderName| shared_meta(header_str(headers, name).unwrap_or_default());
             let (lang, lang_version, tracer_version) = (
                 header(&LANG_HEADER),
@@ -298,13 +305,15 @@ impl TraceIntake {
         }
 
         // A v1.0 payload's own container ID wins over the request's. A v0.x payload has none, so its container is
-        // the request's, as in the trace-agent.
+        // the request's, as in the trace-agent. A v0.7 payload's container is its own only: the trace-agent doesn't
+        // look the request's up.
         let payload_container_id = traces.first().map(|trace| trace.payload.container_id.clone());
         let container = match payload_container_id {
             Some(container_id) if !container_id.is_empty() => {
                 let tags = container_tags.container_tags(&container_id);
                 Some((container_id, tags))
             }
+            Some(_) if version == EndpointVersion::V07 => None,
             Some(_) => container_tags.container(headers, connection),
             None => None,
         };
@@ -694,6 +703,7 @@ mod tests {
     use http::Request;
     use rmp::encode;
     use saluki_core::data_model::event::metric::MetricValues;
+    use saluki_core::data_model::event::trace::AttributeValue;
     use saluki_core::data_model::origin::OriginTagCardinality;
     use saluki_core::data_model::tags::{SharedTagSet, Tag, TagSet};
     use saluki_env::workload::origin::{ResolvedExternalData, ResolvedOrigin};
@@ -1166,11 +1176,121 @@ mod tests {
         assert!(receiver.container_tags.contains("container_id:from-header"));
     }
 
+    /// Builds a v0.7 payload of `chunks` chunks of one root span each, from service `web`, written by a `go` tracer in
+    /// env `prod`, with the container ID, if any, and process tags.
+    fn v07_payload(container_id: Option<&str>, chunks: u32) -> Vec<u8> {
+        let mut buf = Vec::new();
+        encode::write_map_len(&mut buf, if container_id.is_some() { 6 } else { 5 }).unwrap();
+        if let Some(container_id) = container_id {
+            encode::write_str(&mut buf, "container_id").unwrap();
+            encode::write_str(&mut buf, container_id).unwrap();
+        }
+        for (key, value) in [
+            ("language_name", "go"),
+            ("language_version", "1.22"),
+            ("tracer_version", "1.60.0"),
+        ] {
+            encode::write_str(&mut buf, key).unwrap();
+            encode::write_str(&mut buf, value).unwrap();
+        }
+        encode::write_str(&mut buf, "tags").unwrap();
+        encode::write_map_len(&mut buf, 1).unwrap();
+        encode::write_str(&mut buf, "_dd.tags.process").unwrap();
+        encode::write_str(&mut buf, "entrypoint.name:app").unwrap();
+        encode::write_str(&mut buf, "chunks").unwrap();
+        encode::write_array_len(&mut buf, chunks).unwrap();
+        for chunk in 0..chunks {
+            encode::write_map_len(&mut buf, 1).unwrap();
+            encode::write_str(&mut buf, "spans").unwrap();
+            encode::write_array_len(&mut buf, 1).unwrap();
+            encode::write_map_len(&mut buf, 4).unwrap();
+            encode::write_str(&mut buf, "service").unwrap();
+            encode::write_str(&mut buf, "web").unwrap();
+            encode::write_str(&mut buf, "trace_id").unwrap();
+            encode::write_uint(&mut buf, u64::from(chunk) + 1).unwrap();
+            encode::write_str(&mut buf, "span_id").unwrap();
+            encode::write_uint(&mut buf, 1).unwrap();
+            encode::write_str(&mut buf, "meta").unwrap();
+            encode::write_map_len(&mut buf, 1).unwrap();
+            encode::write_str(&mut buf, "env").unwrap();
+            encode::write_str(&mut buf, "prod").unwrap();
+        }
+        buf
+    }
+
+    // `decodeConvertedTracerPayload`'s `V07` case, which reads no media type, keeps the payload's own tracer fields
+    // and container ID, and doesn't look up the request's container; and `replyOK`, which answers with the rates.
+    #[tokio::test]
+    async fn a_v07_payload_is_decoded_whatever_its_media_type_and_keeps_its_own_fields() {
+        let container_tags = ContainerTagsHasher::new(None, Some(Arc::new(TaggingProvider)));
+        for (content_type, container_id) in [
+            (Some("application/msgpack"), Some("from-body")),
+            (Some("application/json"), None),
+            (Some("text/plain"), Some("from-body")),
+            (None, None),
+        ] {
+            let (intake, mut traces) = intake(config());
+            let mut headers = vec![
+                ("Datadog-Meta-Lang", "python"),
+                ("Datadog-Meta-Lang-Version", "3.12"),
+                ("Datadog-Meta-Tracer-Version", "2.0.0"),
+                ("Datadog-Container-ID", "from-header"),
+            ];
+            headers.extend(content_type.map(|value| ("Content-Type", value)));
+            let request = sized_request(&headers, v07_payload(container_id, 2));
+            let response = intake.handle(EndpointVersion::V07, request, &container_tags).await;
+            let (parts, body) = response.into_parts();
+            let body = body.collect().await.unwrap().to_bytes();
+            assert_eq!(parts.status, StatusCode::OK, "{content_type:?}");
+            assert_eq!(body, "{\"rate_by_service\":{}}\n", "{content_type:?}");
+
+            let traces = traces.try_recv().unwrap();
+            assert_eq!(traces.len(), 2);
+            for (index, trace) in traces.iter().enumerate() {
+                assert_eq!(trace.trace_id_low, index as u64 + 1);
+                assert_eq!(trace.payload.language_name, "go");
+                assert_eq!(trace.payload.language_version, "1.22");
+                assert_eq!(trace.payload.tracer_version, "1.60.0");
+                assert_eq!(trace.payload.container_id, container_id.unwrap_or_default());
+                assert_eq!(trace.payload.env, "prod");
+                assert_eq!(
+                    trace.spans()[0].attributes.get("_dd.convertedv1"),
+                    Some(&AttributeValue::String(MetaString::from_static("v07-pb")))
+                );
+            }
+            // The receiver telemetry still takes the tracer fields from the headers.
+            let receiver = traces[0].payload.receiver();
+            assert_eq!(receiver.endpoint_version, "v0.7");
+            assert_eq!(
+                (receiver.lang.as_ref(), receiver.lang_version.as_ref()),
+                ("python", "3.12")
+            );
+            assert_eq!(receiver.tracer_version, "2.0.0");
+            assert_eq!(receiver.service, "web");
+            assert_eq!(receiver.process_tags, "entrypoint.name:app");
+            match container_id {
+                Some(container_id) => {
+                    assert!(receiver
+                        .container_tags
+                        .contains(&format!("container_id:{container_id}")))
+                }
+                None => assert_eq!(receiver.container_tags, ""),
+            }
+        }
+
+        // A JSON body isn't a v0.7 payload.
+        let (intake, _traces) = intake(config());
+        let headers = [("Content-Type", "application/json")];
+        let (status, _, _) = send_to(&intake, EndpointVersion::V07, sized_request(&headers, b"{}".to_vec())).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
     #[tokio::test]
     async fn a_payload_that_ends_early_is_counted_as_msgp_short_bytes() {
         for (version, payload) in [
             (EndpointVersion::V04, v04_payload(2)),
             (EndpointVersion::V05, v05_payload(2)),
+            (EndpointVersion::V07, v07_payload(None, 2)),
             (EndpointVersion::V10, v1_payload(None, 2)),
         ] {
             let (intake, _traces) = intake(config());
@@ -1198,6 +1318,8 @@ mod tests {
         let large = "x".repeat(64 << 10);
         for (version, payload) in [
             (EndpointVersion::V05, v05_payload_in_env(&large, 2000)),
+            // v0.7 has no string references, but its payload's own fields are carried by every trace.
+            (EndpointVersion::V07, v07_payload(Some(&large), 2000)),
             (EndpointVersion::V10, v1_payload(Some(&large), 2000)),
         ] {
             let (intake, mut traces) = intake(TraceIntakeConfiguration {
