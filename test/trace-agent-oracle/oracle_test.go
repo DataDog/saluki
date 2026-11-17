@@ -147,6 +147,8 @@ func TestOracle(t *testing.T) {
 		}
 		v := v04
 		switch c.Version {
+		case "v0.1":
+			v = v01
 		case "v0.2":
 			v = v02
 		case "v0.3":

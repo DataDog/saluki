@@ -1,5 +1,5 @@
-//! Deserialization of a JSON `pb.Traces` value into the classic tracer payload model, as Go's `encoding/json` decodes
-//! it.
+//! Deserialization of a JSON `pb.Traces` value, or of the `[]*pb.Span` value of v0.1, into the classic tracer payload
+//! model, as Go's `encoding/json` decodes it.
 //!
 //! The classic protos derive `serde`, but under their protobuf field names (`TraceID`, `SpanID`) and with `serde`'s
 //! own semantics, which aren't Go's. So the values are decoded here with visitors that follow `encoding/json`
@@ -23,6 +23,7 @@
 //!
 //! A type error ends decoding, where Go carries on and reports it at the end: either way the payload is rejected.
 
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::fmt;
 
@@ -33,6 +34,7 @@ use datadog_protos::traces::{
     AttributeAnyValue, AttributeArray, AttributeArrayValue, Span, SpanEvent, SpanLink, TraceChunk,
 };
 use protobuf::{EnumOrUnknown, MessageField};
+use saluki_common::collections::FastHashMap;
 use serde::de::{self, DeserializeSeed, Deserializer, Error as _, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::Deserialize as _;
 use serde_json::value::RawValue;
@@ -86,6 +88,40 @@ impl<'de> Visitor<'de> for TracesVisitor {
         }
         Ok(chunks)
     }
+}
+
+/// Decodes a JSON `[]*pb.Span` value, the body of `/v0.1/spans`, into one chunk per trace ID.
+///
+/// The chunks are grouped as `traceChunksFromSpans` groups them: `nil` spans are skipped, the spans of a chunk keep
+/// their order in the list, and each chunk gets no priority and no tags. Go builds the chunks from a map, so their
+/// order varies from one request to the next; here they come in the order their trace IDs first appear.
+///
+/// The input must be one syntactically valid JSON value in valid UTF-8, so that any error is a type error.
+pub(super) fn decode_spans(json: &[u8]) -> Result<Vec<TraceChunk>, serde_json::Error> {
+    let mut deserializer = serde_json::Deserializer::from_slice(json);
+    let spans = deserializer.deserialize_option(TraceSeed)?;
+
+    // Nothing is reserved up front: each chunk and map entry is grown by a span that decoded.
+    let mut chunk_by_trace_id: FastHashMap<u64, usize> = FastHashMap::default();
+    let mut chunks: Vec<Vec<Span>> = Vec::new();
+    for span in spans {
+        match chunk_by_trace_id.entry(span.traceID) {
+            Entry::Occupied(entry) => chunks[*entry.get()].push(span),
+            Entry::Vacant(entry) => {
+                entry.insert(chunks.len());
+                // One span's room, as Go's first `append` makes, rather than the four a push would reserve.
+                chunks.push(vec![span]);
+            }
+        }
+    }
+    Ok(chunks
+        .into_iter()
+        .map(|spans| TraceChunk {
+            priority: PRIORITY_NONE,
+            spans,
+            ..TraceChunk::default()
+        })
+        .collect())
 }
 
 /// One trace, a list of spans, `null` being an empty one.

@@ -5,7 +5,7 @@
 //! it the relay.
 //!
 //! With [`trace_intake`](ApmConfiguration::trace_intake) set, the source serves `/v1.0/traces`, `/v0.4/traces`,
-//! `/v0.3/traces` and `/v0.2/traces` itself, in every media type. It emits the traces it decodes on its `traces`
+//! `/v0.3/traces`, `/v0.2/traces`, and the deprecated `/v0.1/spans` and `/spans` itself, in every media type they take. It emits the traces it decodes on its `traces`
 //! output, and its receiver telemetry on its `metrics` output. Without it, the source has no `metrics` output and emits
 //! nothing on `traces`, and every trace payload is forwarded to the trace-agent.
 //!
@@ -668,6 +668,10 @@ impl ApmAPIHandler {
         response
     }
 
+    async fn handle_spans_v01(state: State<ApmState>, request: AxumRequest) -> Response {
+        Self::handle_traces(state, EndpointVersion::V01, request).await
+    }
+
     async fn handle_traces_v02(state: State<ApmState>, request: AxumRequest) -> Response {
         Self::handle_traces(state, EndpointVersion::V02, request).await
     }
@@ -742,6 +746,8 @@ impl APIHandler for ApmAPIHandler {
         // Without the native trace intake, the trace endpoints are forwarded to the trace-agent like any other.
         let with_agent_headers = if state.intake.is_some() {
             with_agent_headers
+                .route("/spans", any(Self::handle_spans_v01))
+                .route("/v0.1/spans", any(Self::handle_spans_v01))
                 .route("/v0.2/traces", any(Self::handle_traces_v02))
                 .route("/v0.3/traces", any(Self::handle_traces_v03))
                 .route("/v0.4/traces", any(Self::handle_traces_v04))
@@ -906,6 +912,30 @@ mod tests {
             ("/v0.3/traces", None, JSON, StatusCode::OK, Some("OK\n")),
             ("/v0.2/traces", Some("text/json"), JSON, StatusCode::OK, Some("OK\n")),
             ("/v0.4/traces", Some("text/plain"), JSON, StatusCode::OK, Some(RATES)),
+            // The deprecated v0.1 endpoints take a JSON span list in any media type but MessagePack.
+            (
+                "/v0.1/spans",
+                Some("application/json"),
+                JSON,
+                StatusCode::OK,
+                Some("OK\n"),
+            ),
+            ("/spans", None, JSON, StatusCode::OK, Some("OK\n")),
+            ("/spans", Some("text/plain"), JSON, StatusCode::OK, Some("OK\n")),
+            (
+                "/v0.1/spans",
+                Some("application/msgpack"),
+                MSGPACK,
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                None,
+            ),
+            (
+                "/spans",
+                Some("application/msgpack"),
+                MSGPACK,
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                None,
+            ),
         ];
         for (path, content_type, body, expected_status, expected_body) in cases {
             let (status, body) = send(router.clone(), path, content_type, body).await;
@@ -945,6 +975,37 @@ mod tests {
         info.set_headers(&mut expected);
         for header in [info::AGENT_STATE_HEADER, info::AGENT_VERSION_HEADER] {
             assert_eq!(response.headers().get(&header), expected.get(&header), "{header}");
+        }
+    }
+
+    #[tokio::test]
+    async fn serves_v01_spans_only_with_the_native_trace_intake() {
+        let send = |router: Router, path: &'static str| async move {
+            router
+                .oneshot(
+                    Request::builder()
+                        .method("PUT")
+                        .uri(path)
+                        .body(axum::body::Body::from(&b"[{\"trace_id\":1,\"span_id\":2}]"[..]))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+        };
+
+        for path in ["/v0.1/spans", "/spans"] {
+            // Without it, the request is proxied, and the trace-agent is unreachable.
+            assert_eq!(
+                send(test_router(), path).await.status(),
+                StatusCode::BAD_GATEWAY,
+                "{path}"
+            );
+
+            let (router, mut traces_rx) = native_intake_router(test_info());
+            assert_eq!(send(router, path).await.status(), StatusCode::OK, "{path}");
+            let traces = traces_rx.recv().await.unwrap();
+            assert_eq!(traces.len(), 1, "{path}");
+            assert_eq!(traces[0].spans()[0].span_id(), 2, "{path}");
         }
     }
 

@@ -54,21 +54,23 @@ than with our reading of its code. `test/trace-agent-oracle/` generates those fi
   it decodes the body with the receiver's `decodeConvertedTracerPayload` and dumps the resulting tracer payload, or
   classifies the error as `httpDecodingError` does.
 - `v04_json_cases.py` holds the cases of `lib/saluki-components/src/decoders/datadog/testdata/v04_json_cases.json`,
-  the v0.4 JSON decoder's fixtures, and turns the oracle's output into that file.
+  the v0.4 JSON decoder's fixtures, and turns the oracle's output into that file. `v01_json_cases.py` does the same for
+  `v01_json_cases.json`, the fixtures of the v0.1 JSON decoder that serves `/v0.1/spans` and `/spans`.
 - `regenerate.sh` runs both, with the Go toolchain that the checkout pins in `.go-version`.
 
-To add a case, add it to `v04_json_cases.py` and regenerate, then run the decoder tests:
+To add a case, add it to the cases script of its format and regenerate, then run the decoder tests:
 
 ```shell
 test/trace-agent-oracle/regenerate.sh ~/dd/datadog-agent
 cargo nextest run -p saluki-components -E 'test(/decoders::datadog::json/)'
 ```
 
-Don't edit the fixtures by hand. To cover another endpoint, such as `/v0.1/spans` or `/v0.7/traces`, add its version
-to the `version` switch in `oracle_test.go`, write a cases script for it beside `v04_json_cases.py` that sets each
-case's `version`, and run it from `regenerate.sh`. The v1.0 decoder's
-fixtures, `testdata/v1_decoder_cases.json`, were produced by the reference Go encoder when that decoder was added,
-with a generator that isn't in the repository.
+Don't edit the fixtures by hand. To cover another endpoint, such as `/v0.7/traces`, add its version to the `version`
+switch in `oracle_test.go`, write a cases script for it beside the others that sets each case's `version`, as
+`v01_json_cases.py` does, and add it to the loop in `regenerate.sh`. The trace-agent groups v0.1 spans into chunks
+through a map, so their order in `v01_json_cases.json` is random, and the test compares them in any order. The v1.0
+decoder's fixtures, `testdata/v1_decoder_cases.json`, were produced by the reference Go encoder when that decoder was
+added, with a generator that isn't in the repository.
 
 ## Correctness tests (panoramic)
 

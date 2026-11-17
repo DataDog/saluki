@@ -1,5 +1,6 @@
-//! Decoder for the Datadog v0.4 APM trace format in JSON, the `[][]Span` body that tracers send to `/v0.4/traces`,
-//! `/v0.3/traces` and `/v0.2/traces` with a JSON media type.
+//! Decoders for the Datadog v0.4 APM trace format in JSON, the `[][]Span` body that tracers send to `/v0.4/traces`,
+//! `/v0.3/traces` and `/v0.2/traces` with a JSON media type, and for the v0.1 format, the `[]Span` body of
+//! `/v0.1/spans` and `/spans`.
 //!
 //! [`decode_v04_json`] decodes these bodies as the trace-agent's receiver does: `json.NewDecoder(body).Decode` into
 //! `pb.Traces`, then a conversion to the v1.0 model. It decodes in three steps:
@@ -12,6 +13,9 @@
 //!
 //! [`decode_v04_any`] is the trace-agent's "do our best" branch for any other media type: JSON first, then MessagePack.
 //!
+//! [`decode_v01_json`] mirrors the reference's `v01` branch the same way, with `traceChunksFromSpans` grouping the spans
+//! into chunks by trace ID. The reference decodes a v0.1 body as JSON whatever its media type.
+//!
 //! # Limits
 //!
 //! The decoder reads the body as a whole, where Go's reads only as far as the first value: a body whose first value is
@@ -19,7 +23,7 @@
 
 use std::borrow::Cow;
 
-use datadog_protos::traces::TracerPayload;
+use datadog_protos::traces::{TraceChunk, TracerPayload};
 
 use super::convert::convert_tracer_payload;
 use super::error::DecodeError;
@@ -58,6 +62,20 @@ pub fn decode_v04_any(body: &[u8]) -> Result<DecodedV1, DecodeError> {
     decode_json(body).or_else(|failure| decode_v04_payload(&body[failure.read..]))
 }
 
+/// Decodes a v0.1 JSON span list into unified trace events, one per trace ID.
+///
+/// The spans of each trace keep their order in the list, and the traces come in the order their IDs first appear. As
+/// for [`decode_v04_json`], the payload fields that come from the request headers are left for the caller to set.
+///
+/// # Errors
+///
+/// Returns [`DecodeError::UnexpectedEof`] if the body ends before its first JSON value is complete, and
+/// [`DecodeError::Json`] if that value isn't valid JSON or isn't a list of spans.
+pub fn decode_v01_json(body: &[u8]) -> Result<DecodedV1, DecodeError> {
+    let chunks = decode_json_value(body, de::decode_spans).map_err(|failure| failure.error)?;
+    Ok(convert_chunks(chunks, "v01-json"))
+}
+
 /// A JSON decoding failure, with how much of the body Go's decoder would have read by then.
 struct JsonFailure {
     error: DecodeError,
@@ -65,6 +83,14 @@ struct JsonFailure {
 }
 
 fn decode_json(body: &[u8]) -> Result<DecodedV1, JsonFailure> {
+    let chunks = decode_json_value(body, de::decode_traces)?;
+    Ok(convert_chunks(chunks, "v04-json"))
+}
+
+/// Decodes the first JSON value of the body into chunks with `decode`, as `json.Decoder.Decode` reads it.
+fn decode_json_value(
+    body: &[u8], decode: fn(&[u8]) -> Result<Vec<TraceChunk>, serde_json::Error>,
+) -> Result<Vec<TraceChunk>, JsonFailure> {
     let scanned = scan::scan(body);
     let read = scan::decoder_read(scanned.examined, body.len());
     let fail = |error| JsonFailure { error, read };
@@ -84,14 +110,17 @@ fn decode_json(body: &[u8]) -> Result<DecodedV1, JsonFailure> {
         Ok(_) => Cow::Borrowed(value),
         Err(_) => Cow::Owned(read::repair_utf8(value).into_bytes()),
     };
-    let chunks = de::decode_traces(&value).map_err(|error| {
+    decode(&value).map_err(|error| {
         fail(DecodeError::Json {
             detail: error.to_string(),
         })
-    })?;
+    })
+}
+
+fn convert_chunks(chunks: Vec<TraceChunk>, converted_from: &'static str) -> DecodedV1 {
     let payload = TracerPayload {
         chunks,
         ..TracerPayload::default()
     };
-    Ok(convert_tracer_payload(payload, "v04-json"))
+    convert_tracer_payload(payload, converted_from)
 }

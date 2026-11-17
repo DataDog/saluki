@@ -1,8 +1,9 @@
 //! Decoders for the Datadog APM trace wire formats.
 //!
 //! [`decode_v04_payload`](datadog::decode_v04_payload) decodes the v0.4 MessagePack `[][]Span` format, and
-//! [`decode_v04_json`](datadog::decode_v04_json) the same format in JSON, into the same output as the v1.0 decoder;
-//! see their modules for how they match the trace-agent. [`convert_tracer_payload`](datadog::convert_tracer_payload)
+//! [`decode_v04_json`](datadog::decode_v04_json) the same format in JSON, and
+//! [`decode_v01_json`](datadog::decode_v01_json) the v0.1 JSON `[]Span` format, into the same output as the v1.0
+//! decoder; see their modules for how they match the trace-agent. [`convert_tracer_payload`](datadog::convert_tracer_payload)
 //! converts the classic tracer payload model the same way. The rest of this page covers the v1.0 format (also called
 //! the `idx`/`etp` format).
 //!
@@ -40,7 +41,7 @@ mod tests;
 
 pub use self::convert::convert_tracer_payload;
 pub use self::error::DecodeError;
-pub use self::json::{decode_v04_any, decode_v04_json};
+pub use self::json::{decode_v01_json, decode_v04_any, decode_v04_json};
 use self::string_table::StringTable;
 pub use self::v04::decode_v04_payload;
 use crate::common::traces::attribute_as_string;

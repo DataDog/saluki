@@ -9,7 +9,7 @@
 //!
 //! | Condition | Status |
 //! |---|---|
-//! | A MessagePack body sent to `/v0.2/traces` | 415 |
+//! | A MessagePack body sent to `/v0.1/spans`, `/spans` or `/v0.2/traces` | 415 |
 //! | `Sec-Fetch-Site: cross-site` | 403 |
 //! | `receiver_timeout` elapses waiting for a decoder | 429, no body |
 //! | `decoder_timeout` elapses waiting for a decoder | 200, or 429 with feature `429` or `Datadog-Send-Real-Http-Status`, after draining the body |
@@ -21,13 +21,14 @@
 //! | Accepted | 200 |
 //!
 //! Accepted payloads, and those refused for want of a decoder, are answered as the trace-agent answers them: `OK` on
-//! `/v0.2/traces` and `/v0.3/traces`, and the [sampling rates by service](crate::common::traces::rates) the priority
-//! sampler publishes on the other endpoints.
+//! `/v0.1/spans`, `/spans`, `/v0.2/traces` and `/v0.3/traces`, and the
+//! [sampling rates by service](crate::common::traces::rates) the priority sampler publishes on the other endpoints.
 //!
 //! # Media types
 //!
-//! `/v1.0/traces` decodes any body as v1.0. The v0.x endpoints decode a body by its [format](super::media_type), as
-//! the trace-agent does:
+//! `/v1.0/traces` decodes any body as v1.0, and `/v0.1/spans` and `/spans` any body but MessagePack as a JSON span list,
+//! grouped into traces by trace ID. The other v0.x endpoints decode a body by its [format](super::media_type), as the
+//! trace-agent does:
 //!
 //! | `Content-Type` | Decoded as |
 //! |---|---|
@@ -62,8 +63,8 @@ use super::media_type::{payload_format, PayloadFormat};
 use super::receiver_telemetry::{DropReason, ReceiverTags, ReceiverTelemetry};
 use crate::common::traces::normalize::{truncate_utf8_str, MAX_SERVICE_LEN};
 use crate::decoders::datadog::{
-    decode_v04_any, decode_v04_json, decode_v04_payload, decode_v1_payload, first_span, resolve_process_tags,
-    resolve_sdk_otlp_export, DecodeError,
+    decode_v01_json, decode_v04_any, decode_v04_json, decode_v04_payload, decode_v1_payload, first_span,
+    resolve_process_tags, resolve_sdk_otlp_export, DecodeError,
 };
 use crate::transforms::{HistogramConfiguration, ServiceRates};
 
@@ -119,6 +120,8 @@ pub struct TraceIntakeConfiguration {
 /// An intake endpoint version, as the trace-agent's `Version`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum EndpointVersion {
+    /// `/v0.1/spans` and `/spans`.
+    V01,
     /// `/v0.2/traces`.
     V02,
     /// `/v0.3/traces`.
@@ -132,6 +135,7 @@ pub(super) enum EndpointVersion {
 impl EndpointVersion {
     fn as_str(self) -> &'static str {
         match self {
+            Self::V01 => "v0.1",
             Self::V02 => "v0.2",
             Self::V03 => "v0.3",
             Self::V04 => "v0.4",
@@ -141,12 +145,12 @@ impl EndpointVersion {
 
     /// Returns whether the endpoint rejects MessagePack bodies, as the trace-agent does below v0.3.
     fn rejects_msgpack(self) -> bool {
-        matches!(self, Self::V02)
+        matches!(self, Self::V01 | Self::V02)
     }
 
     /// Returns whether the endpoint answers `OK` rather than the rates, as the trace-agent does below v0.4.
     fn replies_ok(self) -> bool {
-        matches!(self, Self::V02 | Self::V03)
+        matches!(self, Self::V01 | Self::V02 | Self::V03)
     }
 }
 
@@ -244,6 +248,8 @@ impl TraceIntake {
 
         let decoded = match (version, format) {
             (EndpointVersion::V10, _) => decode_v1_payload(&body),
+            // As `decodeConvertedTracerPayload`'s `v01` case, which decodes JSON whatever the media type.
+            (EndpointVersion::V01, _) => decode_v01_json(&body),
             // `/v0.2/traces` never gets here with MessagePack: it is rejected above.
             (_, PayloadFormat::MessagePack) => decode_v04_payload(&body),
             (_, PayloadFormat::Json) => decode_v04_json(&body),
@@ -857,6 +863,60 @@ mod tests {
         let (tags, errors) = counter(&counters, "datadog.trace_agent.receiver.error");
         assert_eq!(tags, ["error:format-error", "version:v0.2"]);
         assert_eq!(errors, 1.0);
+    }
+
+    // The v0.1 case of `TestReceiverMsgpackDecoder` in `api_test.go`: `/v0.1/spans` and `/spans` are both `v01`.
+    #[tokio::test]
+    async fn a_msgpack_payload_on_v01_is_an_unsupported_media_type() {
+        let (intake, mut traces) = intake(config());
+
+        let (status, response_headers, body) =
+            send_to(&intake, EndpointVersion::V01, sized_request(&[MSGPACK], v04_payload(1))).await;
+
+        assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        assert_eq!(response_headers[CONTENT_TYPE], "text/plain; charset=utf-8");
+        assert_eq!(body, "unsupported media type: \"application/msgpack\"\n");
+        assert!(traces.try_recv().is_err());
+        let counters = counters(&intake);
+        let (tags, errors) = counter(&counters, "datadog.trace_agent.receiver.error");
+        assert_eq!(tags, ["error:format-error", "version:v0.1"]);
+        assert_eq!(errors, 1.0);
+    }
+
+    #[tokio::test]
+    async fn v01_spans_are_grouped_into_traces_and_answered_ok() {
+        let (intake, mut traces, _) = intake_with_rates(config());
+        // Any media type but MessagePack is JSON, and the rates version a client sends gets nothing back.
+        let headers = [
+            ("Content-Type", "text/plain"),
+            ("Datadog-Rates-Payload-Version", "stale"),
+        ];
+        let body = br#"[{"trace_id":1,"span_id":1},{"trace_id":2,"span_id":2},null,{"trace_id":1,"span_id":3}]"#;
+
+        let (status, response_headers, response) =
+            send_to(&intake, EndpointVersion::V01, sized_request(&headers, body.to_vec())).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(response_headers[CONTENT_TYPE], "text/plain; charset=utf-8");
+        assert!(!response_headers.contains_key(&RATES_PAYLOAD_VERSION_HEADER));
+        assert_eq!(response, "OK\n");
+        let traces = traces.try_recv().unwrap();
+        let span_ids: Vec<Vec<u64>> = traces
+            .iter()
+            .map(|trace| trace.spans().iter().map(|span| span.span_id()).collect())
+            .collect();
+        assert_eq!(span_ids, [vec![1, 3], vec![2]]);
+        let accepted = counters(&intake);
+        let (tags, received) = counter(&accepted, "datadog.trace_agent.receiver.traces_received");
+        assert!(tags.iter().any(|tag| tag == "endpoint_version:v0.1"), "{tags:?}");
+        assert_eq!(received, 2.0);
+
+        // A MessagePack body under another media type isn't decoded as MessagePack, as it would be on v0.4.
+        let (status, _, _) = send_to(&intake, EndpointVersion::V01, sized_request(&headers, v04_payload(1))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let rejected = counters(&intake);
+        let (tags, _) = counter(&rejected, "datadog.trace_agent.receiver.error");
+        assert_eq!(tags, ["handler:traces", "v:v0.1", "error:decoding-error"]);
     }
 
     #[tokio::test]
