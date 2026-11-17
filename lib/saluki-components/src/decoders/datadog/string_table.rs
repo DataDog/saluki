@@ -2,10 +2,11 @@
 
 use std::sync::Arc;
 
+use saluki_common::collections::FastHashMap;
 use stringtheory::MetaString;
 
 use super::error::DecodeError;
-use super::read::ResolvedBytes;
+use super::read::{repair_utf8, ResolvedBytes};
 
 /// A growing table of strings referenced by index within a single tracer payload.
 ///
@@ -18,29 +19,66 @@ use super::read::ResolvedBytes;
 /// to the payload's [`ResolvedBytes`] budget.
 pub struct StringTable {
     strings: Vec<MetaString>,
+    /// Index of each valid UTF-8 string, by its text.
+    indexes: FastHashMap<MetaString, u32>,
+    /// Index of each string sent with invalid UTF-8, by the bytes sent: two can repair to the same text.
+    repaired: FastHashMap<Box<[u8]>, u32>,
     resolved: ResolvedBytes,
 }
 
 impl StringTable {
     /// Creates a new string table, seeded with the empty string at index 0, for a payload of `payload_len` bytes.
     pub fn new(payload_len: usize) -> Self {
+        let mut indexes = FastHashMap::default();
+        indexes.insert(MetaString::empty(), 0);
         Self {
             strings: vec![MetaString::empty()],
+            indexes,
+            repaired: FastHashMap::default(),
             resolved: ResolvedBytes::for_payload(payload_len),
         }
     }
 
-    /// Appends a string to the table and returns its index.
+    /// Adds a string, sent as `raw`, to the table and returns its index.
     ///
-    /// Unlike the general-purpose reference table, this performs no deduplication: on the read path
-    /// each literal is known to be new (repeated strings arrive as indices, not literals).
+    /// As the reference's `StringTable.Add`, which a streaming string goes through, a string the table already holds
+    /// keeps its index rather than taking a new one: an encoder sends each string as a literal once, but a payload
+    /// that sends one again, or sends the empty string, mustn't shift the indexes of the strings after it. Strings are
+    /// told apart by their bytes, as the reference holds them, though invalid UTF-8 is repaired (see
+    /// [`repair_utf8`](super::read::repair_utf8)).
+    pub fn add(&mut self, raw: &[u8]) -> u32 {
+        let existing = match simdutf8::basic::from_utf8(raw) {
+            Ok(s) => self.indexes.get(s),
+            Err(_) => self.repaired.get(raw),
+        };
+        match existing {
+            Some(index) => *index,
+            None => self.add_unchecked(raw),
+        }
+    }
+
+    /// Appends a string, sent as `raw`, to the table and returns its index, even if the table already holds it.
+    ///
+    /// As the reference's `StringTable.addUnchecked`, which the string table field goes through: a duplicate takes an
+    /// index of its own, and a later [`add`](Self::add) of the same string returns the index added last.
     ///
     /// A string too long to inline gets one shared allocation, so that every reference to it shares it: cloning an
     /// owned [`MetaString`] copies it.
-    pub fn add(&mut self, s: &str) -> u32 {
-        self.strings
-            .push(MetaString::try_inline(s).unwrap_or_else(|| MetaString::from(Arc::<str>::from(s))));
-        (self.strings.len() - 1) as u32
+    pub fn add_unchecked(&mut self, raw: &[u8]) -> u32 {
+        let index = self.strings.len() as u32;
+        let value = match simdutf8::basic::from_utf8(raw) {
+            Ok(s) => {
+                let value = shared(s);
+                self.indexes.insert(value.clone(), index);
+                value
+            }
+            Err(_) => {
+                self.repaired.insert(raw.into(), index);
+                shared(&repair_utf8(raw))
+            }
+        };
+        self.strings.push(value);
+        index
     }
 
     /// Resolves an index to its string.
@@ -67,4 +105,9 @@ impl StringTable {
     pub fn len(&self) -> usize {
         self.strings.len()
     }
+}
+
+/// Returns `s` inlined, or else in one shared allocation.
+fn shared(s: &str) -> MetaString {
+    MetaString::try_inline(s).unwrap_or_else(|| MetaString::from(Arc::<str>::from(s)))
 }

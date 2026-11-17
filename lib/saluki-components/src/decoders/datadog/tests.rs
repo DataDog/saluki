@@ -923,7 +923,7 @@ fn references_that_resolve_to_too_many_bytes_are_rejected() {
         strings.get(0).unwrap();
     }
     let mut strings = StringTable::new(0);
-    let index = strings.add(&"x".repeat(read::MIN_RESOLVED_BYTES));
+    let index = strings.add("x".repeat(read::MIN_RESOLVED_BYTES).as_bytes());
     strings.get(index).unwrap();
     assert!(matches!(
         strings.get(index),
@@ -1119,4 +1119,99 @@ fn attribute_doubles_are_read_as_the_reference_reads_them() {
     assert!(matches!(err, DecodeError::ShortBytes { .. }), "{err:?}");
     let attributes = attribute(&[0xca, 0x40, 0x20, 0x00, 0x00]).unwrap();
     assert_eq!(attributes.get("k"), Some(&AttributeValue::Float(2.5)));
+}
+
+#[test]
+fn repeated_literals_take_no_new_index() {
+    // Found by the parity fuzzer: the reference's string table adds a literal it already holds, the empty string
+    // included, at its existing index, so a repeated literal doesn't shift the indexes after it.
+    let mut buf = Vec::new();
+    encode::write_map_len(&mut buf, 1).unwrap(); // tracer payload
+    encode::write_uint(&mut buf, 11).unwrap(); // chunks
+    encode::write_array_len(&mut buf, 1).unwrap();
+    encode::write_map_len(&mut buf, 2).unwrap(); // trace chunk
+    encode::write_uint(&mut buf, 6).unwrap(); // traceID
+    encode::write_bin(&mut buf, &[1; 16]).unwrap();
+    encode::write_uint(&mut buf, 4).unwrap(); // spans
+    encode::write_array_len(&mut buf, 1).unwrap();
+    encode::write_map_len(&mut buf, 6).unwrap(); // span
+    encode::write_uint(&mut buf, 1).unwrap(); // service: index 1
+    encode::write_str(&mut buf, "checkout").unwrap();
+    encode::write_uint(&mut buf, 2).unwrap(); // name: the same literal again
+    encode::write_str(&mut buf, "checkout").unwrap();
+    encode::write_uint(&mut buf, 10).unwrap(); // type: the empty literal
+    encode::write_str(&mut buf, "").unwrap();
+    encode::write_uint(&mut buf, 3).unwrap(); // resource: index 2
+    encode::write_str(&mut buf, "GET /cart").unwrap();
+    encode::write_uint(&mut buf, 13).unwrap(); // env: index 2
+    encode::write_uint(&mut buf, 2).unwrap();
+    encode::write_uint(&mut buf, 4).unwrap(); // spanID
+    encode::write_u64(&mut buf, 7).unwrap();
+
+    let decoded = decode_v1_payload(&buf).unwrap();
+    let span = &decoded.traces[0].spans()[0];
+    assert_eq!(
+        (span.service(), span.name(), span.span_type()),
+        ("checkout", "checkout", "")
+    );
+    assert_eq!(span.env.as_ref(), "GET /cart");
+}
+
+/// Encodes a v1.0 payload of `table` as its string table, then one chunk of `priority` and one span whose service and
+/// name are references `service` and `name`.
+fn table_payload(table: &[&str], priority: i64, service: u32, name: u32) -> Vec<u8> {
+    let mut buf = Vec::new();
+    encode::write_map_len(&mut buf, 2).unwrap(); // tracer payload
+    encode::write_uint(&mut buf, 1).unwrap(); // string table
+    encode::write_array_len(&mut buf, table.len() as u32).unwrap();
+    for s in table {
+        encode::write_str(&mut buf, s).unwrap();
+    }
+    encode::write_uint(&mut buf, 11).unwrap(); // chunks
+    encode::write_array_len(&mut buf, 1).unwrap();
+    encode::write_map_len(&mut buf, 3).unwrap(); // trace chunk
+    encode::write_uint(&mut buf, 1).unwrap(); // priority
+    encode::write_sint(&mut buf, priority).unwrap();
+    encode::write_uint(&mut buf, 6).unwrap(); // traceID
+    encode::write_bin(&mut buf, &[1; 16]).unwrap();
+    encode::write_uint(&mut buf, 4).unwrap(); // spans
+    encode::write_array_len(&mut buf, 1).unwrap();
+    encode::write_map_len(&mut buf, 4).unwrap(); // span
+    encode::write_uint(&mut buf, 1).unwrap(); // service
+    encode::write_uint(&mut buf, u64::from(service)).unwrap();
+    encode::write_uint(&mut buf, 2).unwrap(); // name
+    encode::write_uint(&mut buf, u64::from(name)).unwrap();
+    encode::write_uint(&mut buf, 3).unwrap(); // resource
+    encode::write_str(&mut buf, "GET /checkout/cart").unwrap();
+    encode::write_uint(&mut buf, 4).unwrap(); // spanID
+    encode::write_u64(&mut buf, 7).unwrap();
+    buf
+}
+
+#[test]
+fn string_table_entries_each_take_an_index() {
+    // As the reference's `unmarshalStringTable`, which adds with `addUnchecked`: a duplicate entry takes its own index,
+    // and the empty string none.
+    let decoded = decode_v1_payload(&table_payload(&["a", "", "a", "b"], 1, 3, 2)).unwrap();
+    let span = &decoded.traces[0].spans()[0];
+    assert_eq!((span.service(), span.name()), ("b", "a"));
+
+    // A literal sent after them takes the index of the entry added last.
+    let mut strings = StringTable::new(0);
+    assert_eq!(strings.add_unchecked(b"a"), 1);
+    assert_eq!(strings.add_unchecked(b"a"), 2);
+    assert_eq!(strings.add_unchecked(b"b"), 3);
+    assert_eq!(strings.add(b"a"), 2);
+    assert_eq!(strings.add(b"c"), 4);
+}
+
+#[test]
+fn repaired_literals_are_told_apart_by_their_bytes() {
+    // As the reference's table, which holds the bytes sent: two literals that repair to the same text are distinct.
+    let mut strings = StringTable::new(0);
+    assert_eq!(strings.add(b"a\xff"), 1);
+    assert_eq!(strings.add(b"a\xfe"), 2);
+    assert_eq!(strings.add(b"a\xff"), 1);
+    assert_eq!(strings.add("a\u{FFFD}".as_bytes()), 3);
+    assert_eq!(strings.get(2).unwrap(), "a\u{FFFD}");
 }

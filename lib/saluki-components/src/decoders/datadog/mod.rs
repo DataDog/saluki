@@ -308,16 +308,15 @@ pub fn attribute_string_bytes(value: &AttributeValue) -> usize {
 
 /// Decodes the string table array (field 1 of the tracer payload).
 ///
-/// Empty strings are skipped: index 0 is always the pre-seeded empty string, matching the reference
-/// encoder which never emits duplicate or additional empty strings.
+/// As the reference's `unmarshalStringTable`, each entry takes an index of its own, duplicates included, but the empty
+/// string, which index 0 already holds.
 fn decode_string_table(r: &mut &[u8], strings: &mut StringTable) -> Result<(), DecodeError> {
     let num_strings = read::v0_read_dictionary_len(r, "string table")?;
     for _ in 0..num_strings {
-        let s = read::read_str(r, "string table entry")?;
-        if s.is_empty() {
-            continue;
+        let raw = read::read_str_bytes(r, "string table entry")?;
+        if !raw.is_empty() {
+            strings.add_unchecked(raw);
         }
-        strings.add(&s);
     }
     Ok(())
 }
