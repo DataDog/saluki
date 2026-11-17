@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["ApmRelay","ApmRelayConfiguration","TracerFlareConfiguration"]};
+window.SIDEBAR_ITEMS = {"struct":["ApmRelay","ApmRelayConfiguration","InfoCacheObfuscation","InfoConfiguration","InfoJsonObfuscation","InfoObfuscation","InfoReplaceRule","InfoTagFilter","InfoTagFilters","TracerFlareConfiguration"]};
