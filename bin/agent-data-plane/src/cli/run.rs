@@ -166,6 +166,15 @@ async fn create_topology(
         );
     }
 
+    // Like the Agent, run without any OTLP ingest when OTLP logs are enabled without the logs agent. The message starts
+    // with the Agent's own.
+    if dp.otlp_logs_without_logs_agent() {
+        error!(
+            "OTLP logs is enabled but logs agent is not enabled. ADP won't start OTLP ingest. Enable `logs_enabled`, \
+            or disable `otlp_config.logs.enabled`."
+        );
+    }
+
     // If no data pipelines are enabled, then there's nothing for us to do.
     if !dp.data_pipelines_enabled() {
         return Err(generic_error!("No data pipelines are enabled. Exiting."));

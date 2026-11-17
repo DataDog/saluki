@@ -1954,10 +1954,8 @@ inventory:
       runs when either key is `true`, and the Agent logs a deprecation warning when `log_enabled` is
       `true`. ADP reads it the same way, but doesn't log the warning.
 
-      Like the core Agent, ADP only accepts OTLP logs when the logs agent is enabled. ADP doesn't yet
-      apply the Agent's check that starts no OTLP receiver at all when `otlp_config.logs.enabled` is
-      `true` but the logs agent isn't enabled: ADP still serves OTLP metrics and traces then.
-    issue: "#2969"
+      Like the core Agent, ADP only accepts OTLP logs when the logs agent is enabled, and starts no
+      OTLP ingest at all when `otlp_config.logs.enabled` is `true` but the logs agent isn't enabled.
 
   log_file_max_rolls:
     support: full
@@ -2051,19 +2049,14 @@ inventory:
     documentation: "The core agent uses `logging_frequency` to throttle repetitive successful transaction logs. ADP logs successful forwarder operations below the default `info` level, so there is no matching info-level success-log stream to throttle. This key is intentionally unused."
 
   logs_enabled:
-    support: partial
+    support: full
     pipelines: [otlp]
     description: "Enable the logs agent"
     documentation: |-
       The core Agent runs its logs agent when `logs_enabled` (or its deprecated spelling
       `log_enabled`) is `true`. Its OTLP receiver needs the logs agent for OTLP logs: when
       `otlp_config.logs.enabled` is `true` but the logs agent isn't enabled, the Agent logs an error
-      and starts no OTLP receiver at all, so OTLP metrics and traces stop too.
-
-      Like the core Agent, ADP only accepts OTLP logs when the logs agent is enabled. It doesn't yet
-      apply the check that starts no OTLP receiver at all: ADP still serves OTLP metrics and traces
-      then.
-    issue: "#2969"
+      and starts no OTLP receiver at all, so OTLP metrics and traces stop too. ADP does the same.
 
   metric_filterlist:
     support: full

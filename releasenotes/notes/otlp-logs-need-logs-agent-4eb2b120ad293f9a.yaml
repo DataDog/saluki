@@ -1,0 +1,8 @@
+---
+upgrade:
+  - |
+    Like the Datadog Agent, Agent Data Plane now starts no OTLP ingest at all when
+    ``otlp_config.logs.enabled`` is ``true`` but ``logs_enabled`` isn't: OTLP metrics and traces
+    stop too, and Agent Data Plane logs an error. Its other pipelines keep running. Previously,
+    Agent Data Plane accepted OTLP metrics and traces in that configuration. Enable
+    ``logs_enabled``, or disable ``otlp_config.logs.enabled``.

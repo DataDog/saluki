@@ -486,7 +486,6 @@ default values.
 | `forwarder_stop_timeout`                                        | Timeout (s) for forwarder graceful stop         |
 | `log_enabled`                                                   | Deprecated name for `logs_enabled`              |
 | `log_level`                                                     | Log verbosity directives                        |
-| `logs_enabled`                                                  | Enable the logs agent                           |
 | `min_tls_version`                                               | Minimum TLS version for HTTPS connections       |
 | `multi_region_failover.enabled`                                 | Enable multi-region failover mode               |
 | `secret_backend_command`                                        | Path to the Agent secret-fetch executable       |
@@ -857,9 +856,8 @@ The core Agent treats `log_enabled` as a deprecated spelling of `logs_enabled`: 
 runs when either key is `true`, and the Agent logs a deprecation warning when `log_enabled` is
 `true`. ADP reads it the same way, but doesn't log the warning.
 
-Like the core Agent, ADP only accepts OTLP logs when the logs agent is enabled. ADP doesn't yet
-apply the Agent's check that starts no OTLP receiver at all when `otlp_config.logs.enabled` is
-`true` but the logs agent isn't enabled: ADP still serves OTLP metrics and traces then.
+Like the core Agent, ADP only accepts OTLP logs when the logs agent is enabled, and starts no
+OTLP ingest at all when `otlp_config.logs.enabled` is `true` but the logs agent isn't enabled.
 
 ### `log_level`
 
@@ -882,17 +880,6 @@ under it. ADP applies those directive strings as configured:
 ```yaml
 log_level: warn,agent_data_plane=debug,hyper=warn
 ```
-
-### `logs_enabled`
-
-The core Agent runs its logs agent when `logs_enabled` (or its deprecated spelling
-`log_enabled`) is `true`. Its OTLP receiver needs the logs agent for OTLP logs: when
-`otlp_config.logs.enabled` is `true` but the logs agent isn't enabled, the Agent logs an error
-and starts no OTLP receiver at all, so OTLP metrics and traces stop too.
-
-Like the core Agent, ADP only accepts OTLP logs when the logs agent is enabled. It doesn't yet
-apply the check that starts no OTLP receiver at all: ADP still serves OTLP metrics and traces
-then.
 
 ### `min_tls_version`
 
@@ -1312,6 +1299,7 @@ The following settings work in ADP with the same behavior as the core agent.
 | `log_payloads`                                                                             | Debug-log decoded payload contents before encoding |
 | `log_to_console`                                                                           | Write logs to the console                          |
 | `log_to_syslog`                                                                            | Write logs to syslog                               |
+| `logs_enabled`                                                                             | Enable the logs agent                              |
 | `metric_filterlist`                                                                        | Metric name blocklist                              |
 | `metric_filterlist_match_prefix`                                                           | Blocklist uses prefix matching                     |
 | `metric_filterlist_prefix`                                                                 | Per-entry metric prefix blocklist rules            |
@@ -1573,6 +1561,13 @@ empty while syslog logging is enabled, ADP uses the platform default local syslo
 `unixgram:///dev/log` on Linux and `unixgram:///var/run/syslog` on macOS. Set
 `syslog_rfc: true` when the receiving syslog daemon expects the Agent's RFC-style header.
 
+### `logs_enabled`
+
+The core Agent runs its logs agent when `logs_enabled` (or its deprecated spelling
+`log_enabled`) is `true`. Its OTLP receiver needs the logs agent for OTLP logs: when
+`otlp_config.logs.enabled` is `true` but the logs agent isn't enabled, the Agent logs an error
+and starts no OTLP receiver at all, so OTLP metrics and traces stop too. ADP does the same.
+
 ### DogStatsD metric blocklists
 
 The list defaults to empty, and the match-prefix setting defaults to `false`. Accepted runtime
@@ -1784,7 +1779,6 @@ Both commands scrub recognized secret values before writing JSON to standard out
 [#2557]: https://github.com/DataDog/saluki/issues/2557
 [#2558]: https://github.com/DataDog/saluki/issues/2558
 [#2559]: https://github.com/DataDog/saluki/issues/2559
-[#2969]: https://github.com/DataDog/saluki/issues/2969
 [#3088]: https://github.com/DataDog/saluki/issues/3088
 [#3089]: https://github.com/DataDog/saluki/issues/3089
 [#3090]: https://github.com/DataDog/saluki/issues/3090
