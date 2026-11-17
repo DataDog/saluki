@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 use http::StatusCode;
 use metrics::{Counter, Gauge, Histogram};
 use saluki_common::collections::FastHashMap;
+use saluki_io::net::util::retry::PersistedQueueStats;
 use saluki_metrics::MetricsBuilder;
 use stringtheory::MetaString;
 
@@ -553,17 +554,14 @@ impl SharedTransactionQueueTelemetry {
         MetaString::from(format!("{endpoint_url}#{index}"))
     }
 
-    fn record_retry_queue_size(&self, endpoint_id: &MetaString, domain: &MetaString, len: usize) {
-        self.inner.lock().unwrap().record_size(endpoint_id, domain, len);
-    }
-
-    fn record_retry_queue_disk_stats(
-        &self, endpoint_id: &MetaString, domain: &MetaString, files: usize, size_bytes: u64,
+    fn record_retry_queue_state(
+        &self, endpoint_id: &MetaString, domain: &MetaString, len: usize, disk_stats: Option<PersistedQueueStats>,
     ) {
-        self.inner
-            .lock()
-            .unwrap()
-            .record_disk_stats(endpoint_id, domain, files, size_bytes);
+        let mut inner = self.inner.lock().unwrap();
+        inner.record_size(endpoint_id, domain, len);
+        if let Some(stats) = disk_stats {
+            inner.record_disk_stats(endpoint_id, domain, stats.files, stats.size_bytes);
+        }
     }
 
     fn record_retry_queue_disk_startup_reloaded_files(
@@ -662,14 +660,11 @@ impl TransactionQueueTelemetry {
         &self.low_prio_queue_entries_dropped
     }
 
-    pub fn record_retry_queue_size(&self, domain: &MetaString, len: usize) {
-        self.shared.record_retry_queue_size(&self.endpoint_id, domain, len);
-    }
-
-    /// Records the number and total size of the entries this endpoint's retry queue holds on disk.
-    pub fn record_retry_queue_disk_stats(&self, domain: &MetaString, files: usize, size_bytes: u64) {
+    /// Records the number of entries in this endpoint's retry queue and, when given, the number and total size of
+    /// the entries it holds on disk.
+    pub fn record_retry_queue_state(&self, domain: &MetaString, len: usize, disk_stats: Option<PersistedQueueStats>) {
         self.shared
-            .record_retry_queue_disk_stats(&self.endpoint_id, domain, files, size_bytes);
+            .record_retry_queue_state(&self.endpoint_id, domain, len, disk_stats);
     }
 
     /// Records the number of entries this endpoint's retry queue reloaded from disk at startup.
@@ -826,14 +821,14 @@ mod tests {
 
         let domain = MetaString::from_static("https://example.com");
 
-        first.record_retry_queue_size(&domain, 3);
+        first.record_retry_queue_state(&domain, 3, None);
         first.record_retry_queue_bytes_per_sec(10.0);
-        second.record_retry_queue_size(&domain, 5);
+        second.record_retry_queue_state(&domain, 5, None);
         second.record_retry_queue_bytes_per_sec(2.5);
 
         assert_eq!(aggregate_snapshot(&shared), (8, 12.5));
 
-        first.record_retry_queue_size(&domain, 1);
+        first.record_retry_queue_state(&domain, 1, None);
         first.record_retry_queue_bytes_per_sec(4.0);
 
         assert_eq!(aggregate_snapshot(&shared), (6, 6.5));
@@ -851,9 +846,9 @@ mod tests {
         let one = MetaString::from_static("https://one.example");
         let two = MetaString::from_static("https://two.example");
 
-        first.record_retry_queue_size(&one, 3);
-        second.record_retry_queue_size(&one, 4);
-        third.record_retry_queue_size(&two, 5);
+        first.record_retry_queue_state(&one, 3, None);
+        second.record_retry_queue_state(&one, 4, None);
+        third.record_retry_queue_state(&two, 5, None);
 
         assert_eq!(recorder.gauge("network_http_retry_queue_size"), Some(12.0));
         assert_eq!(
@@ -865,7 +860,7 @@ mod tests {
             Some(5.0)
         );
 
-        first.record_retry_queue_size(&one, 0);
+        first.record_retry_queue_state(&one, 0, None);
 
         assert_eq!(recorder.gauge("network_http_retry_queue_size"), Some(9.0));
         assert_eq!(
@@ -891,9 +886,30 @@ mod tests {
 
         first.record_retry_queue_disk_startup_reloaded_files(&one, 1);
         second.record_retry_queue_disk_startup_reloaded_files(&one, 2);
-        first.record_retry_queue_disk_stats(&one, 3, 300);
-        second.record_retry_queue_disk_stats(&one, 4, 400);
-        third.record_retry_queue_disk_stats(&two, 5, 500);
+        first.record_retry_queue_state(
+            &one,
+            3,
+            Some(PersistedQueueStats {
+                files: 3,
+                size_bytes: 300,
+            }),
+        );
+        second.record_retry_queue_state(
+            &one,
+            4,
+            Some(PersistedQueueStats {
+                files: 4,
+                size_bytes: 400,
+            }),
+        );
+        third.record_retry_queue_state(
+            &two,
+            5,
+            Some(PersistedQueueStats {
+                files: 5,
+                size_bytes: 500,
+            }),
+        );
 
         assert_eq!(
             recorder.gauge(("network_http_retry_queue_disk_startup_reloaded_files", one_tags)),
@@ -946,8 +962,8 @@ mod tests {
         second.record_in_flight_requests(&one, 4);
         first.record_high_prio_queue_size(&one, 10);
         second.record_high_prio_queue_size(&one, 20);
-        first.record_retry_queue_size(&one, 5);
-        second.record_retry_queue_size(&one, 6);
+        first.record_retry_queue_state(&one, 5, None);
+        second.record_retry_queue_state(&one, 6, None);
 
         assert_eq!(recorder.gauge(("network_http_in_flight_requests", one_tags)), Some(7.0));
         assert_eq!(recorder.gauge("network_http_in_flight_requests"), Some(7.0));

@@ -379,6 +379,9 @@ where
         while let Some(entry) = self.pending.pop_front() {
             let entry_size = entry.size_bytes();
 
+            // The entry leaves memory whether or not persisting it succeeds, so account for that before persisting.
+            self.total_in_memory_bytes -= entry_size;
+
             if let Some(persisted_pending) = &mut self.persisted_pending {
                 let persist_result = persisted_pending.push(entry).await?;
                 push_result.merge(persist_result);
@@ -596,6 +599,30 @@ mod tests {
         assert_eq!(2, flush_result.items_dropped);
         assert_eq!(2, flush_result.events_dropped);
         assert_eq!(total_size, flush_result.bytes_dropped);
+    }
+
+    #[tokio::test]
+    async fn flush_releases_in_memory_capacity() {
+        let data = FakeData::random();
+        let data_size = data.size_bytes();
+
+        // Size the queue to hold exactly one entry.
+        let mut retry_queue = RetryQueue::<FakeData>::new("test".to_string(), data_size);
+        let _ = retry_queue.push(data).await.expect("should not fail to push data");
+        assert_eq!(0, retry_queue.available_in_memory_capacity_bytes());
+
+        let _ = retry_queue.flush().await.expect("should not fail to flush");
+        assert_eq!(data_size, retry_queue.available_in_memory_capacity_bytes());
+
+        // The flushed entry no longer counts against the queue, so a new entry fits without dropping anything.
+        let push_result = retry_queue
+            .push(FakeData {
+                name: "abcdefgh".to_string(),
+                value: 0,
+            })
+            .await
+            .expect("should not fail to push data");
+        assert!(!push_result.had_drops());
     }
 
     #[tokio::test]

@@ -262,8 +262,8 @@ where
     /// Returns the entries removed from disk to stay within the on-disk size limit since the last call to this
     /// method, resetting the counts.
     ///
-    /// Entries dropped because they couldn't be consumed are counted by
-    /// [`take_entries_dropped`][Self::take_entries_dropped] instead.
+    /// An entry that couldn't be consumed while being evicted is counted here, with no data points, and also by
+    /// [`take_entries_dropped`][Self::take_entries_dropped].
     pub fn take_evictions(&mut self) -> PersistedQueueEvictions {
         std::mem::take(&mut self.evictions)
     }
@@ -445,8 +445,11 @@ where
                         "Permanently dropping persisted entry that could not be consumed during eviction.",
                     );
 
+                    // It was still removed to make room, so count it as evicted, as the core Agent does, but with no
+                    // known data points.
                     self.total_on_disk_bytes -= entry.size_bytes;
                     self.entries_dropped += 1;
+                    self.evictions.files_removed += 1;
 
                     continue;
                 }
@@ -1095,9 +1098,16 @@ mod tests {
             .await
             .expect("should not fail to push data");
 
-        // The corrupt entry was dropped during eviction, not via normal eviction tracking.
+        // The corrupt entry was dropped during eviction, not via normal eviction tracking, but still counts as a
+        // removed file. Its data points are unknown.
         assert_eq!(1, persisted_queue.take_entries_dropped());
-        assert_eq!(PersistedQueueEvictions::default(), persisted_queue.take_evictions());
+        assert_eq!(
+            PersistedQueueEvictions {
+                files_removed: 1,
+                data_points_dropped: 0,
+            },
+            persisted_queue.take_evictions()
+        );
 
         // The valid entry should be poppable.
         let actual = persisted_queue
