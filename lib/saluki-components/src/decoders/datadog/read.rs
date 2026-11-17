@@ -172,6 +172,12 @@ fn mp<E: ReadError>(context: &'static str) -> impl FnOnce(E) -> DecodeError {
     }
 }
 
+/// The error of the reference's `UnmarshalStreamingString` for a payload that ends where a string is expected:
+/// "Expected streaming string but EOF", a decoding error rather than `msgp.ErrShortBytes`.
+pub fn missing_streaming_string(context: &'static str) -> DecodeError {
+    invalid(context, "expected a streaming string but found the end of the payload")
+}
+
 /// Builds a [`DecodeError::Msgpack`] for a value of the wrong type or out of range.
 fn invalid(context: &'static str, detail: impl Into<String>) -> DecodeError {
     DecodeError::Msgpack {
