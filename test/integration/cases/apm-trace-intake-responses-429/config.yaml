@@ -1,0 +1,58 @@
+# As `apm-trace-intake-responses`, for the answers to a payload refused for want of a decoder when
+# `apm_config.features` has `429`: the trace-agent then answers 429 rather than 200 (`rateLimiterResponse`).
+type: integration
+name: "apm-trace-intake-responses-429"
+description: "Verifies ADP native trace intake refuses overload with 429 under feature 429, as the trace-agent does"
+timeout: 300s
+runtimes: [linux]
+
+env:
+  DD_API_KEY: "00000000000000000000000000000000"
+  DD_HOSTNAME: "integration-test-trace-intake"
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "true"
+  DD_DATA_PLANE_DOGSTATSD_ENABLED: "false"
+  DD_DATA_PLANE_EXPERIMENTAL_APM_ENABLED: "true"
+  DD_DATA_PLANE_EXPERIMENTAL_APM_PROXY_DESTINATION: "http://127.0.0.1:8127"
+  DD_DATA_PLANE_EXPERIMENTAL_APM_NATIVE_TRACE_INTAKE: "true"
+  # Plain `DD_APM_*` variables reach both ADP and the trace-agent, so both receivers run with the same limits: a small
+  # body limit for the 413 cases, and one decoder, given up on after 100 ms, so that a request whose body never
+  # finishes arriving makes the next one be refused.
+  DD_APM_MAX_PAYLOAD_SIZE: "4096"
+  DD_APM_DECODERS: "1"
+  DD_APM_DECODER_TIMEOUT: "100"
+  DD_APM_FEATURES: "429"
+  # ADP takes over the trace-agent's receiver, so the trace-agent moves to the proxy destination, where the script
+  # sends it the same requests. `ADP_DD_*` variables only reach ADP (see `docker/cont-init.d/99-agent-data-plane.sh`).
+  # ADP gets a distinct socket path rather than an empty one, which `s6-envdir` would unset.
+  #
+  # TODO: Drop these once the Core Agent moves the trace-agent's receiver itself when the APM proxy is enabled.
+  DD_APM_RECEIVER_PORT: "8127"
+  ADP_DD_APM_RECEIVER_PORT: "8126"
+  ADP_DD_APM_RECEIVER_SOCKET: "/var/run/datadog/adp-apm.socket"
+
+container:
+  files:
+    - "../apm-trace-intake-responses/compare_responses.py:/apm-trace-intake-responses/compare_responses.py"
+
+procedure:
+  - assertion: log_contains
+    pattern: "Agent Data Plane running."
+    timeout: 90s
+  - action: target_exec
+    command:
+      - "/opt/datadog-agent/embedded/bin/python3"
+      - "/apm-trace-intake-responses/compare_responses.py"
+      - "feature-429"
+    timeout: 240s
+  - assertion: file_contains
+    path: "/tmp/apm-trace-intake-responses-result"
+    pattern: "passed"
+    timeout: 10s
+  - parallel:
+      - assertion: process_stable_for
+        duration: 10s
+      - assertion: log_not_contains
+        pattern: "panic|PANIC"
+        regex: true
+        during: 10s
