@@ -82,6 +82,9 @@ pub enum DecodeError {
 
     /// The payload's string references resolve to more string bytes than its size allows: 512 times its length, and at
     /// least 1 MiB. The reference receiver has no such limit, which only payloads built to amplify meet.
+    ///
+    /// The strings every trace of a payload carries (its own fields and attributes, and what the receiver adds to them)
+    /// are held to the same bound, counted once per trace.
     #[snafu(display("string references resolve to more than {limit} bytes"))]
     ResolvedStringsTooLarge {
         /// The payload's bound, in bytes.
