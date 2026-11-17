@@ -9,6 +9,7 @@
 //! The `v0_*` helpers reproduce the trace-agent's v0.x reads, including which numeric types they
 //! tolerate and which failures count as short input.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::hash::{BuildHasher, Hash};
@@ -36,6 +37,62 @@ pub const MAX_PREALLOCATED_ELEMENTS: usize = 1024;
 /// Returns the capacity to pre-allocate for a collection whose header declares `count` elements.
 pub fn preallocation(count: u32) -> usize {
     (count as usize).min(MAX_PREALLOCATED_ELEMENTS)
+}
+
+/// How many bytes of strings a payload's string references may resolve to, per byte of the payload.
+///
+/// The v0.5 and v1.0 formats send each string once and then refer to it by index, so a few bytes can stand for a
+/// string of any length. Memory is not the issue, as every reference shares the one copy, but each resolved string is
+/// hashed into an attribute map, and again downstream (the encoder interns every span's strings), so the work a
+/// payload costs follows the bytes its references resolve to, not its own size. The reference receiver keeps the
+/// references as indexes end to end and has no such limit: this one is a deliberate deviation, which only payloads
+/// built to amplify meet.
+///
+/// A legitimate payload stays below it. A typical span costs about 130 bytes on the wire and resolves to about 500 (a
+/// ratio near 4). Long strings shared across spans push the ratio up: a batch of identical database spans, each
+/// referencing a 5 KB query as its resource, costs about 50 bytes a span in v0.5 and resolves to about 5 KB (a ratio
+/// near 100), and about 200 if each span also repeats the query as a tag. The limit is five times the first and more
+/// than twice the second, and bounds a hostile payload at the maximum request size (25 MiB) to about 13 GB of
+/// resolved strings.
+pub const RESOLVED_BYTES_PER_PAYLOAD_BYTE: usize = 512;
+
+/// The fewest bytes of strings a payload's string references may resolve to, however small the payload.
+pub const MIN_RESOLVED_BYTES: usize = 1 << 20;
+
+/// Bounds the total length of the strings a payload's string references resolve to.
+///
+/// The bound is [`RESOLVED_BYTES_PER_PAYLOAD_BYTE`] times the payload's length, and at least [`MIN_RESOLVED_BYTES`].
+pub struct ResolvedBytes {
+    remaining: Cell<usize>,
+    limit: usize,
+}
+
+impl ResolvedBytes {
+    /// Creates the budget of a payload of `payload_len` bytes.
+    pub fn for_payload(payload_len: usize) -> Self {
+        let limit = payload_len
+            .saturating_mul(RESOLVED_BYTES_PER_PAYLOAD_BYTE)
+            .max(MIN_RESOLVED_BYTES);
+        Self {
+            remaining: Cell::new(limit),
+            limit,
+        }
+    }
+
+    /// Records a resolved string of `len` bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DecodeError::ResolvedStringsTooLarge`] once the payload's references resolve to more than its bound.
+    pub fn charge(&self, len: usize) -> Result<(), DecodeError> {
+        match self.remaining.get().checked_sub(len) {
+            Some(remaining) => {
+                self.remaining.set(remaining);
+                Ok(())
+            }
+            None => Err(DecodeError::ResolvedStringsTooLarge { limit: self.limit }),
+        }
+    }
 }
 
 /// Releases the capacity a map reserved with [`preallocation`] when far fewer entries decoded.

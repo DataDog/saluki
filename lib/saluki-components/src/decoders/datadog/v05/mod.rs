@@ -41,6 +41,15 @@
 //! The dictionary holds each string once, and every reference to it shares that one copy: a payload that references
 //! one large string from many spans holds it once.
 //!
+//! # Resolved string bytes
+//!
+//! Every reference is charged its string's length against a bound of 512 times the payload's length (at least
+//! 1 MiB), and a payload past it fails to decode ([`DecodeError::ResolvedStringsTooLarge`]), as a v1.0 payload does.
+//! Each resolved string is hashed into an attribute map here and again downstream, so without the bound a small
+//! payload that references one large string from many spans would cost work out of all proportion to its size. The
+//! reference keeps its references as indexes and has no such bound: this is a deliberate deviation, which only
+//! payloads built to amplify meet.
+//!
 //! # Promoted fields
 //!
 //! The same fields are promoted to the span, chunk and payload as for v0.4 (see [`decode_v04_payload`]), by the same
@@ -79,7 +88,7 @@ use saluki_core::data_model::event::trace::{AttributeValue, PayloadFields, Span,
 use stringtheory::MetaString;
 
 use super::error::DecodeError;
-use super::read;
+use super::read::{self, ResolvedBytes};
 use super::v04::{
     parse_unsigned, span_kind, ChunkPromoted, PayloadPromoted, RootPriority, PRIORITY_NONE, TAG_APM_MODE,
     TAG_CONVERTED_V1, TAG_GIT_COMMIT_SHA,
@@ -107,7 +116,7 @@ const CONVERTED_V1_VALUE: MetaString = MetaString::from_static("v05");
 pub fn decode_v05_payload(bytes: &[u8]) -> Result<DecodedV1, DecodeError> {
     let mut r = bytes;
     read::v0_read_array_len(&mut r, "payload")?;
-    let dictionary = Dictionary::read(&mut r)?;
+    let dictionary = Dictionary::read(&mut r, bytes.len())?;
 
     let num_chunks = read::v0_read_array_len(&mut r, "trace list")?;
     let mut traces = Vec::with_capacity(read::preallocation(num_chunks));
@@ -121,9 +130,9 @@ pub fn decode_v05_payload(bytes: &[u8]) -> Result<DecodedV1, DecodeError> {
     }
 
     let payload = PayloadFields {
-        env: dictionary.get(promoted.env),
-        hostname: dictionary.get(promoted.hostname),
-        app_version: dictionary.get(promoted.app_version),
+        env: dictionary.get(promoted.env)?,
+        hostname: dictionary.get(promoted.hostname)?,
+        app_version: dictionary.get(promoted.app_version)?,
         ..PayloadFields::default()
     };
     for trace in &mut traces {
@@ -135,11 +144,11 @@ pub fn decode_v05_payload(bytes: &[u8]) -> Result<DecodedV1, DecodeError> {
     if promoted.git_commit_sha != 0 {
         payload_attributes.insert(
             TAG_GIT_COMMIT_SHA,
-            AttributeValue::String(dictionary.get(promoted.git_commit_sha)),
+            AttributeValue::String(dictionary.get(promoted.git_commit_sha)?),
         );
     }
     if promoted.apm_mode != 0 {
-        payload_attributes.insert(TAG_APM_MODE, AttributeValue::String(dictionary.get(promoted.apm_mode)));
+        payload_attributes.insert(TAG_APM_MODE, AttributeValue::String(dictionary.get(promoted.apm_mode)?));
     }
 
     Ok(DecodedV1 {
@@ -156,11 +165,13 @@ struct Dictionary {
     wire_len: u32,
     /// Where the dictionary's first string moved to, or 0 if it didn't move (`newZeroRef`).
     zero_ref: u32,
+    /// The bytes the payload's references may still resolve to.
+    resolved: ResolvedBytes,
 }
 
 impl Dictionary {
-    /// Reads the dictionary, as the first half of `UnmarshalMsgDictionary`.
-    fn read(r: &mut &[u8]) -> Result<Self, DecodeError> {
+    /// Reads the dictionary of a payload of `payload_len` bytes, as the first half of `UnmarshalMsgDictionary`.
+    fn read(r: &mut &[u8], payload_len: usize) -> Result<Self, DecodeError> {
         let wire_len = read::v0_read_dictionary_len(r, "dictionary")?;
         // The count is backed by as many bytes, but a string takes more memory than its one-byte encoding: the table
         // grows as the strings decode.
@@ -188,6 +199,7 @@ impl Dictionary {
             strings,
             wire_len,
             zero_ref: zero_ref as u32,
+            resolved: ResolvedBytes::for_payload(payload_len),
         })
     }
 
@@ -201,13 +213,19 @@ impl Dictionary {
     }
 
     /// Returns the string a reference read by [`read_ref`](Self::read_ref) points to, sharing it.
-    fn get(&self, reference: u32) -> MetaString {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DecodeError::ResolvedStringsTooLarge`] if the payload's references have resolved to too many bytes.
+    fn get(&self, reference: u32) -> Result<MetaString, DecodeError> {
         // Every reference `read_ref` returns is in the table, and 0 always is.
-        self.strings.get(reference as usize).cloned().unwrap_or_default()
+        let value = self.strings.get(reference as usize).cloned().unwrap_or_default();
+        self.resolved.charge(value.len())?;
+        Ok(value)
     }
 
     fn read_string(&self, r: &mut &[u8], context: &'static str) -> Result<MetaString, DecodeError> {
-        Ok(self.get(self.read_ref(r, context)?))
+        self.get(self.read_ref(r, context)?)
     }
 }
 
@@ -245,7 +263,7 @@ fn decode_chunk(
     trace.trace_id_high = promoted.trace_id_high;
     trace.sampling_mechanism = promoted.sampling_mechanism;
     trace.priority = (promoted.sampling_priority != PRIORITY_NONE).then_some(promoted.sampling_priority);
-    trace.origin = dictionary.get(promoted.origin);
+    trace.origin = dictionary.get(promoted.origin)?;
     payload.apply(&mut promoted);
     Ok(trace)
 }
@@ -297,9 +315,9 @@ fn decode_meta(
     read::v0_check_slab_count(len, r, "span meta")?;
     span.attributes.reserve(read::preallocation(len));
     for _ in 0..len {
-        let key = dictionary.get(dictionary.read_ref(r, "span meta key")?);
+        let key = dictionary.read_string(r, "span meta key")?;
         let value_ref = dictionary.read_ref(r, "span meta value")?;
-        let value = dictionary.get(value_ref);
+        let value = dictionary.get(value_ref)?;
         match key.as_ref() {
             "_dd.p.tid" => {
                 if let Some(high) = parse_unsigned(value.as_bytes(), 16) {
@@ -346,7 +364,7 @@ fn decode_metrics(
     read::v0_check_slab_count(len, r, "span metrics")?;
     attributes.reserve(read::preallocation(len));
     for _ in 0..len {
-        let key = dictionary.get(dictionary.read_ref(r, "span metrics key")?);
+        let key = dictionary.read_string(r, "span metrics key")?;
         let value = read::v0_parse_f64(r, "span metrics value")?;
         if key.as_ref() == "_sampling_priority_v1" {
             // Go's `int32(float64)`; out-of-range values saturate here, where Go's result is platform-dependent.

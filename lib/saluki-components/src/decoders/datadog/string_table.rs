@@ -3,6 +3,7 @@
 use stringtheory::MetaString;
 
 use super::error::DecodeError;
+use super::read::ResolvedBytes;
 
 /// A growing table of strings referenced by index within a single tracer payload.
 ///
@@ -11,16 +12,19 @@ use super::error::DecodeError;
 /// always the empty string.
 ///
 /// This is a decode-time-only structure. String references are resolved to owned [`MetaString`]
-/// values as the payload is decoded, so the table is not retained in the decoded output.
+/// values as the payload is decoded, so the table is not retained in the decoded output. Each resolution is charged
+/// to the payload's [`ResolvedBytes`] budget.
 pub struct StringTable {
     strings: Vec<MetaString>,
+    resolved: ResolvedBytes,
 }
 
 impl StringTable {
-    /// Creates a new string table seeded with the empty string at index 0.
-    pub fn new() -> Self {
+    /// Creates a new string table, seeded with the empty string at index 0, for a payload of `payload_len` bytes.
+    pub fn new(payload_len: usize) -> Self {
         Self {
             strings: vec![MetaString::empty()],
+            resolved: ResolvedBytes::for_payload(payload_len),
         }
     }
 
@@ -37,15 +41,15 @@ impl StringTable {
     ///
     /// # Errors
     ///
-    /// Returns [`DecodeError::UnseenStringIndex`] if the index is out of range.
+    /// Returns [`DecodeError::UnseenStringIndex`] if the index is out of range, or
+    /// [`DecodeError::ResolvedStringsTooLarge`] if the payload's references have resolved to too many bytes.
     pub fn get(&self, index: u32) -> Result<MetaString, DecodeError> {
-        self.strings
-            .get(index as usize)
-            .cloned()
-            .ok_or(DecodeError::UnseenStringIndex {
-                index,
-                len: self.strings.len(),
-            })
+        let value = self.strings.get(index as usize).ok_or(DecodeError::UnseenStringIndex {
+            index,
+            len: self.strings.len(),
+        })?;
+        self.resolved.charge(value.len())?;
+        Ok(value.clone())
     }
 
     /// Returns the number of strings currently in the table.
