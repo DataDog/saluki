@@ -4,19 +4,20 @@ use agent_data_plane_config::domains::{otlp, traces::ApmFeature};
 use saluki_components::sources::{
     ContainerTagPromotion, CorsConfiguration, CumulativeMonotonicMode, GrpcTransport, HistogramMode,
     InitialCumulativeMonotonicValue, OtlpContextSettings, OtlpGrpcReceiver, OtlpHttpReceiver, OtlpKeepalive,
-    OtlpMetricsSettings, OtlpReceiver, OtlpReceiverTls, OtlpTracesSettings, SummaryMode,
+    OtlpMetricsSettings, OtlpReceiver, OtlpReceiverTls, OtlpSignals, OtlpTracesSettings, SummaryMode,
 };
 
 use super::origin_tag_cardinality;
 
-/// Builds the OTLP receiver settings.
-pub(crate) fn otlp_receiver(receiver: &otlp::Receiver) -> OtlpReceiver {
+/// Builds the OTLP receiver settings, accepting `signals`.
+pub(crate) fn otlp_receiver(receiver: &otlp::Receiver, signals: OtlpSignals) -> OtlpReceiver {
     let grpc = &receiver.grpc;
     let http = &receiver.http;
 
     OtlpReceiver {
-        logs_enabled: receiver.logs_enabled,
-        metrics_enabled: receiver.metrics_enabled,
+        logs_enabled: signals.logs,
+        metrics_enabled: signals.metrics,
+        traces_enabled: signals.traces,
         grpc: OtlpGrpcReceiver {
             endpoint: grpc.endpoint.clone(),
             max_recv_msg_size_mib: grpc.max_recv_msg_size_mib,
@@ -176,10 +177,18 @@ mod tests {
             },
         };
 
+        // The accepted signals come from the gating decision, not from the receiver's own settings.
+        let signals = OtlpSignals {
+            metrics: true,
+            logs: false,
+            traces: true,
+        };
+
         assert_eq!(
             OtlpReceiver {
-                logs_enabled: true,
-                metrics_enabled: false,
+                logs_enabled: false,
+                metrics_enabled: true,
+                traces_enabled: true,
                 grpc: OtlpGrpcReceiver {
                     endpoint: "0.0.0.0:4317".to_string(),
                     max_recv_msg_size_mib: 11,
@@ -206,7 +215,7 @@ mod tests {
                     max_request_body_size: 18,
                 },
             },
-            otlp_receiver(&receiver)
+            otlp_receiver(&receiver, signals)
         );
     }
 
@@ -219,7 +228,11 @@ mod tests {
             let mut receiver = otlp::Receiver::default();
             receiver.grpc.transport = configured;
 
-            assert_eq!(expected, otlp_receiver(&receiver).grpc.transport, "{configured:?}");
+            assert_eq!(
+                expected,
+                otlp_receiver(&receiver, OtlpSignals::ALL).grpc.transport,
+                "{configured:?}"
+            );
         }
     }
 

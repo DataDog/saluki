@@ -17,7 +17,8 @@ use tracing::{debug, error};
 
 use crate::common::otlp::{
     build_metrics, receiver::OtlpReceiver, CorsConfiguration, Metrics, OtlpHandler, OtlpServerConfiguration,
-    OtlpTlsConfiguration, OTLP_LOGS_GRPC_SERVICE_PATH, OTLP_METRICS_GRPC_SERVICE_PATH, OTLP_TRACES_GRPC_SERVICE_PATH,
+    OtlpSignals, OtlpTlsConfiguration, OTLP_LOGS_GRPC_SERVICE_PATH, OTLP_METRICS_GRPC_SERVICE_PATH,
+    OTLP_TRACES_GRPC_SERVICE_PATH,
 };
 
 /// Configuration for the OTLP relay.
@@ -72,6 +73,7 @@ impl RelayBuilder for OtlpRelayConfiguration {
         let grpc_tls_config = self.receiver.grpc.tls.build()?;
 
         Ok(Box::new(OtlpRelay {
+            signals: self.receiver.signals(),
             http_endpoint: self.http_endpoint(),
             grpc_endpoint: self.grpc_endpoint(),
             grpc_max_recv_msg_size_bytes: self.grpc_max_recv_msg_size_bytes(),
@@ -89,6 +91,7 @@ impl RelayBuilder for OtlpRelayConfiguration {
 ///
 /// Receives OTLP metrics and logs via gRPC and HTTP, outputting payloads for downstream processing.
 pub struct OtlpRelay {
+    signals: OtlpSignals,
     http_endpoint: ListenAddress,
     grpc_endpoint: ListenAddress,
     grpc_max_recv_msg_size_bytes: usize,
@@ -104,6 +107,7 @@ pub struct OtlpRelay {
 impl Relay for OtlpRelay {
     async fn run(self: Box<Self>, mut context: RelayContext) -> Result<(), GenericError> {
         let Self {
+            signals,
             http_endpoint,
             grpc_endpoint,
             grpc_max_recv_msg_size_bytes,
@@ -128,6 +132,7 @@ impl Relay for OtlpRelay {
             grpc_endpoint.clone(),
             grpc_max_recv_msg_size_bytes,
         )
+        .with_signals(signals)
         .with_cors(cors)
         .with_grpc_http2_config(grpc_http2_config)
         .with_http_max_request_body_size(http_max_request_body_size);
@@ -313,6 +318,7 @@ mod tests {
         const EXPORTS: usize = 16;
 
         let mut receiver = receiver();
+        receiver.logs_enabled = true;
         receiver.grpc.endpoint = "127.0.0.1:0".to_string();
         receiver.grpc.max_recv_msg_size_mib = 4;
         // The configuration translator resolves a zero keepalive to these defaults.

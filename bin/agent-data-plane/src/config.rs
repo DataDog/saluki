@@ -5,6 +5,7 @@ use agent_data_plane_config::{ConfigValue, SalukiConfiguration};
 use datadog_agent_commons::ipc::config::{IpcAuthConfiguration, RemoteAgentClientConfiguration};
 use datadog_agent_config::classifier::Pipeline;
 use datadog_agent_runtime::env::{HostSettings, WorkloadSettings};
+use saluki_components::sources::OtlpSignals;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::net::ListenAddress;
 
@@ -149,8 +150,22 @@ impl<'a> DataPlaneConfiguration<'a> {
 
     /// Returns `true` if at least one OTLP signal (metrics, logs, or traces) is enabled.
     const fn otlp_signals_enabled(&self) -> bool {
+        let signals = self.otlp_signals();
+        signals.metrics || signals.logs || signals.traces
+    }
+
+    /// Returns the OTLP signals ADP accepts.
+    ///
+    /// Like the Datadog Agent, ADP only accepts a signal whose pipeline it builds, and doesn't serve the others at all.
+    /// Metrics and traces follow `otlp_config.metrics.enabled` and `otlp_config.traces.enabled`. Logs also need the
+    /// logs agent, `logs_enabled`, as the Agent only builds its OTLP logs pipeline when the logs agent is enabled.
+    pub const fn otlp_signals(&self) -> OtlpSignals {
         let otlp = &self.config.domains.otlp;
-        otlp.receiver.metrics_enabled || otlp.receiver.logs_enabled || otlp.traces.enabled
+        OtlpSignals {
+            metrics: otlp.receiver.metrics_enabled,
+            logs: otlp.receiver.logs_enabled && self.config.control.logs_enabled,
+            traces: otlp.traces.enabled,
+        }
     }
 
     /// Returns `true` if the OTLP proxy is enabled.
@@ -197,8 +212,8 @@ impl<'a> DataPlaneConfiguration<'a> {
     pub const fn logs_pipeline_required(&self) -> bool {
         // We consider the logs pipeline to be enabled if:
         // - Checks is enabled
-        // - OTLP is enabled and not in proxy mode
-        self.checks_enabled() || (self.otlp_enabled() && !self.otlp_proxy_enabled())
+        // - OTLP is enabled, accepts logs, and isn't in proxy mode
+        self.checks_enabled() || (self.otlp_enabled() && self.otlp_signals().logs && !self.otlp_proxy_enabled())
     }
 
     /// Returns `true` if the events pipeline is required.
@@ -311,6 +326,7 @@ mod tests {
             config.control.otlp = true;
             config.domains.otlp.receiver.metrics_enabled = metrics;
             config.domains.otlp.receiver.logs_enabled = logs;
+            config.control.logs_enabled = logs;
             config.domains.otlp.traces.enabled = traces;
             let dp = DataPlaneConfiguration::from_configuration(&config);
             (dp.otlp_enabled(), dp.otlp_enabled_without_signals())
@@ -326,6 +342,7 @@ mod tests {
     fn otlp_without_signals_activates_no_otlp_pipelines() {
         let mut config = pipeline_configuration(false, false, true, Proxy::default());
         config.domains.otlp.receiver.metrics_enabled = false;
+        config.domains.otlp.receiver.logs_enabled = false;
         let dp = DataPlaneConfiguration::from_configuration(&config);
 
         assert!(!dp.data_pipelines_enabled());
@@ -428,10 +445,36 @@ mod tests {
         config.control.checks = checks_enabled;
         config.control.dogstatsd = dogstatsd_enabled;
         config.control.otlp = otlp_enabled;
-        // The OTLP pipeline needs at least one signal, and the Agent enables metrics by default.
+        // The OTLP pipeline needs at least one signal, and the Agent enables metrics by default. Accept logs too, which
+        // needs both OTLP logs and the logs agent.
         config.domains.otlp.receiver.metrics_enabled = true;
+        config.domains.otlp.receiver.logs_enabled = true;
+        config.control.logs_enabled = true;
         config.domains.otlp.proxy = otlp_proxy;
         config
+    }
+
+    #[test]
+    fn otlp_logs_are_accepted_only_with_the_logs_agent() {
+        let otlp_signals = |otlp_logs, logs_agent| {
+            let mut config = pipeline_configuration(false, false, true, Proxy::default());
+            config.domains.otlp.receiver.logs_enabled = otlp_logs;
+            config.control.logs_enabled = logs_agent;
+            config.domains.otlp.traces.enabled = false;
+            let dp = DataPlaneConfiguration::from_configuration(&config);
+            (dp.otlp_signals(), dp.logs_pipeline_required())
+        };
+        let signals = |logs| OtlpSignals {
+            metrics: true,
+            logs,
+            traces: false,
+        };
+
+        assert_eq!(otlp_signals(true, true), (signals(true), true));
+        // Like the Datadog Agent, OTLP logs need the logs agent, and both default to off.
+        assert_eq!(otlp_signals(true, false), (signals(false), false));
+        assert_eq!(otlp_signals(false, true), (signals(false), false));
+        assert_eq!(otlp_signals(false, false), (signals(false), false));
     }
 
     // Pipeline-requirement predicates. Each scenario is chosen to walk one documented branch of the

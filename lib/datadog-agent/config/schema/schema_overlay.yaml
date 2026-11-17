@@ -1954,9 +1954,9 @@ inventory:
       runs when either key is `true`, and the Agent logs a deprecation warning when `log_enabled` is
       `true`. ADP reads it the same way, but doesn't log the warning.
 
-      ADP doesn't yet act on the result. The core Agent refuses to start its OTLP receiver when
-      `otlp_config.logs.enabled` is `true` but the logs agent isn't enabled. ADP doesn't apply this
-      check, and accepts OTLP logs whatever `logs_enabled` and `log_enabled` say.
+      Like the core Agent, ADP only accepts OTLP logs when the logs agent is enabled. ADP doesn't yet
+      apply the Agent's check that starts no OTLP receiver at all when `otlp_config.logs.enabled` is
+      `true` but the logs agent isn't enabled: ADP still serves OTLP metrics and traces then.
     issue: "#2969"
 
   log_file_max_rolls:
@@ -2060,8 +2060,9 @@ inventory:
       `otlp_config.logs.enabled` is `true` but the logs agent isn't enabled, the Agent logs an error
       and starts no OTLP receiver at all, so OTLP metrics and traces stop too.
 
-      ADP reads `logs_enabled`, but doesn't yet apply this check, and accepts OTLP logs whatever
-      `logs_enabled` says.
+      Like the core Agent, ADP only accepts OTLP logs when the logs agent is enabled. It doesn't yet
+      apply the check that starts no OTLP receiver at all: ADP still serves OTLP metrics and traces
+      then.
     issue: "#2969"
 
   metric_filterlist:
@@ -2324,7 +2325,7 @@ inventory:
   otlp_config.logs.enabled:
     support: full
     pipelines: [otlp]
-    description: "otlp_config.logs.enabled"
+    description: "Accept OTLP logs (with `logs_enabled`)"
 
   otlp_config.metrics.batch.flush_timeout:
     support: none
@@ -2371,7 +2372,7 @@ inventory:
   otlp_config.metrics.enabled:
     support: full
     pipelines: [otlp]
-    description: "otlp_config.metrics.enabled"
+    description: "Accept OTLP metrics"
 
   otlp_config.metrics.histograms.mode:
     support: full
@@ -2980,7 +2981,7 @@ inventory:
   otlp_config.traces.enabled:
     support: full
     pipelines: [traces]
-    description: "otlp_config.traces.enabled"
+    description: "Accept OTLP traces"
 
   otlp_config.traces.infra_attributes.container_tag_promotion:
     support: full

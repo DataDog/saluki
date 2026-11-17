@@ -806,6 +806,13 @@ experiments:
 
     erratic: true
 
+    target:
+      environment:
+        # Like the Datadog Agent, ADP only accepts OTLP logs when both OTLP logs and the logs agent are enabled.
+        # Without them, the experiment would measure rejected requests.
+        DD_LOGS_ENABLED: "true"
+        DD_OTLP_CONFIG_LOGS_ENABLED: "true"
+
     lading:
       generator:
         - http:

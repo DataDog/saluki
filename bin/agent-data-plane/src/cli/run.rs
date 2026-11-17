@@ -1050,7 +1050,8 @@ async fn add_otlp_pipeline_to_blueprint(
         );
 
         let config = config_system.config();
-        let otlp_relay_config = OtlpRelayConfiguration::new(otlp_receiver(&config.domains.otlp.receiver));
+        let otlp_relay_config =
+            OtlpRelayConfiguration::new(otlp_receiver(&config.domains.otlp.receiver, dp.otlp_signals()));
         let otlp_decoder_config = OtlpDecoderConfiguration::new(
             otlp_traces_settings(&config.domains.otlp.traces, &config.domains.traces.features),
             env_provider.workload().clone(),
@@ -1093,9 +1094,8 @@ async fn add_otlp_pipeline_to_blueprint(
         let otlp = &config.domains.otlp;
         let otlp_config = OtlpConfiguration {
             default_hostname: default_hostname.into(),
-            receiver: otlp_receiver(&otlp.receiver),
+            receiver: otlp_receiver(&otlp.receiver, dp.otlp_signals()),
             metrics: otlp_metrics_settings(&otlp.metrics),
-            traces_enabled: otlp.traces.enabled,
             traces: otlp_traces_settings(&otlp.traces, &config.domains.traces.features),
             contexts: otlp_context_settings(&otlp.contexts),
             max_resource_len: config.domains.traces.max_resource_len,
@@ -1107,13 +1107,17 @@ async fn add_otlp_pipeline_to_blueprint(
         blueprint
             // Components.
             .add_source("otlp_in", otlp_config)?
-            // Metrics, logs, and traces.
+            // Metrics and traces.
             //
             // We send OTLP metrics directly to the enrichment stage of the metrics pipeline, skipping aggregation,
             // to avoid transforming counters into rates.
             .connect_components("otlp_in.metrics", "metrics_enrich")?
-            .connect_components("otlp_in.logs", "dd_logs_encode")?
             .connect_components("otlp_in.traces", "traces_enrich")?;
+
+        // Logs, when the source accepts them. Otherwise the logs pipeline may not exist.
+        if dp.otlp_signals().logs {
+            blueprint.connect_components("otlp_in.logs", "dd_logs_encode")?;
+        }
     }
     Ok(())
 }

@@ -1,0 +1,10 @@
+---
+upgrade:
+  - |
+    Like the Datadog Agent's OTLP receiver, Agent Data Plane now only serves the OTLP signals that
+    are enabled, natively and in proxy mode. OTLP logs need both ``logs_enabled`` and
+    ``otlp_config.logs.enabled``, which default to ``false``. OTLP metrics and traces follow
+    ``otlp_config.metrics.enabled`` and ``otlp_config.traces.enabled``, which default to ``true``.
+    A client sending a signal that isn't enabled gets gRPC ``Unimplemented`` or HTTP 404.
+    Previously, Agent Data Plane accepted every OTLP signal whenever any of them was enabled. To
+    keep sending OTLP logs, set ``logs_enabled`` and ``otlp_config.logs.enabled`` to ``true``.

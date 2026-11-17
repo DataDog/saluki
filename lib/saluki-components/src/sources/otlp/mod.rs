@@ -38,7 +38,7 @@ use tracing::{debug, error};
 
 use crate::common::otlp::{
     build_metrics, receiver::OtlpReceiver, traces::translator::OtlpTracesSettings, CorsConfiguration, Metrics,
-    OtlpHandler, OtlpServerConfiguration, OtlpTlsConfiguration,
+    OtlpHandler, OtlpServerConfiguration, OtlpSignals, OtlpTlsConfiguration,
 };
 
 mod logs;
@@ -88,9 +88,6 @@ pub struct OtlpConfiguration {
 
     /// Metrics translation settings.
     pub metrics: OtlpMetricsSettings,
-
-    /// Whether OTLP traces are accepted.
-    pub traces_enabled: bool,
 
     /// Trace translation settings.
     pub traces: OtlpTracesSettings,
@@ -151,7 +148,13 @@ impl SourceBuilder for OtlpConfiguration {
     }
 
     async fn build(&self, context: BuildContext) -> Result<Box<dyn Source + Send>, GenericError> {
-        if !self.receiver.metrics_enabled && !self.receiver.logs_enabled && !self.traces_enabled {
+        if self.receiver.signals()
+            == (OtlpSignals {
+                metrics: false,
+                logs: false,
+                traces: false,
+            })
+        {
             return Err(generic_error!(
                 "OTLP metrics, logs and traces support is disabled. Please enable at least one of them."
             ));
@@ -193,6 +196,7 @@ impl SourceBuilder for OtlpConfiguration {
         let logs_translator = OtlpLogsTranslator::new(origin_tag_resolver.clone());
 
         Ok(Box::new(Otlp {
+            signals: self.receiver.signals(),
             context_resolver,
             origin_tag_resolver,
             grpc_endpoint,
@@ -226,6 +230,7 @@ impl MemoryBounds for OtlpConfiguration {
 }
 
 pub struct Otlp {
+    signals: OtlpSignals,
     context_resolver: ContextResolver,
     origin_tag_resolver: OtlpOriginTagResolver,
     grpc_endpoint: ListenAddress,
@@ -249,6 +254,7 @@ pub struct Otlp {
 impl Source for Otlp {
     async fn run(self: Box<Self>, mut context: SourceContext) -> Result<(), GenericError> {
         let Self {
+            signals,
             context_resolver,
             origin_tag_resolver,
             grpc_endpoint,
@@ -290,6 +296,7 @@ impl Source for Otlp {
         let handler = SourceHandler::new(tx, metrics.clone());
         let mut server_config =
             OtlpServerConfiguration::new(http_endpoint, grpc_endpoint, grpc_max_recv_msg_size_bytes)
+                .with_signals(signals)
                 .with_cors(cors)
                 .with_grpc_http2_config(grpc_http2_config)
                 .with_http_max_request_body_size(http_max_request_body_size);
@@ -600,7 +607,6 @@ mod tests {
             default_hostname: MetaString::default(),
             receiver: receiver(),
             metrics: metrics_settings(),
-            traces_enabled: false,
             traces: traces_settings(),
             contexts: OtlpContextSettings {
                 allow_context_heap_allocs: true,
