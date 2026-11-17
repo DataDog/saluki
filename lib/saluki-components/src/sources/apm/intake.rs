@@ -21,14 +21,14 @@
 //! | Accepted | 200 | `replyOK` |
 //!
 //! Accepted payloads, and those refused for want of a decoder, are answered as `replyOK` answers them: `OK` on
-//! `/v0.1/spans`, `/spans`, `/v0.2/traces` and `/v0.3/traces`, and the [sampling rates by service](crate::common::datadog::traces::rates) the
-//! priority sampler publishes on the other endpoints.
+//! `/v0.1/spans`, `/spans`, `/v0.2/traces` and `/v0.3/traces`, and the [sampling rates by
+//! service](crate::common::datadog::traces::rates) the priority sampler publishes on the other endpoints.
 //!
 //! # Media types
 //!
-//! `/v1.0/traces` decodes any body as v1.0, and `/v0.1/spans` and `/spans` any body but MessagePack as a JSON span list,
-//! grouped into traces by trace ID (`traceChunksFromSpans`). The other v0.x endpoints decode a body by its [format](super::media_type), as
-//! `decodeConvertedTracerPayload` does:
+//! `/v1.0/traces` decodes any body as v1.0, and `/v0.1/spans` and `/spans` any body but MessagePack as a JSON span
+//! list, grouped into traces by trace ID (`traceChunksFromSpans`). The other v0.x endpoints decode a body by its
+//! [format](super::media_type), as `decodeConvertedTracerPayload` does:
 //!
 //! | `Content-Type` | Decoded as | Go |
 //! |---|---|---|
