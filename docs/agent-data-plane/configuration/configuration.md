@@ -536,30 +536,30 @@ Container ID resolution through cgroups is independent of this key and is unaffe
 
 ### `data_plane.experimental.otlp.proxy.logs`
 
-ADP has no native path for OTLP logs or metrics while it proxies any signal. When any of
-`data_plane.experimental.otlp.proxy.logs`, `data_plane.experimental.otlp.proxy.metrics`, or
-`data_plane.experimental.otlp.proxy.traces` is `true`, ADP proxies both logs and metrics to the
-Agent, which ingests them on its relocated listener. ADP handles logs and metrics natively only
-when all three settings are `false`. Traces follow `data_plane.experimental.otlp.proxy.traces`
-exactly.
+ADP proxies OTLP logs and traces to the Agent exactly when
+`data_plane.experimental.otlp.proxy.logs` and `data_plane.experimental.otlp.proxy.traces` are
+`true`, and handles them natively otherwise. Metrics have no native path while ADP proxies any
+signal: when any of the three settings is `true`, ADP proxies metrics to the Agent, which ingests
+them on its relocated listener. ADP handles metrics natively only when all three settings are
+`false`.
 
 ### `data_plane.experimental.otlp.proxy.metrics`
 
-ADP has no native path for OTLP logs or metrics while it proxies any signal. When any of
-`data_plane.experimental.otlp.proxy.logs`, `data_plane.experimental.otlp.proxy.metrics`, or
-`data_plane.experimental.otlp.proxy.traces` is `true`, ADP proxies both logs and metrics to the
-Agent, which ingests them on its relocated listener. ADP handles logs and metrics natively only
-when all three settings are `false`. Traces follow `data_plane.experimental.otlp.proxy.traces`
-exactly.
+ADP proxies OTLP logs and traces to the Agent exactly when
+`data_plane.experimental.otlp.proxy.logs` and `data_plane.experimental.otlp.proxy.traces` are
+`true`, and handles them natively otherwise. Metrics have no native path while ADP proxies any
+signal: when any of the three settings is `true`, ADP proxies metrics to the Agent, which ingests
+them on its relocated listener. ADP handles metrics natively only when all three settings are
+`false`.
 
 ### `data_plane.experimental.otlp.proxy.traces`
 
-ADP has no native path for OTLP logs or metrics while it proxies any signal. When any of
-`data_plane.experimental.otlp.proxy.logs`, `data_plane.experimental.otlp.proxy.metrics`, or
-`data_plane.experimental.otlp.proxy.traces` is `true`, ADP proxies both logs and metrics to the
-Agent, which ingests them on its relocated listener. ADP handles logs and metrics natively only
-when all three settings are `false`. Traces follow `data_plane.experimental.otlp.proxy.traces`
-exactly.
+ADP proxies OTLP logs and traces to the Agent exactly when
+`data_plane.experimental.otlp.proxy.logs` and `data_plane.experimental.otlp.proxy.traces` are
+`true`, and handles them natively otherwise. Metrics have no native path while ADP proxies any
+signal: when any of the three settings is `true`, ADP proxies metrics to the Agent, which ingests
+them on its relocated listener. ADP handles metrics natively only when all three settings are
+`false`.
 
 ### `dogstatsd_mapper_cache_size`
 

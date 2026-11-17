@@ -166,6 +166,13 @@ impl<'a> DataPlaneConfiguration<'a> {
         self.config.domains.otlp.proxy.traces_enabled
     }
 
+    /// Returns `true` if OTLP logs should be proxied to the Core Agent.
+    ///
+    /// When another signal is proxied but logs aren't, ADP decodes the relayed logs and handles them natively.
+    pub const fn otlp_proxy_logs_enabled(&self) -> bool {
+        self.config.domains.otlp.proxy.logs_enabled
+    }
+
     /// Returns `true` if the APM pipeline is enabled.
     pub const fn apm_enabled(&self) -> bool {
         self.config.control.apm
@@ -197,8 +204,8 @@ impl<'a> DataPlaneConfiguration<'a> {
     pub const fn logs_pipeline_required(&self) -> bool {
         // We consider the logs pipeline to be enabled if:
         // - Checks is enabled
-        // - OTLP is enabled and not in proxy mode
-        self.checks_enabled() || (self.otlp_enabled() && !self.otlp_proxy_enabled())
+        // - OTLP is enabled and OTLP logs aren't proxied, whether or not other signals are
+        self.checks_enabled() || (self.otlp_enabled() && !self.otlp_proxy_logs_enabled())
     }
 
     /// Returns `true` if the events pipeline is required.
@@ -534,28 +541,30 @@ mod tests {
     }
 
     #[test]
-    fn otlp_proxy_traces_only_proxies_every_signal() {
-        // Proxy mode forwards logs and metrics whatever their own settings, so no native OTLP pipeline is needed.
+    fn otlp_proxy_traces_only_proxies_metrics_and_decodes_logs_natively() {
+        // Proxy mode forwards metrics whatever their own setting, so no native metrics pipeline is needed. Logs follow
+        // their own setting, so they're decoded and handled natively.
         let mut config = pipeline_configuration(false, false, true, proxy(false, false, true));
         config.control.standalone_mode = true;
         let dp = DataPlaneConfiguration::from_configuration(&config);
 
         assert!(dp.otlp_proxy_enabled());
         assert!(dp.otlp_proxy_traces_enabled());
+        assert!(!dp.otlp_proxy_logs_enabled());
         assert!(!dp.metrics_pipeline_required());
-        assert!(!dp.logs_pipeline_required());
+        assert!(dp.logs_pipeline_required());
         assert!(!dp.traces_pipeline_required());
     }
 
     #[test]
-    fn otlp_proxy_metrics_only_decodes_traces_natively() {
+    fn otlp_proxy_metrics_only_decodes_logs_and_traces_natively() {
         let mut config = pipeline_configuration(false, false, true, proxy(false, true, false));
         config.control.standalone_mode = true;
         let dp = DataPlaneConfiguration::from_configuration(&config);
 
         assert!(dp.otlp_proxy_enabled());
         assert!(!dp.otlp_proxy_traces_enabled());
-        assert!(!dp.logs_pipeline_required());
+        assert!(dp.logs_pipeline_required());
         assert!(dp.traces_pipeline_required());
         // The trace sampler's telemetry needs the metrics pipeline; OTLP metrics themselves are proxied.
         assert!(dp.metrics_pipeline_required());

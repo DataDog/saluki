@@ -1,0 +1,7 @@
+---
+enhancements:
+  - |
+    ``data_plane.experimental.otlp.proxy.logs`` now decides on its own whether Agent Data Plane
+    proxies OTLP logs to the Datadog Agent. When another OTLP signal is proxied but logs aren't,
+    Agent Data Plane now handles OTLP logs itself. Previously, proxying any OTLP signal also proxied
+    logs. Metrics are still proxied whenever any OTLP signal is.

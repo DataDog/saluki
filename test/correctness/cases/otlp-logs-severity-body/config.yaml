@@ -40,8 +40,8 @@ comparison:
     DD_DATA_PLANE_ENABLED: "true"
     DD_DATA_PLANE_STANDALONE_MODE: "false"
     DD_DATA_PLANE_OTLP_ENABLED: "true"
-    # Handle OTLP logs natively in ADP rather than relaying them to the core Agent. Proxying any signal also proxies
-    # logs, so this turns off the proxy for every signal.
+    # Handle OTLP logs natively in ADP rather than relaying them to the core Agent, and don't proxy any other signal
+    # either, so that ADP doesn't relay anything to the core Agent.
     DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_LOGS: "false"
     DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_METRICS: "false"
     DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_TRACES: "false"

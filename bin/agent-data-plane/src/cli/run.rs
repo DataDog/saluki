@@ -26,7 +26,7 @@ use saluki_components::{
     config::{
         AgentEnv, AutoscalingFailoverConfiguration, ClusterAgentConfiguration, MetricsEndpointRoutingConfiguration,
     },
-    decoders::otlp::OtlpDecoderConfiguration,
+    decoders::otlp::{OtlpDecoderConfiguration, OtlpLogsDecoderConfiguration},
     destinations::{
         DogStatsDClientTelemetryConfiguration, DogStatsDDebugLogConfiguration, DogStatsDStatisticsConfiguration,
     },
@@ -1046,7 +1046,8 @@ async fn add_otlp_pipeline_to_blueprint(
             proxy_logs,
             proxy_metrics,
             proxy_traces,
-            "OTLP proxy mode enabled. Logs, metrics, and (if `proxy_traces`) traces will be proxied to the Core Agent."
+            "OTLP proxy mode enabled. Metrics, and logs and traces if their proxy setting is on, will be proxied to the \
+             Core Agent."
         );
 
         let config = config_system.config();
@@ -1065,8 +1066,18 @@ async fn add_otlp_pipeline_to_blueprint(
             // Components.
             .add_relay("otlp_relay_in", otlp_relay_config)?
             .add_forwarder("local_agent_otlp_out", local_agent_otlp_forwarder_config)?
-            // Metrics and logs directly to the forwarders.
-            .connect_components(["otlp_relay_in.metrics", "otlp_relay_in.logs"], "local_agent_otlp_out")?;
+            // Metrics directly to the forwarder.
+            .connect_components("otlp_relay_in.metrics", "local_agent_otlp_out")?;
+
+        if proxy_logs {
+            blueprint.connect_components("otlp_relay_in.logs", "local_agent_otlp_out")?;
+        } else {
+            let otlp_logs_decoder_config = OtlpLogsDecoderConfiguration::new(env_provider.workload().clone());
+            blueprint
+                .add_decoder("otlp_logs_decode", otlp_logs_decoder_config)?
+                // Logs to decoder, then to the logs pipeline, as the OTLP source's logs are.
+                .connect_components_in_order(["otlp_relay_in.logs", "otlp_logs_decode", "dd_logs_encode"])?;
+        }
 
         if proxy_traces {
             blueprint.connect_components("otlp_relay_in.traces", "local_agent_otlp_out")?;
