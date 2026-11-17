@@ -1068,3 +1068,15 @@ fn invalid_utf8_strings_are_repaired_rather_than_rejected() {
         assert_eq!(actual, read::repair_utf8(value), "{value:?}");
     }
 }
+
+#[test]
+fn a_payload_that_ends_where_a_string_is_expected_is_a_decoding_error() {
+    // Found by the parity fuzzer: the reference's `UnmarshalStreamingString` reports its own error, not
+    // `msgp.ErrShortBytes`, when no byte is left, so the payload is dropped as `decoding_error`. A string cut short is
+    // still short input.
+    let err = decode_v1_payload(&[0x81, 0x07]).unwrap_err();
+    assert!(matches!(err, DecodeError::Msgpack { context: "env", .. }), "{err:?}");
+
+    let err = decode_v1_payload(&[0x81, 0x07, 0xa5, b'p', b'r']).unwrap_err();
+    assert!(matches!(err, DecodeError::ShortBytes { .. }), "{err:?}");
+}
