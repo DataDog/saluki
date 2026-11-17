@@ -132,7 +132,7 @@ fn dictionary_is_rebuilt_as_the_reference_string_table() {
     ];
     for (input, table, zero_ref) in cases {
         let bytes = encode_value(&V::Arr(input.iter().map(|value| s(value)).collect()));
-        let dictionary = Dictionary::read(&mut bytes.as_slice()).unwrap();
+        let dictionary = Dictionary::read(&mut bytes.as_slice(), bytes.len()).unwrap();
         let strings: Vec<&str> = dictionary.strings.iter().map(|value| value.as_ref()).collect();
         assert_eq!(&strings, table, "{input:?}");
         assert_eq!(dictionary.zero_ref, *zero_ref, "{input:?}");
@@ -214,14 +214,14 @@ fn small_inputs_with_huge_counts_allocate_little() {
 
 #[test]
 fn one_large_string_referenced_from_many_spans_is_held_once() {
-    // A 256 KiB string, referenced by every string field and a meta entry of 1,000 spans: about 20 KB of references
-    // that must not become 6,000 copies of the string.
-    const SPANS: u64 = 1000;
+    // A 256 KiB string, referenced by every string field and a meta entry of 40 spans, well within the resolved-bytes
+    // bound: 240 references that must not become 240 copies of the string.
+    const SPANS: u64 = 40;
     let large = "x".repeat(256 << 10);
-    let refs = [1, 1, 1, 1];
-    let chunks = vec![(0..SPANS).map(|i| span(refs, [1, i + 1, 0], &[(1, 1)], &[])).collect()];
+    let chunks = vec![(0..SPANS)
+        .map(|i| span([1; 4], [1, i + 1, 0], &[(1, 1)], &[]))
+        .collect()];
     let bytes = payload(&["", &large], chunks);
-    assert!(bytes.len() < large.len() + 32 * 1024);
 
     let (decoded, peak) = alloc_tracking::peak_during(|| decode(&bytes));
     let spans = decoded.traces[0].spans();
@@ -244,6 +244,82 @@ fn one_large_string_referenced_from_many_spans_is_held_once() {
     // The string once, plus each span with its two attributes.
     let bound = large.len() + SPANS as usize * (std::mem::size_of::<Span>() + 512);
     assert!(peak <= bound, "peak {peak} bytes (bound {bound})");
+}
+
+#[test]
+fn references_that_resolve_to_too_many_bytes_are_rejected_quickly() {
+    // 100,000 spans of a few bytes each, every string field and a meta entry referencing one 256 KiB string: 2 MB
+    // whose references would resolve to 150 GB.
+    let large = "x".repeat(256 << 10);
+    let chunks = vec![(0..100_000).map(|_| span([1; 4], [0; 3], &[(1, 1)], &[])).collect()];
+    let bytes = payload(&["", &large], chunks);
+    let budget = bytes.len() * read::RESOLVED_BYTES_PER_PAYLOAD_BYTE;
+
+    let start = std::time::Instant::now();
+    let error = decode_v05_payload(&bytes).unwrap_err();
+    let elapsed = start.elapsed();
+    assert!(
+        matches!(error, DecodeError::ResolvedStringsTooLarge { limit } if limit == budget),
+        "{error:?}"
+    );
+    // Decoding stops once the references have resolved to the bound, a few hundred spans in.
+    assert!(elapsed < std::time::Duration::from_secs(5), "took {elapsed:?}");
+}
+
+#[test]
+fn payloads_that_share_long_strings_are_accepted() {
+    // A batch of 1,000 identical database spans, each repeating a 5 KB query as its resource and its `sql.query`, the
+    // most a legitimate payload is expected to share.
+    let query = format!("SELECT {} FROM orders WHERE id = ?", "column_name, ".repeat(400));
+    let dictionary = [
+        "",
+        "orders-db",
+        "postgresql.query",
+        &query,
+        "sql",
+        "sql.query",
+        "env",
+        "production",
+    ];
+    let chunks = vec![(0..1000)
+        .map(|i| {
+            span(
+                [1, 2, 3, 4],
+                [0x1234_5678_9abc_def0, 0x1000_0000_0000 + i, 0x1000_0000_0000],
+                &[(5, 3), (6, 7)],
+                &[],
+            )
+        })
+        .collect()];
+    let bytes = payload(&dictionary, chunks);
+    let decoded = decode(&bytes);
+    assert_eq!(decoded.traces[0].spans().len(), 1000);
+
+    let resolved: usize = decoded.traces[0]
+        .spans()
+        .iter()
+        .map(|span| {
+            let fields = span.service().len() + span.name().len() + span.resource().len() + span.span_type().len();
+            let attributes: usize = span
+                .attributes
+                .iter()
+                .map(|(key, value)| {
+                    key.len()
+                        + if let AttributeValue::String(value) = value {
+                            value.len()
+                        } else {
+                            0
+                        }
+                })
+                .sum();
+            fields + attributes
+        })
+        .sum();
+    let ratio = resolved / bytes.len();
+    assert!(
+        (50..read::RESOLVED_BYTES_PER_PAYLOAD_BYTE / 2).contains(&ratio),
+        "ratio {ratio}"
+    );
 }
 
 #[test]

@@ -80,6 +80,14 @@ pub enum DecodeError {
         index: u32,
     },
 
+    /// The payload's string references resolve to more string bytes than its size allows: 512 times its length, and at
+    /// least 1 MiB. The reference receiver has no such limit, which only payloads built to amplify meet.
+    #[snafu(display("string references resolve to more than {limit} bytes"))]
+    ResolvedStringsTooLarge {
+        /// The payload's bound, in bytes.
+        limit: usize,
+    },
+
     /// An attribute map's flat array length was not a multiple of three (`key`, `type`, `value`).
     #[snafu(display("invalid attribute array length {len} - must be a multiple of 3"))]
     InvalidAttributeArrayLen {

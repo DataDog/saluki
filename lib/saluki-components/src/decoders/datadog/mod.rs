@@ -17,6 +17,13 @@
 //! - **Attribute maps are flat arrays** with three slots per entry (`key`, `type`, `value`).
 //! - **`AnyValue`** is a `uint32` type discriminant followed by the value.
 //!
+//! A reference costs a few bytes but may stand for a string of any length, and each resolved string is hashed into
+//! an attribute map, here and again downstream. So that a payload's cost follows its size, the strings its references
+//! resolve to are bounded at 512 times its length, and at least 1 MiB
+//! ([`DecodeError::ResolvedStringsTooLarge`](datadog::DecodeError::ResolvedStringsTooLarge)). The reference decoder
+//! keeps its references as indexes and has no such bound: this is a deliberate deviation, which only payloads built
+//! to amplify meet. The v0.5 decoder applies the same bound.
+//!
 //! [`decode_v1_payload`](datadog::decode_v1_payload) decodes one tracer payload into the unified
 //! `Trace` model, producing one `Trace` per trace chunk. String references are resolved to owned
 //! strings during decode.
@@ -209,7 +216,7 @@ fn split_trace_id(id: &[u8]) -> (u64, u64) {
 
 /// Decodes the top-level `TracerPayload` map.
 fn decode_tracer_payload(r: &mut &[u8]) -> Result<DecodedPayload, DecodeError> {
-    let mut strings = StringTable::new();
+    let mut strings = StringTable::new(r.len());
     let mut payload = DecodedPayload {
         container_id: MetaString::empty(),
         language_name: MetaString::empty(),
