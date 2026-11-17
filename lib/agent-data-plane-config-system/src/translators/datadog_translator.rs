@@ -282,26 +282,35 @@ fn non_empty_trimmed(s: String) -> Option<String> {
 /// Every rule is parsed before any is validated, and the rules are validated in order. The error is
 /// the Agent's message for the first problem found.
 fn parse_processing_rules(raw: Vec<serde_json::Value>) -> std::result::Result<Vec<ProcessingRule>, String> {
+    // Like Go's decoders, read an explicit null, such as a YAML field with no value, as the field's zero value.
+    fn null_as_default<'de, D, T>(deserializer: D) -> std::result::Result<T, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+        T: Default + serde::Deserialize<'de>,
+    {
+        Ok(<Option<T> as serde::Deserialize>::deserialize(deserializer)?.unwrap_or_default())
+    }
+
     #[derive(serde::Deserialize)]
     struct RawSourceMatch {
-        #[serde(default)]
+        #[serde(default, deserialize_with = "null_as_default")]
         attribute: String,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "null_as_default")]
         value: String,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "null_as_default")]
         new_source: String,
     }
     #[derive(serde::Deserialize)]
     struct RawRule {
-        #[serde(default, rename = "type")]
+        #[serde(default, rename = "type", deserialize_with = "null_as_default")]
         rule_type: String,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "null_as_default")]
         name: String,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "null_as_default")]
         pattern: String,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "null_as_default")]
         replace_placeholder: String,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "null_as_default")]
         matching: Vec<RawSourceMatch>,
     }
 
@@ -3062,6 +3071,37 @@ mod tests {
                 ]
             );
         }
+    }
+
+    #[test]
+    fn null_logs_processing_rule_fields_read_as_empty() {
+        use agent_data_plane_config::domains::logs::ProcessingRule;
+
+        // A YAML field with no value is null. Like the Agent, read it as an empty value.
+        let translate = |rule: Value| {
+            translate_explicit(json!({ "logs_enabled": true, "logs_config": { "processing_rules": [rule] } }))
+        };
+
+        let (config, errors) = translate(
+            json!({ "type": "mask_sequences", "name": "strip", "pattern": "secret", "replace_placeholder": null }),
+        );
+        assert!(errors.is_none(), "unexpected errors: {errors:?}");
+        assert_eq!(
+            config.domains.logs.processing_rules,
+            [ProcessingRule::MaskSequences {
+                name: "strip".into(),
+                pattern: "secret".into(),
+                replace_placeholder: String::new(),
+            }]
+        );
+
+        // An empty `matching` is then rejected with the Agent's validation message, rather than as a type error.
+        let (_, errors) = translate(json!({ "type": "remap_source", "name": "no_matching", "matching": null }));
+        let error = errors.expect("a null `matching` should fail validation").to_string();
+        assert!(
+            error.contains("no matching entries provided for processing rule: no_matching"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
