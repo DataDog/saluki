@@ -153,7 +153,7 @@ participants:
       - {name: main, exit: container, output: container}
       - {name: job, exit: {record: job}, output: {file: job.log}}
     endpoints:
-      statsd: {udp: 8125}
+      statsd: {protocol: udp, port: 8125}
 procedure: []
 "#;
         std::fs::write(dir.join(CASE_FILE), config).unwrap();

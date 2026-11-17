@@ -256,7 +256,7 @@ case. The rest are the participant's data, and a participant type fills in the s
 | `programs` | a list of `{name, path, args, env}` | What runs as host processes. Each program is one observed process. |
 | `env` | `{NAME: "text"}` | Environment of every process of the participant. |
 | `files` | `{<destination or name>: <source>}` | Files placed before start. |
-| `endpoints` | `{<name>: {<protocol>: <address>}}` | Where the participant listens. |
+| `endpoints` | `{<name>: {protocol: <protocol>, port \| path \| name: <address>}}` | Where the participant listens. |
 | `ready` | `{<endpoint>: <evidence>}` | Readiness evidence, where the default for the endpoint's protocol is not enough. |
 | `processes` | a list | The processes steps may name, and how each is observed. |
 | `commands` | `{<name>: [<program>, <arg>, ...]}` | Command lines of the participant's software, for `exec`. |
@@ -284,11 +284,11 @@ programs:
   - {name: main, path: python3, args: [./helper/serve.py], env: {PYTHONUNBUFFERED: "1"}}
 
 endpoints:
-  api:    {http: 8080}
-  secure: {http: 8443, tls: true}
-  stats:  {udp: 8125}
-  docker: {unix_stream: "{{ self.dir }}/docker.sock"}
-  pipe:   {named_pipe: my-pipe}
+  api:    {protocol: http, port: 8080}
+  secure: {protocol: http, port: 8443, tls: true}
+  stats:  {protocol: udp, port: 8125}
+  docker: {protocol: unix_stream, path: "{{ self.dir }}/docker.sock"}
+  pipe:   {protocol: named_pipe, name: my-pipe}
 
 ready:                        # accepts | exists | none | {http: <path>} | {output: <pattern>, process: <name>}
   api: {http: /ready}
@@ -804,14 +804,16 @@ participants:
     command: [python3, /case/fake_docker.py, "{{ adp.container_id }}", "{{ self.endpoints.api.path }}"]
     files: {/case/: fixture/}
     endpoints:
-      api: {unix_stream: "{{ self.dir }}/docker.sock"}
+      api: {protocol: unix_stream, path: "{{ self.dir }}/docker.sock"}
   db:
     image: postgres:16
     endpoints:
-      sql: {tcp: 5432}          # the image listens here without being told
+      sql: {protocol: tcp, port: 5432}   # the image listens here without being told
 ```
 
-An entry is one protocol with its address, plus `tls: true` where an `http` listener serves TLS. A case
+An entry names its protocol and its address, plus `tls: true` where an `http` listener serves TLS. The
+address field is the part a reference reads: `port` for `tcp`, `udp`, `http` and `grpc`, `path` for the
+two Unix protocols and `name` for `named_pipe`. Any other field is an error, as is a port of 0. A case
 that restates an endpoint a participant type declares replaces the entry whole, and should do so
 only when that address is itself under test.
 

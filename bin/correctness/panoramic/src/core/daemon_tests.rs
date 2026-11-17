@@ -350,7 +350,7 @@ participants:
     image: "{image}"
     command: [sh, -c, "sleep 1; echo listening; exec nc -lk -p 8080 -e true"]
     endpoints:
-      api: {tcp: 8080}
+      api: {protocol: tcp, port: 8080}
   worker:
     image: "{image}"
     command:
@@ -423,7 +423,7 @@ participants:
     image: "{image}"
     command: [sh, -c, "echo going away; exit 4"]
     endpoints:
-      api: {tcp: 8080}
+      api: {protocol: tcp, port: 8080}
   client:
     image: "{image}"
     command: [sleep, "600"]
