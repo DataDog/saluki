@@ -5,7 +5,10 @@ features:
     body as a MessagePack tracer payload whatever its ``Content-Type``, keeps the tracer's language, language
     version, tracer version and container ID that the payload carries, and answers with the sampling rates by
     service. The ``Datadog-Meta-*`` headers only tag its receiver telemetry, which is tagged ``v0.7``, and the
-    request's own container isn't looked up.
+    request's own container isn't looked up. Where a v0.7 string field that the trace-agent reads strictly holds
+    invalid UTF-8 (the container ID, payload and chunk tags, the origin, and span link tracestates and string
+    attributes), ADP replaces each invalid byte with U+FFFD, whereas the trace-agent forwards the raw bytes.
+    Tracers don't send invalid UTF-8 in practice.
 fixes:
   - |
     The experimental native trace intake no longer holds a copy of a JSON or v0.7 payload's container ID, tracer
