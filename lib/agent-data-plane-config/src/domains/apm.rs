@@ -7,6 +7,9 @@
 //!
 //! The listen settings are the trace-agent's own `apm_config.*` keys, so ADP binds exactly the address tracers are
 //! already configured to reach. The global `bind_host` also applies, and lives in the shared configuration.
+//!
+//! The domain also holds the trace-agent receiver settings that ADP doesn't apply itself but reports to tracers, such
+//! as the connection limit and the resource limits, as the trace-agent reads them.
 
 use serde::Serialize;
 
@@ -14,7 +17,7 @@ use crate::defaults::DEFAULT_APM_PROXY_DESTINATION;
 use crate::ConfigValue;
 
 /// Resolved APM configuration.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Domain {
     /// TCP port the trace receiver listens on (`apm_config.receiver_port`).
     ///
@@ -46,6 +49,38 @@ pub struct Domain {
     /// Unix domain socket clients whose container ADP couldn't resolve. An `http://` destination leaves their origin
     /// unknown instead.
     pub proxy_destination: String,
+
+    /// Maximum number of connections the trace-agent's receiver accepts (`apm_config.connection_limit`).
+    ///
+    /// `0` when the key is unset: the trace-agent reads the key only when it is set, so it ignores the schema
+    /// default of 2000. A negative value is read as `0`, with a warning: the trace-agent applies no limit for either.
+    pub connection_limit: u32,
+
+    /// Timeout, in seconds, for a request to the trace-agent's receiver (`apm_config.receiver_timeout`).
+    ///
+    /// `0`, the default, leaves the trace-agent's own default of 5 seconds. A negative value is read as `0`, with a
+    /// warning: the trace-agent uses its default for either.
+    pub receiver_timeout: u32,
+
+    /// Maximum size, in bytes, of a request body the trace-agent's receiver accepts (`apm_config.max_payload_size`).
+    ///
+    /// Defaults to 25 MiB. A negative value is a translation error.
+    pub max_payload_size: u64,
+
+    /// Memory, in bytes, the trace-agent aims to stay under (`apm_config.max_memory`).
+    ///
+    /// The provenance is kept because the trace-agent disables the limit in a container when the key is unset; see
+    /// [`Domain::effective_max_memory`].
+    pub max_memory: ConfigValue<f64>,
+
+    /// CPU, in percent of a core, the trace-agent aims to stay under (`apm_config.max_cpu_percent`).
+    ///
+    /// The provenance is kept because the trace-agent disables the limit in a container when the key is unset; see
+    /// [`Domain::effective_max_cpu`].
+    pub max_cpu_percent: ConfigValue<f64>,
+
+    /// Whether the trace-agent proxies tracer telemetry on `/telemetry/proxy/` (`apm_config.telemetry.enabled`).
+    pub telemetry_enabled: bool,
 }
 
 impl Default for Domain {
@@ -57,6 +92,12 @@ impl Default for Domain {
             receiver_port: 0,
             receiver_socket: None,
             non_local_traffic: ConfigValue::defaulted(false),
+            connection_limit: 0,
+            receiver_timeout: 0,
+            max_payload_size: 0,
+            max_memory: ConfigValue::defaulted(0.0),
+            max_cpu_percent: ConfigValue::defaulted(0.0),
+            telemetry_enabled: false,
         }
     }
 }
@@ -76,6 +117,30 @@ impl Domain {
             (host, self.non_local_traffic.value)
         } else {
             (None, containerized)
+        }
+    }
+
+    /// Resolves the memory, in bytes, the trace-agent aims to stay under, where `0` disables the limit.
+    ///
+    /// As in the trace-agent, a container leaves resource limits to its runtime: the limit is disabled there unless
+    /// `apm_config.max_memory` was set explicitly.
+    pub fn effective_max_memory(&self, containerized: bool) -> f64 {
+        if containerized && !self.max_memory.is_explicit() {
+            0.0
+        } else {
+            self.max_memory.value
+        }
+    }
+
+    /// Resolves the CPU the trace-agent aims to stay under, as a fraction of a core, where `0` disables the limit.
+    ///
+    /// As in the trace-agent, a container leaves resource limits to its runtime: the limit is disabled there unless
+    /// `apm_config.max_cpu_percent` was set explicitly.
+    pub fn effective_max_cpu(&self, containerized: bool) -> f64 {
+        if containerized && !self.max_cpu_percent.is_explicit() {
+            0.0
+        } else {
+            self.max_cpu_percent.value / 100.0
         }
     }
 }
@@ -120,6 +185,29 @@ mod tests {
             .listen_host(&ConfigValue::defaulted(Some("localhost".to_string())), true),
             (None, false)
         );
+    }
+
+    #[test]
+    fn resource_limits_are_disabled_in_a_container_unless_set() {
+        let defaulted = Domain {
+            max_memory: ConfigValue::defaulted(5e8),
+            max_cpu_percent: ConfigValue::defaulted(50.0),
+            ..Default::default()
+        };
+        assert_eq!(defaulted.effective_max_memory(false), 5e8);
+        assert_eq!(defaulted.effective_max_cpu(false), 0.5);
+        assert_eq!(defaulted.effective_max_memory(true), 0.0);
+        assert_eq!(defaulted.effective_max_cpu(true), 0.0);
+
+        let explicit = Domain {
+            max_memory: ConfigValue::explicit(1e9),
+            max_cpu_percent: ConfigValue::explicit(200.0),
+            ..Default::default()
+        };
+        for containerized in [false, true] {
+            assert_eq!(explicit.effective_max_memory(containerized), 1e9);
+            assert_eq!(explicit.effective_max_cpu(containerized), 2.0);
+        }
     }
 
     #[test]
