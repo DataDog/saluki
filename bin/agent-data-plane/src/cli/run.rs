@@ -6,7 +6,7 @@ use std::{
 
 use agent_data_plane_config::{
     defaults::DEFAULT_ENCODER_FLUSH_TIMEOUT,
-    domains::multi_region_failover,
+    domains::{logs, multi_region_failover},
     shared::{Secrets, SharedConfiguration},
     SalukiConfiguration,
 };
@@ -47,7 +47,8 @@ use saluki_components::{
     transforms::{
         aggregate_context_snapshot_channel, AggregateConfiguration, AutoscalingFailoverGatewayConfiguration,
         ChainedConfiguration, DogStatsDMapperConfiguration, DogStatsDMapperProfile, DogStatsDMetricMapping,
-        HistogramConfiguration, HostEnrichmentConfiguration, TraceObfuscationConfiguration,
+        HistogramConfiguration, HostEnrichmentConfiguration, LogsProcessingRulesConfiguration,
+        TraceObfuscationConfiguration,
     },
 };
 use saluki_core::{
@@ -63,10 +64,10 @@ use tracing::{debug, error, info, warn};
 use crate::{
     component_inputs::{
         apm_relay_configuration, apm_stats_configuration, datadog_metrics_configuration, forwarder_configuration,
-        metric_mirroring, metric_name_filter, mrf_configuration, obfuscation_configuration, origin_tag_cardinality,
-        otlp_context_settings, otlp_metrics_settings, otlp_receiver, otlp_traces_settings, ottl_error_mode,
-        resolve_static_tags, tag_filter_entries, tag_value_allowlist, trace_configuration, trace_sampler_configuration,
-        trace_tag_replacer_configuration,
+        logs_processing_rules, metric_mirroring, metric_name_filter, mrf_configuration, obfuscation_configuration,
+        origin_tag_cardinality, otlp_context_settings, otlp_metrics_settings, otlp_receiver, otlp_traces_settings,
+        ottl_error_mode, resolve_static_tags, tag_filter_entries, tag_value_allowlist, trace_configuration,
+        trace_sampler_configuration, trace_tag_replacer_configuration,
     },
     components::{
         apm_onboarding::ApmOnboardingConfiguration, dogstatsd_no_agg_split::DogStatsDNoAggSplitConfiguration,
@@ -225,7 +226,7 @@ async fn create_topology(
     }
 
     if dp.logs_pipeline_required() {
-        add_baseline_logs_pipeline_to_blueprint(&mut blueprint, &shared, env_provider).await?;
+        add_baseline_logs_pipeline_to_blueprint(&mut blueprint, &shared, &config.domains.logs, env_provider).await?;
     }
 
     if dp.events_pipeline_required() {
@@ -256,7 +257,13 @@ async fn create_topology(
 
     // Now we move on to our actual data pipelines.
     if dp.checks_enabled() {
-        add_checks_pipeline_to_blueprint(&mut blueprint, &config.domains.checks.ipc_endpoint, env_provider).await?;
+        add_checks_pipeline_to_blueprint(
+            &mut blueprint,
+            &config.domains.checks.ipc_endpoint,
+            logs_pipeline_input(&config.domains.logs),
+            env_provider,
+        )
+        .await?;
     }
 
     let dogstatsd_api = if dp.dogstatsd_enabled() {
@@ -299,7 +306,8 @@ async fn add_liveness_source_to_blueprint(
 }
 
 async fn add_checks_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, checks_ipc_endpoint: &str, env_provider: &RemoteAgentEnvironmentProvider,
+    blueprint: &mut TopologyBlueprint, checks_ipc_endpoint: &str, logs_input: &str,
+    env_provider: &RemoteAgentEnvironmentProvider,
 ) -> Result<(), GenericError> {
     let grpc_endpoint = ListenAddress::try_from(checks_ipc_endpoint)
         .map_err(|error| generic_error!("Invalid checks IPC endpoint `{checks_ipc_endpoint}`: {error}"))?;
@@ -313,7 +321,7 @@ async fn add_checks_pipeline_to_blueprint(
     blueprint
         .add_source("checks_ipc_in", checks_config)?
         .connect_components("checks_ipc_in.metrics", "metrics_enrich")?
-        .connect_components("checks_ipc_in.logs", "dd_logs_encode")?
+        .connect_components("checks_ipc_in.logs", logs_input)?
         .connect_components("checks_ipc_in.events", "dd_events_encode")?
         .connect_components("checks_ipc_in.service_checks", "dd_service_checks_encode")?;
 
@@ -491,8 +499,21 @@ fn add_autoscaling_failover_metrics_pipeline_to_blueprint(
     Ok(())
 }
 
+/// Returns the component that check and OTLP logs enter the logs pipeline through.
+///
+/// Logs go through `logs_process` only when there are processing rules, so that they don't pay for an extra component
+/// otherwise.
+fn logs_pipeline_input(logs: &logs::Domain) -> &'static str {
+    if logs.processing_rules.is_empty() {
+        "dd_logs_encode"
+    } else {
+        "logs_process"
+    }
+}
+
 async fn add_baseline_logs_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, shared: &SharedConfiguration, env_provider: &RemoteAgentEnvironmentProvider,
+    blueprint: &mut TopologyBlueprint, shared: &SharedConfiguration, logs: &logs::Domain,
+    env_provider: &RemoteAgentEnvironmentProvider,
 ) -> Result<(), GenericError> {
     // Create the back half of the logs processing pipeline.
     //
@@ -515,6 +536,16 @@ async fn add_baseline_logs_pipeline_to_blueprint(
         .add_encoder("dd_logs_encode", dd_logs_config)?
         // Logs.
         .connect_components("dd_logs_encode", "dd_out")?;
+
+    if logs_pipeline_input(logs) == "logs_process" {
+        let processing_rules = LogsProcessingRulesConfiguration::new(logs_processing_rules(logs));
+        blueprint
+            .add_transform(
+                "logs_process",
+                ChainedConfiguration::default().with_transform_builder("processing_rules", processing_rules),
+            )?
+            .connect_components("logs_process", "dd_logs_encode")?;
+    }
 
     Ok(())
 }
@@ -1116,7 +1147,7 @@ async fn add_otlp_pipeline_to_blueprint(
             // We send OTLP metrics directly to the enrichment stage of the metrics pipeline, skipping aggregation,
             // to avoid transforming counters into rates.
             .connect_components("otlp_in.metrics", "metrics_enrich")?
-            .connect_components("otlp_in.logs", "dd_logs_encode")?
+            .connect_components("otlp_in.logs", logs_pipeline_input(&config.domains.logs))?
             .connect_components("otlp_in.traces", "traces_enrich")?;
     }
     Ok(())
@@ -1156,6 +1187,19 @@ mod tests {
 
     const CONTEXT_DUMP_FILENAME: &str = "dogstatsd_contexts.json.zstd";
     const CONTEXT_DUMP_ROUTE: &str = crate::dogstatsd_contexts::CONTEXT_DUMP_ROUTE;
+
+    #[test]
+    fn logs_go_through_logs_process_only_when_there_are_processing_rules() {
+        let mut logs = agent_data_plane_config::domains::logs::Domain::default();
+        assert_eq!(super::logs_pipeline_input(&logs), "dd_logs_encode");
+
+        logs.processing_rules.push(
+            agent_data_plane_config::domains::logs::ProcessingRule::ExcludeTruncated {
+                name: "truncated".to_string(),
+            },
+        );
+        assert_eq!(super::logs_pipeline_input(&logs), "logs_process");
+    }
 
     #[test]
     fn dogstatsd_capture_path_falls_back_to_run_path() {

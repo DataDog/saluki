@@ -60,6 +60,7 @@ fn main() -> ExitCode {
         ("otlp-logs-attributes", logs::attributes_fixture),
         ("otlp-logs-severity-body", logs::severity_body_fixture),
         ("otlp-logs-resource-host", logs::resource_host_fixture),
+        ("otlp-logs-processing-rules", logs::processing_rules_fixture),
         ("otlp-metrics-as-type-rate", metrics::as_type_rate_fixture),
         ("otlp-metrics-configured-tags", metrics::configured_tags_fixture),
         (

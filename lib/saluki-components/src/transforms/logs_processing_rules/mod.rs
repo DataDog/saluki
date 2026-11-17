@@ -36,7 +36,7 @@ use saluki_error::{generic_error, GenericError};
 use saluki_metrics::MetricsBuilder;
 
 /// A log processing rule.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum LogsProcessingRule {
     /// Drops logs whose content matches `pattern`.
     ExcludeAtMatch {
@@ -89,7 +89,7 @@ pub enum LogsProcessingRule {
 }
 
 /// An attribute value that a `remap_source` rule maps to a new source.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct LogsSourceMatch {
     /// Path of the attribute.
     pub attribute: String,

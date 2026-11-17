@@ -696,3 +696,40 @@ pub fn resource_host_fixture() -> Vec<u8> {
     }
     .encode_to_vec()
 }
+
+/// Logs for the processing rules in the case's `datadog.yaml`.
+///
+/// The rules match the rendered content of each log, so they see its properties as well as its message. Every log
+/// whose `fixture_id` starts with `keep` matches the include rule through that property, and the others are dropped,
+/// unless a later rule drops them first. Only string values are used, so that no other gap changes the content.
+pub fn processing_rules_fixture() -> Vec<u8> {
+    let with_body = |index: u64, id: &str, body: &str, attributes: Vec<KeyValue>| LogRecord {
+        body: Some(string(body)),
+        ..record(index, id, attributes)
+    };
+    let records = vec![
+        // Kept by every rule, and left as it is.
+        record(0, "keep-plain", vec![]),
+        // Masked in the message, with and without a capture group in the placeholder.
+        with_body(1, "keep-card", "paid with card=1234-5678 today", vec![]),
+        with_body(2, "keep-user", "login by user=alice from the web", vec![]),
+        // Masked in a property, across its key and value.
+        record(3, "keep-token", vec![kv("token", string("secret-abc123"))]),
+        // Matched by the include rule only through a property, so kept.
+        record(4, "attr-include", vec![kv("marker", string("keep"))]),
+        // Dropped by the exclude rule, through the message and through a property.
+        with_body(5, "keep-healthcheck", "healthcheck ok", vec![]),
+        record(6, "keep-attr-exclude", vec![kv("probe", string("healthcheck"))]),
+        // Dropped by the include rule.
+        record(7, "drop-no-marker", vec![]),
+    ];
+
+    request(
+        vec![
+            kv("service.name", string("fixture-processing-rules")),
+            kv("host.name", string("fixture-host")),
+        ],
+        InstrumentationScope::default(),
+        records,
+    )
+}

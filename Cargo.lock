@@ -96,6 +96,7 @@ dependencies = [
  "datadog-protos",
  "futures",
  "prost-types",
+ "regex",
  "saluki-antithesis",
  "saluki-common",
  "saluki-config",

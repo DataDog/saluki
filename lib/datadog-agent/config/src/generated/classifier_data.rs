@@ -539,12 +539,6 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         default: DefaultValue::Json("4"),
     },
     ClassifierEntry {
-        yaml_path: "logs_config.processing_rules",
-        support_level: SupportLevel::Incompatible(Severity::Medium),
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Logs]),
-        default: DefaultValue::Json("[]"),
-    },
-    ClassifierEntry {
         yaml_path: "logs_config.sender_backoff_base",
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Logs]),
