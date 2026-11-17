@@ -125,18 +125,25 @@ impl<'a> DatadogTranslator<'a> {
             .retain(|rule| !exact.reject.iter().any(|exact| exact.key == rule.key));
     }
 
-    /// Warns about an enabled alternate traces intake that has no URL.
+    /// Warns when the alternate traces intake that takes effect has no URL.
     ///
-    /// ADP then ignores that intake and sends traces to the default one.
+    /// Only the first enabled intake takes effect, so a later one isn't mentioned. ADP then sends traces to the endpoint
+    /// that applies without an alternate intake, which the warning names.
     fn warn_on_alternate_traces_intake_without_url(&self) {
-        let traces = &self.config.shared.endpoints.traces;
-        for (prefix, intake) in [
+        let endpoints = &self.config.shared.endpoints;
+        let traces = &endpoints.traces;
+        let enabled = [
             ("observability_pipelines_worker", &traces.opw_intake),
             ("vector", &traces.vector_intake),
-        ] {
-            if intake.enabled && intake.url.is_empty() {
-                warn!("`{prefix}.traces.enabled` is set but `{prefix}.traces.url` is empty: traces will use the default intake.");
-            }
+        ]
+        .into_iter()
+        .find(|(_, intake)| intake.enabled);
+        if let Some((prefix, _)) = enabled.filter(|(_, intake)| intake.url.is_empty()) {
+            warn!(
+                endpoint = endpoints.traces_primary_endpoint(),
+                "`{prefix}.traces.enabled` is set but `{prefix}.traces.url` is empty: sending traces to the endpoint \
+                 that applies without it."
+            );
         }
     }
 

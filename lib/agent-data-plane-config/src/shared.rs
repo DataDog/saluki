@@ -211,10 +211,10 @@ impl Endpoints {
     /// Returns the primary intake endpoint for trace and APM stats payloads, as configured and without
     /// normalization.
     ///
-    /// Like the trace-agent, an enabled Observability Pipelines Worker intake wins, then an enabled Vector intake, and
-    /// then [`apm_dd_url`](TracesIntake::apm_dd_url). Without any of them traces follow
-    /// [`primary_endpoint`](Self::primary_endpoint). An enabled alternate intake without a URL also falls back to
-    /// that, and still shadows the later ones.
+    /// An enabled Observability Pipelines Worker intake wins, then an enabled Vector intake, and then
+    /// [`apm_dd_url`](TracesIntake::apm_dd_url). Without any of them traces follow
+    /// [`primary_endpoint`](Self::primary_endpoint). The first enabled alternate intake shadows the later ones even
+    /// without a URL, in which case traces go to `apm_dd_url`, or else to the default.
     pub fn traces_primary_endpoint(&self) -> String {
         let traces = &self.traces;
         let alternate = [&traces.opw_intake, &traces.vector_intake]
@@ -222,9 +222,8 @@ impl Endpoints {
             .find(|intake| intake.enabled);
         match alternate {
             Some(intake) if !intake.url.is_empty() => intake.url.clone(),
-            Some(_) => self.primary_endpoint(),
-            None if !traces.apm_dd_url.is_empty() => traces.apm_dd_url.clone(),
-            None => self.primary_endpoint(),
+            _ if !traces.apm_dd_url.is_empty() => traces.apm_dd_url.clone(),
+            _ => self.primary_endpoint(),
         }
     }
 }
@@ -866,15 +865,21 @@ mod tests {
     }
 
     #[test]
-    fn an_enabled_alternate_traces_intake_without_a_url_falls_back_to_the_primary_endpoint() {
-        let endpoints = endpoints_with_traces(TracesIntake {
-            apm_dd_url: "https://apm.example.com".to_string(),
-            opw_intake: alternate(true, ""),
-            vector_intake: alternate(true, "https://vector.example.com"),
-            ..TracesIntake::default()
-        });
+    fn an_enabled_alternate_traces_intake_without_a_url_falls_back_to_apm_dd_url_or_the_default() {
+        for (apm_dd_url, expected) in [
+            ("https://apm.example.com", "https://apm.example.com"),
+            ("", "https://app.datadoghq.eu"),
+        ] {
+            // The Observability Pipelines Worker intake shadows the Vector one even without a URL.
+            let endpoints = endpoints_with_traces(TracesIntake {
+                apm_dd_url: apm_dd_url.to_string(),
+                opw_intake: alternate(true, ""),
+                vector_intake: alternate(true, "https://vector.example.com"),
+                ..TracesIntake::default()
+            });
 
-        assert_eq!("https://app.datadoghq.eu", endpoints.traces_primary_endpoint());
+            assert_eq!(expected, endpoints.traces_primary_endpoint(), "{apm_dd_url:?}");
+        }
     }
 
     #[test]

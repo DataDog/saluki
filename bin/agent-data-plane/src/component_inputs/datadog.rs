@@ -88,7 +88,7 @@ pub(crate) fn traces_forwarder_configuration(shared: &SharedConfiguration) -> Fo
         endpoints.traces.additional_endpoints.clone(),
     );
 
-    ForwarderConfiguration {
+    let mut config = ForwarderConfiguration {
         endpoint: if endpoints.traces.skip_main_endpoint {
             endpoint.without_primary()
         } else {
@@ -96,7 +96,11 @@ pub(crate) fn traces_forwarder_configuration(shared: &SharedConfiguration) -> Fo
         },
         opw_metrics: OpwMetricsConfiguration::default(),
         ..forwarder_configuration(shared)
-    }
+    };
+    // Sketch shadowing validates metrics payloads, which never reach this forwarder. Its workers would only add to the
+    // forwarder's declared memory bounds.
+    config.v3_api.sketches.shadow_sample_rate = 0.0;
+    config
 }
 
 /// Builds the settings shared by every Datadog metrics encoder.
@@ -410,8 +414,13 @@ mod tests {
             ),
             config.endpoint
         );
-        // Alternate metrics intakes never apply to traces.
+        // Alternate metrics intakes and sketch shadowing never apply to traces.
         assert_eq!(OpwMetricsConfiguration::default(), config.opw_metrics);
+        assert_eq!(0.0, config.v3_api.sketches.shadow_sample_rate);
+        assert_eq!(
+            0.52,
+            forwarder_configuration(&shared).v3_api.sketches.shadow_sample_rate
+        );
         assert!(config.routing_targets.is_none());
 
         // Everything else is the shared forwarder configuration.
