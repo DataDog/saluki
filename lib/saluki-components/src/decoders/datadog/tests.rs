@@ -1215,3 +1215,12 @@ fn repaired_literals_are_told_apart_by_their_bytes() {
     assert_eq!(strings.add("a\u{FFFD}".as_bytes()), 3);
     assert_eq!(strings.get(2).unwrap(), "a\u{FFFD}");
 }
+
+#[test]
+fn a_chunk_of_priority_none_has_no_priority() {
+    // As the reference's `GetSamplingPriorityV1`, which reads -128 as no priority.
+    let decoded = decode_v1_payload(&table_payload(&["svc"], -128, 1, 1)).unwrap();
+    assert_eq!(decoded.traces[0].priority, None);
+    let decoded = decode_v1_payload(&table_payload(&["svc"], 2, 1, 1)).unwrap();
+    assert_eq!(decoded.traces[0].priority, Some(2));
+}
