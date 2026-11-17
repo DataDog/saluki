@@ -27,7 +27,6 @@ tracking.
 
 | Config Key                                                      | Description                                       | Issue   |
 | --------------------------------------------------------------- | ------------------------------------------------- | ------- |
-| `apm_config.traces_send_to_main_endpoint`                       | Send traces and stats to the main endpoint        | [#2419] |
 | `dogstatsd_client_drop_detection.dropped_ratio_threshold`       | Client drop ratio that marks a client unhealthy   | [#3088] |
 | `dogstatsd_client_drop_detection.enabled`                       | DogStatsD client drop detection                   | [#3088] |
 | `dogstatsd_client_drop_detection.recovery_confirmation_window`  | Time below threshold before a client recovers     | [#3088] |
@@ -1211,6 +1210,7 @@ The following settings work in ADP with the same behavior as the core agent.
 | `apm_config.receiver_socket`                                                               | APM receiver Unix domain socket path               |
 | `apm_config.replace_tags`                                                                  | Regex-based trace tag replacement rules            |
 | `apm_config.target_traces_per_second`                                                      | Target sampled traces per second                   |
+| `apm_config.traces_send_to_main_endpoint`                                                  | Send traces and stats to the main endpoint         |
 | `auth_token_file_path`                                                                     | Agent authentication token file path               |
 | `autoscaling.failover.enabled`                                                             | Enable autoscaling failover metric routing         |
 | `autoscaling.failover.metrics`                                                             | Metric names forwarded to DCA for failover         |
@@ -1784,7 +1784,6 @@ Both commands scrub recognized secret values before writing JSON to standard out
 [#1754]: https://github.com/DataDog/saluki/issues/1754
 [#1755]: https://github.com/DataDog/saluki/issues/1755
 [#2079]: https://github.com/DataDog/saluki/issues/2079
-[#2419]: https://github.com/DataDog/saluki/issues/2419
 [#2557]: https://github.com/DataDog/saluki/issues/2557
 [#2558]: https://github.com/DataDog/saluki/issues/2558
 [#2559]: https://github.com/DataDog/saluki/issues/2559

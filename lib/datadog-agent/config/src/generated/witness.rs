@@ -77,6 +77,7 @@ pub trait DatadogConfigWitness {
     fn consume_apm_config_sql_obfuscation_mode(&mut self, value: String);
     fn consume_apm_config_target_traces_per_second(&mut self, value: f64);
     fn consume_apm_config_telemetry_enabled(&mut self, value: bool);
+    fn consume_apm_config_traces_send_to_main_endpoint(&mut self, value: bool);
     fn consume_auth_token_file_path(&mut self, value: String);
     fn consume_autoscaling_failover_enabled(&mut self, value: bool);
     fn consume_autoscaling_failover_metrics(&mut self, value: Vec<String>);
@@ -426,6 +427,7 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_apm_config_sql_obfuscation_mode(config.apm_config.sql_obfuscation_mode.clone());
     consumer.consume_apm_config_target_traces_per_second(config.apm_config.target_traces_per_second.clone());
     consumer.consume_apm_config_telemetry_enabled(config.apm_config.telemetry.enabled.clone());
+    consumer.consume_apm_config_traces_send_to_main_endpoint(config.apm_config.traces_send_to_main_endpoint.clone());
     consumer.consume_auth_token_file_path(config.auth_token_file_path.clone());
     consumer.consume_autoscaling_failover_enabled(config.autoscaling.failover.enabled.clone());
     consumer.consume_autoscaling_failover_metrics(config.autoscaling.failover.metrics.clone());

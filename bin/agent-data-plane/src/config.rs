@@ -228,6 +228,14 @@ impl<'a> DataPlaneConfiguration<'a> {
         self.otlp_enabled() && (!self.otlp_proxy_enabled() || !self.otlp_proxy_traces_enabled())
     }
 
+    /// Returns `true` if the traces forwarder is required.
+    ///
+    /// The traces pipeline delivers its traces and stats through it, and so does the APM relay, which has nothing to
+    /// feed the traces pipeline.
+    pub const fn traces_forwarder_required(&self) -> bool {
+        self.traces_pipeline_required() || self.apm_enabled()
+    }
+
     /// Returns the set of [`Pipeline`] variants that are active based on our configuration.
     pub fn active_pipelines(&self) -> HashSet<Pipeline> {
         let mut s = HashSet::new();

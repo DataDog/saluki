@@ -929,6 +929,10 @@ pub struct ApmConfig {
 
     #[serde(default)]
     pub telemetry: ApmConfigTelemetry,
+
+    #[serde(default = "defaults::default_bool::<true>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
+    pub traces_send_to_main_endpoint: bool,
 }
 
 impl Default for ApmConfig {
@@ -967,6 +971,7 @@ impl Default for ApmConfig {
             sql_obfuscation_mode: Default::default(),
             target_traces_per_second: defaults::datadog_configuration_apm_config_target_traces_per_second(),
             telemetry: Default::default(),
+            traces_send_to_main_endpoint: defaults::default_bool::<true>(),
         }
     }
 }
