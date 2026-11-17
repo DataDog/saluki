@@ -11,7 +11,8 @@ parents include the branch's current head, plus the base branch's head when the 
 update is a fast-forward, never a force push. If someone pushes after the ownership check, the update is no longer a
 fast-forward, GitHub rejects it, and the run fails without touching their commit. With no open pull request, the
 branch belongs to the automation alone. A leftover branch, such as one from a closed pull request, restarts from the
-base branch. Its commits stay reachable from the closed pull request.
+base branch. Its commits stay reachable from the closed pull request. The reset applies only if the branch still points
+at the commit the tool read, so a push after that, for example to a reopened pull request, makes the run fail instead.
 
 If the version file on the base branch changed after discovery read it, the candidate may be stale, so the tool
 proposes nothing and the next run discovers again.
@@ -104,11 +105,29 @@ def commit_parents(comparison, base_sha, head_sha):
     return [head_sha, base_sha]
 
 
-def write_commit(api, repository, branch, base_sha, parents, version_text, message, exists, force=False):
+def reset_ref(api, repository, branch, expected_sha, sha):
+    """Move `branch` to `sha`, even if that isn't a fast-forward, only if it still points at `expected_sha`.
+
+    The REST API has no such precondition, so this uses GraphQL's atomic `updateRefs`.
+    """
+    repository_id = api.request("GET", f"/repos/{repository}")["node_id"]
+    query = (
+        "mutation($repository: ID!, $updates: [RefUpdate!]!) "
+        + "{ updateRefs(input: {repositoryId: $repository, refUpdates: $updates}) { clientMutationId } }"
+    )
+    update = {"name": f"refs/heads/{branch}", "beforeOid": expected_sha, "afterOid": sha, "force": True}
+    response = api.request(
+        "POST", "/graphql", {"query": query, "variables": {"repository": repository_id, "updates": [update]}}
+    )
+    if response.get("errors"):
+        raise ProposeError(f"could not reset {branch} from {expected_sha[:12]}: {response['errors']}")
+
+
+def write_commit(api, repository, branch, base_sha, parents, version_text, message, exists, expected_head=None):
     """Commit the base's tree plus the version file, with `parents`, and move `branch` to that commit.
 
-    Without `force`, an existing branch moves only by fast-forward, so the update fails if the branch no longer points
-    at a parent.
+    Without `expected_head`, an existing branch moves only by fast-forward, so the update fails if the branch no longer
+    points at a parent. With it, the branch is reset only if it still points at `expected_head`.
     """
     base_tree = api.request("GET", f"/repos/{repository}/git/commits/{base_sha}")["tree"]["sha"]
     entry = {"path": VERSION_FILE, "mode": "100644", "type": "blob", "content": version_text}
@@ -118,8 +137,10 @@ def write_commit(api, repository, branch, base_sha, parents, version_text, messa
     )
     if not commit.get("verification", {}).get("verified"):
         raise ProposeError(f"GitHub did not sign commit {commit.get('sha')}; not pushing it")
-    if exists:
-        api.request("PATCH", f"/repos/{repository}/git/refs/heads/{branch}", {"sha": commit["sha"], "force": force})
+    if expected_head is not None:
+        reset_ref(api, repository, branch, expected_head, commit["sha"])
+    elif exists:
+        api.request("PATCH", f"/repos/{repository}/git/refs/heads/{branch}", {"sha": commit["sha"], "force": False})
     else:
         api.request("POST", f"/repos/{repository}/git/refs", {"ref": f"refs/heads/{branch}", "sha": commit["sha"]})
     return commit["sha"]
@@ -171,10 +192,13 @@ def propose(api, repository, base, branch, version_text, title, body, labels, me
 
     # With no open pull request, a leftover branch restarts from the base. A closed pull request keeps its commits.
     existing = api.request("GET", f"/repos/{repository}/git/ref/heads/{branch}", allow_404=True)
-    if existing is not None:
+    expected_head = existing["object"]["sha"] if existing is not None else None
+    if expected_head is not None:
         print(f"[*] Restarting leftover branch {branch} from {base}.")
-    exists = existing is not None
-    write_commit(api, repository, branch, base_sha, [base_sha], version_text, title, exists=exists, force=exists)
+    write_commit(
+        api, repository, branch, base_sha, [base_sha], version_text, title, exists=existing is not None,
+        expected_head=expected_head,
+    )
     pr = api.request("POST", f"/repos/{repository}/pulls", {"title": title, "head": branch, "base": base, "body": body})
     api.request("POST", f"/repos/{repository}/issues/{pr['number']}/labels", {"labels": labels})
     print(f"[*] Opened {pr['html_url']}")

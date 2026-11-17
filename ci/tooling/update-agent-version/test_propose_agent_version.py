@@ -34,13 +34,14 @@ class FakeApi:
 
     def __init__(self, open_pr=False, files=(subject.VERSION_FILE,), commits=None, branch_version_file=OLD_VERSION_FILE,
                  branch_head=None, ahead_by=1, behind_by=0, signed=True, after_inspection=None,
-                 base_version_file=OLD_VERSION_FILE):
+                 base_version_file=OLD_VERSION_FILE, before_reset=None):
         self.open_pr = open_pr
         self.files = [{"filename": name} for name in files]
         self.branch_head = branch_head if branch_head is not None else (BOT_HEAD if open_pr else None)
         self.commits = list(commits) if commits is not None else [commit(BOT_HEAD)]
         self.branch_version_file = branch_version_file
         self.base_version_file = base_version_file
+        self.before_reset = before_reset
         self.ahead_by = ahead_by
         self.behind_by = behind_by
         self.signed = signed
@@ -75,6 +76,8 @@ class FakeApi:
         if method != "GET":
             self.writes.append((method, path, body))
             return self.write(method, path, body)
+        if path == f"/repos/{REPOSITORY}":
+            return {"node_id": "R_saluki"}
         if path == f"/repos/{REPOSITORY}/git/ref/heads/main":
             return {"object": {"sha": BASE_SHA}}
         if path.startswith(f"/repos/{REPOSITORY}/git/commits/"):
@@ -103,6 +106,15 @@ class FakeApi:
     def write(self, method, path, body):
         if path.endswith("/git/trees"):
             return {"sha": "f" * 40}
+        if path == "/graphql":
+            if self.before_reset:
+                self.before_reset(self)
+            (update,) = body["variables"]["updates"]
+            assert body["variables"]["repository"] == "R_saluki" and update["name"] == f"refs/heads/{BRANCH}"
+            if update["beforeOid"] != self.branch_head:
+                return {"data": None, "errors": [{"message": "Expected branch to point to " + update["beforeOid"]}]}
+            self.branch_head = update["afterOid"]
+            return {"data": {"updateRefs": {"clientMutationId": None}}}
         if path.endswith("/git/commits"):
             self.created += 1
             sha = f"{self.created:040x}"
@@ -114,7 +126,7 @@ class FakeApi:
             self.branch_head = body["sha"]
             return {}
         if path == f"/repos/{REPOSITORY}/git/refs/heads/{BRANCH}":
-            if not body.get("force") and not self.is_ancestor(self.branch_head, body["sha"]):
+            if body.get("force") or not self.is_ancestor(self.branch_head, body["sha"]):
                 raise subject.ProposeError("HTTP 422: Update is not a fast forward")
             self.branch_head = body["sha"]
             return {}
@@ -208,9 +220,18 @@ class ProposeTest(unittest.TestCase):
                 api = FakeApi(branch_head=BOT_HEAD, **options)
                 self.assertEqual(self.propose(api), "opened")
                 self.assertEqual(self.new_commit(api)["parents"], [BASE_SHA])
-                ref_update = next(body for method, _, body in api.writes if method == "PATCH")
-                self.assertTrue(ref_update["force"])
+                (reset,) = [body for _, path, body in api.writes if path == "/graphql"]
+                self.assertEqual(reset["variables"]["updates"][0]["beforeOid"], BOT_HEAD)
                 self.assertEqual(api.parents[api.branch_head], [BASE_SHA])
+
+    def test_a_push_before_a_leftover_branch_resets_is_not_overwritten(self):
+        # Someone reopens the closed pull request and pushes after the tool found no open pull request.
+        human = "e" * 40
+        api = FakeApi(branch_head=BOT_HEAD, before_reset=lambda api: api.push(human, BOT_HEAD))
+        with self.assertRaisesRegex(subject.ProposeError, "could not reset"):
+            self.propose(api)
+        self.assertEqual(api.branch_head, human)
+        self.assertFalse(any(path.endswith("/pulls") for _, path, _ in api.writes))
 
     def test_proposes_nothing_when_the_base_version_changed_after_discovery(self):
         for open_pr in (False, True):
