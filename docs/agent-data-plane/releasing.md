@@ -19,13 +19,6 @@ Datadog Agent minor, its **target**, for its whole life. The release process rou
 - bump the version of ADP to the next development version
 - post a release announcement in the `#agent-data-plane` Slack channel
 
-> [!WARNING]
-> One gap is still open. When the Agent cuts its release branch for a minor, such as `7.87.x`, datadog-agent `main`
-> moves to the next minor, 7.88, right away. Saluki can't cut the ADP line for 7.88 until a complete 7.88 nightly or RC
-> exists, which can take days. Until then, Agent `main` keeps depending on the ADP line for 7.87, which breaks the rule
-> of one Agent minor per ADP line. The team hasn't decided how to handle that, so confirm the plan before cutting a
-> line.
-
 ## Release lines and their target
 
 ADP major.minor is (Agent major - 6).(Agent minor - 78). For example, Agent 7.86 uses ADP 1.8, and Agent 7.87 uses ADP
@@ -43,6 +36,10 @@ it is allowed only when the release branch doesn't have it yet: at the cut, or i
 
 Use this order. The target must exist in the commit you tag, so the branch comes first. The examples cut ADP 1.9 for
 Agent 7.87.
+
+Cut the line before the Agent cuts its release branch for the target minor, so that branch starts with this ADP line.
+Until the next cut, Agent `main` uses this line, one minor behind its own version. The rule of one Agent minor per ADP
+line applies to Agent release branches, RCs and stable releases.
 
 1. Determine the target Agent minor, normally the current milestone on datadog-agent `main`. Check that it maps to the
    ADP version on `main`, in `bin/agent-data-plane/Cargo.toml`: ADP 1.9.0 needs target 7.87.
