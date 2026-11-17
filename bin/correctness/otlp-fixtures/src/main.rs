@@ -19,6 +19,7 @@ use saluki_error::{generic_error, ErrorContext as _, GenericError};
 
 mod common;
 mod logs;
+mod metrics;
 
 fn case_millstone_config(case: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -59,6 +60,26 @@ fn main() -> ExitCode {
         ("otlp-logs-attributes", logs::attributes_fixture),
         ("otlp-logs-severity-body", logs::severity_body_fixture),
         ("otlp-logs-resource-host", logs::resource_host_fixture),
+        ("otlp-metrics-as-type-rate", metrics::as_type_rate_fixture),
+        ("otlp-metrics-configured-tags", metrics::configured_tags_fixture),
+        (
+            "otlp-metrics-core-resource-attributes",
+            metrics::core_resource_attributes_fixture,
+        ),
+        (
+            "otlp-metrics-cumulative-monotonic",
+            metrics::cumulative_monotonic_fixture,
+        ),
+        ("otlp-metrics-ec2-host", metrics::ec2_host_fixture),
+        ("otlp-metrics-fargate", metrics::fargate_fixture),
+        ("otlp-metrics-gcp-host", metrics::gcp_host_fixture),
+        ("otlp-metrics-histogram-counters", metrics::histogram_fixture),
+        ("otlp-metrics-histogram-nobuckets", metrics::histogram_fixture),
+        ("otlp-metrics-host", metrics::host_fixture),
+        ("otlp-metrics-kafka-parity", metrics::kafka_parity_fixture),
+        ("otlp-metrics-resource-attributes", metrics::resource_attributes_fixture),
+        ("otlp-metrics-scope-metadata", metrics::scope_metadata_fixture),
+        ("otlp-metrics-summary-mode", metrics::summary_fixture),
     ];
 
     let mut failed = false;
