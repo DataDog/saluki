@@ -29,6 +29,8 @@
 //! Chunks without spans are dropped. Span event attributes of an unknown type are dropped, as are unknown array
 //! elements, and an array attribute without an array is an empty array.
 
+use std::sync::Arc;
+
 use datadog_protos::traces::{
     AttributeAnyValue, AttributeArrayValue, Span as ClassicSpan, SpanEvent as ClassicSpanEvent,
     SpanLink as ClassicSpanLink, TraceChunk, TracerPayload,
@@ -68,13 +70,14 @@ pub fn convert_tracer_payload(payload: TracerPayload, converted_from: &'static s
     }
 
     // As in the trace-agent, the payload's own fields win, the promoted attributes don't.
-    let or_promoted = |own: String, promoted: MetaString| if own.is_empty() { promoted } else { meta(own) };
+    // Every trace carries these, so each is shared rather than copied per trace.
+    let or_promoted = |own: String, promoted: MetaString| shared(if own.is_empty() { &promoted } else { own.as_str() });
     let fields = PayloadFields {
-        container_id: meta(payload.containerID),
-        language_name: meta(payload.languageName),
-        language_version: meta(payload.languageVersion),
-        tracer_version: meta(payload.tracerVersion),
-        runtime_id: meta(payload.runtimeID),
+        container_id: shared(&payload.containerID),
+        language_name: shared(&payload.languageName),
+        language_version: shared(&payload.languageVersion),
+        tracer_version: shared(&payload.tracerVersion),
+        runtime_id: shared(&payload.runtimeID),
         env: or_promoted(payload.env, promoted.env),
         hostname: or_promoted(payload.hostname, promoted.hostname),
         app_version: or_promoted(payload.appVersion, promoted.app_version),
@@ -322,6 +325,12 @@ fn parse_uint(s: &[u8], base: u64, bit_size: u32) -> Result<u64, u64> {
         }
     }
     Ok(n)
+}
+
+/// Converts a string, inlining it when it is short enough and sharing one allocation otherwise: cloning an owned
+/// [`MetaString`] copies it.
+fn shared(value: &str) -> MetaString {
+    MetaString::try_inline(value).unwrap_or_else(|| MetaString::from(Arc::<str>::from(value)))
 }
 
 /// Converts an owned string, inlining it when it is short enough rather than keeping its allocation.
