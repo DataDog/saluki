@@ -41,7 +41,7 @@ use crate::common::otlp::{
     OtlpHandler, OtlpServerConfiguration, OtlpTlsConfiguration,
 };
 
-mod logs;
+pub(crate) mod logs;
 mod metrics;
 mod resolver;
 use datadog_agent_apm::semantics::SemanticRegistryProvider;

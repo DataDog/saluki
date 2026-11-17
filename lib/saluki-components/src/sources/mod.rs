@@ -13,7 +13,7 @@ pub use self::dogstatsd::{
 mod heartbeat;
 pub use self::heartbeat::HeartbeatConfiguration;
 
-mod otlp;
+pub(crate) mod otlp;
 pub use self::otlp::{
     CumulativeMonotonicMode, HistogramMode, InitialCumulativeMonotonicValue, OtlpConfiguration, OtlpContextSettings,
     OtlpMetricsSettings, SummaryMode,

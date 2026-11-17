@@ -22,6 +22,9 @@ use tokio::{
 };
 use tracing::{debug, error, warn};
 
+mod logs;
+
+pub use self::logs::OtlpLogsDecoderConfiguration;
 use crate::common::otlp::origin::OtlpOriginTagResolver;
 use crate::common::otlp::traces::translator::{OtlpTracesSettings, OtlpTracesTranslator};
 use crate::common::otlp::{
