@@ -170,7 +170,9 @@ fn case_body(case: &Case) -> Vec<u8> {
 
 /// Checks that each fixture case decodes, with `decode`, as the reference decoded it. With `any_chunk_order`, the
 /// chunks are compared in any order, as the reference's own order is random.
-fn check_fixture(fixture: &str, decode: impl Fn(&str, &[u8]) -> Result<DecodedV1, DecodeError>, any_chunk_order: bool) {
+pub(in crate::decoders::datadog) fn check_fixture(
+    fixture: &str, decode: impl Fn(&str, &[u8]) -> Result<DecodedV1, DecodeError>, any_chunk_order: bool,
+) {
     let fixture: Fixture = serde_json::from_str(fixture).unwrap();
     assert!(fixture.cases.len() > 30);
     for case in &fixture.cases {

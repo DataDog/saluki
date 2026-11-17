@@ -55,23 +55,23 @@ than with our reading of its code. `test/trace-agent-oracle/` generates those fi
   classifies the error as `httpDecodingError` does.
 - `v04_json_cases.py` holds the cases of `lib/saluki-components/src/decoders/datadog/testdata/v04_json_cases.json`,
   the v0.4 JSON decoder's fixtures, and turns the oracle's output into that file. `v01_json_cases.py` does the same for
-  `v01_json_cases.json`, the fixtures of the v0.1 JSON decoder that serves `/v0.1/spans` and `/spans`.
-- `regenerate.sh` runs both, with the Go toolchain that the checkout pins in `.go-version`.
+  `v01_json_cases.json`, the fixtures of the v0.1 JSON decoder that serves `/v0.1/spans` and `/spans`, and
+  `v05_cases.py` for `v05_cases.json`, the fixtures of the v0.5 MessagePack decoder that serves `/v0.5/traces`.
+- `regenerate.sh` runs them all, with the Go toolchain that the checkout pins in `.go-version`.
 
 To add a case, add it to the cases script of its format and regenerate, then run the decoder tests:
 
 ```shell
 test/trace-agent-oracle/regenerate.sh ~/dd/datadog-agent
-cargo nextest run -p saluki-components -E 'test(/decoders::datadog::json/)'
+cargo nextest run -p saluki-components -E 'test(/decoders::datadog::(json|v05)/)'
 ```
 
 Don't edit the fixtures by hand. To cover another endpoint, such as `/v0.7/traces`, add its version to the `version`
 switch in `oracle_test.go`, write a cases script for it beside the others that sets each case's `version`, as
 `v01_json_cases.py` does, and add it to the loop in `regenerate.sh`. The trace-agent groups v0.1 spans into chunks
 through a map, so their order is random: `v01_json_cases.py` sorts them so that the fixture is stable, and the test
-compares them in any order. The v1.0
-decoder's fixtures, `testdata/v1_decoder_cases.json`, were produced by the reference Go encoder when that decoder was
-added, with a generator that isn't in the repository.
+compares them in any order. The v1.0 decoder's fixtures, `testdata/v1_decoder_cases.json`, were produced by the
+reference Go encoder when that decoder was added, with a generator that isn't in the repository.
 
 ## Correctness tests (panoramic)
 
