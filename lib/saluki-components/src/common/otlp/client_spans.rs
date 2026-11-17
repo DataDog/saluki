@@ -3,6 +3,7 @@
 //! Tags the counter with the client dimensions an operator needs to attribute traffic: the sending SDK's language, its
 //! version, and the ingest endpoint version.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock, RwLock};
 
@@ -26,9 +27,20 @@ const OVERFLOW_TAG_VALUE: &str = "overflow";
 /// limit. Clients past the cap are counted on a single shared overflow series.
 pub(super) const MAX_CLIENT_SERIES: usize = 1000;
 
-/// Separates the normalized language from the normalized SDK version in a cache key. Neither can contain it, since
-/// normalization removes control characters.
-const KEY_SEPARATOR: char = '\0';
+/// The registered client series, keyed by normalized language and then by normalized SDK version.
+///
+/// Nesting the maps lets a lookup borrow both keys as `&str`, so finding an existing series never allocates.
+#[derive(Default)]
+struct ClientSeries {
+    by_language: HashMap<Box<str>, HashMap<Box<str>, Counter>>,
+    len: usize,
+}
+
+impl ClientSeries {
+    fn get(&self, language: &str, version: &str) -> Option<&Counter> {
+        self.by_language.get(language)?.get(version)
+    }
+}
 
 /// Counters for received OTLP spans, resolved by the sending client's identity.
 ///
@@ -37,7 +49,7 @@ const KEY_SEPARATOR: char = '\0';
 pub struct ClientSpanCounters {
     builder: MetricsBuilder,
     max_series: usize,
-    counters: Arc<RwLock<HashMap<Box<str>, Counter>>>,
+    series: Arc<RwLock<ClientSeries>>,
     overflow: Arc<OnceLock<Counter>>,
 }
 
@@ -51,7 +63,7 @@ impl ClientSpanCounters {
         Self {
             builder,
             max_series,
-            counters: Arc::new(RwLock::new(HashMap::new())),
+            series: Arc::new(RwLock::new(ClientSeries::default())),
             overflow: Arc::new(OnceLock::new()),
         }
     }
@@ -63,32 +75,44 @@ impl ClientSpanCounters {
     /// still yields `tracer_version:otlp-`. Once [`MAX_CLIENT_SERIES`] series exist, new clients share one overflow
     /// series.
     pub fn for_client(&self, sdk_language: &str, sdk_version: &str) -> Counter {
-        let mut key = String::with_capacity(sdk_language.len() + sdk_version.len() + 1);
-        push_normalized(&mut key, sdk_language);
-        key.push(KEY_SEPARATOR);
-        push_normalized(&mut key, sdk_version);
+        let language = normalized(sdk_language);
+        let version = normalized(sdk_version);
 
-        if let Some(counter) = self.counters.read().unwrap().get(key.as_str()) {
+        // Hits, and clients past the cap, are served under the read lock. Once the series are full they never grow
+        // again, so the overflow check stays valid and those clients never contend for the write lock.
+        {
+            let series = self.series.read().unwrap();
+            if let Some(counter) = series.get(&language, &version) {
+                return counter.clone();
+            }
+            if series.len >= self.max_series {
+                return self.overflow_counter();
+            }
+        }
+
+        let mut series = self.series.write().unwrap();
+        // Another thread may have registered the series, or filled the last slot, since the read lock was released.
+        if let Some(counter) = series.get(&language, &version) {
             return counter.clone();
         }
-
-        let mut counters = self.counters.write().unwrap();
-        // Another thread may have registered the series between releasing the read lock and taking the write lock.
-        if let Some(counter) = counters.get(key.as_str()) {
-            return counter.clone();
-        }
-        if counters.len() >= self.max_series {
-            return self
-                .overflow
-                .get_or_init(|| register(&self.builder, Some(OVERFLOW_TAG_VALUE), OVERFLOW_TAG_VALUE))
-                .clone();
+        if series.len >= self.max_series {
+            return self.overflow_counter();
         }
 
-        let (lang, version) = key.split_once(KEY_SEPARATOR).unwrap_or_default();
-        let lang = (!lang.is_empty()).then_some(lang);
-        let counter = register(&self.builder, lang, version);
-        counters.insert(key.into_boxed_str(), counter.clone());
+        let counter = register(&self.builder, (!language.is_empty()).then_some(&*language), &version);
+        series
+            .by_language
+            .entry(language.into_owned().into_boxed_str())
+            .or_default()
+            .insert(version.into_owned().into_boxed_str(), counter.clone());
+        series.len += 1;
         counter
+    }
+
+    fn overflow_counter(&self) -> Counter {
+        self.overflow
+            .get_or_init(|| register(&self.builder, Some(OVERFLOW_TAG_VALUE), OVERFLOW_TAG_VALUE))
+            .clone()
     }
 }
 
@@ -104,19 +128,15 @@ fn register(builder: &MetricsBuilder, lang: Option<&str>, version: &str) -> Coun
     builder.register_counter_with_tags("component_events_received_total", tags)
 }
 
-/// Appends `value`, normalized as a tag value, to `out`.
-fn push_normalized(out: &mut String, value: &str) {
-    if value.is_empty() {
-        return;
-    }
-    if is_normalized_tag_value(value) {
-        out.push_str(value);
-        return;
+/// Returns `value` normalized as a tag value, borrowing it when it's already normalized.
+fn normalized(value: &str) -> Cow<'_, str> {
+    if value.is_empty() || is_normalized_tag_value(value) {
+        return Cow::Borrowed(value);
     }
 
     let mut normalized = StringBuilder::new();
     normalize_tag_value_into_unchecked(value, &mut normalized);
-    out.push_str(normalized.as_str());
+    Cow::Owned(normalized.as_str().to_string())
 }
 
 #[cfg(test)]
@@ -228,7 +248,7 @@ mod tests {
         counters.for_client("Go", "1.0").increment(1);
         counters.for_client("go", "1.0").increment(1);
 
-        assert_eq!(counters.counters.read().unwrap().len(), 1);
+        assert_eq!(counters.series.read().unwrap().len, 1);
     }
 
     #[test]
@@ -244,7 +264,7 @@ mod tests {
         // A client registered before the cap is reached keeps its own series.
         counters.for_client("go", "1").increment(1);
 
-        assert_eq!(counters.counters.read().unwrap().len(), 2);
+        assert_eq!(counters.series.read().unwrap().len, 2);
         assert_eq!(
             spans(
                 &recorder,
