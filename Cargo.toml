@@ -9,6 +9,7 @@ members = [
   "bin/correctness/stele",
   "lib/agent-data-plane-config",
   "lib/agent-data-plane-config-system",
+  "lib/byteorder",
   "lib/datadog-agent/apm",
   "lib/datadog-agent/commons",
   "lib/datadog-agent/config",
@@ -315,7 +316,6 @@ mutable_key_type = "allow"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(system_allocator)'] }
 
 [patch.crates-io]
-# byteorder's `read_f64_into` asserts `align_of::<u64>() <= align_of::<f64>()`, which does not hold
-# on AIX, breaking the build. This unmerged fix (unlikely to land upstream) works around it; remove
-# once we can shed the byteorder dependency: https://github.com/BurntSushi/byteorder/pull/223
-byteorder = { git = "https://github.com/amy-kwan/byteorder", branch = "amyk/update-byteorder-aix" }
+# byteorder's `read_f64_into` asserts `align_of::<u64>() <= align_of::<f64>()`, which does not hold on AIX, breaking
+# the build: https://github.com/BurntSushi/byteorder/issues/221. We replace it with the subset our dependencies use.
+byteorder = { path = "lib/byteorder" }
