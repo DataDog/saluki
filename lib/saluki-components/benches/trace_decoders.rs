@@ -1,12 +1,14 @@
-//! Benchmarks for the v0.4 trace decoders, MessagePack and JSON.
+//! Benchmarks for the v0.x trace decoders: v0.4 in MessagePack and JSON, and v0.5.
 //!
 //! The payloads mimic a web service's traces: a server span with a few children per chunk, each with the tags a
-//! tracer typically sets. Services, names, envs and tag keys repeat across spans, as they do in real payloads. Both
-//! formats carry the same spans.
+//! tracer typically sets. Services, names, envs and tag keys repeat across spans, as they do in real payloads. Every
+//! format carries the same spans.
+
+use std::collections::HashMap;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use rmp::encode;
-use saluki_components::decoders::datadog::{decode_v04_json, decode_v04_payload};
+use saluki_components::decoders::datadog::{decode_v04_json, decode_v04_payload, decode_v05_payload};
 
 fn write_str_map(out: &mut Vec<u8>, entries: &[(&str, String)]) {
     encode::write_map_len(out, entries.len() as u32).unwrap();
@@ -164,6 +166,57 @@ fn json_payload(chunks: u64, spans_per_chunk: u64) -> Vec<u8> {
     serde_json::to_vec(&traces).unwrap()
 }
 
+/// The same spans as a v0.5 payload: a dictionary of every string, then the spans as 12-element arrays of indexes.
+fn v05_payload(chunks: u64, spans_per_chunk: u64) -> Vec<u8> {
+    let mut dictionary: Vec<String> = vec![String::new()];
+    let mut indexes: HashMap<String, u32> = HashMap::from([(String::new(), 0)]);
+    let mut index = |value: &str| -> u32 {
+        if let Some(&index) = indexes.get(value) {
+            return index;
+        }
+        dictionary.push(value.to_string());
+        indexes.insert(value.to_string(), dictionary.len() as u32 - 1);
+        dictionary.len() as u32 - 1
+    };
+    let mut traces = Vec::new();
+    encode::write_array_len(&mut traces, chunks as u32).unwrap();
+    for chunk in 0..chunks {
+        encode::write_array_len(&mut traces, spans_per_chunk as u32).unwrap();
+        for span_index in 0..spans_per_chunk {
+            let span = bench_span(chunk, span_index);
+            encode::write_array_len(&mut traces, 12).unwrap();
+            for value in [span.service, span.name, span.resource.as_str()] {
+                encode::write_uint(&mut traces, u64::from(index(value))).unwrap();
+            }
+            encode::write_uint(&mut traces, span.trace_id).unwrap();
+            encode::write_uint(&mut traces, span.span_id).unwrap();
+            encode::write_uint(&mut traces, span.parent_id).unwrap();
+            encode::write_sint(&mut traces, span.start).unwrap();
+            encode::write_sint(&mut traces, 250_000).unwrap();
+            encode::write_sint(&mut traces, 0).unwrap();
+            encode::write_map_len(&mut traces, span.meta.len() as u32).unwrap();
+            for (key, value) in &span.meta {
+                encode::write_uint(&mut traces, u64::from(index(key))).unwrap();
+                encode::write_uint(&mut traces, u64::from(index(value))).unwrap();
+            }
+            encode::write_map_len(&mut traces, span.metrics.len() as u32).unwrap();
+            for (key, value) in span.metrics {
+                encode::write_uint(&mut traces, u64::from(index(key))).unwrap();
+                encode::write_f64(&mut traces, *value).unwrap();
+            }
+            encode::write_uint(&mut traces, u64::from(index(span.span_type))).unwrap();
+        }
+    }
+    let mut out = Vec::new();
+    encode::write_array_len(&mut out, 2).unwrap();
+    encode::write_array_len(&mut out, dictionary.len() as u32).unwrap();
+    for value in &dictionary {
+        encode::write_str(&mut out, value).unwrap();
+    }
+    out.extend_from_slice(&traces);
+    out
+}
+
 const SHAPES: [(u64, u64); 3] = [(1, 5), (20, 5), (100, 10)];
 
 fn bench_decode(c: &mut Criterion) {
@@ -194,5 +247,19 @@ fn bench_decode_json(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_decode, bench_decode_json);
+fn bench_decode_v05(c: &mut Criterion) {
+    let mut group = c.benchmark_group("v05_decoder/decode");
+    for (chunks, spans_per_chunk) in SHAPES {
+        let bytes = v05_payload(chunks, spans_per_chunk);
+        group.throughput(Throughput::Elements(chunks * spans_per_chunk));
+        group.bench_with_input(
+            BenchmarkId::from_parameter(format!("{chunks}x{spans_per_chunk}")),
+            &bytes,
+            |b, bytes| b.iter(|| decode_v05_payload(bytes).expect("payload should decode")),
+        );
+    }
+    group.finish();
+}
+
+criterion_group!(benches, bench_decode, bench_decode_json, bench_decode_v05);
 criterion_main!(benches);

@@ -119,5 +119,5 @@ tokio = { workspace = true, features = ["time", "io-util", "net", "rt", "test-ut
 tracing-subscriber = { workspace = true, features = ["fmt"] }
 
 [[bench]]
-name = "v04_decoder"
+name = "trace_decoders"
 harness = false
