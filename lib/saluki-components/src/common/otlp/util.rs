@@ -252,19 +252,20 @@ pub fn resolve_otlp_trace_container_tags(
             None if kv.key == CONTAINER_IMAGE_TAGS => ("image_tag", first_element_or_string(value)),
             None => continue,
         };
-        if let Some(tag_value) = tag_value {
-            // A scalar string the typed map no longer holds was replaced by the enrichment step.
-            // Resolve that attribute from the typed map instead, so the enriched value stays and the tags
-            // can't disagree with `Trace::attributes`. Arrays aren't enriched: the typed map holds their
-            // stringified form, which never equals the selected element.
-            let enriched = matches!(value, Some(Value::StringValue(_)))
-                && matches!(
-                    typed_attributes.get(kv.key.as_str()),
-                    Some(AttributeValue::String(enriched)) if enriched.as_ref() != tag_value
-                );
-            if !enriched {
-                semantic.entry(tag_key).or_insert(tag_value);
+
+        // The enrichment step can replace a scalar string's value in the typed map. The replacement keeps the
+        // attribute's place in the order, so it takes the sender's value there, and the tags can't disagree with
+        // `Trace::attributes`. Arrays aren't enriched: the typed map holds their stringified form, so they use the
+        // raw element.
+        let tag_value = match (value, typed_attributes.get(kv.key.as_str())) {
+            (Some(Value::StringValue(_)), Some(AttributeValue::String(typed))) => {
+                Some(typed.as_ref()).filter(|typed| !typed.is_empty())
             }
+            _ => tag_value,
+        };
+
+        if let Some(tag_value) = tag_value {
+            semantic.entry(tag_key).or_insert(tag_value);
         }
     }
     for (tag_key, tag_value) in semantic {

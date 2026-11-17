@@ -1343,6 +1343,50 @@ mod tests {
         );
     }
 
+    #[test]
+    fn translate_spans_keeps_an_enriched_image_tag_at_its_attribute_position() {
+        // Enrichment replaces the value of `container.image.tag`, not its place among the sender's attributes, so
+        // the first valid image tag still wins in attribute order.
+        let enrich_image_tag = || {
+            TestWorkloadProvider::with_entity(
+                EntityId::Container(MetaString::from("abc123")),
+                &["container.image.tag:enriched"],
+            )
+        };
+        let image_tag_of = |attributes: Vec<KeyValue>| {
+            let rs = build_resource_spans(attributes, vec![span([1u8; 16], [1u8; 8], vec![])]);
+            let traces = translate_with_enrichment(enrich_image_tag(), ContainerTagPromotion::Off, true, rs);
+            assert_eq!(traces.len(), 1);
+            traces[0]
+                .payload
+                .resolved_container_tags()
+                .iter()
+                .find_map(|tag| tag.as_ref().strip_prefix("image_tag:").map(str::to_string))
+        };
+        let container = || string_kv("container.id", "abc123");
+
+        // The enriched tag took the place of the sender's, which came before the array.
+        assert_eq!(
+            image_tag_of(vec![
+                container(),
+                string_kv("container.image.tag", "sender"),
+                string_array_kv("container.image.tags", &["later"]),
+            ])
+            .as_deref(),
+            Some("enriched")
+        );
+        // The array came first, so it still wins.
+        assert_eq!(
+            image_tag_of(vec![
+                container(),
+                string_array_kv("container.image.tags", &["first"]),
+                string_kv("container.image.tag", "sender"),
+            ])
+            .as_deref(),
+            Some("first")
+        );
+    }
+
     /// Returns a provider holding one convention tag and one custom tag for the given container.
     fn provider_for_container() -> TestWorkloadProvider {
         TestWorkloadProvider::with_entity(
