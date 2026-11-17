@@ -507,9 +507,12 @@ fn logs_pipeline_input(logs: &logs::Domain) -> &'static str {
     if logs.processing_rules.is_empty() {
         "dd_logs_encode"
     } else {
-        "logs_process"
+        LOGS_PROCESS
     }
 }
+
+/// The component that applies the logs processing rules.
+const LOGS_PROCESS: &str = "logs_process";
 
 async fn add_baseline_logs_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, shared: &SharedConfiguration, logs: &logs::Domain,
@@ -537,14 +540,14 @@ async fn add_baseline_logs_pipeline_to_blueprint(
         // Logs.
         .connect_components("dd_logs_encode", "dd_out")?;
 
-    if logs_pipeline_input(logs) == "logs_process" {
+    if logs_pipeline_input(logs) == LOGS_PROCESS {
         let processing_rules = LogsProcessingRulesConfiguration::new(logs_processing_rules(logs));
         blueprint
             .add_transform(
-                "logs_process",
+                LOGS_PROCESS,
                 ChainedConfiguration::default().with_transform_builder("processing_rules", processing_rules),
             )?
-            .connect_components("logs_process", "dd_logs_encode")?;
+            .connect_components(LOGS_PROCESS, "dd_logs_encode")?;
     }
 
     Ok(())
@@ -1198,7 +1201,7 @@ mod tests {
                 name: "truncated".to_string(),
             },
         );
-        assert_eq!(super::logs_pipeline_input(&logs), "logs_process");
+        assert_eq!(super::logs_pipeline_input(&logs), super::LOGS_PROCESS);
     }
 
     #[test]

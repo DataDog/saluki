@@ -1070,8 +1070,8 @@ handles natively, matching against the same content as the Agent. `exclude_trunc
 `remap_source`, and `multi_line` don't affect these logs in either, so ADP accepts them and
 does nothing with them.
 
-Like the Agent, ADP only reads the rules when `logs_enabled` is `true`, and doesn't start
-when they're invalid. ADP differs in these ways:
+Like the Agent, ADP only reads the rules when `logs_enabled` (or its deprecated spelling
+`log_enabled`) is `true`, and doesn't start when they're invalid. ADP differs in these ways:
 
 - Patterns use the Rust `regex` crate rather than Go's `regexp` package. Their dialects
   differ: for example, `\w`, `\d`, `\s`, and `\b` match Unicode characters in ADP, and only

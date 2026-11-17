@@ -307,9 +307,11 @@ fn parse_processing_rules(raw: Vec<serde_json::Value>) -> std::result::Result<Ve
 
     let raw = raw
         .into_iter()
-        .map(serde_json::from_value::<RawRule>)
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|error| error.to_string())?;
+        .enumerate()
+        .map(|(index, rule)| {
+            serde_json::from_value::<RawRule>(rule).map_err(|error| format!("processing rule {index}: {error}"))
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()?;
 
     let mut rules = Vec::with_capacity(raw.len());
     for rule in raw {
@@ -3127,7 +3129,7 @@ mod tests {
             ),
             (
                 json!({ "type": "exclude_at_match", "name": 7, "pattern": "a" }),
-                "invalid type: integer `7`",
+                "processing rule 1: invalid type: integer `7`",
             ),
         ];
 
