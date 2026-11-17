@@ -588,26 +588,15 @@ mod tests {
         // Packets already queued when shutdown begins must still be sent. A forwarding loop that was aborted at
         // shutdown would be dropped at its current await point and take the rest of the queue with it.
         //
-        // Drain the target on its own thread, started before anything is forwarded. The forwarding loop can outrun a
-        // reader that has to wait its turn on the test's runtime, and a full socket receive buffer would lose packets
-        // in the harness rather than in the code under test.
-        let target = std::net::UdpSocket::bind("127.0.0.1:0").expect("target should bind");
+        // Count the sends the loop completes rather than the packets the target receives. The loop sends the whole
+        // queue in one burst, and a reader that is not scheduled during it lets the socket receive buffer fill, so
+        // the kernel drops packets in the harness rather than in the code under test. A send to a full receive
+        // buffer over loopback still succeeds, so the target only has to stay bound.
+        let target = UdpSocket::bind("127.0.0.1:0").await.expect("target should bind");
         let target_addr = target.local_addr().expect("target should have an address");
-        let receiver = std::thread::spawn(move || {
-            let mut received = 0;
-            let mut buf = [0u8; 128];
-            target
-                .set_read_timeout(Some(Duration::from_secs(5)))
-                .expect("read timeout should be set");
-            while target.recv(&mut buf).is_ok() {
-                received += 1;
-                target
-                    .set_read_timeout(Some(RECEIVE_IDLE_TIMEOUT))
-                    .expect("read timeout should be set");
-            }
-            received
-        });
 
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
         let forwarder = build_forwarder(target_addr);
 
         let supervisor = TestSupervisor::start("dogstatsd").await;
@@ -633,11 +622,22 @@ mod tests {
         drop(forwarder);
         supervisor.shutdown().await.expect("supervisor should stop cleanly");
 
-        let received = receiver.join().expect("receiver should not panic");
+        let forwarded = |state| {
+            recorder.counter((
+                "component_packets_forwarded_total",
+                &[
+                    ("component_id", "dogstatsd_forwarder_test"),
+                    ("component_type", "source"),
+                    ("state", state),
+                ],
+            ))
+        };
         assert_eq!(
-            received, queued,
+            forwarded("ok"),
+            Some(queued as u64),
             "every queued packet should have been forwarded before the loop stopped"
         );
+        assert_eq!(forwarded("error").unwrap_or(0), 0, "no forward should have failed");
     }
 
     #[tokio::test]

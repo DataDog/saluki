@@ -19,7 +19,7 @@ use stringtheory::MetaString;
 
 use crate::components::ottl::ErrorMode;
 
-/// Builds the trace encoder settings, without a default hostname.
+/// Builds the trace encoder settings, without a default hostname or workload provider.
 pub(crate) fn trace_configuration(
     traces: &traces::Domain, otlp_traces: &otlp::Traces, shared: &SharedConfiguration, agent_env: AgentEnv,
 ) -> DatadogTraceConfiguration {
@@ -35,6 +35,7 @@ pub(crate) fn trace_configuration(
         error_tracking_standalone: traces.error_tracking_standalone_enabled,
         ignore_missing_datadog_fields: otlp_traces.ignore_missing_datadog_fields,
         default_hostname: None,
+        workload_provider: None,
     }
 }
 
@@ -244,6 +245,7 @@ mod tests {
         assert!(config.error_tracking_standalone);
         assert!(config.ignore_missing_datadog_fields);
         assert_eq!(None, config.default_hostname);
+        assert!(config.workload_provider.is_none());
     }
 
     #[test]

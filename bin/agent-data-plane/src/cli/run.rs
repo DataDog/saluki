@@ -579,7 +579,10 @@ async fn add_baseline_traces_pipeline_to_blueprint(
         &config.shared.tags.tags,
         &config.shared.tags.extra_tags,
     );
-    let dd_traces_config = trace_configuration(
+    // The trace encoder and the stats transform look up container tags to fill in missing version data. Stats also
+    // carry those tags as infra tags.
+    let workload_provider = Arc::new(env_provider.workload().clone());
+    let mut dd_traces_config = trace_configuration(
         &config.domains.traces,
         &config.domains.otlp.traces,
         &config.shared,
@@ -587,6 +590,7 @@ async fn add_baseline_traces_pipeline_to_blueprint(
     )
     .with_environment_provider(env_provider.clone())
     .await?;
+    dd_traces_config.workload_provider = Some(workload_provider.clone());
     let trace_sampler_config = trace_sampler_configuration(
         &config.domains.traces,
         &config.domains.otlp.traces,
@@ -618,10 +622,11 @@ async fn add_baseline_traces_pipeline_to_blueprint(
         .with_transform_builder("trace_tag_replacer", trace_tag_replacer_config);
     let apm_onboarding_config =
         ChainedConfiguration::default().with_transform_builder("apm_onboarding", ApmOnboardingConfiguration);
-    let apm_stats_transform_config =
+    let mut apm_stats_transform_config =
         apm_stats_configuration(&config.domains.traces, agent_env.clone(), semantic_registry)
             .with_environment_provider(env_provider.clone())
             .await?;
+    apm_stats_transform_config.workload_provider = Some(workload_provider);
     let dd_apm_stats_encoder =
         DatadogApmStatsEncoderConfiguration::new(config.shared.metrics_encoding.flush_timeout, agent_env)
             .with_environment_provider(env_provider.clone())
@@ -1138,7 +1143,6 @@ mod tests {
         aggregate_context_snapshot_channel_for_test, AggregateContextSnapshotEntry, AggregateMetricType,
     };
     use saluki_core::data_model::event::metric::context::Context;
-    use stringtheory::MetaString;
     use tower::ServiceExt as _;
 
     use crate::dogstatsd_contexts::DogStatsDContextDumpAPIHandler;
@@ -1236,10 +1240,6 @@ mod tests {
     }
 
     fn snapshot_entry(name: &'static str) -> AggregateContextSnapshotEntry {
-        AggregateContextSnapshotEntry::for_test(
-            Context::from_static_name(name),
-            AggregateMetricType::Gauge,
-            MetaString::empty(),
-        )
+        AggregateContextSnapshotEntry::for_test(Context::from_static_name(name), AggregateMetricType::Gauge)
     }
 }

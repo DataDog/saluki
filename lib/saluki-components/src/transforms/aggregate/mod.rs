@@ -81,7 +81,6 @@ impl From<&MetricValues> for AggregateMetricType {
 pub struct AggregateContextSnapshotEntry {
     context: Context,
     metric_type: AggregateMetricType,
-    unit: MetaString,
 }
 
 impl AggregateContextSnapshotEntry {
@@ -95,23 +94,10 @@ impl AggregateContextSnapshotEntry {
         self.metric_type
     }
 
-    /// Returns the unit attached to the retained metric values, if one is set.
-    pub fn unit(&self) -> Option<&str> {
-        if self.unit.is_empty() {
-            None
-        } else {
-            Some(&self.unit)
-        }
-    }
-
     /// Creates a snapshot entry for downstream test and benchmark fixtures.
     #[cfg(any(test, feature = "test-util"))]
-    pub fn for_test(context: Context, metric_type: AggregateMetricType, unit: MetaString) -> Self {
-        Self {
-            context,
-            metric_type,
-            unit,
-        }
+    pub fn for_test(context: Context, metric_type: AggregateMetricType) -> Self {
+        Self { context, metric_type }
     }
 }
 
@@ -603,6 +589,20 @@ struct AggregatedMetric {
     origin_id: OriginContextId,
 }
 
+impl AggregatedMetric {
+    fn merge(&mut self, timestamp: u64, values: MetricValues, metadata: MetricMetadata) {
+        // Other metadata changes within a flush interval are ignored to keep things simple.
+        self.last_seen = timestamp;
+        self.values.merge(values);
+
+        // The first non-empty unit wins and persists until the entry is removed; non-counters are removed once all
+        // values are flushed, so a stale unit outlives its samples by at most one flush.
+        if self.metadata.unit.is_empty() {
+            self.metadata.unit = metadata.unit;
+        }
+    }
+}
+
 struct AggregationState {
     contexts: HashMap<Context, AggregatedMetric, foldhash::quality::RandomState>,
     contexts_remove_buf: Vec<Context>,
@@ -647,7 +647,6 @@ impl AggregationState {
             snapshot.push(AggregateContextSnapshotEntry {
                 context: context.clone(),
                 metric_type: AggregateMetricType::from(&aggregated.values),
-                unit: aggregated.metadata.unit.clone(),
             });
         }
         snapshot
@@ -685,13 +684,7 @@ impl AggregationState {
         // If we're already tracking this context, update the last seen time and merge the new values into the existing
         // values. Otherwise, create a new entry.
         match self.contexts.entry(context) {
-            Entry::Occupied(mut entry) => {
-                let aggregated = entry.get_mut();
-
-                // We ignore metadata changes within a flush interval to keep things simple.
-                aggregated.last_seen = timestamp;
-                aggregated.values.merge(values);
-            }
+            Entry::Occupied(mut entry) => entry.get_mut().merge(timestamp, values, metadata),
             Entry::Vacant(entry) => {
                 let origin_id = self.telemetry.increment_contexts(entry.key(), &values);
 
@@ -1244,7 +1237,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_contexts_preserves_full_context_shape_and_unit() {
+    fn snapshot_contexts_preserves_full_context_shape() {
         let mut state = AggregationState::new(
             BUCKET_WIDTH_SECS,
             10,
@@ -1278,11 +1271,9 @@ mod tests {
         assert_eq!(snapshot[0].context().tags().len(), 1);
         assert_eq!(snapshot[0].context().origin_tags().len(), 1);
         assert_eq!(snapshot[0].metric_type(), AggregateMetricType::Histogram);
-        assert_eq!(snapshot[0].unit(), Some("millisecond"));
 
         assert_eq!(snapshot[1].context(), &gauge_context);
         assert_eq!(snapshot[1].metric_type(), AggregateMetricType::Gauge);
-        assert_eq!(snapshot[1].unit(), None);
     }
 
     #[tokio::test]
@@ -1373,7 +1364,6 @@ mod tests {
         let expected = vec![AggregateContextSnapshotEntry {
             context,
             metric_type: AggregateMetricType::Gauge,
-            unit: MetaString::empty(),
         }];
         let (response, mut receiver) = oneshot::channel();
         let snapshot_calls = Cell::new(0);
@@ -1481,7 +1471,6 @@ mod tests {
             let entry = &snapshot[0];
             assert_eq!(entry.context(), &retained_context);
             assert_eq!(entry.metric_type(), AggregateMetricType::Counter);
-            assert_eq!(entry.unit(), None);
 
             drop(snapshot_handle);
             control.shutdown().await.expect("aggregate should stop cleanly");
@@ -1496,7 +1485,6 @@ mod tests {
         let expected = vec![AggregateContextSnapshotEntry::for_test(
             Context::from_static_name("round.trip"),
             AggregateMetricType::Gauge,
-            MetaString::from_static("widget"),
         )];
         let snapshot_task = tokio::spawn(async move { handle.snapshot().await });
 
@@ -1972,6 +1960,85 @@ mod tests {
                     name
                 );
             }
+        }
+    }
+
+    fn histogram_with_unit(context: &Context, value: f64, unit: &'static str) -> Metric {
+        Metric::from_parts(
+            context.clone(),
+            MetricValues::histogram([value]),
+            MetricMetadata::default().with_unit(MetaString::from_static(unit)),
+        )
+    }
+
+    fn max_only_histogram_config() -> HistogramConfiguration {
+        HistogramConfiguration::from_statistics(&[HistogramStatistic::Maximum], false, "".into())
+    }
+
+    #[tokio::test]
+    async fn histogram_unit_first_non_empty_wins() {
+        // DogStatsD `h` and `ms` samples for one context land in one histogram, which carries a unit if any sample did.
+        for units in [["", "millisecond"], ["millisecond", ""]] {
+            let mut state = AggregationState::new(
+                BUCKET_WIDTH_SECS,
+                10,
+                COUNTER_EXPIRE,
+                max_only_histogram_config(),
+                Telemetry::noop(),
+            );
+            let context = Context::from_static_name("mixed.timer");
+            for (value, unit) in units.into_iter().enumerate() {
+                assert!(state.insert(insert_ts(1), histogram_with_unit(&context, value as f64, unit)));
+            }
+
+            let flushed_metrics = get_flushed_metrics(flush_ts(1), &mut state).await;
+            assert_eq!(flushed_metrics.len(), 1);
+            assert_eq!(
+                flushed_metrics[0].metadata().unit(),
+                Some("millisecond"),
+                "units {units:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn histogram_unit_lasts_until_the_context_is_removed() {
+        // The unit isn't tracked per bucket: every unflushed value of the context shares it until the context is removed.
+        for (units, expected) in [
+            (["millisecond", "millisecond"], ["millisecond", "millisecond"]),
+            (["millisecond", ""], ["millisecond", "millisecond"]),
+            (["", "millisecond"], ["millisecond", "millisecond"]),
+            (["", ""], ["", ""]),
+        ] {
+            let mut state = AggregationState::new(
+                BUCKET_WIDTH_SECS,
+                10,
+                COUNTER_EXPIRE,
+                max_only_histogram_config(),
+                Telemetry::noop(),
+            );
+            let context = Context::from_static_name("timer");
+            assert!(state.insert(insert_ts(1), histogram_with_unit(&context, 1.0, units[0])));
+            assert!(state.insert(insert_ts(2), histogram_with_unit(&context, 2.0, units[1])));
+
+            for (step, unit) in [1, 2].into_iter().zip(expected) {
+                let flushed_metrics = get_flushed_metrics_with_open_windows(flush_ts(step), false, &mut state).await;
+                assert_eq!(flushed_metrics.len(), 1, "units {units:?}, step {step}");
+                let max_metric = Metric::gauge(Context::from_static_name("timer.max"), 0.0);
+                assert_flushed_scalar_metric!(max_metric, &flushed_metrics[0], [bucket_ts(step) => step as f64]);
+                assert_eq!(
+                    flushed_metrics[0].metadata().unit(),
+                    (!unit.is_empty()).then_some(unit),
+                    "units {units:?}, step {step}"
+                );
+            }
+            assert!(state.is_empty());
+
+            // A context recreated after removal doesn't inherit the old unit.
+            assert!(state.insert(insert_ts(3), histogram_with_unit(&context, 3.0, "")));
+            let flushed_metrics = get_flushed_metrics_with_open_windows(flush_ts(3), false, &mut state).await;
+            assert_eq!(flushed_metrics.len(), 1, "units {units:?}, step 3");
+            assert_eq!(flushed_metrics[0].metadata().unit(), None, "units {units:?}, step 3");
         }
     }
 

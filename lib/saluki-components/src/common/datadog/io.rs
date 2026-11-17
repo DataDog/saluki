@@ -4,7 +4,9 @@
 //!
 //! Every task here is a supervised child of the process that spawns the forwarder. In practice, that process is the
 //! forwarder component. The tasks make a subtree below the component. The main I/O loop and the background refreshers
-//! are children of the component. Each endpoint has one I/O loop, which is a child of the main I/O loop.
+//! are children of the component. Each endpoint has an I/O loop below the main I/O loop. When sketch shadowing is
+//! enabled, a separate endpoint loop owns shadow concurrency, backoff, and a bounded, memory-only retry queue. Shadow
+//! dispatch never waits for queue capacity, so validation failures cannot block authoritative traffic.
 //!
 //! A drain can outlast the five-second default timeout of a closure-based task: each endpoint loop either waits for or
 //! cancels its in-flight requests, which the request timeout bounds, and then flushes its retry queue. Thus, the main
@@ -66,7 +68,7 @@ use saluki_metrics::MetricsBuilder;
 use stringtheory::MetaString;
 use tokio::{
     select,
-    sync::mpsc,
+    sync::mpsc::{self, error::SendError},
     task::{JoinError, JoinSet},
 };
 use tokio_util::sync::CancellationToken;
@@ -90,6 +92,9 @@ use super::{
     validation::ApiKeyValidator,
     METRICS_SERIES_V3_PATH, METRIC_INTAKE_PATHS,
 };
+
+/// Maximum number of transactions waiting for an endpoint worker.
+pub(crate) const ENDPOINT_CHANNEL_CAPACITY: usize = 8;
 
 type EndpointNameFn = dyn Fn(&Uri) -> Option<MetaString> + Send + Sync;
 
@@ -662,55 +667,91 @@ async fn run_io_loop<B>(
         .iter()
         .any(|endpoint| endpoint.route() == EndpointRoute::MetricsPrimary);
     let shared_txnq_telemetry = SharedTransactionQueueTelemetry::from_builder(&metrics_builder);
+    let mut shadow_setup = None;
 
     for routable_endpoint in resolved_endpoints {
+        let shadow_enabled = config.endpoint_supports_sketch_shadow(&routable_endpoint, has_metrics_primary);
         let (route, resolved_endpoint, target) = routable_endpoint.into_parts();
         let endpoint_url = resolved_endpoint.endpoint().to_string();
         let endpoint_domain = resolved_endpoint.endpoint().origin().ascii_serialization();
+        let task_name = endpoint_io_loop_task_name(&resolved_endpoint);
 
-        let txnq_telemetry =
-            TransactionQueueTelemetry::from_builder(&metrics_builder, &endpoint_url, shared_txnq_telemetry.clone());
-        let retry_telemetry = TransactionRetryTelemetry::from_builder(&metrics_builder, &endpoint_domain);
-        let retry_cause_telemetry = RetryCauseTelemetry::from_builder(&metrics_builder, &endpoint_domain);
+        let spawn_endpoint_worker = |worker_config: &ForwarderConfiguration,
+                                     worker_metrics: &MetricsBuilder,
+                                     queue_telemetry: &SharedTransactionQueueTelemetry,
+                                     task_name: String| {
+            let txnq_telemetry =
+                TransactionQueueTelemetry::from_builder(worker_metrics, &endpoint_url, queue_telemetry.clone());
+            let retry_telemetry = TransactionRetryTelemetry::from_builder(worker_metrics, &endpoint_domain);
+            let retry_cause_telemetry = RetryCauseTelemetry::from_builder(worker_metrics, &endpoint_domain);
+            let (endpoint_tx, endpoint_rx) = mpsc::channel(ENDPOINT_CHANNEL_CAPACITY);
 
-        let (endpoint_tx, endpoint_rx) = mpsc::channel(8);
+            runtime::worker(
+                task_name,
+                run_endpoint_io_loop(
+                    endpoint_rx,
+                    context.clone(),
+                    worker_config.clone(),
+                    retry_storage_path.clone(),
+                    secrets.clone(),
+                    service.clone(),
+                    telemetry.clone(),
+                    txnq_telemetry,
+                    retry_telemetry,
+                    retry_cause_telemetry,
+                    Arc::clone(&endpoint_name),
+                    route,
+                    resolved_endpoint.clone(),
+                    endpoint_request_mapper_factory.clone(),
+                    emitter.clone(),
+                ),
+            )
+            // The drain of an endpoint can take longer than the default timeout. See the module documentation.
+            .with_shutdown_timeout(Duration::MAX)
+            .spawn();
+            endpoint_tx
+        };
 
-        runtime::worker(
-            endpoint_io_loop_task_name(&resolved_endpoint),
-            run_endpoint_io_loop(
-                endpoint_rx,
-                context.clone(),
-                config.clone(),
-                retry_storage_path.clone(),
-                secrets.clone(),
-                service.clone(),
-                telemetry.clone(),
-                txnq_telemetry,
-                retry_telemetry,
-                retry_cause_telemetry,
-                Arc::clone(&endpoint_name),
-                route,
-                resolved_endpoint,
-                endpoint_request_mapper_factory.clone(),
-                emitter.clone(),
-            ),
-        )
-        // The drain of an endpoint can take longer than the default timeout. See the module documentation.
-        .with_shutdown_timeout(Duration::MAX)
-        .spawn();
-
+        let tx = spawn_endpoint_worker(&config, &metrics_builder, &shared_txnq_telemetry, task_name.clone());
+        let shadow_tx = if shadow_enabled {
+            let (shadow_config, shadow_metrics, shadow_queue_telemetry) = shadow_setup.get_or_insert_with(|| {
+                let mut shadow_config = config.clone();
+                // Validation must not consume authoritative disk capacity or delay shutdown for in-flight shadows.
+                shadow_config.retry.storage_max_size_bytes = 0;
+                shadow_config.stop_wait_for_inflight = false;
+                let shadow_metrics = metrics_builder.clone().add_default_tag("traffic:sketch_shadow");
+                let shadow_queue_telemetry = SharedTransactionQueueTelemetry::from_builder(&shadow_metrics);
+                (shadow_config, shadow_metrics, shadow_queue_telemetry)
+            });
+            Some(spawn_endpoint_worker(
+                shadow_config,
+                shadow_metrics,
+                shadow_queue_telemetry,
+                format!("{task_name}_sketch_shadow"),
+            ))
+        } else {
+            None
+        };
         endpoint_txs.push(EndpointSender {
+            configured_endpoint: resolved_endpoint.configured_endpoint().to_string(),
             endpoint_url,
             endpoint_domain,
             target,
             route,
-            tx: endpoint_tx,
+            tx,
+            shadow_tx,
         });
     }
 
     // Listen for transactions to forward, and send a copy of each one to the matching endpoint I/O tasks.
     while let Some(transaction) = transactions_rx.recv().await {
-        let is_metrics_request = is_metrics_request_uri(transaction.request_uri(), METRICS_SERIES_V3_PATH);
+        let is_metrics_request = transaction.metadata().payload_info.is_some()
+            || is_metrics_request_uri(transaction.request_uri(), METRICS_SERIES_V3_PATH);
+        let is_shadow = transaction
+            .metadata()
+            .sketch_shadow
+            .as_ref()
+            .is_some_and(|shadow| shadow.is_shadow);
         for endpoint_sender in &endpoint_txs {
             if !should_route_to_endpoint(is_metrics_request, has_metrics_primary, endpoint_sender.route) {
                 continue;
@@ -719,12 +760,15 @@ async fn run_io_loop<B>(
                 continue;
             }
 
-            if endpoint_sender.tx.send(transaction.clone()).await.is_err() {
+            if endpoint_sender.send(transaction.clone()).await.is_err() {
                 telemetry.track_permanently_failed_transaction(
                     transaction.metadata(),
                     None,
                     &endpoint_sender.endpoint_domain,
                 );
+                if is_shadow {
+                    continue;
+                }
                 error!(
                     endpoint = %endpoint_sender.endpoint_url,
                     "Failed to send request to endpoint I/O task: receiver dropped."
@@ -745,11 +789,36 @@ struct EndpointSender<B>
 where
     B: Buf + Clone,
 {
+    configured_endpoint: String,
     endpoint_url: String,
     endpoint_domain: String,
     target: Option<RoutingTargetId>,
     route: EndpointRoute,
     tx: mpsc::Sender<Transaction<B>>,
+    shadow_tx: Option<mpsc::Sender<Transaction<B>>>,
+}
+
+impl<B: Buf + Clone> EndpointSender<B> {
+    async fn send(&self, transaction: Transaction<B>) -> Result<(), SendError<Transaction<B>>> {
+        if let Some(shadow) = transaction
+            .metadata()
+            .sketch_shadow
+            .as_ref()
+            .filter(|shadow| shadow.is_shadow)
+        {
+            if shadow.batch_id(&self.configured_endpoint).is_none() {
+                return Ok(());
+            }
+            let Some(shadow_tx) = &self.shadow_tx else {
+                return Ok(());
+            };
+            shadow_tx
+                .try_send(transaction)
+                .map_err(|error| SendError(error.into_inner()))
+        } else {
+            self.tx.send(transaction).await
+        }
+    }
 }
 
 fn is_metrics_request_uri(uri: &Uri, v3_beta_series_route: &str) -> bool {
@@ -792,6 +861,34 @@ fn matches_metrics_routing_targets(target: Option<RoutingTargetId>, metadata: &M
         None => true,
         Some(targets) => target.is_some_and(|target| targets.includes(target)),
     }
+}
+
+// Expand batch metadata before queueing so retries persist the original correlation headers.
+fn prepare_metrics_transaction<B: Buf + Clone>(
+    txn: Transaction<B>, configured_endpoint: &str, settings: &EndpointV3Settings, disables_v3: bool,
+) -> Option<Transaction<B>> {
+    let (mut metadata, mut request) = txn.into_parts();
+    let shadow = metadata.sketch_shadow.take();
+    let is_shadow = shadow.as_ref().is_some_and(|shadow| shadow.is_shadow);
+    if let Some(shadow) = shadow {
+        let batch_id = shadow.batch_id(configured_endpoint);
+        if is_shadow && (batch_id.is_none() || settings.use_v3_sketches || disables_v3) {
+            return None;
+        }
+        if let Some(batch_id) = batch_id {
+            request.headers_mut().insert("X-Metrics-Request-ID", batch_id.clone());
+            request
+                .headers_mut()
+                .insert("X-Metrics-Request-Seq", shadow.request_index.into());
+            request
+                .headers_mut()
+                .insert("X-Metrics-Request-Len", shadow.request_count.into());
+        }
+    }
+    if !is_shadow && !settings.should_receive_payload(metadata.payload_info) {
+        return None;
+    }
+    Some(Transaction::reassemble(metadata, request))
 }
 
 /// Returns the process name for the endpoint I/O loop serving `endpoint`.
@@ -927,15 +1024,18 @@ async fn run_endpoint_io_loop<B>(
                     .with_flush_to_disk_mem_ratio(retry.flush_to_disk_mem_ratio)
             });
     }
+    let queue_domain = MetaString::from(endpoint_domain.as_str());
+    let in_flight_telemetry = txnq_telemetry.clone();
     let mut pending_txns = PendingTransactions::new(
         config.endpoint_buffer_size,
         retry_queue,
         txnq_telemetry,
-        MetaString::from(endpoint_domain.as_str()),
+        queue_domain.clone(),
         retry.effective_capacity_time_interval_secs(),
     );
 
     let mut in_flight = JoinSet::new();
+    in_flight_telemetry.record_in_flight_requests(&queue_domain, 0);
     let mut transaction_input_telemetry_by_endpoint = FastHashMap::<MetaString, TransactionInputTelemetry>::default();
     let mut done = false;
 
@@ -945,15 +1045,8 @@ async fn run_endpoint_io_loop<B>(
             maybe_txn = txns_rx.recv(), if !done => match maybe_txn {
                 Some(txn) => {
                     // Endpoint targeting was checked before dispatch to this task. Filter by protocol before queuing.
-                    let payload_info = txn.metadata().payload_info;
-                    if !endpoint_v3_settings.should_receive_payload(payload_info) {
-                        debug!(
-                            endpoint_url,
-                            ?payload_info,
-                            "Filtering out transaction based on endpoint V3 settings."
-                        );
-                        continue;
-                    }
+                    let Some(txn) = prepare_metrics_transaction(txn, &configured_endpoint, &endpoint_v3_settings,
+                        config.compressor_disables_metrics_v3()) else { continue; };
                     let transaction_size = txn.size_bytes();
                     let resolved = endpoint_name(txn.request_uri());
                     let logical = resolved.as_deref().unwrap_or_else(|| txn.request_uri().path());
@@ -983,21 +1076,39 @@ async fn run_endpoint_io_loop<B>(
             // While we're not done and there are pending transactions, wait for the service to become ready and then
             // next the next available pending transaction.
             svc = service.ready(), if !done && !pending_txns.is_empty() => match svc {
-                Ok(svc) => if let Some(pending_txn) = pending_txns.pop().await {
-                    let (metadata, request, retry_counters) = prepare_transaction_for_dispatch(
-                        pending_txn,
-                        &mut retry_telemetry,
-                        endpoint_name.as_ref(),
-                    );
-                    let body_size = request.body().remaining() as u64;
-                    in_flight.spawn(svc.call(request).map(move |result| InFlightTransaction {
-                        metadata,
-                        body_size,
-                        retry_counters,
-                        result,
-                    }));
+                Ok(svc) => {
+                    // Dequeuing can read from disk, and requests can finish while it does, so dequeue first.
+                    let pending_txn = pending_txns.pop().await;
 
-                    debug!(endpoint_url, "Request sent.");
+                    // A finished request releases its concurrency permit before its task is joined, so collect
+                    // finished tasks before dispatching, or the in-flight count would include them.
+                    while let Some(task_result) = in_flight.try_join_next() {
+                        handle_in_flight_transaction_result(
+                            task_result,
+                            &mut pending_txns,
+                            &telemetry,
+                            &endpoint_url,
+                            &endpoint_domain,
+                        ).await;
+                    }
+
+                    if let Some(pending_txn) = pending_txn {
+                        let (metadata, request, retry_counters) = prepare_transaction_for_dispatch(
+                            pending_txn,
+                            &mut retry_telemetry,
+                            endpoint_name.as_ref(),
+                        );
+                        let body_size = request.body().remaining() as u64;
+                        in_flight.spawn(svc.call(request).map(move |result| InFlightTransaction {
+                            metadata,
+                            body_size,
+                            retry_counters,
+                            result,
+                        }));
+
+                        debug!(endpoint_url, "Request sent.");
+                    }
+                    in_flight_telemetry.record_in_flight_requests(&queue_domain, in_flight.len());
                 },
                 Err(e) => match e {
                     RetryCircuitBreakerError::Service(e) => {
@@ -1016,6 +1127,7 @@ async fn run_endpoint_io_loop<B>(
             // Drive any in-flight transactions to completion.
             maybe_result = in_flight.join_next(), if !in_flight.is_empty() => {
                 let task_result = maybe_result.expect("in_flight marked as not being empty");
+                in_flight_telemetry.record_in_flight_requests(&queue_domain, in_flight.len());
                 handle_in_flight_transaction_result(
                     task_result,
                     &mut pending_txns,
@@ -1045,6 +1157,9 @@ async fn run_endpoint_io_loop<B>(
             error!(endpoint_url, error = %e, "Failed to flush pending transactions. Events may be permanently lost.")
         }
     }
+
+    // Any request still in flight here is aborted when the set is dropped, so none remain once this task stops.
+    in_flight_telemetry.record_in_flight_requests(&queue_domain, 0);
 
     debug!(endpoint_url, "Endpoint I/O task stopped.");
 }
@@ -1087,6 +1202,7 @@ fn track_queue_drops(telemetry: &ComponentTelemetry, domain: &str, push_result: 
     telemetry.track_dropped_items(push_result.items_dropped);
     telemetry.track_dropped_events(push_result.events_dropped);
     telemetry.track_data_points_dropped(domain, push_result.data_points_dropped);
+    telemetry.track_dropped_bytes(domain, push_result.bytes_dropped);
 }
 
 /// Processes an HTTP response to a forwarded intake request, updating telemetry and logging as appropriate.
@@ -1188,7 +1304,7 @@ impl<T: Retryable> PendingTransactions<T> {
         max_enqueued: usize, retry_queue: RetryQueue<T>, telemetry: TransactionQueueTelemetry, domain: MetaString,
         capacity_history_duration_secs: u64,
     ) -> Self {
-        Self {
+        let pending = Self {
             high_priority: VecDeque::with_capacity(max_enqueued),
             low_priority: retry_queue,
             telemetry,
@@ -1197,7 +1313,15 @@ impl<T: Retryable> PendingTransactions<T> {
                 capacity_history_duration_secs,
                 RETRY_QUEUE_CAPACITY_BUCKET_DURATION_SECS,
             ),
-        }
+        };
+
+        // Admission to the high-priority queue is bounded by the capacity actually allocated, so report that.
+        pending
+            .telemetry
+            .record_high_prio_queue_capacity(&pending.domain, pending.high_priority.capacity());
+        pending.record_high_prio_queue_size();
+
+        pending
     }
 
     /// Returns `true` if there are no pending transactions.
@@ -1216,6 +1340,7 @@ impl<T: Retryable> PendingTransactions<T> {
         if self.high_priority.len() < self.high_priority.capacity() {
             self.high_priority.push_back(transaction);
             self.telemetry.high_prio_queue_insertions().increment(1);
+            self.record_high_prio_queue_size();
 
             debug!(
                 high_prio_queue_len = self.high_priority.len(),
@@ -1261,6 +1386,7 @@ impl<T: Retryable> PendingTransactions<T> {
         loop {
             if let Some(transaction) = self.high_priority.pop_front() {
                 self.telemetry.high_prio_queue_removals().increment(1);
+                self.record_high_prio_queue_size();
 
                 debug!(
                     high_prio_queue_len = self.high_priority.len(),
@@ -1319,6 +1445,7 @@ impl<T: Retryable> PendingTransactions<T> {
         // Push all high-priority transactions into the low-priority queue.
         while let Some(transaction) = self.high_priority.pop_front() {
             self.telemetry.high_prio_queue_removals().increment(1);
+            self.record_high_prio_queue_size();
 
             let subpush_result = self.low_priority.push(transaction).await?;
             self.telemetry.low_prio_queue_insertions().increment(1);
@@ -1337,6 +1464,11 @@ impl<T: Retryable> PendingTransactions<T> {
     fn record_retry_queue_size(&self) {
         self.telemetry
             .record_retry_queue_size(&self.domain, self.low_priority.len());
+    }
+
+    fn record_high_prio_queue_size(&self) {
+        self.telemetry
+            .record_high_prio_queue_size(&self.domain, self.high_priority.len());
     }
 
     async fn record_incoming_transaction_size(&mut self, bytes: u64) {
@@ -1404,7 +1536,9 @@ mod tests {
     use crate::common::datadog::{
         config::OpwMetricsSettings,
         endpoints::{resolve_additional_endpoints, EndpointConfiguration},
+        protocol::MetricsPayloadInfo,
         routing::{MetricsRoutingTargets, RoutingTargetCatalog, RoutingTargetKind, RoutingTargetSet},
+        sketch_shadow::{SketchShadowDestination, SketchShadowMetadata},
         test_util::{forwarder_configuration, LiveConfiguration, LiveRoot, DEFAULT_PRIMARY_ENDPOINT, TEST_API_KEY},
     };
     use crate::common::datadog::{
@@ -2136,6 +2270,76 @@ mod tests {
         assert!(push_result.had_drops());
         assert_eq!(push_result.items_dropped, 2);
         assert_eq!(push_result.events_dropped, 2);
+        assert_eq!(push_result.bytes_dropped, ("high".len() + "low".len()) as u64);
+    }
+
+    #[test]
+    fn track_queue_drops_counts_dropped_bytes_by_domain() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let telemetry = ComponentTelemetry::from_builder(&MetricsBuilder::default());
+
+        let push_result = PushResult {
+            items_dropped: 2,
+            events_dropped: 3,
+            data_points_dropped: 0,
+            bytes_dropped: 42,
+        };
+        track_queue_drops(&telemetry, "https://example.com", push_result);
+
+        assert_eq!(recorder.counter("component_items_dropped_total"), Some(2));
+        assert_eq!(
+            recorder.counter(("component_bytes_dropped_total", &[("domain", "https://example.com")])),
+            Some(42)
+        );
+    }
+
+    #[tokio::test]
+    async fn high_prio_queue_fill_tracks_pushes_pops_and_flush() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let (telemetry, domain) = transaction_queue_telemetry();
+        let retry_queue = RetryQueue::new("test".to_string(), 1024);
+        let mut pending_txns = PendingTransactions::new(2, retry_queue, telemetry, domain, 900);
+        let capacity = pending_txns.high_priority.capacity() as f64;
+        let size = |recorder: &TestRecorder| {
+            let total = recorder.gauge("network_http_high_prio_queue_size");
+            let by_domain = recorder.gauge((
+                "network_http_high_prio_queue_size",
+                &[("domain", "https://example.com")],
+            ));
+            assert_eq!(total, by_domain);
+            total
+        };
+
+        assert_eq!(recorder.gauge("network_http_high_prio_queue_capacity"), Some(capacity));
+        assert_eq!(
+            recorder.gauge((
+                "network_http_high_prio_queue_capacity",
+                &[("domain", "https://example.com")],
+            )),
+            Some(capacity)
+        );
+        assert_eq!(size(&recorder), Some(0.0));
+
+        for txn in ["first", "second", "third"] {
+            let _ = pending_txns
+                .push_high_priority(txn.to_string())
+                .await
+                .expect("push should succeed");
+        }
+        // The third transaction overflows into the retry queue, so the high-priority queue stays full.
+        assert_eq!(size(&recorder), Some(2.0));
+        assert_eq!(recorder.gauge("network_http_retry_queue_size"), Some(1.0));
+
+        assert!(matches!(
+            pending_txns.pop().await,
+            Some(PendingTransaction::HighPriority(txn)) if txn == "first"
+        ));
+        assert_eq!(size(&recorder), Some(1.0));
+
+        let _ = pending_txns.flush().await.expect("flush should succeed");
+        assert_eq!(size(&recorder), Some(0.0));
     }
 
     #[tokio::test]
@@ -2696,6 +2900,23 @@ mod tests {
         Transaction::from_original(TxnMetadata::from_event_and_data_point_count(1, 0), request)
     }
 
+    fn build_test_shadow_transaction(endpoint: &str) -> Transaction<FrozenChunkedBytesBuffer> {
+        let (mut metadata, mut request) = build_test_transaction().into_parts();
+        metadata.payload_info = Some(MetricsPayloadInfo::v3_sketches());
+        metadata.sketch_shadow = Some(SketchShadowMetadata {
+            sampled_destinations: vec![SketchShadowDestination {
+                configured_endpoint: Arc::from(endpoint),
+                batch_id: "test-batch".parse().unwrap(),
+            }]
+            .into(),
+            request_index: 0,
+            request_count: 1,
+            is_shadow: true,
+        });
+        *request.uri_mut() = uri("/api/intake/metrics/v3beta/sketches");
+        Transaction::reassemble(metadata, request)
+    }
+
     /// Returns a live view reporting that secret resolution can replace a rejected API key.
     fn secrets_in_use() -> Live<bool> {
         LiveConfiguration::new(LiveRoot {
@@ -3039,6 +3260,47 @@ mod tests {
         );
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn forwarder_reports_in_flight_requests() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let (server_url, _, mut requests) =
+            start_recording_http_server_with_delay(vec![StatusCode::OK], Duration::from_millis(200)).await;
+        let live = LiveForwarderConfiguration {
+            secrets_in_use: Live::new_fixed(false),
+            ..Default::default()
+        };
+        let (_, forwarder) = build_test_forwarder_configured(&server_url, live, |config| {
+            config.request_timeout_secs = 10;
+            config.stop_wait_for_inflight = true;
+        })
+        .await;
+        let in_flight_key = || {
+            metrics::Key::from_parts(
+                "network_http_in_flight_requests",
+                vec![
+                    metrics::Label::new("component_id", "test_forwarder"),
+                    metrics::Label::new("component_type", "forwarder"),
+                    metrics::Label::new("domain", server_url.trim_end_matches('/').to_string()),
+                ],
+            )
+        };
+
+        let supervisor = TestSupervisor::start("test_forwarder").await;
+        let handle = spawn_test_forwarder(&supervisor, forwarder).await;
+        handle
+            .send_transaction(build_test_transaction())
+            .await
+            .expect("send should succeed");
+
+        // The endpoint holds its answer back, so the request is still in flight once the endpoint has received it.
+        requests.recv().await.expect("the endpoint should receive the request");
+        assert_eq!(recorder.gauge(in_flight_key()), Some(1.0));
+
+        drain_test_forwarder(supervisor, handle).await;
+        assert_eq!(recorder.gauge(in_flight_key()), Some(0.0));
+    }
+
     #[tokio::test]
     async fn a_rotated_api_key_reaches_the_requests_a_spawned_forwarder_sends() {
         let (server_url, _counter, mut requests) =
@@ -3082,6 +3344,100 @@ mod tests {
 
         drain_test_forwarder(supervisor, handle).await;
         assert!(rotated.is_ok(), "a rotated API key should reach the request path");
+    }
+
+    #[tokio::test]
+    async fn sketch_shadow_backoff_does_not_delay_authoritative_requests() {
+        const ENDPOINT: &str = "http://app.datadoghq.com";
+        for status in [StatusCode::SERVICE_UNAVAILABLE, StatusCode::TOO_MANY_REQUESTS] {
+            let recorder = TestRecorder::default();
+            let _guard = metrics::set_default_local_recorder(&recorder);
+            let (server_url, _, mut requests) =
+                start_recording_http_server_with_requests(vec![status, StatusCode::OK]).await;
+            let (_, forwarder) = build_test_forwarder_configured(ENDPOINT, Default::default(), |config| {
+                config.proxy.http = server_url;
+                config.v3_api.sketches.shadow_sample_rate = 1.0;
+                config.retry.backoff_base = 60.0;
+                config.retry.backoff_max = 60.0;
+            })
+            .await;
+            let supervisor = TestSupervisor::start("test_forwarder").await;
+            let handle = spawn_test_forwarder(&supervisor, forwarder).await;
+            handle
+                .send_transaction(build_test_shadow_transaction(ENDPOINT))
+                .await
+                .unwrap();
+
+            // Wait until the failed shadow is queued for retry, so its circuit breaker is already open.
+            timeout(Duration::from_secs(3), async {
+                let shadow = requests.recv().await.unwrap();
+                assert!(shadow
+                    .lines()
+                    .next()
+                    .unwrap()
+                    .contains("/api/intake/metrics/v3beta/sketches "));
+                while recorder.gauge((
+                    "network_http_retry_queue_size",
+                    &[
+                        ("component_id", "test_forwarder"),
+                        ("component_type", "forwarder"),
+                        ("traffic", "sketch_shadow"),
+                    ],
+                )) != Some(1.0)
+                {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("shadow should enter its retry queue");
+
+            let (mut metadata, mut request) = build_test_transaction().into_parts();
+            metadata.payload_info = Some(MetricsPayloadInfo::v2_sketches());
+            *request.uri_mut() = uri(METRICS_SKETCHES_PATH);
+            handle
+                .send_transaction(Transaction::reassemble(metadata, request))
+                .await
+                .unwrap();
+            let baseline = timeout(Duration::from_secs(3), requests.recv())
+                .await
+                .expect("authoritative delivery must not wait for shadow backoff")
+                .unwrap();
+            assert!(baseline.lines().next().unwrap().contains("/api/beta/sketches "));
+            drain_test_forwarder(supervisor, handle).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn a_full_shadow_channel_does_not_block_authoritative_dispatch() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let (shadow_tx, _shadow_rx) = mpsc::channel(1);
+        let mut sender = EndpointSender {
+            configured_endpoint: "sampled".to_string(),
+            endpoint_url: String::new(),
+            endpoint_domain: String::new(),
+            target: None,
+            route: EndpointRoute::Primary,
+            tx,
+            shadow_tx: Some(shadow_tx),
+        };
+        // Unrelated shadows used to fill this channel and drop samples intended for this destination.
+        sender.send(build_test_shadow_transaction("other")).await.unwrap();
+        sender.send(build_test_shadow_transaction("sampled")).await.unwrap();
+        sender.send(build_test_shadow_transaction("other")).await.unwrap();
+        assert!(sender
+            .send(build_test_shadow_transaction("sampled"))
+            .now_or_never()
+            .unwrap()
+            .is_err());
+        assert!(sender.send(build_test_transaction()).now_or_never().unwrap().is_ok());
+        assert!(sender.send(build_test_transaction()).now_or_never().is_none());
+        rx.recv().await.unwrap();
+        sender.shadow_tx = None;
+        sender.send(build_test_shadow_transaction("sampled")).await.unwrap();
+        assert!(
+            rx.try_recv().is_err(),
+            "disabled shadows must not use the authoritative channel"
+        );
     }
 
     #[tokio::test]
@@ -3172,5 +3528,69 @@ mod tests {
             API_KEY_VALIDATION_PURPOSE_TAG,
             format!("purpose:{API_KEY_VALIDATION_PURPOSE}")
         );
+    }
+}
+
+#[cfg(test)]
+mod sketch_shadow_tests {
+    use bytes::Bytes;
+    use http::HeaderValue;
+
+    use super::*;
+    use crate::common::datadog::{
+        protocol::MetricsPayloadInfo,
+        sketch_shadow::{SketchShadowDestination, SketchShadowMetadata},
+    };
+
+    #[test]
+    fn sketch_shadow_headers_are_destination_specific_and_persist_on_retry() {
+        const SAMPLED: &str = "https://app.datadoghq.com";
+        const UNSAMPLED: &str = "https://app.us3.datadoghq.com";
+        const BATCH_ID: &str = "019a0000-0000-7000-8000-000000000001";
+        let sampled_destinations = Arc::from([SketchShadowDestination {
+            configured_endpoint: Arc::from(SAMPLED),
+            batch_id: HeaderValue::from_static(BATCH_ID),
+        }]);
+        let make_transaction = |is_shadow| {
+            let mut metadata = Metadata::from_event_and_data_point_count(1, 1);
+            metadata.payload_info = Some(if is_shadow {
+                MetricsPayloadInfo::v3_sketches()
+            } else {
+                MetricsPayloadInfo::v2_sketches()
+            });
+            metadata.sketch_shadow = Some(SketchShadowMetadata {
+                sampled_destinations: Arc::clone(&sampled_destinations),
+                request_index: 1,
+                request_count: 3,
+                is_shadow,
+            });
+            Transaction::from_original(
+                metadata,
+                Request::builder()
+                    .uri("/custom/sketches")
+                    .body(Bytes::from_static(b"payload"))
+                    .unwrap(),
+            )
+        };
+        let settings = EndpointV3Settings::disabled();
+        for is_shadow in [false, true] {
+            let txn = prepare_metrics_transaction(make_transaction(is_shadow), SAMPLED, &settings, false).unwrap();
+            assert!(txn.metadata().sketch_shadow.is_none());
+            let serialized = serde_json::to_vec(&txn).unwrap();
+            let restored: Transaction<Bytes> = serde_json::from_slice(&serialized).unwrap();
+            let (_, request) = restored.into_parts();
+            assert_eq!(request.headers()["X-Metrics-Request-ID"], BATCH_ID);
+            assert_eq!(request.headers()["X-Metrics-Request-Seq"], "1");
+            assert_eq!(request.headers()["X-Metrics-Request-Len"], "3");
+        }
+        assert!(prepare_metrics_transaction(make_transaction(true), UNSAMPLED, &settings, false).is_none());
+        assert!(prepare_metrics_transaction(make_transaction(true), SAMPLED, &settings, true).is_none());
+        let authoritative = EndpointV3Settings {
+            use_v3_sketches: true,
+            ..settings.clone()
+        };
+        assert!(prepare_metrics_transaction(make_transaction(true), SAMPLED, &authoritative, false).is_none());
+        let baseline = prepare_metrics_transaction(make_transaction(false), UNSAMPLED, &settings, false).unwrap();
+        assert!(!baseline.into_parts().1.headers().contains_key("X-Metrics-Request-ID"));
     }
 }

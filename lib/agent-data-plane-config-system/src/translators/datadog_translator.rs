@@ -1438,6 +1438,12 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.shared.static_tags.kubernetes_kubelet_nodename = value;
     }
 
+    fn consume_log_enabled(&mut self, value: bool) {
+        // Like the Datadog Agent, the deprecated `log_enabled` enables the logs agent alongside `logs_enabled`, so
+        // either key being `true` is enough, whichever order they're read in.
+        self.config.control.logs_enabled |= value;
+    }
+
     fn consume_log_file_max_rolls(&mut self, value: i64) {
         match usize::try_from(value) {
             Ok(max_rolls) => self.config.control.logging.file_max_rolls = max_rolls,
@@ -1478,6 +1484,11 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
 
     fn consume_log_to_syslog(&mut self, value: bool) {
         self.config.control.logging.to_syslog = value;
+    }
+
+    fn consume_logs_enabled(&mut self, value: bool) {
+        // See `consume_log_enabled`.
+        self.config.control.logs_enabled |= value;
     }
 
     fn consume_metric_filterlist(&mut self, value: Vec<String>) {
@@ -1873,6 +1884,18 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
 
     fn consume_serializer_experimental_use_v3_api_compression_level(&mut self, value: i64) {
         self.config.shared.metrics_encoding.v3_api.compression_level = value as i32;
+    }
+
+    fn consume_serializer_experimental_use_v3_api_sketches_beta_route(&mut self, value: String) {
+        self.config.shared.metrics_encoding.v3_api.sketches.beta_route = value;
+    }
+
+    fn consume_serializer_experimental_use_v3_api_sketches_shadow_sample_rate(&mut self, value: f64) {
+        self.config.shared.metrics_encoding.v3_api.sketches.shadow_sample_rate = value;
+    }
+
+    fn consume_serializer_experimental_use_v3_api_sketches_shadow_sites(&mut self, value: Vec<String>) {
+        self.config.shared.metrics_encoding.v3_api.sketches.shadow_sites = value;
     }
 
     fn consume_serializer_experimental_use_v3_api_sketches_endpoints(&mut self, value: Vec<String>) {
@@ -3932,6 +3955,23 @@ mod tests {
             config.control.ipc.ipc_cert_file_path,
             PathBuf::from("/secret/ipc_cert.pem")
         );
+    }
+
+    #[test]
+    fn logs_agent_is_enabled_by_either_logs_enabled_or_log_enabled() {
+        // Like the Datadog Agent, the deprecated `log_enabled` isn't a former name of `logs_enabled`: either key being
+        // `true` enables the logs agent, whichever of the two is read last.
+        let (config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none());
+        assert!(!config.control.logs_enabled);
+
+        let (config, errors) = translate_explicit(json!({ "logs_enabled": true, "log_enabled": false }));
+        assert!(errors.is_none());
+        assert!(config.control.logs_enabled);
+
+        let (config, errors) = translate_explicit(json!({ "logs_enabled": false, "log_enabled": true }));
+        assert!(errors.is_none());
+        assert!(config.control.logs_enabled);
     }
 
     #[test]

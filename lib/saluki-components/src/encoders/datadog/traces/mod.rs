@@ -1,8 +1,9 @@
-use std::{borrow::Cow, fmt::Write, time::Duration};
+use std::{borrow::Cow, fmt, fmt::Write, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use datadog_protos::traces::builders::{idx::SpanKind, AgentPayloadBuilder};
 use http::{uri::PathAndQuery, HeaderName, HeaderValue, Method, Uri};
+use metrics::{Counter, Gauge, Histogram};
 use piecemeal::{ScratchBuffer, ScratchWriter};
 use saluki_common::collections::{FastHashMap, FastIndexSet};
 use saluki_common::strings::StringBuilder;
@@ -14,15 +15,16 @@ use saluki_core::{
             trace::{AttributeValue, Trace, TraceIngestInfo},
             EventType,
         },
+        origin::OriginTagCardinality,
         payload::{HttpPayload, Payload, PayloadMetadata, PayloadType},
-        tags::TagSet,
+        tags::{SharedTagSet, TagSet},
     },
     observability::ComponentMetricsExt as _,
     runtime,
     topology::{EventsBuffer, PayloadsBuffer},
 };
 use saluki_env::host::providers::BoxedHostProvider;
-use saluki_env::{EnvironmentProvider, HostProvider};
+use saluki_env::{workload::EntityId, EnvironmentProvider, HostProvider, WorkloadProvider};
 use saluki_error::generic_error;
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_io::compression::CompressionScheme;
@@ -40,8 +42,11 @@ use crate::common::datadog::{
     io::RB_BUFFER_CHUNK_SIZE,
     request_builder::{EndpointEncoder, RequestBuilder},
     telemetry::ComponentTelemetry,
-    DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT, TAG_DECISION_MAKER,
+    version_data::ContainerVersionData,
+    DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT, KEY_ANALYZED_SPANS,
+    TAG_DECISION_MAKER,
 };
+use crate::common::otlp::traces::normalize::{is_normalized_tag_value, normalize_tag_value_into_unchecked};
 use crate::common::otlp::util::{
     attributes_to_source, extract_container_tags_from_attributes_map, Source as OtlpSource,
     SourceKind as OtlpSourceKind, KEY_DATADOG_CONTAINER_TAGS,
@@ -49,6 +54,12 @@ use crate::common::otlp::util::{
 use crate::config::AgentEnv;
 
 const CONTAINER_TAGS_META_KEY: &str = "_dd.tags.container";
+
+/// Cardinality of the container tags looked up to fill in a missing application version.
+///
+/// The version data tags are low cardinality, so a low cardinality lookup finds them.
+const VERSION_DATA_TAG_CARDINALITY: OriginTagCardinality = OriginTagCardinality::Low;
+
 const MAX_TRACES_PER_PAYLOAD: usize = 10000;
 static CONTENT_TYPE_PROTOBUF: HeaderValue = HeaderValue::from_static("application/x-protobuf");
 
@@ -137,6 +148,12 @@ pub struct DatadogTraceConfiguration {
     /// If unset, payloads carry an empty hostname. See
     /// [`with_environment_provider`](Self::with_environment_provider).
     pub default_hostname: Option<String>,
+
+    /// Workload provider used to look up container tags, if any.
+    ///
+    /// When a trace carries no application version, the `version` tag of its container fills it in. The lookup never
+    /// waits: if the container's tags aren't known yet, the version stays empty.
+    pub workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
 }
 
 impl DatadogTraceConfiguration {
@@ -162,6 +179,7 @@ impl DatadogTraceConfiguration {
             self.error_tracking_standalone,
             self.ignore_missing_datadog_fields,
         )
+        .with_container_tag_lookup(ContainerTagLookup(self.workload_provider.clone()))
     }
 }
 
@@ -178,6 +196,7 @@ impl EncoderBuilder for DatadogTraceConfiguration {
     async fn build(&self, context: BuildContext) -> Result<Box<dyn Encoder + Send>, GenericError> {
         let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
+        let payload_telemetry = TracePayloadTelemetry::from_builder(&metrics_builder);
         let compression_scheme = CompressionScheme::new(&self.compressor_kind, self.zstd_compressor_level);
 
         // Create request builder for traces which is used to generate HTTP requests.
@@ -196,6 +215,7 @@ impl EncoderBuilder for DatadogTraceConfiguration {
         Ok(Box::new(DatadogTrace {
             trace_rb,
             telemetry,
+            payload_telemetry,
             flush_timeout,
         }))
     }
@@ -219,7 +239,87 @@ impl MemoryBounds for DatadogTraceConfiguration {
 pub struct DatadogTrace {
     trace_rb: RequestBuilder<TraceEndpointEncoder>,
     telemetry: ComponentTelemetry,
+    payload_telemetry: TracePayloadTelemetry,
     flush_timeout: Duration,
+}
+
+/// Telemetry for what the traces encoder writes into payloads.
+struct TracePayloadTelemetry {
+    traces: Counter,
+    spans: Counter,
+    events: Counter,
+    bytes_uncompressed: Counter,
+    payload_size: Histogram,
+    largest_payload_size: Gauge,
+    largest_payload_size_seen: usize,
+}
+
+impl TracePayloadTelemetry {
+    fn from_builder(builder: &MetricsBuilder) -> Self {
+        Self {
+            traces: builder.register_counter("component_traces_encoded_total"),
+            spans: builder.register_counter("component_spans_encoded_total"),
+            events: builder.register_counter("component_trace_events_encoded_total"),
+            bytes_uncompressed: builder.register_counter("component_bytes_uncompressed_total"),
+            payload_size: builder.register_histogram("component_payload_size_bytes"),
+            largest_payload_size: builder.register_gauge("component_payload_size_max_bytes"),
+            largest_payload_size_seen: 0,
+        }
+    }
+
+    /// Tracks a trace written into a payload.
+    fn track_trace(&self, counts: TraceCounts) {
+        self.traces.increment(1);
+        self.spans.increment(counts.spans);
+        self.events.increment(counts.events);
+    }
+
+    /// Tracks a flushed payload, given its size before compression and the size of the request body.
+    ///
+    /// The body size goes into a distribution, and the largest body seen so far goes into a gauge: exported
+    /// distributions keep their buckets, sum and count, but not the exact maximum.
+    fn track_payload(&mut self, uncompressed_len: usize, body_len: usize) {
+        self.bytes_uncompressed.increment(uncompressed_len as u64);
+        self.payload_size.record(body_len as f64);
+
+        if body_len > self.largest_payload_size_seen {
+            self.largest_payload_size_seen = body_len;
+            self.largest_payload_size.set(body_len as f64);
+        }
+    }
+}
+
+/// Spans and events that a trace adds to a payload.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct TraceCounts {
+    spans: u64,
+    events: u64,
+}
+
+impl TraceCounts {
+    /// Counts the spans and events of a trace.
+    ///
+    /// A trace that sampling dropped is still sent when it carries spans kept as standalone events. Only those
+    /// analyzed spans count, as events, and none of its spans count as spans. A kept trace counts all of its spans as
+    /// spans and no events, even when some of its spans are analyzed: those are not sent as standalone events.
+    fn from_trace(trace: &Trace) -> Self {
+        if trace.dropped_trace {
+            let events = trace
+                .spans()
+                .iter()
+                .filter(|span| span.attributes.contains_key(KEY_ANALYZED_SPANS))
+                .count();
+            Self {
+                spans: 0,
+                events: events as u64,
+            }
+        } else {
+            Self {
+                spans: trace.spans().len() as u64,
+                events: 0,
+            }
+        }
+    }
 }
 
 // Encodes Trace events to TracerPayloads.
@@ -229,6 +329,7 @@ impl Encoder for DatadogTrace {
         let Self {
             trace_rb,
             telemetry,
+            payload_telemetry,
             flush_timeout,
         } = *self;
 
@@ -241,7 +342,14 @@ impl Encoder for DatadogTrace {
         //
         // The request builder task ignores the shutdown signal on purpose: it drains its incoming event buffer channel
         // until the channel closes, which is what guarantees every buffered metric is encoded and dispatched.
-        let request_builder_fut = run_request_builder(trace_rb, telemetry, events_rx, payloads_tx, flush_timeout);
+        let request_builder_fut = run_request_builder(
+            trace_rb,
+            telemetry,
+            payload_telemetry,
+            events_rx,
+            payloads_tx,
+            flush_timeout,
+        );
         runtime::worker("request_builder", request_builder_fut)
             .on_runtime(context.topology_context().global_thread_pool().clone())
             .needed()
@@ -292,7 +400,8 @@ impl Encoder for DatadogTrace {
 
 async fn run_request_builder(
     mut trace_request_builder: RequestBuilder<TraceEndpointEncoder>, telemetry: ComponentTelemetry,
-    mut events_rx: Receiver<EventsBuffer>, payloads_tx: Sender<PayloadsBuffer>, flush_timeout: std::time::Duration,
+    mut payload_telemetry: TracePayloadTelemetry, mut events_rx: Receiver<EventsBuffer>,
+    payloads_tx: Sender<PayloadsBuffer>, flush_timeout: std::time::Duration,
 ) -> Result<(), GenericError> {
     let mut pending_flush = false;
     let pending_flush_timeout = sleep(flush_timeout);
@@ -304,8 +413,12 @@ async fn run_request_builder(
                 for trace in event_buffer.into_events::<Trace>() {
                     // Encode the trace. If we get it back, that means the current request is full, and we need to
                     // flush it before we can try to encode the trace again.
+                    let trace_counts = TraceCounts::from_trace(&trace);
                     let trace_to_retry = match trace_request_builder.encode(trace).await {
-                        Ok(None) => continue,
+                        Ok(None) => {
+                            payload_telemetry.track_trace(trace_counts);
+                            continue;
+                        }
                         Ok(Some(trace)) => trace,
                         Err(e) => {
                             error!(error = %e, "Failed to encode trace.");
@@ -321,7 +434,8 @@ async fn run_request_builder(
 
                     for maybe_request in maybe_requests {
                         match maybe_request {
-                            Ok((events, _data_points, request)) => {
+                            Ok((events, _data_points, uncompressed_len, request)) => {
+                                payload_telemetry.track_payload(uncompressed_len, request.body().len());
                                 let payload_meta = PayloadMetadata::from_event_count(events);
                                 let http_payload = HttpPayload::new(payload_meta, request);
                                 let payload = Payload::Http(http_payload);
@@ -339,9 +453,16 @@ async fn run_request_builder(
                     }
 
                     // Now try to encode the trace again.
-                    if let Err(e) = trace_request_builder.encode(trace_to_retry).await {
-                        error!(error = %e, "Failed to encode trace.");
-                        telemetry.events_dropped_encoder().increment(1);
+                    match trace_request_builder.encode(trace_to_retry).await {
+                        Ok(None) => payload_telemetry.track_trace(trace_counts),
+                        Ok(Some(_)) => {
+                            error!("Trace did not fit in a request after flushing; dropping it.");
+                            telemetry.events_dropped_encoder().increment(1);
+                        }
+                        Err(e) => {
+                            error!(error = %e, "Failed to encode trace.");
+                            telemetry.events_dropped_encoder().increment(1);
+                        }
                     }
                 }
 
@@ -363,7 +484,8 @@ async fn run_request_builder(
                 let maybe_trace_requests = trace_request_builder.flush().await;
                 for maybe_request in maybe_trace_requests {
                     match maybe_request {
-                        Ok((events, _data_points, request)) => {
+                        Ok((events, _data_points, uncompressed_len, request)) => {
+                            payload_telemetry.track_payload(uncompressed_len, request.body().len());
                             let payload_meta = PayloadMetadata::from_event_count(events);
                             let http_payload = HttpPayload::new(payload_meta, request);
                             let payload = Payload::Http(http_payload);
@@ -390,6 +512,31 @@ async fn run_request_builder(
     Ok(())
 }
 
+/// One-shot lookup of a container's tags.
+///
+/// The lookup doesn't wait for the container to become known, and doesn't retry.
+#[derive(Clone, Default)]
+struct ContainerTagLookup(Option<Arc<dyn WorkloadProvider + Send + Sync>>);
+
+impl ContainerTagLookup {
+    /// Returns the tags of the container with the given ID, if the container is known.
+    fn get(&self, container_id: &MetaString) -> Option<SharedTagSet> {
+        if container_id.is_empty() {
+            return None;
+        }
+        let provider = self.0.as_ref()?;
+        provider.get_tags_for_entity(&EntityId::Container(container_id.clone()), VERSION_DATA_TAG_CARDINALITY)
+    }
+}
+
+impl fmt::Debug for ContainerTagLookup {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ContainerTagLookup")
+            .field("enabled", &self.0.is_some())
+            .finish()
+    }
+}
+
 #[derive(Debug)]
 struct TraceEndpointEncoder {
     scratch: ScratchWriter<Vec<u8>>,
@@ -401,9 +548,11 @@ struct TraceEndpointEncoder {
     errors_per_second: f64,
     ignore_missing_datadog_fields: bool,
     string_builder: StringBuilder,
+    env_builder: StringBuilder,
     string_table: StringTable,
     error_tracking_standalone: bool,
     extra_headers: Vec<(HeaderName, HeaderValue)>,
+    container_tags: ContainerTagLookup,
 }
 
 impl TraceEndpointEncoder {
@@ -429,10 +578,18 @@ impl TraceEndpointEncoder {
             errors_per_second,
             ignore_missing_datadog_fields,
             string_builder: StringBuilder::new(),
+            env_builder: StringBuilder::new(),
             string_table: StringTable::new(),
             error_tracking_standalone,
             extra_headers,
+            container_tags: ContainerTagLookup::default(),
         }
+    }
+
+    /// Sets the lookup used to fill in a missing application version from container tags.
+    fn with_container_tag_lookup(mut self, container_tags: ContainerTagLookup) -> Self {
+        self.container_tags = container_tags;
+        self
     }
 
     fn encode_tracer_payload(&mut self, trace: &Trace, output_buffer: &mut Vec<u8>) -> std::io::Result<()> {
@@ -456,8 +613,15 @@ impl TraceEndpointEncoder {
         // Resolve computed metadata strings (may produce strings not directly present on trace fields).
         let container_tags =
             resolve_container_tags_from_attrs(&trace.attributes, source.as_ref(), self.ignore_missing_datadog_fields);
-        let env_str: Option<&str> = if !trace.payload.env.is_empty() {
-            Some(&trace.payload.env)
+        // The payload environment is normalized like any other tag value before it's interned.
+        let payload_env: &str = if is_normalized_tag_value(&trace.payload.env) {
+            &trace.payload.env
+        } else {
+            normalize_tag_value_into_unchecked(&trace.payload.env, &mut self.env_builder);
+            self.env_builder.as_str()
+        };
+        let env_str: Option<&str> = if !payload_env.is_empty() {
+            Some(payload_env)
         } else if self.ignore_missing_datadog_fields {
             Some("")
         } else {
@@ -469,6 +633,27 @@ impl TraceEndpointEncoder {
             Some(self.default_hostname.as_ref()),
             self.ignore_missing_datadog_fields,
         );
+        // The container's `version` tag fills in an application version that the payload leaves empty. The tags come
+        // from the trace's own container-tag attributes and from the container's known tags, as they do for stats. They
+        // are gathered only when the version is missing.
+        let version_tags = if trace.payload.app_version.is_empty() && !trace.payload.container_id.is_empty() {
+            let mut tags = TagSet::default();
+            extract_container_tags_from_attributes_map(&trace.attributes, &mut tags);
+            if let Some(provider_tags) = self.container_tags.get(&trace.payload.container_id) {
+                tags.merge_shared(&provider_tags);
+            }
+            Some(tags)
+        } else {
+            None
+        };
+        let app_version: &str = if !trace.payload.app_version.is_empty() {
+            &trace.payload.app_version
+        } else {
+            version_tags
+                .as_ref()
+                .map(|tags| ContainerVersionData::from_tags(tags).app_version)
+                .unwrap_or_default()
+        };
         let decision_maker = trace.decision_maker.as_deref();
         let priority = trace.priority.unwrap_or(DEFAULT_CHUNK_PRIORITY);
         let dropped_trace = trace.dropped_trace;
@@ -515,8 +700,8 @@ impl TraceEndpointEncoder {
             if let Some(h) = hostname_str {
                 tp.hostname_ref(self.string_table.intern(h))?;
             }
-            if !trace.payload.app_version.is_empty() {
-                tp.app_version_ref(self.string_table.intern(&trace.payload.app_version))?;
+            if !app_version.is_empty() {
+                tp.app_version_ref(self.string_table.intern(app_version))?;
             }
 
             // Container tags go in the payload-level attributes map.
@@ -773,7 +958,7 @@ fn resolve_hostname_from_payload<'a>(
     }
     match source {
         Some(src) => match src.kind {
-            OtlpSourceKind::HostnameKind => Some(src.identifier.as_str()),
+            OtlpSourceKind::Hostname => Some(src.identifier.as_str()),
             _ => Some(""),
         },
         None => default_hostname,
@@ -794,7 +979,7 @@ fn resolve_container_tags_from_attrs(
     }
     let mut container_tags = TagSet::default();
     extract_container_tags_from_attributes_map(attributes, &mut container_tags);
-    let is_fargate_source = source.is_some_and(|src| src.kind == OtlpSourceKind::AwsEcsFargateKind);
+    let is_fargate_source = source.is_some_and(|src| src.kind == OtlpSourceKind::AwsEcsFargate);
     if container_tags.is_empty() && !is_fargate_source {
         return None;
     }
@@ -850,20 +1035,25 @@ fn trace_configuration(agent_env: AgentEnv) -> DatadogTraceConfiguration {
         error_tracking_standalone: false,
         ignore_missing_datadog_fields: false,
         default_hostname: None,
+        workload_provider: None,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeSet, HashMap};
-    use std::sync::Arc;
 
     use datadog_protos::traces::{idx, AgentPayload};
     use protobuf::Message as _;
     use saluki_core::data_model::{
-        event::trace::{Span as DdSpan, Trace, TraceIngestInfo},
+        event::{
+            trace::{Span as DdSpan, Trace, TraceIngestInfo},
+            Event,
+        },
         tags::Tag,
     };
+    use saluki_env::workload::providers::TestWorkloadProvider;
+    use saluki_metrics::test::TestRecorder;
     use stringtheory::MetaString;
 
     use super::*;
@@ -1210,11 +1400,11 @@ mod tests {
     #[test]
     fn resolve_hostname_from_payload_prefers_payload_then_source_then_default() {
         let host_source = OtlpSource {
-            kind: OtlpSourceKind::HostnameKind,
+            kind: OtlpSourceKind::Hostname,
             identifier: "resolved-host".to_string(),
         };
         let fargate_source = OtlpSource {
-            kind: OtlpSourceKind::AwsEcsFargateKind,
+            kind: OtlpSourceKind::AwsEcsFargate,
             identifier: "task-arn".to_string(),
         };
 
@@ -1408,5 +1598,235 @@ mod tests {
             "unexpected native chunk rate {native_chunk_rate:?}"
         );
         assert_eq!(decode_etp_span_attributes(&buf)[0][TAG_OTLP_SAMPLING_RATE], "0.77");
+    }
+
+    fn make_span(span_id: u64, analyzed: bool) -> DdSpan {
+        let span = DdSpan::new(
+            MetaString::from("svc"),
+            MetaString::from("op"),
+            MetaString::from("res"),
+            MetaString::from("web"),
+            span_id,
+            0,    // parent_id
+            0,    // start
+            1000, // duration
+            0,    // error
+        );
+        if analyzed {
+            span.with_attributes(FastHashMap::from_iter([(
+                MetaString::from(KEY_ANALYZED_SPANS),
+                AttributeValue::Float(1.0),
+            )]))
+        } else {
+            span
+        }
+    }
+
+    fn make_sampled_trace(spans: Vec<DdSpan>, dropped_trace: bool) -> Trace {
+        let mut trace = Trace::new(spans, TraceIngestInfo::Datadog);
+        trace.priority = Some(1);
+        trace.dropped_trace = dropped_trace;
+        trace
+    }
+
+    #[test]
+    fn largest_payload_gauge_only_moves_up() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let mut telemetry = TracePayloadTelemetry::from_builder(&MetricsBuilder::default());
+
+        for (body_len, expected_largest) in [(100_000, 100_000.0), (3_000_000, 3_000_000.0), (50_000, 3_000_000.0)] {
+            telemetry.track_payload(body_len, body_len);
+            assert_eq!(
+                recorder.gauge("component_payload_size_max_bytes"),
+                Some(expected_largest)
+            );
+        }
+    }
+
+    #[test]
+    fn trace_counts_follow_the_sampling_decision() {
+        // A kept trace counts every span as a span, analyzed or not, and no events.
+        let kept = make_sampled_trace(vec![make_span(1, true), make_span(2, false)], false);
+        assert_eq!(TraceCounts::from_trace(&kept), TraceCounts { spans: 2, events: 0 });
+
+        // A dropped trace counts only its analyzed spans, as events.
+        let dropped = make_sampled_trace(vec![make_span(1, true), make_span(2, true), make_span(3, false)], true);
+        assert_eq!(TraceCounts::from_trace(&dropped), TraceCounts { spans: 0, events: 2 });
+    }
+
+    #[tokio::test]
+    async fn request_builder_tracks_written_traces_and_payload_sizes() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let metrics_builder = MetricsBuilder::default();
+
+        let traces = vec![
+            make_sampled_trace(vec![make_span(1, false), make_span(2, true)], false),
+            make_sampled_trace(vec![make_span(3, true), make_span(4, false)], true),
+            make_sampled_trace(vec![make_span(5, false)], false),
+        ];
+
+        // Without compression or framing, the payload before compression is every trace encoded back to back.
+        let expected_uncompressed_len = traces
+            .iter()
+            .map(|trace| {
+                let mut buf = Vec::new();
+                make_encoder(false)
+                    .encode(trace, &mut buf)
+                    .expect("encode should succeed");
+                buf.len() as u64
+            })
+            .sum::<u64>();
+
+        let request_builder = RequestBuilder::new(make_encoder(false), CompressionScheme::noop(), RB_BUFFER_CHUNK_SIZE)
+            .await
+            .expect("request builder should be created");
+        let (events_tx, events_rx) = mpsc::channel(1);
+        let (payloads_tx, mut payloads_rx) = mpsc::channel(8);
+
+        let mut events = EventsBuffer::default();
+        for trace in traces {
+            assert!(events.try_push(Event::Trace(trace)).is_none());
+        }
+        events_tx.send(events).await.expect("events should be sent");
+        drop(events_tx);
+
+        run_request_builder(
+            request_builder,
+            ComponentTelemetry::from_builder(&metrics_builder),
+            TracePayloadTelemetry::from_builder(&metrics_builder),
+            events_rx,
+            payloads_tx,
+            Duration::from_millis(1),
+        )
+        .await
+        .expect("request builder should run to completion");
+
+        let mut body_lens = Vec::new();
+        while let Some(payload) = payloads_rx.recv().await {
+            let http_payload = payload.try_into_http_payload().expect("payload should be HTTP");
+            let (_, request) = http_payload.into_parts();
+            body_lens.push(request.body().len() as f64);
+        }
+        assert_eq!(body_lens.len(), 1);
+        assert_eq!(
+            recorder.histogram("component_payload_size_bytes"),
+            Some(body_lens.clone())
+        );
+        assert_eq!(recorder.gauge("component_payload_size_max_bytes"), Some(body_lens[0]));
+
+        assert_eq!(recorder.counter("component_traces_encoded_total"), Some(3));
+        assert_eq!(recorder.counter("component_spans_encoded_total"), Some(3));
+        assert_eq!(recorder.counter("component_trace_events_encoded_total"), Some(1));
+        assert_eq!(
+            recorder.counter("component_bytes_uncompressed_total"),
+            Some(expected_uncompressed_len)
+        );
+    }
+
+    /// Resolves the env and app version of every ETP tracer payload in an encoded `AgentPayload`.
+    fn decode_etp_env_and_app_versions(buf: &[u8]) -> Vec<(String, String)> {
+        let payload = AgentPayload::parse_from_bytes(buf).expect("AgentPayload should decode");
+        payload
+            .idxTracerPayloads
+            .iter()
+            .map(|tp| {
+                (
+                    resolve_ref(tp.strings(), tp.envRef()).to_string(),
+                    resolve_ref(tp.strings(), tp.appVersionRef()).to_string(),
+                )
+            })
+            .collect()
+    }
+
+    fn encoder_with_container(container_id: &str, tags: &[&str]) -> TraceEndpointEncoder {
+        let provider = TestWorkloadProvider::with_entity(EntityId::Container(MetaString::from(container_id)), tags);
+        make_encoder(false).with_container_tag_lookup(ContainerTagLookup(Some(Arc::new(provider))))
+    }
+
+    #[test]
+    fn app_version_falls_back_to_container_version_tag() {
+        let mut encoder = encoder_with_container("cid-1", &["image_tag:1.2.3", "version:container-v"]);
+        let encode = |encoder: &mut TraceEndpointEncoder, trace: &Trace| {
+            let mut buf = Vec::new();
+            encoder.encode(trace, &mut buf).expect("encode should succeed");
+            decode_etp_env_and_app_versions(&buf)[0].1.clone()
+        };
+
+        // A payload with no version takes the container's.
+        let mut trace = make_trace(TraceIngestInfo::Datadog);
+        trace.payload.container_id = MetaString::from("cid-1");
+        assert_eq!(encode(&mut encoder, &trace), "container-v");
+
+        // The payload's own version wins.
+        trace.payload.app_version = MetaString::from("payload-v");
+        assert_eq!(encode(&mut encoder, &trace), "payload-v");
+
+        // A container the provider doesn't know yet supplies nothing.
+        let mut trace = make_trace(TraceIngestInfo::Datadog);
+        trace.payload.container_id = MetaString::from("cid-unknown");
+        assert_eq!(encode(&mut encoder, &trace), "");
+
+        // Neither does a payload without a container ID.
+        let trace = make_trace(TraceIngestInfo::Datadog);
+        assert_eq!(encode(&mut encoder, &trace), "");
+    }
+
+    #[test]
+    fn app_version_falls_back_to_the_traces_own_container_tag_attributes() {
+        // An OTLP trace carries its container's tags as attributes, and the tagger may not know the container yet.
+        let mut encoder = make_encoder(false);
+        let mut trace = make_trace(TraceIngestInfo::Datadog);
+        trace.payload.container_id = MetaString::from("cid-1");
+        trace.attributes = Arc::new(FastHashMap::from_iter([(
+            MetaString::from("datadog.container.tag.version"),
+            AttributeValue::String(MetaString::from("attribute-v")),
+        )]));
+
+        let mut buf = Vec::new();
+        encoder.encode(&trace, &mut buf).expect("encode should succeed");
+        assert_eq!(decode_etp_env_and_app_versions(&buf)[0].1, "attribute-v");
+
+        // Without a container ID, the attributes don't apply.
+        trace.payload.container_id = MetaString::default();
+        let mut buf = Vec::new();
+        encoder.encode(&trace, &mut buf).expect("encode should succeed");
+        assert_eq!(decode_etp_env_and_app_versions(&buf)[0].1, "");
+    }
+
+    #[test]
+    fn container_version_lookup_leaves_container_tags_untouched() {
+        let mut encoder = encoder_with_container("cid-1", &["version:container-v", "kube_namespace:default"]);
+        let mut trace = make_trace(TraceIngestInfo::Datadog);
+        trace.payload.container_id = MetaString::from("cid-1");
+
+        let mut buf = Vec::new();
+        encoder.encode(&trace, &mut buf).expect("encode should succeed");
+        let payload = AgentPayload::parse_from_bytes(&buf).expect("AgentPayload should decode");
+        let tracer_payload = &payload.idxTracerPayloads[0];
+        let attrs = string_attrs(tracer_payload.attributes(), tracer_payload.strings());
+        assert!(!attrs.contains_key(CONTAINER_TAGS_META_KEY));
+    }
+
+    #[test]
+    fn payload_env_is_normalized() {
+        let cases = [
+            ("prod", "prod"),
+            ("Prod Env", "prod_env"),
+            ("STAGING", "staging"),
+            ("!!!", ""),
+            ("", ""),
+        ];
+        for (env, expected) in cases {
+            let mut trace = make_trace(TraceIngestInfo::Datadog);
+            trace.payload.env = MetaString::from(env);
+
+            let mut buf = Vec::new();
+            make_encoder(false)
+                .encode(&trace, &mut buf)
+                .expect("encode should succeed");
+            assert_eq!(decode_etp_env_and_app_versions(&buf)[0].0, expected, "env {env:?}");
+        }
     }
 }

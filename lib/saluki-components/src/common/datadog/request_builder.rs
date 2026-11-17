@@ -2,7 +2,7 @@
 
 use std::io;
 
-use http::{HeaderName, HeaderValue, Method, Request, Uri};
+use http::{HeaderMap, HeaderName, HeaderValue, Method, Request, Uri};
 use saluki_common::buf::{ChunkedBytesBuffer, FrozenChunkedBytesBuffer};
 use saluki_io::compression::*;
 use snafu::{ResultExt, Snafu};
@@ -86,6 +86,12 @@ pub trait EndpointEncoder: std::fmt::Debug {
     fn additional_headers(&self) -> &[(HeaderName, HeaderValue)] {
         &[]
     }
+
+    /// Adds HTTP headers that depend on the inputs of a request, given the inputs in the order they were encoded.
+    ///
+    /// Called once for every request, including each request that a split produces, with exactly the inputs that the
+    /// request holds. Defaults to adding no headers.
+    fn add_input_headers(&self, _inputs: &[Self::Input], _headers: &mut HeaderMap) {}
 }
 
 // Request builder errors.
@@ -517,12 +523,15 @@ where
     ///
     /// This attempts to split the request payload into two smaller payloads if the original request payload is too large.
     ///
+    /// Each flushed request comes with the number of inputs it holds, the number of data points it holds, and the size
+    /// of its payload before compression, in that order.
+    ///
     /// # Errors
     ///
     /// If an error occurs while finalizing the compressor or creating the request, an error will be returned.
     pub async fn flush(
         &mut self,
-    ) -> Vec<Result<(usize, usize, Request<FrozenChunkedBytesBuffer>), RequestBuilderError<E>>> {
+    ) -> Vec<Result<(usize, usize, usize, Request<FrozenChunkedBytesBuffer>), RequestBuilderError<E>>> {
         if self.encoded_inputs.is_empty() {
             return vec![];
         }
@@ -551,12 +560,11 @@ where
         }
 
         let data_points_written = self.encoded_data_point_count(&self.encoded_inputs);
+        let request = self.create_request(compressed_buf, &self.encoded_inputs);
         let inputs_written = self.clear_encoded_inputs();
         debug!(encoder = E::encoder_name(), endpoint = ?self.encoder.endpoint_uri(), uncompressed_len, compressed_len, inputs_written, data_points_written, "Flushing request.");
 
-        vec![self
-            .create_request(compressed_buf)
-            .map(|req| (inputs_written, data_points_written, req))]
+        vec![request.map(|req| (inputs_written, data_points_written, uncompressed_len, req))]
     }
 
     /// Internal implementation of `flush`.
@@ -621,7 +629,7 @@ where
 
     async fn split_request(
         &mut self,
-    ) -> Vec<Result<(usize, usize, Request<FrozenChunkedBytesBuffer>), RequestBuilderError<E>>> {
+    ) -> Vec<Result<(usize, usize, usize, Request<FrozenChunkedBytesBuffer>), RequestBuilderError<E>>> {
         // Nothing to do if we have no encoded inputs.
         let mut requests = Vec::new();
         if self.encoded_inputs.is_empty() {
@@ -683,7 +691,7 @@ where
 
     async fn try_split_request(
         &mut self, inputs: &[E::Input],
-    ) -> Option<Result<(usize, usize, Request<FrozenChunkedBytesBuffer>), RequestBuilderError<E>>> {
+    ) -> Option<Result<(usize, usize, usize, Request<FrozenChunkedBytesBuffer>), RequestBuilderError<E>>> {
         trace!(
             encoder = E::encoder_name(),
             endpoint = ?self.encoder.endpoint_uri(),
@@ -751,13 +759,13 @@ where
         let data_points_written = self.encoded_data_point_count(inputs);
 
         Some(
-            self.create_request(compressed_buf)
-                .map(|request| (inputs.len(), data_points_written, request)),
+            self.create_request(compressed_buf, inputs)
+                .map(|request| (inputs.len(), data_points_written, uncompressed_len, request)),
         )
     }
 
     fn create_request(
-        &self, buffer: FrozenChunkedBytesBuffer,
+        &self, buffer: FrozenChunkedBytesBuffer, inputs: &[E::Input],
     ) -> Result<Request<FrozenChunkedBytesBuffer>, RequestBuilderError<E>> {
         let mut builder = Request::builder()
             .method(self.encoder.endpoint_method())
@@ -772,7 +780,9 @@ where
             builder = builder.header(name, value);
         }
 
-        builder.body(buffer).context(Http)
+        let mut request = builder.body(buffer).context(Http)?;
+        self.encoder.add_input_headers(inputs, request.headers_mut());
+        Ok(request)
     }
 }
 
@@ -827,7 +837,7 @@ mod tests {
 
         for (request, expected_request_body) in requests.into_iter().zip(expected_request_bodies) {
             let (request, expected_request_body) = match request {
-                Ok((_, _data_points, request)) => (request, expected_request_body),
+                Ok((_, _data_points, _uncompressed_len, request)) => (request, expected_request_body),
                 Err(e) => panic!("failed to create request: {}", e),
             };
 
@@ -1112,8 +1122,10 @@ mod tests {
 
         let mut actual = Vec::new();
         for request in requests {
-            let (events, data_points, request) = request.expect("split request should be created");
+            let (events, data_points, uncompressed_len, request) = request.expect("split request should be created");
             let body = request.into_body().collect().await.unwrap().to_bytes();
+            // No compression is configured, so the uncompressed size is the size of the body.
+            assert_eq!(uncompressed_len, body.len());
             actual.push((events, data_points, String::from_utf8(body.to_vec()).unwrap()));
         }
 
@@ -1348,7 +1360,7 @@ mod tests {
             let requests = request_builder.flush().await;
             for request in requests {
                 match request {
-                    Ok((events, _data_points, _request)) => {
+                    Ok((events, _data_points, _uncompressed_len, _request)) => {
                         flushed_inputs_len += events;
                     }
                     Err(e) => match e {
@@ -1387,7 +1399,7 @@ mod tests {
         let requests = request_builder.flush().await;
         for request in requests {
             match request {
-                Ok((events, _data_points, _request)) => {
+                Ok((events, _data_points, _uncompressed_len, _request)) => {
                     flushed_inputs_len += events;
                 }
                 Err(e) => match e {
@@ -1455,11 +1467,27 @@ mod tests {
         );
 
         let requests = request_builder.flush().await;
-        let (_, _, request) = requests.into_iter().next().unwrap().unwrap();
+        let (_, _, _, request) = requests.into_iter().next().unwrap().unwrap();
         assert_eq!(b"[a,b]", &request.into_body().collect().await.unwrap().to_bytes()[..]);
 
         assert_eq!(None, request_builder.encode("cc".to_string()).await.unwrap());
         flush_and_validate_requests(request_builder, vec!["[cc]".to_string()]).await;
+    }
+
+    #[tokio::test]
+    async fn flushed_request_reports_uncompressed_size_with_framing() {
+        // The reported size is that of the payload before compression, framing included, not the size of the body.
+        let encoder = TestEncoder::new(usize::MAX, usize::MAX, "/submit").with_delimiters(b"[", b"]", b",");
+        let mut request_builder = create_zstd_compression_request_builder(encoder).await;
+
+        assert_eq!(None, request_builder.encode("alpha".to_string()).await.unwrap());
+        assert_eq!(None, request_builder.encode("beta".to_string()).await.unwrap());
+
+        let mut requests = request_builder.flush().await;
+        assert_eq!(requests.len(), 1);
+        let (inputs_written, _, uncompressed_len, _) = requests.remove(0).expect("request should be created");
+        assert_eq!(inputs_written, 2);
+        assert_eq!(uncompressed_len, "[alpha,beta]".len());
     }
 
     #[tokio::test]
@@ -1531,7 +1559,7 @@ mod tests {
                 ));
             }
             assert_eq!(requests.len(), 1, "{}", second_input);
-            let (inputs_written, _, request) = requests.remove(0).expect("second subrequest should be created");
+            let (inputs_written, _, _, request) = requests.remove(0).expect("second subrequest should be created");
             assert_eq!(inputs_written, 2);
             assert_eq!(
                 b"[third,fourth]",

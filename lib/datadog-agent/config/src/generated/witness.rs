@@ -186,6 +186,7 @@ pub trait DatadogConfigWitness {
     fn consume_ipc_address(&mut self, value: String);
     fn consume_ipc_cert_file_path(&mut self, value: String);
     fn consume_kubernetes_kubelet_nodename(&mut self, value: String);
+    fn consume_log_enabled(&mut self, value: bool);
     fn consume_log_file_max_rolls(&mut self, value: i64);
     fn consume_log_file_max_size(&mut self, value: String);
     fn consume_log_format_json(&mut self, value: bool);
@@ -194,6 +195,7 @@ pub trait DatadogConfigWitness {
     fn consume_log_payloads(&mut self, value: bool);
     fn consume_log_to_console(&mut self, value: bool);
     fn consume_log_to_syslog(&mut self, value: bool);
+    fn consume_logs_enabled(&mut self, value: bool);
     fn consume_metric_filterlist(&mut self, value: Vec<String>);
     fn consume_metric_filterlist_match_prefix(&mut self, value: bool);
     fn consume_metric_filterlist_prefix(&mut self, value: Vec<::serde_json::Map<String, ::serde_json::Value>>);
@@ -269,10 +271,13 @@ pub trait DatadogConfigWitness {
     fn consume_secret_refresh_on_api_key_failure_interval(&mut self, value: i64);
     fn consume_serializer_compressor_kind(&mut self, value: String);
     fn consume_serializer_experimental_use_v3_api_compression_level(&mut self, value: i64);
+    fn consume_serializer_experimental_use_v3_api_sketches_beta_route(&mut self, value: String);
     fn consume_serializer_experimental_use_v3_api_sketches_endpoints(&mut self, value: Vec<String>);
     fn consume_serializer_experimental_use_v3_api_sketches_max_compressed_payload_size(&mut self, value: i64);
     fn consume_serializer_experimental_use_v3_api_sketches_max_points_per_payload(&mut self, value: i64);
     fn consume_serializer_experimental_use_v3_api_sketches_max_uncompressed_payload_size(&mut self, value: i64);
+    fn consume_serializer_experimental_use_v3_api_sketches_shadow_sample_rate(&mut self, value: f64);
+    fn consume_serializer_experimental_use_v3_api_sketches_shadow_sites(&mut self, value: Vec<String>);
     fn consume_serializer_max_payload_size(&mut self, value: i64);
     fn consume_serializer_max_series_payload_size(&mut self, value: i64);
     fn consume_serializer_max_series_points_per_payload(&mut self, value: i64);
@@ -548,6 +553,7 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_ipc_address(config.ipc_address.clone());
     consumer.consume_ipc_cert_file_path(config.ipc_cert_file_path.clone());
     consumer.consume_kubernetes_kubelet_nodename(config.kubernetes_kubelet_nodename.clone());
+    consumer.consume_log_enabled(config.log_enabled.clone());
     consumer.consume_log_file_max_rolls(config.log_file_max_rolls.clone());
     consumer.consume_log_file_max_size(config.log_file_max_size.clone());
     consumer.consume_log_format_json(config.log_format_json.clone());
@@ -556,6 +562,7 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_log_payloads(config.log_payloads.clone());
     consumer.consume_log_to_console(config.log_to_console.clone());
     consumer.consume_log_to_syslog(config.log_to_syslog.clone());
+    consumer.consume_logs_enabled(config.logs_enabled.clone());
     consumer.consume_metric_filterlist(config.metric_filterlist.clone());
     consumer.consume_metric_filterlist_match_prefix(config.metric_filterlist_match_prefix.clone());
     consumer.consume_metric_filterlist_prefix(config.metric_filterlist_prefix.clone());
@@ -748,6 +755,9 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_serializer_experimental_use_v3_api_compression_level(
         config.serializer_experimental_use_v3_api.compression_level.clone(),
     );
+    consumer.consume_serializer_experimental_use_v3_api_sketches_beta_route(
+        config.serializer_experimental_use_v3_api.sketches.beta_route.clone(),
+    );
     consumer.consume_serializer_experimental_use_v3_api_sketches_endpoints(
         config.serializer_experimental_use_v3_api.sketches.endpoints.clone(),
     );
@@ -771,6 +781,16 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
             .sketches
             .max_uncompressed_payload_size
             .clone(),
+    );
+    consumer.consume_serializer_experimental_use_v3_api_sketches_shadow_sample_rate(
+        config
+            .serializer_experimental_use_v3_api
+            .sketches
+            .shadow_sample_rate
+            .clone(),
+    );
+    consumer.consume_serializer_experimental_use_v3_api_sketches_shadow_sites(
+        config.serializer_experimental_use_v3_api.sketches.shadow_sites.clone(),
     );
     consumer.consume_serializer_max_payload_size(config.serializer_max_payload_size.clone());
     consumer.consume_serializer_max_series_payload_size(config.serializer_max_series_payload_size.clone());

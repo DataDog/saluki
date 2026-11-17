@@ -1945,6 +1945,20 @@ inventory:
     pipelines: [dogstatsd, otlp]
     description: "Kubernetes node name for EKS Fargate static tags"
 
+  log_enabled:
+    support: partial
+    pipelines: [otlp]
+    description: "Deprecated name for `logs_enabled`"
+    documentation: |-
+      The core Agent treats `log_enabled` as a deprecated spelling of `logs_enabled`: the logs agent
+      runs when either key is `true`, and the Agent logs a deprecation warning when `log_enabled` is
+      `true`. ADP reads it the same way, but doesn't log the warning.
+
+      ADP doesn't yet act on the result. The core Agent refuses to start its OTLP receiver when
+      `otlp_config.logs.enabled` is `true` but the logs agent isn't enabled. ADP doesn't apply this
+      check, and accepts OTLP logs whatever `logs_enabled` and `log_enabled` say.
+    issue: "#2969"
+
   log_file_max_rolls:
     support: full
     pipelines: [cross_cutting]
@@ -2035,6 +2049,20 @@ inventory:
     pipelines: [cross_cutting]
     description: "Transaction success log interval"
     documentation: "The core agent uses `logging_frequency` to throttle repetitive successful transaction logs. ADP logs successful forwarder operations below the default `info` level, so there is no matching info-level success-log stream to throttle. This key is intentionally unused."
+
+  logs_enabled:
+    support: partial
+    pipelines: [otlp]
+    description: "Enable the logs agent"
+    documentation: |-
+      The core Agent runs its logs agent when `logs_enabled` (or its deprecated spelling
+      `log_enabled`) is `true`. Its OTLP receiver needs the logs agent for OTLP logs: when
+      `otlp_config.logs.enabled` is `true` but the logs agent isn't enabled, the Agent logs an error
+      and starts no OTLP receiver at all, so OTLP metrics and traces stop too.
+
+      ADP reads `logs_enabled`, but doesn't yet apply this check, and accepts OTLP logs whatever
+      `logs_enabled` says.
+    issue: "#2969"
 
   metric_filterlist:
     support: full
@@ -3101,13 +3129,10 @@ inventory:
     description: "V3 API zstd compression level"
 
   serializer_experimental_use_v3_api.sketches.beta_route:
-    support: none
-    severity: low
-    planned: true
-    issue: "#2555"
-    pipelines: [dogstatsd]
+    support: full
+    pipelines: [checks, dogstatsd]
     description: "V3 sketches beta intake route"
-    documentation: "ADP does not implement V3 sketches shadowing."
+    documentation: "Defaults to `/api/intake/metrics/v3beta/sketches`. Overrides the route used for sampled sketch copies; the authoritative V2 route is unchanged."
 
   serializer_experimental_use_v3_api.sketches.endpoints:
     support: full
@@ -3133,22 +3158,16 @@ inventory:
     documentation: "Defaults to `0`. Zero or negative values use `serializer_max_uncompressed_payload_size`."
 
   serializer_experimental_use_v3_api.sketches.shadow_sample_rate:
-    support: none
-    severity: low
-    planned: true
-    issue: "#2555"
-    pipelines: [dogstatsd]
+    support: full
+    pipelines: [checks, dogstatsd]
     description: "V3 sketches shadow sample rate"
-    documentation: "ADP does not implement V3 sketches shadowing."
+    documentation: "Defaults to `0` (disabled). Samples eligible V2 sketch batches independently per destination. Zero or negative values disable shadowing; values at least `1` sample every batch. Authoritative V3 sketches are not shadowed."
 
   serializer_experimental_use_v3_api.sketches.shadow_sites:
-    support: none
-    severity: low
-    planned: true
-    issue: "#2555"
-    pipelines: [dogstatsd]
+    support: full
+    pipelines: [checks, dogstatsd]
     description: "V3 sketches shadow sites"
-    documentation: "ADP does not implement V3 sketches shadowing."
+    documentation: "Defaults to `[\"datadoghq.com\"]`. Matches the resolved V2 destination site. An empty list disables sketch shadowing for all sites."
 
   serializer_max_payload_size:
     support: full
@@ -4477,7 +4496,6 @@ excluded:
   leader_lease_name: "ignored in initial audit 2026-04-23"
   listeners: "ignored in initial audit 2026-04-23"
   log_all_goroutines_when_unhealthy: "ignored in initial audit 2026-04-23"
-  log_enabled: "ignored in initial audit 2026-04-23"
   log_file: "ignored in second bulk edit 2026-05-06"
   logon_duration.enabled: "ignored in initial audit 2026-04-23"
   logs_config.add_logsource_tag: "ignored in initial audit 2026-04-23"
@@ -4605,7 +4623,6 @@ excluded:
   logs_config.validate_pod_container_id: "ignored in initial audit 2026-04-23"
   logs_config.windows_open_file_timeout: "ignored in initial audit 2026-04-23"
   logs_config.zstd_compression_level: "ignored in initial audit 2026-04-23"
-  logs_enabled: "ignored in initial audit 2026-04-23"
   memtrack_enabled: "ignored in initial audit 2026-04-23"
   metadata_endpoints_max_hostname_size: "ignored in initial audit 2026-04-23"
   metadata_ip_resolution_from_hostname: "ignored in initial audit 2026-04-23"

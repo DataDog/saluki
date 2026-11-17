@@ -42,7 +42,7 @@ use self::probabilistic::PROB_RATE_KEY;
 use self::telemetry::{DecisionWindow, WINDOW};
 use crate::common::datadog::{
     compute_top_level, get_root_span_index, get_trace_env, sample_by_rate, DECISION_MAKER_MANUAL,
-    DECISION_MAKER_PROBABILISTIC, SAMPLING_PRIORITY_METRIC_KEY, TAG_DECISION_MAKER, TAG_ORIGIN,
+    DECISION_MAKER_PROBABILISTIC, KEY_ANALYZED_SPANS, SAMPLING_PRIORITY_METRIC_KEY, TAG_DECISION_MAKER, TAG_ORIGIN,
 };
 use crate::config::AgentEnv;
 
@@ -51,9 +51,8 @@ const PRIORITY_AUTO_DROP: i32 = 0;
 const PRIORITY_AUTO_KEEP: i32 = 1;
 const PRIORITY_USER_KEEP: i32 = 2;
 
-// Single Span Sampling and Analytics Events keys
+// Single Span Sampling key
 const KEY_SPAN_SAMPLING_MECHANISM: &str = "_dd.span_sampling.mechanism";
-const KEY_ANALYZED_SPANS: &str = "_dd.analyzed";
 
 /// Configuration for the trace sampler transform.
 #[derive(Debug)]

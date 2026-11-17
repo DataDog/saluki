@@ -628,80 +628,33 @@ fn translator_cases() -> Vec<Case> {
                 ("otelcol.component.kind", string("Receiver")),
             ],
         ),
-    ]
-}
-
-/// Returns every case ported from `TestDeriveStatus`, as logs with only a severity number.
-fn derive_status_cases() -> Vec<Case> {
-    [
-        ("trace3", 3, "trace"),
-        ("trace4", 4, "trace"),
-        ("debug5", 5, "debug"),
-        ("debug7", 7, "debug"),
-        ("debug8", 8, "debug"),
-        ("info9", 9, "info"),
-        ("info12", 12, "info"),
-        ("warn13", 13, "warn"),
-        ("warn16", 16, "warn"),
-        ("error17", 17, "error"),
-        ("error20", 20, "error"),
-        ("fatal21", 21, "fatal"),
-        ("fatal24", 24, "fatal"),
-        ("undefined", 50, "error"),
-    ]
-    .into_iter()
-    .map(|(name, severity_number, status)| {
         case(
-            name,
-            record().severity_number(severity_number),
+            "ObservedTimestamp used as fallback when Timestamp is zero",
+            record()
+                .observed_timestamp(1_700_499_303_397_000_000)
+                .severity_number(5),
             item(
                 OTEL_SOURCE_TAG,
-                json!({"status": status, "otel.severity_number": severity_number.to_string()}),
+                json!({
+                    "status": "debug",
+                    "otel.severity_number": "5",
+                    "@timestamp": "2023-11-20T16:55:03.397Z",
+                    "otel.timestamp": "1700499303397000000",
+                }),
             ),
-        )
-    })
-    .collect()
-}
-
-/// The `TestTranslator` case of a log with only an observed timestamp, which the reference translator uses as
-/// the log's timestamp.
-fn observed_timestamp_cases() -> Vec<Case> {
-    vec![case(
-        "ObservedTimestamp used as fallback when Timestamp is zero",
-        record()
-            .observed_timestamp(1_700_499_303_397_000_000)
-            .severity_number(5),
-        item(
-            OTEL_SOURCE_TAG,
-            json!({
-                "status": "debug",
-                "otel.severity_number": "5",
-                "@timestamp": "2023-11-20T16:55:03.397Z",
-                "otel.timestamp": "1700499303397000000",
-            }),
         ),
-    )]
-}
-
-/// The `TestTranslator` case of a log with an event name.
-fn event_name_cases() -> Vec<Case> {
-    vec![case(
-        "EventName is mapped to otel.event_name",
-        record().event_name("app.screen.click").severity_number(5),
-        item(
-            OTEL_SOURCE_TAG,
-            json!({
-                "status": "debug",
-                "otel.severity_number": "5",
-                "otel.event_name": "app.screen.click",
-            }),
+        case(
+            "EventName is mapped to otel.event_name",
+            record().event_name("app.screen.click").severity_number(5),
+            item(
+                OTEL_SOURCE_TAG,
+                json!({
+                    "status": "debug",
+                    "otel.severity_number": "5",
+                    "otel.event_name": "app.screen.click",
+                }),
+            ),
         ),
-    )]
-}
-
-/// The `TestTranslator` cases of scope names and versions, and of the `otel.library.*` aliases for them.
-fn scope_metadata_cases() -> Vec<Case> {
-    vec![
         case(
             "scope name",
             record().body("hello world").severity_number(5),
@@ -768,6 +721,38 @@ fn scope_metadata_cases() -> Vec<Case> {
         )
         .scope("scope-metadata-name", "", []),
     ]
+}
+
+/// Returns every case ported from `TestDeriveStatus`, as logs with only a severity number.
+fn derive_status_cases() -> Vec<Case> {
+    [
+        ("trace3", 3, "trace"),
+        ("trace4", 4, "trace"),
+        ("debug5", 5, "debug"),
+        ("debug7", 7, "debug"),
+        ("debug8", 8, "debug"),
+        ("info9", 9, "info"),
+        ("info12", 12, "info"),
+        ("warn13", 13, "warn"),
+        ("warn16", 16, "warn"),
+        ("error17", 17, "error"),
+        ("error20", 20, "error"),
+        ("fatal21", 21, "fatal"),
+        ("fatal24", 24, "fatal"),
+        ("undefined", 50, "error"),
+    ]
+    .into_iter()
+    .map(|(name, severity_number, status)| {
+        case(
+            name,
+            record().severity_number(severity_number),
+            item(
+                OTEL_SOURCE_TAG,
+                json!({"status": status, "otel.severity_number": severity_number.to_string()}),
+            ),
+        )
+    })
+    .collect()
 }
 
 /// The `TestTranslator` cases of array attributes, which the reference translator keeps as JSON arrays.
@@ -928,24 +913,6 @@ fn translator() {
     cases.extend(derive_status_cases());
     cases.extend(status_attribute_override_cases());
     check(cases);
-}
-
-#[test]
-#[ignore = "target for `gap/observed-timestamp`"]
-fn target_observed_timestamp() {
-    check(observed_timestamp_cases());
-}
-
-#[test]
-#[ignore = "target for `gap/event-name`"]
-fn target_event_name() {
-    check(event_name_cases());
-}
-
-#[test]
-#[ignore = "target for `gap/scope-metadata`"]
-fn target_scope_metadata() {
-    check(scope_metadata_cases());
 }
 
 #[test]

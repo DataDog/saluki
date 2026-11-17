@@ -1,0 +1,6 @@
+---
+fixes:
+  - |
+    OTLP logs handled natively now keep the original spelling of log attribute keys, such as ``RequestID``, rather
+    than lowercasing them. Keys with a special meaning, such as ``message``, ``status``, and ``ddtags``, are still
+    recognized when their ASCII letters are in any case.

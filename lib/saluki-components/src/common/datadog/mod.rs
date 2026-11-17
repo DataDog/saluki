@@ -10,11 +10,13 @@ pub mod request_builder;
 pub(crate) mod retry;
 mod retry_capacity;
 pub mod routing;
+pub(crate) mod sketch_shadow;
 pub mod telemetry;
 #[cfg(test)]
 pub(crate) mod test_util;
 pub mod transaction;
 pub mod validation;
+pub(crate) mod version_data;
 
 use saluki_common::collections::FastHashMap;
 use saluki_core::data_model::event::trace::{AttributeValue, Span, Trace};
@@ -85,6 +87,9 @@ pub const TAG_ORIGIN: &str = "_dd.origin";
 
 /// Span attribute key used to mark top-level spans (`_top_level`).
 pub const TOP_LEVEL_KEY: &str = "_top_level";
+
+/// Span attribute key used to mark spans that sampling kept as standalone events (`_dd.analyzed`).
+pub const KEY_ANALYZED_SPANS: &str = "_dd.analyzed";
 
 /// Decision maker value for probabilistic sampling (matches Datadog Agent).
 pub const DECISION_MAKER_PROBABILISTIC: &str = "-9";

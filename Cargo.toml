@@ -252,6 +252,7 @@ tikv-jemallocator = { version = "0.7", default-features = false }
 axum-extra = { version = "0.12", default-features = false }
 papaya = { version = "0.2", default-features = false }
 tempfile = { version = "3", default-features = false }
+tar = { version = "0.4", default-features = false }
 fs4 = { version = "0.13.1", default-features = false }
 fnv = { version = "1", default-features = false }
 twox-hash = { version = "2", features = ["xxhash64"] }
@@ -278,7 +279,7 @@ chumsky = { version = "0.13", default-features = false }
 logos = { version = "0.16", default-features = false }
 lru-slab = { version = "0.1.2", default-features = false }
 antithesis-instrumentation = { version = "0.1" }
-antithesis_sdk = { git = "https://github.com/antithesishq/antithesis-sdk-rust", rev = "78c9db56771f0f6b01cb5404765c5a96852c159c", default-features = false } # 0.2.8 is pinned to rand 0.8, rev version allows us to select workspace rand
+antithesis_sdk = { version = "0.2.9", default-features = false }
 mime = "0.3"
 tokio-stream = "0.1"
 

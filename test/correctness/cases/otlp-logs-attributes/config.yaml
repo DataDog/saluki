@@ -4,7 +4,7 @@ analysis_mode: logs
 logs:
   # Every record carries a unique `fixture_id`, so records pair even when a gap changes their message or timestamp.
   identity_fields: ["fixture_id"]
-  min_count: 54
+  min_count: 108
   # Every difference ADP shows today, tagged with its gap from the OTLP logs parity plan (DataDog/saluki#2966). Remove
   # an entry in the change that fixes its gap.
   known_differences:
@@ -31,32 +31,11 @@ logs:
       when:
         fixture_id: [message-int, message-map]
       reason: ADP only honors string `message`/`log` attributes, and uses the body instead.
-    - gap: gap/event-name
-      paths: ["content.otel.event_name"]
-      kinds: [missing]
-      reason: ADP doesn't set `otel.event_name`.
-    - gap: gap/scope-metadata
-      paths: ["content.otel.scope.name", "content.otel.scope.version"]
-      kinds: [missing]
-      reason: ADP doesn't set the scope name and version.
-    - gap: gap/scope-metadata
-      paths: ["content.otel.library.name", "content.otel.library.version"]
-      kinds: [extra]
-      reason: ADP keeps the `otel.library.*` aliases instead of mapping them to scope keys.
-    - gap: gap/attribute-key-case
-      paths: ["content.RequestID", "content.nested_Map.InnerKey"]
-      kinds: [missing]
-      reason: ADP lowercases log attribute keys, so mixed-case keys are missing under their original spelling.
-    - gap: gap/attribute-key-case
-      paths: ["content.requestid", "content.nested_map.InnerKey"]
-      kinds: [extra]
-      reason: ADP lowercases log attribute keys, so mixed-case keys appear under their lowercased spelling.
     - gap: gap/missing-headers
       paths:
-        - headers.dd-message-timestamp
         - headers.dd-current-timestamp
       kinds: [missing]
-      reason: ADP doesn't send the `dd-message-timestamp` and `dd-current-timestamp` headers on logs requests.
+      reason: ADP doesn't send the `dd-current-timestamp` header on logs requests.
 baseline:
   image: saluki-images/datadog-agent:testing-release
   files:

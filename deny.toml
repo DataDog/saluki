@@ -83,10 +83,6 @@ allow-git = [
   # Yet-to-be-published version of incremental Protocol Buffers encoding library.
   "https://github.com/tobz/piecemeal.git",
 
-  # Pinned to a specific revision so we can select our workspace's `rand` version, ahead of a crates.io release that
-  # supports it.
-  "https://github.com/antithesishq/antithesis-sdk-rust",
-
   # Datadog-maintained trace obfuscation crate (`libdd-trace-obfuscation`), shared with Datadog's other trace
   # obfuscation implementations. The version we need is not on crates.io yet, so it is consumed from GitHub and pinned
   # to a specific revision in Cargo.toml.

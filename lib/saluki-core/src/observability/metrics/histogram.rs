@@ -10,10 +10,16 @@ static TIME_HISTOGRAM_BUCKETS: LazyLock<[(f64, &'static str); HISTOGRAM_BUCKET_C
 static NON_TIME_HISTOGRAM_BUCKETS: LazyLock<[(f64, &'static str); HISTOGRAM_BUCKET_COUNT]> =
     LazyLock::new(|| histogram_buckets::<HISTOGRAM_BUCKET_COUNT>(1.0, 2.0));
 
+// Sizes in bytes span far more than the generic schedule's last bucket of 24,576: request payloads reach several
+// megabytes. This schedule starts at 256 bytes and ends past 6 MiB.
+static BYTES_HISTOGRAM_BUCKETS: LazyLock<[(f64, &'static str); HISTOGRAM_BUCKET_COUNT]> =
+    LazyLock::new(|| histogram_buckets::<HISTOGRAM_BUCKET_COUNT>(256.0, 2.0));
+
 /// An aggregated histogram with fixed buckets, suitable for Prometheus exposition.
 ///
 /// Bucket layout follows a log-linear schedule. A metric name ending in `_seconds` selects the
-/// time-oriented bucket schedule; everything else uses the non-time schedule.
+/// time-oriented bucket schedule, one ending in `_bytes` selects the size-oriented schedule, and everything else uses
+/// the generic non-time schedule.
 #[derive(Clone, Debug)]
 pub struct AggregatedHistogram {
     sum: f64,
@@ -25,10 +31,13 @@ impl AggregatedHistogram {
     /// Creates a new `AggregatedHistogram` for the given metric name.
     ///
     /// The metric name determines the bucket schedule: names ending in `_seconds` use a
-    /// time-oriented schedule, everything else uses a generic non-time schedule.
+    /// time-oriented schedule, names ending in `_bytes` use a size-oriented schedule, and everything else uses a
+    /// generic non-time schedule.
     pub fn new(metric_name: &str) -> Self {
         let base_buckets = if metric_name.ends_with("_seconds") {
             &TIME_HISTOGRAM_BUCKETS[..]
+        } else if metric_name.ends_with("_bytes") {
+            &BYTES_HISTOGRAM_BUCKETS[..]
         } else {
             &NON_TIME_HISTOGRAM_BUCKETS[..]
         };
@@ -165,6 +174,31 @@ mod tests {
             time_first, non_time_first,
             "the `_seconds` suffix must select a different, time-oriented bucket schedule"
         );
+    }
+
+    #[test]
+    fn byte_sizes_up_to_the_intake_limit_get_a_finite_bucket() {
+        // Payloads reach 3.2 MB. The generic schedule's last finite bucket is 24,576, so every large payload would
+        // fall into the `+Inf` bucket and sizes of 100 KB and 3 MB would look the same.
+        let last_finite = |name: &str| {
+            let histogram = AggregatedHistogram::new(name);
+            histogram.buckets.last().expect("schedule has buckets").0
+        };
+        assert_eq!(last_finite("payload_size"), 24_576.0);
+        assert!(last_finite("payload_size_bytes") >= 3_200_000.0);
+
+        let mut histogram = AggregatedHistogram::new("payload_size_bytes");
+        histogram.add_sample(100_000.0, 1);
+        histogram.add_sample(3_000_000.0, 1);
+        let finite = |upper_bound: &str| {
+            histogram
+                .buckets()
+                .find(|(label, _)| *label == upper_bound)
+                .map(|(_, count)| count)
+                .expect("bucket exists")
+        };
+        assert_eq!(finite("131072"), 1);
+        assert_eq!(finite("3145728"), 2);
     }
 
     #[test]
