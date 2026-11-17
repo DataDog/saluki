@@ -274,32 +274,9 @@ and `otlp-fixtures`. Look first for bugs that hang a run, crash it, leave proces
 case pass when ADP is wrong.
 
 - Each wait, probe, and exec has a deadline, and each read has a deadline or an idle timeout. A target that stops
-  responding fails the case, and doesn't hang the job. (A step that never returned from one await used the whole case
-  budget: #2894.) Don't ask for a size limit on an intake dump. The dump is the data under test, so `IntakeClient`
-  reads all of it.
-- The harness kills the process group of a host process when its handle drops, also after a timeout, a cancellation,
-  or a panic. Flag a host process that has no such handle, or whose cleanup runs only on the normal path. (Host
-  processes outlived a timed-out case and could keep its ports: #2885.)
-- Dropping a handle doesn't remove a container, a network, a volume, or a Kubernetes namespace. The code registers
-  the isolation group or the namespace with the case's `ResourceLedger` before the creation request, so that reclaim
-  removes it. Flag a resource that the code creates before it registers it, or never registers.
-- A target can report healthy before its receivers listen. A client such as `millstone` retries the first connection
-  and transient errors, and fails on other errors. It uses bounded backoff, as `retry_backoff` in
-  `bin/correctness/millstone/src/target.rs` does. (`millstone` exited after one failed connection to the Agent's gRPC
-  receiver: #2175.)
-- A fixed port that a target binds is below 49152 for a case that runs on macOS or Windows. In a Linux container that
-  `airlock` starts, the port is below 60000, because `airlock` moves the ephemeral range to `60000 65535`. (ADP
-  couldn't bind its API port in a Linux container and started 23 times: #3149.)
-- A harness feature that resolves values for a target, such as dynamic variables, writes them for ADP and for the
-  Core Agent. If it doesn't, the feature works only in standalone mode. (Panoramic wrote resolved dynamic variables
-  only for ADP, so they worked only in standalone cases: #1854.)
-- The correctness tools build with the `release` profile, which keeps overflow checks, so an overflow panics. When
-  the load generator can make values near the limit of their type, such as span durations, a sum of them matches the
-  upstream. For example, the trace-agent adds APM stats as `uint64` values that wrap, so `stele` uses
-  `wrapping_add`. (Summed span durations overflowed and made `stele` panic: #3062.)
+  responding fails the case, and doesn't hang the job.
 - An analysis compares only output that the case controls. It removes the targets' own telemetry, as
   `is_internal_telemetry` does in the metrics analysis, because that telemetry depends on timing and on the container.
-  (The DogStatsD client telemetry of system-probe carried each container's ID and failed `dsd-forwarding`: #2851.)
 - Don't ask for edge cases that no current case can produce. An analysis that is too strict fails a case, so it
   doesn't hide a regression. Flag analysis logic that can let a case pass when ADP is wrong, such as a filter or a
   tolerance that also matches real output.
@@ -312,19 +289,8 @@ Reviewers check changes to the test cases under `test/` against these rules:
 <!-- review:test-cases -->
 Apply these rules to files under `test/`: correctness cases, integration cases, and SMP experiments.
 
-- A correctness case must fail when ADP is wrong. Flag a new `additional_span_ignore_fields` entry that has no comment
-  to say why the field differs. Valid reasons include an ADP gap with its issue, a DDOT baseline, or a field that the
-  two targets store in different forms. An ignored field can hide the bug that the case exists to find. (An ignored
-  `meta.error.msg` field hid a wrong HTTP status text: #1317.)
-- Flag a new `logs.known_differences` entry that covers more than its gap. For example, it has a `**` path, or it has
-  no `kinds` or `when` but the gap affects only some kinds or fixtures. A broad entry can also hide a new bug.
-  `panoramic` already requires `gap` and `reason`, and fails a stale entry.
-- Check each `DD_` variable against its configuration key. The name is `DD_` and the key in uppercase, with `_` for
-  each `.`, unless the schema entry of the key under `lib/datadog-agent/config/schema/core/` lists `env_vars`. The
-  Agent doesn't read the `__` form. A wrong name leaves the setting at its default in ADP. (A `__` typo left DogStatsD
-  off in ADP, and the DogStatsD cases still passed: #1072.)
-- To check a Saluki-only key, look in `SalukiOnly` in `lib/agent-data-plane-config-system/src/saluki_only.rs`, not in
-  the schema. An `ADP_DD_` variable goes to ADP only, so check the part after `ADP_`.
+- A correctness case must fail when ADP is wrong.
+- A correctness case tests only the settings that it sets. 
 - The Core Agent and ADP can both run some pipelines, such as DogStatsD and OTLP. If ADP doesn't receive the traffic,
   the Core Agent handles it, and the case compares the Agent with itself. When a case turns on such a pipeline in ADP,
   ask what shows that ADP received the traffic. Don't ask when the case or the description already shows it.
@@ -335,22 +301,9 @@ Apply these rules to files under `test/`: correctness cases, integration cases, 
 - The `baseline` and `comparison` targets differ only in the setting under test and in the settings that turn on ADP.
   Settings that only ADP reads can also differ, such as `DD_AGGREGATE_CONTEXT_LIMIT` and `ADP_DD_` variables. Flag a
   setting that the Datadog Agent also reads and that only one side sets, when no comment explains it.
-- A correctness case tests only the settings that it sets. Panoramic collects output before it stops the targets, and
-  the metrics analysis reduces each series to one value. Ask for a unit test for shutdown behavior or single points.
-  If a case only shows that a value parses, ask for a unit test instead. (A shutdown flush bug and a bug at a
-  non-default window both passed the suite: #2820.)
 - Flag a setting in a case or an SMP experiment that ADP no longer reads, such as a removed or renamed key. ADP
   ignores it without an error, so the case no longer tests it. For SMP, comment on
   `test/smp/regression/adp/experiments.yaml`, not on the generated `experiment.yaml` files.
-  `make generate-smp-experiments` writes them from that file. (SMP experiments kept a removed V3 setting, so they sent
-  V2 series: #2632.)
-- A fixed port in an integration case is below 49152. On macOS, cases run as host processes, and macOS gives ports
-  49152 and higher to outbound connections. (Integration ports from 55001 to 58125 failed intermittently on macOS:
-  #3050.)
-- A fake service doesn't pin one API version. It matches routes with any version prefix, and it advertises its
-  version where the client negotiates one, such as the `API-Version` header on `/_ping`. The fake Docker daemon in
-  `test/integration/cases/liveness-container-tags/run_liveness_test.py` does both. The nightly job runs the latest
-  Agent. (A fake Docker daemon served only `/v1.54`, and the nightly Agent moved to 1.55: #2258.)
 <!-- /review -->
 
 ## Fuzzing

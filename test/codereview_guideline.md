@@ -4,19 +4,8 @@
 
 Apply these rules to files under `test/`: correctness cases, integration cases, and SMP experiments.
 
-- A correctness case must fail when ADP is wrong. Flag a new `additional_span_ignore_fields` entry that has no comment
-  to say why the field differs. Valid reasons include an ADP gap with its issue, a DDOT baseline, or a field that the
-  two targets store in different forms. An ignored field can hide the bug that the case exists to find. (An ignored
-  `meta.error.msg` field hid a wrong HTTP status text: #1317.)
-- Flag a new `logs.known_differences` entry that covers more than its gap. For example, it has a `**` path, or it has
-  no `kinds` or `when` but the gap affects only some kinds or fixtures. A broad entry can also hide a new bug.
-  `panoramic` already requires `gap` and `reason`, and fails a stale entry.
-- Check each `DD_` variable against its configuration key. The name is `DD_` and the key in uppercase, with `_` for
-  each `.`, unless the schema entry of the key under `lib/datadog-agent/config/schema/core/` lists `env_vars`. The
-  Agent doesn't read the `__` form. A wrong name leaves the setting at its default in ADP. (A `__` typo left DogStatsD
-  off in ADP, and the DogStatsD cases still passed: #1072.)
-- To check a Saluki-only key, look in `SalukiOnly` in `lib/agent-data-plane-config-system/src/saluki_only.rs`, not in
-  the schema. An `ADP_DD_` variable goes to ADP only, so check the part after `ADP_`.
+- A correctness case must fail when ADP is wrong.
+- A correctness case tests only the settings that it sets. 
 - The Core Agent and ADP can both run some pipelines, such as DogStatsD and OTLP. If ADP doesn't receive the traffic,
   the Core Agent handles it, and the case compares the Agent with itself. When a case turns on such a pipeline in ADP,
   ask what shows that ADP received the traffic. Don't ask when the case or the description already shows it.
@@ -27,19 +16,6 @@ Apply these rules to files under `test/`: correctness cases, integration cases, 
 - The `baseline` and `comparison` targets differ only in the setting under test and in the settings that turn on ADP.
   Settings that only ADP reads can also differ, such as `DD_AGGREGATE_CONTEXT_LIMIT` and `ADP_DD_` variables. Flag a
   setting that the Datadog Agent also reads and that only one side sets, when no comment explains it.
-- A correctness case tests only the settings that it sets. Panoramic collects output before it stops the targets, and
-  the metrics analysis reduces each series to one value. Ask for a unit test for shutdown behavior or single points.
-  If a case only shows that a value parses, ask for a unit test instead. (A shutdown flush bug and a bug at a
-  non-default window both passed the suite: #2820.)
 - Flag a setting in a case or an SMP experiment that ADP no longer reads, such as a removed or renamed key. ADP
   ignores it without an error, so the case no longer tests it. For SMP, comment on
   `test/smp/regression/adp/experiments.yaml`, not on the generated `experiment.yaml` files.
-  `make generate-smp-experiments` writes them from that file. (SMP experiments kept a removed V3 setting, so they sent
-  V2 series: #2632.)
-- A fixed port in an integration case is below 49152. On macOS, cases run as host processes, and macOS gives ports
-  49152 and higher to outbound connections. (Integration ports from 55001 to 58125 failed intermittently on macOS:
-  #3050.)
-- A fake service doesn't pin one API version. It matches routes with any version prefix, and it advertises its
-  version where the client negotiates one, such as the `API-Version` header on `/_ping`. The fake Docker daemon in
-  `test/integration/cases/liveness-container-tags/run_liveness_test.py` does both. The nightly job runs the latest
-  Agent. (A fake Docker daemon served only `/v1.54`, and the nightly Agent moved to 1.55: #2258.)
