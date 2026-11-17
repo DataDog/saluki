@@ -1,0 +1,9 @@
+fixes:
+  - |
+    ``agent-data-plane dogstatsd dump-contexts`` now reports DogStatsD timing
+    (``ms``) contexts as ``Histogram``, matching the Agent, instead of
+    ``Historate``.
+  - |
+    With ``dogstatsd_set_timing_unit`` enabled, a context receiving both
+    histogram (``h``) and timing (``ms``) samples now flushes with the
+    ``millisecond`` unit if any timing sample arrived.

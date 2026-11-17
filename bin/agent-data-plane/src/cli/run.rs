@@ -1146,7 +1146,6 @@ mod tests {
         aggregate_context_snapshot_channel_for_test, AggregateContextSnapshotEntry, AggregateMetricType,
     };
     use saluki_core::data_model::event::metric::context::Context;
-    use stringtheory::MetaString;
     use tower::ServiceExt as _;
 
     use crate::dogstatsd_contexts::DogStatsDContextDumpAPIHandler;
@@ -1244,10 +1243,6 @@ mod tests {
     }
 
     fn snapshot_entry(name: &'static str) -> AggregateContextSnapshotEntry {
-        AggregateContextSnapshotEntry::for_test(
-            Context::from_static_name(name),
-            AggregateMetricType::Gauge,
-            MetaString::empty(),
-        )
+        AggregateContextSnapshotEntry::for_test(Context::from_static_name(name), AggregateMetricType::Gauge)
     }
 }

@@ -35,7 +35,7 @@ impl Serialize for AgentContextSnapshotRecord<'_> {
         let mut record = serializer.serialize_struct("AgentContextRecord", 7)?;
         record.serialize_field("Name", name)?;
         record.serialize_field("Host", context.host().unwrap_or_default())?;
-        record.serialize_field("Type", agent_metric_type(entry))?;
+        record.serialize_field("Type", agent_metric_type(entry.metric_type()))?;
         record.serialize_field("TaggerTags", &BorrowedTags(context.origin_tags()))?;
         record.serialize_field("MetricTags", &BorrowedTags(context.tags()))?;
         record.serialize_field("NoIndex", &false)?;
@@ -56,14 +56,14 @@ impl Serialize for BorrowedTags<'_> {
 }
 
 // These spellings match `MetricType.String()` in the Agent's pkg/metrics/metric_sample.go.
-fn agent_metric_type(entry: &AggregateContextSnapshotEntry) -> &'static str {
-    match entry.metric_type() {
+// The Agent enriches DogStatsD timers (`ms`) as `HistogramType` regardless of unit.
+fn agent_metric_type(metric_type: AggregateMetricType) -> &'static str {
+    match metric_type {
         AggregateMetricType::Counter => "Counter",
         AggregateMetricType::Rate => "Rate",
         AggregateMetricType::Gauge => "Gauge",
         AggregateMetricType::Set => "Set",
         AggregateMetricType::Distribution => "Distribution",
-        AggregateMetricType::Histogram if entry.unit() == Some("millisecond") => "Historate",
         AggregateMetricType::Histogram => "Histogram",
     }
 }
