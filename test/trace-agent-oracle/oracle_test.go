@@ -163,6 +163,11 @@ func TestOracle(t *testing.T) {
 		}
 		results = append(results, res)
 	}
-	out, _ := json.MarshalIndent(results, "", "  ")
-	os.WriteFile(os.Getenv("ORACLE_OUT"), out, 0o644)
+	out, err := json.MarshalIndent(results, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(os.Getenv("ORACLE_OUT"), out, 0o644); err != nil {
+		t.Fatal(err)
+	}
 }

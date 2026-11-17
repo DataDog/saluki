@@ -68,7 +68,8 @@ cargo nextest run -p saluki-components -E 'test(/decoders::datadog::json/)'
 Don't edit the fixtures by hand. To cover another endpoint, such as `/v0.7/traces`, add its version to the `version`
 switch in `oracle_test.go`, write a cases script for it beside the others that sets each case's `version`, as
 `v01_json_cases.py` does, and add it to the loop in `regenerate.sh`. The trace-agent groups v0.1 spans into chunks
-through a map, so their order in `v01_json_cases.json` is random, and the test compares them in any order. The v1.0
+through a map, so their order is random: `v01_json_cases.py` sorts them so that the fixture is stable, and the test
+compares them in any order. The v1.0
 decoder's fixtures, `testdata/v1_decoder_cases.json`, were produced by the reference Go encoder when that decoder was
 added, with a generator that isn't in the repository.
 
