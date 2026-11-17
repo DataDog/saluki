@@ -892,7 +892,9 @@ mod tests {
         assert!(!listed.contains(&"/telemetry/proxy/"));
         assert!(!listed.contains(&"/v0.7/config"));
         // Hidden endpoints are served but not listed.
-        assert!(!listed.contains(&"/v0.2/traces"));
+        for hidden in ["/spans", "/v0.1/spans", "/v0.2/traces"] {
+            assert!(!listed.contains(&hidden), "{hidden}");
+        }
 
         let (payload, _) = render(&InfoConfiguration {
             telemetry_enabled: true,
