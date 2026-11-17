@@ -137,7 +137,7 @@ fn read_any_value_depth(r: &mut &[u8], strings: &mut StringTable, depth: usize) 
     let value = match value_type {
         1 => AttributeValue::String(read_streaming_string(r, strings, "AnyValue string")?),
         2 => AttributeValue::Bool(read::read_bool(r, "AnyValue bool")?),
-        3 => AttributeValue::Float(read::read_f64(r, "AnyValue double")?),
+        3 => AttributeValue::Float(read::v0_read_f64(r, "AnyValue double")?),
         4 => AttributeValue::Int(read::read_i64(r, "AnyValue int")?),
         5 => AttributeValue::Bytes(read::read_bytes(r, "AnyValue bytes")?),
         6 => {
