@@ -310,6 +310,31 @@ const HTTP_SERVER_ID: &str = "otlp-http";
 /// Server identifier of the OTLP gRPC endpoint.
 const GRPC_SERVER_ID: &str = "otlp-grpc";
 
+/// The OTLP signals a server accepts.
+///
+/// Like the Datadog Agent's OTLP receiver, the server doesn't serve a signal that isn't accepted: a client gets gRPC
+/// `Unimplemented` or HTTP 404 for it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OtlpSignals {
+    /// Whether OTLP metrics are accepted.
+    pub metrics: bool,
+
+    /// Whether OTLP logs are accepted.
+    pub logs: bool,
+
+    /// Whether OTLP traces are accepted.
+    pub traces: bool,
+}
+
+impl OtlpSignals {
+    /// Every signal accepted.
+    pub const ALL: Self = Self {
+        metrics: true,
+        logs: true,
+        traces: true,
+    };
+}
+
 /// OTLP server configuration.
 ///
 /// Holds the raw inputs needed to construct and start the OTLP HTTP and gRPC servers. Call [`build`][Self::build] to
@@ -325,6 +350,7 @@ pub struct OtlpServerConfiguration {
     grpc_tls: Option<OtlpTlsConfiguration>,
     http_server_id: MetaString,
     grpc_server_id: MetaString,
+    signals: OtlpSignals,
 }
 
 impl OtlpServerConfiguration {
@@ -343,7 +369,17 @@ impl OtlpServerConfiguration {
             grpc_tls: None,
             http_server_id: MetaString::from_static(HTTP_SERVER_ID),
             grpc_server_id: MetaString::from_static(GRPC_SERVER_ID),
+            signals: OtlpSignals::ALL,
         }
+    }
+
+    /// Sets the signals the servers accept.
+    ///
+    /// Defaults to every signal. The servers don't serve the others at all: gRPC calls get `Unimplemented`, and HTTP
+    /// requests get 404.
+    pub fn with_signals(mut self, signals: OtlpSignals) -> Self {
+        self.signals = signals;
+        self
     }
 
     /// Sets the HTTP/2 settings used by the gRPC endpoint.
@@ -424,22 +460,30 @@ impl OtlpServerConfiguration {
         // Create and spawn the gRPC server.
         let inner_grpc = GrpcServiceImpl::new(otlp_handler.clone(), memory_limiter.clone(), metrics.clone());
 
-        let grpc_metrics_server =
-            MetricsServiceServer::new(inner_grpc.clone()).max_decoding_message_size(self.grpc_max_recv_msg_size_bytes);
-
-        let grpc_logs_server =
-            LogsServiceServer::new(inner_grpc.clone()).max_decoding_message_size(self.grpc_max_recv_msg_size_bytes);
-
-        let grpc_traces_server =
-            TraceServiceServer::new(inner_grpc).max_decoding_message_size(self.grpc_max_recv_msg_size_bytes);
-
         // The gRPC endpoint is served by an HTTP server: gRPC is HTTP/2 with a distinct route naming convention, so
         // the generated services are just another route set. It is restricted to HTTP/2 because the OTLP gRPC port
         // only ever serves gRPC, and an HTTP/1.1 caller belongs on the HTTP endpoint instead.
-        let mut grpc_server = HttpServer::from_listen_address(self.grpc_endpoint.clone())
-            .add_grpc_service(grpc_metrics_server)
-            .add_grpc_service(grpc_logs_server)
-            .add_grpc_service(grpc_traces_server)
+        //
+        // Only the services of accepted signals are added. A call to another one gets `Unimplemented`, as from the
+        // Datadog Agent, whose receiver only serves the signals it has a pipeline for.
+        let mut grpc_server = HttpServer::from_listen_address(self.grpc_endpoint.clone());
+        if self.signals.metrics {
+            grpc_server = grpc_server.add_grpc_service(
+                MetricsServiceServer::new(inner_grpc.clone())
+                    .max_decoding_message_size(self.grpc_max_recv_msg_size_bytes),
+            );
+        }
+        if self.signals.logs {
+            grpc_server = grpc_server.add_grpc_service(
+                LogsServiceServer::new(inner_grpc.clone()).max_decoding_message_size(self.grpc_max_recv_msg_size_bytes),
+            );
+        }
+        if self.signals.traces {
+            grpc_server = grpc_server.add_grpc_service(
+                TraceServiceServer::new(inner_grpc).max_decoding_message_size(self.grpc_max_recv_msg_size_bytes),
+            );
+        }
+        let mut grpc_server = grpc_server
             .with_http2_only()
             .with_http2_config(self.grpc_http2_config)
             .with_server_id(self.grpc_server_id)
@@ -465,12 +509,21 @@ impl OtlpServerConfiguration {
             self.http_max_request_body_size as usize
         };
 
-        let router = Router::new()
-            .route("/v1/metrics", post(http_metrics_handler::<H>))
-            .route("/v1/logs", post(http_logs_handler::<H>))
-            .route("/v1/traces", post(http_traces_handler::<H>))
-            .layer(DefaultBodyLimit::max(max_body_size))
-            .with_state((otlp_handler, memory_limiter, metrics));
+        // Likewise, only the routes of accepted signals are added, so a request for another one gets 404.
+        let mut router = Router::new();
+        if self.signals.metrics {
+            router = router.route("/v1/metrics", post(http_metrics_handler::<H>));
+        }
+        if self.signals.logs {
+            router = router.route("/v1/logs", post(http_logs_handler::<H>));
+        }
+        if self.signals.traces {
+            router = router.route("/v1/traces", post(http_traces_handler::<H>));
+        }
+        let router =
+            router
+                .layer(DefaultBodyLimit::max(max_body_size))
+                .with_state((otlp_handler, memory_limiter, metrics));
 
         // Apply CORS middleware when origins are configured.
         let router = if !self.cors.allowed_origins.is_empty() {
@@ -984,6 +1037,120 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
         panic!("Unix socket at {} did not appear within 500ms", path.display());
+    }
+
+    /// Sends an empty export request for `signal` over gRPC and returns the resulting status code.
+    async fn grpc_export_status(port: u16, signal: &str) -> tonic::Code {
+        use otlp_protos::opentelemetry::proto::collector::logs::v1::logs_service_client::LogsServiceClient;
+        use otlp_protos::opentelemetry::proto::collector::metrics::v1::metrics_service_client::MetricsServiceClient;
+        use otlp_protos::opentelemetry::proto::collector::trace::v1::trace_service_client::TraceServiceClient;
+
+        let channel = tonic::transport::Endpoint::from_shared(format!("http://127.0.0.1:{port}"))
+            .expect("endpoint should parse")
+            .connect()
+            .await
+            .expect("should connect to the gRPC server");
+        let result = match signal {
+            "metrics" => MetricsServiceClient::new(channel)
+                .export(ExportMetricsServiceRequest::default())
+                .await
+                .map(|_| ()),
+            "logs" => LogsServiceClient::new(channel)
+                .export(ExportLogsServiceRequest::default())
+                .await
+                .map(|_| ()),
+            "traces" => TraceServiceClient::new(channel)
+                .export(ExportTraceServiceRequest::default())
+                .await
+                .map(|_| ()),
+            signal => panic!("unknown signal {signal}"),
+        };
+        match result {
+            Ok(()) => tonic::Code::Ok,
+            Err(status) => status.code(),
+        }
+    }
+
+    /// Sends an empty export request for `signal` over HTTP and returns the response status line.
+    async fn http_export_status(port: u16, signal: &str) -> String {
+        let mut stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{port}"))
+            .await
+            .expect("should connect to HTTP server");
+        let request = format!(
+            "POST /v1/{signal} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/x-protobuf\r\n\
+             Content-Length: 0\r\nConnection: close\r\n\r\n"
+        );
+        stream.write_all(request.as_bytes()).await.expect("write request");
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.expect("read response");
+        String::from_utf8_lossy(&response)
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn signals_that_are_not_accepted_are_not_served() {
+        // Like the Datadog Agent's receiver, a signal that isn't accepted isn't served at all, over either protocol,
+        // and the other signals are unaffected.
+        for disabled in ["metrics", "logs", "traces"] {
+            let supervisor = TestSupervisor::start("otlp-test").await;
+            let http_server_id = format!("http-unserved-{disabled}");
+            let grpc_server_id = format!("grpc-unserved-{disabled}");
+            let signals = OtlpSignals {
+                metrics: disabled != "metrics",
+                logs: disabled != "logs",
+                traces: disabled != "traces",
+            };
+
+            supervisor
+                .scope(
+                    OtlpServerConfiguration::new(
+                        ListenAddress::tcp_loopback(0),
+                        ListenAddress::tcp_loopback(0),
+                        4 * 1024 * 1024,
+                    )
+                    .with_server_ids(http_server_id.clone(), grpc_server_id.clone())
+                    .with_signals(signals)
+                    .build(
+                        NoopHandler,
+                        MemoryLimiter::noop(),
+                        Metrics::for_tests(),
+                        &tokio::runtime::Handle::current(),
+                    ),
+                )
+                .await
+                .expect("build should succeed");
+
+            let http_port = bound_port(&supervisor, &http_server_id).await;
+            let grpc_port = bound_port(&supervisor, &grpc_server_id).await;
+            wait_for_port(http_port).await;
+            wait_for_port(grpc_port).await;
+
+            for signal in ["metrics", "logs", "traces"] {
+                let (expected_grpc, expected_http) = if signal == disabled {
+                    (tonic::Code::Unimplemented, "HTTP/1.1 404 Not Found")
+                } else {
+                    (tonic::Code::Ok, "HTTP/1.1 200 OK")
+                };
+                assert_eq!(
+                    grpc_export_status(grpc_port, signal).await,
+                    expected_grpc,
+                    "gRPC {signal} with {disabled} disabled"
+                );
+                assert_eq!(
+                    http_export_status(http_port, signal).await,
+                    expected_http,
+                    "HTTP {signal} with {disabled} disabled"
+                );
+            }
+
+            supervisor
+                .shutdown()
+                .await
+                .expect("supervisor should shut down cleanly");
+        }
     }
 
     #[tokio::test]

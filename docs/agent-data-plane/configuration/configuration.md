@@ -857,9 +857,9 @@ The core Agent treats `log_enabled` as a deprecated spelling of `logs_enabled`: 
 runs when either key is `true`, and the Agent logs a deprecation warning when `log_enabled` is
 `true`. ADP reads it the same way, but doesn't log the warning.
 
-ADP doesn't yet act on the result. The core Agent refuses to start its OTLP receiver when
-`otlp_config.logs.enabled` is `true` but the logs agent isn't enabled. ADP doesn't apply this
-check, and accepts OTLP logs whatever `logs_enabled` and `log_enabled` say.
+Like the core Agent, ADP only accepts OTLP logs when the logs agent is enabled. ADP doesn't yet
+apply the Agent's check that starts no OTLP receiver at all when `otlp_config.logs.enabled` is
+`true` but the logs agent isn't enabled: ADP still serves OTLP metrics and traces then.
 
 ### `log_level`
 
@@ -890,8 +890,9 @@ The core Agent runs its logs agent when `logs_enabled` (or its deprecated spelli
 `otlp_config.logs.enabled` is `true` but the logs agent isn't enabled, the Agent logs an error
 and starts no OTLP receiver at all, so OTLP metrics and traces stop too.
 
-ADP reads `logs_enabled`, but doesn't yet apply this check, and accepts OTLP logs whatever
-`logs_enabled` says.
+Like the core Agent, ADP only accepts OTLP logs when the logs agent is enabled. It doesn't yet
+apply the check that starts no OTLP receiver at all: ADP still serves OTLP metrics and traces
+then.
 
 ### `min_tls_version`
 
@@ -1325,9 +1326,9 @@ The following settings work in ADP with the same behavior as the core agent.
 | `observability_pipelines_worker.metrics.url`                                               | OPW metrics intake URL                             |
 | `observability_pipelines_worker.metrics.use_v3_api.series`                                 | Use V3 series for OPW                              |
 | `origin_detection_unified`                                                                 | Unified origin detection mode                      |
-| `otlp_config.logs.enabled`                                                                 | otlp_config.logs.enabled                           |
+| `otlp_config.logs.enabled`                                                                 | Accept OTLP logs (with `logs_enabled`)             |
 | `otlp_config.metrics.delta_ttl`                                                            | TTL (seconds) for cached delta-conversion points   |
-| `otlp_config.metrics.enabled`                                                              | otlp_config.metrics.enabled                        |
+| `otlp_config.metrics.enabled`                                                              | Accept OTLP metrics                                |
 | `otlp_config.metrics.histograms.mode`                                                      | OTLP histogram bucket reporting mode               |
 | `otlp_config.metrics.histograms.send_aggregation_metrics`                                  | Emit OTLP histogram aggregation metrics.           |
 | `otlp_config.metrics.instrumentation_scope_metadata_as_tags`                               | Add instrumentation scope metadata as metric tags. |
@@ -1357,7 +1358,7 @@ The following settings work in ADP with the same behavior as the core agent.
 | `otlp_config.receiver.protocols.http.tls.ca_file`                                          | HTTP TLS CA file path                              |
 | `otlp_config.receiver.protocols.http.tls.cert_file`                                        | HTTP TLS cert file path                            |
 | `otlp_config.receiver.protocols.http.tls.key_file`                                         | HTTP TLS key file path                             |
-| `otlp_config.traces.enabled`                                                               | otlp_config.traces.enabled                         |
+| `otlp_config.traces.enabled`                                                               | Accept OTLP traces                                 |
 | `otlp_config.traces.infra_attributes.container_tag_promotion`                              | OTLP trace container-tag promotion                 |
 | `otlp_config.traces.infra_attributes.enabled`                                              | OTLP trace infrastructure-attribute enrichment     |
 | `otlp_config.traces.internal_port`                                                         | otlp_config.traces.internal_port                   |

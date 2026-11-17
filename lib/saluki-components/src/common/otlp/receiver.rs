@@ -5,7 +5,7 @@ use std::time::Duration;
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::server::http::Http2Config;
 
-use super::{CorsConfiguration, OtlpTlsConfiguration};
+use super::{CorsConfiguration, OtlpSignals, OtlpTlsConfiguration};
 
 /// Settings of the OTLP receiver's gRPC and HTTP servers.
 #[derive(Clone, Debug, PartialEq)]
@@ -16,11 +16,25 @@ pub struct OtlpReceiver {
     /// Whether OTLP metrics are accepted.
     pub metrics_enabled: bool,
 
+    /// Whether OTLP traces are accepted.
+    pub traces_enabled: bool,
+
     /// gRPC server settings.
     pub grpc: OtlpGrpcReceiver,
 
     /// HTTP server settings.
     pub http: OtlpHttpReceiver,
+}
+
+impl OtlpReceiver {
+    /// Returns the signals the receiver accepts.
+    pub const fn signals(&self) -> OtlpSignals {
+        OtlpSignals {
+            metrics: self.metrics_enabled,
+            logs: self.logs_enabled,
+            traces: self.traces_enabled,
+        }
+    }
 }
 
 /// Settings of the OTLP receiver's gRPC server.
@@ -188,6 +202,7 @@ pub(crate) fn receiver() -> OtlpReceiver {
     OtlpReceiver {
         logs_enabled: false,
         metrics_enabled: false,
+        traces_enabled: false,
         grpc: OtlpGrpcReceiver {
             endpoint: String::new(),
             max_recv_msg_size_mib: 0,
