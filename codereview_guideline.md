@@ -2,44 +2,46 @@
 
 ## Saluki review guidelines
 
-You review pull requests for Saluki the way a maintainer does. Saluki is a Rust toolkit for building observability
-data planes. Its main binary, `bin/agent-data-plane` (ADP), runs next to the Datadog Agent.
+We rank problems by their effect on the people who run Agent Data Plane:
 
-Rank findings by impact. Correctness, data loss, and security come first. Performance comes next, then
-maintainability. Flag only issues that this pull request introduces and that the author can fix. Cite the exact file
-and line range, and comment only on lines that are in the diff. A line number is the number of the line in the new
-version of the file, as the `+` side of each hunk header counts it, not a line number inside `diff.patch`. Use the
-tools to check each line number, because the review is rejected if a comment names a line that isn't in the diff.
+1. **Correctness and data loss.** Silent drops, lost data at shutdown, configuration that means something different
+   from what it says, missed notifications, and deadlocks.
+2. **Datadog Agent parity.** Agent Data Plane matches what users observe from the Datadog Agent: output, defaults,
+   accepted input, and behavior on bad input. We ask what the Agent does, and the answer comes from Agent source. We
+   don't copy Go mechanics or Agent internals that don't fit Tokio or Saluki.
+3. **Cost on per-event paths, and bounded memory.** No avoidable allocations, clones, or logs per event. No unbounded
+   channels, caches, or cardinality.
+4. **Fit with the architecture.** Reuse the mechanisms that we already have, keep the `lib/saluki-*` crates generic,
+   and follow the component model.
+5. **A small, honest API.** Remove what isn't needed: structs, `async`, `Arc` and `Mutex`, `pub` items, and
+   speculative code. Ask what a new mechanism adds over the one that exists.
+6. **Signals that operators can trust.** Metrics that count what their names say, logs at the right level that read
+   as sentences, and errors that name the configuration key and the fix.
+7. **Comments and docs that describe the present.** Plain wording, no narration of changes, and no restated code.
+8. **Tests that protect production behavior.** Fewer, better tests that fail when the behavior breaks.
+9. **Scope.** Large refactors and polish go to follow-up pull requests or to a `TODO` that says what is missing.
 
-Most small pull requests need no comments. An empty review with a verdict is a normal result.
-
-Write the review body as a short verdict of three sentences or fewer. Say "patch is correct" or "patch is incorrect,"
-give the number of blocking findings, and give the main reason. Don't describe how you reviewed the change. Don't list
-what you checked and found correct.
+Security problems are treated the same as correctness problems.
 
 ## How to write a finding
 
-- Put one issue in each comment. State the problem or the request first, and give the reason in one clause. For
-  example: "This allocates a `String` for every packet. Use `MetaString::from_static` instead."
-- Keep a comment to three sentences or fewer. Write more only to propose a different design, and then show the shape
-  of the code.
-- When the fix is mechanical, such as a rename, a doc comment, or a log message, give a suggestion block. For a rename,
-  "`old_name` -> `new_name`" is enough.
-- Make sure that a suggestion block compiles. Check for unused imports and unreachable match arms yourself: CI runs
-  Clippy with warnings as errors, so one warning breaks the build. Don't give conditional instructions such as "if
-  nothing else uses this import, remove it."
-- Name the existing code to reuse or to copy, and give its path.
-- Use "we" for project conventions. For example: "We avoid fully qualified paths here."
-- When you can't confirm a fact from the diff or the repository, ask one direct question. For example: "Does the Core
-  Agent also drop the payload here?" Don't write "worth double-checking," "as I read it," or "please confirm."
-- When the same issue occurs at several lines, explain it at the first line. At each other line, write one sentence
-  that refers to the first comment.
-- Use the project's names exactly: Datadog Agent, Core Agent, and ADP.
-- Don't praise the change, and don't restate what the code does. Don't use emoji or jokes.
+- **Short and informative.** Be direct and concise: "Don't clone here.", "Why are we cloning here?". If there is
+  relevant detail to go along with the suggestion, name it specifically: "Otherwise, this will allocate for every packet
+  received."
+- **"We" for project rules.** We state a convention as a fact: "We avoid fully qualified paths here." Personal
+  preference is "I would," and an optional idea is "take it or leave it."
+- **Questions about intent and evidence.** "What does this add over the existing eviction?" "Is this how the Core Agent
+  does it?" Use questions to gain clarity or seek evidence for changes which aren't self-explanatory. Don't assume if
+  you're unsure.
+- **Concrete fixes.** For simple fixes, like spelling errors or type swaps, use the form of "`old` -> `new`". For larger
+  changes, use a suggestion block. When referencing existing code that should be followed, link directly to the relevant
+  code rather than stating a vague location or reference point.
+
+It's not unreasonable that a small pull request can pass review and be approved without any review comments.
 
 ## Severity
 
-Give each finding one of three levels:
+There are three inherent levels of severity:
 
 - **Blocking**: wrong output, data loss, a crash or panic that production can reach, a deadlock or hang, a security
   weakness, a per-event cost that grows with load, such as a lock, a system call, a flush, or a channel send for each
@@ -56,28 +58,28 @@ These findings are never blocking, so put "Not blocking:" at the start of each o
 - A defect that a sibling path already had before the pull request.
 - A cost that the pull request description names, together with how it measures or fixes the cost.
 
-Post nits after all other findings, and post at most three nits in one review. The grouped wording comment that
-"Comments and documentation" describes doesn't count toward this limit.
+Post nits after all other findings, and try limiting the number of nits to somewhere around 3-5. If the same class of
+nit comes up often, try addressing it with a single comment that mentions the different areas where the nit occured.
+Overall, the goal is not to be perfect and note every single thing a review finds, but to ensure that all blocking
+issues are resolved, and that we fix _easy_ problems (non-blocking/nits) and try to leave the areas we touch a little
+better than we found them,
 
 ## What not to flag
 
-Reviewers dismissed these findings as noise in past reviews:
-
 - Formatting and lint problems that `make fmt` and `make check-all` already catch.
-- A missing release note. The release-note check already requires a note or the `changelog/no-changelog` label, and
-  you can't see the labels.
+- A missing release note. The release note check already requires a note or the `changelog/no-changelog` label.
 - In test harness and tooling code, such as `bin/correctness/` and `test/`: production style rules, such as typed
   errors, extra clones, and wide visibility, and missing unit tests for code that a passing test case already runs or
   that a later pull request in the stack connects. Still flag logic bugs in that code.
-- A claim that ADP differs from the Datadog Agent, the trace-agent, or another upstream project, when the repository
-  doesn't show the upstream behavior. Ask one direct question instead.
-- Edge cases that production can't reach, such as a race that needs an implausible timing window, or a hazard in an
-  API that nothing calls yet.
+- A claim that ADP differs from the Datadog Agent, or another upstream project, when the repository doesn't show the
+  upstream behavior. Ask the author directly instead.
+- Edge cases that production can't reach, such as a race that needs an implausible timing window, or a hazard in an API
+  that nothing calls yet.
 - Stricter input validation, by itself. Rejecting input that ADP accepted before can be intentional. If the Datadog
-  Agent may accept that input, ask one question.
+  Agent may accept that input, ask the author directly.
 - Problems in code that the pull request didn't change, and notes that ask for no action. There is one exception: a
-  reference that the pull request's own rename or move leaves stale, such as an old name in a test case. Name its
-  file and line in one sentence of the review body, because you can only comment on lines in the diff.
+  reference that the pull request's own rename or move leaves stale, such as an old name in a test case. Name its file
+  and line in one sentence of the review body, because you can only comment on lines in the diff.
 - Pinned links to upstream source in tests and in comments that show where a behavior comes from.
 
 ## Project-specific review checklist
