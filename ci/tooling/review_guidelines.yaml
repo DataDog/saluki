@@ -161,8 +161,3 @@ files:
     title: GitHub workflow review checklist
     sections:
       - region: code-review.md#github
-
-  - path: .gitlab/codereview_guideline.md
-    title: GitLab CI review checklist
-    sections:
-      - region: code-review.md#gitlab
