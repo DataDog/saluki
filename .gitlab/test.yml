@@ -7,8 +7,23 @@
     KUBERNETES_MEMORY_REQUEST: "16Gi"
     KUBERNETES_MEMORY_LIMIT: "20Gi"
 
+# Writes a JUnit report and uploads it to Datadog Test Optimization, which detects flaky tests.
+.upload-test-results:
+  variables:
+    NEXTEST_PROFILE: "ci"
+  id_tokens:
+    DD_STS_OIDC_TOKEN:
+      aud: dd-sts
+  after_script:
+    - bash ci/tooling/upload-test-results.sh target/nextest/ci/junit.xml
+  artifacts:
+    when: always
+    expire_in: 1 week
+    reports:
+      junit: target/nextest/ci/junit.xml
+
 unit-tests-linux-amd64:
-  extends: .linux-amd64-test-job-heavy
+  extends: [.linux-amd64-test-job-heavy, .upload-test-results]
   stage: test
   script:
     - make test
@@ -21,7 +36,7 @@ check-schema-overlay:
     - git diff --exit-code && test -z "$(git status --porcelain)" || (echo "Schema overlay output not up-to-date. Run 'make build-schema-overlay' locally and commit."; exit 1)
 
 property-tests-linux-amd64:
-  extends: [.linux-amd64-test-job-heavy, .property-tests-memory]
+  extends: [.linux-amd64-test-job-heavy, .property-tests-memory, .upload-test-results]
   stage: test
   script:
     - make test-property
@@ -39,13 +54,13 @@ check-features-linux-amd64:
     - make check-features
 
 unit-tests-linux-arm64:
-  extends: .linux-arm64-test-job-heavy
+  extends: [.linux-arm64-test-job-heavy, .upload-test-results]
   stage: test
   script:
     - make test
 
 property-tests-linux-arm64:
-  extends: [.linux-arm64-test-job-heavy, .property-tests-memory]
+  extends: [.linux-arm64-test-job-heavy, .property-tests-memory, .upload-test-results]
   stage: test
   script:
     - make test-property
