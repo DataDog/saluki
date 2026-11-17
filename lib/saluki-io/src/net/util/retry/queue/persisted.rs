@@ -445,11 +445,14 @@ where
                         "Permanently dropping persisted entry that could not be consumed during eviction.",
                     );
 
-                    // It was still removed to make room, so count it as evicted, as the core Agent does, but with no
-                    // known data points.
                     self.total_on_disk_bytes -= entry.size_bytes;
                     self.entries_dropped += 1;
-                    self.evictions.files_removed += 1;
+
+                    // When the file is gone, it was removed to make room, so count it as evicted, as the core Agent
+                    // does, but with no known data points. A read or delete failure can leave the file in place.
+                    if matches!(tokio::fs::try_exists(&entry.path).await, Ok(false)) {
+                        self.evictions.files_removed += 1;
+                    }
 
                     continue;
                 }
@@ -1117,6 +1120,41 @@ mod tests {
             .expect("should have a valid entry");
         assert_eq!(data, actual);
         assert_eq!(0, files_in_dir(&root_path).await);
+    }
+
+    #[tokio::test]
+    async fn unreadable_entry_left_on_disk_is_not_counted_as_evicted() {
+        let temp_dir = tempfile::tempdir().expect("should not fail to create temporary directory");
+        let root_path = temp_dir.path().to_path_buf();
+
+        // Queue sized to hold only one entry.
+        let mut persisted_queue = PersistedQueue::<FakeData>::from_root_path(PersistedQueueArgs {
+            root_path: root_path.clone(),
+            max_on_disk_bytes: 32,
+            storage_max_disk_ratio: 0.8,
+            disk_usage_retriever: Arc::new(MockDiskUsageRetriever {}),
+            max_age_days: 10,
+        })
+        .await
+        .expect("should not fail to create persisted queue");
+
+        // Replace the first entry's file with a directory, which can be neither read nor removed as a file.
+        let _ = persisted_queue
+            .push(FakeData::random())
+            .await
+            .expect("should not fail to push data");
+        let first_path = persisted_queue.entries[0].path.clone();
+        tokio::fs::remove_file(&first_path).await.unwrap();
+        tokio::fs::create_dir(&first_path).await.unwrap();
+
+        // Evicting it fails, so it's dropped from the queue but not counted as a removed file.
+        let _ = persisted_queue
+            .push(FakeData::random())
+            .await
+            .expect("should not fail to push data");
+        assert_eq!(1, persisted_queue.take_entries_dropped());
+        assert_eq!(PersistedQueueEvictions::default(), persisted_queue.take_evictions());
+        assert!(tokio::fs::try_exists(&first_path).await.unwrap());
     }
 
     #[tokio::test]
