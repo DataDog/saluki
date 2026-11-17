@@ -4,16 +4,10 @@ analysis_mode: logs
 logs:
   # Every record carries a unique `fixture_id`, so records pair even when a gap changes their message or timestamp.
   identity_fields: ["fixture_id"]
-  min_count: 93
+  min_count: 99
   # Every difference ADP shows today, tagged with its gap from the OTLP logs parity plan (DataDog/saluki#2966). Remove
   # an entry in the change that fixes its gap.
   known_differences:
-    - gap: gap/observed-timestamp
-      paths: ["content.@timestamp", "content.otel.timestamp"]
-      kinds: [missing]
-      when:
-        fixture_id: [timestamp-observed-only]
-      reason: ADP doesn't fall back to the observed timestamp.
     - gap: gap/bytes-encoding
       paths: ["content.message"]
       kinds: [value]

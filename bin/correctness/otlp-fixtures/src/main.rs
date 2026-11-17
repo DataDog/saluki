@@ -364,6 +364,14 @@ fn severity_body_fixture() -> Vec<u8> {
     let mut neither = next("timestamp-neither".to_string(), vec![]);
     neither.time_unix_nano = 0;
     records.push(neither);
+    // Nanoseconds are read as signed, so a timestamp past `i64::MAX` wraps to before 1970, from either field.
+    let mut wrapped = next("timestamp-wraps".to_string(), vec![]);
+    wrapped.time_unix_nano = 1 << 63;
+    records.push(wrapped);
+    let mut wrapped_observed = next("timestamp-observed-wraps".to_string(), vec![]);
+    wrapped_observed.time_unix_nano = 0;
+    wrapped_observed.observed_time_unix_nano = u64::MAX;
+    records.push(wrapped_observed);
 
     // gap/value-formatting and gap/bytes-encoding: bodies other than strings use `AsString` in the Agent.
     for (id, body) in [

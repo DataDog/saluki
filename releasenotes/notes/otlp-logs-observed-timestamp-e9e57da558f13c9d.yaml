@@ -1,0 +1,5 @@
+---
+fixes:
+  - |
+    OTLP logs handled natively now fall back to the observed timestamp for ``@timestamp`` and ``otel.timestamp`` when
+    the log's timestamp isn't set, as the Datadog Agent does.

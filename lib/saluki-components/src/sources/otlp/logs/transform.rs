@@ -340,19 +340,24 @@ pub fn transform_log_record(
         );
     }
 
-    if lr.time_unix_nano != 0 {
+    // Fall back to the observed timestamp when the timestamp isn't set. Nanoseconds are read as signed, so a timestamp
+    // past `i64::MAX` wraps to before 1970.
+    let timestamp = if lr.time_unix_nano != 0 {
+        lr.time_unix_nano
+    } else {
+        lr.observed_time_unix_nano
+    };
+    if timestamp != 0 {
+        let nanos = timestamp as i64;
         additional_properties.insert(
             MetaString::from_static("otel.timestamp"),
-            JsonValue::String(lr.time_unix_nano.to_string()),
+            JsonValue::String(nanos.to_string()),
         );
-
-        let secs = (lr.time_unix_nano / 1_000_000_000) as i64;
-        let subnsec = (lr.time_unix_nano % 1_000_000_000) as u32;
-        if let Some(dt) = DateTime::from_timestamp(secs, subnsec) {
-            // Match pattern 2006-01-02T15:04:05.000Z
-            let formatted = dt.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
-            additional_properties.insert(MetaString::from_static("@timestamp"), JsonValue::String(formatted));
-        }
+        // Match the Go layout `2006-01-02T15:04:05.000Z07:00`, in UTC.
+        let formatted = DateTime::from_timestamp_nanos(nanos)
+            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+            .to_string();
+        additional_properties.insert(MetaString::from_static("@timestamp"), JsonValue::String(formatted));
     }
 
     // Message: prefer attributes, else body. An empty message attribute also falls back to the body.
@@ -645,6 +650,66 @@ mod tests {
                 case.span_id.map(|id| json!(id)).as_ref(),
                 "{}: span ID",
                 case.name
+            );
+        }
+    }
+
+    #[test]
+    fn timestamps_fall_back_to_the_observed_timestamp() {
+        // (timestamp, observed timestamp, `otel.timestamp`, `@timestamp`)
+        let cases = [
+            (
+                1_700_499_303_397_999_999,
+                0,
+                Some("1700499303397999999"),
+                Some("2023-11-20T16:55:03.397Z"),
+            ),
+            // The timestamp wins over the observed timestamp, and the observed timestamp fills in when it's 0.
+            (
+                1_700_499_303_397_000_000,
+                1_600_000_000_000_000_000,
+                Some("1700499303397000000"),
+                Some("2023-11-20T16:55:03.397Z"),
+            ),
+            (
+                0,
+                1_700_499_303_397_000_000,
+                Some("1700499303397000000"),
+                Some("2023-11-20T16:55:03.397Z"),
+            ),
+            // Neither is set.
+            (0, 0, None, None),
+            // Nanoseconds are read as signed, so timestamps past `i64::MAX` wrap to before 1970.
+            (
+                1 << 63,
+                0,
+                Some("-9223372036854775808"),
+                Some("1677-09-21T00:12:43.145Z"),
+            ),
+            (0, u64::MAX, Some("-1"), Some("1969-12-31T23:59:59.999Z")),
+        ];
+
+        for (time_unix_nano, observed_time_unix_nano, otel_timestamp, timestamp) in cases {
+            let lr = LogRecord {
+                time_unix_nano,
+                observed_time_unix_nano,
+                ..Default::default()
+            };
+            let log = transform_log_record(lr, &Resource::default(), None, None, None, TagSet::default());
+
+            let props = log.additional_properties();
+            let context = format!("timestamp {}, observed {}", time_unix_nano, observed_time_unix_nano);
+            assert_eq!(
+                props.get("otel.timestamp"),
+                otel_timestamp.map(|ts| json!(ts)).as_ref(),
+                "{}",
+                context
+            );
+            assert_eq!(
+                props.get("@timestamp"),
+                timestamp.map(|ts| json!(ts)).as_ref(),
+                "{}",
+                context
             );
         }
     }
