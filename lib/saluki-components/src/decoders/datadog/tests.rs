@@ -1043,3 +1043,33 @@ fn a_chunk_without_a_priority_has_priority_zero() {
     let decoded = decode_v1_payload(&buf).unwrap();
     assert_eq!(decoded.traces[0].priority, Some(0));
 }
+
+#[test]
+fn invalid_utf8_strings_are_repaired_rather_than_rejected() {
+    // Found by the parity fuzzer: the reference reads strings without validating them, so it accepts the payload
+    // and keeps the bytes. Each invalid byte becomes U+FFFD, as for the v0.7 format's strings.
+    for (field, value) in [(1u64, &b"\xe3heckout"[..]), (2, &b"op\xff\xfe"[..])] {
+        let mut buf = Vec::new();
+        encode::write_map_len(&mut buf, 1).unwrap(); // tracer payload
+        encode::write_uint(&mut buf, 11).unwrap(); // chunks
+        encode::write_array_len(&mut buf, 1).unwrap();
+        encode::write_map_len(&mut buf, 2).unwrap(); // trace chunk
+        encode::write_uint(&mut buf, 6).unwrap(); // traceID
+        encode::write_bin(&mut buf, &[1; 16]).unwrap();
+        encode::write_uint(&mut buf, 4).unwrap(); // spans
+        encode::write_array_len(&mut buf, 1).unwrap();
+        encode::write_map_len(&mut buf, 3).unwrap(); // span
+        encode::write_uint(&mut buf, 4).unwrap(); // spanID
+        encode::write_u64(&mut buf, 7).unwrap();
+        encode::write_uint(&mut buf, 3).unwrap(); // resource
+        encode::write_str(&mut buf, "GET /checkout").unwrap();
+        encode::write_uint(&mut buf, field).unwrap(); // service or name
+        encode::write_str_len(&mut buf, value.len() as u32).unwrap();
+        buf.extend_from_slice(value);
+
+        let decoded = decode_v1_payload(&buf).unwrap();
+        let span = &decoded.traces[0].spans()[0];
+        let actual = if field == 1 { span.service() } else { span.name() };
+        assert_eq!(actual, read::repair_utf8(value), "{value:?}");
+    }
+}

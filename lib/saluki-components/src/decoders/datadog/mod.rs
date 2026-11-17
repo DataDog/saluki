@@ -319,7 +319,7 @@ fn decode_string_table(r: &mut &[u8], strings: &mut StringTable) -> Result<(), D
         if s.is_empty() {
             continue;
         }
-        strings.add(s);
+        strings.add(&s);
     }
     Ok(())
 }
