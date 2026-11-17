@@ -42,7 +42,6 @@ use tracing::{debug, warn};
 
 use super::backend::Realized;
 use super::courier::Courier;
-use super::handle::HandleError;
 use super::spec::{CollectFile, Keep};
 
 /// The file, in a participant's log directory, of the container log of a participant whose processes are all
@@ -374,23 +373,15 @@ impl Sink {
         if let Some(why) = read_failure {
             self.failed(why);
         }
-        match followed {
-            // The follow ends this way when the participant exits.
-            Err(HandleError::Software(e)) => debug!(path, error = %e, "Stopped following a file."),
-            // Without the participant's exit, a harness error means the follow could not run at all.
-            Err(HandleError::Harness(e)) => {
-                let exited = self
-                    .process
-                    .as_ref()
-                    .is_some_and(|(observation, _)| observation.exit().is_some());
-                if exited {
-                    debug!(path, error = %e, "Stopped following a file.");
-                } else {
-                    warn!(path, error = %e, "Failed to follow a file.");
-                    self.failed(e);
-                }
+        // The follow fails when the participant exits, which leaves nothing more to capture. While the participant
+        // runs, a failure means the courier could not run, or could not open or read the file, so the capture stopped.
+        if let Err(e) = followed {
+            if participant.has_exited().await {
+                debug!(path, error = %e, "Stopped following a file.");
+            } else {
+                warn!(path, error = %e, "Failed to follow a file.");
+                self.failed(e.to_string());
             }
-            Ok(()) => {}
         }
         match participant.read_file(path, Instant::now() + LAST_READ_TIME).await {
             Ok(Some(contents)) => {

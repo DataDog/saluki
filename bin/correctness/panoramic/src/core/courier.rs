@@ -96,8 +96,8 @@ impl<'a> Courier<'a> {
     ///
     /// # Errors
     ///
-    /// Returns a software error if the file does not appear within `limit`, and a harness error if the courier cannot
-    /// run or `out` cannot be written.
+    /// Returns a software error if the file does not appear within `limit` or cannot be opened or read, or the
+    /// participant exits, and a harness error if the courier cannot run or `out` cannot be written.
     pub(crate) async fn follow(
         &self, path: &str, limit: Duration, out: &mut (dyn AsyncWrite + Send + Unpin),
     ) -> Result<(), HandleError> {
