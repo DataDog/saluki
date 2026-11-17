@@ -3,8 +3,8 @@
 //! The primary tests are table-driven runs over `testdata/v04_json_cases.json` and `testdata/v01_json_cases.json`. Each
 //! case's expected value is what the trace-agent's receiver decodes from the same body: the fixtures were produced by
 //! running its decoder (Go 1.26.11, the toolchain the Agent pins) on each body, and dumping the resulting tracer
-//! payload or classifying the error as the receiver does. The remaining tests cover the syntax pass, the
-//! nesting limit, and allocation bounds.
+//! payload or classifying the error as the receiver does. The remaining tests cover the syntax pass, the nesting limit,
+//! and allocation bounds.
 
 use base64::{engine::general_purpose, Engine as _};
 use proptest::prelude::*;

@@ -5,9 +5,10 @@
 //! it the relay.
 //!
 //! With [`trace_intake`](ApmConfiguration::trace_intake) set, the source serves `/v1.0/traces`, `/v0.4/traces`,
-//! `/v0.3/traces`, `/v0.2/traces`, and the deprecated `/v0.1/spans` and `/spans` itself, in every media type they take. It emits the traces it decodes on its `traces`
-//! output, and its receiver telemetry on its `metrics` output. Without it, the source has no `metrics` output and emits
-//! nothing on `traces`, and every trace payload is forwarded to the trace-agent.
+//! `/v0.3/traces`, `/v0.2/traces`, and the deprecated `/v0.1/spans` and `/spans` itself, in every media type they take.
+//! It emits the traces it decodes on its `traces` output, and its receiver telemetry on its `metrics` output. Without
+//! it, the source has no `metrics` output and emits nothing on `traces`, and every trace payload is forwarded to the
+//! trace-agent.
 //!
 //! The relay serves `/info` itself, and so owns `Datadog-Agent-State`, the hash of the `/info` body that every
 //! response carries: it replaces the trace-agent's on the responses it forwards.
