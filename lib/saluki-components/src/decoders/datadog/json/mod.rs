@@ -33,7 +33,7 @@ mod de;
 mod scan;
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;
 
 /// Decodes a v0.4 JSON trace payload into unified trace events.
 ///

@@ -15,7 +15,7 @@ use crate::decoders::datadog::{read, DecodedV1};
 
 /// A MessagePack value. Integers use the smallest encoding unless written as `Raw`.
 #[derive(Clone, Debug)]
-enum V {
+pub(in crate::decoders::datadog) enum V {
     Nil,
     Bool(bool),
     Int(i64),
@@ -30,7 +30,7 @@ enum V {
     Raw(Vec<u8>),
 }
 
-fn s(value: &str) -> V {
+pub(in crate::decoders::datadog) fn s(value: &str) -> V {
     V::Str(value.to_string())
 }
 
@@ -49,7 +49,7 @@ fn f64_map(entries: &[(&str, f64)]) -> V {
     V::Map(entries.iter().map(|(k, v)| (s(k), V::F64(*v))).collect())
 }
 
-fn write(out: &mut Vec<u8>, value: &V) {
+pub(in crate::decoders::datadog) fn write(out: &mut Vec<u8>, value: &V) {
     match value {
         V::Nil => encode::write_nil(out).unwrap(),
         V::Bool(b) => encode::write_bool(out, *b).unwrap(),
@@ -80,7 +80,7 @@ fn write(out: &mut Vec<u8>, value: &V) {
     }
 }
 
-fn encode_value(value: &V) -> Vec<u8> {
+pub(in crate::decoders::datadog) fn encode_value(value: &V) -> Vec<u8> {
     let mut out = Vec::new();
     write(&mut out, value);
     out
@@ -106,7 +106,7 @@ fn decode_err(chunks: Vec<Vec<V>>) -> DecodeError {
     decode_v04_payload(&payload(chunks)).expect_err("payload should fail to decode")
 }
 
-fn ms(value: &str) -> MetaString {
+pub(in crate::decoders::datadog) fn ms(value: &str) -> MetaString {
     MetaString::from(value)
 }
 
@@ -114,7 +114,7 @@ fn attr<'a>(span: &'a Span, key: &str) -> Option<&'a AttributeValue> {
     span.attributes.get(key)
 }
 
-fn string_attr(value: &str) -> AttributeValue {
+pub(in crate::decoders::datadog) fn string_attr(value: &str) -> AttributeValue {
     AttributeValue::String(ms(value))
 }
 

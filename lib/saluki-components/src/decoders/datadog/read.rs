@@ -405,22 +405,25 @@ pub const V0_MAX_COLLECTION_SIZE: u32 = 500_000;
 /// [`V0_MAX_COLLECTION_SIZE`] is too long, and a count over the remaining bytes is short input.
 pub fn v0_read_array_len(r: &mut &[u8], context: &'static str) -> Result<u32, DecodeError> {
     let len = rmp::decode::read_array_len(r).map_err(mp(context))?;
-    v0_check_header_len(len, r, context)
+    v0_check_header_len(len, V0_MAX_COLLECTION_SIZE, r, context)
+}
+
+/// Reads the v0.5 dictionary's array header as the reference's `safeReadDictionaryHeaderBytes` does: as
+/// [`v0_read_array_len`], but with the string table's larger limit, [`MAX_SIZE`] (`maxStringTableSize`).
+pub fn v0_read_dictionary_len(r: &mut &[u8], context: &'static str) -> Result<u32, DecodeError> {
+    let len = rmp::decode::read_array_len(r).map_err(mp(context))?;
+    v0_check_header_len(len, MAX_SIZE, r, context)
 }
 
 /// Reads a map header as the trace-agent does, with the same checks as [`v0_read_array_len`].
 pub fn v0_read_map_len(r: &mut &[u8], context: &'static str) -> Result<u32, DecodeError> {
     let len = rmp::decode::read_map_len(r).map_err(mp(context))?;
-    v0_check_header_len(len, r, context)
+    v0_check_header_len(len, V0_MAX_COLLECTION_SIZE, r, context)
 }
 
-fn v0_check_header_len(len: u32, remaining: &[u8], context: &'static str) -> Result<u32, DecodeError> {
-    if len > V0_MAX_COLLECTION_SIZE {
-        return Err(DecodeError::OversizeHeader {
-            context,
-            len,
-            max: V0_MAX_COLLECTION_SIZE,
-        });
+fn v0_check_header_len(len: u32, max: u32, remaining: &[u8], context: &'static str) -> Result<u32, DecodeError> {
+    if len > max {
+        return Err(DecodeError::OversizeHeader { context, len, max });
     }
     if u64::from(len) > remaining.len() as u64 {
         return Err(DecodeError::ShortBytes { context });

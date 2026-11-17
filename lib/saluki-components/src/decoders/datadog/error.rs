@@ -72,6 +72,13 @@ pub enum DecodeError {
         len: usize,
     },
 
+    /// A v0.5 string reference was past the end of the payload's dictionary.
+    #[snafu(display("dictionary index {index} out of range"))]
+    DictionaryIndexOutOfRange {
+        /// The out-of-range index that was referenced.
+        index: u32,
+    },
+
     /// An attribute map's flat array length was not a multiple of three (`key`, `type`, `value`).
     #[snafu(display("invalid attribute array length {len} - must be a multiple of 3"))]
     InvalidAttributeArrayLen {

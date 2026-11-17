@@ -153,6 +153,8 @@ func TestOracle(t *testing.T) {
 			v = v02
 		case "v0.3":
 			v = v03
+		case "v0.5":
+			v = v05
 		}
 		res := map[string]any{"name": c.Name, "media_type": getMediaType(req)}
 		tp, err := r.decodeConvertedTracerPayload(v, req, stubCID{}, "", "", "")
