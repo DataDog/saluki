@@ -69,12 +69,12 @@ unit-tests-windows-amd64:
       powershell.exe -NoProfile -NonInteractive -File c:\mnt\ci\tooling\windows-unit-tests.ps1
     - If ($lastExitCode -ne "0") { exit "$lastExitCode" }
   after_script:
-    - powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ci\tooling\windows-upload-test-results.ps1 -JUnitPath target\windows-ci\nextest\ci\junit.xml
+    - powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ci\tooling\windows-upload-test-results.ps1 -JUnitPath target\nextest\ci\junit.xml
   artifacts:
     when: always
     expire_in: 1 week
     reports:
-      junit: target/windows-ci/nextest/ci/junit.xml
+      junit: target/nextest/ci/junit.xml
 
 test-integration-windows-amd64:
   extends: .windows-amd64-test-job
