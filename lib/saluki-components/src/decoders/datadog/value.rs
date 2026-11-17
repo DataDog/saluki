@@ -28,8 +28,7 @@ pub fn read_streaming_string(
         return Err(read::missing_streaming_string(context));
     }
     if read::peek_is_str(r) {
-        let s = read::read_str(r, context)?;
-        let index = strings.add(&s);
+        let index = strings.add(read::read_str_bytes(r, context)?);
         strings.get(index)
     } else {
         let index = read::read_u32(r, context)?;
@@ -76,8 +75,7 @@ fn harvest_unknown_field_depth(
     }
 
     if read::peek_is_str(r) {
-        let s = read::read_str(r, context)?;
-        strings.add(&s);
+        strings.add(read::read_str_bytes(r, context)?);
     } else if read::peek_is_array(r) {
         let len = read::read_array_len(r, context)?;
         for _ in 0..len {

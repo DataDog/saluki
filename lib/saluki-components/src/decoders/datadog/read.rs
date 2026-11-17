@@ -9,7 +9,6 @@
 //! The `v0_*` helpers reproduce the trace-agent's v0.x reads, including which numeric types they
 //! tolerate and which failures count as short input.
 
-use std::borrow::Cow;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::fmt::Display;
@@ -303,17 +302,13 @@ pub fn read_bool(r: &mut &[u8], context: &'static str) -> Result<bool, DecodeErr
     rmp::decode::read_bool(r).map_err(mp(context))
 }
 
-/// Reads a string, borrowing from the input for the lifetime of the underlying buffer.
+/// Reads a string's bytes, borrowing from the input for the lifetime of the underlying buffer.
 ///
-/// As the reference's `msgp.ReadStringBytes`, the bytes aren't validated as UTF-8: invalid ones are repaired, each
-/// becoming U+FFFD (see [`repair_utf8`]), rather than failing the payload.
-pub fn read_str<'a>(r: &mut &'a [u8], context: &'static str) -> Result<Cow<'a, str>, DecodeError> {
+/// As the reference's `msgp.ReadStringBytes`, the bytes aren't validated as UTF-8: the
+/// [string table](super::string_table::StringTable) repairs invalid ones rather than failing the payload.
+pub fn read_str_bytes<'a>(r: &mut &'a [u8], context: &'static str) -> Result<&'a [u8], DecodeError> {
     let len = rmp::decode::read_str_len(r).map_err(mp(context))?;
-    let bytes = take(r, len as usize, context)?;
-    Ok(match simdutf8::basic::from_utf8(bytes) {
-        Ok(s) => Cow::Borrowed(s),
-        Err(_) => Cow::Owned(repair_utf8(bytes)),
-    })
+    take(r, len as usize, context)
 }
 
 /// Reads a binary blob, copying it into an owned `Vec<u8>`.
