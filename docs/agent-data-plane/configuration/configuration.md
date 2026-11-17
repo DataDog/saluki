@@ -713,6 +713,7 @@ default values.
 | `logs_enabled`                                                  | Enable the logs agent                           |
 | `min_tls_version`                                               | Minimum TLS version for HTTPS connections       |
 | `multi_region_failover.enabled`                                 | Enable multi-region failover mode               |
+| `otlp_config.logs.enabled`                                      | Enable OTLP logs ingestion                      |
 | `secret_backend_command`                                        | Path to the Agent secret-fetch executable       |
 | `secret_refresh_on_api_key_failure_interval`                    | Minutes between secret refreshes after a 403    |
 | `serializer_zstd_compressor_level`                              | Zstd compression level (Agent)                  |
@@ -1179,6 +1180,16 @@ is enabled.
 | `multi_region_failover.site`             | Datadog site for the failover region, used as `https://app.mrf.<site>`.    | unset   |
 | `multi_region_failover.dd_url`           | Explicit failover intake URL. Takes precedence over `site` when set.       | unset   |
 
+### `otlp_config.logs.enabled`
+
+The core Agent serves OTLP logs only when `otlp_config.logs.enabled` is `true`. Otherwise its
+OTLP receiver doesn't serve the logs service, so clients get gRPC `Unimplemented` or HTTP 404.
+When it's `true` but `logs_enabled` isn't, the Agent logs an error and starts no OTLP
+receiver at all.
+
+ADP reads `otlp_config.logs.enabled`, but doesn't yet gate on it: it accepts OTLP logs whenever
+any OTLP signal is enabled, natively and in proxy mode.
+
 ### `secret_backend_command`
 
 ADP resolves no secrets of its own. The core Agent runs `secret_backend_command` to resolve `ENC[...]`
@@ -1568,7 +1579,6 @@ The following settings work in ADP with the same behavior as the core agent.
 | `observability_pipelines_worker.metrics.url`                                               | OPW metrics intake URL                             |
 | `observability_pipelines_worker.metrics.use_v3_api.series`                                 | Use V3 series for OPW                              |
 | `origin_detection_unified`                                                                 | Unified origin detection mode                      |
-| `otlp_config.logs.enabled`                                                                 | otlp_config.logs.enabled                           |
 | `otlp_config.metrics.delta_ttl`                                                            | TTL (seconds) for cached delta-conversion points   |
 | `otlp_config.metrics.enabled`                                                              | otlp_config.metrics.enabled                        |
 | `otlp_config.metrics.histograms.mode`                                                      | OTLP histogram bucket reporting mode               |

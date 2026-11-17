@@ -3234,9 +3234,19 @@ inventory:
       processes the logs and applies this key.
 
   otlp_config.logs.enabled:
-    support: full
+    support: partial
+    warn: true
     pipelines: [otlp]
-    description: "otlp_config.logs.enabled"
+    description: "Enable OTLP logs ingestion"
+    documentation: |-
+      The core Agent serves OTLP logs only when `otlp_config.logs.enabled` is `true`. Otherwise its
+      OTLP receiver doesn't serve the logs service, so clients get gRPC `Unimplemented` or HTTP 404.
+      When it's `true` but `logs_enabled` isn't, the Agent logs an error and starts no OTLP
+      receiver at all.
+
+      ADP reads `otlp_config.logs.enabled`, but doesn't yet gate on it: it accepts OTLP logs whenever
+      any OTLP signal is enabled, natively and in proxy mode.
+    issue: "#2969"
 
   otlp_config.logs.infra_attributes.tags_as_ddtags:
     support: none
