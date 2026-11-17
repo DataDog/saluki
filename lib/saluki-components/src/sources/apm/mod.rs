@@ -4,11 +4,11 @@
 //! does not handle itself are forwarded to the relocated trace-agent, so the documentation, metrics, and logs still call
 //! it the relay.
 //!
-//! With [`trace_intake`](ApmConfiguration::trace_intake) set, the source serves `/v1.0/traces`, `/v0.4/traces`,
-//! `/v0.3/traces`, `/v0.2/traces`, and the deprecated `/v0.1/spans` and `/spans` itself, in every media type they take.
-//! It emits the traces it decodes on its `traces` output, and its receiver telemetry on its `metrics` output. Without
-//! it, the source has no `metrics` output and emits nothing on `traces`, and every trace payload is forwarded to the
-//! trace-agent.
+//! With [`trace_intake`](ApmConfiguration::trace_intake) set, the source serves `/v1.0/traces`, `/v0.5/traces`,
+//! `/v0.4/traces`, `/v0.3/traces`, `/v0.2/traces`, and the deprecated `/v0.1/spans` and `/spans` itself, in every media
+//! type they take. It emits the traces it decodes on its `traces` output, and its receiver telemetry on its `metrics`
+//! output. Without it, the source has no `metrics` output and emits nothing on `traces`, and every trace payload is
+//! forwarded to the trace-agent.
 //!
 //! The relay serves `/info` itself, and so owns `Datadog-Agent-State`, the hash of the `/info` body that every
 //! response carries: it replaces the trace-agent's on the responses it forwards.
@@ -685,6 +685,10 @@ impl ApmAPIHandler {
         Self::handle_traces(state, EndpointVersion::V04, request).await
     }
 
+    async fn handle_traces_v05(state: State<ApmState>, request: AxumRequest) -> Response {
+        Self::handle_traces(state, EndpointVersion::V05, request).await
+    }
+
     async fn handle_traces_v1(state: State<ApmState>, request: AxumRequest) -> Response {
         Self::handle_traces(state, EndpointVersion::V10, request).await
     }
@@ -752,6 +756,7 @@ impl APIHandler for ApmAPIHandler {
                 .route("/v0.2/traces", any(Self::handle_traces_v02))
                 .route("/v0.3/traces", any(Self::handle_traces_v03))
                 .route("/v0.4/traces", any(Self::handle_traces_v04))
+                .route("/v0.5/traces", any(Self::handle_traces_v05))
                 .route("/v1.0/traces", any(Self::handle_traces_v1))
         } else {
             with_agent_headers
@@ -878,6 +883,8 @@ mod tests {
         // Empty v0.4 payloads: an array with no traces.
         const MSGPACK: &[u8] = &[0x90];
         const JSON: &[u8] = b"[]";
+        // An empty v0.5 payload: an empty dictionary and no traces.
+        const V05: &[u8] = &[0x92, 0x90, 0x90];
         const RATES: &str = "{\"rate_by_service\":{}}\n";
         let (router, _traces) = native_intake_router(test_info());
 
@@ -935,6 +942,22 @@ mod tests {
                 Some("application/msgpack"),
                 MSGPACK,
                 StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                None,
+            ),
+            // v0.5 takes its dictionary payload in any media type, and nothing else.
+            (
+                "/v0.5/traces",
+                Some("application/msgpack"),
+                V05,
+                StatusCode::OK,
+                Some(RATES),
+            ),
+            ("/v0.5/traces", None, V05, StatusCode::OK, Some(RATES)),
+            (
+                "/v0.5/traces",
+                Some("application/json"),
+                JSON,
+                StatusCode::BAD_REQUEST,
                 None,
             ),
         ];
