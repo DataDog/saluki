@@ -577,15 +577,37 @@ fn any_value_depth_cap_enforced() {
 #[test]
 fn oversize_array_header_rejected() {
     let mut buf = Vec::new();
-    encode::write_array_len(&mut buf, read::MAX_SIZE + 1).unwrap();
+    encode::write_array_len(&mut buf, read::MAX_COLLECTION_SIZE + 1).unwrap();
     let mut r = buf.as_slice();
     let err = read::read_array_len(&mut r, "test").unwrap_err();
     assert!(matches!(err, DecodeError::OversizeHeader { .. }));
 }
 
 #[test]
+fn collections_are_limited_as_the_reference_limits_them() {
+    // Found by the parity fuzzer: the reference checks a count against its limit before the bytes that remain, at
+    // 500,000 for every collection but the string table, which allows 25,000,000 strings. Over the limit is a
+    // decoding error, under it but past the bytes that remain is short input.
+    let over = read::MAX_COLLECTION_SIZE + 1;
+    let mut map = Vec::new();
+    encode::write_map_len(&mut map, over).unwrap();
+    let err = read::read_map_len(&mut map.as_slice(), "test").unwrap_err();
+    assert!(matches!(err, DecodeError::OversizeHeader { .. }), "{err:?}");
+    let mut array = Vec::new();
+    encode::write_array_len(&mut array, over).unwrap();
+    let err = read::read_array_len(&mut array.as_slice(), "test").unwrap_err();
+    assert!(matches!(err, DecodeError::OversizeHeader { .. }), "{err:?}");
+
+    // A string table of more strings than that, in a payload too short for them.
+    let mut payload = vec![0x81, 0x01];
+    payload.extend(array);
+    let err = decode_v1_payload(&payload).unwrap_err();
+    assert!(matches!(err, DecodeError::ShortBytes { .. }), "{err:?}");
+}
+
+#[test]
 fn array_count_beyond_remaining_bytes_is_short_input() {
-    // Under MAX_SIZE, but more elements than bytes remain: the reference returns `msgp.ErrShortBytes`.
+    // Under MAX_COLLECTION_SIZE, but more elements than bytes remain: the reference returns `msgp.ErrShortBytes`.
     let mut buf = Vec::new();
     encode::write_array_len(&mut buf, 1000).unwrap();
     encode::write_uint(&mut buf, 0).unwrap();
