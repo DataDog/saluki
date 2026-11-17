@@ -1,10 +1,12 @@
 //! Connects the trace pipeline to the core Agent's Remote Configuration service.
 //!
 //! The Agent supplies trace sampling settings (`APM_SAMPLING`) and mappings from trace concepts such
-//! as HTTP status to attribute names (`APM_SEMANTIC_CORE_DD`). With a local trace pipeline, ADP
-//! subscribes to enabled products through the remote agent runtime's Remote Configuration client,
-//! which is only available in connected mode with Remote Configuration enabled. Without a
-//! subscription, components use configured sampling settings and the mappings embedded in ADP.
+//! as HTTP status to attribute names (`APM_SEMANTIC_CORE_DD`). ADP subscribes to enabled products
+//! through the remote agent runtime's Remote Configuration client, which is only available in
+//! connected mode with Remote Configuration enabled: sampling settings with a local trace pipeline,
+//! and mappings with a local trace pipeline or the APM relay, whose `/info` reports peer tags
+//! derived from them. Without a subscription, components use configured sampling settings and the
+//! mappings embedded in ADP.
 
 use agent_data_plane_config::SalukiConfiguration;
 use datadog_agent_apm::{sampling::TraceSamplingSubscription, semantics::SemanticRegistryProvider};
@@ -19,7 +21,7 @@ pub(crate) struct RcProducts {
     /// Whether to request trace sampling settings.
     pub sampling: bool,
 
-    /// Whether to request OTLP trace attribute mappings.
+    /// Whether to request trace attribute mappings.
     pub semantics: bool,
 }
 
@@ -38,17 +40,19 @@ impl RcProducts {
 
 /// Chooses which trace products to subscribe to from `config`.
 ///
-/// Subscriptions require a local trace pipeline and the corresponding product switch. Connected mode and the global
-/// Remote Configuration switch are checked by the remote agent runtime.
+/// Each subscription requires the corresponding product switch. Sampling settings also require a local trace pipeline,
+/// and attribute mappings a local trace pipeline or the APM relay, as the peer tags on `/info` follow them like the
+/// trace-agent's do. Connected mode and the global Remote Configuration switch are checked by the remote agent runtime.
 pub(crate) fn enabled_products(config: &SalukiConfiguration) -> RcProducts {
     let dp = DataPlaneConfiguration::from_configuration(config);
-    if !dp.traces_pipeline_required() {
+    let traces_pipeline = dp.traces_pipeline_required();
+    if !traces_pipeline && !dp.apm_enabled() {
         return RcProducts::NONE;
     }
 
     let rc = &config.domains.remote_configuration;
     RcProducts {
-        sampling: rc.apm_sampling_enabled,
+        sampling: traces_pipeline && rc.apm_sampling_enabled,
         semantics: rc.apm_semantics_enabled,
     }
 }
@@ -109,6 +113,7 @@ mod tests {
         otlp: bool,
         otlp_proxy_metrics: bool,
         otlp_proxy_traces: bool,
+        apm: bool,
         expected: RcProducts,
     }
 
@@ -133,11 +138,12 @@ mod tests {
         otlp: true,
         otlp_proxy_metrics: false,
         otlp_proxy_traces: false,
+        apm: false,
         expected: BOTH,
     };
 
     #[test]
-    fn enabled_products_requires_a_product_key_and_the_traces_pipeline() {
+    fn enabled_products_requires_a_product_key_and_a_consumer() {
         let cases = [
             Case { name: "all on", ..ON },
             Case {
@@ -176,6 +182,33 @@ mod tests {
                 otlp_proxy_metrics: true,
                 ..ON
             },
+            Case {
+                name: "apm relay without traces pipeline: semantics only",
+                otlp: false,
+                apm: true,
+                expected: SEMANTICS,
+                ..ON
+            },
+            Case {
+                name: "apm relay with otlp traces proxied: semantics only",
+                otlp_proxy_traces: true,
+                apm: true,
+                expected: SEMANTICS,
+                ..ON
+            },
+            Case {
+                name: "apm relay with semantics key off",
+                otlp: false,
+                apm: true,
+                semantics: false,
+                expected: RcProducts::NONE,
+                ..ON
+            },
+            Case {
+                name: "apm relay with traces pipeline",
+                apm: true,
+                ..ON
+            },
         ];
 
         for case in cases {
@@ -183,6 +216,7 @@ mod tests {
             config.domains.remote_configuration.apm_sampling_enabled = case.sampling;
             config.domains.remote_configuration.apm_semantics_enabled = case.semantics;
             config.control.otlp = case.otlp;
+            config.control.apm = case.apm;
             // OTLP needs at least one signal to run.
             config.domains.otlp.receiver.metrics_enabled = true;
             config.domains.otlp.proxy.metrics_enabled = case.otlp_proxy_metrics;

@@ -576,6 +576,8 @@ pub enum HttpStatusMatcher {
 pub enum HttpBodyMatcher {
     /// Assertion passes when the response body equals this value exactly.
     Equal(String),
+    /// Assertion passes when the response body contains this value.
+    Contains(String),
 }
 
 impl CaseConfig for IntegrationConfig {

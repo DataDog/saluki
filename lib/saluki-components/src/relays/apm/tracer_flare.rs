@@ -108,6 +108,11 @@ impl TracerFlareProxy {
         })
     }
 
+    /// Returns the API key flares are sent with, shared: a refresh through this proxy updates every clone.
+    pub(super) fn api_key(&self) -> ApiKeyCell {
+        self.api_key.clone()
+    }
+
     /// Replaces the API key flares are sent with.
     pub(super) fn refresh_api_key(&self, api_key: &str) {
         self.api_key.refresh(API_KEY_SOURCE, api_key);

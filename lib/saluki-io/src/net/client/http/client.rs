@@ -300,6 +300,18 @@ impl HttpClientBuilder {
         self
     }
 
+    /// Sets an AF_VSOCK address to route all connections through.
+    ///
+    /// When set, the client will connect to this address instead of performing DNS resolution and TCP connection.
+    /// The URI host is ignored—all requests are sent to the configured address.
+    ///
+    /// Defaults to unset (TCP connections via DNS).
+    #[cfg(target_os = "linux")]
+    pub fn with_vsock_addr(mut self, addr: tokio_vsock::VsockAddr) -> Self {
+        self.connector_builder = self.connector_builder.with_vsock_addr(addr);
+        self
+    }
+
     /// Sets the TLS configuration.
     ///
     /// A TLS configuration builder is provided to allow for more advanced configuration of the TLS connection.

@@ -310,7 +310,7 @@ Verifies a pattern does NOT appear in the logs for a duration.
 
 #### `http_check`
 
-Probes an HTTP or HTTPS endpoint and asserts on the response status code, and optionally on the response body. HTTPS is supported with optional certificate verification skipping for self-signed certificates. The status matcher accepts either an "equal" or "not equal" variant; the latter is useful for asserting that a route is registered without having to know what status code the endpoint would return. The optional body matcher accepts an "equal" variant, which requires the response body to match the value exactly; when set, the check passes only once both the status and the body match.
+Probes an HTTP or HTTPS endpoint and asserts on the response status code, and optionally on the response body. HTTPS is supported with optional certificate verification skipping for self-signed certificates. The status matcher accepts either an "equal" or "not equal" variant; the latter is useful for asserting that a route is registered without having to know what status code the endpoint would return. The optional body matcher accepts an "equal" variant, which requires the response body to match the value exactly, or a "contains" variant, which requires the response body to contain the value; when set, the check passes only once both the status and the body match.
 
 `insecure_skip_verify` disables only verification of the server certificate; it does not supply a client certificate. As a result, `http_check` cannot probe ADP privileged routes, which require an authenticated client identity. Direct authenticated CLI operations through [`adp_cli`](#adp_cli) are the supported integration path for privileged operations.
 
@@ -337,6 +337,15 @@ Probes an HTTP or HTTPS endpoint and asserts on the response status code, and op
     equal: 200
   body:                          # Optional: compare the response body exactly
     equal: "OK\n"
+  timeout: 30s
+
+# Assert the response body contains a value.
+- assertion: http_check
+  endpoint: "http://localhost:8126/info"
+  status:
+    equal: 200
+  body:
+    contains: "\"/v0.4/traces\""
   timeout: 30s
 ```
 
