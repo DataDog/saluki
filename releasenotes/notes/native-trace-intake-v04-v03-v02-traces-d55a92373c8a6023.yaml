@@ -5,7 +5,6 @@ features:
     ``/v1.0/traces``. As the trace-agent does, ``/v0.4/traces`` answers with the rates by service, ``/v0.3/traces``
     answers ``OK``, and ``/v0.2/traces`` rejects MessagePack with ``415 Unsupported Media Type``. The tracer's language,
     language version and tracer version come from the ``Datadog-Meta-*`` headers, and its container from the request.
-    JSON payloads on these endpoints are still forwarded to the trace-agent.
   - |
     The native trace intake counts payloads that end early under ``reason:msgp_short_bytes`` in
     ``datadog.trace_agent.normalizer.traces_dropped``, as the trace-agent does, and answers them with the trace-agent's
