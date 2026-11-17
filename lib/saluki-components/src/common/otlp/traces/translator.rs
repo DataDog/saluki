@@ -17,7 +17,7 @@ use stringtheory::MetaString;
 
 use crate::common::datadog::SAMPLING_PRIORITY_METRIC_KEY;
 use crate::common::otlp::origin::OtlpOriginTagResolver;
-use crate::common::otlp::source::resource_attributes_to_source;
+use crate::common::otlp::source::resolve_source_from_attributes;
 use crate::common::otlp::traces::transform::{
     bytes_to_hex_lowercase, get_otel_container_id, get_otel_env, get_otel_version, normalize_peer_service_tags,
     otel_span_to_dd_span, otel_span_to_dd_span_v1, otlp_value_to_string, SpanConversion, SpanNaming,
@@ -180,7 +180,7 @@ fn resolve_hostname(
             .unwrap_or_default();
     }
 
-    match resource_attributes_to_source(attributes) {
+    match resolve_source_from_attributes(attributes) {
         Some(source) if source.kind == SourceKind::Hostname => MetaString::from_interner(&source.identifier, interner),
         Some(_) => MetaString::default(),
         None => default_hostname.clone(),

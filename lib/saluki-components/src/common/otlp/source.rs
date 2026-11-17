@@ -68,7 +68,7 @@ static GCP_CLOUD_RUN_JOB_RESOURCE: LazyLock<Regex> = LazyLock::new(|| {
 ///
 /// Returns `None` when no source can be determined, and also for a GCP Cloud Run or Cloud Functions resource whose
 /// identity is incomplete. Callers decide whether to fall back to a default hostname; see [`is_gcp_serverless`].
-pub fn resource_attributes_to_source(attributes: &[KeyValue]) -> Option<Source> {
+pub fn resolve_source_from_attributes(attributes: &[KeyValue]) -> Option<Source> {
     if let Some(source) = azure_functions_source(attributes) {
         return Some(source);
     }
@@ -437,7 +437,7 @@ mod tests {
     }
 
     fn resolve(entries: &[(&str, &str)]) -> Option<(SourceKind, String)> {
-        resource_attributes_to_source(&attrs(entries)).map(|source| (source.kind, source.identifier))
+        resolve_source_from_attributes(&attrs(entries)).map(|source| (source.kind, source.identifier))
     }
 
     const FUNCTION_ARN: &str = "arn:aws:lambda:us-east-1:123456789012:function:orders";
