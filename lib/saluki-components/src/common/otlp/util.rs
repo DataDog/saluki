@@ -170,8 +170,9 @@ pub fn extract_container_tags_from_resource_attributes(attributes: &[otlp_common
         let value = kv.value.as_ref().and_then(|v| v.value.as_ref());
 
         // Semantic conventions. `container.image.tags` is mapped here rather than in
-        // `CONTAINER_MAPPINGS`, which traces also use: trace resource arrays reach container-tag
-        // extraction as JSON strings, so traces can't read its first element.
+        // `CONTAINER_MAPPINGS`, which traces also use: the typed trace attributes stringify arrays,
+        // so traces resolve this key from the raw attributes in
+        // [`resolve_otlp_trace_container_tags`] instead.
         let mapped = match CONTAINER_MAPPINGS.get(kv.key.as_str()) {
             Some(datadog_key) => non_empty_string(value).map(|s_val| (*datadog_key, s_val)),
             None if kv.key == CONTAINER_IMAGE_TAGS => first_element_or_string(value).map(|s_val| ("image_tag", s_val)),
@@ -231,9 +232,12 @@ pub fn extract_trace_container_tags(
 ///
 /// A tag's source and the order of the attributes decide its value: a semantic convention wins over a
 /// `datadog.container.tag.` attribute, which wins over a pre-mapped Datadog tag, and the first valid value wins among
-/// attributes of the same source. The typed map has lost the order and the arrays, so semantic conventions are
-/// resolved from `attributes`. Custom and pre-mapped tags can't tie across keys, because their key names the tag, so
-/// the typed map resolves them.
+/// attributes of the same source, as the reference's consuming trace path does. The metrics and logs extractor,
+/// [`extract_container_tags_from_resource_attributes`], keeps the last semantic-convention value instead: the
+/// reference's non-consuming variant reads its attributes from an unordered map, so it defines no order for ties.
+/// The two rules are meant to differ, so don't align them. The typed map has lost the order and the arrays, so
+/// semantic conventions are resolved from `attributes`. Custom and pre-mapped tags can't tie across keys, because
+/// their key names the tag, so the typed map resolves them.
 pub fn resolve_otlp_trace_container_tags(
     attributes: &[otlp_common::KeyValue], typed_attributes: &FastHashMap<MetaString, AttributeValue>,
 ) -> Vec<MetaString> {
@@ -249,7 +253,18 @@ pub fn resolve_otlp_trace_container_tags(
             None => continue,
         };
         if let Some(tag_value) = tag_value {
-            semantic.entry(tag_key).or_insert(tag_value);
+            // A scalar string the typed map no longer holds was replaced by the enrichment step.
+            // Resolve that attribute from the typed map instead, so the enriched value stays and the tags
+            // can't disagree with `Trace::attributes`. Arrays aren't enriched: the typed map holds their
+            // stringified form, which never equals the selected element.
+            let enriched = matches!(value, Some(Value::StringValue(_)))
+                && matches!(
+                    typed_attributes.get(kv.key.as_str()),
+                    Some(AttributeValue::String(enriched)) if enriched.as_ref() != tag_value
+                );
+            if !enriched {
+                semantic.entry(tag_key).or_insert(tag_value);
+            }
         }
     }
     for (tag_key, tag_value) in semantic {

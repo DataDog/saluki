@@ -1309,6 +1309,40 @@ mod tests {
         );
     }
 
+    #[test]
+    fn translate_spans_keeps_the_enriched_value_of_an_overwritten_convention_tag() {
+        // A workload tag can take the name of a semantic-convention key, replacing the sender's value in the typed
+        // attributes. The resolved container tags must keep the enriched value, so they can't disagree with
+        // `Trace::attributes`.
+        let provider = TestWorkloadProvider::with_entity(
+            EntityId::Container(MetaString::from("abc123")),
+            &["cloud.region:enriched"],
+        );
+        let rs = build_resource_spans(
+            vec![
+                string_kv("container.id", "abc123"),
+                string_kv("cloud.region", "sender-r"),
+            ],
+            vec![span([1u8; 16], [1u8; 8], vec![])],
+        );
+
+        let traces = translate_with_enrichment(provider, ContainerTagPromotion::Off, true, rs);
+        assert_eq!(traces.len(), 1);
+
+        assert_eq!(attr(&traces[0], "cloud.region").as_deref(), Some("enriched"));
+        let tags: Vec<&str> = traces[0]
+            .payload
+            .resolved_container_tags()
+            .iter()
+            .map(AsRef::as_ref)
+            .collect();
+        assert!(tags.contains(&"region:enriched"), "got {tags:?}");
+        assert!(
+            !tags.iter().any(|tag| tag.starts_with("region:sender-r")),
+            "got {tags:?}"
+        );
+    }
+
     /// Returns a provider holding one convention tag and one custom tag for the given container.
     fn provider_for_container() -> TestWorkloadProvider {
         TestWorkloadProvider::with_entity(
