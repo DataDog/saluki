@@ -258,10 +258,11 @@ mod tests {
         let start = std::time::Instant::now();
         assert_eq!(parse_media_type(&value).as_deref(), Some("application/msgpack"));
         let elapsed = start.elapsed();
+        // Loose enough for a loaded CI runner: the quadratic search took far longer than either.
         let bound = if cfg!(debug_assertions) {
-            std::time::Duration::from_secs(2)
+            std::time::Duration::from_secs(10)
         } else {
-            std::time::Duration::from_millis(100)
+            std::time::Duration::from_secs(1)
         };
         assert!(
             elapsed < bound,

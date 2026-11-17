@@ -21,12 +21,15 @@ fi
 
 printf '{"Replace": {"%s": "%s"}}\n' "$agent/pkg/trace/api/oracle_test.go" "$here/oracle_test.go" >"$work/overlay.json"
 
+fixtures="$saluki/lib/saluki-components/src/decoders/datadog/testdata"
 python3 -I "$here/v04_json_cases.py" cases >"$work/v04_json_in.json"
 (
   cd "$agent/pkg/trace"
-  GOTOOLCHAIN="go$go_version" ORACLE_IN="$work/v04_json_in.json" ORACLE_OUT="$work/v04_json_out.json" \
+  GOTOOLCHAIN="go$go_version" GOFLAGS=-mod=readonly \
+    ORACLE_IN="$work/v04_json_in.json" ORACLE_OUT="$work/v04_json_out.json" \
     go test -tags test -count=1 -overlay "$work/overlay.json" -run '^TestOracle$' ./api
 )
-python3 -I "$here/v04_json_cases.py" fixture "$work/v04_json_out.json" \
-  >"$saluki/lib/saluki-components/src/decoders/datadog/testdata/v04_json_cases.json"
+# Written whole, then moved into place, so that a failure leaves the committed fixture as it was.
+python3 -I "$here/v04_json_cases.py" fixture "$work/v04_json_out.json" >"$work/v04_json_cases.json"
+mv "$work/v04_json_cases.json" "$fixtures/v04_json_cases.json"
 echo "Regenerated v04_json_cases.json with the trace-agent at $(git -C "$agent" rev-parse --short HEAD), Go $go_version."
