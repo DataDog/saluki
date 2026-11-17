@@ -63,10 +63,10 @@ fn assert_cases(rules: &[LogsProcessingRule], cases: Cases<'_>) {
     }
 }
 
-// The cases in the `agent_*` tests are ported from the Agent's processor tests (`exclusionTests`, `inclusionTests`,
-// `exclusionInclusionTests`, and `masksTests` in `comp/logs-library/processor/processor_test.go`), at
-// DataDog/datadog-agent@e0c8d8d93be. Their inputs are ASCII, so the differences between the regular expression dialects
-// of Go and the `regex` crate don't affect them.
+// The cases in the `agent_*` tests are ported from the logs processor tests of the Datadog Agent (`exclusionTests`,
+// `inclusionTests`, `exclusionInclusionTests`, and `masksTests` in `comp/logs-library/processor/processor_test.go`),
+// at DataDog/datadog-agent@e0c8d8d93be. Their inputs are ASCII, so the differences between the regular expression
+// dialects of Go and the `regex` crate don't affect them.
 
 #[test]
 fn agent_exclusion_cases() {
@@ -90,7 +90,7 @@ fn agent_inclusion_cases() {
             ("a brand new world", Some("a brand new world")),
         ],
     );
-    // In the Agent, this is a global rule followed by a rule of the log's source. Every include must match.
+    // In the ported test, this is a global rule followed by a rule of the log's source. Every include must match.
     assert_cases(&[include("world"), include("^world")], &[("a brand new world", None)]);
 }
 
@@ -197,13 +197,12 @@ fn empty_content_and_empty_matches_behave_like_the_agent() {
 
 #[test]
 fn placeholder_expansion() {
-    // `go` is what Go's `Regexp.ReplaceAll` gives, where it differs from what ADP gives. These differences are
-    // documented in the module documentation.
+    // `go` is what Go's `Regexp.ReplaceAll` gives, where it differs from what the `regex` crate gives.
     struct Case {
         pattern: &'static str,
         placeholder: &'static str,
         input: &'static str,
-        adp: &'static str,
+        rust: &'static str,
         go: Option<&'static str>,
     }
     let cases = [
@@ -211,105 +210,105 @@ fn placeholder_expansion() {
             pattern: "(a)",
             placeholder: "[$01]",
             input: "a",
-            adp: "[a]",
+            rust: "[a]",
             go: Some("[]"),
         },
         Case {
             pattern: "(a)",
             placeholder: "[${01}]",
             input: "a",
-            adp: "[a]",
+            rust: "[a]",
             go: Some("[]"),
         },
         Case {
             pattern: "(a)",
             placeholder: "[${}]",
             input: "a",
-            adp: "[]",
+            rust: "[]",
             go: Some("[${}]"),
         },
         Case {
             pattern: "(a)",
             placeholder: "[${ 1}]",
             input: "a",
-            adp: "[]",
+            rust: "[]",
             go: Some("[${ 1}]"),
         },
         Case {
             pattern: "(a)",
             placeholder: "[$é]",
             input: "a",
-            adp: "[$é]",
+            rust: "[$é]",
             go: Some("[]"),
         },
         Case {
             pattern: "(a)",
             placeholder: "[$$1]",
             input: "a",
-            adp: "[$1]",
+            rust: "[$1]",
             go: None,
         },
         Case {
             pattern: "(a)",
             placeholder: "[$]",
             input: "a",
-            adp: "[$]",
+            rust: "[$]",
             go: None,
         },
         Case {
             pattern: "(a)",
             placeholder: "[$-]",
             input: "a",
-            adp: "[$-]",
+            rust: "[$-]",
             go: None,
         },
         Case {
             pattern: "(a)",
             placeholder: "[${1]",
             input: "a",
-            adp: "[${1]",
+            rust: "[${1]",
             go: None,
         },
         Case {
             pattern: "(a)",
             placeholder: "[$1x]",
             input: "a",
-            adp: "[]",
+            rust: "[]",
             go: None,
         },
         Case {
             pattern: "(a)",
             placeholder: "[${1}x]",
             input: "a",
-            adp: "[ax]",
+            rust: "[ax]",
             go: None,
         },
         Case {
             pattern: "(a)",
             placeholder: "[$0|${0}]",
             input: "a",
-            adp: "[a|a]",
+            rust: "[a|a]",
             go: None,
         },
         Case {
             pattern: "(a)",
             placeholder: "[$10]",
             input: "a",
-            adp: "[]",
+            rust: "[]",
             go: None,
         },
         Case {
             pattern: "(a)(b)?",
             placeholder: "[$2]",
             input: "a",
-            adp: "[]",
+            rust: "[]",
             go: None,
         },
         Case {
             pattern: "(?P<n>a)",
             placeholder: "[${n}|$n]",
             input: "a",
-            adp: "[a|a]",
+            rust: "[a|a]",
             go: None,
         },
     ];
@@ -317,11 +316,11 @@ fn placeholder_expansion() {
     for case in cases {
         assert_eq!(
             apply(&[mask(case.pattern, case.placeholder)], case.input).as_deref(),
-            Some(case.adp),
+            Some(case.rust),
             "placeholder {:?} for pattern {:?} (Go gives {:?})",
             case.placeholder,
             case.pattern,
-            case.go.unwrap_or(case.adp),
+            case.go.unwrap_or(case.rust),
         );
     }
 }
