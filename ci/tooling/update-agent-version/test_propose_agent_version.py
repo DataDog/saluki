@@ -34,7 +34,7 @@ class FakeApi:
 
     def __init__(self, open_pr=False, files=(subject.VERSION_FILE,), commits=None, branch_version_file=OLD_VERSION_FILE,
                  branch_head=None, ahead_by=1, behind_by=0, signed=True, after_inspection=None,
-                 base_version_file=OLD_VERSION_FILE, before_reset=None):
+                 base_version_file=OLD_VERSION_FILE, before_reset=None, after_branch_read=None):
         self.open_pr = open_pr
         self.files = [{"filename": name} for name in files]
         self.branch_head = branch_head if branch_head is not None else (BOT_HEAD if open_pr else None)
@@ -42,6 +42,7 @@ class FakeApi:
         self.branch_version_file = branch_version_file
         self.base_version_file = base_version_file
         self.before_reset = before_reset
+        self.after_branch_read = after_branch_read
         self.ahead_by = ahead_by
         self.behind_by = behind_by
         self.signed = signed
@@ -96,7 +97,10 @@ class FakeApi:
             text = self.base_version_file if path.endswith(f"ref={BASE_SHA}") else self.branch_version_file
             return {"content": base64.b64encode(text.encode()).decode()}
         if path == f"/repos/{REPOSITORY}/git/ref/heads/{BRANCH}":
-            return {"object": {"sha": self.branch_head}} if self.branch_head else None
+            head = self.branch_head
+            if self.after_branch_read:
+                self.after_branch_read(self)
+            return {"object": {"sha": head}} if head else None
         if path.startswith(f"/repos/{REPOSITORY}/compare/"):
             return {
                 "files": self.files, "commits": self.commits, "ahead_by": self.ahead_by, "behind_by": self.behind_by
@@ -232,6 +236,19 @@ class ProposeTest(unittest.TestCase):
             self.propose(api)
         self.assertEqual(api.branch_head, human)
         self.assertFalse(any(path.endswith("/pulls") for _, path, _ in api.writes))
+
+    def test_a_pull_request_reopened_with_a_push_after_the_branch_read_is_not_overwritten(self):
+        human = "e" * 40
+
+        def reopen_and_push(api):
+            api.open_pr = True
+            api.push(human, BOT_HEAD)
+            api.commits = [commit(BOT_HEAD), commit(human, author_type="User")]
+
+        api = FakeApi(branch_head=BOT_HEAD, after_branch_read=reopen_and_push)
+        self.assertEqual(self.propose(api), "held")
+        self.assertEqual(api.branch_head, human)
+        self.assertEqual(api.writes, [])
 
     def test_proposes_nothing_when_the_base_version_changed_after_discovery(self):
         for open_pr in (False, True):

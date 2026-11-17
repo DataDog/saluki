@@ -165,6 +165,9 @@ def propose(api, repository, base, branch, version_text, title, body, labels, me
     if read_version_file_at(api, repository, base_sha) != merged:
         print(f"[*] {VERSION_FILE} on {base} changed after discovery. Proposing nothing; the next run discovers again.")
         return "stale"
+    # Read the branch before looking for an open pull request. A pull request reopened after the lookup can only gain
+    # commits by moving the branch, which makes the reset of a leftover branch fail.
+    existing = api.request("GET", f"/repos/{repository}/git/ref/heads/{branch}", allow_404=True)
     query = urllib.parse.urlencode({"state": "open", "base": base, "head": f"{owner}:{branch}"})
     open_prs = api.request("GET", f"/repos/{repository}/pulls?{query}")
 
@@ -191,7 +194,6 @@ def propose(api, repository, base, branch, version_text, title, body, labels, me
         return "refreshed"
 
     # With no open pull request, a leftover branch restarts from the base. A closed pull request keeps its commits.
-    existing = api.request("GET", f"/repos/{repository}/git/ref/heads/{branch}", allow_404=True)
     expected_head = existing["object"]["sha"] if existing is not None else None
     if expected_head is not None:
         print(f"[*] Restarting leftover branch {branch} from {base}.")
