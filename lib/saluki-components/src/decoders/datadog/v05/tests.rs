@@ -446,3 +446,57 @@ proptest! {
         prop_assert!(peak <= bound, "peak {} bytes for {} bytes (bound {})", peak, mutated.len(), bound);
     }
 }
+
+/// Encodes a v0.5 payload whose first chunk's span promotes `hostname` and `version` from the dictionary, followed by
+/// `chunks - 1` chunks of one span that reference only the empty string.
+fn fan_out_payload(hostname: &str, version: &str, chunks: u32) -> Vec<u8> {
+    use rmp::encode;
+
+    let mut buf = Vec::new();
+    encode::write_array_len(&mut buf, 2).unwrap();
+    encode::write_array_len(&mut buf, 5).unwrap();
+    for string in ["", hostname, version, "_dd.hostname", "version"] {
+        encode::write_str(&mut buf, string).unwrap();
+    }
+    encode::write_array_len(&mut buf, chunks).unwrap();
+    for chunk in 0..chunks {
+        encode::write_array_len(&mut buf, 1).unwrap();
+        encode::write_array_len(&mut buf, 12).unwrap();
+        // Service, name and resource, then the trace, span and parent IDs, start, duration and error.
+        for value in [0, 0, 0, u64::from(chunk) + 1, 1, 0, 0, 0, 0] {
+            encode::write_uint(&mut buf, value).unwrap();
+        }
+        if chunk == 0 {
+            encode::write_map_len(&mut buf, 2).unwrap();
+            for (key, value) in [(3, 1), (4, 2)] {
+                encode::write_uint(&mut buf, key).unwrap();
+                encode::write_uint(&mut buf, value).unwrap();
+            }
+        } else {
+            encode::write_map_len(&mut buf, 0).unwrap();
+        }
+        encode::write_map_len(&mut buf, 0).unwrap();
+        encode::write_uint(&mut buf, 0).unwrap();
+    }
+    buf
+}
+
+#[test]
+fn payload_fields_are_charged_once_per_trace() {
+    // A 1 MiB hostname and version sent once, then copied onto 500,000 traces: a 9 MB payload whose traces would carry
+    // 1 TB of them downstream.
+    let large = "x".repeat(1 << 20);
+    let bytes = fan_out_payload(&large, &large, 500_000);
+    let budget = bytes.len() * read::RESOLVED_BYTES_PER_PAYLOAD_BYTE;
+    let error = decode_v05_payload(&bytes).unwrap_err();
+    assert!(
+        matches!(error, DecodeError::ResolvedStringsTooLarge { limit } if limit == budget),
+        "{error:?}"
+    );
+
+    // Many traces with the usual sizes of hostname and version are well within the bound.
+    let decoded = decode(&fan_out_payload("web-1.us-east-1.example.com", "1.2.3", 500_000));
+    assert_eq!(decoded.traces.len(), 500_000);
+    assert_eq!(decoded.traces[499_999].payload.hostname, "web-1.us-east-1.example.com");
+    assert_eq!(decoded.traces[499_999].payload.app_version, "1.2.3");
+}

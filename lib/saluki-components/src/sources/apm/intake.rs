@@ -736,10 +736,15 @@ mod tests {
 
     /// Builds a v0.5 payload of `chunks` chunks of one root span each, from service `web` in env `prod`.
     fn v05_payload(chunks: u32) -> Vec<u8> {
+        v05_payload_in_env("prod", chunks)
+    }
+
+    /// Builds a v0.5 payload of `chunks` chunks of one root span each, from service `web` in env `env`.
+    fn v05_payload_in_env(env: &str, chunks: u32) -> Vec<u8> {
         let mut buf = Vec::new();
         encode::write_array_len(&mut buf, 2).unwrap();
         encode::write_array_len(&mut buf, 5).unwrap();
-        for string in ["", "web", "http.request", "env", "prod"] {
+        for string in ["", "web", "http.request", "env", env] {
             encode::write_str(&mut buf, string).unwrap();
         }
         encode::write_array_len(&mut buf, chunks).unwrap();
@@ -1112,6 +1117,36 @@ mod tests {
             let (tags, dropped) = counter(&counters, "datadog.trace_agent.normalizer.traces_dropped");
             assert_eq!(tags.last().unwrap(), "reason:msgp_short_bytes", "{version:?}");
             assert_eq!(dropped, 2.0);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_payload_whose_strings_resolve_to_too_many_bytes_is_a_decoding_error() {
+        // One 64 KiB string sent once and carried by 2,000 traces resolves to more than 512 times the payload's size.
+        let large = "x".repeat(64 << 10);
+        for (version, payload) in [
+            (EndpointVersion::V05, v05_payload_in_env(&large, 2000)),
+            (EndpointVersion::V10, v1_payload(Some(&large), 2000)),
+        ] {
+            let (intake, mut traces) = intake(TraceIntakeConfiguration {
+                max_request_bytes: 1 << 20,
+                ..config()
+            });
+            let headers = [MSGPACK, ("X-Datadog-Trace-Count", "2000")];
+
+            let (status, _, body) = send_to(&intake, version, sized_request(&headers, payload)).await;
+
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{version:?}");
+            assert!(body.starts_with("string references resolve to more than"), "{body}");
+            assert!(traces.try_recv().is_err(), "{version:?}");
+            let counters = counters(&intake);
+            let (tags, errors) = counter(&counters, "datadog.trace_agent.receiver.error");
+            let version_tag = format!("v:{}", version.as_str());
+            assert_eq!(tags, ["handler:traces", version_tag.as_str(), "error:decoding-error"]);
+            assert_eq!(errors, 1.0);
+            let (tags, dropped) = counter(&counters, "datadog.trace_agent.normalizer.traces_dropped");
+            assert_eq!(tags.last().unwrap(), "reason:decoding_error", "{version:?}");
+            assert_eq!(dropped, 2000.0);
         }
     }
 

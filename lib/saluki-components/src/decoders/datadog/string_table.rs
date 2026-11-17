@@ -52,6 +52,11 @@ impl StringTable {
         Ok(value.clone())
     }
 
+    /// Returns the payload's resolved-bytes budget.
+    pub fn resolved(&self) -> &ResolvedBytes {
+        &self.resolved
+    }
+
     /// Returns the number of strings currently in the table.
     pub fn len(&self) -> usize {
         self.strings.len()

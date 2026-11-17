@@ -43,9 +43,12 @@ pub fn preallocation(count: u32) -> usize {
 /// How many bytes of strings a payload's string references may resolve to, per byte of the payload.
 ///
 /// The v0.5 and v1.0 formats send each string once and then refer to it by index, so a few bytes can stand for a
-/// string of any length. Memory is not the issue, as every reference shares the one copy, but each resolved string is
-/// hashed into an attribute map, and again downstream (the encoder interns every span's strings), so the work a
-/// payload costs follows the bytes its references resolve to, not its own size. The reference receiver keeps the
+/// string of any length. The decoders share one copy of a string between its references, but the sharing doesn't
+/// survive the pipeline: each resolved string is hashed into an attribute map, the encoder interns every span's
+/// strings, and transforms such as SQL obfuscation turn one shared input into a separate output per span. So both the
+/// work and the downstream memory a payload costs follow the bytes its references resolve to, not its own size. The
+/// bound caps them at a multiple of the payload's size. It doesn't bound the cost of strings the payload spells out,
+/// which already grows with its size, nor the per-span cost of what isn't a string. The reference receiver keeps the
 /// references as indexes end to end and has no such limit: this one is a deliberate deviation, which only payloads
 /// built to amplify meet.
 ///
