@@ -30,6 +30,8 @@ use self::driver::Driver;
 
 mod target;
 
+mod transcode;
+
 fn main() {
     tracing_subscriber::fmt()
         .compact()
