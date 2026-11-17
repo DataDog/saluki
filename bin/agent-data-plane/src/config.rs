@@ -140,18 +140,26 @@ impl<'a> DataPlaneConfiguration<'a> {
     /// The pipeline needs at least one OTLP signal. Like the Agent, ADP treats OTLP as disabled when none is enabled,
     /// instead of failing startup.
     pub const fn otlp_enabled(&self) -> bool {
-        self.config.control.otlp && self.otlp_signals_enabled()
+        self.config.control.otlp && self.otlp_signals_configured() && !self.otlp_logs_without_logs_agent()
     }
 
     /// Returns `true` if the OTLP pipeline is enabled but every OTLP signal (metrics, logs, and traces) is disabled.
     pub const fn otlp_enabled_without_signals(&self) -> bool {
-        self.config.control.otlp && !self.otlp_signals_enabled()
+        self.config.control.otlp && !self.otlp_signals_configured()
     }
 
-    /// Returns `true` if at least one OTLP signal (metrics, logs, or traces) is enabled.
-    const fn otlp_signals_enabled(&self) -> bool {
-        let signals = self.otlp_signals();
-        signals.metrics || signals.logs || signals.traces
+    /// Returns `true` if the OTLP pipeline is enabled with OTLP logs, but the logs agent isn't enabled.
+    ///
+    /// Like the Datadog Agent, ADP then starts no OTLP ingest at all: the Agent fails to build its whole OTLP pipeline
+    /// when OTLP logs are enabled without the logs agent, so OTLP metrics and traces stop too.
+    pub const fn otlp_logs_without_logs_agent(&self) -> bool {
+        self.config.control.otlp && self.config.domains.otlp.receiver.logs_enabled && !self.config.control.logs_enabled
+    }
+
+    /// Returns `true` if at least one OTLP signal (metrics, logs, or traces) is enabled by its own setting.
+    const fn otlp_signals_configured(&self) -> bool {
+        let otlp = &self.config.domains.otlp;
+        otlp.receiver.metrics_enabled || otlp.receiver.logs_enabled || otlp.traces.enabled
     }
 
     /// Returns the OTLP signals ADP accepts.
@@ -452,6 +460,27 @@ mod tests {
         config.control.logs_enabled = true;
         config.domains.otlp.proxy = otlp_proxy;
         config
+    }
+
+    #[test]
+    fn otlp_logs_without_the_logs_agent_disable_otlp_ingest() {
+        // Like the Datadog Agent, enabling OTLP logs without the logs agent stops every OTLP signal, not only logs.
+        let mut config = pipeline_configuration(false, true, true, Proxy::default());
+        config.control.logs_enabled = false;
+        config.domains.otlp.traces.enabled = true;
+        let dp = DataPlaneConfiguration::from_configuration(&config);
+
+        assert!(dp.otlp_logs_without_logs_agent());
+        assert!(!dp.otlp_enabled());
+        assert!(!dp.otlp_enabled_without_signals());
+        assert!(!dp.active_pipelines().contains(&Pipeline::Otlp));
+
+        // With OTLP logs disabled, the other signals run without the logs agent.
+        config.domains.otlp.receiver.logs_enabled = false;
+        let dp = DataPlaneConfiguration::from_configuration(&config);
+
+        assert!(!dp.otlp_logs_without_logs_agent());
+        assert!(dp.otlp_enabled());
     }
 
     #[test]

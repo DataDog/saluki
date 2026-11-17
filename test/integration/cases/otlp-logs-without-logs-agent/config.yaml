@@ -1,0 +1,44 @@
+# Verify that ADP, like the Datadog Agent, starts no OTLP ingest at all when OTLP logs are enabled without the logs
+# agent: OTLP metrics and traces aren't served either. ADP keeps running its other pipelines.
+#
+# DogStatsD keeps ADP running without OTLP.
+
+type: integration
+name: "otlp-logs-without-logs-agent"
+description: "Verifies that OTLP logs enabled without the logs agent disable OTLP ingest"
+timeout: 120s
+runtimes: [linux]
+
+env:
+  DD_API_KEY: "test-api-key"
+  DD_HOSTNAME: "integration-test-otlp-logs-without-logs-agent"
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "true"
+  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+  DD_DATA_PLANE_OTLP_ENABLED: "true"
+  DD_OTLP_CONFIG_LOGS_ENABLED: "true"
+  # Bind ADP to framework-isolated addresses reachable through the container port mapping.
+  DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY: "0.0.0.0:46447"
+  DD_DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY: "0.0.0.0:46448"
+
+container:
+  exposed_ports:
+    - "46447/tcp"
+    - "46448/tcp"
+
+procedure:
+  - assertion: log_contains
+    pattern: "OTLP logs is enabled but logs agent is not enabled"
+    timeout: 60s
+  - parallel:
+      - assertion: process_stable_for
+        duration: 10s
+      # The OTLP pipeline logs one of these when it's built, natively or in proxy mode.
+      - assertion: log_not_contains
+        pattern: "OTLP proxy mode (enabled|disabled)"
+        regex: true
+        during: 10s
+      - assertion: log_not_contains
+        pattern: "panic|PANIC"
+        regex: true
+        during: 10s
