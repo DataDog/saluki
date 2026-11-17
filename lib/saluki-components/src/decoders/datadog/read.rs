@@ -22,9 +22,9 @@ use super::error::DecodeError;
 ///
 /// Protects the decoder from payloads that declare an enormous collection size to force large
 /// allocations. Matches the reference decoder's `maxSize` (25,000,000). This alone doesn't stop a
-/// tiny payload from claiming a count near this ceiling; [`read_array_len`] and [`read_map_len`]
-/// additionally reject counts that couldn't possibly be backed by the remaining input, via
-/// [`check_slab_count`].
+/// tiny payload from claiming a count near this ceiling: [`read_array_len`] additionally rejects counts that couldn't
+/// possibly be backed by the remaining input, via [`check_slab_count`], and [`read_map_len`] counts larger than the
+/// remaining input, as the reference does.
 pub const MAX_SIZE: u32 = 25_000_000;
 
 /// Maximum number of elements pre-allocated from a wire count.
@@ -248,8 +248,8 @@ pub fn read_array_len_with_minimum(
 /// # Errors
 ///
 /// Returns an error if the next value is not a map header, if the declared length exceeds
-/// [`MAX_SIZE`], or if the declared length couldn't possibly be backed by the remaining input (see
-/// [`check_slab_count`]).
+/// [`MAX_SIZE`], or [`DecodeError::ShortBytes`] if it exceeds the number of bytes remaining, as the reference's
+/// `readBoundedHeaderBytes` does.
 pub fn read_map_len(r: &mut &[u8], context: &'static str) -> Result<u32, DecodeError> {
     let len = rmp::decode::read_map_len(r).map_err(mp(context))?;
     if len > MAX_SIZE {
@@ -259,7 +259,11 @@ pub fn read_map_len(r: &mut &[u8], context: &'static str) -> Result<u32, DecodeE
             max: MAX_SIZE,
         });
     }
-    check_slab_count(len, MIN_BYTES_PER_MAP_ENTRY, r, context)?;
+    // Unlike arrays, a map's count sizes no allocation, so it takes no tighter bound than the reference's: a map of
+    // fewer entries than bytes remain reads its entries until they fail, with the reference's error.
+    if u64::from(len) > r.len() as u64 {
+        return Err(DecodeError::ShortBytes { context });
+    }
     Ok(len)
 }
 

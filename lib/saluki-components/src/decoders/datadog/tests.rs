@@ -653,8 +653,9 @@ fn implausibly_small_spans_rejected() {
 }
 
 #[test]
-fn implausible_map_count_rejected() {
-    // More entries than bytes remain is short input; fewer, but under two bytes per entry, is implausible.
+fn map_counts_are_checked_against_the_remaining_bytes_only() {
+    // As the reference's `readBoundedHeaderBytes`, more entries than bytes remain is short input, and fewer is left
+    // to the entries themselves to fail.
     let mut buf = Vec::new();
     encode::write_map_len(&mut buf, 1000).unwrap();
     encode::write_uint(&mut buf, 0).unwrap();
@@ -664,11 +665,15 @@ fn implausible_map_count_rejected() {
     let mut buf = Vec::new();
     encode::write_map_len(&mut buf, 2).unwrap();
     buf.extend_from_slice(&[0; 3]);
-    let err = read::read_map_len(&mut buf.as_slice(), "test").unwrap_err();
-    assert!(
-        matches!(err, DecodeError::ImplausibleHeaderCount { len: 2, .. }),
-        "{err:?}"
-    );
+    assert_eq!(read::read_map_len(&mut buf.as_slice(), "test").unwrap(), 2);
+}
+
+#[test]
+fn a_payload_cut_short_after_a_field_is_short_input() {
+    // Found by the parity fuzzer: four fields declared, the container ID given, then nothing. The reference reads the
+    // fields until the bytes run out, and reports `msgp.ErrShortBytes`.
+    let err = decode_v1_payload(&[0x84, 0x03, 0xa2, b'g', b'o']).unwrap_err();
+    assert!(matches!(err, DecodeError::ShortBytes { .. }), "{err:?}");
 }
 
 #[test]
