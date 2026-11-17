@@ -1,6 +1,0 @@
-enhancements:
-  - |
-    Trace and APM stats payloads can now be routed independently of metrics, logs, and events. ADP reads
-    ``apm_config.apm_dd_url``, ``apm_config.additional_endpoints``, ``observability_pipelines_worker.traces.enabled``
-    and ``observability_pipelines_worker.traces.url``, and their ``vector.traces`` equivalents, as the trace-agent does.
-    Each ``apm_config.additional_endpoints`` entry receives its own copy of the payloads, one per API key.
