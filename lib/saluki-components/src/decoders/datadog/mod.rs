@@ -116,7 +116,7 @@ pub fn decode_v1_payload(bytes: &[u8]) -> Result<DecodedV1, DecodeError> {
         trace.origin = chunk.origin;
         trace.payload = payload_fields.clone();
         trace.attributes = Arc::new(chunk.attributes);
-        trace.priority = chunk.priority;
+        trace.priority = Some(chunk.priority);
         trace.dropped_trace = chunk.dropped_trace;
         trace.sampling_mechanism = chunk.sampling_mechanism;
         traces.push(trace);
@@ -194,7 +194,8 @@ struct DecodedPayload {
 
 /// Intermediate representation of a decoded trace chunk.
 struct DecodedChunk {
-    priority: Option<i32>,
+    /// Zero when the payload omits it, as the reference's chunk keeps its zero value.
+    priority: i32,
     origin: MetaString,
     attributes: FastHashMap<MetaString, AttributeValue>,
     spans: Vec<Span>,
@@ -336,7 +337,7 @@ fn decode_chunk_list(r: &mut &[u8], strings: &mut StringTable) -> Result<Vec<Dec
 
 /// Decodes a single `TraceChunk` map.
 fn decode_chunk(r: &mut &[u8], strings: &mut StringTable) -> Result<DecodedChunk, DecodeError> {
-    let mut priority = None;
+    let mut priority = 0;
     let mut origin = MetaString::empty();
     let mut attributes = FastHashMap::default();
     let mut spans = Vec::new();
@@ -349,7 +350,7 @@ fn decode_chunk(r: &mut &[u8], strings: &mut StringTable) -> Result<DecodedChunk
     for _ in 0..num_fields {
         let field = read::read_u32(r, "trace chunk field")?;
         match field {
-            1 => priority = Some(read::read_i32(r, "trace chunk priority")?),
+            1 => priority = read::read_i32(r, "trace chunk priority")?,
             2 => origin = value::read_streaming_string(r, strings, "trace chunk origin")?,
             3 => attributes = value::read_attributes_map(r, strings, "trace chunk attributes")?,
             4 => spans = decode_span_list(r, strings)?,
