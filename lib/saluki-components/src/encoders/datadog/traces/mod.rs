@@ -39,6 +39,7 @@ use tokio::{
 use tracing::{debug, error};
 
 use crate::common::datadog::{
+    get_tracer_hostname,
     io::RB_BUFFER_CHUNK_SIZE,
     request_builder::{EndpointEncoder, RequestBuilder},
     telemetry::ComponentTelemetry,
@@ -627,9 +628,9 @@ impl TraceEndpointEncoder {
         } else {
             None
         };
-        let hostname_str: Option<&str> = resolve_hostname_from_payload(
-            &trace.payload.hostname,
-            source.as_ref(),
+        let hostname_str: Option<&str> = resolve_hostname(
+            get_tracer_hostname(trace).map(|hostname| hostname.as_ref()),
+            matches!(trace.ingest_info(), TraceIngestInfo::Otlp { .. }),
             Some(self.default_hostname.as_ref()),
             self.ignore_missing_datadog_fields,
         );
@@ -946,23 +947,21 @@ fn encode_etp_attribute_value<S: ScratchBuffer>(
         .map(|_| ())
 }
 
-fn resolve_hostname_from_payload<'a>(
-    payload_hostname: &'a str, source: Option<&'a OtlpSource>, default_hostname: Option<&'a str>,
-    ignore_missing_fields: bool,
+/// Resolves the hostname to report for a trace.
+///
+/// `tracer_hostname` is the hostname the trace carries. Without one, OTLP traces report none: the translator already
+/// applied its source cascade, so an empty hostname means a serverless resource. Other traces fall back to
+/// `default_hostname`.
+fn resolve_hostname<'a>(
+    tracer_hostname: Option<&'a str>, is_otlp: bool, default_hostname: Option<&'a str>, ignore_missing_fields: bool,
 ) -> Option<&'a str> {
-    if !payload_hostname.is_empty() {
-        return Some(payload_hostname);
+    if let Some(hostname) = tracer_hostname {
+        return Some(hostname);
     }
-    if ignore_missing_fields {
+    if ignore_missing_fields || is_otlp {
         return Some("");
     }
-    match source {
-        Some(src) => match src.kind {
-            OtlpSourceKind::Hostname => Some(src.identifier.as_str()),
-            _ => Some(""),
-        },
-        None => default_hostname,
-    }
+    default_hostname
 }
 
 fn resolve_container_tags_from_attrs(
@@ -1133,6 +1132,23 @@ mod tests {
             .iter()
             .map(|tp| resolve_ref(tp.strings(), tp.tracerVersionRef()).to_string())
             .collect()
+    }
+
+    /// Resolves the `hostnameRef` of every ETP tracer payload in an encoded `AgentPayload`.
+    fn decode_etp_hostnames(buf: &[u8]) -> Vec<String> {
+        let payload = AgentPayload::parse_from_bytes(buf).expect("AgentPayload should decode");
+        payload
+            .idxTracerPayloads
+            .iter()
+            .map(|tp| resolve_ref(tp.strings(), tp.hostnameRef()).to_string())
+            .collect()
+    }
+
+    fn encoded_hostname(trace: &Trace) -> String {
+        let mut encoder = make_encoder(false);
+        let mut buf = Vec::new();
+        encoder.encode(trace, &mut buf).expect("encode should succeed");
+        decode_etp_hostnames(&buf).remove(0)
     }
 
     // The APM sampler defaults: 10 target and error traces per second.
@@ -1398,42 +1414,55 @@ mod tests {
     }
 
     #[test]
-    fn resolve_hostname_from_payload_prefers_payload_then_source_then_default() {
-        let host_source = OtlpSource {
-            kind: OtlpSourceKind::Hostname,
-            identifier: "resolved-host".to_string(),
-        };
-        let fargate_source = OtlpSource {
-            kind: OtlpSourceKind::AwsEcsFargate,
-            identifier: "task-arn".to_string(),
+    fn resolve_hostname_prefers_the_trace_hostname_then_the_ingest_default() {
+        // A hostname carried by the trace always wins.
+        assert_eq!(
+            Some("tracer-host"),
+            resolve_hostname(Some("tracer-host"), true, Some("default"), true)
+        );
+        // Without one, OTLP traces and ignored missing fields report an empty hostname.
+        assert_eq!(Some(""), resolve_hostname(None, true, Some("default"), false));
+        assert_eq!(Some(""), resolve_hostname(None, false, Some("default"), true));
+        // Other traces fall back to the default hostname, which may itself be absent.
+        assert_eq!(Some("default"), resolve_hostname(None, false, Some("default"), false));
+        assert_eq!(None, resolve_hostname(None, false, None, false));
+    }
+
+    #[test]
+    fn encoded_hostname_comes_from_the_payload_then_the_root_span_then_the_ingest_default() {
+        let with_root_hostname = |payload_hostname: &str| {
+            let mut attributes = FastHashMap::default();
+            attributes.insert(
+                MetaString::from("_dd.hostname"),
+                AttributeValue::String(MetaString::from("root-host")),
+            );
+            let span = DdSpan::new("svc", "op", "res", "web", 1, 0, 0, 1000, 0).with_attributes(attributes);
+            let mut trace = Trace::new(vec![span], TraceIngestInfo::Datadog);
+            trace.priority = Some(1);
+            trace.payload.hostname = MetaString::from(payload_hostname);
+            trace
         };
 
-        // A non-empty payload hostname always wins.
-        assert_eq!(
-            Some("payload-host"),
-            resolve_hostname_from_payload("payload-host", Some(&host_source), Some("default"), false)
-        );
-        // An empty payload plus `ignore_missing_fields` short-circuits to an empty hostname.
-        assert_eq!(
-            Some(""),
-            resolve_hostname_from_payload("", Some(&host_source), Some("default"), true)
-        );
-        // Honoring fields, a hostname-kind source supplies its identifier.
-        assert_eq!(
-            Some("resolved-host"),
-            resolve_hostname_from_payload("", Some(&host_source), Some("default"), false)
-        );
-        // A non-hostname (Fargate) source resolves to an empty hostname.
-        assert_eq!(
-            Some(""),
-            resolve_hostname_from_payload("", Some(&fargate_source), Some("default"), false)
-        );
-        // With no source, it falls back to the default hostname (which may itself be absent).
-        assert_eq!(
-            Some("default"),
-            resolve_hostname_from_payload("", None, Some("default"), false)
-        );
-        assert_eq!(None, resolve_hostname_from_payload("", None, None, false));
+        // The payload hostname beats the root span.
+        let trace = with_root_hostname("payload-host");
+        assert_eq!(encoded_hostname(&trace), "payload-host");
+
+        // The root span applies only when the payload hostname is empty.
+        let trace = with_root_hostname("");
+        assert_eq!(encoded_hostname(&trace), "root-host");
+    }
+
+    #[test]
+    fn encoded_hostname_is_empty_for_otlp_traces_without_one() {
+        // The translator leaves the hostname empty for serverless resources.
+        let trace = make_trace(TraceIngestInfo::Otlp {
+            receiver_sampling_rate: 1.0,
+        });
+        assert_eq!(encoded_hostname(&trace), "");
+
+        // Other traces fall back to the encoder's default hostname.
+        let trace = make_trace(TraceIngestInfo::Datadog);
+        assert_eq!(encoded_hostname(&trace), "test-host");
     }
 
     #[test]

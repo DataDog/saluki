@@ -184,10 +184,8 @@ impl OtlpMetricsTranslator {
                 kind: SourceKind::Hostname,
                 identifier,
             }) => Some(MetaString::from(identifier)),
-            Some(Source {
-                kind: SourceKind::AwsEcsFargate,
-                ..
-            }) => None,
+            // Every other source, such as ECS Fargate, reports no host.
+            Some(_) => None,
             None => Some(self.default_hostname.clone()),
         };
 

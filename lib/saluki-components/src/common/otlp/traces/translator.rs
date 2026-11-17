@@ -17,11 +17,14 @@ use stringtheory::MetaString;
 
 use crate::common::datadog::SAMPLING_PRIORITY_METRIC_KEY;
 use crate::common::otlp::origin::OtlpOriginTagResolver;
+use crate::common::otlp::source::resolve_source_from_attributes;
 use crate::common::otlp::traces::transform::{
     bytes_to_hex_lowercase, get_otel_container_id, get_otel_env, get_otel_version, normalize_peer_service_tags,
     otel_span_to_dd_span, otel_span_to_dd_span_v1, otlp_value_to_string, SpanConversion, SpanNaming,
 };
-use crate::common::otlp::util::{get_string_attribute, set_resource_attributes, write_infra_tag_attributes};
+use crate::common::otlp::util::{
+    get_string_attribute, set_resource_attributes, write_infra_tag_attributes, SourceKind,
+};
 use crate::common::otlp::Metrics;
 
 const DATADOG_HOSTNAME_ATTR: &str = "datadog.host.name";
@@ -79,17 +82,11 @@ struct OtlpResourceMeta {
 ///
 /// Mirrors the field extraction performed by `receiveResourceSpansV2` in the Go trace agent
 /// (`pkg/trace/api/otlp.go`): env from deployment environment semantic conventions, container ID from
-/// container semantic conventions, hostname from `datadog.host.name`, language/version from telemetry SDK attributes.
+/// container semantic conventions, hostname from the resource source, language/version from telemetry SDK attributes.
 /// All known fields are also inserted into the returned `attributes` map so that downstream code
 /// can use a single map lookup regardless of whether a field is explicitly modelled on `Trace`.
-///
-/// **Hostname**: we capture only `datadog.host.name` here. The Go agent resolves hostname
-/// through up to six fallback steps (cloud-provider EC2/GCP/Azure, K8s node name, `host.name`,
-/// etc.). The encoder covers `host.name` + AWS ECS Fargate via `attributes_to_source`, but the
-/// cloud-provider and K8s steps are not yet implemented.
-/// TODO: implement full hostnameFromAttributes parity.
 fn extract_resource_meta(
-    attributes: &[otlp_common::KeyValue], ignore_missing_fields: bool,
+    attributes: &[otlp_common::KeyValue], ignore_missing_fields: bool, default_hostname: &MetaString,
     infra_attributes: Option<(&OtlpOriginTagResolver, ContainerTagPromotion)>, interner: &GenericMapInterner,
     string_builder: &mut StringBuilder<GenericMapInterner>,
 ) -> OtlpResourceMeta {
@@ -100,10 +97,7 @@ fn extract_resource_meta(
     let app_version = get_otel_version(attributes, empty, ignore_missing_fields, interner, string_builder);
     let container_id = get_otel_container_id(attributes, empty, ignore_missing_fields, interner, string_builder);
 
-    let hostname = get_string_attribute(attributes, DATADOG_HOSTNAME_ATTR)
-        .filter(|s| !s.is_empty())
-        .map(|s| MetaString::from_interner(s, interner))
-        .unwrap_or_default();
+    let hostname = resolve_hostname(attributes, ignore_missing_fields, default_hostname, interner);
 
     let language_name = get_string_attribute(attributes, TELEMETRY_SDK_LANGUAGE)
         .filter(|s| !s.is_empty())
@@ -168,6 +162,28 @@ fn extract_resource_meta(
         tracer_version,
         attributes: Arc::new(attr_map),
         span_attributes,
+    }
+}
+
+/// Resolves the payload hostname from the resource's source.
+///
+/// A hostname source gives its identifier, a serverless source gives no hostname, and a resource with no source gets
+/// `default_hostname`. When missing Datadog fields are ignored, only an explicit `datadog.host.name` counts.
+fn resolve_hostname(
+    attributes: &[otlp_common::KeyValue], ignore_missing_fields: bool, default_hostname: &MetaString,
+    interner: &GenericMapInterner,
+) -> MetaString {
+    if ignore_missing_fields {
+        return get_string_attribute(attributes, DATADOG_HOSTNAME_ATTR)
+            .filter(|s| !s.is_empty())
+            .map(|s| MetaString::from_interner(s, interner))
+            .unwrap_or_default();
+    }
+
+    match resolve_source_from_attributes(attributes) {
+        Some(source) if source.kind == SourceKind::Hostname => MetaString::from_interner(&source.identifier, interner),
+        Some(_) => MetaString::default(),
+        None => default_hostname.clone(),
     }
 }
 
@@ -270,6 +286,8 @@ pub struct OtlpTracesTranslator {
     string_builder: StringBuilder<GenericMapInterner>,
     /// Supplies one registry snapshot per `ResourceSpans` batch, so mappings cannot change midway through a batch.
     registry: SemanticRegistryProvider,
+    /// Hostname of traces whose resource carries no source.
+    default_hostname: MetaString,
 }
 
 impl OtlpTracesTranslator {
@@ -307,7 +325,16 @@ impl OtlpTracesTranslator {
             interner,
             string_builder,
             registry,
+            default_hostname: MetaString::default(),
         }
+    }
+
+    /// Sets the hostname of traces whose resource carries no source, such as the host the data plane runs on.
+    ///
+    /// Defaults to an empty hostname.
+    pub fn with_default_hostname(mut self, default_hostname: MetaString) -> Self {
+        self.default_hostname = default_hostname;
+        self
     }
 
     pub fn translate_spans(&mut self, resource_spans: ResourceSpans, metrics: &Metrics) -> impl Iterator<Item = Event> {
@@ -328,6 +355,7 @@ impl OtlpTracesTranslator {
         let mut resource_meta = extract_resource_meta(
             &resource.attributes,
             ignore_missing_fields,
+            &self.default_hostname,
             infra_attributes,
             interner,
             string_builder,
@@ -932,30 +960,108 @@ mod tests {
         }
     }
 
-    #[test]
-    fn translate_spans_resolves_hostname_from_datadog_host_name() {
-        let rs = build_resource_spans(
-            vec![string_kv("datadog.host.name", "my-host")],
-            vec![span([1u8; 16], [1u8; 8], vec![])],
-        );
-
-        let traces = translate(rs);
+    fn translate_hostname(settings: OtlpTracesSettings, resource_attrs: Vec<KeyValue>) -> String {
+        let mut translator = OtlpTracesTranslator::new(
+            settings,
+            MAX_RESOURCE_LEN,
+            SemanticRegistryProvider::default(),
+            OtlpOriginTagResolver::new(Arc::new(TestWorkloadProvider::new())),
+        )
+        .with_default_hostname(MetaString::from("agent-host"));
+        let rs = build_resource_spans(resource_attrs, vec![span([1u8; 16], [1u8; 8], vec![])]);
+        let traces: Vec<Trace> = translator
+            .translate_spans(rs, &Metrics::for_tests())
+            .filter_map(Event::try_into_trace)
+            .collect();
         assert_eq!(traces.len(), 1);
-        assert_eq!(traces[0].payload.hostname.as_ref(), "my-host");
+        traces[0].payload.hostname.to_string()
     }
 
     #[test]
-    fn translate_spans_leaves_hostname_empty_without_datadog_host_name() {
-        // Only `datadog.host.name` is honored here (the single documented fallback); absent it, the
-        // hostname is left empty rather than guessed from other attributes.
-        let rs = build_resource_spans(
-            vec![string_kv("host.name", "ignored")],
-            vec![span([1u8; 16], [1u8; 8], vec![])],
-        );
+    fn translate_spans_resolves_hostname_from_datadog_host_name() {
+        let hostname = translate_hostname(traces_settings(), vec![string_kv("datadog.host.name", "my-host")]);
+        assert_eq!(hostname, "my-host");
+    }
 
-        let traces = translate(rs);
-        assert_eq!(traces.len(), 1);
-        assert!(traces[0].payload.hostname.as_ref().is_empty());
+    #[test]
+    fn translate_spans_resolves_hostname_with_the_agent_cascade() {
+        // `datadog.host.name` outranks every cloud and host attribute.
+        let hostname = translate_hostname(
+            traces_settings(),
+            vec![
+                string_kv("datadog.host.name", "custom"),
+                string_kv("host.name", "other"),
+            ],
+        );
+        assert_eq!(hostname, "custom");
+
+        // Cloud provider attributes take the provider-specific form.
+        let hostname = translate_hostname(
+            traces_settings(),
+            vec![
+                string_kv("cloud.provider", "gcp"),
+                string_kv("cloud.account.id", "project"),
+                string_kv("host.name", "vm.internal"),
+            ],
+        );
+        assert_eq!(hostname, "vm.internal.project");
+
+        // Kubernetes node names come before `host.id` and `host.name`.
+        let hostname = translate_hostname(
+            traces_settings(),
+            vec![
+                string_kv("k8s.node.name", "node-1"),
+                string_kv("host.id", "i-1"),
+                string_kv("host.name", "other"),
+            ],
+        );
+        assert_eq!(hostname, "node-1");
+
+        let hostname = translate_hostname(traces_settings(), vec![string_kv("host.name", "my-host")]);
+        assert_eq!(hostname, "my-host");
+    }
+
+    #[test]
+    fn translate_spans_falls_back_to_the_default_hostname_without_a_source() {
+        assert_eq!(translate_hostname(traces_settings(), vec![]), "agent-host");
+        // Loopback names are not valid hostnames.
+        let hostname = translate_hostname(traces_settings(), vec![string_kv("host.name", "localhost")]);
+        assert_eq!(hostname, "agent-host");
+    }
+
+    #[test]
+    fn translate_spans_leaves_hostname_empty_for_serverless_sources() {
+        let lambda = vec![
+            string_kv("cloud.provider", "aws"),
+            string_kv("cloud.platform", "aws_lambda"),
+            string_kv("faas.id", "arn:aws:lambda:us-east-1:123456789012:function:orders"),
+            string_kv("host.name", "ip-10-0-0-1"),
+        ];
+        assert_eq!(translate_hostname(traces_settings(), lambda), "");
+
+        let fargate = vec![
+            string_kv("aws.ecs.launchtype", "fargate"),
+            string_kv("aws.ecs.task.arn", "arn:task"),
+            string_kv("host.name", "ignored"),
+        ];
+        assert_eq!(translate_hostname(traces_settings(), fargate), "");
+    }
+
+    #[test]
+    fn translate_spans_honors_only_datadog_host_name_when_ignoring_missing_fields() {
+        let settings = OtlpTracesSettings {
+            ignore_missing_datadog_fields: true,
+            ..traces_settings()
+        };
+        assert_eq!(
+            translate_hostname(settings.clone(), vec![string_kv("host.name", "ignored")]),
+            ""
+        );
+        assert_eq!(translate_hostname(settings.clone(), vec![]), "");
+        assert_eq!(
+            translate_hostname(settings, vec![string_kv("datadog.host.name", "my-host")]),
+            "my-host"
+        );
     }
 
     #[test]

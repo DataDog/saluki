@@ -34,6 +34,7 @@ use stringtheory::MetaString;
 use tokio::{select, time::interval};
 use tracing::{debug, error};
 
+use crate::common::datadog::get_tracer_hostname;
 use crate::common::datadog::version_data::ContainerVersionData;
 use crate::common::otlp::traces::normalize::normalized_tag_value;
 use crate::common::otlp::util::extract_container_tags_from_attributes_map;
@@ -263,21 +264,9 @@ impl ApmStats {
                 }
             });
 
-        let hostname = root_span
-            .and_then(|s| {
-                s.attributes
-                    .get("_dd.hostname")
-                    .and_then(AttributeValue::as_string)
-                    .filter(|s| !s.is_empty())
-            })
+        let hostname = get_tracer_hostname(trace)
             .cloned()
-            .unwrap_or_else(|| {
-                if !trace.payload.hostname.is_empty() {
-                    trace.payload.hostname.clone()
-                } else {
-                    self.agent_hostname.clone()
-                }
-            });
+            .unwrap_or_else(|| self.agent_hostname.clone());
 
         // The root span's `version` attribute takes priority: for OTLP traces it already prefers the span's version
         // over the resource's. The payload's version comes next, then the container's `version` tag.
@@ -1904,6 +1893,68 @@ mod tests {
         // A payload env that normalizes to nothing falls back to the agent's.
         assert_eq!(key_for("!!!"), "none");
         assert_eq!(key_for(""), "none");
+    }
+
+    #[test]
+    fn hostname_prefers_payload_then_root_span_then_agent() {
+        let now = now_nanos();
+        let transform = ApmStats {
+            concentrator: SpanConcentrator::new(true, true, &[], Default::default(), now),
+            flush_interval: DEFAULT_FLUSH_INTERVAL,
+            agent_env: MetaString::default(),
+            agent_hostname: MetaString::from("agent-host"),
+            workload_provider: None,
+            splits: Counter::noop(),
+        };
+        let trace_with = |payload_hostname: &str, root_hostname: Option<&str>| {
+            let mut attrs = FastHashMap::default();
+            if let Some(root_hostname) = root_hostname {
+                attrs.insert(
+                    MetaString::from("_dd.hostname"),
+                    AttributeValue::String(MetaString::from(root_hostname)),
+                );
+            }
+            let root_span = Span::new("svc", "op", "res", "web", 1, 0, now, 1_000_000, 0).with_attributes(attrs);
+            let mut trace = Trace::new(vec![root_span], TraceIngestInfo::Datadog);
+            trace.payload.hostname = MetaString::from(payload_hostname);
+            trace
+        };
+        let hostname = |trace: &Trace| {
+            transform
+                .build_payload_key(trace, "", ContainerVersionData::default())
+                .hostname
+                .to_string()
+        };
+
+        // The payload hostname beats the root span's `_dd.hostname`.
+        assert_eq!(hostname(&trace_with("payload-host", Some("root-host"))), "payload-host");
+        assert_eq!(hostname(&trace_with("", Some("root-host"))), "root-host");
+        assert_eq!(hostname(&trace_with("", None)), "agent-host");
+    }
+
+    #[test]
+    fn otlp_trace_without_a_hostname_is_attributed_to_the_configured_hostname() {
+        let now = now_nanos();
+        let transform = ApmStats {
+            concentrator: SpanConcentrator::new(true, true, &[], Default::default(), now),
+            flush_interval: DEFAULT_FLUSH_INTERVAL,
+            agent_env: MetaString::default(),
+            agent_hostname: MetaString::from("agent-host"),
+            workload_provider: None,
+            splits: Counter::noop(),
+        };
+
+        // A serverless OTLP resource reports no hostname, so its stats use the configured one. The trace payload
+        // itself stays empty.
+        let span = Span::new("svc", "op", "res", "web", 1, 0, now, 1_000_000, 0);
+        let trace = Trace::new(
+            vec![span],
+            TraceIngestInfo::Otlp {
+                receiver_sampling_rate: 1.0,
+            },
+        );
+        let key = transform.build_payload_key(&trace, "", ContainerVersionData::default());
+        assert_eq!(key.hostname.as_ref(), "agent-host");
     }
 
     proptest! {
