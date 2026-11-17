@@ -422,8 +422,7 @@ where
 /// of this calculation is returned.
 ///
 /// The available space reported by the volume already excludes the queue's own files, so `total_on_disk_bytes` is
-/// added back in: the result is the queue's total allowance, not the space left on top of what it already uses. This
-/// matches the core Agent's `DiskUsageLimit.computeAvailableSpace`.
+/// added back in: the result is the queue's total allowance, not the space left on top of what it already uses.
 ///
 /// # Errors
 ///
