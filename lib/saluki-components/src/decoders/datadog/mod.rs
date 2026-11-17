@@ -310,7 +310,7 @@ pub fn attribute_string_bytes(value: &AttributeValue) -> usize {
 /// Empty strings are skipped: index 0 is always the pre-seeded empty string, matching the reference
 /// encoder which never emits duplicate or additional empty strings.
 fn decode_string_table(r: &mut &[u8], strings: &mut StringTable) -> Result<(), DecodeError> {
-    let num_strings = read::read_array_len(r, "string table")?;
+    let num_strings = read::v0_read_dictionary_len(r, "string table")?;
     for _ in 0..num_strings {
         let s = read::read_str(r, "string table entry")?;
         if s.is_empty() {

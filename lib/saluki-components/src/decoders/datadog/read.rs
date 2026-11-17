@@ -19,14 +19,18 @@ use rmp::decode::{bytes::BytesReadError, DecodeStringError, NumValueReadError, V
 
 use super::error::DecodeError;
 
-/// Maximum element count permitted in any array or map header.
-///
-/// Protects the decoder from payloads that declare an enormous collection size to force large
-/// allocations. Matches the reference decoder's `maxSize` (25,000,000). This alone doesn't stop a
-/// tiny payload from claiming a count near this ceiling: [`read_array_len`] additionally rejects counts that couldn't
-/// possibly be backed by the remaining input, via [`check_slab_count`], and [`read_map_len`] counts larger than the
-/// remaining input, as the reference does.
+/// Maximum string count of a string table: the v1.0 tracer payload's, and the v0.5 dictionary's. Matches the
+/// reference decoder's `maxStringTableSize` (25,000,000).
 pub const MAX_SIZE: u32 = 25_000_000;
+
+/// Maximum element count of any other array or map header of the v1.0 format. Matches the reference decoder's
+/// `maxCollectionSize` (500,000).
+///
+/// Protects the decoder from payloads that declare an enormous collection size to force large allocations. This alone
+/// doesn't stop a tiny payload from claiming a count near this ceiling: [`read_array_len`] additionally rejects counts
+/// that couldn't possibly be backed by the remaining input, via [`check_slab_count`], and [`read_map_len`] counts
+/// larger than the remaining input, as the reference does.
+pub const MAX_COLLECTION_SIZE: u32 = 500_000;
 
 /// Maximum number of elements pre-allocated from a wire count.
 ///
@@ -190,7 +194,7 @@ fn invalid(context: &'static str, detail: impl Into<String>) -> DecodeError {
 ///
 /// Without this, a small malicious payload could set an array or map header to millions of
 /// entries and force a large allocation before decoding ever reaches the missing bytes and fails
-/// naturally. This is a much tighter bound than [`MAX_SIZE`] for small inputs, since it scales
+/// naturally. This is a much tighter bound than [`MAX_COLLECTION_SIZE`] for small inputs, since it scales
 /// with the actual data available rather than a fixed ceiling.
 ///
 /// # Errors
@@ -219,7 +223,7 @@ fn check_slab_count(
 /// # Errors
 ///
 /// Returns an error if the next value is not an array header, if the declared length exceeds
-/// [`MAX_SIZE`], or if the declared length couldn't possibly be backed by the remaining input (see
+/// [`MAX_COLLECTION_SIZE`], or if the declared length couldn't possibly be backed by the remaining input (see
 /// [`check_slab_count`]).
 pub fn read_array_len(r: &mut &[u8], context: &'static str) -> Result<u32, DecodeError> {
     read_array_len_with_minimum(r, MIN_BYTES_PER_ARRAY_ELEMENT, context)
@@ -234,16 +238,16 @@ pub fn read_array_len(r: &mut &[u8], context: &'static str) -> Result<u32, Decod
 /// # Errors
 ///
 /// Returns an error if the next value is not an array header, if the declared length exceeds
-/// [`MAX_SIZE`], or if the declared elements would require more bytes than remain on the cursor.
+/// [`MAX_COLLECTION_SIZE`], or if the declared elements would require more bytes than remain on the cursor.
 pub fn read_array_len_with_minimum(
     r: &mut &[u8], min_bytes_per_element: u32, context: &'static str,
 ) -> Result<u32, DecodeError> {
     let len = rmp::decode::read_array_len(r).map_err(mp(context))?;
-    if len > MAX_SIZE {
+    if len > MAX_COLLECTION_SIZE {
         return Err(DecodeError::OversizeHeader {
             context,
             len,
-            max: MAX_SIZE,
+            max: MAX_COLLECTION_SIZE,
         });
     }
     check_slab_count(len, min_bytes_per_element, r, context)?;
@@ -255,15 +259,15 @@ pub fn read_array_len_with_minimum(
 /// # Errors
 ///
 /// Returns an error if the next value is not a map header, if the declared length exceeds
-/// [`MAX_SIZE`], or [`DecodeError::ShortBytes`] if it exceeds the number of bytes remaining, as the reference's
+/// [`MAX_COLLECTION_SIZE`], or [`DecodeError::ShortBytes`] if it exceeds the number of bytes remaining, as the reference's
 /// `readBoundedHeaderBytes` does.
 pub fn read_map_len(r: &mut &[u8], context: &'static str) -> Result<u32, DecodeError> {
     let len = rmp::decode::read_map_len(r).map_err(mp(context))?;
-    if len > MAX_SIZE {
+    if len > MAX_COLLECTION_SIZE {
         return Err(DecodeError::OversizeHeader {
             context,
             len,
-            max: MAX_SIZE,
+            max: MAX_COLLECTION_SIZE,
         });
     }
     // Unlike arrays, a map's count sizes no allocation, so it takes no tighter bound than the reference's: a map of
@@ -491,8 +495,8 @@ pub fn v0_read_array_len(r: &mut &[u8], context: &'static str) -> Result<u32, De
     v0_check_header_len(len, V0_MAX_COLLECTION_SIZE, r, context)
 }
 
-/// Reads the v0.5 dictionary's array header as the trace-agent does: as [`v0_read_array_len`], but with the string
-/// table's larger limit, [`MAX_SIZE`].
+/// Reads a string table's array header, the v0.5 dictionary's or the v1.0 tracer payload's, as the trace-agent does:
+/// as [`v0_read_array_len`], but with the string table's larger limit, [`MAX_SIZE`].
 pub fn v0_read_dictionary_len(r: &mut &[u8], context: &'static str) -> Result<u32, DecodeError> {
     let len = rmp::decode::read_array_len(r).map_err(mp(context))?;
     v0_check_header_len(len, MAX_SIZE, r, context)
