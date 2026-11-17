@@ -22,7 +22,7 @@ fi
 printf '{"Replace": {"%s": "%s"}}\n' "$agent/pkg/trace/api/oracle_test.go" "$here/oracle_test.go" >"$work/overlay.json"
 
 fixtures="$saluki/lib/saluki-components/src/decoders/datadog/testdata"
-for cases in v04_json v01_json v05; do
+for cases in v04_json v01_json v05 v07; do
   python3 -I "$here/${cases}_cases.py" cases >"$work/${cases}_in.json"
   (
     cd "$agent/pkg/trace"

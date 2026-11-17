@@ -1,7 +1,8 @@
 //! Decoders for the Datadog APM trace wire formats.
 //!
 //! [`decode_v04_payload`](datadog::decode_v04_payload) decodes the v0.4 MessagePack `[][]Span` format,
-//! [`decode_v05_payload`](datadog::decode_v05_payload) the v0.5 MessagePack dictionary format, and
+//! [`decode_v05_payload`](datadog::decode_v05_payload) the v0.5 MessagePack dictionary format,
+//! [`decode_v07_payload`](datadog::decode_v07_payload) the v0.7 MessagePack `TracerPayload` format,
 //! [`decode_v04_json`](datadog::decode_v04_json) the v0.4 format in JSON, and
 //! [`decode_v01_json`](datadog::decode_v01_json) the v0.1 JSON `[]Span` format, into the same output as the v1.0
 //! decoder; see their modules for how they mirror the reference.
@@ -44,6 +45,7 @@ mod read;
 mod string_table;
 mod v04;
 mod v05;
+mod v07;
 mod value;
 
 #[cfg(test)]
@@ -57,6 +59,7 @@ use self::read::ResolvedBytes;
 use self::string_table::StringTable;
 pub use self::v04::decode_v04_payload;
 pub use self::v05::decode_v05_payload;
+pub use self::v07::decode_v07_payload;
 use crate::common::datadog::traces::attribute_as_string;
 
 /// Plausible minimum average wire size of a trace chunk containing a span list and 16-byte trace ID.
