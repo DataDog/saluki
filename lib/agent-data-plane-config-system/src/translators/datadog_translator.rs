@@ -154,7 +154,7 @@ impl<'a> DatadogTranslator<'a> {
 
     /// Warns about an enabled alternate traces intake that has no URL.
     ///
-    /// Like the trace-agent, ADP then ignores that intake and sends traces to the default one.
+    /// ADP then ignores that intake and sends traces to the default one.
     fn warn_on_alternate_traces_intake_without_url(&self) {
         let traces = &self.config.shared.endpoints.traces;
         for (prefix, intake) in [
@@ -866,6 +866,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
 
     fn consume_apm_config_telemetry_enabled(&mut self, value: bool) {
         self.config.domains.apm.telemetry_enabled = value;
+    }
+
+    fn consume_apm_config_traces_send_to_main_endpoint(&mut self, value: bool) {
+        self.config.shared.endpoints.traces.skip_main_endpoint = !value;
     }
 
     fn consume_auth_token_file_path(&mut self, value: String) {
@@ -3222,6 +3226,18 @@ mod tests {
         );
         assert!(!endpoints.opw_intake.enabled);
         assert!(!endpoints.vector_intake.enabled);
+    }
+
+    #[test]
+    fn the_main_traces_endpoint_is_skipped_when_the_setting_is_false() {
+        for (value, expected) in [(false, true), (true, false)] {
+            let (config, errors) = translate_explicit(json!({
+                "apm_config": { "traces_send_to_main_endpoint": value },
+            }));
+
+            assert!(errors.is_none());
+            assert_eq!(expected, config.shared.endpoints.traces.skip_main_endpoint, "{value}");
+        }
     }
 
     #[test]

@@ -250,6 +250,12 @@ pub struct TracesIntake {
 
     /// Alternate traces intake for Vector, used in place of the default intake when enabled.
     pub vector_intake: AltTracesIntake,
+
+    /// Whether traces and APM stats skip the primary traces endpoint and go only to
+    /// [`additional_endpoints`](Self::additional_endpoints) (`apm_config.traces_send_to_main_endpoint` is `false`).
+    ///
+    /// This is the inverse of the setting, so that the default sends to the primary endpoint.
+    pub skip_main_endpoint: bool,
 }
 
 /// An alternate traces intake (Observability Pipelines Worker or Vector) that replaces the Datadog intake when

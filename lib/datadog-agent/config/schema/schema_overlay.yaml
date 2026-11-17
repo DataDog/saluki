@@ -571,17 +571,9 @@ inventory:
       proxies tracer telemetry when this key is enabled.
 
   apm_config.traces_send_to_main_endpoint:
-    support: none
-    severity: low
-    planned: true
-    issue: "#2419"
+    support: full
     pipelines: [traces]
     description: "Send traces and stats to the main endpoint"
-    documentation: |-
-      When `false`, the trace-agent sends traces and APM stats only to `apm_config.additional_endpoints`. ADP
-      sends the trace and stats payloads from its OTLP traces pipeline to the main trace endpoint
-      (`apm_config.apm_dd_url`, or the one derived from `dd_url` or `site`) and `apm_config.additional_endpoints`,
-      whatever this key's value. Traces that ADP relays to the trace-agent follow this key.
 
   auth_token_file_path:
     support: full

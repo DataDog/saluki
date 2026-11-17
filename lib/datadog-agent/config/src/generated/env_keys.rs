@@ -338,6 +338,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Bool,
     },
     EnvKey {
+        env_vars: &["DD_APM_TRACES_SEND_TO_MAIN_ENDPOINT"],
+        path: &["apm_config", "traces_send_to_main_endpoint"],
+        decode: EnvDecode::Bool,
+    },
+    EnvKey {
         env_vars: &["DD_AUTH_TOKEN_FILE_PATH"],
         path: &["auth_token_file_path"],
         decode: EnvDecode::RawString,

@@ -82,12 +82,18 @@ pub(crate) fn forwarder_configuration(shared: &SharedConfiguration) -> Forwarder
 pub(crate) fn traces_forwarder_configuration(shared: &SharedConfiguration) -> ForwarderConfiguration {
     let endpoints = &shared.endpoints;
 
+    let endpoint = EndpointConfiguration::new(
+        endpoints.api_key.clone(),
+        endpoints.traces_primary_endpoint(),
+        endpoints.traces.additional_endpoints.clone(),
+    );
+
     ForwarderConfiguration {
-        endpoint: EndpointConfiguration::new(
-            endpoints.api_key.clone(),
-            endpoints.traces_primary_endpoint(),
-            endpoints.traces.additional_endpoints.clone(),
-        ),
+        endpoint: if endpoints.traces.skip_main_endpoint {
+            endpoint.without_primary()
+        } else {
+            endpoint
+        },
         opw_metrics: OpwMetricsConfiguration::default(),
         ..forwarder_configuration(shared)
     }
@@ -269,6 +275,7 @@ mod tests {
                         enabled: false,
                         url: "https://traces-vector.example.com".to_string(),
                     },
+                    skip_main_endpoint: false,
                 },
             },
             metrics_encoding: MetricsEncoding {
@@ -414,6 +421,25 @@ mod tests {
         assert_eq!(expected.retry.storage_path, config.retry.storage_path);
         assert_eq!(expected.proxy.https, config.proxy.https);
         assert_eq!(expected.min_tls_version, config.min_tls_version);
+    }
+
+    #[test]
+    fn traces_forwarder_configuration_can_skip_the_main_endpoint() {
+        let mut shared = distinct_shared_configuration();
+        shared.endpoints.traces.skip_main_endpoint = true;
+
+        let endpoint = EndpointConfiguration::new(
+            "primary-key".to_string(),
+            "https://apm.example.com".to_string(),
+            HashMap::from([(
+                "https://apm-additional.example.com".to_string(),
+                vec!["apm-additional-key".to_string()],
+            )]),
+        )
+        .without_primary();
+        assert_eq!(endpoint, traces_forwarder_configuration(&shared).endpoint);
+        // The shared forwarder keeps sending to its primary endpoint.
+        assert!(forwarder_configuration(&shared).endpoint != endpoint);
     }
 
     #[test]
