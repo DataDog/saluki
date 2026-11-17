@@ -123,11 +123,4 @@ pub enum DecodeError {
     /// The string table must be the first field so that later streaming-string references resolve.
     #[snafu(display("unexpected strings field: the string table must be sent first"))]
     StringsNotFirst,
-
-    /// The input contained bytes after the top-level tracer payload was fully decoded.
-    #[snafu(display("{len} trailing byte(s) after the tracer payload"))]
-    TrailingBytes {
-        /// The number of unconsumed bytes remaining after decoding.
-        len: usize,
-    },
 }

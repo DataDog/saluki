@@ -744,23 +744,18 @@ fn overlong_trace_id_in_span_link_uses_final_16_bytes() {
 }
 
 #[test]
-fn trailing_bytes_after_payload_rejected_reserved_marker() {
-    let mut buf = Vec::new();
-    encode::write_map_len(&mut buf, 0).unwrap(); // empty, otherwise-valid tracer payload
-    buf.push(0xc1); // reserved MessagePack marker
+fn bytes_after_the_payload_are_ignored() {
+    // Found by the parity fuzzer: the reference decodes the tracer payload and ignores what follows it.
+    for trailing in [&[0xc1][..], &[0x2a], &[0x91, 0x01]] {
+        let mut buf = Vec::new();
+        encode::write_map_len(&mut buf, 1).unwrap();
+        encode::write_uint(&mut buf, 2).unwrap(); // container ID
+        encode::write_str(&mut buf, "abc").unwrap();
+        buf.extend_from_slice(trailing);
 
-    let err = decode_v1_payload(&buf).unwrap_err();
-    assert!(matches!(err, DecodeError::TrailingBytes { len: 1 }));
-}
-
-#[test]
-fn trailing_bytes_after_payload_rejected_valid_value() {
-    let mut buf = Vec::new();
-    encode::write_map_len(&mut buf, 0).unwrap(); // empty, otherwise-valid tracer payload
-    encode::write_uint(&mut buf, 42).unwrap(); // an otherwise-valid MessagePack value
-
-    let err = decode_v1_payload(&buf).unwrap_err();
-    assert!(matches!(err, DecodeError::TrailingBytes { len: 1 }));
+        let decoded = decode_v1_payload(&buf).unwrap();
+        assert!(decoded.traces.is_empty(), "{trailing:?}");
+    }
 }
 
 fn attrs(key: &str, value: &str) -> FastHashMap<MetaString, AttributeValue> {
