@@ -82,7 +82,7 @@ Use the `/panoramic` skill for correctness and integration testing.
 | [Testing](./testing.md) | Choosing which kind of test to write, and running test suites |
 | [Testing patterns](./testing-patterns.md) | Writing unit tests or property tests |
 | [Configuration system](./configuration-system.md) | Working on configuration, the schema overlay, or the configuration inventory |
-| [Datadog Agent pin](./agent-pin.md) | Changing which Agent CI builds with and tests against, or the tooling that reads `.agent-pin.json` |
+| [Datadog Agent version](./agent-version.md) | How we manage, update, and use the right version of the Datadog Agent |
 | [Plans](#plans) | Planning work that spans several pull requests |
 
 For Antithesis work, read `test/antithesis/AGENTS.md`.

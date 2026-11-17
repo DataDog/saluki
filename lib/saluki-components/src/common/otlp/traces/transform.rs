@@ -120,9 +120,8 @@ const DD_NAMESPACED_TO_APM_CONVENTIONS: &[(&str, &str)] = &[
 
 // From 7.87 the Agent sends the links and events of an OTLP span as span links and span events. Before that it wrote
 // them as the `_dd.span_links` and `events` JSON tags, the legacy form. ADP follows the Agent version it was built
-// against: the pinned nightly on `main`, and the target minor on a release branch.
-// TODO(#3069): remove this gate, the legacy tag path, and `marshal_links`/`marshal_events` once every maintained
-// release line declares 7.87 or later. Reaching 7.87 on `main` is not enough.
+// against.
+// TODO(#3069): remove this gate, the legacy tag path, and `marshal_links`/`marshal_events`.
 const LEGACY_TAG_LINKS_AND_EVENTS: bool = !datadog_agent_commons::agent_version::meets(7, 87, 0);
 
 /// How OTLP spans are converted, fixed for the life of a translator.

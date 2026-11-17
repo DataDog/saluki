@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""Open or refresh the bot pull request that proposes a discovered `.agent-pin.json`.
+"""Open or refresh the bot pull request that proposes a discovered `.datadog-agent-version.json`.
 
 Each base branch has one bot branch and at most one open pull request. The tool refreshes that pull request only
-while every change on it is the bot's own pin update. Once anyone adds a commit or touches another file, the pull
-request keeps its candidate and blocks newer proposals until it merges or closes.
+while every change on it is the bot's own Agent version update. Once anyone adds a commit or touches another file, the
+pull request keeps its candidate and blocks newer proposals until it merges or closes.
 
-The bot branch only moves forward. A refresh adds a commit on top of the head the ownership check inspected, and the
-ref update is a fast-forward, never a force push. If someone pushes after the check, the update is no longer a
-fast-forward, GitHub rejects it, and the run fails without touching their commit.
+Every commit the tool writes has the base branch's current tree plus the new version file, so the branch's CI tests
+the new Agent against current code. The bot branch only moves forward: the new commit's parents include the branch's
+current head, plus the base branch's head when the bot branch is behind it, and the ref update is a fast-forward, never
+a force push. If someone pushes after the ownership check, the update is no longer a fast-forward, GitHub rejects it,
+and the run fails without touching their commit.
 
 Commits are created through GitHub's API without custom author information, so GitHub signs them as the app that
 owns the token. The token comes from `GITHUB_TOKEN`.
@@ -23,7 +25,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-PIN_PATH = ".agent-pin.json"
+VERSION_FILE = ".datadog-agent-version.json"
 
 
 class ProposeError(Exception):
@@ -61,27 +63,40 @@ def is_bot_commit(commit):
 
 
 def foreign_changes(files, commits):
-    """Return why changes on the bot branch are not the bot's own pin update, or `None`."""
-    other_files = sorted(entry["filename"] for entry in files if entry.get("filename") != PIN_PATH)
+    """Return why changes on the bot branch are not the bot's own Agent version update, or `None`."""
+    other_files = sorted(entry["filename"] for entry in files if entry.get("filename") != VERSION_FILE)
     if other_files:
-        return f"it changes files other than {PIN_PATH}: {', '.join(other_files)}"
+        return f"it changes files other than {VERSION_FILE}: {', '.join(other_files)}"
     foreign = [commit["sha"][:12] for commit in commits if not is_bot_commit(commit)]
     if foreign:
         return f"it has commits the automation did not make: {', '.join(foreign)}"
     return None
 
 
-def write_commit(api, repository, branch, parent_sha, pin_text, message, exists):
-    """Commit the pin on top of `parent_sha` and move `branch` to that commit.
+def commit_parents(comparison, base_sha, head_sha):
+    """Return the parents for a new commit on a bot branch at `head_sha`, given GitHub's comparison of base...head.
 
-    An existing branch moves only by fast-forward, so the update fails if the branch no longer points at
-    `parent_sha`.
+    A branch that is already part of the base starts again from the base. Otherwise the commit keeps `head_sha`, so the
+    ref update is a fast-forward, and adds `base_sha` when the branch is behind, so the base's changes come in. A branch
+    left behind by a squash merge is both ahead and behind.
     """
-    parent_tree = api.request("GET", f"/repos/{repository}/git/commits/{parent_sha}")["tree"]["sha"]
-    entry = {"path": PIN_PATH, "mode": "100644", "type": "blob", "content": pin_text}
-    tree = api.request("POST", f"/repos/{repository}/git/trees", {"base_tree": parent_tree, "tree": [entry]})["sha"]
+    if comparison.get("ahead_by", 0) == 0:
+        return [base_sha]
+    if comparison.get("behind_by", 0) == 0:
+        return [head_sha]
+    return [head_sha, base_sha]
+
+
+def write_commit(api, repository, branch, base_sha, parents, version_text, message, exists):
+    """Commit the base's tree plus the version file, with `parents`, and move `branch` to that commit.
+
+    An existing branch moves only by fast-forward, so the update fails if the branch no longer points at a parent.
+    """
+    base_tree = api.request("GET", f"/repos/{repository}/git/commits/{base_sha}")["tree"]["sha"]
+    entry = {"path": VERSION_FILE, "mode": "100644", "type": "blob", "content": version_text}
+    tree = api.request("POST", f"/repos/{repository}/git/trees", {"base_tree": base_tree, "tree": [entry]})["sha"]
     commit = api.request(
-        "POST", f"/repos/{repository}/git/commits", {"message": message, "tree": tree, "parents": [parent_sha]}
+        "POST", f"/repos/{repository}/git/commits", {"message": message, "tree": tree, "parents": parents}
     )
     if not commit.get("verification", {}).get("verified"):
         raise ProposeError(f"GitHub did not sign commit {commit.get('sha')}; not pushing it")
@@ -92,15 +107,15 @@ def write_commit(api, repository, branch, parent_sha, pin_text, message, exists)
     return commit["sha"]
 
 
-def read_pin_at(api, repository, ref):
-    document = api.request("GET", f"/repos/{repository}/contents/{PIN_PATH}?ref={urllib.parse.quote(ref)}",
+def read_version_file_at(api, repository, ref):
+    document = api.request("GET", f"/repos/{repository}/contents/{VERSION_FILE}?ref={urllib.parse.quote(ref)}",
                            allow_404=True)
     if document is None:
         return None
     return json.loads(base64.b64decode(document["content"]))
 
 
-def propose(api, repository, base, branch, pin_text, title, body, labels):
+def propose(api, repository, base, branch, version_text, title, body, labels):
     """Open, refresh or hold the bot pull request. Returns `opened`, `refreshed`, `unchanged` or `held`."""
     owner = repository.split("/", 1)[0]
     base_sha = api.request("GET", f"/repos/{repository}/git/ref/heads/{base}")["object"]["sha"]
@@ -119,27 +134,28 @@ def propose(api, repository, base, branch, pin_text, title, body, labels):
         if problem:
             print(f"[*] Holding {pr['html_url']}: {problem}. Newer candidates wait until it merges or closes.")
             return "held"
-        if read_pin_at(api, repository, head_sha) == json.loads(pin_text):
-            print(f"[*] {pr['html_url']} already proposes this pin.")
+        if read_version_file_at(api, repository, head_sha) == json.loads(version_text):
+            print(f"[*] {pr['html_url']} already proposes this Agent version.")
             return "unchanged"
-        write_commit(api, repository, branch, head_sha, pin_text, title, exists=True)
+        comparison = api.request("GET", f"/repos/{repository}/compare/{base_sha}...{head_sha}")
+        parents = commit_parents(comparison, base_sha, head_sha)
+        write_commit(api, repository, branch, base_sha, parents, version_text, title, exists=True)
         api.request("PATCH", f"/repos/{repository}/pulls/{number}", {"title": title, "body": body})
         print(f"[*] Refreshed {pr['html_url']}")
         return "refreshed"
 
-    # A leftover branch is reused without a force push. If it is already part of the base, the new commit starts from
-    # the base; otherwise it goes on top of the branch's own commits.
+    # A leftover branch, such as one from a closed pull request, is reused without a force push.
     existing = api.request("GET", f"/repos/{repository}/git/ref/heads/{branch}", allow_404=True)
-    parent_sha = base_sha
+    parents = [base_sha]
     if existing is not None:
-        comparison = api.request("GET", f"/repos/{repository}/compare/{base_sha}...{existing['object']['sha']}")
+        existing_sha = existing["object"]["sha"]
+        comparison = api.request("GET", f"/repos/{repository}/compare/{base_sha}...{existing_sha}")
         problem = foreign_changes(comparison.get("files", []), comparison.get("commits", []))
         if problem:
             print(f"[*] Not overwriting branch {branch}: {problem}.")
             return "held"
-        if comparison.get("ahead_by", 0) > 0:
-            parent_sha = existing["object"]["sha"]
-    write_commit(api, repository, branch, parent_sha, pin_text, title, exists=existing is not None)
+        parents = commit_parents(comparison, base_sha, existing_sha)
+    write_commit(api, repository, branch, base_sha, parents, version_text, title, exists=existing is not None)
     pr = api.request("POST", f"/repos/{repository}/pulls", {"title": title, "head": branch, "base": base, "body": body})
     api.request("POST", f"/repos/{repository}/issues/{pr['number']}/labels", {"labels": labels})
     print(f"[*] Opened {pr['html_url']}")
@@ -151,7 +167,9 @@ def main(argv=None):
     parser.add_argument("--repository", required=True, help="owner/name")
     parser.add_argument("--base", required=True, help="Branch the pull request targets")
     parser.add_argument("--branch", required=True, help="Bot branch that carries the proposal")
-    parser.add_argument("--candidate-dir", type=Path, required=True, help="Output directory of discover_agent_pin.py")
+    parser.add_argument(
+        "--candidate-dir", type=Path, required=True, help="Output directory of discover_agent_version.py"
+    )
     parser.add_argument("--label", action="append", default=[], dest="labels")
     arguments = parser.parse_args(argv)
 
@@ -166,7 +184,7 @@ def main(argv=None):
             arguments.repository,
             arguments.base,
             arguments.branch,
-            (candidate / "agent-pin.json").read_text(encoding="utf-8"),
+            (candidate / "datadog-agent-version.json").read_text(encoding="utf-8"),
             (candidate / "pr-title.txt").read_text(encoding="utf-8").strip(),
             (candidate / "pr-body.md").read_text(encoding="utf-8"),
             arguments.labels,

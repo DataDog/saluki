@@ -38,7 +38,7 @@ services:
       dockerfile: test/antithesis/scenarios/general/Dockerfile
       target: datadog-agent
       args:
-        # Set from `.agent-pin.json` by `make antithesis-build` and `test/antithesis/bin/launch.sh`.
+        # Set from `.datadog-agent-version.json` by `make antithesis-build` and `test/antithesis/bin/launch.sh`.
         AGENT_DEBUG_DEB_URL: ${AGENT_DEBUG_DEB_URL:?build with make antithesis-build}
         AGENT_DEBUG_DEB_SHA256: ${AGENT_DEBUG_DEB_SHA256:?build with make antithesis-build}
     image: datadog-agent:${ANTITHESIS_IMAGE_TAG:-latest}

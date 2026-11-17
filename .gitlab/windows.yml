@@ -96,10 +96,10 @@ test-integration-windows-amd64:
   script:
     - *windows-build-image-pull-script
     - |
-      $AgentPin = Get-Content -Raw .agent-pin.json | ConvertFrom-Json
-      $WindowsAdpBaseImage = $AgentPin.integration.windows.image
-      if (-not $WindowsAdpBaseImage) { throw ".agent-pin.json has no integration.windows.image" }
-      Write-Host "Pinned Agent $($AgentPin.integration.version): $WindowsAdpBaseImage"
+      $AgentVersion = Get-Content -Raw .datadog-agent-version.json | ConvertFrom-Json
+      $WindowsAdpBaseImage = $AgentVersion.integration.windows.image
+      if (-not $WindowsAdpBaseImage) { throw ".datadog-agent-version.json has no integration.windows.image" }
+      Write-Host "Agent $($AgentVersion.integration.version): $WindowsAdpBaseImage"
       if ($env:AGENT_NIGHTLY -eq "true") { # for nightly run, use latest Agent
         if ($env:NIGHTLY_WINDOWS_AGENT_IMAGE) {
           $WindowsAdpBaseImage = $env:NIGHTLY_WINDOWS_AGENT_IMAGE

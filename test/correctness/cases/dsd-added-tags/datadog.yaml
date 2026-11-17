@@ -48,7 +48,7 @@ dogstatsd_tags:
 # `dogstatsd_tags`, which the DSD source applies per-packet regardless of duration.
 expected_tags_duration: 1000m
 
-# Uncomment once the Agent in `.agent-pin.json` is 7.86.0 or later (https://github.com/DataDog/saluki/issues/3119). The
-# core agent adds an `infra_mode:basic` host tag, and neither DSD nor ADP should copy it onto metrics. Before 7.86.0,
-# the core agent's DSD still copies it, so this case would fail on the pinned version.
+# Uncomment once the Agent in `.datadog-agent-version.json` is 7.86.0 or later
+# (https://github.com/DataDog/saluki/issues/3119). The core agent adds an `infra_mode:basic` host tag, and neither DSD
+# nor ADP should copy it onto metrics. Before 7.86.0, the core agent's DSD still copies it, so this case would fail.
 # infrastructure_mode: basic

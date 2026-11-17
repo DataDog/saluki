@@ -63,12 +63,13 @@ jobs:
           token: ${{ steps.octo-sts.outputs.token }}
           fetch-depth: 0
           path: release-tag
-      # A line that has adopted `.agent-pin.json` tags its first release on the `releases/X.Y.x` branch cut before the
-      # tag, so Reno collects that release's notes from the branch. Older lines tagged their first release on `main`.
+      # A line that has adopted `.datadog-agent-version.json` tags its first release on the `releases/X.Y.x` branch cut
+      # before the tag, so Reno collects that release's notes from the branch. Older lines tagged their first release
+      # on `main`.
       - name: Check that a first release was tagged on its release branch
         run: |
           if [[ "$RELEASE_TAG" =~ ^([0-9]+)\.([0-9]+)\.0$ ]] &&
-            git -C release-tag cat-file -e "refs/tags/$RELEASE_TAG:.agent-pin.json" 2>/dev/null; then
+            git -C release-tag cat-file -e "refs/tags/$RELEASE_TAG:.datadog-agent-version.json" 2>/dev/null; then
             branch="refs/remotes/origin/releases/${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.x"
             if ! git -C release-tag merge-base --is-ancestor "refs/tags/$RELEASE_TAG" "$branch"; then
               echo "::error::$RELEASE_TAG is not on its release branch. Cut the branch, commit its target, then tag it."

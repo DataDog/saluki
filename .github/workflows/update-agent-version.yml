@@ -1,17 +1,20 @@
-name: Update Agent Release Pins
+name: Update Agent Release Version
 
 # Proposes newer Datadog Agent RC and stable releases for the release lines in `MAINTAINED_LINES`.
 #
 # GitHub runs scheduled workflows only from `main`, so this workflow reads each `releases/X.Y.x` branch's
-# `.agent-pin.json` from here. For a line that has adopted the pin, `ci/tooling/discover_agent_pin.py release` looks for
-# the newest complete release within the line's `target` minor and never moves backwards. The proposal changes only the
-# pin's `integration`: never `target`, version gates or code. Each line gets its own bot branch and pull request, and
-# that branch's CI tests the new Agent.
+# `.datadog-agent-version.json` from here. For a line that has adopted the file,
+# `ci/tooling/update-agent-version/discover_agent_version.py release` looks for the newest complete release within the
+# line's `target` minor and never moves backwards. The proposal changes only the file's `integration`: never `target`,
+# version gates or code. Each line gets its own bot branch and pull request, and that branch's CI tests the new Agent.
 #
-# Lines without the pin are reported and skipped. They still count as maintained when deciding whether a version gate
+# Lines without the file are reported and skipped. They still count as maintained when deciding whether a version gate
 # can be removed.
 #
 # `discover` has a read-only token. `propose` alone exchanges an OIDC token for write access.
+#
+# Nothing else reports a failed run, so watch this workflow from Slack through the GitHub integration:
+# `/github subscribe DataDog/saluki workflows:{name:"Update Agent Release Version" event:"schedule"}`.
 
 on:
   schedule:
@@ -64,18 +67,18 @@ jobs:
               failed=1
               continue
             fi
-            if ! git cat-file -e "origin/$branch:.agent-pin.json" 2>/dev/null; then
-              echo "$branch has not adopted .agent-pin.json; skipping it." | tee -a "$GITHUB_STEP_SUMMARY"
+            if ! git cat-file -e "origin/$branch:.datadog-agent-version.json" 2>/dev/null; then
+              echo "$branch has not adopted .datadog-agent-version.json; skipping it." | tee -a "$GITHUB_STEP_SUMMARY"
               continue
             fi
 
-            pin="$RUNNER_TEMP/pins/$line.json"
+            current="$RUNNER_TEMP/current/$line.json"
             output="$RUNNER_TEMP/candidates/$line"
-            mkdir -p "$(dirname "$pin")"
-            git show "origin/$branch:.agent-pin.json" > "$pin"
-            python3 ci/tooling/agent_pin.py age --pin "$pin" | sed "s|^|$branch: |" | tee -a "$GITHUB_STEP_SUMMARY"
-            if ! GITHUB_OUTPUT= python3 ci/tooling/discover_agent_pin.py release \
-                --merged-pin "$pin" --base-branch "$branch" --output-dir "$output"; then
+            mkdir -p "$(dirname "$current")"
+            git show "origin/$branch:.datadog-agent-version.json" > "$current"
+            python3 ci/tooling/agent_version.py age --file "$current" | sed "s|^|$branch: |" | tee -a "$GITHUB_STEP_SUMMARY"
+            if ! GITHUB_OUTPUT= python3 ci/tooling/update-agent-version/discover_agent_version.py release \
+                --merged-file "$current" --base-branch "$branch" --output-dir "$output"; then
               echo "::error::Discovery failed for $branch"
               failed=1
               continue
@@ -134,7 +137,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ steps.octo-sts.outputs.token }}
         run: |
-          python3 ci/tooling/propose_agent_pin.py \
+          python3 ci/tooling/update-agent-version/propose_agent_version.py \
             --repository "${{ github.repository }}" \
             --base "releases/$LINE" \
             --branch "ci/update-agent-version-$LINE" \

@@ -11,7 +11,7 @@
 
 ARG BUILD_IMAGE=ubuntu:26.04@sha256:b7f48194d4d8b763a478a621cdc81c27be222ba2206ca3ca6bc42b49685f3d9e
 ARG APP_IMAGE=ubuntu:26.04@sha256:b7f48194d4d8b763a478a621cdc81c27be222ba2206ca3ca6bc42b49685f3d9e
-# Project-pinned converged Datadog Agent image (Make-built from `.agent-pin.json`).
+# Project-pinned converged Datadog Agent image (Make-built from `.datadog-agent-version.json`).
 # Do not pin an upstream Agent tag here.
 ARG DD_AGENT_IMAGE=saluki-images/datadog-agent:testing-release
 
@@ -122,7 +122,7 @@ ENTRYPOINT ["/usr/local/bin/antithesis-intake"]
 # can symbolize the off-the-shelf Core Agent without touching the agent image.
 # ---------------------------------------------------------------------------
 FROM build-base AS agent-symbols
-# The debug package pinned in `.agent-pin.json` for this build's architecture. Make passes both through
+# The debug package in `.datadog-agent-version.json` for this build's architecture. Make passes both through
 # docker-compose.yaml.
 ARG AGENT_DEBUG_DEB_URL=
 ARG AGENT_DEBUG_DEB_SHA256=

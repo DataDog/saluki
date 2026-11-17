@@ -17,14 +17,14 @@
     - ci/tooling/get-temporary-aws-credentials.sh
     - 'echo "Building ADP image. (version: ${ADP_IMAGE_VERSION}, target: ${BUILD_TARGET}, profile: ${BUILD_PROFILE})"'
     # Bake the Agent version into the binary so version gates work without a runtime env var.
-    # Use "nightly" for nightly CI (dev Agent). Otherwise use the pin's declared version: the target minor's
-    # patch zero on a release branch, or the pinned nightly on `main`.
+    # Use "nightly" for nightly CI (dev Agent). Otherwise use the Declared version from `.datadog-agent-version.json`:
+    # the target minor's patch zero on a release branch, or the Integration version's nightly on `main`.
     - |
       if [ -n "${AGENT_NIGHTLY}" ]; then
         DD_AGENT_VERSION="nightly"
       else
         DD_AGENT_VERSION=$(jq -er 'if has("target") then .target + ".0" else .integration.version end' \
-          .agent-pin.json) || exit 1
+          .datadog-agent-version.json) || exit 1
       fi
       echo "Compiling ADP with DD_AGENT_VERSION=${DD_AGENT_VERSION}"
     - docker buildx build

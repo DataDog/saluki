@@ -9,7 +9,8 @@ collected/generated, and more.
 Each ADP minor version is a **release line**, developed on a `releases/X.Y.x` branch. A release line supports one
 Datadog Agent minor, its **target**, for its whole life. The release process roughly looks like this:
 
-- for a new release line, cut `releases/X.Y.x` from `main` and commit the line's target to it
+- for a new release line, cut `releases/X.Y.x` from `main`
+- open a PR into the release branch to select the correct Agent version in `.datadog-agent-version.json`
 - create a GitHub release, which tags the release branch at a particular point
 - creation of the Git tag triggers a CI pipeline that checks the tag and additionally unlocks jobs to publish release
   artifacts
@@ -19,47 +20,82 @@ Datadog Agent minor, its **target**, for its whole life. The release process rou
 - post a release announcement in the `#agent-data-plane` Slack channel
 
 > [!WARNING]
-> This process doesn't yet cover the Agent `main` version transition. When Agent `main` moves to its next minor before
-> Saluki has pinned a matching nightly, the Agent's ADP dependency still belongs to the previous ADP line. How to handle
-> that gap is undecided, so confirm the plan with the team before cutting a line.
+> One gap is still open. When the Agent cuts its release branch for a minor, such as `7.87.x`, datadog-agent `main`
+> moves to the next minor, 7.88, right away. Saluki can't cut the ADP line for 7.88 until a complete 7.88 nightly or RC
+> exists, which can take days. Until then, Agent `main` keeps depending on the ADP line for 7.87, which breaks the rule
+> of one Agent minor per ADP line. The team hasn't decided how to handle that, so confirm the plan before cutting a
+> line.
 
 ## Release lines and their target
 
 ADP major.minor is (Agent major - 6).(Agent minor - 78). For example, Agent 7.86 uses ADP 1.8, and Agent 7.87 uses ADP
 1.9.
 
-The target lives in the release branch's `.agent-pin.json`, as `"target": "7.87"`. `main` has no target. The Linux ADP
-build on a release branch compiles with the target's patch zero, such as `DD_AGENT_VERSION=7.87.0`, so version gates
-select the target's behavior even when CI tests a later RC or patch. See
-[Datadog Agent pin](../development/agent-pin.md) for the rest of the pin.
+The target lives in the release branch's `.datadog-agent-version.json`, as `"target": "7.87"`. `main` has no target.
+The Linux ADP build on a release branch compiles with the target's patch zero, such as `DD_AGENT_VERSION=7.87.0`, so
+version gates select the target's behavior even when CI tests a later RC or patch. [Datadog Agent
+version](../development/agent-version.md#what-target-changes) lists everything else the target changes.
 
 The target is set once, by the release-cut commit. After the cut, no pull request may add, remove, or change it. Adding
 it is allowed only when the release branch doesn't have it yet: at the cut, or in a reviewed migration of an older line.
 
 ## Cutting a new release line
 
-Use this order. The target must exist in the commit you tag, so the branch comes first.
+Use this order. The target must exist in the commit you tag, so the branch comes first. The examples cut ADP 1.9 for
+Agent 7.87.
 
 1. Determine the target Agent minor, normally the current milestone on datadog-agent `main`. Check that it maps to the
    ADP version on `main`, in `bin/agent-data-plane/Cargo.toml`: ADP 1.9.0 needs target 7.87.
-2. Create `releases/X.Y.x` from the chosen `main` commit. The branch inherits `main`'s nightly pin.
-3. Make the release-cut commit on the branch, which adds `target` to `.agent-pin.json`. If the target minor has a
-   complete RC, the same commit replaces the inherited nightly with the newest complete RC. To find it, run the
-   following on the branch, then copy `<dir>/agent-pin.json` over `.agent-pin.json`:
+2. Create `releases/1.9.x` from the chosen `main` commit. The branch inherits `main`'s `.datadog-agent-version.json`,
+   which holds a nightly and no target.
+3. Open a pull request into `releases/1.9.x` that selects the line's Agent. This is the release-cut commit. It adds
+   `"target": "7.87"` to `.datadog-agent-version.json`, and it sets the Integration version to an Agent build from
+   7.87:
+   - If 7.87 has a complete RC, let the discovery tool write the whole file. It reads the Agent's 7.87 tags from
+     GitHub, resolves the newest complete RC's images to digests, downloads and hashes its packages, and writes a file
+     that includes the target. On the branch, run:
 
-   ```shell
-   python3 ci/tooling/discover_agent_pin.py release --target 7.87 --base-branch releases/1.9.x --output-dir <dir>
-   ```
-4. Wait for the branch's CI to pass. Check the target, the Integration version, and the ADP crate version.
-5. Tag `X.Y.0` on that branch commit (see [Quick steps](#quick-steps)), publish from the tag, and let the
-   **Bump ADP Version** workflow open the development-version bumps for `main` and the release branch.
+     ```shell
+     python3 ci/tooling/update-agent-version/discover_agent_version.py release --target 7.87 \
+       --base-branch releases/1.9.x --output-dir /tmp/release-cut
+     cp /tmp/release-cut/datadog-agent-version.json .datadog-agent-version.json
+     ```
+
+     If no RC is complete, it writes only `/tmp/release-cut/summary.json`, which says why.
+   - If 7.87 has no complete RC, see [Before the target minor has an RC](#before-the-target-minor-has-an-rc).
+
+   Run `make check-agent-version` before you push. It fails when the Integration version is outside the target.
+4. Wait for the pull request's CI to pass, then merge it. Check the target, the Integration version, and the ADP crate
+   version.
+5. Tag `1.9.0` on the release branch (see [Quick steps](#quick-steps)), publish from the tag, and let the **Bump ADP
+   Version** workflow open the development-version bumps for `main` and the release branch.
+6. Add `1.9.x` to `MAINTAINED_LINES` in `.github/workflows/update-agent-version.yml` on `main`, so the line gets newer
+   7.87 RCs and stable releases.
 
 ### Before the target minor has an RC
 
-If the target minor hasn't published a complete RC, keep the inherited nightly only if it belongs to the target minor.
-Otherwise, use a strict nightly from when Agent `main` had that minor, wait for a complete RC, or wait to cut. Agent
-release-branch nightlies don't publish the packages a pin needs. Don't borrow an RC from another minor, and don't
-change the target to fit the available artifacts.
+The branch inherits `main`'s nightly. If that nightly is from the target minor, such as
+`7.87.0-devel+git.394.462b537.pipeline.151347634` for target 7.87, keep it and add only the `target` field by hand:
+
+```json
+{
+  "schema_version": 1,
+  "target": "7.87",
+  "integration": { "kind": "nightly", "version": "7.87.0-devel+git.394.462b537.pipeline.151347634", ... }
+}
+```
+
+If Agent `main` has already moved to the next minor, the inherited nightly is outside the target. Take the last
+nightly from the target minor out of `main`'s history of the file, then add `target`:
+
+```shell
+git log --oneline origin/main -- .datadog-agent-version.json
+git show <commit>:.datadog-agent-version.json > .datadog-agent-version.json
+```
+
+If `main` never had a nightly from the target minor, wait for a complete RC, or wait to cut. Agent release-branch
+nightlies don't publish the packages the file needs. Don't borrow an RC from another minor, and don't change the target
+to fit the available artifacts.
 
 ## Patch releases
 
@@ -68,9 +104,9 @@ workflow bumps the release branch to the next patch development version.
 
 ## Agent updates within a release line
 
-The **Update Agent Release Pins** workflow proposes newer Agent releases for each maintained line that has adopted the
-pin. It changes only the pin's `integration`, never `target`, version gates, or code, and the branch's CI tests the new
-Agent. It:
+The **Update Agent Release Version** workflow proposes newer Agent releases for each maintained line that has adopted
+`.datadog-agent-version.json`. It changes only the file's `integration`, never `target`, version gates, or code, and the
+branch's CI tests the new Agent. It:
 
 - accepts only exact `X.Y.Z` and `X.Y.Z-rc.N` Agent tags within the target minor
 - lets the first complete RC replace the inherited nightly
@@ -78,7 +114,7 @@ Agent. It:
 - stays on stable patches once the line reaches stable, without proposing patch RCs
 - keeps the newest complete version when a newer one is missing artifacts
 
-The workflow skips maintained lines that haven't adopted the pin. Those lines still count when you decide whether a
+The workflow skips maintained lines that haven't adopted the file. Those lines still count when you decide whether a
 version gate can be removed.
 
 ## Release checks
@@ -86,20 +122,46 @@ version gate can be removed.
 These checks guard a release. A tag-triggered workflow can't undo a tag, so branch CI and this page's steps prevent a
 bad tag, and the GitLab check prevents a bad tag from shipping:
 
-- the **Agent pin** pull request check keeps each release branch's pin valid and its target unchanged
+- the **Agent version** pull request check keeps each release branch's file valid and its target unchanged
 - the **Bump ADP Version** workflow checks that an `X.Y.0` tag is on `releases/X.Y.x` and declares the mapped target,
   before it opens the version bumps and creates the backport label
-- the `check-release-agent-pin` job in the tag pipeline checks that the tag is on its release branch, that the ADP
-  version matches the tag, and that the pin declares the mapped target with an Integration version inside it. Every
+- the `check-release-agent-version` job in the tag pipeline checks that the tag is on its release branch, that the ADP
+  version matches the tag, and that the file declares the mapped target with an Integration version inside it. Every
   publish job depends on it.
 - the **Release notes** workflow checks that an `X.Y.0` tag is on its release branch before it renders the notes
 
+## Release notes for a new line
+
+Reno, the release-note tool, decides which release a note belongs to by walking back through the Git history of the
+tag being released. A note belongs to the first release tag after the commit that added it. Notes added before an
+earlier release tag in that history belong to that earlier release, so Reno leaves them out.
+
+Each line is cut to `releases/X.Y.x` before its first tag, and tagged there, so no `X.Y.0` tag is in `main`'s history.
+In this example, `T1` and `T2` are the release-cut commits:
+
+```text
+main:              A --- B --- C --- D
+                          \           \
+releases/1.9.x:            T1 (1.9.0)  \
+releases/1.10.x:                        T2 (1.10.0)
+```
+
+The notes added in `A` and `B` shipped in `1.9.0`. When Reno walks back from `1.10.0`, through `T2`, `D`, `C`, `B` and
+`A`, it never meets the `1.9.0` tag, so on its own it would list those notes again under `1.10.0`.
+
+`ci/tooling/release_notes.py render` corrects for that. When the newest earlier release, `1.9.0`, isn't in the tag's
+history, it takes the notes present at `B`, where the two histories meet, and drops the ones Reno already gives to a
+release in the tag's history. It passes the rest to Reno as `ignore_notes`, in a temporary copy of the configuration;
+`releasenotes/config.yaml` doesn't change. Patch releases, and older lines that were tagged on `main`, have their
+newest earlier release in their history and render as before. A change merged to `main` after the cut and backported
+to `1.9.x` isn't in `B`, so its note appears in both `1.9.x` and `1.10.0`.
+
 ## Older release lines
 
-Release lines cut before `.agent-pin.json` existed keep their existing process until someone migrates them: their
-checks skip lines without a pin, and published tags are never rewritten. Migrating a line means auditing its intended
-Agent minor and its version gates, then adding the pin with its `target` in a reviewed pull request. Once a line has the
-pin, removing the pin or `target` doesn't exempt it from the checks.
+Release lines cut before `.datadog-agent-version.json` existed keep their existing process until someone migrates them:
+their checks skip lines without the file, and published tags are never rewritten. Migrating a line means auditing its
+intended Agent minor and its version gates, then adding the file with its `target` in a reviewed pull request. Once a
+line has the file, removing the file or `target` doesn't exempt it from the checks.
 
 ## Quick steps
 
@@ -125,7 +187,7 @@ pin, removing the pin or `target` doesn't exempt it from the checks.
   find the pipeline that was triggered for the newly created Git tag. It may take a minute or two for the repository
   sync and pipeline creation to occur.
 - The pipeline should progress through the `test`, `build`, `correctness`, and `release` stages without issue,
-  including the `check-release-agent-pin` job.
+  including the `check-release-agent-version` job.
 - Once all stages have completed, the `release` stage will have a number of blocked jobs: standalone image publishing,
   release tarball publishing, and so on. These jobs perform any necessary final packaging and publish ADP release
   artifacts, in their various forms, to the relevant container registries and object storage. They _must_ be triggered

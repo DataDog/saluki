@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Validate and read `.agent-pin.json`, the Datadog Agent that Saluki builds with and tests against.
+"""Validate and read `.datadog-agent-version.json`, the Datadog Agent that Saluki builds with and tests against.
 
-The pin holds the Integration version: one Agent build's Linux, Windows, macOS and debug-package artifacts. On a
+The file holds the Integration version: one Agent build's Linux, Windows, macOS and debug-package artifacts. On a
 release branch it also holds `target`, the Agent minor the ADP line supports. This module only reads local files and
-Git objects; discovery, which reads registries and hashes packages, lives in `discover_agent_pin.py`.
+Git objects. Discovery, which reads registries and hashes packages, is
+`update-agent-version/discover_agent_version.py`.
 """
 
 import argparse
@@ -15,7 +16,7 @@ import sys
 from pathlib import Path
 
 
-PIN_PATH = ".agent-pin.json"
+VERSION_FILE = ".datadog-agent-version.json"
 SCHEMA_VERSION = 1
 ADP_CARGO_TOML = "bin/agent-data-plane/Cargo.toml"
 
@@ -43,8 +44,8 @@ LINUX_ARCHITECTURES = ("amd64", "arm64")
 KINDS = ("nightly", "rc", "release")
 
 
-class PinError(Exception):
-    """A pin that is missing, unreadable or invalid."""
+class VersionFileError(Exception):
+    """A version file that is missing, unreadable or invalid."""
 
 
 def parse_agent_version(version):
@@ -125,7 +126,7 @@ def check_package(value, path, expected_url):
         return errors
     url = value["url"]
     if isinstance(url, str) and "/dd-agent-macostesting/ci/" in url:
-        errors.append(f"{path}.url uses the expiring macOS ci/ prefix; pin the long-lived package instead")
+        errors.append(f"{path}.url uses the expiring macOS ci/ prefix; use the long-lived package instead")
     elif url != expected_url:
         errors.append(f"{path}.url must be {expected_url}, not {url!r}")
     if not isinstance(value["sha256"], str) or not SHA256_RE.fullmatch(value["sha256"]):
@@ -136,7 +137,8 @@ def check_package(value, path, expected_url):
 def validate_integration(integration):
     """Return errors for the `integration` section."""
     keys = (
-        "kind", "version", "revision", "pipeline_id", "built_at", "linux", "windows", "macos", "antithesis_debug_debs",
+        "kind", "version", "git_revision", "pipeline_id", "built_at",
+        "linux", "windows", "macos", "antithesis_debug_debs",
     )
     errors = check_keys(integration, "integration", keys)
     if errors:
@@ -150,9 +152,9 @@ def validate_integration(integration):
     if parsed is None or parsed[0] != kind:
         return [f"integration.version {version!r} is not a {kind} Agent version"]
 
-    revision = integration["revision"]
+    revision = integration["git_revision"]
     if not isinstance(revision, str) or not REVISION_RE.fullmatch(revision):
-        errors.append("integration.revision must be a full 40-character Agent commit SHA")
+        errors.append("integration.git_revision must be a full 40-character Agent commit SHA")
 
     pipeline_id = integration["pipeline_id"]
     if kind == "nightly":
@@ -162,7 +164,7 @@ def validate_integration(integration):
         elif str(pipeline_id) != match.group(6):
             errors.append(f"integration.pipeline_id {pipeline_id} does not match version pipeline {match.group(6)}")
         if isinstance(revision, str) and not revision.startswith(match.group(5)):
-            errors.append(f"integration.revision does not start with the version's commit {match.group(5)}")
+            errors.append(f"integration.git_revision does not start with the version's commit {match.group(5)}")
     elif pipeline_id is not None:
         errors.append(f"integration.pipeline_id must be null for kind {kind}")
 
@@ -218,99 +220,102 @@ def validate_integration(integration):
     return errors
 
 
-def validate_pin(pin):
-    """Return every error in a pin's shape and values, independent of its branch."""
-    errors = check_keys(pin, "pin", ("schema_version", "integration"), ("target",))
+def validate_version_file(version_file):
+    """Return every error in a version file's shape and values, independent of its branch."""
+    errors = check_keys(version_file, "file", ("schema_version", "integration"), ("target",))
     if errors:
         return errors
-    if pin["schema_version"] != SCHEMA_VERSION:
-        return [f"schema_version {pin['schema_version']!r} is not supported; this reader understands {SCHEMA_VERSION}"]
+    if version_file["schema_version"] != SCHEMA_VERSION:
+        schema_version = version_file["schema_version"]
+        return [f"schema_version {schema_version!r} is not supported; this reader understands {SCHEMA_VERSION}"]
 
-    errors = validate_integration(pin["integration"])
-    if "target" in pin:
-        target = pin["target"]
+    errors = validate_integration(version_file["integration"])
+    if "target" in version_file:
+        target = version_file["target"]
         if not isinstance(target, str) or not TARGET_RE.fullmatch(target):
             errors.append(f"target {target!r} must be an Agent major.minor such as 7.87")
         else:
-            minor = version_minor(pin["integration"].get("version"))
+            version = version_file["integration"].get("version")
+            minor = version_minor(version)
             if minor is not None and minor != target:
-                errors.append(f"integration.version {pin['integration']['version']} is outside target {target}")
+                errors.append(f"integration.version {version} is outside target {target}")
     return errors
 
 
 def parse_built_at(value):
-    """Parse a pin's `built_at` timestamp as an aware UTC datetime."""
+    """Parse a version file's `built_at` timestamp as an aware UTC datetime."""
     return datetime.datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
 
 
-def declared_version(pin):
+def declared_version(version_file):
     """Return the `DD_AGENT_VERSION` that the Linux ADP build compiles in."""
-    return f"{pin['target']}.0" if "target" in pin else pin["integration"]["version"]
+    return f"{version_file['target']}.0" if "target" in version_file else version_file["integration"]["version"]
 
 
-def read_field(pin, field):
+def read_field(version_file, field):
     """Return the scalar at a dotted path, such as `integration.linux.image`."""
-    value = pin
+    value = version_file
     for part in field.split("."):
         if not isinstance(value, dict) or part not in value:
-            raise PinError(f"{PIN_PATH} has no field {field}")
+            raise VersionFileError(f"{VERSION_FILE} has no field {field}")
         value = value[part]
     if value is None or isinstance(value, (dict, list)):
-        raise PinError(f"{PIN_PATH} field {field} is not a scalar value")
+        raise VersionFileError(f"{VERSION_FILE} field {field} is not a scalar value")
     return value
 
 
-def parse_pin_text(text, source):
-    """Parse pin JSON, raising `PinError` with the source on failure."""
+def parse_version_file_text(text, source):
+    """Parse version file JSON, raising `VersionFileError` with the source on failure."""
     try:
         return json.loads(text)
     except json.JSONDecodeError as error:
-        raise PinError(f"{source} is not valid JSON: {error}") from error
+        raise VersionFileError(f"{source} is not valid JSON: {error}") from error
 
 
-def load_pin(path):
-    """Read and validate a pin file."""
+def load_version_file(path):
+    """Read and validate a version file."""
     try:
         text = Path(path).read_text(encoding="utf-8")
     except FileNotFoundError as error:
-        raise PinError(f"{path} does not exist") from error
-    pin = parse_pin_text(text, path)
-    errors = validate_pin(pin)
+        raise VersionFileError(f"{path} does not exist") from error
+    version_file = parse_version_file_text(text, path)
+    errors = validate_version_file(version_file)
     if errors:
-        raise PinError("\n".join(f"{path}: {error}" for error in errors))
-    return pin
+        raise VersionFileError("\n".join(f"{path}: {error}" for error in errors))
+    return version_file
 
 
-def check_change(destination, pin, established):
-    """Return errors for a proposed pin against its destination branch.
+def check_change(destination, version_file, established):
+    """Return errors for a proposed version file against its destination branch.
 
-    `pin` is the proposed file and `established` is the file on the destination branch's tip; either is `None` when
-    the file is absent. Rules come from the destination, so a change cannot exempt itself by deleting the pin or
+    `version_file` is the proposed file and `established` is the file on the destination branch's tip; either is `None`
+    when the file is absent. Rules come from the destination, so a change cannot exempt itself by deleting the file or
     `target`.
     """
-    errors = validate_pin(pin) if pin is not None else []
-    proposed_target = pin.get("target") if isinstance(pin, dict) else None
+    errors = validate_version_file(version_file) if version_file is not None else []
+    proposed_target = version_file.get("target") if isinstance(version_file, dict) else None
     established_target = established.get("target") if isinstance(established, dict) else None
     line = RELEASE_BRANCH_RE.fullmatch(destination)
 
     if destination == "main":
-        if pin is None:
-            errors.append(f"main requires {PIN_PATH}")
-        elif isinstance(pin, dict):
-            if "target" in pin:
+        if version_file is None:
+            errors.append(f"main requires {VERSION_FILE}")
+        elif isinstance(version_file, dict):
+            if "target" in version_file:
                 errors.append("main must not declare target; only release branches do")
-            if isinstance(pin.get("integration"), dict) and pin["integration"].get("kind") != "nightly":
-                errors.append("main must pin a nightly")
+            integration = version_file.get("integration")
+            if isinstance(integration, dict) and integration.get("kind") != "nightly":
+                errors.append("main must use a nightly")
     elif line:
-        # A line adopts the pin once its branch has one. Older lines keep their process until a migration adds it.
-        if established is None and pin is None:
+        # A line adopts the file once its branch has one. Older lines keep their process until a migration adds it.
+        if established is None and version_file is None:
             return errors
-        if pin is None:
-            errors.append(f"{destination} has adopted {PIN_PATH}; it cannot be removed")
+        if version_file is None:
+            errors.append(f"{destination} has adopted {VERSION_FILE}; it cannot be removed")
         expected_target = target_for_adp_line(int(line.group(1)), int(line.group(2)))
         if established_target is not None and proposed_target != established_target:
             errors.append(f"target is immutable on {destination}: it must stay {established_target!r}")
-        elif pin is not None and proposed_target is None:
+        elif version_file is not None and proposed_target is None:
             errors.append(f"{destination} requires target {expected_target!r}")
         if proposed_target is not None and proposed_target != expected_target:
             errors.append(f"target {proposed_target!r} does not match {destination}; it must be {expected_target!r}")
@@ -319,17 +324,18 @@ def check_change(destination, pin, established):
     return errors
 
 
-def check_release_tag(tag, pin, adp_version, established, on_branch):
+def check_release_tag(tag, version_file, adp_version, established, on_branch):
     """Return `(adopted, errors)` for publishing ADP release `tag`.
 
-    `pin` and `adp_version` come from the tagged commit, `established` from the tip of the line's release branch, and
-    `on_branch` says whether that branch contains the tag. Lines with no pin in either place have not adopted it.
+    `version_file` and `adp_version` come from the tagged commit, `established` from the tip of the line's release
+    branch, and `on_branch` says whether that branch contains the tag. Lines with no file in either place have not
+    adopted it.
     """
     match = ADP_TAG_RE.fullmatch(tag)
     if not match:
         return True, [f"release tag {tag!r} must use the X.Y.Z format"]
     branch = f"releases/{match.group(1)}.{match.group(2)}.x"
-    if pin is None and established is None:
+    if version_file is None and established is None:
         return False, []
 
     errors = []
@@ -337,12 +343,12 @@ def check_release_tag(tag, pin, adp_version, established, on_branch):
         errors.append(f"tag {tag} is not on {branch}; cut the branch, commit target, then tag the branch")
     if adp_version != tag:
         errors.append(f"{ADP_CARGO_TOML} version {adp_version!r} does not match tag {tag}")
-    if pin is None:
-        errors.append(f"tag {tag} has no {PIN_PATH}, but {branch} has adopted it")
+    if version_file is None:
+        errors.append(f"tag {tag} has no {VERSION_FILE}, but {branch} has adopted it")
     else:
-        errors.extend(validate_pin(pin))
+        errors.extend(validate_version_file(version_file))
         expected_target = target_for_adp_line(int(match.group(1)), int(match.group(2)))
-        target = pin.get("target") if isinstance(pin, dict) else None
+        target = version_file.get("target") if isinstance(version_file, dict) else None
         if target != expected_target:
             errors.append(f"tag {tag} must declare target {expected_target!r}, not {target!r}")
     return True, errors
@@ -353,16 +359,16 @@ def git(repository, *arguments):
     return subprocess.run(["git", "-C", str(repository), *arguments], capture_output=True, text=True)
 
 
-def read_git_pin(repository, ref):
-    """Return the pin at a Git ref, or `None` when the ref has no pin file."""
+def read_git_version_file(repository, ref):
+    """Return the version file at a Git ref, or `None` when the ref has none."""
     if git(repository, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}").returncode != 0:
-        raise PinError(f"Git ref {ref} does not exist; fetch it before checking")
-    if git(repository, "cat-file", "-e", f"{ref}:{PIN_PATH}").returncode != 0:
+        raise VersionFileError(f"Git ref {ref} does not exist; fetch it before checking")
+    if git(repository, "cat-file", "-e", f"{ref}:{VERSION_FILE}").returncode != 0:
         return None
-    shown = git(repository, "show", f"{ref}:{PIN_PATH}")
+    shown = git(repository, "show", f"{ref}:{VERSION_FILE}")
     if shown.returncode != 0:
-        raise PinError(f"could not read {PIN_PATH} at {ref}: {shown.stderr.strip()}")
-    return parse_pin_text(shown.stdout, f"{ref}:{PIN_PATH}")
+        raise VersionFileError(f"could not read {VERSION_FILE} at {ref}: {shown.stderr.strip()}")
+    return parse_version_file_text(shown.stdout, f"{ref}:{VERSION_FILE}")
 
 
 def read_adp_version(repository):
@@ -371,15 +377,15 @@ def read_adp_version(repository):
         match = re.fullmatch(r'version = "([^"]+)"', line.strip())
         if match:
             return match.group(1)
-    raise PinError(f"{ADP_CARGO_TOML} has no version")
+    raise VersionFileError(f"{ADP_CARGO_TOML} has no version")
 
 
-def read_working_pin(repository):
-    """Return the working tree's pin without validating it, or `None` when it is absent."""
-    path = Path(repository) / PIN_PATH
+def read_working_version_file(repository):
+    """Return the working tree's version file without validating it, or `None` when it is absent."""
+    path = Path(repository) / VERSION_FILE
     if not path.exists():
         return None
-    return parse_pin_text(path.read_text(encoding="utf-8"), str(path))
+    return parse_version_file_text(path.read_text(encoding="utf-8"), str(path))
 
 
 def report(errors):
@@ -391,36 +397,36 @@ def report(errors):
 
 
 def validate_command(arguments):
-    load_pin(arguments.pin)
-    print(f"{arguments.pin} is valid")
+    load_version_file(arguments.file)
+    print(f"{arguments.file} is valid")
     return 0
 
 
 def get_command(arguments):
-    print(read_field(load_pin(arguments.pin), arguments.field))
+    print(read_field(load_version_file(arguments.file), arguments.field))
     return 0
 
 
 def declared_version_command(arguments):
-    print(declared_version(load_pin(arguments.pin)))
+    print(declared_version(load_version_file(arguments.file)))
     return 0
 
 
 def age_command(arguments):
-    pin = load_pin(arguments.pin)
+    version_file = load_version_file(arguments.file)
     now = parse_built_at(arguments.now) if arguments.now else datetime.datetime.now(datetime.timezone.utc)
-    built_at = pin["integration"]["built_at"]
+    built_at = version_file["integration"]["built_at"]
     days = (now - parse_built_at(built_at)).total_seconds() / 86400
-    print(f"Agent pin {pin['integration']['version']} was built at {built_at}: {days:.1f} days old.")
+    print(f"Agent {version_file['integration']['version']} was built at {built_at}: {days:.1f} days old.")
     return 0
 
 
 def check_change_command(arguments):
     repository = Path(arguments.repository)
-    established = read_git_pin(repository, arguments.established_ref) if arguments.established_ref else None
-    errors = check_change(arguments.destination, read_working_pin(repository), established)
+    established = read_git_version_file(repository, arguments.established_ref) if arguments.established_ref else None
+    errors = check_change(arguments.destination, read_working_version_file(repository), established)
     if not errors:
-        print(f"{PIN_PATH} satisfies the rules for {arguments.destination}")
+        print(f"{VERSION_FILE} satisfies the rules for {arguments.destination}")
     return report(errors)
 
 
@@ -437,20 +443,20 @@ def check_tag_command(arguments):
         if listed.returncode == 0:
             fetched = git(repository, "fetch", "--no-tags", arguments.remote, f"+refs/heads/{branch}:{ref}")
             if fetched.returncode != 0:
-                raise PinError(f"could not fetch {branch}: {fetched.stderr.strip()}")
+                raise VersionFileError(f"could not fetch {branch}: {fetched.stderr.strip()}")
         elif listed.returncode != 2:
-            raise PinError(f"could not list {branch}: {listed.stderr.strip()}")
+            raise VersionFileError(f"could not list {branch}: {listed.stderr.strip()}")
 
     branch_exists = git(repository, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}").returncode == 0
-    established = read_git_pin(repository, ref) if branch_exists else None
+    established = read_git_version_file(repository, ref) if branch_exists else None
     on_branch = branch_exists and git(repository, "merge-base", "--is-ancestor", "HEAD", ref).returncode == 0
     adopted, errors = check_release_tag(
-        arguments.tag, read_working_pin(repository), read_adp_version(repository), established, on_branch
+        arguments.tag, read_working_version_file(repository), read_adp_version(repository), established, on_branch
     )
     if not adopted:
         if arguments.require_adopted:
-            return report([f"{branch} has not adopted {PIN_PATH}; a new release line must declare its target"])
-        print(f"{branch} has not adopted {PIN_PATH}; skipping the pin checks for {arguments.tag}")
+            return report([f"{branch} has not adopted {VERSION_FILE}; a new release line must declare its target"])
+        print(f"{branch} has not adopted {VERSION_FILE}; skipping the Agent version checks for {arguments.tag}")
         return 0
     if not errors:
         print(f"{arguments.tag} is on {branch} and declares the mapped target")
@@ -467,20 +473,22 @@ def parse_arguments(argv=None):
         return subparser
 
     for name, handler, help_text in (
-        ("validate", validate_command, "Validate the pin's shape and values"),
+        ("validate", validate_command, "Validate the version file's shape and values"),
         ("declared-version", declared_version_command, "Print the DD_AGENT_VERSION for the Linux ADP build"),
-        ("age", age_command, "Print the pin's age, measured from built_at"),
+        ("age", age_command, "Print the Integration version's age, measured from built_at"),
     ):
         subparser = add(name, handler, help_text)
-        subparser.add_argument("--pin", default=PIN_PATH)
+        subparser.add_argument("--file", default=VERSION_FILE)
         if name == "age":
             subparser.add_argument("--now", help="Measure age at this UTC time instead of now")
 
     get_parser = add("get", get_command, "Print one field, such as integration.linux.image")
     get_parser.add_argument("field")
-    get_parser.add_argument("--pin", default=PIN_PATH)
+    get_parser.add_argument("--file", default=VERSION_FILE)
 
-    change_parser = add("check-change", check_change_command, "Check the working tree's pin against a destination")
+    change_parser = add(
+        "check-change", check_change_command, "Check the working tree's version file against a destination"
+    )
     change_parser.add_argument("--destination", required=True, help="Pull request destination branch, such as main")
     change_parser.add_argument("--established-ref", help="Git ref of the destination branch's tip")
     change_parser.add_argument("--repository", default=".")
@@ -489,7 +497,7 @@ def parse_arguments(argv=None):
     tag_parser.add_argument("--tag", required=True)
     tag_parser.add_argument("--remote", default="origin")
     tag_parser.add_argument("--fetch", action="store_true", help="Fetch the release branch from the remote first")
-    tag_parser.add_argument("--require-adopted", action="store_true", help="Fail when the line has no pin")
+    tag_parser.add_argument("--require-adopted", action="store_true", help="Fail when the line has no version file")
     tag_parser.add_argument("--repository", default=".")
     return parser.parse_args(argv)
 
@@ -498,7 +506,7 @@ def main(argv=None):
     arguments = parse_arguments(argv)
     try:
         return arguments.handler(arguments)
-    except PinError as error:
+    except VersionFileError as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
 

@@ -46,7 +46,7 @@ export default defineConfig({
                     { text: "Testing", link: "/development/testing" },
                     { text: "Testing Patterns", link: "/development/testing-patterns" },
                     { text: "Configuration System", link: "/development/configuration-system" },
-                    { text: "Datadog Agent Pin", link: "/development/agent-pin" },
+                    { text: "Datadog Agent Version", link: "/development/agent-version" },
                 ],
             },
             {

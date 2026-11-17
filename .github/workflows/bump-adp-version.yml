@@ -70,7 +70,7 @@ jobs:
       - name: Check that the tag is on its release branch and declares its target
         env:
           TAG_NAME: ${{ github.ref_name }}
-        run: python3 ci/tooling/agent_pin.py check-tag --tag "$TAG_NAME" --require-adopted
+        run: python3 ci/tooling/agent_version.py check-tag --tag "$TAG_NAME" --require-adopted
 
   create-backport-label:
     needs: [release-info, check-release-cut]

@@ -11,14 +11,15 @@ import unittest.mock
 from pathlib import Path
 
 
-TOOLING = Path(__file__).parent
-sys.path.insert(0, str(TOOLING))
-spec = importlib.util.spec_from_file_location("discover_agent_pin", TOOLING / "discover_agent_pin.py")
+HERE = Path(__file__).resolve().parent
+# `agent_version` and its tests live one directory up, in `ci/tooling`.
+sys.path.insert(0, str(HERE.parent))
+spec = importlib.util.spec_from_file_location("discover_agent_version", HERE / "discover_agent_version.py")
 subject = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(subject)
-agent_pin = subject.agent_pin
+agent_version = subject.agent_version
 
-from test_agent_pin import make_pin  # noqa: E402
+from test_agent_version import make_version_file  # noqa: E402
 
 # Test-only commits and versions; none of these identify real Agent builds.
 OLD_REVISION = "0123456789abcdef0123456789abcdef01234567"
@@ -90,8 +91,9 @@ def labels(version, revision):
     return {subject.VERSION_LABEL: version, subject.REVISION_LABEL: revision}
 
 
-def publish_nightly(web, version=VERSION, revision=REVISION, linux_version=None, skip=()):
+def publish_nightly(web, version=VERSION, revision=REVISION, linux_version=None, skip=(), on_main=True):
     """Publish a nightly's Windows, Linux and package artifacts; return the Windows child digest."""
+    web.json(f"{GITHUB}/compare/{revision}...main", {"status": "ahead" if on_main else "diverged"})
     windows = web.image(HUB, "windows", "amd64", labels(version, revision), os_version=WINDOWS_OS)
     nanoserver = web.image(HUB, "windows", "amd64", labels(version, revision), os_version="10.0.17763.1")
     web.index(
@@ -120,11 +122,11 @@ def publish_linux(web, base, tag, version, revision, windows_child=None):
 
 
 def publish_packages(web, kind, version, skip=()):
-    for arch in agent_pin.MACOS_ARCHITECTURES:
-        web.package(agent_pin.macos_package_url(kind, version, arch), f"dmg {arch} {version}".encode())
-    for arch in agent_pin.LINUX_ARCHITECTURES:
+    for arch in agent_version.MACOS_ARCHITECTURES:
+        web.package(agent_version.macos_package_url(kind, version, arch), f"dmg {arch} {version}".encode())
+    for arch in agent_version.LINUX_ARCHITECTURES:
         if f"deb-{arch}" not in skip:
-            web.package(agent_pin.debug_deb_url(kind, version, arch), f"deb {arch} {version}".encode())
+            web.package(agent_version.debug_deb_url(kind, version, arch), f"deb {arch} {version}".encode())
 
 
 class FakeClock:
@@ -161,15 +163,15 @@ class DiscoveryTest(unittest.TestCase):
 
 
 class NightlyDiscoveryTest(DiscoveryTest):
-    def test_pins_a_complete_matching_set(self):
+    def test_selects_a_complete_matching_set(self):
         windows_child = publish_nightly(self.web)
         self.web.json(f"{GITHUB}/compare/{OLD_REVISION}...{REVISION}", {"status": "ahead"})
 
-        pin = self.nightly(make_pin())
+        version_file = self.nightly(make_version_file())
 
-        self.assertEqual(agent_pin.validate_pin(pin), [])
-        integration = pin["integration"]
-        self.assertEqual((integration["version"], integration["revision"], integration["pipeline_id"]),
+        self.assertEqual(agent_version.validate_version_file(version_file), [])
+        integration = version_file["integration"]
+        self.assertEqual((integration["version"], integration["git_revision"], integration["pipeline_id"]),
                          (VERSION, REVISION, 99000))
         self.assertEqual(integration["built_at"], "2026-11-16T03:40:12Z")
         self.assertEqual(integration["windows"]["image"], f"datadog/agent-dev@{windows_child}")
@@ -178,19 +180,53 @@ class NightlyDiscoveryTest(DiscoveryTest):
         self.assertEqual(
             integration["macos"]["arm64"]["sha256"], hashlib.sha256(f"dmg arm64 {VERSION}".encode()).hexdigest()
         )
-        self.assertNotIn("target", pin)
+        self.assertNotIn("target", version_file)
 
-    def test_skips_when_windows_is_ahead_of_linux(self):
-        publish_nightly(self.web, skip=("linux",))
-        with self.assertRaisesRegex(subject.Skip, "nightly-full-main-89abcdef-jmx does not exist"):
+    def test_skips_a_nightly_whose_packages_are_not_published(self):
+        publish_nightly(self.web, skip=("linux", "deb-amd64"))
+        with self.assertRaisesRegex(subject.Skip, "_amd64.deb is not published"):
             self.nightly()
 
-    def test_pins_the_windows_build_when_windows_is_behind_linux(self):
+    def test_fails_when_the_packages_exist_but_the_linux_image_does_not(self):
+        publish_nightly(self.web, skip=("linux",))
+        expected = "nightly-full-main-89abcdef-jmx does not exist.*LINUX_NIGHTLY_TAG"
+        with self.assertRaisesRegex(subject.DiscoveryError, expected):
+            self.nightly()
+
+    def test_skips_a_nightly_from_an_agent_release_branch(self):
+        publish_nightly(self.web, on_main=False)
+        with self.assertRaisesRegex(subject.Skip, "is not on Agent main"):
+            self.nightly()
+
+    def test_selects_the_windows_build_when_windows_is_behind_linux(self):
         publish_nightly(self.web)
         newer_revision = "f" * 40
         publish_linux(self.web, HUB, f"nightly-full-main-{newer_revision[:8]}-jmx",
                       "7.87.0-devel+git.51.fffffff.pipeline.99100", newer_revision)
-        self.assertEqual(self.nightly()["integration"]["revision"], REVISION)
+        self.assertEqual(self.nightly()["integration"]["git_revision"], REVISION)
+
+    def test_fails_on_a_windows_version_it_does_not_understand(self):
+        publish_nightly(self.web, version="7.87.0-nightly.20261116", skip=("linux",))
+        with self.assertRaisesRegex(subject.DiscoveryError, "update NIGHTLY_VERSION_RE"):
+            self.nightly()
+
+    def test_fails_on_a_linux_index_without_both_architectures(self):
+        publish_nightly(self.web, skip=("linux",))
+        amd64 = self.web.image(HUB, "linux", "amd64", labels(VERSION, REVISION))
+        tag = f"nightly-full-main-{REVISION[:8]}-jmx"
+        self.web.index(HUB, [(amd64, {"os": "linux", "architecture": "amd64"})], tag)
+        with self.assertRaisesRegex(subject.DiscoveryError, "has no linux/arm64 image; it has linux/amd64"):
+            self.nightly()
+
+    def test_fails_on_a_windows_index_without_ltsc2022(self):
+        nanoserver = self.web.image(HUB, "windows", "amd64", labels(VERSION, REVISION), os_version="10.0.17763.1")
+        self.web.index(
+            HUB, [(nanoserver, {"os": "windows", "architecture": "amd64", "os.version": "10.0.17763.1"})],
+            subject.WINDOWS_NIGHTLY_TAG,
+        )
+        expected = "no windows/amd64 image .* it has windows/amd64 10.0.17763.1"
+        with self.assertRaisesRegex(subject.DiscoveryError, expected):
+            self.nightly()
 
     def test_skips_a_windows_image_from_a_release_branch(self):
         publish_nightly(self.web, version="7.86.2-rc.1", skip=("linux",))
@@ -207,11 +243,11 @@ class NightlyDiscoveryTest(DiscoveryTest):
         moved = publish_nightly(self.web, version="7.87.0-devel+git.52.89abcde.pipeline.99200", skip=("linux",))
         self.assertNotEqual(moved, None)
 
-        pin = self.nightly()
+        version_file = self.nightly()
 
         tag_url = f"{HUB}/manifests/{subject.WINDOWS_NIGHTLY_TAG}"
         self.assertEqual(self.web.requests.count(("GET", tag_url)), 1)
-        self.assertEqual(pin["integration"]["version"], VERSION)
+        self.assertEqual(version_file["integration"]["version"], VERSION)
 
     def test_skips_missing_packages(self):
         publish_nightly(self.web, skip=("deb-arm64",))
@@ -233,7 +269,7 @@ class NightlyDiscoveryTest(DiscoveryTest):
 
     def test_retries_an_interrupted_download(self):
         publish_nightly(self.web)
-        url = agent_pin.macos_package_url("nightly", VERSION, "arm64")
+        url = agent_version.macos_package_url("nightly", VERSION, "arm64")
         contents = f"dmg arm64 {VERSION}".encode()
 
         def interrupted():
@@ -241,12 +277,12 @@ class NightlyDiscoveryTest(DiscoveryTest):
             raise http.client.IncompleteRead(contents[:3], len(contents) - 3)
 
         self.web.routes[("GET", url)] = [(200, {}, interrupted), (200, {}, contents)]
-        pin = self.nightly()
-        self.assertEqual(pin["integration"]["macos"]["arm64"]["sha256"], hashlib.sha256(contents).hexdigest())
+        version_file = self.nightly()
+        self.assertEqual(version_file["integration"]["macos"]["arm64"]["sha256"], hashlib.sha256(contents).hexdigest())
 
     def test_fails_when_downloads_keep_failing(self):
         publish_nightly(self.web)
-        url = agent_pin.debug_deb_url("nightly", VERSION, "amd64")
+        url = agent_version.debug_deb_url("nightly", VERSION, "amd64")
         self.web.routes[("GET", url)] = [ConnectionResetError("reset")]
         with self.assertRaisesRegex(subject.DiscoveryError, "ConnectionResetError"):
             self.nightly()
@@ -264,22 +300,22 @@ class NightlyDiscoveryTest(DiscoveryTest):
 
     def test_skips_older_candidates(self):
         publish_nightly(self.web)
-        merged = make_pin()
+        merged = make_version_file()
         merged["integration"]["pipeline_id"] = 99000
         merged["integration"]["version"] = "7.87.0-devel+git.42.0123456.pipeline.99000"
-        with self.assertRaisesRegex(subject.Skip, "not newer than pinned pipeline 99000"):
+        with self.assertRaisesRegex(subject.Skip, "not newer than the current pipeline 99000"):
             self.nightly(merged)
 
         self.web.json(f"{GITHUB}/compare/{OLD_REVISION}...{REVISION}", {"status": "behind"})
-        with self.assertRaisesRegex(subject.Skip, "is not ahead of the pinned commit"):
-            self.nightly(make_pin())
+        with self.assertRaisesRegex(subject.Skip, "is not ahead of the current commit"):
+            self.nightly(make_version_file())
 
     def test_accepts_a_supplied_windows_child_digest(self):
         windows_child = publish_nightly(self.web)
         self.web.routes.pop(("GET", f"{HUB}/manifests/{subject.WINDOWS_NIGHTLY_TAG}"))
-        pin = self.nightly(windows_digest=windows_child)
-        self.assertIsNone(pin["integration"]["windows"]["source_index_digest"])
-        self.assertEqual(pin["integration"]["windows"]["image"], f"datadog/agent-dev@{windows_child}")
+        version_file = self.nightly(windows_digest=windows_child)
+        self.assertIsNone(version_file["integration"]["windows"]["source_index_digest"])
+        self.assertEqual(version_file["integration"]["windows"]["image"], f"datadog/agent-dev@{windows_child}")
 
     def test_authenticates_with_the_registry_token_challenge(self):
         publish_nightly(self.web)
@@ -325,11 +361,11 @@ class ReleaseDiscoveryTest(DiscoveryTest):
         self.tags("7.87.0-rc.1", "7.87.0-installer-0.1", "7.87.0-devel", annotated=("7.87.0-rc.1",))
         publish_release(self.web, "7.87.0-rc.1")
 
-        pin = self.release(make_pin(target="7.87"))
+        version_file = self.release(make_version_file(target="7.87"))
 
-        self.assertEqual(agent_pin.validate_pin(pin), [])
-        self.assertEqual(pin["target"], "7.87")
-        integration = pin["integration"]
+        self.assertEqual(agent_version.validate_version_file(version_file), [])
+        self.assertEqual(version_file["target"], "7.87")
+        integration = version_file["integration"]
         self.assertEqual((integration["kind"], integration["version"]), ("rc", "7.87.0-rc.1"))
         self.assertIsNone(integration["pipeline_id"])
         self.assertTrue(integration["linux"]["image"].startswith("registry.datadoghq.com/agent@sha256:"))
@@ -338,39 +374,40 @@ class ReleaseDiscoveryTest(DiscoveryTest):
         self.tags("7.87.0-rc.2", "7.87.0-rc.10")
         publish_release(self.web, "7.87.0-rc.2")
         publish_release(self.web, "7.87.0-rc.10", skip=("windows",))
-        self.assertEqual(self.release(make_pin(target="7.87"))["integration"]["version"], "7.87.0-rc.2")
+        self.assertEqual(self.release(make_version_file(target="7.87"))["integration"]["version"], "7.87.0-rc.2")
 
     def test_moves_from_stable_to_stable_patches_only(self):
         self.tags("7.87.0", "7.87.1-rc.1", "7.87.1")
         publish_release(self.web, "7.87.1")
-        current = make_pin("release", "7.87.0", target="7.87")
+        current = make_version_file("release", "7.87.0", target="7.87")
         self.assertEqual(self.release(current)["integration"]["version"], "7.87.1")
 
     def test_never_moves_backwards(self):
         self.tags("7.87.0-rc.2", "7.87.0-rc.10")
         with self.assertRaisesRegex(subject.Skip, "no Agent 7.87 release is newer than 7.87.0-rc.10"):
-            self.release(make_pin("rc", "7.87.0-rc.10", target="7.87"))
+            self.release(make_version_file("rc", "7.87.0-rc.10", target="7.87"))
 
-    def test_keeps_the_pin_when_every_newer_version_is_incomplete(self):
+    def test_keeps_the_current_version_when_every_newer_version_is_incomplete(self):
         self.tags("7.87.0-rc.1")
         publish_release(self.web, "7.87.0-rc.1", skip=("windows",))
         with self.assertRaisesRegex(subject.Skip, "no newer complete release"):
-            self.release(make_pin(target="7.87"))
+            self.release(make_version_file(target="7.87"))
 
     def test_a_release_cut_can_replace_a_nightly_from_another_minor(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "pin.json"
-            path.write_text(json.dumps(make_pin(version="7.88.0-devel+git.1.0123456.pipeline.98765")), encoding="utf-8")
-            merged = subject.load_merged_pin(path, "7.87")
-            with self.assertRaisesRegex(agent_pin.PinError, "different target"):
-                path.write_text(json.dumps(make_pin(target="7.87")), encoding="utf-8")
-                subject.load_merged_pin(path, "7.86")
+            path = Path(directory) / "version.json"
+            other_minor = make_version_file(version="7.88.0-devel+git.1.0123456.pipeline.98765")
+            path.write_text(json.dumps(other_minor), encoding="utf-8")
+            merged = subject.load_merged_version_file(path, "7.87")
+            with self.assertRaisesRegex(agent_version.VersionFileError, "different target"):
+                path.write_text(json.dumps(make_version_file(target="7.87")), encoding="utf-8")
+                subject.load_merged_version_file(path, "7.86")
         self.tags("7.87.0-rc.3")
         publish_release(self.web, "7.87.0-rc.3")
         self.assertEqual(self.release(merged)["integration"]["version"], "7.87.0-rc.3")
 
     def test_refuses_to_cross_minors_from_a_release(self):
-        merged = make_pin("rc", "7.86.0-rc.1", target="7.86")
+        merged = make_version_file("rc", "7.86.0-rc.1", target="7.86")
         merged["target"] = "7.87"
         with self.assertRaisesRegex(subject.DiscoveryError, "outside target 7.87"):
             self.release(merged)
@@ -379,7 +416,7 @@ class ReleaseDiscoveryTest(DiscoveryTest):
         self.tags("7.87.0-rc.1")
         publish_release(self.web, "7.87.0-rc.1", revision="e" * 40)
         with self.assertRaisesRegex(subject.Skip, "Linux amd64 image is 7.87.0-rc.1 at e+"):
-            self.release(make_pin(target="7.87"))
+            self.release(make_version_file(target="7.87"))
 
 
 class CommandTest(unittest.TestCase):
@@ -395,30 +432,49 @@ class CommandTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "out"
             arguments = subject.argparse.Namespace(
-                mode="nightly", merged_pin=str(Path(directory) / "missing.json"), base_branch="main",
+                mode="nightly", merged_file=str(Path(directory) / "missing.json"), base_branch="main",
                 windows_digest=None, target=None, output_dir=output, budget_seconds=1,
             )
-            publish_nightly(web, skip=("linux",))
+            publish_nightly(web, skip=("linux", "deb-arm64"))
             with contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(subject.run(arguments, subject.Http(web.transport)), 0)
             self.assertEqual(sorted(path.name for path in output.iterdir()), ["summary.json"])
             self.assertEqual(json.loads((output / "summary.json").read_text())["status"], "skipped")
 
-    def test_a_candidate_writes_the_pin_and_pull_request_text(self):
+    def test_a_failed_discovery_says_why_and_writes_no_version_file(self):
+        web = FakeWeb()
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "out"
+            arguments = subject.argparse.Namespace(
+                mode="nightly", merged_file=str(Path(directory) / "missing.json"), base_branch="main",
+                windows_digest=None, target=None, output_dir=output, budget_seconds=1,
+            )
+            stderr = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(stderr):
+                with unittest.mock.patch.dict(subject.os.environ, {"GITHUB_ACTIONS": "true"}):
+                    self.assertEqual(subject.run(arguments, subject.Http(web.transport)), 1)
+            self.assertEqual(sorted(path.name for path in output.iterdir()), ["summary.json"])
+            summary = json.loads((output / "summary.json").read_text())
+            self.assertEqual(summary["status"], "error")
+            self.assertIn(f"{subject.WINDOWS_NIGHTLY_TAG} does not exist", summary["reason"])
+            self.assertIn("was not changed", stderr.getvalue())
+
+    def test_a_candidate_writes_the_version_file_and_pull_request_text(self):
         web = FakeWeb()
         publish_nightly(web)
         web.json(f"{GITHUB}/compare/{OLD_REVISION}...{REVISION}", {"status": "ahead"})
         with tempfile.TemporaryDirectory() as directory:
-            merged = Path(directory) / "pin.json"
-            merged.write_text(json.dumps(make_pin()), encoding="utf-8")
+            merged = Path(directory) / "version.json"
+            merged.write_text(json.dumps(make_version_file()), encoding="utf-8")
             output = Path(directory) / "out"
             arguments = subject.argparse.Namespace(
-                mode="nightly", merged_pin=str(merged), base_branch="main", windows_digest=None, target=None,
+                mode="nightly", merged_file=str(merged), base_branch="main", windows_digest=None, target=None,
                 output_dir=output, budget_seconds=1,
             )
             with contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(subject.run(arguments, subject.Http(web.transport)), 0)
-            self.assertEqual(agent_pin.load_pin(output / "agent-pin.json")["integration"]["version"], VERSION)
+            candidate = agent_version.load_version_file(output / "datadog-agent-version.json")
+            self.assertEqual(candidate["integration"]["version"], VERSION)
             body = (output / "pr-body.md").read_text()
             self.assertIn(f"compare/{OLD_REVISION}...{REVISION}", body)
             self.assertIn("/-/pipelines/99000", body)

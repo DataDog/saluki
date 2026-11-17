@@ -65,11 +65,12 @@ if [[ -n "$(git -C "$REPO_ROOT" status --porcelain 2>/dev/null)" ]]; then
 fi
 export ANTITHESIS_IMAGE_TAG="$GIT_SHA"
 
-# The scenarios build for linux/amd64 with the Agent debug package pinned in
-# `.agent-pin.json`. Exported so the Make build and the rendered compose agree.
-PIN_READER=(python3 "$REPO_ROOT/ci/tooling/agent_pin.py")
-AGENT_DEBUG_DEB_URL="$("${PIN_READER[@]}" get integration.antithesis_debug_debs.amd64.url --pin "$REPO_ROOT/.agent-pin.json")"
-AGENT_DEBUG_DEB_SHA256="$("${PIN_READER[@]}" get integration.antithesis_debug_debs.amd64.sha256 --pin "$REPO_ROOT/.agent-pin.json")"
+# The scenarios build for linux/amd64 with the Agent debug package in
+# `.datadog-agent-version.json`. Exported so the Make build and the rendered compose agree.
+VERSION_READER=(python3 "$REPO_ROOT/ci/tooling/agent_version.py")
+VERSION_FILE="$REPO_ROOT/.datadog-agent-version.json"
+AGENT_DEBUG_DEB_URL="$("${VERSION_READER[@]}" get integration.antithesis_debug_debs.amd64.url --file "$VERSION_FILE")"
+AGENT_DEBUG_DEB_SHA256="$("${VERSION_READER[@]}" get integration.antithesis_debug_debs.amd64.sha256 --file "$VERSION_FILE")"
 export AGENT_DEBUG_DEB_URL AGENT_DEBUG_DEB_SHA256
 
 WEBHOOK="${WEBHOOK:-${SCENARIO_WEBHOOK:-run_test}}"

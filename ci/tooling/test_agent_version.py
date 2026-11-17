@@ -11,10 +11,10 @@ import unittest
 from pathlib import Path
 
 
-MODULE_PATH = Path(__file__).with_name("agent_pin.py")
-spec = importlib.util.spec_from_file_location("agent_pin", MODULE_PATH)
+MODULE_PATH = Path(__file__).with_name("agent_version.py")
+spec = importlib.util.spec_from_file_location("agent_version", MODULE_PATH)
 subject = importlib.util.module_from_spec(spec)
-sys.modules["agent_pin"] = subject
+sys.modules["agent_version"] = subject
 spec.loader.exec_module(subject)
 
 # Test-only values: these digests, checksums and commits do not identify real Agent builds.
@@ -26,15 +26,15 @@ def digest(character):
     return "sha256:" + character * 64
 
 
-def make_pin(kind="nightly", version=NIGHTLY_VERSION, target=None):
-    """Build a complete, valid test pin for an Agent version."""
+def make_version_file(kind="nightly", version=NIGHTLY_VERSION, target=None):
+    """Build a complete, valid test version file for an Agent version."""
     repository = subject.image_repository(kind)
-    pin = {
+    version_file = {
         "schema_version": 1,
         "integration": {
             "kind": kind,
             "version": version,
-            "revision": REVISION,
+            "git_revision": REVISION,
             "pipeline_id": 98765 if kind == "nightly" else None,
             "built_at": "2026-11-16T03:40:00Z",
             "linux": {
@@ -57,8 +57,8 @@ def make_pin(kind="nightly", version=NIGHTLY_VERSION, target=None):
         },
     }
     if target is not None:
-        pin["target"] = target
-    return pin
+        version_file["target"] = target
+    return version_file
 
 
 class PackageUrlTest(unittest.TestCase):
@@ -97,30 +97,30 @@ class PackageUrlTest(unittest.TestCase):
         self.assertEqual(subject.target_for_adp_line(1, 9), "7.87")
 
 
-class ValidatePinTest(unittest.TestCase):
-    def assert_rejected(self, pin, message):
-        errors = subject.validate_pin(pin)
+class ValidateVersionFileTest(unittest.TestCase):
+    def assert_rejected(self, version_file, message):
+        errors = subject.validate_version_file(version_file)
         self.assertTrue(any(message in error for error in errors), f"{message!r} not in {errors}")
 
-    def test_accepts_complete_pins_of_every_kind(self):
-        for pin in (
-            make_pin(),
-            make_pin(target="7.87"),
-            make_pin("rc", "7.87.0-rc.2", target="7.87"),
-            make_pin("release", "7.87.1", target="7.87"),
+    def test_accepts_complete_version_files_of_every_kind(self):
+        for version_file in (
+            make_version_file(),
+            make_version_file(target="7.87"),
+            make_version_file("rc", "7.87.0-rc.2", target="7.87"),
+            make_version_file("release", "7.87.1", target="7.87"),
         ):
-            with self.subTest(version=pin["integration"]["version"]):
-                self.assertEqual(subject.validate_pin(pin), [])
+            with self.subTest(version=version_file["integration"]["version"]):
+                self.assertEqual(subject.validate_version_file(version_file), [])
 
     def test_rejects_unknown_schema_version(self):
-        pin = make_pin()
-        pin["schema_version"] = 2
-        self.assert_rejected(pin, "schema_version 2 is not supported")
+        version_file = make_version_file()
+        version_file["schema_version"] = 2
+        self.assert_rejected(version_file, "schema_version 2 is not supported")
 
     def test_rejects_unknown_fields(self):
-        pin = make_pin()
-        pin["integration"]["linux"]["tag"] = "latest"
-        self.assert_rejected(pin, "integration.linux.tag is not a known field")
+        version_file = make_version_file()
+        version_file["integration"]["linux"]["tag"] = "latest"
+        self.assert_rejected(version_file, "integration.linux.tag is not a known field")
 
     def test_rejects_missing_architectures(self):
         cases = (
@@ -130,12 +130,12 @@ class ValidatePinTest(unittest.TestCase):
         )
         for section, subsection, arch, message in cases:
             with self.subTest(section=section, arch=arch):
-                pin = make_pin()
-                container = pin["integration"][section]
+                version_file = make_version_file()
+                container = version_file["integration"][section]
                 if subsection:
                     container = container[subsection]
                 del container[arch]
-                self.assert_rejected(pin, message)
+                self.assert_rejected(version_file, message)
 
     def test_rejects_malformed_digests_and_checksums(self):
         cases = (
@@ -148,72 +148,72 @@ class ValidatePinTest(unittest.TestCase):
         )
         for mutate, message in cases:
             with self.subTest(message=message):
-                pin = make_pin()
-                mutate(pin)
-                self.assert_rejected(pin, message)
+                version_file = make_version_file()
+                mutate(version_file)
+                self.assert_rejected(version_file, message)
 
     def test_rejects_expiring_macos_ci_packages(self):
-        pin = make_pin()
-        pin["integration"]["macos"]["arm64"]["url"] = (
+        version_file = make_version_file()
+        version_file["integration"]["macos"]["arm64"]["url"] = (
             "https://s3.amazonaws.com/dd-agent-macostesting/ci/datadog-agent-7.87.0-devel.git.42-1.arm64.dmg"
         )
-        self.assert_rejected(pin, "expiring macOS ci/ prefix")
+        self.assert_rejected(version_file, "expiring macOS ci/ prefix")
 
     def test_rejects_packages_from_another_build(self):
-        pin = make_pin()
-        debs = pin["integration"]["antithesis_debug_debs"]
+        version_file = make_version_file()
+        debs = version_file["integration"]["antithesis_debug_debs"]
         debs["amd64"]["url"] = subject.debug_deb_url("release", "7.85.4", "amd64")
-        self.assert_rejected(pin, "integration.antithesis_debug_debs.amd64.url must be")
+        self.assert_rejected(version_file, "integration.antithesis_debug_debs.amd64.url must be")
 
     def test_rejects_images_from_the_wrong_repository(self):
-        pin = make_pin("rc", "7.87.0-rc.1", target="7.87")
-        pin["integration"]["windows"]["image"] = f"datadog/agent-dev@{digest('d')}"
-        self.assert_rejected(pin, "must come from registry.datadoghq.com/agent")
+        version_file = make_version_file("rc", "7.87.0-rc.1", target="7.87")
+        version_file["integration"]["windows"]["image"] = f"datadog/agent-dev@{digest('d')}"
+        self.assert_rejected(version_file, "must come from registry.datadoghq.com/agent")
 
     def test_requires_an_ltsc2022_windows_image(self):
-        pin = make_pin()
-        pin["integration"]["windows"]["os_version"] = "10.0.17763.1"
-        self.assert_rejected(pin, "ltsc2022")
+        version_file = make_version_file()
+        version_file["integration"]["windows"]["os_version"] = "10.0.17763.1"
+        self.assert_rejected(version_file, "ltsc2022")
 
     def test_nightly_pipeline_and_revision_agree_with_the_version(self):
-        pin = make_pin()
-        pin["integration"]["pipeline_id"] = 98766
-        self.assert_rejected(pin, "does not match version pipeline 98765")
+        version_file = make_version_file()
+        version_file["integration"]["pipeline_id"] = 98766
+        self.assert_rejected(version_file, "does not match version pipeline 98765")
 
-        pin = make_pin()
-        pin["integration"]["revision"] = "f" * 40
-        self.assert_rejected(pin, "does not start with the version's commit 0123456")
+        version_file = make_version_file()
+        version_file["integration"]["git_revision"] = "f" * 40
+        self.assert_rejected(version_file, "does not start with the version's commit 0123456")
 
-        pin = make_pin()
-        pin["integration"]["pipeline_id"] = None
-        self.assert_rejected(pin, "pipeline_id must be a positive integer")
+        version_file = make_version_file()
+        version_file["integration"]["pipeline_id"] = None
+        self.assert_rejected(version_file, "pipeline_id must be a positive integer")
 
     def test_release_pins_have_no_pipeline(self):
-        pin = make_pin("release", "7.87.0", target="7.87")
-        pin["integration"]["pipeline_id"] = 1
-        self.assert_rejected(pin, "pipeline_id must be null for kind release")
+        version_file = make_version_file("release", "7.87.0", target="7.87")
+        version_file["integration"]["pipeline_id"] = 1
+        self.assert_rejected(version_file, "pipeline_id must be null for kind release")
 
     def test_kind_and_version_agree(self):
-        pin = make_pin()
-        pin["integration"]["kind"] = "rc"
-        self.assert_rejected(pin, "is not a rc Agent version")
+        version_file = make_version_file()
+        version_file["integration"]["kind"] = "rc"
+        self.assert_rejected(version_file, "is not a rc Agent version")
 
     def test_rejects_versions_outside_the_target_minor(self):
-        self.assert_rejected(make_pin(target="7.86"), "is outside target 7.86")
-        self.assert_rejected(make_pin("rc", "7.88.0-rc.1", target="7.87"), "is outside target 7.87")
+        self.assert_rejected(make_version_file(target="7.86"), "is outside target 7.86")
+        self.assert_rejected(make_version_file("rc", "7.88.0-rc.1", target="7.87"), "is outside target 7.87")
 
     def test_rejects_malformed_targets_and_timestamps(self):
-        self.assert_rejected(make_pin(target="7.87.0"), "must be an Agent major.minor")
-        pin = make_pin()
-        pin["integration"]["built_at"] = "2026-11-16T03:40:00.123+00:00"
-        self.assert_rejected(pin, "built_at must be a UTC timestamp")
+        self.assert_rejected(make_version_file(target="7.87.0"), "must be an Agent major.minor")
+        version_file = make_version_file()
+        version_file["integration"]["built_at"] = "2026-11-16T03:40:00.123+00:00"
+        self.assert_rejected(version_file, "built_at must be a UTC timestamp")
 
 
 class DeclaredVersionTest(unittest.TestCase):
     def test_main_declares_the_nightly_and_release_lines_declare_their_target(self):
-        self.assertEqual(subject.declared_version(make_pin()), NIGHTLY_VERSION)
-        self.assertEqual(subject.declared_version(make_pin(target="7.87")), "7.87.0")
-        self.assertEqual(subject.declared_version(make_pin("release", "7.87.3", target="7.87")), "7.87.0")
+        self.assertEqual(subject.declared_version(make_version_file()), NIGHTLY_VERSION)
+        self.assertEqual(subject.declared_version(make_version_file(target="7.87")), "7.87.0")
+        self.assertEqual(subject.declared_version(make_version_file("release", "7.87.3", target="7.87")), "7.87.0")
 
 
 class CiDeclaredVersionTest(unittest.TestCase):
@@ -222,90 +222,96 @@ class CiDeclaredVersionTest(unittest.TestCase):
         if not jq:
             self.skipTest("jq is not installed")
         build = (MODULE_PATH.parents[2] / ".gitlab/build.yml").read_text(encoding="utf-8")
-        expression = re.search(r"jq -er '([^']*)' \\\s+\.agent-pin\.json", build).group(1)
-        for pin in (make_pin(), make_pin(target="7.87"), make_pin("release", "7.87.2", target="7.87")):
+        expression = re.search(r"jq -er '([^']*)' \\\s+\.datadog-agent-version\.json", build).group(1)
+        version_files = (
+            make_version_file(), make_version_file(target="7.87"), make_version_file("release", "7.87.2", target="7.87")
+        )
+        for version_file in version_files:
             resolved = subprocess.run(
-                [jq, "-er", expression], input=json.dumps(pin), capture_output=True, text=True, check=True
+                [jq, "-er", expression], input=json.dumps(version_file), capture_output=True, text=True, check=True
             ).stdout.strip()
-            self.assertEqual(resolved, subject.declared_version(pin))
+            self.assertEqual(resolved, subject.declared_version(version_file))
 
 
 class CheckChangeTest(unittest.TestCase):
-    def assert_errors(self, destination, pin, established, *messages):
-        errors = subject.check_change(destination, pin, established)
+    def assert_errors(self, destination, version_file, established, *messages):
+        errors = subject.check_change(destination, version_file, established)
         if not messages:
             self.assertEqual(errors, [])
         for message in messages:
             self.assertTrue(any(message in error for error in errors), f"{message!r} not in {errors}")
 
     def test_main_takes_a_nightly_without_target(self):
-        self.assert_errors("main", make_pin(), make_pin())
-        self.assert_errors("main", make_pin(), None)
-        self.assert_errors("main", make_pin(target="7.87"), make_pin(), "main must not declare target")
-        self.assert_errors("main", make_pin("release", "7.87.0"), make_pin(), "main must pin a nightly")
-        self.assert_errors("main", None, make_pin(), "main requires .agent-pin.json")
+        self.assert_errors("main", make_version_file(), make_version_file())
+        self.assert_errors("main", make_version_file(), None)
+        established = make_version_file()
+        self.assert_errors("main", make_version_file(target="7.87"), established, "main must not declare target")
+        self.assert_errors("main", make_version_file("release", "7.87.0"), established, "main must use a nightly")
+        self.assert_errors("main", None, make_version_file(), "main requires .datadog-agent-version.json")
 
     def test_release_cut_adds_the_mapped_target(self):
-        self.assert_errors("releases/1.9.x", make_pin(target="7.87"), make_pin())
-        self.assert_errors("releases/1.9.x", make_pin("rc", "7.87.0-rc.1", target="7.87"), make_pin())
-        self.assert_errors("releases/1.9.x", make_pin(target="7.86"), make_pin(), "it must be '7.87'")
-        self.assert_errors("releases/1.9.x", make_pin(), make_pin(), "requires target '7.87'")
+        self.assert_errors("releases/1.9.x", make_version_file(target="7.87"), make_version_file())
+        self.assert_errors("releases/1.9.x", make_version_file("rc", "7.87.0-rc.1", target="7.87"), make_version_file())
+        self.assert_errors("releases/1.9.x", make_version_file(target="7.86"), make_version_file(), "it must be '7.87'")
+        self.assert_errors("releases/1.9.x", make_version_file(), make_version_file(), "requires target '7.87'")
 
     def test_release_pull_requests_cannot_edit_target(self):
-        established = make_pin(target="7.87")
-        self.assert_errors("releases/1.9.x", make_pin("rc", "7.87.0-rc.2", target="7.87"), established)
-        self.assert_errors("releases/1.9.x", make_pin(), established, "target is immutable")
-        changed = make_pin("rc", "7.88.0-rc.1", target="7.88")
+        established = make_version_file(target="7.87")
+        self.assert_errors("releases/1.9.x", make_version_file("rc", "7.87.0-rc.2", target="7.87"), established)
+        self.assert_errors("releases/1.9.x", make_version_file(), established, "target is immutable")
+        changed = make_version_file("rc", "7.88.0-rc.1", target="7.88")
         self.assert_errors("releases/1.9.x", changed, established, "target is immutable", "it must be '7.87'")
 
-    def test_adopted_lines_keep_the_pin(self):
-        self.assert_errors("releases/1.9.x", None, make_pin(target="7.87"), "cannot be removed")
-        self.assert_errors("releases/1.9.x", None, make_pin(), "cannot be removed")
+    def test_adopted_lines_keep_the_version_file(self):
+        self.assert_errors("releases/1.9.x", None, make_version_file(target="7.87"), "cannot be removed")
+        self.assert_errors("releases/1.9.x", None, make_version_file(), "cannot be removed")
 
-    def test_lines_without_the_pin_keep_their_process(self):
+    def test_lines_without_the_version_file_keep_their_process(self):
         self.assert_errors("releases/1.8.x", None, None)
 
-    def test_a_copied_main_pin_cannot_start_an_old_line(self):
-        self.assert_errors("releases/1.8.x", make_pin(), None, "requires target '7.86'")
-        self.assert_errors("releases/1.8.x", make_pin(target="7.87"), None, "it must be '7.86'")
+    def test_a_copied_main_version_file_cannot_start_an_old_line(self):
+        self.assert_errors("releases/1.8.x", make_version_file(), None, "requires target '7.86'")
+        self.assert_errors("releases/1.8.x", make_version_file(target="7.87"), None, "it must be '7.86'")
 
     def test_other_destinations_keep_target(self):
-        self.assert_errors("feature/stack-base", make_pin(), make_pin())
-        self.assert_errors("feature/stack-base", make_pin(target="7.87"), make_pin(), "target must not change")
+        self.assert_errors("feature/stack-base", make_version_file(), make_version_file())
+        self.assert_errors(
+            "feature/stack-base", make_version_file(target="7.87"), make_version_file(), "target must not change"
+        )
 
 
 class CheckReleaseTagTest(unittest.TestCase):
-    def check(self, tag="1.9.0", pin=None, adp_version="1.9.0", established=None, on_branch=True):
-        return subject.check_release_tag(tag, pin, adp_version, established, on_branch)
+    def check(self, tag="1.9.0", version_file=None, adp_version="1.9.0", established=None, on_branch=True):
+        return subject.check_release_tag(tag, version_file, adp_version, established, on_branch)
 
     def test_accepts_a_tag_on_its_release_branch(self):
-        pin = make_pin(target="7.87")
-        self.assertEqual(self.check(pin=pin, established=pin), (True, []))
-        stable = make_pin("release", "7.87.2", target="7.87")
+        version_file = make_version_file(target="7.87")
+        self.assertEqual(self.check(version_file=version_file, established=version_file), (True, []))
+        stable = make_version_file("release", "7.87.2", target="7.87")
         self.assertEqual(self.check("1.9.3", stable, "1.9.3", stable), (True, []))
 
     def test_rejects_a_tag_off_the_expected_branch(self):
-        adopted, errors = self.check(pin=make_pin(target="7.87"), established=None, on_branch=False)
+        adopted, errors = self.check(version_file=make_version_file(target="7.87"), established=None, on_branch=False)
         self.assertTrue(adopted)
         self.assertIn("tag 1.9.0 is not on releases/1.9.x", errors[0])
 
     def test_rejects_a_target_that_disagrees_with_the_adp_line(self):
-        pin = make_pin("release", "7.86.3", target="7.86")
-        _, errors = self.check(pin=pin, established=pin)
+        version_file = make_version_file("release", "7.86.3", target="7.86")
+        _, errors = self.check(version_file=version_file, established=version_file)
         self.assertTrue(any("must declare target '7.87'" in error for error in errors), errors)
 
     def test_rejects_an_adp_version_that_disagrees_with_the_tag(self):
-        pin = make_pin(target="7.87")
-        _, errors = self.check(pin=pin, adp_version="1.9.1-dev", established=pin)
+        version_file = make_version_file(target="7.87")
+        _, errors = self.check(version_file=version_file, adp_version="1.9.1-dev", established=version_file)
         self.assertTrue(any("does not match tag 1.9.0" in error for error in errors), errors)
 
-    def test_removing_the_pin_does_not_exempt_an_adopted_line(self):
-        _, errors = self.check(pin=None, established=make_pin(target="7.87"))
-        self.assertTrue(any("has no .agent-pin.json" in error for error in errors), errors)
-        _, errors = self.check(pin=make_pin(), established=make_pin(target="7.87"))
+    def test_removing_the_version_file_does_not_exempt_an_adopted_line(self):
+        _, errors = self.check(version_file=None, established=make_version_file(target="7.87"))
+        self.assertTrue(any("has no .datadog-agent-version.json" in error for error in errors), errors)
+        _, errors = self.check(version_file=make_version_file(), established=make_version_file(target="7.87"))
         self.assertTrue(any("must declare target '7.87', not None" in error for error in errors), errors)
 
-    def test_skips_lines_that_have_not_adopted_the_pin(self):
+    def test_skips_lines_that_have_not_adopted_the_version_file(self):
         self.assertEqual(self.check("1.8.2", None, "1.8.2", None, on_branch=True), (False, []))
 
 
@@ -321,39 +327,41 @@ class CommandTest(unittest.TestCase):
             code = subject.main(list(arguments))
         return code, stdout.getvalue(), stderr.getvalue()
 
-    def write_pin(self, pin):
-        (self.root / ".agent-pin.json").write_text(json.dumps(pin, indent=2) + "\n", encoding="utf-8")
+    def write_version_file(self, version_file):
+        text = json.dumps(version_file, indent=2) + "\n"
+        (self.root / ".datadog-agent-version.json").write_text(text, encoding="utf-8")
 
-    def test_get_and_declared_version_read_a_valid_pin(self):
-        self.write_pin(make_pin(target="7.87"))
-        path = str(self.root / ".agent-pin.json")
+    def test_get_and_declared_version_read_a_valid_version_file(self):
+        self.write_version_file(make_version_file(target="7.87"))
+        path = str(self.root / ".datadog-agent-version.json")
         self.assertEqual(
-            self.run_main("get", "integration.linux.image", "--pin", path),
+            self.run_main("get", "integration.linux.image", "--file", path),
             (0, f"datadog/agent-dev@{digest('a')}\n", ""),
         )
-        self.assertEqual(self.run_main("declared-version", "--pin", path), (0, "7.87.0\n", ""))
+        self.assertEqual(self.run_main("declared-version", "--file", path), (0, "7.87.0\n", ""))
 
-    def test_readers_refuse_an_invalid_pin(self):
-        pin = make_pin()
-        del pin["integration"]["macos"]["x86_64"]
-        self.write_pin(pin)
-        code, stdout, stderr = self.run_main("get", "integration.version", "--pin", str(self.root / ".agent-pin.json"))
+    def test_readers_refuse_an_invalid_version_file(self):
+        version_file = make_version_file()
+        del version_file["integration"]["macos"]["x86_64"]
+        self.write_version_file(version_file)
+        path = str(self.root / ".datadog-agent-version.json")
+        code, stdout, stderr = self.run_main("get", "integration.version", "--file", path)
         self.assertEqual((code, stdout), (1, ""))
         self.assertIn("integration.macos.x86_64 is required", stderr)
 
     def test_get_rejects_missing_and_null_fields(self):
-        pin = make_pin()
-        pin["integration"]["windows"]["source_index_digest"] = None
-        self.write_pin(pin)
-        path = str(self.root / ".agent-pin.json")
-        self.assertIn("has no field target", self.run_main("get", "target", "--pin", path)[2])
-        null_field = self.run_main("get", "integration.windows.source_index_digest", "--pin", path)
+        version_file = make_version_file()
+        version_file["integration"]["windows"]["source_index_digest"] = None
+        self.write_version_file(version_file)
+        path = str(self.root / ".datadog-agent-version.json")
+        self.assertIn("has no field target", self.run_main("get", "target", "--file", path)[2])
+        null_field = self.run_main("get", "integration.windows.source_index_digest", "--file", path)
         self.assertIn("is not a scalar", null_field[2])
 
     def test_age_is_measured_from_built_at(self):
-        self.write_pin(make_pin())
+        self.write_version_file(make_version_file())
         code, stdout, _ = self.run_main(
-            "age", "--pin", str(self.root / ".agent-pin.json"), "--now", "2026-11-20T15:40:00Z"
+            "age", "--file", str(self.root / ".datadog-agent-version.json"), "--now", "2026-11-20T15:40:00Z"
         )
         self.assertEqual(code, 0)
         self.assertIn("4.5 days old", stdout)
@@ -369,19 +377,19 @@ class CommandTest(unittest.TestCase):
         self.git("init", "-q", "-b", "main")
         (self.root / "bin/agent-data-plane").mkdir(parents=True)
         (self.root / "bin/agent-data-plane/Cargo.toml").write_text('[package]\nversion = "1.9.0"\n', encoding="utf-8")
-        self.write_pin(make_pin())
+        self.write_version_file(make_version_file())
         self.commit("main")
 
     def test_check_change_reads_the_destination_branch_from_git(self):
         self.init_repository()
         self.git("branch", "releases/1.9.x")
-        self.write_pin(make_pin(target="7.87"))
+        self.write_version_file(make_version_file(target="7.87"))
         self.assertEqual(
             self.run_main("check-change", "--destination", "releases/1.9.x", "--established-ref", "releases/1.9.x",
                           "--repository", str(self.root))[0],
             0,
         )
-        (self.root / ".agent-pin.json").unlink()
+        (self.root / ".datadog-agent-version.json").unlink()
         code, _, stderr = self.run_main(
             "check-change", "--destination", "releases/1.9.x", "--established-ref", "releases/1.9.x",
             "--repository", str(self.root),
@@ -392,7 +400,7 @@ class CommandTest(unittest.TestCase):
     def test_check_tag_requires_the_tag_on_its_release_branch(self):
         self.init_repository()
         self.git("update-ref", "refs/remotes/origin/releases/1.9.x", "HEAD")
-        self.write_pin(make_pin(target="7.87"))
+        self.write_version_file(make_version_file(target="7.87"))
         self.commit("release cut")
 
         # The cut commit is not yet on the release branch.
@@ -405,7 +413,7 @@ class CommandTest(unittest.TestCase):
 
     def test_check_tag_can_require_an_adopted_line(self):
         self.init_repository()
-        (self.root / ".agent-pin.json").unlink()
+        (self.root / ".datadog-agent-version.json").unlink()
         (self.root / "bin/agent-data-plane/Cargo.toml").write_text('[package]\nversion = "1.8.2"\n', encoding="utf-8")
         self.commit("old line")
         self.assertEqual(self.run_main("check-tag", "--tag", "1.8.2", "--repository", str(self.root))[0], 0)

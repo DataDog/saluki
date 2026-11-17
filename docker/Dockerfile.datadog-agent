@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.28
-# DD_AGENT_IMAGE has no default: callers pass the Linux Agent image pinned in `.agent-pin.json`, as
+# DD_AGENT_IMAGE has no default: callers pass the Linux Agent image from `.datadog-agent-version.json`, as
 # `make build-datadog-agent-image` does.
 ARG DD_AGENT_IMAGE=
 ARG ADP_IMAGE=saluki-images/agent-data-plane:testing-devel
@@ -8,7 +8,7 @@ ARG ADP_IMAGE=saluki-images/agent-data-plane:testing-devel
 FROM ${ADP_IMAGE} AS adp
 
 # Build off of the Datadog Agent image.
-FROM ${DD_AGENT_IMAGE:?set_DD_AGENT_IMAGE_to_the_Agent_image_pinned_in_.agent-pin.json}
+FROM ${DD_AGENT_IMAGE:?set_DD_AGENT_IMAGE_to_the_Agent_image_pinned_in_.datadog-agent-version.json}
 
 # Copy the ADP binary and all of the required licensing bits.
 COPY --from=adp /usr/local/bin/agent-data-plane /opt/datadog-agent/embedded/bin/agent-data-plane

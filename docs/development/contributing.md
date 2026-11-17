@@ -171,12 +171,10 @@ before its first tag, so a change that merges to `main` after that cut ships in 
 To ship it on an existing line, backport it: the note comes along with the cherry-pick. A fix made only on a release
 branch carries its note in the pull request to that branch.
 
-Because each line's first tag is on its release branch rather than `main`, Reno alone would also list the previous
-line's notes under the next `X.Y.0`. `ci/tooling/release_notes.py render` leaves those out. When the newest earlier
-release isn't in the tag's history, the notes present where the two histories meet, but absent from the newest release
-that is in the tag's history, already shipped. The renderer passes them to Reno as `ignore_notes` in a temporary
-configuration; `releasenotes/config.yaml` doesn't change. Tags whose newest earlier release is in their history, such as
-patch releases and lines tagged on `main`, render exactly as before, and a backported note still appears in both lines.
+Because each line's first tag is on its release branch rather than `main`, Reno on its own would list the previous
+line's notes again under the next `X.Y.0`. The release tooling leaves them out. [Release notes for a new
+line](../agent-data-plane/releasing.md#release-notes-for-a-new-line) explains how Reno assigns notes and what the tooling
+corrects.
 
 ## Addressing review feedback
 
@@ -234,11 +232,11 @@ The new PR is titled `<original title> (backport X.Y.x)`, and the original PR ge
 merge it like any other PR. A clean cherry-pick can still fail to compile on an older branch if the change depends on
 something that only exists on `main`, so wait for CI before you merge.
 
-A backport brings the code change, any version gate it needs, and its release note. It never brings an Agent pin:
-each release line keeps its own `.agent-pin.json` and `target` (see [Datadog Agent pin](./agent-pin.md)). The workflow
-refuses a PR that changes `.agent-pin.json`, and its comment explains how to backport the change without it. A gate
-must select the behavior that the release line's target Agent expects. If a change needs a newer Agent minor than the
-line's target, it belongs on the release line for that minor.
+A backport brings the code change, any version gate it needs, and its release note. It never brings an Agent version:
+each release line keeps its own `.datadog-agent-version.json` and `target` (see [Datadog Agent
+version](./agent-version.md)). The workflow refuses a PR that changes `.datadog-agent-version.json`, and its comment
+explains how to backport the change without it. A gate must select the behavior that the release line's target Agent
+expects. If a change needs a newer Agent minor than the line's target, it belongs on the release line for that minor.
 
 ### When the backport fails
 
@@ -263,12 +261,5 @@ release line is no longer maintained, delete its label and remove it from `MAINT
 
 ## Version gates
 
-A version gate switches between old and new Agent behavior, based on the `DD_AGENT_VERSION` that ADP was built
-against. On `main` that's the pinned nightly, so every gate selects the newest behavior. On a release branch it's the
-line's target minor, such as `7.87.0`, even when CI tests a later RC or patch.
-
-- Gate on Agent minor versions, such as `meets(7, 87, 0)`. Don't add patch-level gates.
-- When an Agent change affects what correctness tests compare, put the matching ADP change in the pull request that
-  updates the nightly pin, so the code and the test Agent advance together.
-- Delete a gate only when every maintained release line declares at least its threshold. Reaching that version on
-  `main` isn't enough, and a maintained line that hasn't adopted the pin still counts.
+A version gate switches ADP between old and new behavior based on the Agent version ADP was built with. Before you add
+or remove one, read [Version gates](./agent-version.md#version-gates).

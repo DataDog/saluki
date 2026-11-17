@@ -33,7 +33,7 @@ endif
 # ADP-specific settings used when running.
 export ADP_STANDALONE_IPC_CERT_FILE := /tmp/adp-ipc-cert.pem
 
-# macOS integration-test settings. The Agent package comes from `.agent-pin.json`.
+# macOS integration-test settings. The Agent package comes from `.datadog-agent-version.json`.
 MACOS_TEST_AGENT_DMG_DIR ?= /tmp/saluki-dda-dmg-cache
 MACOS_TEST_AGENT_INSTALL_DIR ?= /tmp/saluki-dda/datadog-agent
 
@@ -204,8 +204,8 @@ build-adp-image-fips-release: ## Builds the ADP container image in release mode 
 .PHONY: build-datadog-agent-image
 build-datadog-agent-image: build-adp-image ## Builds the converged Datadog Agent/ADP container image (debug mode)
 	@echo "[*] Building converged Datadog Agent image... (debug mode)"
-	@DD_AGENT_IMAGE=$$($(PYTHON) ci/tooling/agent_pin.py get integration.linux.image) && \
-	echo "[*] Using the pinned Agent image $$DD_AGENT_IMAGE" && \
+	@DD_AGENT_IMAGE=$$($(PYTHON) ci/tooling/agent_version.py get integration.linux.image) && \
+	echo "[*] Using the Agent image $$DD_AGENT_IMAGE from .datadog-agent-version.json" && \
 	docker build \
 		--tag saluki-images/datadog-agent:testing-devel \
 		--tag local.dev/saluki-images/datadog-agent:testing-devel \
@@ -217,8 +217,8 @@ build-datadog-agent-image: build-adp-image ## Builds the converged Datadog Agent
 .PHONY: build-datadog-agent-image-release
 build-datadog-agent-image-release: build-adp-image-release ## Builds the converged Datadog Agent/ADP container image (release mode)
 	@echo "[*] Building converged Datadog Agent image... (release mode)"
-	@DD_AGENT_IMAGE=$$($(PYTHON) ci/tooling/agent_pin.py get integration.linux.image) && \
-	echo "[*] Using the pinned Agent image $$DD_AGENT_IMAGE" && \
+	@DD_AGENT_IMAGE=$$($(PYTHON) ci/tooling/agent_version.py get integration.linux.image) && \
+	echo "[*] Using the Agent image $$DD_AGENT_IMAGE from .datadog-agent-version.json" && \
 	docker build \
 		--tag saluki-images/datadog-agent:testing-release \
 		--tag local.dev/saluki-images/datadog-agent:testing-release \
@@ -717,7 +717,7 @@ test-integration-macos-run: ## Runs the macOS host-process integration tests usi
 		$(if $(PANORAMIC_LOG_DIR),-l $(PANORAMIC_LOG_DIR))
 
 .PHONY: provision-macos-test-env
-provision-macos-test-env: ## Installs the macOS Datadog Agent pinned in .agent-pin.json into $(MACOS_TEST_AGENT_INSTALL_DIR) (a sandbox under /tmp) and bootstraps the IPC cert. Idempotent: re-uses the install if its marker matches the pin.
+provision-macos-test-env: ## Installs the macOS Datadog Agent named in .datadog-agent-version.json into $(MACOS_TEST_AGENT_INSTALL_DIR) (a sandbox under /tmp) and bootstraps the IPC cert. Idempotent: re-uses the install if its marker matches the file.
 	@echo "[*] Provisioning macOS test environment..."
 	@if [ "$(shell uname -s)" != "Darwin" ]; then \
 		echo "provision-macos-test-env only runs on macOS hosts" >&2; exit 1; \
@@ -796,13 +796,13 @@ ifeq ($(shell command -v snouty >/dev/null || echo not-found), not-found)
 	$(error "snouty must be present to validate the Antithesis harness, see https://github.com/antithesishq/snouty")
 endif
 
-# Compose builds the scenarios for linux/amd64, so they take the amd64 debug package from the pin. Every recipe
+# Compose builds the scenarios for linux/amd64, so they take the amd64 debug package from .datadog-agent-version.json. Every recipe
 # that interpolates the Compose files needs these.
 ANTITHESIS_AGENT_DEBUG_DEB_ENV = \
-	AGENT_DEBUG_DEB_URL=$$($(PYTHON) ci/tooling/agent_pin.py get integration.antithesis_debug_debs.amd64.url) && \
-	AGENT_DEBUG_DEB_SHA256=$$($(PYTHON) ci/tooling/agent_pin.py get integration.antithesis_debug_debs.amd64.sha256) && \
+	AGENT_DEBUG_DEB_URL=$$($(PYTHON) ci/tooling/agent_version.py get integration.antithesis_debug_debs.amd64.url) && \
+	AGENT_DEBUG_DEB_SHA256=$$($(PYTHON) ci/tooling/agent_version.py get integration.antithesis_debug_debs.amd64.sha256) && \
 	export AGENT_DEBUG_DEB_URL AGENT_DEBUG_DEB_SHA256 && \
-	echo "[*] Using the pinned Agent debug package $$AGENT_DEBUG_DEB_URL"
+	echo "[*] Using the Agent debug package $$AGENT_DEBUG_DEB_URL"
 
 .PHONY: antithesis-build
 antithesis-build: build-datadog-agent-image-release ## Builds the Antithesis harness container images
@@ -969,14 +969,14 @@ render-release-notes: ## Renders VERSION=X.Y.Z Reno notes as GitHub-flavored Mar
 	@test -n "$(VERSION)" || { echo "Set VERSION=X.Y.Z" >&2; exit 2; }
 	@$(PYTHON) ci/tooling/release_notes.py render --version "$(VERSION)" --output -
 
-.PHONY: test-agent-pin
-test-agent-pin: ## Runs unit tests for the Agent pin tooling
-	@$(PYTHON) -m unittest ci/tooling/test_agent_pin.py ci/tooling/test_discover_agent_pin.py \
-		ci/tooling/test_propose_agent_pin.py ci/tooling/test_install_macos_agent.py
+.PHONY: test-agent-version
+test-agent-version: ## Runs unit tests for the Agent version tooling
+	@$(PYTHON) -m unittest ci/tooling/test_agent_version.py ci/tooling/update-agent-version/test_discover_agent_version.py \
+		ci/tooling/update-agent-version/test_propose_agent_version.py ci/tooling/test_install_macos_agent.py
 
-.PHONY: check-agent-pin
-check-agent-pin: ## Validates .agent-pin.json
-	@$(PYTHON) ci/tooling/agent_pin.py validate
+.PHONY: check-agent-version
+check-agent-version: ## Validates .datadog-agent-version.json
+	@$(PYTHON) ci/tooling/agent_version.py validate
 
 .PHONY: ensure-python-venv
 ensure-python-venv: ## Creates the virtualenv that Python tooling prefers, or updates an existing one

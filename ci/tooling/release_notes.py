@@ -144,12 +144,23 @@ def release_key(version: str) -> tuple[int, ...]:
 
 
 def find_notes_shipped_off_history(version: str, repository: Path, run) -> list[str]:
-    """Return notes that an earlier release line already shipped, but that Reno would attribute to `version`.
+    """Return notes that an earlier release already shipped, but that Reno would also list under `version`.
 
-    Reno attributes a note to the first tag after it in the scanned history. A release line cut to its own branch
-    before its first tag leaves that tag off `main`, so the next line's history reaches the line's notes without
-    passing the tag that shipped them. Those are the notes present where the two histories meet but absent from the
-    newest release in `version`'s own history. Lines tagged on `main` have none, so their render is unchanged.
+    Background: Reno decides which release a note belongs to by walking the history of the tag being released. A note
+    belongs to the first release tag that comes after the commit that added it. Notes added before an earlier tag in
+    that history belong to that earlier release, so Reno leaves them out.
+
+    The problem: each release line is cut to `releases/X.Y.x` before its first tag, and tagged there, so `X.Y.0` isn't
+    in `main`'s history. When Reno walks back from the next minor's tag, it never meets `X.Y.0`, so it would list every
+    note that `X.Y.0` already shipped a second time.
+
+    The fix: find the newest earlier release. If it isn't in `version`'s history, the notes it shipped from `main` are
+    the ones present where the two histories meet, the commit where its release branch was cut. Leave out the notes
+    that Reno already gives to a release in `version`'s history, and return the rest for Reno to ignore.
+
+    Releases whose newest earlier release is in their history, such as patch releases and lines tagged on `main`,
+    return nothing and render as before. A change merged to `main` after the cut and backported to the line isn't in
+    the cut, so its note still appears in both lines.
     """
 
     def release_tags(*arguments: str) -> list[str]:

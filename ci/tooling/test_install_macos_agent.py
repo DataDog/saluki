@@ -18,25 +18,26 @@ spec = importlib.util.spec_from_file_location("install_macos_agent", TOOLING / "
 subject = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(subject)
 
-from test_agent_pin import make_pin  # noqa: E402
+from test_agent_version import make_version_file  # noqa: E402
 
 
 DMG_BYTES = b"test-only DMG contents"
 
 
-def pin_for(contents=DMG_BYTES):
-    pin = make_pin()
-    pin["integration"]["macos"]["arm64"]["sha256"] = hashlib.sha256(contents).hexdigest()
-    return pin
+def version_file_for(contents=DMG_BYTES):
+    version_file = make_version_file()
+    version_file["integration"]["macos"]["arm64"]["sha256"] = hashlib.sha256(contents).hexdigest()
+    return version_file
 
 
-def newer_package_pin(contents):
-    """Return a pin for another nightly build whose DMG holds `contents`."""
-    pin = pin_for(contents)
-    package = pin["integration"]["macos"]["arm64"]
+def newer_package_version_file(contents):
+    """Return a version file for another nightly build whose DMG holds `contents`."""
+    version_file = version_file_for(contents)
+    package = version_file["integration"]["macos"]["arm64"]
     package["url"] = package["url"].replace("pipeline.98765", "pipeline.98766")
-    pin["integration"]["version"] = pin["integration"]["version"].replace("pipeline.98765", "pipeline.98766")
-    return pin
+    integration = version_file["integration"]
+    integration["version"] = integration["version"].replace("pipeline.98765", "pipeline.98766")
+    return version_file
 
 
 class FakeInstaller:
@@ -78,22 +79,22 @@ class ProvisionTest(unittest.TestCase):
 
         return fetch
 
-    def provision(self, pin=None, fetch=None, installer=None):
+    def provision(self, version_file=None, fetch=None, installer=None):
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()), \
                 unittest.mock.patch.object(subject.time, "sleep"):
             return subject.provision(
-                pin or pin_for(), "arm64", self.install_dir, self.cache_dir, fetch or self.fetch(),
+                version_file or version_file_for(), "arm64", self.install_dir, self.cache_dir, fetch or self.fetch(),
                 installer or FakeInstaller(), self.root,
             )
 
     def marker(self):
         return json.loads((self.install_dir / subject.MARKER_NAME).read_text(encoding="utf-8"))
 
-    def test_installs_and_records_the_pinned_package(self):
-        pin = pin_for()
-        self.assertTrue(self.provision(pin))
+    def test_installs_and_records_the_package(self):
+        version_file = version_file_for()
+        self.assertTrue(self.provision(version_file))
         self.assertTrue(os.access(self.install_dir / subject.AGENT_EXECUTABLE, os.X_OK))
-        self.assertEqual(self.marker(), subject.expected_marker(pin, "arm64"))
+        self.assertEqual(self.marker(), subject.expected_marker(version_file, "arm64"))
 
     def test_reuses_an_install_whose_marker_matches(self):
         self.provision()
@@ -105,7 +106,7 @@ class ProvisionTest(unittest.TestCase):
     def test_reinstalls_when_the_marker_is_stale(self):
         self.provision()
         newer = b"test-only newer DMG contents"
-        self.assertTrue(self.provision(newer_package_pin(newer), fetch=self.fetch(newer)))
+        self.assertTrue(self.provision(newer_package_version_file(newer), fetch=self.fetch(newer)))
         self.assertEqual(self.marker()["sha256"], hashlib.sha256(newer).hexdigest())
 
     def test_reinstalls_when_the_executable_is_missing(self):
@@ -114,14 +115,14 @@ class ProvisionTest(unittest.TestCase):
         self.assertTrue(self.provision())
 
     def test_rejects_a_download_with_the_wrong_checksum(self):
-        with self.assertRaisesRegex(subject.InstallError, "but the pin expects"):
+        with self.assertRaisesRegex(subject.InstallError, "but the version file expects"):
             self.provision(fetch=self.fetch(b"tampered"))
         self.assertEqual(list(self.cache_dir.iterdir()), [])
         self.assertFalse(self.install_dir.exists())
 
     def test_rejects_and_removes_a_cached_package_with_the_wrong_checksum(self):
         self.cache_dir.mkdir()
-        url = pin_for()["integration"]["macos"]["arm64"]["url"]
+        url = version_file_for()["integration"]["macos"]["arm64"]["url"]
         cached = self.cache_dir / url.rsplit("/", 1)[1]
         cached.write_bytes(b"corrupted")
         with self.assertRaisesRegex(subject.InstallError, "cached .* removed it"):
@@ -139,11 +140,11 @@ class ProvisionTest(unittest.TestCase):
         self.provision()
         newer = b"test-only newer DMG contents"
         with self.assertRaisesRegex(subject.InstallError, "no executable"):
-            self.provision(newer_package_pin(newer), self.fetch(newer), FakeInstaller(executable=False))
+            self.provision(newer_package_version_file(newer), self.fetch(newer), FakeInstaller(executable=False))
         self.assertFalse((self.install_dir / subject.MARKER_NAME).exists())
 
         with self.assertRaisesRegex(subject.InstallError, "failed to attach"):
-            self.provision(newer_package_pin(newer), self.fetch(newer), FakeInstaller(attach_failures=3))
+            self.provision(newer_package_version_file(newer), self.fetch(newer), FakeInstaller(attach_failures=3))
         self.assertFalse((self.install_dir / subject.MARKER_NAME).exists())
 
 

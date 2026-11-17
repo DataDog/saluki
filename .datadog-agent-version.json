@@ -3,7 +3,7 @@
   "integration": {
     "kind": "nightly",
     "version": "7.87.0-devel+git.394.462b537.pipeline.151347634",
-    "revision": "462b537681de43ea0d5c3f4469e5465368d0f74f",
+    "git_revision": "462b537681de43ea0d5c3f4469e5465368d0f74f",
     "pipeline_id": 151347634,
     "built_at": "2026-11-09T03:27:54Z",
     "linux": {

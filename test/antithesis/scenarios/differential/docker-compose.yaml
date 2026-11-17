@@ -40,7 +40,8 @@ services:
       dockerfile: test/antithesis/scenarios/differential/Dockerfile
       target: datadog-agent
       args:
-        # Set from `.agent-pin.json` by `make antithesis-build-differential` and `test/antithesis/bin/launch.sh`.
+        # Set from `.datadog-agent-version.json` by `make antithesis-build-differential` and
+        # `test/antithesis/bin/launch.sh`.
         AGENT_DEBUG_DEB_URL: ${AGENT_DEBUG_DEB_URL:?build with make antithesis-build-differential}
         AGENT_DEBUG_DEB_SHA256: ${AGENT_DEBUG_DEB_SHA256:?build with make antithesis-build-differential}
     image: datadog-agent-differential:${ANTITHESIS_IMAGE_TAG:-latest}
@@ -70,7 +71,8 @@ services:
       dockerfile: test/antithesis/scenarios/differential/Dockerfile
       target: datadog-agent
       args:
-        # Set from `.agent-pin.json` by `make antithesis-build-differential` and `test/antithesis/bin/launch.sh`.
+        # Set from `.datadog-agent-version.json` by `make antithesis-build-differential` and
+        # `test/antithesis/bin/launch.sh`.
         AGENT_DEBUG_DEB_URL: ${AGENT_DEBUG_DEB_URL:?build with make antithesis-build-differential}
         AGENT_DEBUG_DEB_SHA256: ${AGENT_DEBUG_DEB_SHA256:?build with make antithesis-build-differential}
     image: datadog-agent-differential:${ANTITHESIS_IMAGE_TAG:-latest}

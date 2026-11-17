@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Install the macOS Datadog Agent pinned in `.agent-pin.json` into a sandbox directory.
+"""Install the macOS Datadog Agent named in `.datadog-agent-version.json` into a sandbox directory.
 
-The DMG for the host architecture is verified against its pinned SHA-256 before it is mounted, whether it was just
+This sets up the Agent for the macOS integration tests, in CI and locally, through `make provision-macos-test-env`.
+It isn't part of the workflows that update the version file.
+
+The DMG for the host architecture is verified against its recorded SHA-256 before it is mounted, whether it was just
 downloaded or found in the cache. A marker recording the version, URL and checksum is written only after a successful
-install, and an installation is reused only when its marker matches the pin and the Agent executable exists.
+install, and an installation is reused only when its marker matches the version file and the Agent executable exists.
 """
 
 import argparse
@@ -20,16 +23,16 @@ from pathlib import Path, PurePosixPath
 from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import agent_pin  # noqa: E402
+import agent_version  # noqa: E402
 
 
-MARKER_NAME = ".saluki-agent-pin.json"
+MARKER_NAME = ".saluki-agent-version.json"
 AGENT_EXECUTABLE = Path("bin/agent/agent")
 CLEANUP_SCRIPT = Path(__file__).resolve().with_name("cleanup-macos-dda-mounts.sh")
 
 
 class InstallError(Exception):
-    """The pinned Agent could not be fetched, verified or installed."""
+    """The macOS Agent could not be fetched, verified or installed."""
 
 
 def sha256_file(path):
@@ -48,7 +51,7 @@ def download(url, destination):
 
 
 def fetch_verified(url, sha256, cache_dir, fetch=download):
-    """Return a cached copy of `url` whose SHA-256 matches the pin.
+    """Return a cached copy of `url` whose SHA-256 matches the version file.
 
     Only verified downloads enter the cache, so a cached file that does not match was changed after download. It is
     deleted and the run fails rather than trusting it.
@@ -61,7 +64,7 @@ def fetch_verified(url, sha256, cache_dir, fetch=download):
         actual = sha256_file(path)
         if actual != sha256:
             path.unlink()
-            raise InstallError(f"cached {path} has SHA-256 {actual}, but the pin expects {sha256}; removed it")
+            raise InstallError(f"cached {path} has SHA-256 {actual}, but the version file expects {sha256}; removed it")
         print(f"[*] Using cached {path} (SHA-256 verified)")
         return path
 
@@ -72,20 +75,20 @@ def fetch_verified(url, sha256, cache_dir, fetch=download):
         fetch(url, partial)
         actual = sha256_file(partial)
         if actual != sha256:
-            raise InstallError(f"{url} has SHA-256 {actual}, but the pin expects {sha256}")
+            raise InstallError(f"{url} has SHA-256 {actual}, but the version file expects {sha256}")
         os.replace(partial, path)
     finally:
         Path(partial).unlink(missing_ok=True)
     return path
 
 
-def expected_marker(pin, arch):
-    package = pin["integration"]["macos"][arch]
-    return {"version": pin["integration"]["version"], "url": package["url"], "sha256": package["sha256"]}
+def expected_marker(version_file, arch):
+    package = version_file["integration"]["macos"][arch]
+    return {"version": version_file["integration"]["version"], "url": package["url"], "sha256": package["sha256"]}
 
 
 def is_installed(install_dir, marker):
-    """Return whether `install_dir` holds a complete install of the pinned Agent."""
+    """Return whether `install_dir` holds a complete install of the Agent in the version file."""
     marker_path = Path(install_dir) / MARKER_NAME
     executable = Path(install_dir) / AGENT_EXECUTABLE
     try:
@@ -138,10 +141,10 @@ def install(dmg, install_dir, marker, run=subprocess.run, mount_root="/tmp"):
     (install_dir / MARKER_NAME).write_text(json.dumps(marker, indent=2) + "\n", encoding="utf-8")
 
 
-def provision(pin, arch, install_dir, cache_dir, fetch=download, run=subprocess.run, mount_root="/tmp"):
-    """Install the pinned Agent for `arch` unless a matching install already exists."""
-    marker = expected_marker(pin, arch)
-    print(f"[*] Pinned Agent {marker['version']}: {marker['url']} (SHA-256 {marker['sha256']})")
+def provision(version_file, arch, install_dir, cache_dir, fetch=download, run=subprocess.run, mount_root="/tmp"):
+    """Install the Agent in the version file for `arch` unless a matching install already exists."""
+    marker = expected_marker(version_file, arch)
+    print(f"[*] Agent {marker['version']}: {marker['url']} (SHA-256 {marker['sha256']})")
     if is_installed(install_dir, marker):
         print(f"[*] Datadog Agent {marker['version']} is already installed in {install_dir}")
         return False
@@ -153,18 +156,19 @@ def provision(pin, arch, install_dir, cache_dir, fetch=download, run=subprocess.
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--pin", default=agent_pin.PIN_PATH)
+    parser.add_argument("--file", default=agent_version.VERSION_FILE)
     parser.add_argument("--install-dir", required=True)
     parser.add_argument("--cache-dir", required=True)
     arguments = parser.parse_args(argv)
 
     arch = platform.machine()
-    if arch not in agent_pin.MACOS_ARCHITECTURES:
-        print(f"error: no pinned macOS package for architecture {arch!r}", file=sys.stderr)
+    if arch not in agent_version.MACOS_ARCHITECTURES:
+        print(f"error: no macOS package in the version file for architecture {arch!r}", file=sys.stderr)
         return 1
     try:
-        provision(agent_pin.load_pin(arguments.pin), arch, Path(arguments.install_dir), Path(arguments.cache_dir))
-    except (agent_pin.PinError, InstallError, OSError) as error:
+        version_file = agent_version.load_version_file(arguments.file)
+        provision(version_file, arch, Path(arguments.install_dir), Path(arguments.cache_dir))
+    except (agent_version.VersionFileError, InstallError, OSError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
     return 0

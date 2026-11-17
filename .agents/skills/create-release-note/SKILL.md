@@ -30,18 +30,12 @@ change looks like a `changelog/no-changelog` candidate, and that a maintainer ap
 the pull request. When it's genuinely ambiguous, ask the user with `AskUserQuestion` rather than
 guessing.
 
-## Step 2: Choose the release line
-
-Check which branch the change targets. A change merged to `main` ships in the next minor release, and its backports
-bring the note along. A change made only on a `releases/X.Y.x` branch carries its note in that pull request. "Which
-release a note ships in" explains the cut order behind this. Don't write a separate note for a backport.
-
-## Step 3: Choose the section and draft the content
+## Step 2: Choose the section and draft the content
 
 Propose a section and a draft entry from the diff, then confirm both with the user before writing
 the file.
 
-## Step 4: Create the file with Reno
+## Step 3: Create the file with Reno
 
 ```bash
 make ensure-python-venv          # only if .venv/bin/reno is missing
@@ -52,12 +46,12 @@ make ensure-python-venv          # only if .venv/bin/reno is missing
 `fix-listener-shutdown-race`. **Never hand-write the file or its filename**: the hex suffix Reno
 appends is the note's unique identifier.
 
-## Step 5: Write the entry
+## Step 4: Write the entry
 
-Keep only the section chosen in step 3, delete every other section of the template including its
+Keep only the section chosen in step 2, delete every other section of the template including its
 comments, and write the entry in reStructuredText.
 
-## Step 6: Validate
+## Step 5: Validate
 
 ```bash
 make check-release-notes
