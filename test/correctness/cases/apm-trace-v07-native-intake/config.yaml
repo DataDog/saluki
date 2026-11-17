@@ -1,0 +1,52 @@
+type: correctness
+runtime: docker
+analysis_mode: traces
+# The baseline trace-agent processes `/v0.7/traces` payloads itself. On the comparison side, ADP's native
+# trace intake serves them and processes the traces in place of the trace-agent behind it, so any difference in the
+# spans or APM stats that reach the intake comes from ADP.
+# The body is the v0.4 corpus, transcoded by millstone into a v0.7 MessagePack tracer payload, which carries each
+# trace's sampling priority on its chunk.
+# The corpus's span durations reach `i64::MAX`, so the stats' summed durations pass 2^64. ADP caps them at the largest
+# value, as the trace-agent does since DataDog/datadog-agent#59657 (`round` in `statsraw.go`), but the baseline
+# trace-agent, from the test image, predates it and wraps them. The hits, errors and latency distributions are still
+# compared.
+# TODO: Drop once the test image's trace-agent includes DataDog/datadog-agent#59657.
+additional_span_ignore_fields:
+  - duration_ns
+millstone:
+  image: saluki-images/correctness-tools:latest
+  config_path: millstone.yaml
+datadog_intake:
+  image: saluki-images/correctness-tools:latest
+baseline:
+  image: saluki-images/datadog-agent:testing-release
+  files:
+    - datadog.yaml:/etc/datadog-agent/datadog.yaml
+  env:
+    DD_API_KEY: correctness-test
+comparison:
+  image: saluki-images/datadog-agent:testing-release
+  files:
+    - datadog.yaml:/etc/datadog-agent/datadog.yaml
+  env:
+    DD_API_KEY: correctness-test
+    DD_DATA_PLANE_ENABLED: "true"
+    DD_DATA_PLANE_STANDALONE_MODE: "true"
+    DD_DATA_PLANE_EXPERIMENTAL_APM_ENABLED: "true"
+    DD_DATA_PLANE_EXPERIMENTAL_APM_PROXY_DESTINATION: "http://127.0.0.1:8127"
+    DD_DATA_PLANE_EXPERIMENTAL_APM_NATIVE_TRACE_INTAKE: "true"
+    # The trace-agent behind ADP sends nowhere, so that traces it processed never reach the intake: if native intake
+    # didn't activate and ADP proxied `/v0.7/traces` to it, the comparison would have no spans or stats and the case
+    # would fail. ADP doesn't read `apm_config.apm_dd_url`, and sends to `dd_url`.
+    DD_APM_DD_URL: "http://127.0.0.1:9"
+    # ADP takes over the trace-agent's receiver (TCP and UDS), so the trace-agent has to move to the proxy destination.
+    # `ADP_DD_*` variables only reach ADP (see `docker/cont-init.d/99-agent-data-plane.sh`), while the plain variable is
+    # seen by the trace-agent.
+    #
+    # ADP gets a distinct socket path rather than an empty one: `s6-envdir` unsets variables whose value is empty, which
+    # would put ADP back on the trace-agent's default socket.
+    #
+    # TODO: Drop these once the Core Agent moves the trace-agent's receiver itself when the APM proxy is enabled.
+    DD_APM_RECEIVER_PORT: "8127"
+    ADP_DD_APM_RECEIVER_PORT: "8126"
+    ADP_DD_APM_RECEIVER_SOCKET: "/var/run/datadog/adp-apm.socket"
