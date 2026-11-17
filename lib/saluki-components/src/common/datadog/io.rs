@@ -1146,11 +1146,23 @@ async fn run_endpoint_io_loop<B>(
     match pending_txns.flush().await {
         // If we successfully flushed the pending transactions, track the number of events that were dropped, if any.
         Ok(flush_result) => {
-            debug!(
-                items_dropped = flush_result.items_dropped,
-                events_dropped = flush_result.events_dropped,
-                "Flushed pending transactions prior to shutdown."
-            );
+            // Drop telemetry recorded this late is unlikely to be collected before the process exits, so make drops
+            // visible in the logs.
+            if flush_result.had_drops() {
+                warn!(
+                    endpoint_url,
+                    items_dropped = flush_result.items_dropped,
+                    events_dropped = flush_result.events_dropped,
+                    "Flushed pending transactions prior to shutdown."
+                );
+            } else {
+                debug!(
+                    endpoint_url,
+                    items_dropped = flush_result.items_dropped,
+                    events_dropped = flush_result.events_dropped,
+                    "Flushed pending transactions prior to shutdown."
+                );
+            }
             track_queue_drops(&telemetry, &endpoint_domain, flush_result);
         }
         Err(e) => {
@@ -1304,7 +1316,7 @@ impl<T: Retryable> PendingTransactions<T> {
         max_enqueued: usize, retry_queue: RetryQueue<T>, telemetry: TransactionQueueTelemetry, domain: MetaString,
         capacity_history_duration_secs: u64,
     ) -> Self {
-        let pending = Self {
+        let mut pending = Self {
             high_priority: VecDeque::with_capacity(max_enqueued),
             low_priority: retry_queue,
             telemetry,
@@ -1320,6 +1332,14 @@ impl<T: Retryable> PendingTransactions<T> {
             .telemetry
             .record_high_prio_queue_capacity(&pending.domain, pending.high_priority.capacity());
         pending.record_high_prio_queue_size();
+
+        // Whatever is on disk before anything is pushed was reloaded from a previous run.
+        if let Some(stats) = pending.low_priority.persisted_stats() {
+            pending
+                .telemetry
+                .record_retry_queue_disk_startup_reloaded_files(&pending.domain, stats.files);
+        }
+        pending.record_retry_queue_state();
 
         pending
     }
@@ -1351,7 +1371,7 @@ impl<T: Retryable> PendingTransactions<T> {
         } else {
             let push_result = self.low_priority.push(transaction).await?;
             self.telemetry.low_prio_queue_insertions().increment(1);
-            self.record_retry_queue_size();
+            self.record_retry_queue_state();
 
             debug!(
                 low_prio_queue_len = self.low_priority.len(),
@@ -1366,7 +1386,7 @@ impl<T: Retryable> PendingTransactions<T> {
     pub async fn push_low_priority(&mut self, transaction: T) -> Result<PushResult, GenericError> {
         let push_result = self.low_priority.push(transaction).await?;
         self.telemetry.low_prio_queue_insertions().increment(1);
-        self.record_retry_queue_size();
+        self.record_retry_queue_state();
 
         debug!(
             low_prio_queue_len = self.low_priority.len(),
@@ -1407,7 +1427,7 @@ impl<T: Retryable> PendingTransactions<T> {
             match pop_result {
                 Ok(Some(transaction)) => {
                     self.telemetry.low_prio_queue_removals().increment(1);
-                    self.record_retry_queue_size();
+                    self.record_retry_queue_state();
 
                     debug!(
                         low_prio_queue_len = self.low_priority.len(),
@@ -1416,7 +1436,7 @@ impl<T: Retryable> PendingTransactions<T> {
                     return Some(PendingTransaction::LowPriority(transaction));
                 }
                 Ok(None) => {
-                    self.record_retry_queue_size();
+                    self.record_retry_queue_state();
                     return None;
                 }
                 Err(e) => {
@@ -1449,21 +1469,38 @@ impl<T: Retryable> PendingTransactions<T> {
 
             let subpush_result = self.low_priority.push(transaction).await?;
             self.telemetry.low_prio_queue_insertions().increment(1);
-            self.record_retry_queue_size();
+            self.record_retry_queue_state();
 
             push_result.merge(subpush_result);
         }
 
         // Flush the low-priority queue.
         let flush_result = self.low_priority.flush().await?;
+        self.record_retry_queue_state();
         push_result.merge(flush_result);
 
         Ok(push_result)
     }
 
-    fn record_retry_queue_size(&self) {
+    /// Records the size of the retry queue, the entries it holds on disk, and any entries it removed from disk to stay
+    /// within the on-disk size limit.
+    fn record_retry_queue_state(&mut self) {
         self.telemetry
             .record_retry_queue_size(&self.domain, self.low_priority.len());
+
+        if let Some(stats) = self.low_priority.persisted_stats() {
+            self.telemetry
+                .record_retry_queue_disk_stats(&self.domain, stats.files, stats.size_bytes);
+        }
+
+        let evictions = self.low_priority.take_persisted_evictions();
+        if evictions.files_removed > 0 {
+            self.telemetry.record_retry_queue_disk_evictions(
+                &self.domain,
+                evictions.files_removed,
+                evictions.data_points_dropped,
+            );
+        }
     }
 
     fn record_high_prio_queue_size(&self) {
@@ -2375,6 +2412,101 @@ mod tests {
         persisted.sort();
 
         assert_eq!(persisted, ["high", "low"]);
+    }
+
+    #[tokio::test]
+    async fn disk_persistence_records_on_disk_retry_queue_telemetry() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let domain_tags = &[("domain", "https://example.com")];
+
+        let temp_dir = tempfile::tempdir().expect("temporary directory should be created");
+        let root_path = temp_dir.path().to_path_buf();
+
+        // A queue starting from an empty directory reloads nothing.
+        let (telemetry, domain) = transaction_queue_telemetry();
+        let retry_queue = persisted_retry_queue(&root_path, "test", 4096).await;
+        let mut pending_txns = PendingTransactions::new(4, retry_queue, telemetry, domain, 900);
+        assert_eq!(
+            recorder.gauge(("network_http_retry_queue_disk_startup_reloaded_files", domain_tags)),
+            Some(0.0)
+        );
+        assert_eq!(
+            recorder.gauge(("network_http_retry_queue_disk_files", domain_tags)),
+            Some(0.0)
+        );
+
+        let _ = pending_txns
+            .push_high_priority("high".to_string())
+            .await
+            .expect("high-priority push should succeed");
+        let _ = pending_txns
+            .push_low_priority("low".to_string())
+            .await
+            .expect("low-priority push should succeed");
+        let _ = pending_txns.flush().await.expect("flush should succeed");
+
+        // Each transaction is persisted as a JSON string: `"high"` and `"low"`.
+        assert_eq!(
+            recorder.gauge(("network_http_retry_queue_disk_files", domain_tags)),
+            Some(2.0)
+        );
+        assert_eq!(
+            recorder.gauge(("network_http_retry_queue_disk_size_bytes", domain_tags)),
+            Some(11.0)
+        );
+        assert_eq!(recorder.gauge("network_http_retry_queue_disk_size_bytes"), Some(11.0));
+
+        // The next run reloads what the previous one persisted.
+        let (telemetry, domain) = transaction_queue_telemetry();
+        let retry_queue = persisted_retry_queue::<String>(&root_path, "test", 4096).await;
+        let _pending_txns = PendingTransactions::new(4, retry_queue, telemetry, domain, 900);
+        assert_eq!(
+            recorder.gauge(("network_http_retry_queue_disk_startup_reloaded_files", domain_tags)),
+            Some(2.0)
+        );
+        assert_eq!(
+            recorder.gauge(("network_http_retry_queue_disk_files", domain_tags)),
+            Some(2.0)
+        );
+    }
+
+    #[tokio::test]
+    async fn disk_evictions_are_counted_by_domain() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let (telemetry, domain) = transaction_queue_telemetry();
+        let domain_tags = &[("domain", "https://example.com")];
+
+        // The disk only holds one of the two transactions, so flushing the second evicts the first.
+        let temp_dir = tempfile::tempdir().expect("temporary directory should be created");
+        let root_path = temp_dir.path().to_path_buf();
+        let retry_queue = persisted_retry_queue(&root_path, "test", 6).await;
+        let mut pending_txns = PendingTransactions::new(4, retry_queue, telemetry, domain, 900);
+
+        let _ = pending_txns
+            .push_high_priority("high".to_string())
+            .await
+            .expect("high-priority push should succeed");
+        let _ = pending_txns
+            .push_low_priority("low".to_string())
+            .await
+            .expect("low-priority push should succeed");
+        let push_result = pending_txns.flush().await.expect("flush should succeed");
+
+        assert_eq!(push_result.items_dropped, 1);
+        assert_eq!(
+            recorder.counter(("network_http_retry_queue_disk_files_removed_total", domain_tags)),
+            Some(1)
+        );
+        assert_eq!(
+            recorder.counter(("network_http_retry_queue_disk_data_points_dropped_total", domain_tags)),
+            Some(0)
+        );
+        assert_eq!(
+            recorder.gauge(("network_http_retry_queue_disk_files", domain_tags)),
+            Some(1.0)
+        );
     }
 
     #[tokio::test]

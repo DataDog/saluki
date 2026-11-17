@@ -102,6 +102,52 @@ pub struct PersistedQueueArgs {
     pub max_age_days: u32,
 }
 
+/// Point-in-time statistics about the entries a persisted queue holds on disk.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PersistedQueueStats {
+    /// Number of entries (files) on disk.
+    pub files: usize,
+
+    /// Total size of the entries on disk, in bytes.
+    pub size_bytes: u64,
+}
+
+/// Entries a persisted queue removed from disk to stay within its on-disk size limit.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PersistedQueueEvictions {
+    /// Number of entries (files) removed.
+    pub files_removed: u64,
+
+    /// Number of metric data points represented by the removed entries.
+    pub data_points_dropped: u64,
+}
+
+/// Which setting imposes the on-disk size limit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OnDiskLimitReason {
+    /// The configured maximum on-disk size of the queue.
+    MaxSize,
+
+    /// The configured maximum disk usage ratio of the underlying volume.
+    MaxDiskRatio,
+}
+
+impl OnDiskLimitReason {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::MaxSize => "max_size",
+            Self::MaxDiskRatio => "max_disk_ratio",
+        }
+    }
+}
+
+/// The on-disk size limit in force.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct OnDiskLimit {
+    bytes: u64,
+    reason: OnDiskLimitReason,
+}
+
 pub struct PersistedQueue<T> {
     root_path: PathBuf,
     entries: Vec<PersistedEntry>,
@@ -111,6 +157,7 @@ pub struct PersistedQueue<T> {
     disk_usage_retriever: DiskUsageRetrieverWrapper,
     max_age_days: u32,
     entries_dropped: u64,
+    evictions: PersistedQueueEvictions,
     _entry: PhantomData<T>,
 }
 
@@ -152,6 +199,7 @@ where
             disk_usage_retriever: DiskUsageRetrieverWrapper::new(disk_usage_retriever),
             max_age_days,
             entries_dropped: 0,
+            evictions: PersistedQueueEvictions::default(),
             _entry: PhantomData,
         };
 
@@ -175,6 +223,14 @@ where
         self.entries.len()
     }
 
+    /// Returns statistics about the entries currently on disk.
+    pub fn stats(&self) -> PersistedQueueStats {
+        PersistedQueueStats {
+            files: self.entries.len(),
+            size_bytes: self.total_on_disk_bytes,
+        }
+    }
+
     /// Returns the available on-disk capacity, in bytes.
     ///
     /// This reflects the lower of the configured queue limit and disk-usage-ratio limit, minus the bytes currently used
@@ -194,13 +250,22 @@ where
         .await
         .error_context("Failed to run disk size limit check to completion.")??;
 
-        Ok(limit.saturating_sub(self.total_on_disk_bytes))
+        Ok(limit.bytes.saturating_sub(self.total_on_disk_bytes))
     }
 
     /// Returns the number of entries that have been permanently dropped due to errors since the last call to this
     /// method, resetting the counter.
     pub fn take_entries_dropped(&mut self) -> u64 {
         std::mem::take(&mut self.entries_dropped)
+    }
+
+    /// Returns the entries removed from disk to stay within the on-disk size limit since the last call to this
+    /// method, resetting the counts.
+    ///
+    /// Entries dropped because they couldn't be consumed are counted by
+    /// [`take_entries_dropped`][Self::take_entries_dropped] instead.
+    pub fn take_evictions(&mut self) -> PersistedQueueEvictions {
+        std::mem::take(&mut self.evictions)
     }
 
     /// Removes retry files older than `max_age_days` (from [`PersistedQueueArgs`]) from the queue directory and
@@ -359,7 +424,8 @@ where
         .await
         .error_context("Failed to run disk size limit check to completion.")??;
 
-        while !self.entries.is_empty() && self.total_on_disk_bytes + required_bytes > limit {
+        while !self.entries.is_empty() && self.total_on_disk_bytes + required_bytes > limit.bytes {
+            let on_disk_bytes = self.total_on_disk_bytes;
             let entry = self.entries.remove(0);
 
             // Deserialize the entry, which gives us back the original event and removes the file from disk.
@@ -389,6 +455,8 @@ where
             // Update our statistics.
             self.total_on_disk_bytes -= entry.size_bytes;
             push_result.track_dropped_item(&deserialized);
+            self.evictions.files_removed += 1;
+            self.evictions.data_points_dropped += deserialized.data_point_count();
 
             // The message text here is kept in sync with an equivalent log emitted by another implementation of
             // this queue, so that log-based alerting on this condition matches regardless of which implementation
@@ -396,6 +464,9 @@ where
             error!(
                 entry.path = %entry.path.display(),
                 entry.len = entry.size_bytes,
+                limit_reason = limit.reason.as_str(),
+                limit_bytes = limit.bytes,
+                on_disk_bytes,
                 "Maximum disk space for retry transactions is reached. Removing {}.",
                 entry.path.display()
             );
@@ -407,19 +478,29 @@ where
 
 /// Determines the total number of bytes that can be written to disk without causing the underlying volume to end up
 /// with more than `storage_max_disk_ratio` in terms of used space. The minimum of `max_on_disk_bytes` and the result
-/// of this calculation is returned.
+/// of this calculation is returned, along with which of the two it is.
 ///
 /// # Errors
 ///
 /// If there is an error while retrieving the total or available space of the underlying volume, an error is returned.
 fn on_disk_bytes_limit(
     disk_usage_retriever: DiskUsageRetrieverWrapper, storage_max_disk_ratio: f64, max_on_disk_bytes: u64,
-) -> Result<u64, GenericError> {
+) -> Result<OnDiskLimit, GenericError> {
     let total_space = disk_usage_retriever.inner.total_space()? as f64;
     let available_space = disk_usage_retriever.inner.available_space()? as f64;
     let disk_reserved = total_space * (1.0 - storage_max_disk_ratio);
     let available_disk_usage = (available_space - disk_reserved).ceil() as u64;
-    Ok(max_on_disk_bytes.min(available_disk_usage))
+    Ok(if max_on_disk_bytes <= available_disk_usage {
+        OnDiskLimit {
+            bytes: max_on_disk_bytes,
+            reason: OnDiskLimitReason::MaxSize,
+        }
+    } else {
+        OnDiskLimit {
+            bytes: available_disk_usage,
+            reason: OnDiskLimitReason::MaxDiskRatio,
+        }
+    })
 }
 
 async fn try_deserialize_entry<T: DeserializeOwned>(entry: &PersistedEntry) -> Result<Option<T>, GenericError> {
@@ -609,6 +690,10 @@ mod tests {
         fn event_count(&self) -> u64 {
             1
         }
+
+        fn data_point_count(&self) -> u64 {
+            2
+        }
     }
 
     impl Retryable for FakeData {
@@ -738,6 +823,10 @@ mod tests {
         assert_eq!(0, push_result.items_dropped);
         assert_eq!(0, push_result.events_dropped);
         assert_eq!(0, push_result.bytes_dropped);
+        let first_stats = persisted_queue.stats();
+        assert_eq!(1, first_stats.files);
+        assert!(first_stats.size_bytes > 0);
+        assert_eq!(PersistedQueueEvictions::default(), persisted_queue.take_evictions());
 
         // Push a second data entry, which should cause the first entry to be removed.
         let push_result = persisted_queue
@@ -748,6 +837,17 @@ mod tests {
         assert_eq!(1, push_result.items_dropped);
         assert_eq!(1, push_result.events_dropped);
         assert_eq!(data1_size, push_result.bytes_dropped);
+        assert_eq!(1, persisted_queue.stats().files);
+        assert_eq!(
+            PersistedQueueEvictions {
+                files_removed: 1,
+                data_points_dropped: 2,
+            },
+            persisted_queue.take_evictions()
+        );
+
+        // Taking the evictions resets them.
+        assert_eq!(PersistedQueueEvictions::default(), persisted_queue.take_evictions());
 
         // Now pop the data back out and ensure it matches the second item we pushed -- indicating the first item was
         // removed -- and that we've consumed it, leaving no files on disk.
@@ -758,6 +858,28 @@ mod tests {
             .expect("should not be empty");
         assert_eq!(data2, actual);
         assert_eq!(0, files_in_dir(&root_path).await);
+        assert_eq!(PersistedQueueStats::default(), persisted_queue.stats());
+    }
+
+    #[test]
+    fn on_disk_bytes_limit_reports_which_setting_applies() {
+        // `MockDiskUsageRetriever` reports 100 bytes total and available, so a ratio of 0.35 allows 35 bytes.
+        let retriever = || DiskUsageRetrieverWrapper::new(Arc::new(MockDiskUsageRetriever {}));
+
+        assert_eq!(
+            OnDiskLimit {
+                bytes: 35,
+                reason: OnDiskLimitReason::MaxDiskRatio,
+            },
+            on_disk_bytes_limit(retriever(), 0.35, 80).unwrap()
+        );
+        assert_eq!(
+            OnDiskLimit {
+                bytes: 20,
+                reason: OnDiskLimitReason::MaxSize,
+            },
+            on_disk_bytes_limit(retriever(), 0.35, 20).unwrap()
+        );
     }
 
     #[tokio::test]
@@ -975,6 +1097,7 @@ mod tests {
 
         // The corrupt entry was dropped during eviction, not via normal eviction tracking.
         assert_eq!(1, persisted_queue.take_entries_dropped());
+        assert_eq!(PersistedQueueEvictions::default(), persisted_queue.take_evictions());
 
         // The valid entry should be poppable.
         let actual = persisted_queue

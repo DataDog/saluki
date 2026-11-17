@@ -290,6 +290,10 @@ struct SharedTransactionQueueTelemetryInner {
     retry_queue_bytes_per_sec_by_domain: FastHashMap<String, Gauge>,
     retry_queue_capacity_secs_by_domain: FastHashMap<String, Gauge>,
     retry_queue_capacity_bytes_by_domain: FastHashMap<String, Gauge>,
+    retry_queue_disk_size_bytes: DomainAggregatedGauge,
+    retry_queue_disk_files: DomainAggregatedGauge,
+    retry_queue_disk_startup_reloaded_files: DomainAggregatedGauge,
+    retry_queue_disk_evictions_by_domain: FastHashMap<String, DiskEvictionCounters>,
 }
 
 #[derive(Default)]
@@ -300,6 +304,15 @@ struct EndpointQueueStats {
     in_flight_requests: usize,
     high_prio_queue_size: usize,
     high_prio_queue_capacity: usize,
+    retry_queue_disk_size_bytes: usize,
+    retry_queue_disk_files: usize,
+    retry_queue_disk_startup_reloaded_files: usize,
+}
+
+/// Counters for entries removed from a domain's on-disk retry queues to stay within the on-disk size limit.
+struct DiskEvictionCounters {
+    files_removed: Counter,
+    data_points_dropped: Counter,
 }
 
 /// A gauge summed over every endpoint.
@@ -364,6 +377,16 @@ impl SharedTransactionQueueTelemetryInner {
             retry_queue_bytes_per_sec_by_domain: FastHashMap::default(),
             retry_queue_capacity_secs_by_domain: FastHashMap::default(),
             retry_queue_capacity_bytes_by_domain: FastHashMap::default(),
+            retry_queue_disk_size_bytes: DomainAggregatedGauge::from_builder(
+                builder,
+                "network_http_retry_queue_disk_size_bytes",
+            ),
+            retry_queue_disk_files: DomainAggregatedGauge::from_builder(builder, "network_http_retry_queue_disk_files"),
+            retry_queue_disk_startup_reloaded_files: DomainAggregatedGauge::from_builder(
+                builder,
+                "network_http_retry_queue_disk_startup_reloaded_files",
+            ),
+            retry_queue_disk_evictions_by_domain: FastHashMap::default(),
         }
     }
 
@@ -379,6 +402,47 @@ impl SharedTransactionQueueTelemetryInner {
             .update(&self.builder, &self.per_endpoint, domain, |stats| {
                 stats.retry_queue_size
             });
+    }
+
+    fn record_disk_stats(&mut self, endpoint_id: &MetaString, domain: &MetaString, files: usize, size_bytes: u64) {
+        let stats = self.endpoint_stats(endpoint_id, domain);
+        stats.retry_queue_disk_files = files;
+        stats.retry_queue_disk_size_bytes = size_bytes as usize;
+        self.retry_queue_disk_files
+            .update(&self.builder, &self.per_endpoint, domain, |stats| {
+                stats.retry_queue_disk_files
+            });
+        self.retry_queue_disk_size_bytes
+            .update(&self.builder, &self.per_endpoint, domain, |stats| {
+                stats.retry_queue_disk_size_bytes
+            });
+    }
+
+    fn record_disk_startup_reloaded_files(&mut self, endpoint_id: &MetaString, domain: &MetaString, files: usize) {
+        self.endpoint_stats(endpoint_id, domain)
+            .retry_queue_disk_startup_reloaded_files = files;
+        self.retry_queue_disk_startup_reloaded_files
+            .update(&self.builder, &self.per_endpoint, domain, |stats| {
+                stats.retry_queue_disk_startup_reloaded_files
+            });
+    }
+
+    fn record_disk_evictions(&mut self, domain: &MetaString, files_removed: u64, data_points_dropped: u64) {
+        let builder = &self.builder;
+        let counters = self
+            .retry_queue_disk_evictions_by_domain
+            .entry(domain.to_string())
+            .or_insert_with(|| {
+                let tags = [("domain", domain.to_string())];
+                DiskEvictionCounters {
+                    files_removed: builder
+                        .register_counter_with_tags("network_http_retry_queue_disk_files_removed_total", tags.clone()),
+                    data_points_dropped: builder
+                        .register_counter_with_tags("network_http_retry_queue_disk_data_points_dropped_total", tags),
+                }
+            });
+        counters.files_removed.increment(files_removed);
+        counters.data_points_dropped.increment(data_points_dropped);
     }
 
     fn record_in_flight_requests(&mut self, endpoint_id: &MetaString, domain: &MetaString, count: usize) {
@@ -493,6 +557,31 @@ impl SharedTransactionQueueTelemetry {
         self.inner.lock().unwrap().record_size(endpoint_id, domain, len);
     }
 
+    fn record_retry_queue_disk_stats(
+        &self, endpoint_id: &MetaString, domain: &MetaString, files: usize, size_bytes: u64,
+    ) {
+        self.inner
+            .lock()
+            .unwrap()
+            .record_disk_stats(endpoint_id, domain, files, size_bytes);
+    }
+
+    fn record_retry_queue_disk_startup_reloaded_files(
+        &self, endpoint_id: &MetaString, domain: &MetaString, files: usize,
+    ) {
+        self.inner
+            .lock()
+            .unwrap()
+            .record_disk_startup_reloaded_files(endpoint_id, domain, files);
+    }
+
+    fn record_retry_queue_disk_evictions(&self, domain: &MetaString, files_removed: u64, data_points_dropped: u64) {
+        self.inner
+            .lock()
+            .unwrap()
+            .record_disk_evictions(domain, files_removed, data_points_dropped);
+    }
+
     fn record_retry_queue_bytes_per_sec(&self, endpoint_id: &MetaString, bytes_per_sec: f64) {
         self.inner
             .lock()
@@ -575,6 +664,24 @@ impl TransactionQueueTelemetry {
 
     pub fn record_retry_queue_size(&self, domain: &MetaString, len: usize) {
         self.shared.record_retry_queue_size(&self.endpoint_id, domain, len);
+    }
+
+    /// Records the number and total size of the entries this endpoint's retry queue holds on disk.
+    pub fn record_retry_queue_disk_stats(&self, domain: &MetaString, files: usize, size_bytes: u64) {
+        self.shared
+            .record_retry_queue_disk_stats(&self.endpoint_id, domain, files, size_bytes);
+    }
+
+    /// Records the number of entries this endpoint's retry queue reloaded from disk at startup.
+    pub fn record_retry_queue_disk_startup_reloaded_files(&self, domain: &MetaString, files: usize) {
+        self.shared
+            .record_retry_queue_disk_startup_reloaded_files(&self.endpoint_id, domain, files);
+    }
+
+    /// Records entries this endpoint's retry queue removed from disk to stay within the on-disk size limit.
+    pub fn record_retry_queue_disk_evictions(&self, domain: &MetaString, files_removed: u64, data_points_dropped: u64) {
+        self.shared
+            .record_retry_queue_disk_evictions(domain, files_removed, data_points_dropped);
     }
 
     pub fn record_retry_queue_bytes_per_sec(&self, bytes_per_sec: f64) {
@@ -764,6 +871,63 @@ mod tests {
         assert_eq!(
             recorder.gauge(("network_http_retry_queue_size", &[("domain", "https://one.example")])),
             Some(4.0)
+        );
+    }
+
+    #[test]
+    fn shared_transaction_queue_telemetry_records_disk_retry_queue_stats_by_domain() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let builder = MetricsBuilder::default();
+        let shared = SharedTransactionQueueTelemetry::from_builder(&builder);
+        // Loops for two API keys of the same endpoint have separate queues on disk.
+        let first = TransactionQueueTelemetry::from_builder(&builder, "https://one.example", shared.clone());
+        let second = TransactionQueueTelemetry::from_builder(&builder, "https://one.example", shared.clone());
+        let third = TransactionQueueTelemetry::from_builder(&builder, "https://two.example", shared.clone());
+        let one = MetaString::from_static("https://one.example");
+        let two = MetaString::from_static("https://two.example");
+        let one_tags = &[("domain", "https://one.example")];
+        let two_tags = &[("domain", "https://two.example")];
+
+        first.record_retry_queue_disk_startup_reloaded_files(&one, 1);
+        second.record_retry_queue_disk_startup_reloaded_files(&one, 2);
+        first.record_retry_queue_disk_stats(&one, 3, 300);
+        second.record_retry_queue_disk_stats(&one, 4, 400);
+        third.record_retry_queue_disk_stats(&two, 5, 500);
+
+        assert_eq!(
+            recorder.gauge(("network_http_retry_queue_disk_startup_reloaded_files", one_tags)),
+            Some(3.0)
+        );
+        assert_eq!(
+            recorder.gauge(("network_http_retry_queue_disk_files", one_tags)),
+            Some(7.0)
+        );
+        assert_eq!(
+            recorder.gauge(("network_http_retry_queue_disk_size_bytes", one_tags)),
+            Some(700.0)
+        );
+        assert_eq!(
+            recorder.gauge(("network_http_retry_queue_disk_files", two_tags)),
+            Some(5.0)
+        );
+        assert_eq!(recorder.gauge("network_http_retry_queue_disk_size_bytes"), Some(1200.0));
+
+        first.record_retry_queue_disk_evictions(&one, 1, 10);
+        second.record_retry_queue_disk_evictions(&one, 2, 20);
+        third.record_retry_queue_disk_evictions(&two, 4, 40);
+
+        assert_eq!(
+            recorder.counter(("network_http_retry_queue_disk_files_removed_total", one_tags)),
+            Some(3)
+        );
+        assert_eq!(
+            recorder.counter(("network_http_retry_queue_disk_data_points_dropped_total", one_tags)),
+            Some(30)
+        );
+        assert_eq!(
+            recorder.counter(("network_http_retry_queue_disk_files_removed_total", two_tags)),
+            Some(4)
         );
     }
 

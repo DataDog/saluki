@@ -6,7 +6,9 @@ use tracing::{debug, info, warn};
 
 mod persisted;
 use self::persisted::PersistedQueue;
-pub use self::persisted::{DiskUsageRetriever, DiskUsageRetrieverImpl, PersistedQueueArgs};
+pub use self::persisted::{
+    DiskUsageRetriever, DiskUsageRetrieverImpl, PersistedQueueArgs, PersistedQueueEvictions, PersistedQueueStats,
+};
 
 const DEFAULT_FLUSH_TO_DISK_MEM_RATIO: f64 = 0.5;
 
@@ -209,6 +211,24 @@ where
         self.persisted_pending.as_mut().map_or(0, |p| p.take_entries_dropped())
     }
 
+    /// Returns statistics about the entries persisted on disk.
+    ///
+    /// Returns `None` if disk persistence isn't enabled.
+    pub fn persisted_stats(&self) -> Option<PersistedQueueStats> {
+        self.persisted_pending.as_ref().map(|p| p.stats())
+    }
+
+    /// Returns the persisted entries removed from disk to stay within the on-disk size limit since the last call to
+    /// this method, resetting the counts.
+    ///
+    /// Always returns empty counts if disk persistence isn't enabled.
+    pub fn take_persisted_evictions(&mut self) -> PersistedQueueEvictions {
+        self.persisted_pending
+            .as_mut()
+            .map(|p| p.take_evictions())
+            .unwrap_or_default()
+    }
+
     /// Enqueues an entry.
     ///
     /// If the queue is full and the entry can't be enqueued in-memory, in-memory entries (oldest first) are evicted
@@ -353,7 +373,7 @@ where
     /// # Errors
     ///
     /// If an error occurs while persisting an entry to disk, an error is returned.
-    pub async fn flush(mut self) -> Result<PushResult, GenericError> {
+    pub async fn flush(&mut self) -> Result<PushResult, GenericError> {
         let mut push_result = PushResult::default();
 
         while let Some(entry) = self.pending.pop_front() {
