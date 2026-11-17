@@ -799,6 +799,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::RawString,
     },
     EnvKey {
+        env_vars: &["DD_LOG_ENABLED"],
+        path: &["log_enabled"],
+        decode: EnvDecode::Bool,
+    },
+    EnvKey {
         env_vars: &["DD_LOG_FILE_MAX_ROLLS"],
         path: &["log_file_max_rolls"],
         decode: EnvDecode::Integer,
@@ -836,6 +841,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
     EnvKey {
         env_vars: &["DD_LOG_TO_SYSLOG"],
         path: &["log_to_syslog"],
+        decode: EnvDecode::Bool,
+    },
+    EnvKey {
+        env_vars: &["DD_LOGS_ENABLED"],
+        path: &["logs_enabled"],
         decode: EnvDecode::Bool,
     },
     EnvKey {
