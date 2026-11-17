@@ -1,4 +1,4 @@
-//! Benchmarks for the v0.x trace decoders: v0.4 in MessagePack and JSON, and v0.5.
+//! Benchmarks for the v0.x trace decoders: v0.4 in MessagePack and JSON, v0.5 and v0.7.
 //!
 //! The payloads mimic a web service's traces: a server span with a few children per chunk, each with the tags a
 //! tracer typically sets. Services, names, envs and tag keys repeat across spans, as they do in real payloads. Every
@@ -8,7 +8,9 @@ use std::collections::HashMap;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use rmp::encode;
-use saluki_components::decoders::datadog::{decode_v04_json, decode_v04_payload, decode_v05_payload};
+use saluki_components::decoders::datadog::{
+    decode_v04_json, decode_v04_payload, decode_v05_payload, decode_v07_payload,
+};
 
 fn write_str_map(out: &mut Vec<u8>, entries: &[(&str, String)]) {
     encode::write_map_len(out, entries.len() as u32).unwrap();
@@ -217,6 +219,37 @@ fn v05_payload(chunks: u64, spans_per_chunk: u64) -> Vec<u8> {
     out
 }
 
+/// The same spans as a v0.7 payload: a `TracerPayload` with the tracer's fields, and the chunks as maps.
+fn v07_payload(chunks: u64, spans_per_chunk: u64) -> Vec<u8> {
+    let mut out = Vec::new();
+    encode::write_map_len(&mut out, 5).unwrap();
+    for (key, value) in [
+        (
+            "container_id",
+            "3f2a9c1e5b7d4e6f8a0b2c4d6e8f0a1b3c5d7e9f1a2b4c6d8e0f2a4b6c8d0e2f",
+        ),
+        ("language_name", "go"),
+        ("language_version", "go1.22.5"),
+        ("tracer_version", "v1.68.0"),
+    ] {
+        encode::write_str(&mut out, key).unwrap();
+        encode::write_str(&mut out, value).unwrap();
+    }
+    encode::write_str(&mut out, "chunks").unwrap();
+    encode::write_array_len(&mut out, chunks as u32).unwrap();
+    for chunk in 0..chunks {
+        encode::write_map_len(&mut out, 2).unwrap();
+        encode::write_str(&mut out, "priority").unwrap();
+        encode::write_sint(&mut out, 1).unwrap();
+        encode::write_str(&mut out, "spans").unwrap();
+        encode::write_array_len(&mut out, spans_per_chunk as u32).unwrap();
+        for index in 0..spans_per_chunk {
+            write_span(&mut out, &bench_span(chunk, index));
+        }
+    }
+    out
+}
+
 const SHAPES: [(u64, u64); 3] = [(1, 5), (20, 5), (100, 10)];
 
 fn bench_decode(c: &mut Criterion) {
@@ -261,5 +294,25 @@ fn bench_decode_v05(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_decode, bench_decode_json, bench_decode_v05);
+fn bench_decode_v07(c: &mut Criterion) {
+    let mut group = c.benchmark_group("v07_decoder/decode");
+    for (chunks, spans_per_chunk) in SHAPES {
+        let bytes = v07_payload(chunks, spans_per_chunk);
+        group.throughput(Throughput::Elements(chunks * spans_per_chunk));
+        group.bench_with_input(
+            BenchmarkId::from_parameter(format!("{chunks}x{spans_per_chunk}")),
+            &bytes,
+            |b, bytes| b.iter(|| decode_v07_payload(bytes).expect("payload should decode")),
+        );
+    }
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_decode,
+    bench_decode_json,
+    bench_decode_v05,
+    bench_decode_v07
+);
 criterion_main!(benches);
