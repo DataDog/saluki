@@ -1,0 +1,14 @@
+features:
+  - |
+    The experimental native trace intake, enabled with ``data_plane.experimental.apm.native_trace_intake``, now serves
+    ``/v0.5/traces`` itself, rather than forwarding it to the trace-agent. As the trace-agent does, it decodes the
+    body as a v0.5 dictionary payload whatever its ``Content-Type``, takes the tracer's language, language version
+    and tracer version from the ``Datadog-Meta-*`` headers, and answers with the sampling rates by service. Its
+    receiver telemetry is tagged ``v0.5``.
+security:
+  - |
+    The experimental native trace intake now rejects a ``/v0.5/traces`` or ``/v1.0/traces`` payload whose string
+    references resolve to more than 512 times its size in strings (and at least 1 MiB), with ``400 Bad Request``,
+    counted as a decoding error. Both formats send a string once and refer to it by index, so a small payload that
+    references one large string from many spans could otherwise cost work out of all proportion to its size. The
+    trace-agent has no such limit; legitimate payloads stay well below it.
