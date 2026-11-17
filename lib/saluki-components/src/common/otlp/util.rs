@@ -227,7 +227,7 @@ pub fn extract_trace_container_tags(
 /// Resolves the container tags of an OTLP trace resource, as `key:value` tags in a stable order.
 ///
 /// `attributes` is the resource as the sender ordered it, and `typed_attributes` is the same resource after
-/// stringifying arrays and adding workload tags.
+/// converting arrays to string representations and adding workload tags.
 ///
 /// A tag's source and the order of the attributes decide its value: a semantic convention wins over a
 /// `datadog.container.tag.` attribute, which wins over a pre-mapped Datadog tag, and the first valid value wins among
