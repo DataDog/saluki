@@ -6,10 +6,15 @@ while every change on it is the bot's own Agent version update. Once anyone adds
 pull request keeps its candidate and blocks newer proposals until it merges or closes.
 
 Every commit the tool writes has the base branch's current tree plus the new version file, so the branch's CI tests
-the new Agent against current code. The bot branch only moves forward: the new commit's parents include the branch's
-current head, plus the base branch's head when the bot branch is behind it, and the ref update is a fast-forward, never
-a force push. If someone pushes after the ownership check, the update is no longer a fast-forward, GitHub rejects it,
-and the run fails without touching their commit.
+the new Agent against current code. While a pull request is open, its branch only moves forward: the new commit's
+parents include the branch's current head, plus the base branch's head when the bot branch is behind it, and the ref
+update is a fast-forward, never a force push. If someone pushes after the ownership check, the update is no longer a
+fast-forward, GitHub rejects it, and the run fails without touching their commit. With no open pull request, the
+branch belongs to the automation alone. A leftover branch, such as one from a closed pull request, restarts from the
+base branch. Its commits stay reachable from the closed pull request.
+
+If the version file on the base branch changed after discovery read it, the candidate may be stale, so the tool
+proposes nothing and the next run discovers again.
 
 Commits are created through GitHub's API without custom author information, so GitHub signs them as the app that
 owns the token. The token comes from `GITHUB_TOKEN`.
@@ -90,8 +95,7 @@ def commit_parents(comparison, base_sha, head_sha):
     """Return the parents for a new commit on a bot branch at `head_sha`, given GitHub's comparison of base...head.
 
     A branch that is already part of the base starts again from the base. Otherwise the commit keeps `head_sha`, so the
-    ref update is a fast-forward, and adds `base_sha` when the branch is behind, so the base's changes come in. A branch
-    left behind by a squash merge is both ahead and behind.
+    ref update is a fast-forward, and adds `base_sha` when the branch is behind, so the base's changes come in.
     """
     if comparison.get("ahead_by", 0) == 0:
         return [base_sha]
@@ -100,10 +104,11 @@ def commit_parents(comparison, base_sha, head_sha):
     return [head_sha, base_sha]
 
 
-def write_commit(api, repository, branch, base_sha, parents, version_text, message, exists):
+def write_commit(api, repository, branch, base_sha, parents, version_text, message, exists, force=False):
     """Commit the base's tree plus the version file, with `parents`, and move `branch` to that commit.
 
-    An existing branch moves only by fast-forward, so the update fails if the branch no longer points at a parent.
+    Without `force`, an existing branch moves only by fast-forward, so the update fails if the branch no longer points
+    at a parent.
     """
     base_tree = api.request("GET", f"/repos/{repository}/git/commits/{base_sha}")["tree"]["sha"]
     entry = {"path": VERSION_FILE, "mode": "100644", "type": "blob", "content": version_text}
@@ -114,7 +119,7 @@ def write_commit(api, repository, branch, base_sha, parents, version_text, messa
     if not commit.get("verification", {}).get("verified"):
         raise ProposeError(f"GitHub did not sign commit {commit.get('sha')}; not pushing it")
     if exists:
-        api.request("PATCH", f"/repos/{repository}/git/refs/heads/{branch}", {"sha": commit["sha"], "force": False})
+        api.request("PATCH", f"/repos/{repository}/git/refs/heads/{branch}", {"sha": commit["sha"], "force": force})
     else:
         api.request("POST", f"/repos/{repository}/git/refs", {"ref": f"refs/heads/{branch}", "sha": commit["sha"]})
     return commit["sha"]
@@ -128,10 +133,17 @@ def read_version_file_at(api, repository, ref):
     return json.loads(base64.b64decode(document["content"]))
 
 
-def propose(api, repository, base, branch, version_text, title, body, labels):
-    """Open, refresh or hold the bot pull request. Returns `opened`, `refreshed`, `unchanged` or `held`."""
+def propose(api, repository, base, branch, version_text, title, body, labels, merged):
+    """Open, refresh or hold the bot pull request.
+
+    `merged` is the version file discovery compared the candidate with, or `None` when there was none. Returns
+    `opened`, `refreshed`, `unchanged`, `held` or `stale`.
+    """
     owner = repository.split("/", 1)[0]
     base_sha = api.request("GET", f"/repos/{repository}/git/ref/heads/{base}")["object"]["sha"]
+    if read_version_file_at(api, repository, base_sha) != merged:
+        print(f"[*] {VERSION_FILE} on {base} changed after discovery. Proposing nothing; the next run discovers again.")
+        return "stale"
     query = urllib.parse.urlencode({"state": "open", "base": base, "head": f"{owner}:{branch}"})
     open_prs = api.request("GET", f"/repos/{repository}/pulls?{query}")
 
@@ -157,18 +169,12 @@ def propose(api, repository, base, branch, version_text, title, body, labels):
         print(f"[*] Refreshed {pr['html_url']}")
         return "refreshed"
 
-    # A leftover branch, such as one from a closed pull request, is reused without a force push.
+    # With no open pull request, a leftover branch restarts from the base. A closed pull request keeps its commits.
     existing = api.request("GET", f"/repos/{repository}/git/ref/heads/{branch}", allow_404=True)
-    parents = [base_sha]
     if existing is not None:
-        existing_sha = existing["object"]["sha"]
-        comparison = api.request("GET", f"/repos/{repository}/compare/{base_sha}...{existing_sha}")
-        problem = foreign_changes(comparison.get("files", []), comparison.get("commits", []))
-        if problem:
-            print(f"[*] Not overwriting branch {branch}: {problem}.")
-            return "held"
-        parents = commit_parents(comparison, base_sha, existing_sha)
-    write_commit(api, repository, branch, base_sha, parents, version_text, title, exists=existing is not None)
+        print(f"[*] Restarting leftover branch {branch} from {base}.")
+    exists = existing is not None
+    write_commit(api, repository, branch, base_sha, [base_sha], version_text, title, exists=exists, force=exists)
     pr = api.request("POST", f"/repos/{repository}/pulls", {"title": title, "head": branch, "base": base, "body": body})
     api.request("POST", f"/repos/{repository}/issues/{pr['number']}/labels", {"labels": labels})
     print(f"[*] Opened {pr['html_url']}")
@@ -191,6 +197,7 @@ def main(argv=None):
         print("error: GITHUB_TOKEN is not set", file=sys.stderr)
         return 1
     candidate = arguments.candidate_dir
+    merged_path = candidate / "merged-datadog-agent-version.json"
     try:
         propose(
             GitHubApi(token),
@@ -201,6 +208,7 @@ def main(argv=None):
             (candidate / "pr-title.txt").read_text(encoding="utf-8").strip(),
             (candidate / "pr-body.md").read_text(encoding="utf-8"),
             arguments.labels,
+            json.loads(merged_path.read_text(encoding="utf-8")) if merged_path.exists() else None,
         )
     except (ProposeError, OSError, KeyError, json.JSONDecodeError) as error:
         print(f"error: {error}", file=sys.stderr)

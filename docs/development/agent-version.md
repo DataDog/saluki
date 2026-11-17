@@ -129,7 +129,9 @@ The workflow keeps one bot branch, `ci/update-agent-nightly`, and at most one op
 request only while the pull request holds nothing but the automated update. Each refresh is based on the current
 `main`, and it moves the bot branch only by fast-forward, so a push that arrives during a run makes the run fail rather
 than overwriting it. If the new Agent needs an ADP change, push it to the bot branch: the pull request then keeps its
-candidate, and the workflow proposes nothing newer until it merges or closes.
+candidate, and the workflow proposes nothing newer until it merges or closes. After a pull request closes without
+merging, the next run restarts the bot branch from `main` and opens a new pull request. If `main`'s version file changes
+while a run is in progress, that run proposes nothing, and the next run discovers again.
 
 The Windows nightly is published under a floating tag, so a missed run can't find an older Windows build later. To
 bootstrap the file or recover a missed nightly, take the `ltsc2022` child digest from the upstream Windows build job's

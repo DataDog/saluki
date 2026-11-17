@@ -33,12 +33,14 @@ class FakeApi:
     """
 
     def __init__(self, open_pr=False, files=(subject.VERSION_FILE,), commits=None, branch_version_file=OLD_VERSION_FILE,
-                 branch_head=None, ahead_by=1, behind_by=0, signed=True, after_inspection=None):
+                 branch_head=None, ahead_by=1, behind_by=0, signed=True, after_inspection=None,
+                 base_version_file=OLD_VERSION_FILE):
         self.open_pr = open_pr
         self.files = [{"filename": name} for name in files]
         self.branch_head = branch_head if branch_head is not None else (BOT_HEAD if open_pr else None)
         self.commits = list(commits) if commits is not None else [commit(BOT_HEAD)]
         self.branch_version_file = branch_version_file
+        self.base_version_file = base_version_file
         self.ahead_by = ahead_by
         self.behind_by = behind_by
         self.signed = signed
@@ -88,7 +90,8 @@ class FakeApi:
                 self.after_inspection(self)
             return commits
         if path.startswith(f"/repos/{REPOSITORY}/contents/"):
-            return {"content": base64.b64encode(self.branch_version_file.encode()).decode()}
+            text = self.base_version_file if path.endswith(f"ref={BASE_SHA}") else self.branch_version_file
+            return {"content": base64.b64encode(text.encode()).decode()}
         if path == f"/repos/{REPOSITORY}/git/ref/heads/{BRANCH}":
             return {"object": {"sha": self.branch_head}} if self.branch_head else None
         if path.startswith(f"/repos/{REPOSITORY}/compare/"):
@@ -111,7 +114,7 @@ class FakeApi:
             self.branch_head = body["sha"]
             return {}
         if path == f"/repos/{REPOSITORY}/git/refs/heads/{BRANCH}":
-            if body.get("force") or not self.is_ancestor(self.branch_head, body["sha"]):
+            if not body.get("force") and not self.is_ancestor(self.branch_head, body["sha"]):
                 raise subject.ProposeError("HTTP 422: Update is not a fast forward")
             self.branch_head = body["sha"]
             return {}
@@ -123,7 +126,10 @@ class FakeApi:
 class ProposeTest(unittest.TestCase):
     def propose(self, api):
         with contextlib.redirect_stdout(io.StringIO()):
-            return subject.propose(api, REPOSITORY, "main", BRANCH, NEW_VERSION_FILE, "title", "body", ["automated"])
+            return subject.propose(
+                api, REPOSITORY, "main", BRANCH, NEW_VERSION_FILE, "title", "body", ["automated"],
+                json.loads(OLD_VERSION_FILE),
+            )
 
     def new_commit(self, api):
         tree = next(body for _, path, body in api.writes if path.endswith("/git/trees"))
@@ -189,29 +195,29 @@ class ProposeTest(unittest.TestCase):
                 self.assertEqual(self.propose(api), "held")
                 self.assertEqual(api.writes, [])
 
-    def test_does_not_reuse_a_leftover_branch_with_human_commits(self):
-        api = FakeApi(branch_head=BOT_HEAD, commits=[commit(BOT_HEAD, author_type="User")])
-        self.assertEqual(self.propose(api), "held")
-        self.assertEqual(api.writes, [])
+    def test_restarts_a_leftover_branch_from_the_base(self):
+        # A closed pull request leaves its branch, possibly with human commits, or ahead of and behind the base.
+        cases = {
+            "human commits": dict(commits=[commit(BOT_HEAD, author_type="User")]),
+            "bot commits": dict(),
+            "behind the base": dict(behind_by=3),
+            "already in the base": dict(commits=[], files=(), ahead_by=0),
+        }
+        for name, options in cases.items():
+            with self.subTest(name):
+                api = FakeApi(branch_head=BOT_HEAD, **options)
+                self.assertEqual(self.propose(api), "opened")
+                self.assertEqual(self.new_commit(api)["parents"], [BASE_SHA])
+                ref_update = next(body for method, _, body in api.writes if method == "PATCH")
+                self.assertTrue(ref_update["force"])
+                self.assertEqual(api.parents[api.branch_head], [BASE_SHA])
 
-    def test_extends_a_leftover_bot_branch(self):
-        api = FakeApi(branch_head=BOT_HEAD)
-        self.assertEqual(self.propose(api), "opened")
-        self.assertEqual(self.new_commit(api)["parents"], [BOT_HEAD])
-
-    def test_brings_the_base_into_a_leftover_branch_that_is_behind_it(self):
-        # A closed pull request, or a squash merge whose branch was kept, leaves bot commits that are ahead of the base
-        # and behind it.
-        api = FakeApi(branch_head=BOT_HEAD, behind_by=3)
-        self.assertEqual(self.propose(api), "opened")
-        self.assertEqual(self.new_commit(api)["parents"], [BOT_HEAD, BASE_SHA])
-        self.assertTrue(api.is_ancestor(BASE_SHA, api.branch_head))
-
-    def test_restarts_a_leftover_branch_that_is_already_in_the_base(self):
-        api = FakeApi(branch_head=BOT_HEAD, commits=[], files=(), ahead_by=0)
-        api.parents = {BASE_SHA: [BOT_HEAD]}
-        self.assertEqual(self.propose(api), "opened")
-        self.assertEqual(self.new_commit(api)["parents"], [BASE_SHA])
+    def test_proposes_nothing_when_the_base_version_changed_after_discovery(self):
+        for open_pr in (False, True):
+            with self.subTest(open_pr=open_pr):
+                api = FakeApi(open_pr=open_pr, base_version_file=NEW_VERSION_FILE)
+                self.assertEqual(self.propose(api), "stale")
+                self.assertEqual(api.writes, [])
 
     def test_refuses_to_push_an_unsigned_commit(self):
         api = FakeApi(signed=False)

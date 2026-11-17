@@ -9,7 +9,8 @@ the version file on the branch being updated.
 The outcome is written to `--output-dir`:
 
 - `summary.json` always, with a `status` of `candidate`, `skipped` or `error`, and the reason.
-- For a candidate, also `datadog-agent-version.json`, `pr-title.txt` and `pr-body.md`.
+- For a candidate, also `datadog-agent-version.json`, `pr-title.txt` and `pr-body.md`, plus
+  `merged-datadog-agent-version.json`, a copy of the version file it was compared with, when there is one.
 
 A skip is normal: a newer build isn't complete yet, or isn't newer. It exits 0 and changes nothing. Anything this tool
 doesn't expect is an error and exits 1: a registry or bucket that keeps failing past the retry budget, a malformed
@@ -661,7 +662,7 @@ def describe(version_file, merged, base_branch):
     return title, "\n".join(lines) + "\n"
 
 
-def write_outcome(output_dir, summary, version_file=None, title=None, body=None):
+def write_outcome(output_dir, summary, version_file=None, title=None, body=None, merged_text=None):
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     if version_file is not None:
@@ -669,6 +670,8 @@ def write_outcome(output_dir, summary, version_file=None, title=None, body=None)
         (output_dir / "datadog-agent-version.json").write_text(text, encoding="utf-8")
         (output_dir / "pr-title.txt").write_text(title + "\n", encoding="utf-8")
         (output_dir / "pr-body.md").write_text(body, encoding="utf-8")
+    if merged_text is not None:
+        (output_dir / "merged-datadog-agent-version.json").write_text(merged_text, encoding="utf-8")
     github_output = os.environ.get("GITHUB_OUTPUT")
     if github_output:
         with open(github_output, "a", encoding="utf-8") as file:
@@ -736,7 +739,9 @@ def discover(arguments, http=None):
     new = version_file["integration"]["version"]
     print(f"[*] Found a complete Agent set: {new}")
     summary = {"status": "candidate", "current_version": current, "candidate_version": new}
-    write_outcome(arguments.output_dir, summary, version_file, title, body)
+    merged_path = Path(arguments.merged_file)
+    merged_text = merged_path.read_text(encoding="utf-8") if merged_path.exists() else None
+    write_outcome(arguments.output_dir, summary, version_file, title, body, merged_text)
     return 0
 
 

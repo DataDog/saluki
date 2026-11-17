@@ -479,6 +479,7 @@ class CommandTest(unittest.TestCase):
             self.assertIn(f"compare/{OLD_REVISION}...{REVISION}", body)
             self.assertIn("/-/pipelines/99000", body)
             self.assertIn(VERSION, (output / "pr-title.txt").read_text())
+            self.assertEqual((output / "merged-datadog-agent-version.json").read_text(), merged.read_text())
 
 
 if __name__ == "__main__":

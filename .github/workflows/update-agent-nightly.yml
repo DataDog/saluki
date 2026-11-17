@@ -8,8 +8,8 @@ name: Update Agent Nightly
 # current nightly's age, measured from its `built_at`.
 #
 # `propose` alone exchanges an OIDC token for write access. It keeps one bot branch and at most one open pull request,
-# and refreshes that pull request only while it holds nothing but the bot's own update. The bot branch moves only
-# by fast-forward. See `ci/tooling/update-agent-version/propose_agent_version.py`.
+# and refreshes that pull request only while it holds nothing but the bot's own update. While a pull request is open,
+# the bot branch moves only by fast-forward. See `ci/tooling/update-agent-version/propose_agent_version.py`.
 #
 # It runs daily at 12:30 UTC, after the Linux images and packages have usually been published, and on manual dispatch.
 # To recover a missed nightly, dispatch it with the ltsc2022 child digest from the upstream Windows build job's push
