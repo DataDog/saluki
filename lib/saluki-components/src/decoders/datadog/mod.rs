@@ -22,7 +22,8 @@
 //! resolve to are bounded at 512 times its length, and at least 1 MiB
 //! ([`DecodeError::ResolvedStringsTooLarge`](datadog::DecodeError::ResolvedStringsTooLarge)). The reference decoder
 //! keeps its references as indexes and has no such bound: this is a deliberate deviation, which only payloads built
-//! to amplify meet. The v0.5 decoder applies the same bound.
+//! to amplify meet. The v0.5 decoder applies the same bound. The payload's own fields and attributes are copied onto
+//! every trace, and downstream work is per trace, so they are charged once per trace too.
 //!
 //! [`decode_v1_payload`](datadog::decode_v1_payload) decodes one tracer payload into the unified
 //! `Trace` model, producing one `Trace` per trace chunk. String references are resolved to owned
@@ -51,6 +52,7 @@ mod tests;
 pub use self::convert::convert_tracer_payload;
 pub use self::error::DecodeError;
 pub use self::json::{decode_v01_json, decode_v04_any, decode_v04_json};
+use self::read::ResolvedBytes;
 use self::string_table::StringTable;
 pub use self::v04::decode_v04_payload;
 pub use self::v05::decode_v05_payload;
@@ -255,7 +257,50 @@ fn decode_tracer_payload(r: &mut &[u8]) -> Result<DecodedPayload, DecodeError> {
         }
     }
 
+    let fields = [
+        &payload.container_id,
+        &payload.language_name,
+        &payload.language_version,
+        &payload.tracer_version,
+        &payload.runtime_id,
+        &payload.env,
+        &payload.hostname,
+        &payload.app_version,
+    ];
+    charge_per_trace(strings.resolved(), &fields, &payload.attributes, payload.chunks.len())?;
+
     Ok(payload)
+}
+
+/// Charges a payload's own fields and attributes once per trace against its resolved-bytes budget.
+///
+/// They resolve once, but every trace carries them, and downstream work is per trace: the encoder writes them into
+/// each trace's payload, and stats key each trace by them. Without the charge, one large hostname or version sent once
+/// and a payload of many small chunks would cost work out of all proportion to its size.
+fn charge_per_trace(
+    resolved: &ResolvedBytes, fields: &[&MetaString], attributes: &FastHashMap<MetaString, AttributeValue>,
+    traces: usize,
+) -> Result<(), DecodeError> {
+    let per_trace = fields.iter().map(|field| field.len()).sum::<usize>()
+        + attributes
+            .iter()
+            .map(|(key, value)| key.len() + attribute_string_bytes(value))
+            .sum::<usize>();
+    resolved.charge(per_trace.saturating_mul(traces))
+}
+
+/// Returns the bytes of the strings and byte strings an attribute value holds.
+fn attribute_string_bytes(value: &AttributeValue) -> usize {
+    match value {
+        AttributeValue::String(s) => s.len(),
+        AttributeValue::Bytes(bytes) => bytes.len(),
+        AttributeValue::Array(values) => values.iter().map(attribute_string_bytes).sum(),
+        AttributeValue::KeyValueList(entries) => entries
+            .iter()
+            .map(|(key, value)| key.len() + attribute_string_bytes(value))
+            .sum(),
+        AttributeValue::Bool(_) | AttributeValue::Int(_) | AttributeValue::Float(_) => 0,
+    }
 }
 
 /// Decodes the string table array (field 1 of the tracer payload).

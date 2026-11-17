@@ -46,7 +46,8 @@
 //! Each resolved string is hashed into an attribute map here and again downstream, so without the bound a small
 //! payload that references one large string from many spans would cost work out of all proportion to its size. The
 //! trace-agent keeps its references as indexes and has no such bound: this is a deliberate deviation, which only
-//! payloads built to amplify meet.
+//! payloads built to amplify meet. The payload's env, hostname, app version and attributes are charged once per
+//! trace, as every trace carries them.
 //!
 //! # Promoted fields
 //!
@@ -90,7 +91,7 @@ use super::v04::{
     parse_unsigned, span_kind, ChunkPromoted, PayloadPromoted, RootPriority, PRIORITY_NONE, TAG_APM_MODE,
     TAG_CONVERTED_V1, TAG_GIT_COMMIT_SHA,
 };
-use super::DecodedV1;
+use super::{charge_per_trace, DecodedV1};
 
 #[cfg(test)]
 mod tests;
@@ -132,9 +133,6 @@ pub fn decode_v05_payload(bytes: &[u8]) -> Result<DecodedV1, DecodeError> {
         app_version: dictionary.get(promoted.app_version)?,
         ..PayloadFields::default()
     };
-    for trace in &mut traces {
-        trace.payload = payload.clone();
-    }
 
     // As in the trace-agent, a set reference makes an attribute, even to an empty string.
     let mut payload_attributes = FastHashMap::default();
@@ -146,6 +144,12 @@ pub fn decode_v05_payload(bytes: &[u8]) -> Result<DecodedV1, DecodeError> {
     }
     if promoted.apm_mode != 0 {
         payload_attributes.insert(TAG_APM_MODE, AttributeValue::String(dictionary.get(promoted.apm_mode)?));
+    }
+    let fields = [&payload.env, &payload.hostname, &payload.app_version];
+    charge_per_trace(&dictionary.resolved, &fields, &payload_attributes, traces.len())?;
+
+    for trace in &mut traces {
+        trace.payload = payload.clone();
     }
 
     Ok(DecodedV1 {

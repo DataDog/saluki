@@ -943,3 +943,53 @@ fn truncated_v1_payload_is_short_input() {
     let err = decode_v1_payload(&buf).unwrap_err();
     assert!(matches!(err, DecodeError::Msgpack { .. }), "{err:?}");
 }
+
+/// Encodes a v1.0 payload with `hostname` and a `_dd.git.commit.sha` payload attribute of `sha`, sent once as
+/// literals, and `chunks` chunks of a trace ID and a priority.
+fn fan_out_v1_payload(hostname: &str, sha: &str, chunks: u32) -> Vec<u8> {
+    let mut buf = Vec::new();
+    encode::write_map_len(&mut buf, 3).unwrap();
+    encode::write_uint(&mut buf, 8).unwrap();
+    encode::write_str(&mut buf, hostname).unwrap();
+    encode::write_uint(&mut buf, 10).unwrap();
+    encode::write_array_len(&mut buf, 3).unwrap();
+    encode::write_str(&mut buf, "_dd.git.commit.sha").unwrap();
+    encode::write_uint(&mut buf, 1).unwrap();
+    encode::write_str(&mut buf, sha).unwrap();
+    encode::write_uint(&mut buf, 11).unwrap();
+    encode::write_array_len(&mut buf, chunks).unwrap();
+    for chunk in 0..chunks {
+        encode::write_map_len(&mut buf, 2).unwrap();
+        encode::write_uint(&mut buf, 6).unwrap();
+        encode::write_bin(&mut buf, &(u128::from(chunk) + 1).to_be_bytes()).unwrap();
+        encode::write_uint(&mut buf, 1).unwrap();
+        encode::write_sint(&mut buf, 1).unwrap();
+    }
+    buf
+}
+
+#[test]
+fn payload_fields_and_attributes_are_charged_once_per_trace() {
+    // A 1 MiB hostname and commit SHA sent once, then carried by 100,000 traces: a 4 MB payload whose traces would
+    // carry 200 GB of them downstream.
+    let large = "x".repeat(1 << 20);
+    for (hostname, sha) in [(large.as_str(), "abc"), ("web-1", large.as_str())] {
+        let bytes = fan_out_v1_payload(hostname, sha, 100_000);
+        let budget = bytes.len() * read::RESOLVED_BYTES_PER_PAYLOAD_BYTE;
+        let error = decode_v1_payload(&bytes).unwrap_err();
+        assert!(
+            matches!(error, DecodeError::ResolvedStringsTooLarge { limit } if limit == budget),
+            "{error:?}"
+        );
+    }
+
+    // Many traces with the usual sizes of hostname and commit SHA are well within the bound.
+    let sha = "4f0e7c2a9b1d3e5f60718293a4b5c6d7e8f90123";
+    let decoded = decode_v1_payload(&fan_out_v1_payload("web-1.us-east-1.example.com", sha, 100_000)).unwrap();
+    assert_eq!(decoded.traces.len(), 100_000);
+    assert_eq!(decoded.traces[99_999].payload.hostname, "web-1.us-east-1.example.com");
+    assert_eq!(
+        decoded.payload_attributes.get("_dd.git.commit.sha"),
+        Some(&AttributeValue::String(ms(sha)))
+    );
+}
