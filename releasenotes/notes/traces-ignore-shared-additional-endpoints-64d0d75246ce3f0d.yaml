@@ -1,4 +1,0 @@
-upgrade:
-  - |
-    ADP no longer sends traces and APM stats to the endpoints in the top-level ``additional_endpoints`` setting. Like
-    the trace-agent, it sends them to ``apm_config.additional_endpoints``. To keep dual shipping traces, set that key.
