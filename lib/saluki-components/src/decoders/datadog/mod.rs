@@ -90,11 +90,8 @@ pub struct DecodedV1 {
 /// Returns a [`DecodeError`] if the input is not a well-formed v1.0 tracer payload (truncated,
 /// malformed MessagePack, oversized headers, out-of-range string references, and so on).
 pub fn decode_v1_payload(bytes: &[u8]) -> Result<DecodedV1, DecodeError> {
-    let mut reader = bytes;
-    let payload = decode_tracer_payload(&mut reader)?;
-    if !reader.is_empty() {
-        return Err(DecodeError::TrailingBytes { len: reader.len() });
-    }
+    // As the reference's `UnmarshalMsg`, whose leftover bytes the receiver ignores, what follows the payload is ignored.
+    let payload = decode_tracer_payload(&mut &bytes[..])?;
 
     let payload_fields = PayloadFields {
         container_id: payload.container_id,
