@@ -23,13 +23,13 @@ fn obj(fields: Vec<(&str, V)>) -> V {
     V::Map(fields.into_iter().map(|(key, value)| (s(key), value)).collect())
 }
 
-fn payload(fields: Vec<(&str, V)>, chunks: Vec<V>) -> Vec<u8> {
+pub(in crate::decoders::datadog) fn payload(fields: Vec<(&str, V)>, chunks: Vec<V>) -> Vec<u8> {
     let mut fields = fields;
     fields.push(("chunks", V::Arr(chunks)));
     encode_value(&obj(fields))
 }
 
-fn chunk(spans: Vec<V>) -> V {
+pub(in crate::decoders::datadog) fn chunk(spans: Vec<V>) -> V {
     obj(vec![("spans", V::Arr(spans))])
 }
 
@@ -134,7 +134,7 @@ fn nil_and_empty_elements_allocate_in_proportion_to_their_bytes() {
     }
 }
 
-fn span_strategy() -> impl Strategy<Value = V> {
+pub(in crate::decoders::datadog) fn span_strategy() -> impl Strategy<Value = V> {
     (
         "[a-z._]{0,20}",
         any::<u64>(),

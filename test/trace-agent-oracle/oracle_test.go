@@ -6,10 +6,15 @@
 //
 // Input (ORACLE_IN): a JSON list of cases, each {name, content_type?, body | body_b64, version?}. Output
 // (ORACLE_OUT): one result per case, {name, media_type, payload} or {name, media_type, error: {tag, reason, ...}}.
+//
+// With ORACLE_STREAM set instead, it reads one case per line on stdin and writes each result on stdout, on one line
+// prefixed with "ORACLE ", until stdin closes. The Go/Rust parity fuzzer drives it this way (see fuzz.sh). A decoder
+// panic is reported as {name, panic} rather than ending the stream.
 
 package api
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -58,14 +63,29 @@ func dumpAny(s *idx.StringTable, v *idx.AnyValue) any {
 			out = append(out, dumpAny(s, e))
 		}
 		return map[string]any{"array": out}
+	case *idx.AnyValue_KeyValueList:
+		out := []any{}
+		for _, kv := range x.KeyValueList.KeyValues {
+			out = append(out, []any{s.Get(kv.Key), dumpAny(s, kv.Value)})
+		}
+		return map[string]any{"key_value_list": out}
 	}
 	return map[string]any{"unknown": fmt.Sprintf("%T", v.Value)}
 }
 
+// dumpAttrs renders attributes by name. v0.5 attributes are keyed by dictionary index, so two entries of the same
+// text are two attributes of the same name, in no order: such a name is rendered as {"duplicate": count}.
 func dumpAttrs(s *idx.StringTable, m map[uint32]*idx.AnyValue) map[string]any {
 	out := map[string]any{}
+	counts := map[string]int{}
 	for k, v := range m {
-		out[s.Get(k)] = dumpAny(s, v)
+		name := s.Get(k)
+		counts[name]++
+		if counts[name] > 1 {
+			out[name] = map[string]any{"duplicate": counts[name]}
+		} else {
+			out[name] = dumpAny(s, v)
+		}
 	}
 	return out
 }
@@ -121,7 +141,52 @@ func classify(err error) map[string]any {
 	return map[string]any{"tag": errtag, "reason": reason, "message": err.Error(), "type": fmt.Sprintf("%T", err)}
 }
 
+func runCase(r *HTTPReceiver, c oracleCase) (res map[string]any) {
+	res = map[string]any{"name": c.Name}
+	defer func() {
+		if p := recover(); p != nil {
+			res = map[string]any{"name": c.Name, "panic": fmt.Sprint(p)}
+		}
+	}()
+	body := []byte(c.Body)
+	if c.BodyB64 != "" {
+		body, _ = base64.StdEncoding.DecodeString(c.BodyB64)
+	}
+	req := httptest.NewRequest("POST", "/v0.4/traces", bytes.NewReader(body))
+	if c.ContentType != nil {
+		req.Header.Set("Content-Type", *c.ContentType)
+	}
+	v := v04
+	switch c.Version {
+	case "v0.1":
+		v = v01
+	case "v0.2":
+		v = v02
+	case "v0.3":
+		v = v03
+	case "v0.5":
+		v = v05
+	case "v0.7":
+		v = V07
+	case "v1.0":
+		v = V10
+	}
+	res["media_type"] = getMediaType(req)
+	tp, err := r.decodeConvertedTracerPayload(v, req, stubCID{}, "", "", "")
+	if err != nil {
+		res["error"] = classify(err)
+	} else {
+		res["payload"] = dumpPayload(tp)
+	}
+	return res
+}
+
 func TestOracle(t *testing.T) {
+	r := newTestReceiverFromConfig(newTestReceiverConfig())
+	if os.Getenv("ORACLE_STREAM") != "" {
+		stream(t, r)
+		return
+	}
 	in := os.Getenv("ORACLE_IN")
 	if in == "" {
 		t.Skip()
@@ -134,38 +199,9 @@ func TestOracle(t *testing.T) {
 	if err := json.Unmarshal(raw, &cases); err != nil {
 		t.Fatal(err)
 	}
-	r := newTestReceiverFromConfig(newTestReceiverConfig())
 	results := []any{}
 	for _, c := range cases {
-		body := []byte(c.Body)
-		if c.BodyB64 != "" {
-			body, _ = base64.StdEncoding.DecodeString(c.BodyB64)
-		}
-		req := httptest.NewRequest("POST", "/v0.4/traces", bytes.NewReader(body))
-		if c.ContentType != nil {
-			req.Header.Set("Content-Type", *c.ContentType)
-		}
-		v := v04
-		switch c.Version {
-		case "v0.1":
-			v = v01
-		case "v0.2":
-			v = v02
-		case "v0.3":
-			v = v03
-		case "v0.5":
-			v = v05
-		case "v0.7":
-			v = V07
-		}
-		res := map[string]any{"name": c.Name, "media_type": getMediaType(req)}
-		tp, err := r.decodeConvertedTracerPayload(v, req, stubCID{}, "", "", "")
-		if err != nil {
-			res["error"] = classify(err)
-		} else {
-			res["payload"] = dumpPayload(tp)
-		}
-		results = append(results, res)
+		results = append(results, runCase(r, c))
 	}
 	out, err := json.MarshalIndent(results, "", "  ")
 	if err != nil {
@@ -173,5 +209,35 @@ func TestOracle(t *testing.T) {
 	}
 	if err := os.WriteFile(os.Getenv("ORACLE_OUT"), out, 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func stream(t *testing.T, r *HTTPReceiver) {
+	in := bufio.NewReaderSize(os.Stdin, 1<<20)
+	out := bufio.NewWriter(os.Stdout)
+	for {
+		line, err := in.ReadBytes('\n')
+		if len(bytes.TrimSpace(line)) > 0 {
+			var c oracleCase
+			if err := json.Unmarshal(line, &c); err != nil {
+				t.Fatal(err)
+			}
+			res, err := json.Marshal(runCase(r, c))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := fmt.Fprintf(out, "ORACLE %s\n", res); err != nil {
+				t.Fatal(err)
+			}
+			if err := out.Flush(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err == io.EOF {
+			return
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 }

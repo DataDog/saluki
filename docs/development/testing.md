@@ -286,6 +286,32 @@ development, lean on CI.
 We aren't doing a lot with fuzzing right now, but what we've uses `cargo-fuzz` and
 operates at the function-level. More fuzzing coverage will likely come in the future.
 
+### Go/Rust parity fuzzing of the trace decoders
+
+The `decoders::datadog::parity` tests in `saluki-components` fuzz each trace decoder (v1.0, v0.4 MessagePack and JSON,
+v0.1, v0.5 and v0.7) against the trace-agent's own receiver code. Each test generates payloads from the decoder's
+[reference fixtures](#trace-agent-reference-fixtures) and property-test strategies, as they are or with bytes flipped,
+overwritten, inserted, removed or cut off, decodes each with the decoder and with the trace-agent's
+`decodeConvertedTracerPayload`, and fails on the first payload whose results differ, shrunk to a minimal one. The
+trace-agent side is `test/trace-agent-oracle/oracle_test.go`, built as a Go test binary and driven over its standard
+input and output. The tests are ignored, as they need that binary: `fuzz.sh` builds it and runs them.
+
+```shell
+# 1,000 payloads per decoder, from the checkout at ~/dd/datadog-agent:
+test/trace-agent-oracle/fuzz.sh
+# 50,000 payloads for the v0.5 decoder only:
+test/trace-agent-oracle/fuzz.sh ~/dd/datadog-agent 50000 parity_v05
+# Compare one body that a failure printed again:
+PARITY_BODY=<base64> test/trace-agent-oracle/fuzz.sh ~/dd/datadog-agent 1 parity_v1
+# Repeat a run, from the seed it printed:
+PARITY_SEED=<seed> test/trace-agent-oracle/fuzz.sh ~/dd/datadog-agent 50000 parity_v1
+```
+
+Each run draws new payloads from a random seed, which each test prints as `PARITY_SEED=<seed>`, and a failure repeats.
+With the same seed and the same `datadog-agent` checkout, a run draws the same payloads. To fix a difference, add the shrunk payload as a unit test of the decoder that fails, then
+fix the decoder. The tests accept the deliberate deviations that `parity.rs` documents, such as the bound on the
+strings that references resolve to, and the trace-agent's random order of v0.1 chunks.
+
 ## Loom and Miri testing
 
 Loom and Miri target concurrency and memory-model correctness rather than business logic. **Loom**
