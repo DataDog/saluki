@@ -18,8 +18,10 @@ pub trait DatadogConfigWitness {
     fn consume_aggregator_stop_timeout(&mut self, value: i64);
     fn consume_allow_arbitrary_tags(&mut self, value: bool);
     fn consume_api_key(&mut self, value: String);
+    fn consume_apm_config_additional_endpoints(&mut self, value: HashMap<String, Vec<String>>);
     fn consume_apm_config_analyzed_rate_by_service(&mut self, value: HashMap<String, f64>);
     fn consume_apm_config_analyzed_spans(&mut self, value: ::serde_json::Map<String, ::serde_json::Value>);
+    fn consume_apm_config_apm_dd_url(&mut self, value: String);
     fn consume_apm_config_apm_non_local_traffic(&mut self, value: bool);
     fn consume_apm_config_compute_stats_by_span_kind(&mut self, value: bool);
     fn consume_apm_config_connection_limit(&mut self, value: i64);
@@ -211,6 +213,8 @@ pub trait DatadogConfigWitness {
     fn consume_observability_pipelines_worker_metrics_enabled(&mut self, value: bool);
     fn consume_observability_pipelines_worker_metrics_url(&mut self, value: String);
     fn consume_observability_pipelines_worker_metrics_use_v3_api_series(&mut self, value: bool);
+    fn consume_observability_pipelines_worker_traces_enabled(&mut self, value: bool);
+    fn consume_observability_pipelines_worker_traces_url(&mut self, value: String);
     fn consume_origin_detection_unified(&mut self, value: bool);
     fn consume_otlp_config_logs_enabled(&mut self, value: bool);
     fn consume_otlp_config_metrics_delta_ttl(&mut self, value: i64);
@@ -303,6 +307,8 @@ pub trait DatadogConfigWitness {
     fn consume_vector_metrics_enabled(&mut self, value: bool);
     fn consume_vector_metrics_url(&mut self, value: String);
     fn consume_vector_metrics_use_v3_api_series(&mut self, value: bool);
+    fn consume_vector_traces_enabled(&mut self, value: bool);
+    fn consume_vector_traces_url(&mut self, value: String);
     fn consume_vsock_addr(&mut self, value: String);
 
     /// Drains every translation error recorded while consuming.
@@ -323,8 +329,10 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_aggregator_stop_timeout(config.aggregator_stop_timeout.clone());
     consumer.consume_allow_arbitrary_tags(config.allow_arbitrary_tags.clone());
     consumer.consume_api_key(config.api_key.clone());
+    consumer.consume_apm_config_additional_endpoints(config.apm_config.additional_endpoints.clone());
     consumer.consume_apm_config_analyzed_rate_by_service(config.apm_config.analyzed_rate_by_service.clone());
     consumer.consume_apm_config_analyzed_spans(config.apm_config.analyzed_spans.clone());
+    consumer.consume_apm_config_apm_dd_url(config.apm_config.apm_dd_url.clone());
     consumer.consume_apm_config_apm_non_local_traffic(config.apm_config.apm_non_local_traffic.clone());
     consumer.consume_apm_config_compute_stats_by_span_kind(config.apm_config.compute_stats_by_span_kind.clone());
     consumer.consume_apm_config_connection_limit(config.apm_config.connection_limit.clone());
@@ -583,6 +591,11 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_observability_pipelines_worker_metrics_use_v3_api_series(
         config.observability_pipelines_worker.metrics.use_v3_api.series.clone(),
     );
+    consumer.consume_observability_pipelines_worker_traces_enabled(
+        config.observability_pipelines_worker.traces.enabled.clone(),
+    );
+    consumer
+        .consume_observability_pipelines_worker_traces_url(config.observability_pipelines_worker.traces.url.clone());
     consumer.consume_origin_detection_unified(config.origin_detection_unified.clone());
     consumer.consume_otlp_config_logs_enabled(config.otlp_config.logs.enabled.clone());
     consumer.consume_otlp_config_metrics_delta_ttl(config.otlp_config.metrics.delta_ttl.clone());
@@ -819,6 +832,8 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_vector_metrics_enabled(config.vector.metrics.enabled.clone());
     consumer.consume_vector_metrics_url(config.vector.metrics.url.clone());
     consumer.consume_vector_metrics_use_v3_api_series(config.vector.metrics.use_v3_api.series.clone());
+    consumer.consume_vector_traces_enabled(config.vector.traces.enabled.clone());
+    consumer.consume_vector_traces_url(config.vector.traces.url.clone());
     consumer.consume_vsock_addr(config.vsock_addr.clone());
 
     let errors = consumer.translate_errors();

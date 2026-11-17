@@ -27,7 +27,6 @@ tracking.
 
 | Config Key                                                      | Description                                       | Issue   |
 | --------------------------------------------------------------- | ------------------------------------------------- | ------- |
-| `apm_config.apm_dd_url`                                         | APM intake URL override                           | [#2419] |
 | `apm_config.traces_send_to_main_endpoint`                       | Send traces and stats to the main endpoint        | [#2419] |
 | `dogstatsd_client_drop_detection.dropped_ratio_threshold`       | Client drop ratio that marks a client unhealthy   | [#3088] |
 | `dogstatsd_client_drop_detection.enabled`                       | DogStatsD client drop detection                   | [#3088] |
@@ -1168,8 +1167,10 @@ The following settings work in ADP with the same behavior as the core agent.
 | `agent_ipc.grpc_max_message_size`                                                          | Max inbound gRPC message size for IPC client       |
 | `allow_arbitrary_tags`                                                                     | Relax backend tag validation via HTTP header       |
 | `api_key`                                                                                  | API key for endpoint auth                          |
+| `apm_config.additional_endpoints`                                                          | Dual-ship traces and stats to extra endpoints      |
 | `apm_config.analyzed_rate_by_service`                                                      | Legacy per-service event extraction rates          |
 | `apm_config.analyzed_spans`                                                                | Per service|operation APM event extraction rates   |
+| `apm_config.apm_dd_url`                                                                    | APM intake URL override                            |
 | `apm_config.apm_non_local_traffic`                                                         | Accept non-local traffic on the APM receiver       |
 | `apm_config.compute_stats_by_span_kind`                                                    | Compute APM stats per span kind                    |
 | `apm_config.enable_rare_sampler`                                                           | Enable the APM rare-span sampler                   |
@@ -1324,6 +1325,8 @@ The following settings work in ADP with the same behavior as the core agent.
 | `observability_pipelines_worker.metrics.enabled`                                           | Route metrics to OPW instance                      |
 | `observability_pipelines_worker.metrics.url`                                               | OPW metrics intake URL                             |
 | `observability_pipelines_worker.metrics.use_v3_api.series`                                 | Use V3 series for OPW                              |
+| `observability_pipelines_worker.traces.enabled`                                            | Route traces and stats to OPW                      |
+| `observability_pipelines_worker.traces.url`                                                | OPW traces intake URL                              |
 | `origin_detection_unified`                                                                 | Unified origin detection mode                      |
 | `otlp_config.logs.enabled`                                                                 | otlp_config.logs.enabled                           |
 | `otlp_config.metrics.delta_ttl`                                                            | TTL (seconds) for cached delta-conversion points   |
@@ -1402,6 +1405,8 @@ The following settings work in ADP with the same behavior as the core agent.
 | `vector.metrics.enabled`                                                                   | Route metrics to OPW (legacy alias)                |
 | `vector.metrics.url`                                                                       | OPW metrics intake URL (legacy alias)              |
 | `vector.metrics.use_v3_api.series`                                                         | Use V3 series for Vector                           |
+| `vector.traces.enabled`                                                                    | Route traces to OPW (legacy alias)                 |
+| `vector.traces.url`                                                                        | OPW traces intake URL (legacy alias)               |
 | `vsock_addr`                                                                               | vsock address for Agent IPC endpoint               |
 
 

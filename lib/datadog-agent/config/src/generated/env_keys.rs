@@ -33,6 +33,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::RawString,
     },
     EnvKey {
+        env_vars: &["DD_APM_ADDITIONAL_ENDPOINTS"],
+        path: &["apm_config", "additional_endpoints"],
+        decode: EnvDecode::JsonValue,
+    },
+    EnvKey {
         env_vars: &["DD_APM_CONFIG_ANALYZED_RATE_BY_SERVICE"],
         path: &["apm_config", "analyzed_rate_by_service"],
         decode: EnvDecode::JsonValue,
@@ -41,6 +46,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         env_vars: &["DD_APM_ANALYZED_SPANS"],
         path: &["apm_config", "analyzed_spans"],
         decode: EnvDecode::TracesSpan,
+    },
+    EnvKey {
+        env_vars: &["DD_APM_DD_URL"],
+        path: &["apm_config", "apm_dd_url"],
+        decode: EnvDecode::RawString,
     },
     EnvKey {
         env_vars: &["DD_APM_NON_LOCAL_TRAFFIC"],
@@ -997,6 +1007,16 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Bool,
     },
     EnvKey {
+        env_vars: &["DD_OBSERVABILITY_PIPELINES_WORKER_TRACES_ENABLED"],
+        path: &["observability_pipelines_worker", "traces", "enabled"],
+        decode: EnvDecode::Bool,
+    },
+    EnvKey {
+        env_vars: &["DD_OBSERVABILITY_PIPELINES_WORKER_TRACES_URL"],
+        path: &["observability_pipelines_worker", "traces", "url"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
         env_vars: &["DD_ORIGIN_DETECTION_UNIFIED"],
         path: &["origin_detection_unified"],
         decode: EnvDecode::Bool,
@@ -1480,6 +1500,16 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         env_vars: &["DD_VECTOR_METRICS_USE_V3_API_SERIES"],
         path: &["vector", "metrics", "use_v3_api", "series"],
         decode: EnvDecode::Bool,
+    },
+    EnvKey {
+        env_vars: &["DD_VECTOR_TRACES_ENABLED"],
+        path: &["vector", "traces", "enabled"],
+        decode: EnvDecode::Bool,
+    },
+    EnvKey {
+        env_vars: &["DD_VECTOR_TRACES_URL"],
+        path: &["vector", "traces", "url"],
+        decode: EnvDecode::RawString,
     },
     EnvKey {
         env_vars: &["DD_VSOCK_ADDR"],

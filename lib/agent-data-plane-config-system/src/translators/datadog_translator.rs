@@ -80,6 +80,7 @@ impl<'a> DatadogTranslator<'a> {
         self.apply_deprecated_max_tps_alias();
         self.resolve_v3_sketch_payload_limits();
         self.drop_regex_tag_filters_shadowed_by_exact_ones();
+        self.warn_on_alternate_traces_intake_without_url();
         (self.config, errors)
     }
 
@@ -122,6 +123,21 @@ impl<'a> DatadogTranslator<'a> {
         regex
             .reject
             .retain(|rule| !exact.reject.iter().any(|exact| exact.key == rule.key));
+    }
+
+    /// Warns about an enabled alternate traces intake that has no URL.
+    ///
+    /// Like the trace-agent, ADP then ignores that intake and sends traces to the default one.
+    fn warn_on_alternate_traces_intake_without_url(&self) {
+        let traces = &self.config.shared.endpoints.traces;
+        for (prefix, intake) in [
+            ("observability_pipelines_worker", &traces.opw_intake),
+            ("vector", &traces.vector_intake),
+        ] {
+            if intake.enabled && intake.url.is_empty() {
+                warn!("`{prefix}.traces.enabled` is set but `{prefix}.traces.url` is empty: traces will use the default intake.");
+            }
+        }
     }
 
     /// Records a translation error encountered while consuming.
@@ -473,6 +489,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.shared.endpoints.api_key = value;
     }
 
+    fn consume_apm_config_additional_endpoints(&mut self, value: HashMap<String, Vec<String>>) {
+        self.config.shared.endpoints.traces.additional_endpoints = value;
+    }
+
     fn consume_apm_config_analyzed_rate_by_service(&mut self, value: HashMap<String, f64>) {
         self.config.domains.traces.analyzed_rate_by_service = value;
     }
@@ -505,6 +525,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
                 .insert(operation.to_owned(), rate);
         }
         self.config.domains.traces.analyzed_spans_by_service = rates_by_service;
+    }
+
+    fn consume_apm_config_apm_dd_url(&mut self, value: String) {
+        self.config.shared.endpoints.traces.apm_dd_url = value.trim().to_string();
     }
 
     fn consume_apm_config_apm_non_local_traffic(&mut self, value: bool) {
@@ -1562,6 +1586,14 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.shared.endpoints.opw_intake.use_v3_series = value;
     }
 
+    fn consume_observability_pipelines_worker_traces_enabled(&mut self, value: bool) {
+        self.config.shared.endpoints.traces.opw_intake.enabled = value;
+    }
+
+    fn consume_observability_pipelines_worker_traces_url(&mut self, value: String) {
+        self.config.shared.endpoints.traces.opw_intake.url = value.trim().to_string();
+    }
+
     fn consume_origin_detection_unified(&mut self, value: bool) {
         self.config.domains.dogstatsd.origin.unified = value;
     }
@@ -2034,6 +2066,14 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
 
     fn consume_vector_metrics_use_v3_api_series(&mut self, value: bool) {
         self.config.shared.endpoints.vector_intake.use_v3_series = value;
+    }
+
+    fn consume_vector_traces_enabled(&mut self, value: bool) {
+        self.config.shared.endpoints.traces.vector_intake.enabled = value;
+    }
+
+    fn consume_vector_traces_url(&mut self, value: String) {
+        self.config.shared.endpoints.traces.vector_intake.url = value.trim().to_string();
     }
 
     fn consume_vsock_addr(&mut self, value: String) {
@@ -2949,6 +2989,55 @@ mod tests {
         assert!(errors.is_none());
         assert_eq!(config.domains.dogstatsd.mapper.profiles.len(), 1);
         assert!(config.domains.dogstatsd.mapper.profiles[0].mappings.is_empty());
+    }
+
+    #[test]
+    fn traces_intake_settings_translate_apart_from_the_shared_endpoints() {
+        let (config, errors) = translate_explicit(json!({
+            "additional_endpoints": { "https://shared.example.com": ["shared-key"] },
+            "apm_config": {
+                "apm_dd_url": " https://apm.example.com ",
+                "additional_endpoints": {
+                    "https://apm-additional.example.com": ["key-a", "key-b"],
+                },
+            },
+            "observability_pipelines_worker": { "traces": { "enabled": true, "url": " https://opw.example.com " } },
+            "vector": { "traces": { "enabled": true, "url": "https://vector.example.com" } },
+        }));
+
+        assert!(errors.is_none());
+        let endpoints = &config.shared.endpoints;
+        assert_eq!("https://apm.example.com", endpoints.traces.apm_dd_url);
+        assert_eq!(
+            HashMap::from([(
+                "https://apm-additional.example.com".to_string(),
+                vec!["key-a".to_string(), "key-b".to_string()],
+            )]),
+            endpoints.traces.additional_endpoints
+        );
+        assert!(endpoints.traces.opw_intake.enabled);
+        assert_eq!("https://opw.example.com", endpoints.traces.opw_intake.url);
+        assert!(endpoints.traces.vector_intake.enabled);
+        assert_eq!("https://vector.example.com", endpoints.traces.vector_intake.url);
+
+        // The shared endpoints and the metrics intakes don't see them.
+        assert_eq!(
+            HashMap::from([("https://shared.example.com".to_string(), vec!["shared-key".to_string()])]),
+            endpoints.additional_endpoints
+        );
+        assert!(!endpoints.opw_intake.enabled);
+        assert!(!endpoints.vector_intake.enabled);
+    }
+
+    #[test]
+    fn traces_intake_settings_are_unset_by_default() {
+        let (config, errors) = translate_explicit(json!({}));
+
+        assert!(errors.is_none());
+        assert_eq!(
+            agent_data_plane_config::shared::TracesIntake::default(),
+            config.shared.endpoints.traces
+        );
     }
 
     #[test]
