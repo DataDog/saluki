@@ -1,7 +1,7 @@
 //! Per-client counters for OTLP spans received.
 //!
-//! Mirrors the client dimensions the Datadog Agent puts on `datadog.trace_agent.otlp.spans`: the sending SDK's
-//! language, its version, and the ingest endpoint version.
+//! Tags the counter with the client dimensions an operator needs to attribute traffic: the sending SDK's language, its
+//! version, and the ingest endpoint version.
 
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock, RwLock};
@@ -11,10 +11,10 @@ use saluki_metrics::{Counter, MetricsBuilder};
 
 use crate::common::otlp::traces::normalize::{is_normalized_tag_value, normalize_tag_value_into_unchecked};
 
-/// Prefix the Agent puts on the SDK version to form `tracer_version`, to tell OTLP clients from Datadog tracers.
+/// Prefix on the SDK version in `tracer_version`, to tell OTLP clients from Datadog tracers.
 const TRACER_VERSION_PREFIX: &str = "otlp-";
 
-/// Value of the `endpoint_version` tag, as in the Agent's OTLP receiver.
+/// Value of the `endpoint_version` tag.
 const ENDPOINT_VERSION: &str = "opentelemetry_grpc_v1";
 
 /// Value of the `lang` and `tracer_version` tags on the shared series that absorbs clients past the cap.
