@@ -1,8 +1,0 @@
----
-enhancements:
-  - |
-    The OTLP received-spans counter, ``component_events_received_total{message_type:otlp_spans}``, now carries the
-    sending client's identity as ``lang``, ``tracer_version`` and ``endpoint_version`` tags, taken from the resource's
-    ``telemetry.sdk.language`` and ``telemetry.sdk.version`` attributes. ``tracer_version`` is the SDK version
-    prefixed with ``otlp-``. Clients beyond 1,000 distinct language and version pairs are counted together under
-    ``lang:overflow`` and ``tracer_version:otlp-overflow``.
