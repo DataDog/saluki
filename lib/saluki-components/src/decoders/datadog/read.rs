@@ -727,3 +727,72 @@ pub fn repair_utf8(mut bytes: &[u8]) -> String {
         }
     }
 }
+
+/// Element-count limit of the reference's generated `msgp` decoders for the classic tracer payload model
+/// (`za0d4ccedlimitArrays`, `za0d4ccedlimitMaps`).
+pub const MSGP_MAX_COLLECTION_SIZE: u32 = 500_000;
+
+/// Reads an array header as a generated `msgp` decoder does: `msgp.ReadArrayHeaderBytes`, then `ErrLimitExceeded`
+/// over `max`. `nil` is a type error. The count isn't checked against the remaining bytes: the elements run out.
+pub fn msgp_read_array_len(r: &mut &[u8], max: u32, context: &'static str) -> Result<u32, DecodeError> {
+    let len = rmp::decode::read_array_len(r).map_err(mp(context))?;
+    if len > max {
+        return Err(DecodeError::OversizeHeader { context, len, max });
+    }
+    Ok(len)
+}
+
+/// Reads a map header as a generated `msgp` decoder does: `msgp.ReadMapHeaderBytes`, then `ErrLimitExceeded` over
+/// `max`. `nil` is a type error.
+pub fn msgp_read_map_len(r: &mut &[u8], max: u32, context: &'static str) -> Result<u32, DecodeError> {
+    let len = rmp::decode::read_map_len(r).map_err(mp(context))?;
+    if len > max {
+        return Err(DecodeError::OversizeHeader { context, len, max });
+    }
+    Ok(len)
+}
+
+/// Reads a string's raw bytes as `msgp.ReadStringBytes`: only a `str` value, not `nil` or `bin`. The bytes may not be
+/// valid UTF-8.
+pub fn msgp_read_str_bytes<'a>(r: &mut &'a [u8], context: &'static str) -> Result<&'a [u8], DecodeError> {
+    let width = match r.first() {
+        None => return Err(DecodeError::ShortBytes { context }),
+        Some(&b) if is_fixstr(b) => {
+            *r = &r[1..];
+            return take(r, usize::from(b & 0x1f), context);
+        }
+        Some(0xd9) => 1,
+        Some(0xda) => 2,
+        Some(0xdb) => 4,
+        Some(&b) => return Err(invalid(context, format!("expected a str, found marker {b:#04x}"))),
+    };
+    *r = &r[1..];
+    let len = read_len(r, width, context)?;
+    take(r, len, context)
+}
+
+/// Reads a `bin` value's raw bytes as `msgp.ReadBytesHeader` and then the bytes, with `ErrLimitExceeded` over `max`.
+pub fn msgp_read_bin_bytes<'a>(r: &mut &'a [u8], max: u32, context: &'static str) -> Result<&'a [u8], DecodeError> {
+    let width = match r.first() {
+        None => return Err(DecodeError::ShortBytes { context }),
+        Some(0xc4) => 1,
+        Some(0xc5) => 2,
+        Some(0xc6) => 4,
+        Some(&b) => return Err(invalid(context, format!("expected a bin, found marker {b:#04x}"))),
+    };
+    *r = &r[1..];
+    let len = read_len(r, width, context)?;
+    if len > max as usize {
+        return Err(DecodeError::OversizeHeader {
+            context,
+            len: len as u32,
+            max,
+        });
+    }
+    take(r, len, context)
+}
+
+/// Reads an `int32` as `msgp.ReadInt32Bytes`: an integer of any width in the `int32` range.
+pub fn v0_read_i32(r: &mut &[u8], context: &'static str) -> Result<i32, DecodeError> {
+    i32::try_from(v0_read_i64(r, context)?).map_err(|_| invalid(context, "integer overflows int32"))
+}
