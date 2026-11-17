@@ -1,0 +1,4 @@
+#!/bin/sh
+
+# Keeps the Agent's output in the container log, and appends it to the file the harness follows.
+exec tee -a "$PANORAMIC_LOG_DIR/agent.log"

@@ -10,8 +10,11 @@
 //! 4. Check the guards: two changes a case could make that would otherwise fail silently.
 //! 5. Lay the case layer over the participant type's spec.
 //!
-//! The merged spec is then shaped for its realization: the launch shape, the file destinations and the processes
-//! steps may name. Last, each step of the procedure is built.
+//! The merged spec is then shaped for its realization: the launch shape, the file destinations, the processes steps may
+//! name, the environment each declared connection delivers, and each endpoint's address and readiness evidence. Then,
+//! across participants: each connection gets its route and its address as the consumer reaches it, every reference is
+//! checked against its place and filled in where planning knows its value, and the create and start orders are
+//! computed as levels, with what each consumer waits for. Last, each step of the procedure is built.
 //!
 //! The plan owns everything the lifecycle acts on: the contents of every file and the operations steps call. After
 //! planning, nothing reads the loaded case or calls a participant type, except an operation a step calls.
@@ -23,25 +26,35 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::Serialize;
 
 use super::case::{is_name, CaseError, CaseInfo, LoadedCase, LoadedParticipant, Source, NAME_RULE};
-use super::participant::{ConnectionTarget, Enclosure, Os, Realization, SpecContext};
+use super::participant::{Enclosure, Os, Realization, SpecContext};
+use super::reference::Later;
 use super::registry::Registry;
 use super::spec::{
-    CollectFile, CommandSpec, Contents, EndpointSpec, Evidence, FileSource, HostMount, ParticipantSpec, ProcessSpec,
+    CollectFile, CommandSpec, Consumed, Contents, Evidence, FileSource, HostMount, ParticipantSpec, ProcessSpec,
     Program, DEFAULT_PROCESS,
 };
 use super::step::{Operation, ProcedureNode, Step, StepFields, StepPurpose};
 use super::template::Template;
+use super::wiring::{Gate, PlannedConnection, PlannedEndpoint, TypeWiring};
+use super::{order, reference, wiring};
 
 /// Environment keys with this prefix are the harness's own.
 const RESERVED_ENV_PREFIX: &str = "PANORAMIC_";
 
 /// Everything one case will do on one subject OS.
-// TODO: add the scope, the create and start orders, and the gates with addresses and connections.
 #[derive(Debug, Serialize)]
 pub(crate) struct CasePlan {
     pub(crate) case: CaseInfo,
     pub(crate) subject_os: Os,
+    /// What each realization backend the case uses makes for it.
+    pub(crate) scope: BTreeMap<Enclosure, &'static str>,
     pub(crate) participants: BTreeMap<String, PlannedParticipant>,
+    /// Levels of participants, each created after the participants whose container IDs it names.
+    pub(crate) create_order: Vec<Vec<String>>,
+    /// Levels of participants, each started after the participants it connects to.
+    pub(crate) start_order: Vec<Vec<String>>,
+    /// What each consumer waits for before it starts.
+    pub(crate) gates: BTreeMap<String, Vec<Gate>>,
     pub(crate) procedure: Vec<ProcedureNode<PlannedStep>>,
 }
 
@@ -57,15 +70,17 @@ pub(crate) struct PlannedParticipant {
     /// Every placed file, by destination, with a directory source expanded to its files.
     pub(crate) files: Vec<PlannedFile>,
     pub(crate) mounts: Vec<HostMount>,
-    pub(crate) endpoints: BTreeMap<String, EndpointSpec>,
-    pub(crate) ready: BTreeMap<String, Evidence>,
-    pub(crate) connect: BTreeMap<String, ConnectionTarget>,
+    pub(crate) endpoints: BTreeMap<String, PlannedEndpoint>,
+    pub(crate) connections: BTreeMap<String, PlannedConnection>,
     pub(crate) processes: Vec<ProcessSpec>,
     pub(crate) commands: BTreeMap<String, CommandSpec>,
     pub(crate) collect: Vec<CollectFile>,
     /// What steps call, by name. Each serializes as what it uses.
     #[serde(serialize_with = "operations")]
     pub(crate) operations: BTreeMap<&'static str, &'static dyn Operation>,
+    /// Templates that hold a reference planning cannot fill, by place, with each participant they wait for and what it
+    /// must have done.
+    pub(crate) later: BTreeMap<String, BTreeMap<String, Later>>,
 }
 
 /// What runs.
@@ -141,6 +156,10 @@ pub(crate) fn plan(case: &LoadedCase, os: Os, registry: &Registry) -> Result<Cas
         errors: Vec::new(),
     };
     let realizations = lay_out(case, os, &mut problems);
+    let scope = realizations
+        .values()
+        .map(|realization| (realization.enclosure, realization.enclosure.facts().per_case))
+        .collect();
     let connected: BTreeSet<(&str, &str)> = case
         .participants
         .values()
@@ -149,6 +168,8 @@ pub(crate) fn plan(case: &LoadedCase, os: Os, registry: &Registry) -> Result<Cas
         .collect();
 
     let mut participants = BTreeMap::new();
+    // By participant, the connection names its participant type knows and what each delivers. Only planning reads it.
+    let mut consumes = BTreeMap::new();
     for (name, participant) in &case.participants {
         let Some(&realization) = realizations.get(name) else {
             continue;
@@ -161,10 +182,39 @@ pub(crate) fn plan(case: &LoadedCase, os: Os, registry: &Registry) -> Result<Cas
             case,
             at: &mut at,
         };
-        if let Some(planned) = planner.plan(registry, &connected) {
+        if let Some((planned, known)) = planner.plan(registry, &connected) {
             participants.insert(name.clone(), planned);
+            consumes.insert(name.clone(), known);
         }
     }
+
+    // Each phase across participants reads what the phase before it planned, so it runs only if that phase found no
+    // problem. Otherwise it would report what is missing as a mistake of its own.
+    if problems.errors.is_empty() {
+        wiring::plan_connections(case, &mut participants, &consumes, &mut problems);
+    }
+    let mut create_edges = BTreeSet::new();
+    if problems.errors.is_empty() {
+        create_edges = reference::fill_references(&mut participants, &mut problems);
+    }
+    let start_edges = participants
+        .iter()
+        .flat_map(|(consumer, participant)| {
+            participant
+                .connections
+                .values()
+                .map(|connection| (connection.target.participant.clone(), consumer.clone()))
+        })
+        .collect();
+    let mut order = |which: &str, edges| {
+        order::levels(participants.keys().cloned(), edges).unwrap_or_else(|chain| {
+            problems.push(None, format!("the {} order has a cycle: {}", which, chain));
+            Vec::new()
+        })
+    };
+    let create_order = order("create", &create_edges);
+    let start_order = order("start", &start_edges);
+    let gates = wiring::gates(&participants);
 
     let procedure = build_procedure(case, registry, &mut problems);
     if !problems.errors.is_empty() {
@@ -173,7 +223,11 @@ pub(crate) fn plan(case: &LoadedCase, os: Os, registry: &Registry) -> Result<Cas
     Ok(CasePlan {
         case: case.info.clone(),
         subject_os: os,
+        scope,
         participants,
+        create_order,
+        start_order,
+        gates,
         procedure,
     })
 }
@@ -259,14 +313,14 @@ fn build_procedure(
 }
 
 /// Collects the problems of one case on one subject OS.
-struct Problems<'a> {
+pub(super) struct Problems<'a> {
     case: &'a LoadedCase,
     os: Os,
     errors: Vec<CaseError>,
 }
 
 impl<'a> Problems<'a> {
-    fn push(&mut self, at: Option<String>, message: String) {
+    pub(super) fn push(&mut self, at: Option<String>, message: String) {
         self.errors.push(CaseError {
             case: self.case.info.name.clone(),
             file: self.case.info.file.clone(),
@@ -303,7 +357,10 @@ struct Planner<'c, 'p, 'a> {
 }
 
 impl Planner<'_, '_, '_> {
-    fn plan(&mut self, registry: &Registry, connected: &BTreeSet<(&str, &str)>) -> Option<PlannedParticipant> {
+    /// Plans the participant, and returns it with the connection names its participant type knows.
+    fn plan(
+        &mut self, registry: &Registry, connected: &BTreeSet<(&str, &str)>,
+    ) -> Option<(PlannedParticipant, BTreeMap<&'static str, Consumed>)> {
         let placement = &self.participant.placement;
         let mut case_layer = self.participant.spec.clone();
         let (mut lower, type_name) = match &placement.participant_type {
@@ -343,6 +400,7 @@ impl Planner<'_, '_, '_> {
         };
 
         lower.files = self.normalize_type_files(std::mem::take(&mut lower.files), type_name);
+        let typed = TypeWiring::take(&mut lower);
         let names = self.rewrite_names(&mut case_layer, &lower, type_name);
         self.check_guards(&case_layer, &lower, type_name);
         for (endpoint, _) in case_layer.ready.iter() {
@@ -354,7 +412,7 @@ impl Planner<'_, '_, '_> {
             }
         }
         lower.lay(case_layer);
-        self.shape(lower, names, type_name)
+        self.shape(lower, names, type_name, typed, connected)
     }
 
     /// Keys a participant type's files by their normalized destinations.
@@ -393,15 +451,29 @@ impl Planner<'_, '_, '_> {
                         continue;
                     }
                 };
-                let alias = lower
-                    .aliases
+                // A directory that places a file at a name's destination is a second spelling of that file.
+                let separator = self.separator();
+                let targets: BTreeSet<String> = self
+                    .targets(&destination, &file, separator)
                     .iter()
-                    .find(|(_, aliased)| self.destination(aliased).as_deref() == Ok(destination.as_str()));
-                if let Some((alias, _)) = alias {
-                    self.at.push(format!(
-                        "files.{}: this is the destination of the name '{}'; write the name",
-                        key, alias
-                    ));
+                    .map(|target| path_key(target, separator))
+                    .collect();
+                let named = lower.aliases.iter().find_map(|(alias, aliased)| {
+                    let aliased = self.destination(aliased).ok()?;
+                    targets
+                        .contains(&path_key(&aliased, separator))
+                        .then_some((alias, aliased))
+                });
+                if let Some((alias, aliased)) = named {
+                    let message = if path_key(&aliased, separator) == path_key(&destination, separator) {
+                        format!("this is the destination of the name '{}'; write the name", alias)
+                    } else {
+                        format!(
+                            "places {}, the destination of the name '{}'; write the name",
+                            aliased, alias
+                        )
+                    };
+                    self.at.push(format!("files.{}: {}", key, message));
                     continue;
                 }
                 destination
@@ -452,36 +524,49 @@ impl Planner<'_, '_, '_> {
     fn check_guards(&mut self, case_layer: &ParticipantSpec, lower: &ParticipantSpec, type_name: Option<&str>) {
         let type_name = type_name.unwrap_or_default();
         if lower.supervised() && case_layer.processes.is_none() {
-            let replaces_launch = if case_layer.command.is_some() {
-                Some("command")
-            } else if case_layer.args.is_some() {
-                Some("args")
-            } else {
-                None
-            };
             let separator = self.separator();
-            let placed: BTreeSet<String> = case_layer
+            let supervising: BTreeSet<String> = lower
                 .files
                 .iter()
-                .flat_map(|(destination, file)| self.targets(destination, file, separator))
-                .map(|target| path_key(&target, separator))
+                .filter(|(_, file)| file.supervises)
+                .map(|(destination, _)| path_key(destination, separator))
                 .collect();
-            let replaced: Vec<&String> = lower
-                .files
-                .iter()
-                .filter(|(destination, file)| file.supervises && placed.contains(&path_key(destination, separator)))
-                .map(|(destination, _)| destination)
-                .collect();
-            if replaces_launch.is_some() || !replaced.is_empty() {
-                let what = if let Some(field) = replaces_launch {
-                    format!("sets '{}'", field)
-                } else {
-                    format!("replaces {}", super::case::join(&replaced))
-                };
+            let mut replaced = Vec::new();
+            let mut by_directory: BTreeMap<&String, Vec<String>> = BTreeMap::new();
+            for (destination, file) in &case_layer.files {
+                for target in self.targets(destination, file, separator) {
+                    if !supervising.contains(&path_key(&target, separator)) {
+                        continue;
+                    }
+                    if target == *destination {
+                        replaced.push(target);
+                    } else {
+                        by_directory.entry(destination).or_default().push(target);
+                    }
+                }
+            }
+            let what = if case_layer.command.is_some() {
+                Some("sets 'command'".to_string())
+            } else if case_layer.args.is_some() {
+                Some("sets 'args'".to_string())
+            } else {
+                (!replaced.is_empty()).then(|| format!("replaces {}", super::case::join(&replaced)))
+            };
+            if let Some(what) = what {
                 self.at.push(format!(
                     "the case {}, which participant type '{}' uses to supervise its processes; set 'processes' too, \
                      or no exit record is written and a process that never started reads as running",
                     what, type_name
+                ));
+            }
+            for (directory, targets) in by_directory {
+                self.at.push(format!(
+                    "files.{}: places {}, which participant type '{}' uses to supervise its processes; a directory \
+                     cannot replace a participant type's file, so place each under its own destination and set \
+                     'processes' too",
+                    directory,
+                    super::case::join(&targets),
+                    type_name
                 ));
             }
         }
@@ -512,28 +597,48 @@ impl Planner<'_, '_, '_> {
         }
     }
 
-    /// Makes a merged spec concrete for the realization.
+    /// Makes a merged spec concrete for the realization, and returns it with the connection names its participant type
+    /// knows.
     fn shape(
-        &mut self, spec: ParticipantSpec, names: BTreeMap<String, String>, type_name: Option<&str>,
-    ) -> Option<PlannedParticipant> {
+        &mut self, spec: ParticipantSpec, names: BTreeMap<String, String>, type_name: Option<&str>, typed: TypeWiring,
+        connected: &BTreeSet<(&str, &str)>,
+    ) -> Option<(PlannedParticipant, BTreeMap<&'static str, Consumed>)> {
         let enclosure = self.realization.enclosure;
         let ParticipantSpec {
             image,
             command,
             args,
             programs,
-            env,
+            mut env,
             files,
             mounts,
             endpoints,
-            ready,
+            mut ready,
             processes,
             commands,
             collect,
             aliases: _,
-            consumes: _,
+            consumes,
             operations,
+            wiring: _,
         } = spec;
+
+        let connect = &self.participant.placement.connect;
+        for consumed in connect.keys().filter_map(|name| consumes.get(name.as_str())) {
+            for (key, value) in consumed.env {
+                match Template::parse(*value) {
+                    Ok(value) => {
+                        env.insert(key.to_string(), value);
+                    }
+                    Err(message) => self.at.push(format!(
+                        "participant type '{}' delivers {}: {}",
+                        type_name.unwrap_or_default(),
+                        key,
+                        message
+                    )),
+                }
+            }
+        }
 
         let launch = if enclosure.runs_an_image() {
             if programs.is_some() {
@@ -619,18 +724,16 @@ impl Planner<'_, '_, '_> {
             }
         }
 
-        for name in endpoints.keys() {
-            if !is_name(name) {
-                self.at.push(format!("endpoint name '{}' {}", name, NAME_RULE));
-            }
-        }
         for (endpoint, evidence) in &ready {
             if !endpoints.contains_key(endpoint) {
                 self.at
                     .push(format!("ready.{}: the participant has no such endpoint", endpoint));
             }
+            // Only a consumer waits for evidence, so a participant type's default may name a process the case's
+            // `processes` left out, as long as nothing connects to the endpoint.
+            let waited_for = connected.contains(&(self.name, endpoint.as_str()));
             if let Evidence::Output { process, .. } = evidence {
-                if !processes.iter().any(|candidate| candidate.name() == process) {
+                if waited_for && !processes.iter().any(|candidate| candidate.name() == process) {
                     self.at.push(format!(
                         "ready.{}: the participant has no process '{}'",
                         endpoint, process
@@ -638,8 +741,20 @@ impl Planner<'_, '_, '_> {
                 }
             }
         }
+        let mut planned_endpoints = BTreeMap::new();
+        for (name, endpoint) in endpoints {
+            if !is_name(&name) {
+                self.at.push(format!("endpoint name '{}' {}", name, NAME_RULE));
+            }
+            match PlannedEndpoint::plan(endpoint, ready.remove(&name), self.name, self.realization) {
+                Ok(endpoint) => {
+                    planned_endpoints.insert(name, endpoint);
+                }
+                Err(message) => self.at.push(format!("endpoints.{}: {}", name, message)),
+            }
+        }
 
-        Some(PlannedParticipant {
+        let mut planned = PlannedParticipant {
             participant_type: self.participant.placement.participant_type.clone(),
             subject: self.participant.placement.subject,
             realization: self.realization,
@@ -654,14 +769,22 @@ impl Planner<'_, '_, '_> {
             env,
             files,
             mounts,
-            endpoints,
-            ready,
-            connect: self.participant.placement.connect.clone(),
+            endpoints: planned_endpoints,
+            connections: BTreeMap::new(),
             processes,
             commands,
             collect: collect.unwrap_or_default(),
             operations: by_name,
-        })
+            later: BTreeMap::new(),
+        };
+        for message in planned
+            .check_addresses()
+            .into_iter()
+            .chain(planned.check_wiring(self.name, connect, typed, &consumes))
+        {
+            self.at.push(message);
+        }
+        Some((planned, consumes))
     }
 
     /// Expands each file to the files it places, with their contents, and checks modes, shapes and reserved paths.
@@ -671,7 +794,7 @@ impl Planner<'_, '_, '_> {
     ) -> Vec<PlannedFile> {
         let windows = self.realization.os == Os::Windows;
         let separator = self.separator();
-        let reserved = self.reserved_paths();
+        let reserved = self.realization.enclosure.facts().reserved_paths(self.name);
         let mut placed = Vec::new();
         let mut seen = BTreeSet::new();
         for (destination, file) in files {
@@ -751,11 +874,7 @@ impl Planner<'_, '_, '_> {
 
     /// The separator of the realization's file paths.
     fn separator(&self) -> char {
-        if self.realization.enclosure == Enclosure::WindowsContainer {
-            '\\'
-        } else {
-            '/'
-        }
+        self.realization.enclosure.facts().separator
     }
 
     /// The destinations a file of the case places: one, or one per file of a directory source.
@@ -844,24 +963,6 @@ impl Planner<'_, '_, '_> {
             return Err(format!("'{}' has an empty, '.' or '..' part", key));
         }
         Ok(path)
-    }
-
-    /// Paths the realization reserves for the harness: the courier, and the participant's exit and log directories.
-    fn reserved_paths(&self) -> Vec<String> {
-        let name = self.name;
-        match self.realization.enclosure {
-            Enclosure::LinuxContainer | Enclosure::KubernetesPod => vec![
-                "/panoramic/courier".to_string(),
-                format!("/airlock/{}/exit", name),
-                format!("/airlock/{}/log", name),
-            ],
-            Enclosure::WindowsContainer => vec![
-                "C:\\panoramic\\courier.exe".to_string(),
-                format!("C:\\airlock\\{}\\exit", name),
-                format!("C:\\airlock\\{}\\log", name),
-            ],
-            Enclosure::HostProcessGroup => Vec::new(),
-        }
     }
 }
 

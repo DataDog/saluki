@@ -212,6 +212,7 @@ impl ParticipantEntry {
             aliases: BTreeMap::new(),
             consumes: BTreeMap::new(),
             operations: &[],
+            wiring: BTreeMap::new(),
         };
         (placement, spec)
     }
@@ -566,7 +567,7 @@ pub(crate) fn load(dir: &Path, registry: &Registry) -> Result<LoadedCase, Vec<Ca
         }
         if let Some(request) = &placement.realization {
             for option in request.options.keys() {
-                if !request.enclosure.options().contains(&option.as_str()) {
+                if !request.enclosure.facts().options.contains(&option.as_str()) {
                     problem(format!(
                         "realization option '{}' is not supported on {}",
                         option, request.enclosure

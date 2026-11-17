@@ -95,13 +95,6 @@ impl Enclosure {
         !matches!(self, Self::HostProcessGroup)
     }
 
-    /// The realization options a case may set on this kind.
-    // TODO: add each option with the case that first needs it: `host_cgroup_namespace` on a Linux container, and
-    // `host_pid` and `cri_socket` on a pod.
-    pub(crate) fn options(self) -> &'static [&'static str] {
-        &[]
-    }
-
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::LinuxContainer => "linux-container",
@@ -126,7 +119,7 @@ pub(crate) struct Realization {
 }
 
 /// The endpoint of another participant that a participant consumes: `<participant>.<endpoint>`.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub(crate) struct ConnectionTarget {
     pub(crate) participant: String,
     pub(crate) endpoint: String,
@@ -179,21 +172,21 @@ pub(crate) trait ParticipantType: Send + Sync {
 }
 
 /// What a participant type may read while it fills in a spec.
-// TODO: remove the dead_code allowance once a participant type reads its context.
-#[allow(dead_code)]
 pub(crate) struct SpecContext<'a> {
     pub(crate) realization: Realization,
     /// The realization options the case set.
+    // TODO: remove the dead_code allowance once a participant type reads an option.
+    #[allow(dead_code)]
     pub(crate) options: &'a BTreeMap<String, bool>,
     /// What the case wrote for this OS, with references unresolved.
     pub(crate) case: &'a ParticipantSpec,
+    // TODO: remove the dead_code allowance once a participant type reads the case's connections.
+    #[allow(dead_code)]
     pub(crate) connect: &'a BTreeMap<String, ConnectionTarget>,
     pub(super) with: &'a BTreeMap<String, serde_json::Value>,
     pub(super) sources: &'a CaseSources,
 }
 
-// TODO: remove the dead_code allowance once a participant type reads its context.
-#[allow(dead_code)]
 impl SpecContext<'_> {
     /// Decodes `with` into the participant type's own struct, which should deny unknown fields.
     ///
