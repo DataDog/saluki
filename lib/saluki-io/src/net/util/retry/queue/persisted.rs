@@ -187,14 +187,20 @@ where
         let disk_usage_retriever = self.disk_usage_retriever.clone();
         let storage_max_disk_ratio = self.storage_max_disk_ratio;
         let max_on_disk_bytes = self.max_on_disk_bytes;
+        let total_on_disk_bytes = self.total_on_disk_bytes;
 
         let limit = tokio::task::spawn_blocking(move || {
-            on_disk_bytes_limit(disk_usage_retriever, storage_max_disk_ratio, max_on_disk_bytes)
+            on_disk_bytes_limit(
+                disk_usage_retriever,
+                storage_max_disk_ratio,
+                max_on_disk_bytes,
+                total_on_disk_bytes,
+            )
         })
         .await
         .error_context("Failed to run disk size limit check to completion.")??;
 
-        Ok(limit.saturating_sub(self.total_on_disk_bytes))
+        Ok(limit.saturating_sub(total_on_disk_bytes))
     }
 
     /// Returns the number of entries that have been permanently dropped due to errors since the last call to this
@@ -346,6 +352,7 @@ where
         let disk_usage_retriever = self.disk_usage_retriever.clone();
         let storage_max_disk_ratio = self.storage_max_disk_ratio;
         let max_on_disk_bytes = self.max_on_disk_bytes;
+        let total_on_disk_bytes = self.total_on_disk_bytes;
 
         // TODO: Evaluate the possible failures scenarios a little more thoroughly, and see if we can improve
         // how we handle them instead of just bailing out.
@@ -354,7 +361,12 @@ where
         // still write the persistent entries to disk, and if it's worth it to do something like trying to
         // cache the last known good value we get here to use if we fail to get a new value, etc.
         let limit = tokio::task::spawn_blocking(move || {
-            on_disk_bytes_limit(disk_usage_retriever, storage_max_disk_ratio, max_on_disk_bytes)
+            on_disk_bytes_limit(
+                disk_usage_retriever,
+                storage_max_disk_ratio,
+                max_on_disk_bytes,
+                total_on_disk_bytes,
+            )
         })
         .await
         .error_context("Failed to run disk size limit check to completion.")??;
@@ -405,20 +417,28 @@ where
     }
 }
 
-/// Determines the total number of bytes that can be written to disk without causing the underlying volume to end up
+/// Determines the total number of bytes the queue may occupy on disk without causing the underlying volume to end up
 /// with more than `storage_max_disk_ratio` in terms of used space. The minimum of `max_on_disk_bytes` and the result
 /// of this calculation is returned.
+///
+/// The available space reported by the volume already excludes the queue's own files, so `total_on_disk_bytes` is
+/// added back in: the result is the queue's total allowance, not the space left on top of what it already uses. This
+/// matches the core Agent's `DiskUsageLimit.computeAvailableSpace`.
 ///
 /// # Errors
 ///
 /// If there is an error while retrieving the total or available space of the underlying volume, an error is returned.
 fn on_disk_bytes_limit(
     disk_usage_retriever: DiskUsageRetrieverWrapper, storage_max_disk_ratio: f64, max_on_disk_bytes: u64,
+    total_on_disk_bytes: u64,
 ) -> Result<u64, GenericError> {
     let total_space = disk_usage_retriever.inner.total_space()? as f64;
     let available_space = disk_usage_retriever.inner.available_space()? as f64;
     let disk_reserved = total_space * (1.0 - storage_max_disk_ratio);
-    let available_disk_usage = (available_space - disk_reserved).ceil() as u64;
+
+    // When the volume is already past the ratio, this goes negative and pulls the allowance below what the queue
+    // currently uses, so that existing entries get evicted. Casting to `u64` saturates the final result at zero.
+    let available_disk_usage = (total_on_disk_bytes as f64 + available_space - disk_reserved).ceil() as u64;
     Ok(max_on_disk_bytes.min(available_disk_usage))
 }
 
@@ -628,6 +648,32 @@ mod tests {
         }
     }
 
+    /// A fake volume holding `other_used_bytes` of unrelated data plus whatever files are in `dir`.
+    ///
+    /// Like a real volume, the available space it reports shrinks as the queue writes entries.
+    struct DirBackedDiskUsageRetriever {
+        dir: PathBuf,
+        total_bytes: u64,
+        other_used_bytes: u64,
+    }
+
+    impl DiskUsageRetriever for DirBackedDiskUsageRetriever {
+        fn total_space(&self) -> Result<u64, GenericError> {
+            Ok(self.total_bytes)
+        }
+
+        fn available_space(&self) -> Result<u64, GenericError> {
+            let mut queue_bytes = 0;
+            for entry in std::fs::read_dir(&self.dir)? {
+                let metadata = entry?.metadata()?;
+                if metadata.is_file() {
+                    queue_bytes += metadata.len();
+                }
+            }
+            Ok(self.total_bytes - self.other_used_bytes - queue_bytes)
+        }
+    }
+
     async fn files_in_dir(path: &Path) -> usize {
         let mut file_count = 0;
         let mut dir_reader = tokio::fs::read_dir(path).await.unwrap();
@@ -775,7 +821,11 @@ mod tests {
             root_path: root_path.clone(),
             max_on_disk_bytes: 80,
             storage_max_disk_ratio: 0.35,
-            disk_usage_retriever: Arc::new(MockDiskUsageRetriever {}),
+            disk_usage_retriever: Arc::new(DirBackedDiskUsageRetriever {
+                dir: root_path.clone(),
+                total_bytes: 100,
+                other_used_bytes: 0,
+            }),
             max_age_days: 10,
         })
         .await
@@ -784,8 +834,8 @@ mod tests {
         // Ensure the directory is empty.
         assert_eq!(0, files_in_dir(&root_path).await);
 
-        // The `storage_max_disk_ratio` is 0.35, and our `MockDiskUsageRetriever` returns 100 for both `total_space` and
-        // `available_space`, so `on_disk_bytes_limit()` returns min(80, 35) = 35.
+        // The `storage_max_disk_ratio` is 0.35 and the volume is 100 bytes with nothing else on it, so
+        // `on_disk_bytes_limit()` returns min(80, 35) = 35 regardless of how much the queue has written.
         //
         // First entry: total_on_disk_bytes(0) + required_bytes(30) < on_disk_bytes_limit(35)
         let push_result = persisted_queue.push(data1).await.expect("should not fail to push data");
@@ -812,6 +862,52 @@ mod tests {
             .expect("should not be empty");
         assert_eq!(data2, actual);
         assert_eq!(0, files_in_dir(&root_path).await);
+    }
+
+    #[tokio::test]
+    async fn storage_ratio_does_not_double_count_queue_bytes() {
+        let temp_dir = tempfile::tempdir().expect("should not fail to create temporary directory");
+        let root_path = temp_dir.path().to_path_buf();
+
+        // The volume is 1000 bytes with 400 bytes of unrelated data, and the ratio reserves 500 bytes, so the queue may
+        // occupy 100 bytes in total. Entries serialize to about 30 bytes each, so three fit.
+        let mut persisted_queue = PersistedQueue::<FakeData>::from_root_path(PersistedQueueArgs {
+            root_path: root_path.clone(),
+            max_on_disk_bytes: 1024,
+            storage_max_disk_ratio: 0.5,
+            disk_usage_retriever: Arc::new(DirBackedDiskUsageRetriever {
+                dir: root_path.clone(),
+                total_bytes: 1000,
+                other_used_bytes: 400,
+            }),
+            max_age_days: 10,
+        })
+        .await
+        .expect("should not fail to create persisted queue");
+
+        // Counting the queue's files twice would leave room for only two entries, evicting one on the third push.
+        for _ in 0..3 {
+            let push_result = persisted_queue
+                .push(FakeData::random())
+                .await
+                .expect("should not fail to push data");
+            assert_eq!(0, push_result.items_dropped);
+
+            let available = persisted_queue
+                .available_capacity_bytes()
+                .await
+                .expect("should not fail to get available capacity");
+            assert_eq!(100 - persisted_queue.total_on_disk_bytes, available);
+        }
+        assert_eq!(3, files_in_dir(&root_path).await);
+
+        // A fourth entry exceeds the 100-byte allowance, so the oldest entry is evicted.
+        let push_result = persisted_queue
+            .push(FakeData::random())
+            .await
+            .expect("should not fail to push data");
+        assert_eq!(1, push_result.items_dropped);
+        assert_eq!(3, files_in_dir(&root_path).await);
     }
 
     /// Writes a corrupt (non-JSON) file with a valid retry filename to the given directory, using a timestamp
