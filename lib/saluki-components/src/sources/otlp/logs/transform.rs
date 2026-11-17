@@ -360,6 +360,14 @@ pub fn transform_log_record(
         additional_properties.insert(MetaString::from_static("@timestamp"), JsonValue::String(formatted));
     }
 
+    // The event name overwrites an `otel.event_name` attribute from any source.
+    if !lr.event_name.is_empty() {
+        additional_properties.insert(
+            MetaString::from_static("otel.event_name"),
+            JsonValue::String(lr.event_name),
+        );
+    }
+
     // Message: prefer attributes, else body. An empty message attribute also falls back to the body.
     let message = match msg_from_attrs {
         Some(m) if !m.is_empty() => MetaString::from(m),
@@ -710,6 +718,55 @@ mod tests {
                 timestamp.map(|ts| json!(ts)).as_ref(),
                 "{}",
                 context
+            );
+        }
+    }
+
+    #[test]
+    fn event_name_overwrites_attributes_with_the_same_key() {
+        // (event name, record attribute, resource attribute, scope attribute, `otel.event_name`)
+        let cases = [
+            ("event", None, None, None, Some("event")),
+            ("", None, None, None, None),
+            // The event name wins over an attribute from each source.
+            ("event", Some("record"), None, None, Some("event")),
+            ("event", None, Some("resource"), None, Some("event")),
+            ("event", None, None, Some("scope"), Some("event")),
+            // Without an event name, the attributes keep their usual precedence.
+            ("", Some("record"), None, None, Some("record")),
+            ("", Some("record"), Some("resource"), None, Some("resource")),
+            ("", Some("record"), Some("resource"), Some("scope"), Some("scope")),
+        ];
+
+        for (event_name, record_attr, resource_attr, scope_attr, expected) in cases {
+            let attributes = |value: Option<&str>| {
+                value
+                    .map(|value| vec![key_value("otel.event_name", string(value))])
+                    .unwrap_or_default()
+            };
+            let lr = LogRecord {
+                event_name: event_name.to_string(),
+                attributes: attributes(record_attr),
+                ..Default::default()
+            };
+            let resource = Resource {
+                attributes: attributes(resource_attr),
+                ..Default::default()
+            };
+            let scope = otlp_common::InstrumentationScope {
+                attributes: attributes(scope_attr),
+                ..Default::default()
+            };
+            let log = transform_log_record(lr, &resource, Some(&scope), None, None, TagSet::default());
+
+            assert_eq!(
+                log.additional_properties().get("otel.event_name"),
+                expected.map(|value| json!(value)).as_ref(),
+                "event name {:?}, record {:?}, resource {:?}, scope {:?}",
+                event_name,
+                record_attr,
+                resource_attr,
+                scope_attr
             );
         }
     }
