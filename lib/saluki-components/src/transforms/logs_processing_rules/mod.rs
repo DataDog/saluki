@@ -1,11 +1,10 @@
 //! Logs processing rules transform.
 //!
-//! Applies the Datadog Agent's log processing rules to the content of each log, as the Agent's logs processor does in
-//! `applyRedactingRules` (`comp/logs-library/processor/processor.go`). The content of a log is its message: the raw
-//! line for check logs, and the rendered content for OTLP logs. Only the message changes; the status, hostname,
-//! service, source, tags, and additional properties are left as they are.
+//! Applies an ordered list of processing rules to the message of each log, which can drop the log or mask parts of
+//! its message. Only the message changes; the status, hostname, service, source, tags, and additional properties are
+//! left as they are.
 //!
-//! The rules run in order, and each one sees the content as the rules before it left it:
+//! The rules run in order, and each one sees the message as the rules before it left it:
 //!
 //! - `exclude_at_match` drops the log if its pattern matches.
 //! - `include_at_match` drops the log if its pattern doesn't match.
@@ -13,23 +12,13 @@
 //!
 //! The first rule that drops a log stops the processing of that log.
 //!
-//! The Agent's other rule types don't affect the logs that reach this transform, so they're accepted and do nothing.
-//! `exclude_truncated` drops truncated logs, and neither check nor OTLP logs are truncated. `remap_source` only applies
-//! to structured messages, and the Agent handles both kinds of log as unstructured. `multi_line` isn't applied by the
-//! Agent's logs processor at all.
+//! The other rule types are accepted and do nothing, since they only apply to logs that this transform doesn't
+//! receive. `exclude_truncated` applies to truncated logs, `remap_source` to structured logs, and `multi_line` to the
+//! aggregation of log lines before processing.
 //!
-//! The rules are expected to be valid: the configuration layer checks them as the Agent does. Building the transform
-//! only fails when a pattern doesn't compile.
-//!
-//! # Differences from the Agent
-//!
-//! The Agent uses Go's `regexp` package, and this transform uses the `regex` crate:
-//!
-//! - The regular expression dialects differ. For example, `\w`, `\d`, `\s`, and `\b` are Unicode-aware in `regex` and
-//!   ASCII-only in Go, and some patterns are accepted by one and rejected by the other.
-//! - Placeholders are expanded with the `regex` crate's rules, which differ from Go's for some unusual group
-//!   references. `$01` and `${01}` refer to group 1, where Go expands them to nothing. `${}` and `${ 1}` expand to
-//!   nothing, where Go keeps them as they are. `$é` is kept as it is, where Go expands it to nothing.
+//! Patterns and placeholders use the syntax of the `regex` crate, where `$1` and `${name}` refer to capture groups.
+//! The rules are expected to have been validated already: building the transform only fails when a pattern doesn't
+//! compile.
 
 use std::borrow::Cow;
 
@@ -46,7 +35,7 @@ use saluki_core::{
 use saluki_error::{generic_error, GenericError};
 use saluki_metrics::MetricsBuilder;
 
-/// A log processing rule, as the Agent defines it in `logs_config.processing_rules`.
+/// A log processing rule.
 #[derive(Clone, Debug)]
 pub enum LogsProcessingRule {
     /// Drops logs whose content matches `pattern`.
@@ -90,7 +79,7 @@ pub enum LogsProcessingRule {
         matching: Vec<LogsSourceMatch>,
     },
 
-    /// Aggregates multi-line logs. Does nothing, as the Agent doesn't apply it as a processing rule.
+    /// Aggregates multi-line logs. Does nothing, as aggregation happens before processing.
     MultiLine {
         /// Name of the rule.
         name: String,
