@@ -1083,6 +1083,9 @@ when they're invalid. ADP differs in these ways:
 - Rule fields must be spelled in lowercase and hold strings. The Agent also accepts other
   spellings, such as `Pattern`, and in YAML it converts other scalars, such as numbers, to
   strings.
+- A string value that isn't a JSON array, including an empty string, stops ADP from
+  starting, even when `logs_enabled` is `false`. The Agent reads an empty string as no rules,
+  and doesn't read the rules at all when the logs agent is disabled (#3225).
 
 ### `logs_enabled`
 
