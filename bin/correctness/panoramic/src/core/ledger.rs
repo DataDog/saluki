@@ -17,7 +17,7 @@ use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tokio::time::{sleep, timeout_at, Instant};
 use tokio_util::sync::CancellationToken;
 
-use crate::reporter::{Issue, IssueKind, ReclaimEntry, ReclaimResult};
+use crate::core::result::{Issue, IssueKind, ReclaimEntry, ReclaimResult};
 
 /// Shared budget for stopping a case's tracked tasks and removing its resources.
 pub(crate) const RECLAIM_TIME: Duration = Duration::from_secs(30);
@@ -340,8 +340,7 @@ mod tests {
     use tokio::task::JoinHandle;
 
     use super::*;
-    use crate::intake::test_server::install_crypto_provider;
-    use crate::tasks::{CaseTasks, TASK_STOP_TIME};
+    use crate::core::tasks::{CaseTasks, TASK_STOP_TIME};
 
     /// Bounds every reclaim in these tests.
     const BOUND: Duration = Duration::from_secs(10);
@@ -367,7 +366,7 @@ mod tests {
 
     impl FakeApi {
         async fn start(respond: Respond) -> Self {
-            install_crypto_provider();
+            let _ = crate::default_crypto_provider().install_default();
             let listener = TcpListener::bind("127.0.0.1:0")
                 .await
                 .expect("the fake API should bind");

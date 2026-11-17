@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use saluki_error::{generic_error, GenericError};
 
 use super::config::{Config, Runtime, TargetConfig};
-use crate::reporter::TestResult;
+use crate::core::result::TestResult;
 use crate::test::{resolve_case_path, Test, TestContext, TestSuite};
 
 // Correctness tests run two isolation groups (baseline + comparison), each with multiple

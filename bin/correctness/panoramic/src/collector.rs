@@ -14,10 +14,11 @@ use tokio::time::MissedTickBehavior;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
+use crate::core::result::DurationMs;
 use crate::events::TestEvent;
 use crate::interrupts::Interrupts;
 use crate::machine_output::{self, InterruptReason, RunReport, RunState, RunTotals, TestReport};
-use crate::reporter::{run_counts, DurationMs, Reporter};
+use crate::reporter::{run_counts, Reporter};
 use crate::tui::Tui;
 
 /// Exit code for an assertion failure.
@@ -325,9 +326,10 @@ mod tests {
 
     use super::*;
     use crate::assertions::{AssertionResult, AssertionStatus};
+    use crate::core::result::{ErrorKind, TestResult};
     use crate::events::create_event_channel;
     use crate::machine_output::RUN_REPORT_FILE_NAME;
-    use crate::reporter::{ErrorKind, OutputFormat, TestResult};
+    use crate::reporter::OutputFormat;
     use crate::runner::test_support::{test_runner_settings, Behavior, ScriptedTest};
     use crate::runner::{RunArgs, Runner};
 

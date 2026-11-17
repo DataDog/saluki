@@ -33,8 +33,8 @@ use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
+use crate::core::result::TestOutcome;
 use crate::intake::{CollectedData, IntakeClient};
-use crate::reporter::TestOutcome;
 
 const TRAFFIC_DIR_NAME: &str = "traffic";
 
@@ -924,9 +924,9 @@ mod tests {
 
         use super::super::{capture_intake, finalize, traffic_dir, Side, INTEGRATION_INPUT_UNAVAILABLE_REASON};
         use super::{read_json, read_manifest};
+        use crate::core::result::TestOutcome;
         use crate::intake::test_server::{closed_port, install_crypto_provider, MockIntake};
         use crate::intake::IntakeClient;
-        use crate::reporter::TestOutcome;
 
         /// Runs a capture into a fresh log directory, finalizes it as failed, and returns the merged manifest.
         async fn capture(port: u16, cancel: &CancellationToken, budget: Duration) -> serde_json::Value {

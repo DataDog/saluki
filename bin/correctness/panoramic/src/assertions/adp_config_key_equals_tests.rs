@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 use super::{AdpConfigEndpoint, AdpConfigKeyEqualsAssertion, ADP_CONFIG_CLI_DIAGNOSTIC_LABEL};
 use crate::actions::test_docker::{Exec, FakeDocker};
 use crate::assertions::{Assertion as _, AssertionContext, AssertionStatus, LogBuffer, TargetCommand};
-use crate::probe::PROBE_TIMEOUT;
+use crate::core::probe::PROBE_TIMEOUT;
 
 fn host_context(adp_cli_command: TargetCommand) -> AssertionContext {
     AssertionContext {

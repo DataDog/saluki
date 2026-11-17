@@ -235,8 +235,9 @@ procedure:
 ```
 
 The directory names the case. A participant name is a lowercase DNS label, because it becomes a
-container name, a pod name and a host name. `localhost` and a name of only digits are errors, because a
-resolver answers them with an address that is not the container's.
+container name, a pod name and a host name. `localhost`, a name of only digits and a hexadecimal number
+written with `0x` are errors, because a resolver answers them with an address that is not the
+container's.
 
 **Participant fields.** An entry is flat. The first six fields say where the participant sits in the
 case. The rest are the participant's data, and a participant type fills in the same ones.
