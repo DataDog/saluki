@@ -16,7 +16,7 @@ use saluki_core::{
         event::{
             trace::{AttributeValue, Trace},
             trace_stats::{ClientStatsBucket, ClientStatsPayload, TraceStats},
-            Event, EventType,
+            EventType,
         },
         origin::OriginTagCardinality,
         tags::TagSet,
@@ -115,13 +115,13 @@ impl TransformBuilder for ApmStatsTransformConfiguration {
             now_nanos(),
         );
 
-        Ok(Box::new(ApmStats {
+        Ok(Box::new(Typed::new(ApmStats {
             concentrator,
             flush_interval: DEFAULT_FLUSH_INTERVAL,
             agent_env: self.agent_env.clone().into(),
             agent_hostname,
             workload_provider: self.workload_provider.clone(),
-        }))
+        })))
     }
 
     fn input_event_type(&self) -> EventType {
@@ -436,8 +436,8 @@ fn split_client_payload(mut client_payload: ClientStatsPayload, max_entries: usi
 }
 
 #[async_trait]
-impl Transform for ApmStats {
-    async fn run(mut self: Box<Self>, mut context: TransformContext) -> Result<(), GenericError> {
+impl Transform<Trace, TraceStats> for ApmStats {
+    async fn run(mut self: Box<Self>, mut context: TransformContext<Trace, TraceStats>) -> Result<(), GenericError> {
         let mut health = context.take_health_handle();
 
         let mut flush_ticker = interval(self.flush_interval);
@@ -461,7 +461,7 @@ impl Transform for ApmStats {
                         let dispatcher = context.dispatcher().buffered()
                             .error_context("Default output should be available.")?;
 
-                        if let Err(e) = dispatcher.send_all(events.into_iter().map(Event::TraceStats)).await {
+                        if let Err(e) = dispatcher.send_all(events).await {
                             error!(error = %e, "Failed to dispatch events.");
                         }
                     }
@@ -472,12 +472,12 @@ impl Transform for ApmStats {
                     }
                 },
 
-                maybe_events = context.events().next(), if !final_flush => {
-                    match maybe_events {
-                        Some(events) => {
+                maybe_traces = context.events().next(), if !final_flush => {
+                    match maybe_traces {
+                        Some(traces) => {
                             // Use one peer tag key set for the whole buffer.
                             self.concentrator.refresh_registry();
-                            for trace in events.into_events::<Trace>() {
+                            for trace in traces {
                                 self.process_trace(&trace);
                             }
                         },
@@ -541,6 +541,7 @@ mod tests {
     use saluki_core::data_model::event::trace::{AttributeValue, Span, TraceIngestInfo};
     use saluki_core::data_model::event::trace_stats::ClientGroupedStats;
     use saluki_core::data_model::event::trace_stats::ClientStatsBucket;
+    use saluki_core::data_model::event::Event;
 
     use super::aggregation::BUCKET_DURATION_NS;
     use super::span_concentrator::METRIC_PARTIAL_VERSION;

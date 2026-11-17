@@ -7,7 +7,10 @@ use crate::{
     components::{
         decoders::*, destinations::*, encoders::*, forwarders::*, relays::*, sources::*, transforms::*, BuildContext,
     },
-    data_model::{event::EventType, payload::PayloadType},
+    data_model::{
+        event::{metric::Metric, EventType},
+        payload::PayloadType,
+    },
 };
 
 struct TestSource;
@@ -144,9 +147,20 @@ impl Transform for TestTransform {
     }
 }
 
+/// A transform that only consumes and dispatches metrics.
+struct TestMetricsTransform;
+
+#[async_trait]
+impl Transform<Metric, Metric> for TestMetricsTransform {
+    async fn run(self: Box<Self>, _context: TransformContext<Metric, Metric>) -> Result<(), GenericError> {
+        Ok(())
+    }
+}
+
 pub struct TestTransformBuilder {
     input_event_ty: EventType,
     outputs: Vec<OutputDefinition<EventType>>,
+    metrics_only: bool,
 }
 
 impl TestTransformBuilder {
@@ -154,6 +168,15 @@ impl TestTransformBuilder {
         Self {
             input_event_ty,
             outputs: vec![OutputDefinition::default_output(output_event_ty)],
+            metrics_only: false,
+        }
+    }
+
+    /// Creates a builder for a typed transform that only consumes and dispatches metrics.
+    pub fn metrics_only() -> Self {
+        Self {
+            metrics_only: true,
+            ..Self::default_output(EventType::Metric, EventType::Metric)
         }
     }
 
@@ -168,6 +191,7 @@ impl TestTransformBuilder {
                     None => OutputDefinition::default_output(*event_ty),
                 })
                 .collect(),
+            metrics_only: false,
         }
     }
 }
@@ -183,7 +207,11 @@ impl TransformBuilder for TestTransformBuilder {
     }
 
     async fn build(&self, _: BuildContext) -> Result<Box<dyn Transform + Send>, GenericError> {
-        Ok(Box::new(TestTransform))
+        if self.metrics_only {
+            Ok(Box::new(Typed::new(TestMetricsTransform)))
+        } else {
+            Ok(Box::new(TestTransform))
+        }
     }
 }
 

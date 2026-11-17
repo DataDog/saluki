@@ -9,12 +9,12 @@ use saluki_components::config::metrics_endpoint_routing::compact_metric_prefixes
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     components::{
-        transforms::{Transform, TransformBuilder, TransformContext},
+        transforms::{Transform, TransformBuilder, TransformContext, Typed},
         BuildContext,
     },
     data_model::event::{metric::Metric, EventType},
     observability::ComponentMetricsExt as _,
-    topology::{EventsBuffer, OutputDefinition},
+    topology::{OutputDefinition, TypedEventsBuffer},
 };
 use saluki_error::GenericError;
 use saluki_metrics::MetricsBuilder;
@@ -172,19 +172,24 @@ impl Filter {
         }
     }
 
-    fn filter_events(&self, events: &mut EventsBuffer, telemetry: &Telemetry) -> usize {
-        let input_count = events.len();
-        events.retain_events::<Metric, _>(|metric| self.should_forward(metric));
-        let dropped_count = input_count.saturating_sub(events.len());
+    fn filter_events(&self, metrics: &mut TypedEventsBuffer<Metric>, telemetry: &Telemetry) -> usize {
+        let input_count = metrics.len();
+        metrics.retain(|metric| self.should_forward(metric));
+        let dropped_count = input_count.saturating_sub(metrics.len());
         telemetry.record_metrics_filtered(dropped_count);
         dropped_count
     }
 
     async fn process_event_batch(
-        &self, mut events: EventsBuffer, context: &mut TransformContext, telemetry: &Telemetry,
+        &self, mut metrics: TypedEventsBuffer<Metric>, context: &mut TransformContext<Metric, Metric>,
+        telemetry: &Telemetry,
     ) -> Result<(), GenericError> {
-        let dropped_count = self.filter_events(&mut events, telemetry);
-        let sent_count = context.dispatcher().buffered()?.send_all(events).await?;
+        let dropped_count = self.filter_events(&mut metrics, telemetry);
+        // Forward the filtered buffer itself, rather than copying the remaining metrics into a new one.
+        let sent_count = metrics.len();
+        if sent_count > 0 {
+            context.dispatcher().dispatch(metrics).await?;
+        }
         debug!(
             forwarded_events = sent_count,
             dropped_events = dropped_count,
@@ -245,10 +250,10 @@ struct MetricFilter {
 impl TransformBuilder for MetricFilterConfiguration {
     async fn build(&self, context: BuildContext) -> Result<Box<dyn Transform + Send>, GenericError> {
         let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
-        Ok(Box::new(MetricFilter {
+        Ok(Box::new(Typed::new(MetricFilter {
             source: self.source.clone(),
             telemetry: self.source.telemetry(&metrics_builder),
-        }))
+        })))
     }
 
     fn input_event_type(&self) -> EventType {
@@ -286,8 +291,8 @@ impl MemoryBounds for MetricFilterConfiguration {
 }
 
 #[async_trait]
-impl Transform for MetricFilter {
-    async fn run(self: Box<Self>, mut context: TransformContext) -> Result<(), GenericError> {
+impl Transform<Metric, Metric> for MetricFilter {
+    async fn run(self: Box<Self>, mut context: TransformContext<Metric, Metric>) -> Result<(), GenericError> {
         let mut health = context.take_health_handle();
         let Self { mut source, telemetry } = *self;
         let mut filter = source.filter();
@@ -318,10 +323,7 @@ mod tests {
 
     use metrics::{set_default_local_recorder, Key};
     use saluki_common::sync::live::{self, LivePublisher, LiveSource};
-    use saluki_core::{
-        accounting::ComponentRegistry, components::ComponentContext, data_model::event::Event,
-        support::SubsystemIdentifier,
-    };
+    use saluki_core::{accounting::ComponentRegistry, components::ComponentContext, support::SubsystemIdentifier};
     use saluki_metrics::test::TestRecorder;
 
     use super::*;
@@ -439,16 +441,16 @@ mod tests {
             let telemetry = source.telemetry(&MetricsBuilder::from_component_context(&context));
             let filter = source.filter();
             for _ in 0..2 {
-                let mut events = EventsBuffer::default();
+                let mut events = TypedEventsBuffer::default();
                 for make_metric in [counter, distribution] {
                     for name in ["allowed", "blocked"] {
-                        assert!(events.try_push(Event::Metric(make_metric(name))).is_none());
+                        assert!(events.try_push(make_metric(name)).is_none());
                     }
                 }
                 assert_eq!(filter.filter_events(&mut events, &telemetry), expected);
                 assert_eq!(events.len(), 4 - expected);
             }
-            assert_eq!(filter.filter_events(&mut EventsBuffer::default(), &telemetry), 0);
+            assert_eq!(filter.filter_events(&mut TypedEventsBuffer::default(), &telemetry), 0);
         }
         for (component_id, expected) in [("partial", 4), ("all", 0), ("none", 8)] {
             let context = ComponentContext::test_transform(component_id);

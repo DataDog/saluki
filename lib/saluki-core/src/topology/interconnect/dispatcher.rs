@@ -1,4 +1,4 @@
-use std::{borrow::Cow, time::Instant};
+use std::{borrow::Cow, marker::PhantomData, time::Instant};
 
 use saluki_common::collections::FastHashMap;
 use saluki_error::{generic_error, GenericError};
@@ -174,15 +174,17 @@ where
 /// one-by-one into batches, which are then dispatched to the configured output as needed. This allows callers to focus
 /// on the logic around what items to send, without needing to worry about the details of event buffer sizing or
 /// flushing.
-pub struct BufferedDispatcher<'a, T> {
+///
+/// Items are buffered in a `T`, which is converted to the interconnect's type `W` when flushed.
+pub struct BufferedDispatcher<'a, T, W = T> {
     metrics: &'a DispatcherMetrics,
     flushed_len: usize,
     buffer: Option<T>,
-    target: &'a DispatchTarget<T>,
+    target: &'a DispatchTarget<W>,
 }
 
-impl<'a, T> BufferedDispatcher<'a, T> {
-    fn new(target: &'a DispatchTarget<T>) -> Self {
+impl<'a, T, W> BufferedDispatcher<'a, T, W> {
+    fn new(target: &'a DispatchTarget<W>) -> Self {
         Self {
             metrics: &target.metrics,
             flushed_len: 0,
@@ -192,14 +194,15 @@ impl<'a, T> BufferedDispatcher<'a, T> {
     }
 }
 
-impl<T> BufferedDispatcher<'_, T>
+impl<T, W> BufferedDispatcher<'_, T, W>
 where
-    T: DispatchBuffer,
+    T: DispatchBuffer + Into<W>,
+    W: Dispatchable,
 {
     async fn try_flush_buffer(&self, buffer: T) -> Result<(), GenericError> {
         let buffer_len = buffer.len();
         if buffer_len > 0 {
-            self.target.send(buffer).await
+            self.target.send(buffer.into()).await
         } else {
             Ok(())
         }
@@ -276,18 +279,24 @@ where
 /// [`Dispatcher`] provides an ergonomic interface for sending items to a downstream component. It has support for
 /// multiple outputs (a default output, and additional "named" outputs) and provides telemetry around the number of
 /// dispatched items as well as the latency of sending them.
-pub struct Dispatcher<T>
+///
+/// The component dispatches items of type `T`, which are converted to the interconnect's type `W` when sent. By
+/// default, `T` is `W`, and items are sent as they are. A component that dispatches a narrower type, such as a
+/// [`TypedEventBuffer`][super::TypedEventBuffer] of a single event type, gets a dispatcher where `T` is that type.
+pub struct Dispatcher<T, W = T>
 where
-    T: Dispatchable,
+    W: Dispatchable,
 {
     context: ComponentContext,
-    default: Option<DispatchTarget<T>>,
-    targets: FastHashMap<Cow<'static, str>, DispatchTarget<T>>,
+    default: Option<DispatchTarget<W>>,
+    targets: FastHashMap<Cow<'static, str>, DispatchTarget<W>>,
+    _item: PhantomData<fn(T)>,
 }
 
-impl<T> Dispatcher<T>
+impl<T, W> Dispatcher<T, W>
 where
-    T: Dispatchable,
+    T: Into<W>,
+    W: Dispatchable,
 {
     /// Create a new `Dispatcher` for the given component context.
     pub fn new(context: ComponentContext) -> Self {
@@ -295,6 +304,23 @@ where
             context,
             default: None,
             targets: FastHashMap::default(),
+            _item: PhantomData,
+        }
+    }
+
+    /// Changes the type of item this dispatcher sends.
+    ///
+    /// This doesn't change what the interconnect carries, or the outputs and senders already attached, only what the
+    /// component hands to the dispatcher.
+    pub fn with_item_type<U>(self) -> Dispatcher<U, W>
+    where
+        U: Into<W>,
+    {
+        Dispatcher {
+            context: self.context,
+            default: self.default,
+            targets: self.targets,
+            _item: PhantomData,
         }
     }
 
@@ -330,7 +356,7 @@ where
     ///
     /// If the output doesn't exist, an error is returned.
     pub fn attach_sender_to_output(
-        &mut self, output_name: &OutputName, sender: mpsc::Sender<T>,
+        &mut self, output_name: &OutputName, sender: mpsc::Sender<W>,
     ) -> Result<(), GenericError> {
         self.attach_gated_sender_to_output(output_name, sender, None)
     }
@@ -341,7 +367,7 @@ where
     ///
     /// If the output doesn't exist, an error is returned.
     pub(crate) fn attach_gated_sender_to_output(
-        &mut self, output_name: &OutputName, sender: mpsc::Sender<T>, gate: Option<EdgeGate>,
+        &mut self, output_name: &OutputName, sender: mpsc::Sender<W>, gate: Option<EdgeGate>,
     ) -> Result<(), GenericError> {
         let target = match output_name {
             OutputName::Default => self
@@ -358,13 +384,13 @@ where
         Ok(())
     }
 
-    fn get_default_output(&self) -> Result<&DispatchTarget<T>, GenericError> {
+    fn get_default_output(&self) -> Result<&DispatchTarget<W>, GenericError> {
         self.default
             .as_ref()
             .ok_or_else(|| generic_error!("No default output declared."))
     }
 
-    fn get_named_output(&self, name: &str) -> Result<&DispatchTarget<T>, GenericError> {
+    fn get_named_output(&self, name: &str) -> Result<&DispatchTarget<W>, GenericError> {
         self.targets
             .get(name)
             .ok_or_else(|| generic_error!("No output named '{}' declared.", name))
@@ -407,15 +433,16 @@ where
             Some(name) => self.get_named_output(name)?,
         };
 
-        target.send(item).await?;
+        target.send(item.into()).await?;
 
         Ok(())
     }
 }
 
-impl<T> Dispatcher<T>
+impl<T, W> Dispatcher<T, W>
 where
-    T: DispatchBuffer,
+    T: DispatchBuffer + Into<W>,
+    W: Dispatchable,
 {
     /// Creates a buffered dispatcher for the default output.
     ///
@@ -426,7 +453,7 @@ where
     /// # Errors
     ///
     /// If the default output hasn't been configured, an error will be returned.
-    pub fn buffered(&self) -> Result<BufferedDispatcher<'_, T>, GenericError> {
+    pub fn buffered(&self) -> Result<BufferedDispatcher<'_, T, W>, GenericError> {
         self.get_default_output().map(BufferedDispatcher::new)
     }
 
@@ -439,7 +466,7 @@ where
     /// # Errors
     ///
     /// If the given named output hasn't been configured, an error will be returned.
-    pub fn buffered_named<N>(&self, output_name: N) -> Result<BufferedDispatcher<'_, T>, GenericError>
+    pub fn buffered_named<N>(&self, output_name: N) -> Result<BufferedDispatcher<'_, T, W>, GenericError>
     where
         N: AsRef<str>,
     {
@@ -477,7 +504,7 @@ where
         if buffer.try_push(item).is_some() {
             return Err(generic_error!("Default-constructed buffer rejected a single item."));
         }
-        target.send(buffer).await
+        target.send(buffer.into()).await
     }
 }
 

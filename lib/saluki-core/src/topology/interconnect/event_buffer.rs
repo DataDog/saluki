@@ -165,6 +165,28 @@ impl<const N: usize> FixedSizeEventBuffer<N> {
         };
         extracted.into_iter()
     }
+
+    /// Creates an event buffer holding the given collection of events of type `T`.
+    ///
+    /// The collection is moved into the buffer as is. Callers must make sure it never holds, or has room for, more than
+    /// `N` events.
+    pub(super) fn from_items<T: EventKind>(items: Vec<T>) -> Self {
+        Self {
+            storage: T::wrap(items),
+        }
+    }
+
+    /// Moves the collection of events out of the event buffer if it holds events of type `T`.
+    ///
+    /// An empty buffer gives an empty collection, whatever type it held before. A buffer holding events of another type
+    /// is handed back unchanged.
+    pub(super) fn try_into_items<T: EventKind>(mut self) -> Result<Vec<T>, Self> {
+        match T::take(&mut self.storage) {
+            Some(items) => Ok(items),
+            None if self.is_empty() => Ok(Vec::new()),
+            None => Err(self),
+        }
+    }
 }
 
 /// The events held by a [`FixedSizeEventBuffer`]: a collection of a single event type.

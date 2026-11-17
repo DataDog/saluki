@@ -1,7 +1,10 @@
+use std::marker::PhantomData;
+
 use saluki_metrics::{static_metrics, Counter, Histogram};
 use tokio::sync::mpsc;
+use tracing::debug;
 
-use super::Dispatchable;
+use super::{Dispatchable, FromInterconnect};
 use crate::components::ComponentContext;
 
 #[static_metrics(prefix = component, labels(component_id, component_type))]
@@ -10,6 +13,7 @@ struct ConsumerMetrics {
     events_received_total: Counter,
     #[metric(level = trace)]
     events_received_size: Histogram,
+    events_rejected_total: Counter,
 }
 
 impl ConsumerMetrics {
@@ -21,34 +25,64 @@ impl ConsumerMetrics {
 /// A stream of items sent to a component.
 ///
 /// This represents the receiving end of a component interconnect, where the sending end is [`Dispatcher<T>`][super::Dispatcher].
-pub struct Consumer<T> {
-    inner: mpsc::Receiver<T>,
+///
+/// The interconnect carries items of type `W`, which the consumer converts to `T` as it receives them. By default, `T`
+/// is `W`, and items are handed to the component as they are. A component that consumes a narrower type, such as a
+/// [`TypedEventBuffer`][super::TypedEventBuffer] of a single event type, gets a consumer where `T` is that type. Items
+/// that can't be converted are dropped and counted.
+pub struct Consumer<T, W = T> {
+    inner: mpsc::Receiver<W>,
     metrics: ConsumerMetrics,
+    _item: PhantomData<fn() -> T>,
 }
 
-impl<T> Consumer<T>
+impl<T, W> Consumer<T, W>
 where
-    T: Dispatchable,
+    W: Dispatchable,
+    T: FromInterconnect<W>,
 {
     /// Create a new `Consumer` for the given component context and inner receiver.
-    pub fn new(context: ComponentContext, inner: mpsc::Receiver<T>) -> Self {
+    pub fn new(context: ComponentContext, inner: mpsc::Receiver<W>) -> Self {
         Self {
             inner,
             metrics: ConsumerMetrics::from_component_context(context),
+            _item: PhantomData,
         }
     }
 
     /// Gets the next item in the stream.
     ///
+    /// Items that can't be converted to `T` are dropped, and the next item is returned instead.
+    ///
     /// If the component (or components) connected to this consumer have stopped, `None` is returned.
     pub async fn next(&mut self) -> Option<T> {
-        match self.inner.recv().await {
-            Some(item) => {
-                self.metrics.events_received_total().increment(item.item_count() as u64);
-                self.metrics.events_received_size().record(item.item_count() as f64);
-                Some(item)
+        loop {
+            let item = self.inner.recv().await?;
+            let item_count = item.item_count();
+            self.metrics.events_received_total().increment(item_count as u64);
+            self.metrics.events_received_size().record(item_count as f64);
+
+            match T::from_interconnect(item) {
+                Ok(item) => return Some(item),
+                Err(_) => {
+                    debug!(item_count, "Dropped items the component doesn't consume.");
+                    self.metrics.events_rejected_total().increment(item_count as u64);
+                }
             }
-            None => None,
+        }
+    }
+
+    /// Changes the type of item this consumer converts to.
+    ///
+    /// This doesn't change what the interconnect carries, only what the consumer hands to the component.
+    pub fn with_item_type<U>(self) -> Consumer<U, W>
+    where
+        U: FromInterconnect<W>,
+    {
+        Consumer {
+            inner: self.inner,
+            metrics: self.metrics,
+            _item: PhantomData,
         }
     }
 }

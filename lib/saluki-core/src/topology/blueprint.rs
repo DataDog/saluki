@@ -954,6 +954,10 @@ impl TopologyBuildState {
             decoders.insert(component_context, (decoder, self.component_registry.clone()));
         }
 
+        // Each transform states the event types it consumes, and a transform that works with a single event type can't
+        // handle any other. Check that every transform can only receive event types it consumes.
+        let effective_event_types = self.graph.effective_event_types();
+
         let mut transforms = HashMap::new();
         for (id, builder) in self.transforms {
             let component_context = ComponentContext::transform(&self.topology_id, id.clone());
@@ -970,6 +974,18 @@ impl TopologyBuildState {
                 .track_resources(allocation_token)
                 .await
                 .with_error_context(|| format!("Failed to build transform '{}'.", id))?;
+
+            let consumed = transform.consumed_event_types();
+            if let Some(received) = effective_event_types.input(&id) {
+                if !consumed.contains(received) {
+                    return Err(generic_error!(
+                        "Transform '{}' consumes {} events, but can receive {} events.",
+                        id,
+                        consumed,
+                        received
+                    ));
+                }
+            }
 
             component_scopes.insert(component_context.clone(), scope);
             transforms.insert(component_context, (transform, self.component_registry.clone()));
@@ -2233,6 +2249,41 @@ mod tests {
         assert!(state.destinations.contains_key(&component_id("observer")));
         assert!(!state.edge_conditions.is_empty());
         assert!(state.graph.validate().is_ok());
+    }
+
+    /// Builds a source -> transform -> destination topology, where the transform only consumes metrics.
+    async fn build_metrics_only_topology(source_event_ty: EventType) -> Result<super::BuiltTopology, GenericError> {
+        let mut blueprint = TopologyBlueprint::new("test", &ComponentRegistry::default());
+        blueprint
+            .add_source("source", TestSourceBuilder::default_output(source_event_ty))?
+            .add_transform("metrics", TestTransformBuilder::metrics_only())?
+            .add_destination(
+                "destination",
+                TestDestinationBuilder::with_input_type(EventType::Metric),
+            )?
+            .connect_components_in_order(["source", "metrics", "destination"])?;
+
+        let state = blueprint.build_state.lock().unwrap().take().unwrap();
+        state.build("test".to_string(), &ResourceRegistry::new()).await
+    }
+
+    #[tokio::test]
+    async fn build_accepts_a_typed_transform_that_only_receives_its_event_type() {
+        assert!(build_metrics_only_topology(EventType::Metric).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn build_rejects_a_typed_transform_that_can_receive_other_event_types() {
+        // The graph only requires the edge's event types to overlap, so this connection is valid, but a transform that
+        // only consumes metrics can't handle the logs the source can send.
+        let error = build_metrics_only_topology(EventType::Metric | EventType::Log)
+            .await
+            .err()
+            .expect("building should fail");
+        assert_eq!(
+            error.to_string(),
+            "Transform 'metrics' consumes Metric events, but can receive Metric|Log events."
+        );
     }
 
     #[test]
