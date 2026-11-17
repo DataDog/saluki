@@ -62,7 +62,7 @@ use crate::{
         metric_mirroring, metric_name_filter, mrf_configuration, obfuscation_configuration, origin_tag_cardinality,
         otlp_context_settings, otlp_debug_verbosity, otlp_metrics_settings, otlp_receiver, otlp_traces_settings,
         ottl_error_mode, resolve_static_tags, tag_filter_entries, tag_value_allowlist, trace_configuration,
-        trace_sampler_configuration, trace_tag_replacer_configuration,
+        trace_sampler_configuration, trace_tag_replacer_configuration, traces_forwarder_configuration,
     },
     components::{
         apm_onboarding::ApmOnboardingConfiguration, dogstatsd_no_agg_split::DogStatsDNoAggSplitConfiguration,
@@ -208,6 +208,19 @@ async fn create_topology(
         .with_routing_targets(Arc::clone(&catalog));
         blueprint.add_forwarder("dd_out", dd_forwarder_config)?;
         routing_targets = Some(catalog);
+    }
+
+    // Traces and APM stats don't share `dd_out`: they have their own intake, additional endpoints, and alternate
+    // intakes, so routing them somewhere else never touches metrics, logs, or events. The APM relay needs the forwarder
+    // alone, as it has nothing to feed the traces pipeline.
+    if dp.traces_pipeline_required(otlp) || dp.apm_enabled() {
+        let dd_traces_forwarder_config = DatadogForwarderConfiguration::new(
+            traces_forwarder_configuration(&shared),
+            config_system.live(|config| &config.shared.endpoints.api_key),
+            config_system.live(|config| &config.shared.endpoints.traces.additional_endpoints),
+            config_system.live(|config| &config.shared.secrets).map(Secrets::in_use),
+        );
+        blueprint.add_forwarder("dd_traces_out", dd_traces_forwarder_config)?;
     }
 
     if dp.metrics_pipeline_required(otlp) {
@@ -653,7 +666,7 @@ async fn add_baseline_traces_pipeline_to_blueprint(
         // output, delivering the metrics through the metrics pipeline to the backend.
         .connect_components("trace_sampler.metrics", "metrics_enrich")?
         .connect_components("dd_apm_stats", "dd_stats_encode")?
-        .connect_components(["dd_traces_encode", "dd_stats_encode"], "dd_out")?;
+        .connect_components(["dd_traces_encode", "dd_stats_encode"], "dd_traces_out")?;
 
     Ok(())
 }
@@ -1028,8 +1041,8 @@ async fn add_apm_pipeline_to_blueprint(
     blueprint
         .add_relay("dd_traces_relay", dd_traces_relay)?
         // The relay has no output path of its own, but a topology can't hold a component with no connections, so it
-        // connects to the forwarder, which is always created when APM is enabled.
-        .connect_components("dd_traces_relay.traces", "dd_out")?;
+        // connects to the traces forwarder, which is always created when APM is enabled.
+        .connect_components("dd_traces_relay.traces", "dd_traces_out")?;
     Ok(())
 }
 
