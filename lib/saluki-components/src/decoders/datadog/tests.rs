@@ -1224,3 +1224,14 @@ fn a_chunk_of_priority_none_has_no_priority() {
     let decoded = decode_v1_payload(&table_payload(&["svc"], 2, 1, 1)).unwrap();
     assert_eq!(decoded.traces[0].priority, Some(2));
 }
+
+#[test]
+fn oracle_cases_decode_as_the_reference_decodes_them() {
+    // `testdata/v1_cases.json` holds what the trace-agent's own decoder made of each body (see
+    // `test/trace-agent-oracle/`), where `testdata/v1_decoder_cases.json` holds payloads of the reference encoder.
+    crate::decoders::datadog::json::tests::check_fixture(
+        include_str!("testdata/v1_cases.json"),
+        |_, body| decode_v1_payload(body),
+        false,
+    );
+}
