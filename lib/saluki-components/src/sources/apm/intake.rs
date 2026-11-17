@@ -16,7 +16,7 @@
 //! | `Content-Length` over `max_request_bytes` | 413 |
 //! | Body reaches `max_request_bytes` | 413 |
 //! | `receiver_timeout` elapses reading the body | 408 |
-//! | The body ends early | 400 `unexpected-eof` |
+//! | The body ends early, or ends before its JSON value does | 400 `unexpected-eof` |
 //! | The payload doesn't decode | 400 |
 //! | Accepted | 200 |
 //!
@@ -26,8 +26,14 @@
 //!
 //! # Media types
 //!
-//! `/v1.0/traces` decodes any body as v1.0. The v0.x endpoints only decode MessagePack bodies, as the trace-agent
-//! does; [`TraceIntake::serves`] leaves every other body to the trace-agent.
+//! `/v1.0/traces` decodes any body as v1.0. The v0.x endpoints decode a body by its [format](super::media_type), as
+//! the trace-agent does:
+//!
+//! | `Content-Type` | Decoded as |
+//! |---|---|
+//! | `application/msgpack`, with any parameters | MessagePack |
+//! | `application/json`, `text/json`, absent, or a value that doesn't parse | JSON |
+//! | Any other media type | JSON, or else MessagePack from where the JSON decoder stopped reading |
 //!
 //! Each outcome but the cross-site rejection is counted in the [receiver telemetry](super::receiver_telemetry), as
 //! the trace-agent counts it.
@@ -52,10 +58,12 @@ use tokio::time::{sleep, sleep_until, Instant};
 use tracing::debug;
 
 use super::container_tags::ContainerTagsHasher;
+use super::media_type::{payload_format, PayloadFormat};
 use super::receiver_telemetry::{DropReason, ReceiverTags, ReceiverTelemetry};
 use crate::common::traces::normalize::{truncate_utf8_str, MAX_SERVICE_LEN};
 use crate::decoders::datadog::{
-    decode_v04_payload, decode_v1_payload, first_span, resolve_process_tags, resolve_sdk_otlp_export, DecodeError,
+    decode_v04_any, decode_v04_json, decode_v04_payload, decode_v1_payload, first_span, resolve_process_tags,
+    resolve_sdk_otlp_export, DecodeError,
 };
 use crate::transforms::{HistogramConfiguration, ServiceRates};
 
@@ -146,17 +154,11 @@ impl EndpointVersion {
 /// trace-agent writes it.
 const UNSUPPORTED_MSGPACK_MESSAGE: &str = "unsupported media type: \"application/msgpack\"";
 
+/// Body of the `400 Bad Request` answer to a body that ends early, as the trace-agent writes it.
+const UNEXPECTED_EOF_MESSAGE: &str = "unexpected-eof";
+
 /// Body of the `400 Bad Request` answer to a MessagePack body that ends early, the trace-agent's message.
 const MSGP_SHORT_BYTES_MESSAGE: &str = "msgp: too few bytes left to read object";
-
-/// Returns whether a request's body is MessagePack, as the trace-agent reads `Content-Type`.
-///
-/// Only a bare `application/msgpack`, in any case and with surrounding whitespace, counts. Go also reads one with
-/// parameters as MessagePack, if they parse; such a request isn't served natively, so the trace-agent still answers it
-/// as Go does.
-fn is_msgpack(headers: &HeaderMap) -> bool {
-    header_str(headers, &CONTENT_TYPE).is_some_and(|value| value.trim().eq_ignore_ascii_case("application/msgpack"))
-}
 
 /// Handles trace intake requests, and hands their traces to the source.
 #[derive(Clone)]
@@ -182,17 +184,6 @@ impl TraceIntake {
         Arc::clone(&self.telemetry)
     }
 
-    /// Returns whether the intake serves a request to the endpoint of `version`, rather than the trace-agent.
-    ///
-    /// shortcut: the v0.x endpoints only serve MessagePack bodies, and leave JSON and every other media type to the
-    /// trace-agent behind the relay, since there is no native JSON decoder yet. Serve JSON once it exists (APMSP-4289).
-    pub(super) fn serves(&self, version: EndpointVersion, headers: &HeaderMap) -> bool {
-        match version {
-            EndpointVersion::V10 => true,
-            EndpointVersion::V02 | EndpointVersion::V03 | EndpointVersion::V04 => is_msgpack(headers),
-        }
-    }
-
     /// Handles a trace payload sent to the endpoint of `version`.
     pub(super) async fn handle(
         &self, version: EndpointVersion, request: AxumRequest, container_tags: &ContainerTagsHasher,
@@ -202,7 +193,8 @@ impl TraceIntake {
         let (parts, body) = request.into_parts();
         let headers = &parts.headers;
 
-        if version.rejects_msgpack() && is_msgpack(headers) {
+        let format = payload_format(headers);
+        if version.rejects_msgpack() && format == PayloadFormat::MessagePack {
             debug!(
                 "Rejecting a MessagePack payload sent to the {} endpoint.",
                 version.as_str()
@@ -250,10 +242,12 @@ impl TraceIntake {
         };
         let body_len = body.len();
 
-        let decoded = match version {
-            EndpointVersion::V10 => decode_v1_payload(&body),
-            // `/v0.2/traces` never gets here: its MessagePack bodies are rejected above.
-            EndpointVersion::V02 | EndpointVersion::V03 | EndpointVersion::V04 => decode_v04_payload(&body),
+        let decoded = match (version, format) {
+            (EndpointVersion::V10, _) => decode_v1_payload(&body),
+            // `/v0.2/traces` never gets here with MessagePack: it is rejected above.
+            (_, PayloadFormat::MessagePack) => decode_v04_payload(&body),
+            (_, PayloadFormat::Json) => decode_v04_json(&body),
+            (_, PayloadFormat::Unknown) => decode_v04_any(&body),
         };
         // The decoded traces own their data, so the body is released before they wait for the pipeline, as the
         // trace-agent releases its buffer before sending the payload on.
@@ -262,9 +256,11 @@ impl TraceIntake {
             Ok(decoded) => decoded,
             Err(error) => {
                 debug!(%error, "Cannot decode {version:?} traces payload.");
-                // Short input is counted apart, and answered with its own message.
+                // Short MessagePack input and a JSON body that ends early are counted apart, and answered with their
+                // own messages.
                 let (reason, message) = match error {
                     DecodeError::ShortBytes { .. } => (DropReason::MsgpShortBytes, MSGP_SHORT_BYTES_MESSAGE.into()),
+                    DecodeError::UnexpectedEof => (DropReason::UnexpectedEof, UNEXPECTED_EOF_MESSAGE.into()),
                     error => (DropReason::DecodingError, error.to_string()),
                 };
                 self.record_rejection(version, headers, connection, start, reason);
@@ -539,7 +535,7 @@ impl IntoResponse for BodyError {
     fn into_response(self) -> Response {
         match self {
             Self::TooLarge => http_error(StatusCode::PAYLOAD_TOO_LARGE, "payload-too-large"),
-            Self::UnexpectedEof => http_error(StatusCode::BAD_REQUEST, "unexpected-eof"),
+            Self::UnexpectedEof => http_error(StatusCode::BAD_REQUEST, UNEXPECTED_EOF_MESSAGE),
             Self::Timeout => http_error(StatusCode::REQUEST_TIMEOUT, "timeout"),
         }
     }
@@ -727,39 +723,120 @@ mod tests {
 
     const MSGPACK: (&str, &str) = ("Content-Type", "application/msgpack");
 
-    #[test]
-    fn the_v0_endpoints_only_serve_msgpack_bodies() {
-        let (intake, _traces) = intake(config());
-        let content_type = |value: Option<&str>| {
-            let mut headers = HeaderMap::new();
-            if let Some(value) = value {
-                headers.insert(CONTENT_TYPE, HeaderValue::from_str(value).unwrap());
-            }
-            headers
-        };
-        let msgpack = ["application/msgpack", "Application/MsgPack", " application/msgpack "];
-        let other = [
-            None,
-            Some(""),
-            Some("application/json"),
-            Some("text/json"),
-            Some("application/octet-stream"),
-            // Go reads these as MessagePack too; they are left to the trace-agent, which answers them as Go does.
-            Some("application/msgpack; charset=utf-8"),
-        ];
+    /// `testutil.GetTestTraces(1, 1, false)` as `json.Marshal` writes it.
+    const GO_TEST_TRACES_JSON: &str = r#"[[{"service":"fennel_IS amazing!","name":"something &&<@# that should be a metric!","resource":"NOT touched because it is going to be hashed","trace_id":42,"span_id":52,"parent_id":42,"start":9223372036854775807,"duration":9223372036854775807,"error":0,"meta":{"http.host":"192.168.0.1"},"metrics":{"http.monitor":41.99},"type":"web","span_links":[{"trace_id":42,"trace_id_high":32,"span_id":52,"attributes":{"a1":"v1","a2":"v2"},"tracestate":"dd=s:2;o:rum,congo=baz123","flags":2147483649}]}]]"#;
+
+    // `TestReceiverJSONDecoder` in `api_test.go`.
+    #[tokio::test]
+    async fn json_payloads_are_decoded_on_every_v0_endpoint() {
         for version in [EndpointVersion::V02, EndpointVersion::V03, EndpointVersion::V04] {
-            for value in msgpack {
-                assert!(
-                    intake.serves(version, &content_type(Some(value))),
-                    "{version:?} {value:?}"
+            for content_type in [None, Some(""), Some("application/json"), Some("text/json")] {
+                let (intake, mut traces) = intake(config());
+                let headers: Vec<_> = content_type.map(|value| ("Content-Type", value)).into_iter().collect();
+                let request = sized_request(&headers, GO_TEST_TRACES_JSON.as_bytes().to_vec());
+                let (status, _, _) = send_to(&intake, version, request).await;
+                assert_eq!(status, StatusCode::OK, "{version:?} {content_type:?}");
+
+                let traces = traces.try_recv().unwrap();
+                assert_eq!(traces.len(), 1);
+                let trace = &traces[0];
+                assert_eq!((trace.trace_id_high, trace.trace_id_low), (0, 42));
+                let span = &trace.spans()[0];
+                assert_eq!(span.span_id(), 52);
+                assert_eq!(span.service(), "fennel_IS amazing!");
+                assert_eq!(span.name(), "something &&<@# that should be a metric!");
+                assert_eq!(span.resource(), "NOT touched because it is going to be hashed");
+                assert_eq!(
+                    span.attributes
+                        .get("http.host")
+                        .and_then(|value| value.as_string())
+                        .map(|value| value.as_ref()),
+                    Some("192.168.0.1")
+                );
+                assert_eq!(
+                    span.attributes.get("http.monitor").and_then(|value| value.as_float()),
+                    Some(41.99)
                 );
             }
-            for value in other {
-                assert!(!intake.serves(version, &content_type(value)), "{version:?} {value:?}");
-            }
         }
-        for value in other {
-            assert!(intake.serves(EndpointVersion::V10, &content_type(value)), "{value:?}");
+    }
+
+    #[tokio::test]
+    async fn a_body_of_another_media_type_is_decoded_as_json_or_else_as_msgpack() {
+        let (intake, mut traces) = intake(config());
+        let headers = [("Content-Type", "text/plain"), ("X-Datadog-Trace-Count", "1")];
+
+        let (status, _, _) = send_to(
+            &intake,
+            EndpointVersion::V04,
+            sized_request(&headers, GO_TEST_TRACES_JSON.as_bytes().to_vec()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(traces.try_recv().unwrap().len(), 1);
+
+        // The MessagePack decoder only gets what the JSON decoder left, which for a short body is nothing.
+        let (status, _, body) = send_to(&intake, EndpointVersion::V04, sized_request(&headers, v04_payload(1))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body, format!("{MSGP_SHORT_BYTES_MESSAGE}\n"));
+        assert!(traces.try_recv().is_err());
+        let counters = counters(&intake);
+        assert_eq!(
+            counter(&counters, "datadog.trace_agent.normalizer.traces_dropped")
+                .0
+                .last()
+                .map(String::as_str),
+            Some("reason:msgp_short_bytes")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_msgpack_content_type_with_parameters_is_msgpack() {
+        let (intake, mut traces) = intake(config());
+        let headers = [("Content-Type", "Application/MsgPack; charset=utf-8")];
+        let (status, _, _) = send_to(&intake, EndpointVersion::V04, sized_request(&headers, v04_payload(1))).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(traces.try_recv().unwrap().len(), 1);
+
+        let (status, _, _) = send_to(&intake, EndpointVersion::V02, sized_request(&headers, v04_payload(1))).await;
+        assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    }
+
+    // `TestReceiverDecodingError` in `api_test.go`, and `io.ErrUnexpectedEOF` from the JSON decoder.
+    #[tokio::test]
+    async fn json_decoding_errors_are_classified_as_http_decoding_error_does() {
+        let cases: [(&[u8], &str, &str, &str); 4] = [
+            (b"} invalid json", "error:decoding-error", "reason:decoding_error", ""),
+            (
+                br#"[[{"span_id":"52"}]]"#,
+                "error:decoding-error",
+                "reason:decoding_error",
+                "",
+            ),
+            (
+                br#"[[{"service":"a""#,
+                "error:unexpected-eof",
+                "reason:unexpected_eof",
+                "unexpected-eof\n",
+            ),
+            (b"", "error:unexpected-eof", "reason:unexpected_eof", "unexpected-eof\n"),
+        ];
+        for (body, error_tag, reason_tag, message) in cases {
+            let (intake, _traces) = intake(config());
+            let headers = [("Content-Type", "application/json"), ("X-Datadog-Trace-Count", "10")];
+            let (status, _, response) =
+                send_to(&intake, EndpointVersion::V04, sized_request(&headers, body.to_vec())).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{body:?}");
+            if !message.is_empty() {
+                assert_eq!(response, message);
+            }
+            let counters = counters(&intake);
+            let (tags, errors) = counter(&counters, "datadog.trace_agent.receiver.error");
+            assert_eq!(tags, ["handler:traces", "v:v0.4", error_tag], "{body:?}");
+            assert_eq!(errors, 1.0);
+            let (tags, dropped) = counter(&counters, "datadog.trace_agent.normalizer.traces_dropped");
+            assert_eq!(tags.last().map(String::as_str), Some(reason_tag), "{body:?}");
+            assert_eq!(dropped, 10.0);
         }
     }
 

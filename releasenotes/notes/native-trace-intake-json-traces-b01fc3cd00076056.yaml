@@ -1,0 +1,9 @@
+features:
+  - |
+    The experimental native trace intake, enabled with ``data_plane.experimental.apm.native_trace_intake``, now decodes
+    JSON payloads on ``/v0.4/traces``, ``/v0.3/traces`` and ``/v0.2/traces`` itself, rather than forwarding them to the
+    trace-agent. It picks the decoder from ``Content-Type`` as the trace-agent does: ``application/msgpack``, with or
+    without parameters, is MessagePack; ``application/json``, ``text/json``, no ``Content-Type`` or one that doesn't
+    parse is JSON; and any other media type is tried as JSON, then as MessagePack. JSON is decoded with the
+    trace-agent's semantics, from its case-insensitive field names to how it promotes the env, version, hostname and
+    sampling fields of the first span, and a JSON body that ends early is counted under ``reason:unexpected_eof``.

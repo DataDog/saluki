@@ -4,11 +4,10 @@
 //! does not handle itself are forwarded to the relocated trace-agent, so the documentation, metrics, and logs still call
 //! it the relay.
 //!
-//! With [`trace_intake`](ApmConfiguration::trace_intake) set, the source serves `/v1.0/traces`, and the MessagePack
-//! payloads of `/v0.4/traces`, `/v0.3/traces` and `/v0.2/traces`, itself. It emits the traces it decodes on its
-//! `traces` output, and its receiver telemetry on its `metrics` output. Payloads in other media types are still
-//! forwarded to the trace-agent. Without it, the source has no `metrics` output and emits nothing on `traces`, and every
-//! trace payload is forwarded to the trace-agent.
+//! With [`trace_intake`](ApmConfiguration::trace_intake) set, the source serves `/v1.0/traces`, `/v0.4/traces`,
+//! `/v0.3/traces` and `/v0.2/traces` itself, in every media type. It emits the traces it decodes on its `traces`
+//! output, and its receiver telemetry on its `metrics` output. Without it, the source has no `metrics` output and emits
+//! nothing on `traces`, and every trace payload is forwarded to the trace-agent.
 //!
 //! The relay serves `/info` itself, and so owns `Datadog-Agent-State`, the hash of the `/info` body that every
 //! response carries: it replaces the trace-agent's on the responses it forwards.
@@ -61,6 +60,8 @@ use self::info::Info;
 mod intake;
 pub use self::intake::TraceIntakeConfiguration;
 use self::intake::{EndpointVersion, TraceIntake};
+
+mod media_type;
 
 mod opm;
 pub use self::info::{
@@ -688,11 +689,6 @@ impl ApmAPIHandler {
             .intake
             .as_ref()
             .expect("trace routes are only registered with the native trace intake");
-        // shortcut: payloads the intake can't decode yet (JSON on the v0.x endpoints) are forwarded to the
-        // trace-agent, as they are without the native intake. Drop once the intake decodes them (APMSP-4289).
-        if !intake.serves(version, request.headers()) {
-            return Self::proxy_request(State(state), request).await;
-        }
         intake.handle(version, request, &state.container_tags).await
     }
 }
@@ -858,8 +854,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_native_intake_serves_v0_msgpack_traces_and_forwards_the_rest() {
-        let send = |router: Router, path: &'static str, content_type: Option<&'static str>, body: Vec<u8>| async move {
+    async fn the_native_intake_serves_v0_traces_in_every_media_type() {
+        let send = |router: Router, path: &'static str, content_type: Option<&'static str>, body: &'static [u8]| async move {
             let mut builder = Request::builder().method("PUT").uri(path);
             if let Some(content_type) = content_type {
                 builder = builder.header("Content-Type", content_type);
@@ -872,36 +868,47 @@ mod tests {
             let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
             (status, body)
         };
-        // An empty v0.4 payload: a MessagePack array with no traces.
-        let empty = vec![0x90];
+        // Empty v0.4 payloads: an array with no traces.
+        const MSGPACK: &[u8] = &[0x90];
+        const JSON: &[u8] = b"[]";
+        const RATES: &str = "{\"rate_by_service\":{}}\n";
         let (router, _traces) = native_intake_router(test_info());
 
         let cases = [
             (
                 "/v0.4/traces",
                 Some("application/msgpack"),
+                MSGPACK,
                 StatusCode::OK,
-                Some("{\"rate_by_service\":{}}\n"),
+                Some(RATES),
             ),
             (
                 "/v0.3/traces",
                 Some("application/msgpack"),
+                MSGPACK,
                 StatusCode::OK,
                 Some("OK\n"),
             ),
             (
                 "/v0.2/traces",
                 Some("application/msgpack"),
+                MSGPACK,
                 StatusCode::UNSUPPORTED_MEDIA_TYPE,
                 None,
             ),
-            // No native JSON decoder yet: the trace-agent, unreachable here, gets these.
-            ("/v0.4/traces", Some("application/json"), StatusCode::BAD_GATEWAY, None),
-            ("/v0.3/traces", None, StatusCode::BAD_GATEWAY, None),
-            ("/v0.2/traces", Some("text/json"), StatusCode::BAD_GATEWAY, None),
+            (
+                "/v0.4/traces",
+                Some("application/json"),
+                JSON,
+                StatusCode::OK,
+                Some(RATES),
+            ),
+            ("/v0.3/traces", None, JSON, StatusCode::OK, Some("OK\n")),
+            ("/v0.2/traces", Some("text/json"), JSON, StatusCode::OK, Some("OK\n")),
+            ("/v0.4/traces", Some("text/plain"), JSON, StatusCode::OK, Some(RATES)),
         ];
-        for (path, content_type, expected_status, expected_body) in cases {
-            let (status, body) = send(router.clone(), path, content_type, empty.clone()).await;
+        for (path, content_type, body, expected_status, expected_body) in cases {
+            let (status, body) = send(router.clone(), path, content_type, body).await;
             assert_eq!(status, expected_status, "{path} {content_type:?}");
             if let Some(expected_body) = expected_body {
                 assert_eq!(body, expected_body.as_bytes(), "{path} {content_type:?}");
