@@ -304,11 +304,6 @@ pub fn read_bool(r: &mut &[u8], context: &'static str) -> Result<bool, DecodeErr
     rmp::decode::read_bool(r).map_err(mp(context))
 }
 
-/// Reads a double-precision float.
-pub fn read_f64(r: &mut &[u8], context: &'static str) -> Result<f64, DecodeError> {
-    rmp::decode::read_f64(r).map_err(mp(context))
-}
-
 /// Reads a string, borrowing from the input for the lifetime of the underlying buffer.
 ///
 /// As the reference's `msgp.ReadStringBytes`, the bytes aren't validated as UTF-8: invalid ones are repaired, each

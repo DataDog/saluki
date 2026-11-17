@@ -1102,3 +1102,21 @@ fn a_payload_that_ends_where_a_string_is_expected_is_a_decoding_error() {
     let err = decode_v1_payload(&[0x81, 0x07, 0xa5, b'p', b'r']).unwrap_err();
     assert!(matches!(err, DecodeError::ShortBytes { .. }), "{err:?}");
 }
+
+#[test]
+fn attribute_doubles_are_read_as_the_reference_reads_them() {
+    // Found by the parity fuzzer: `msgp.ReadFloat64Bytes` checks the length before the marker, so a double cut short
+    // is short input whatever its marker, and it also takes a `float32`.
+    let attribute = |value: &[u8]| {
+        let mut buf = Vec::new();
+        encode::write_array_len(&mut buf, 3).unwrap();
+        encode::write_str(&mut buf, "k").unwrap();
+        encode::write_uint(&mut buf, 3).unwrap(); // double
+        buf.extend_from_slice(value);
+        value::read_attributes_map(&mut buf.as_slice(), &mut StringTable::new(64), "test")
+    };
+    let err = attribute(&[0xc9]).unwrap_err();
+    assert!(matches!(err, DecodeError::ShortBytes { .. }), "{err:?}");
+    let attributes = attribute(&[0xca, 0x40, 0x20, 0x00, 0x00]).unwrap();
+    assert_eq!(attributes.get("k"), Some(&AttributeValue::Float(2.5)));
+}
