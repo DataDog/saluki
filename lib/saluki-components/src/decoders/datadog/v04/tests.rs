@@ -1178,7 +1178,7 @@ fn event_strategy() -> impl Strategy<Value = V> {
     ]
 }
 
-fn span_strategy() -> impl Strategy<Value = V> {
+pub(in crate::decoders::datadog) fn span_strategy() -> impl Strategy<Value = V> {
     let ids = (
         any::<u64>(),
         any::<u64>(),

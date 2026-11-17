@@ -48,7 +48,7 @@ enum Expected {
 }
 
 /// Classifies an error as the trace-agent's receiver tags it and as it counts the dropped traces.
-fn classify(error: &DecodeError) -> (&'static str, &'static str) {
+pub(in crate::decoders::datadog) fn classify(error: &DecodeError) -> (&'static str, &'static str) {
     match error {
         DecodeError::UnexpectedEof => ("unexpected-eof", "unexpected_eof"),
         DecodeError::ShortBytes { .. } => ("decoding-error", "msgp_short_bytes"),
@@ -57,7 +57,7 @@ fn classify(error: &DecodeError) -> (&'static str, &'static str) {
 }
 
 /// Renders decoded traces in the fixtures' form.
-fn dump(decoded: &DecodedV1) -> Value {
+pub(in crate::decoders::datadog) fn dump(decoded: &DecodedV1) -> Value {
     let payload = decoded
         .traces
         .first()
@@ -140,12 +140,14 @@ fn dump_value(value: &AttributeValue) -> Value {
         AttributeValue::Float(f) => json!({ "double": f }),
         AttributeValue::Bytes(b) => json!({ "bytes": general_purpose::STANDARD.encode(b) }),
         AttributeValue::Array(values) => json!({ "array": values.iter().map(dump_value).collect::<Vec<_>>() }),
-        AttributeValue::KeyValueList(_) => json!({ "unknown": "key value list" }),
+        AttributeValue::KeyValueList(entries) => json!({
+            "key_value_list": entries.iter().map(|(key, value)| json!([key.as_ref(), dump_value(value)])).collect::<Vec<_>>(),
+        }),
     }
 }
 
 /// Turns the fixtures' doubles, which are Go's text for them, into numbers.
-fn parse_doubles(value: &mut Value) {
+pub(in crate::decoders::datadog) fn parse_doubles(value: &mut Value) {
     match value {
         Value::Object(map) => {
             if let (1, Some(Value::String(text))) = (map.len(), map.get("double")) {
@@ -213,7 +215,7 @@ pub(in crate::decoders::datadog) fn check_fixture(
 }
 
 /// Sorts a dumped payload's chunks by their rendering.
-fn sort_chunks(payload: &mut Value) {
+pub(in crate::decoders::datadog) fn sort_chunks(payload: &mut Value) {
     if let Some(Value::Array(chunks)) = payload.get_mut("chunks") {
         chunks.sort_by_cached_key(|chunk| chunk.to_string());
     }
@@ -372,7 +374,7 @@ fn empty_span_payloads_allocate_in_proportion_to_their_size() {
 }
 
 /// Arbitrary JSON values, including the field names the decoder looks for.
-fn json_strategy() -> impl Strategy<Value = Value> {
+pub(in crate::decoders::datadog) fn json_strategy() -> impl Strategy<Value = Value> {
     let key = prop_oneof![
         Just("service".to_string()),
         Just("trace_id".to_string()),

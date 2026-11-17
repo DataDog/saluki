@@ -56,7 +56,7 @@ use super::read::{self, MSGP_MAX_COLLECTION_SIZE};
 use super::{convert_tracer_payload, DecodedV1};
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;
 
 /// The `msgp:limit` of a span's `meta_struct` map and of each of its values.
 const META_STRUCT_MAX_SIZE: u32 = 10 << 20;

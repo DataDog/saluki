@@ -49,6 +49,8 @@ mod v07;
 mod value;
 
 #[cfg(test)]
+mod parity;
+#[cfg(test)]
 mod tests;
 
 pub use self::convert::convert_tracer_payload;

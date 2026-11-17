@@ -34,7 +34,7 @@ fn span(refs: [u64; 4], ids: [u64; 3], meta: &[(u64, u64)], metrics: &[(u64, f64
     ])
 }
 
-fn payload(dictionary: &[&str], chunks: Vec<Vec<V>>) -> Vec<u8> {
+pub(in crate::decoders::datadog) fn payload(dictionary: &[&str], chunks: Vec<Vec<V>>) -> Vec<u8> {
     encode_value(&V::Arr(vec![
         V::Arr(dictionary.iter().map(|value| s(value)).collect()),
         V::Arr(chunks.into_iter().map(V::Arr).collect()),
@@ -390,7 +390,7 @@ fn span_strategy(dictionary_len: u64) -> impl Strategy<Value = V> {
         .prop_map(|(refs, ids, meta, metrics)| span(refs, ids, &meta, &metrics))
 }
 
-fn payload_strategy() -> impl Strategy<Value = (Vec<String>, Vec<Vec<V>>)> {
+pub(in crate::decoders::datadog) fn payload_strategy() -> impl Strategy<Value = (Vec<String>, Vec<Vec<V>>)> {
     prop::collection::vec("[a-z._]{0,40}", 1..12).prop_flat_map(|dictionary| {
         let spans = span_strategy(dictionary.len() as u64);
         (
