@@ -590,6 +590,12 @@ test: ## Runs all unit tests
 	@echo "[*] Running unit tests..."
 	cargo nextest run --lib --bins --no-fail-fast -E 'not test(/property_test_*/)'
 
+.PHONY: test-container-daemon
+test-container-daemon: check-rust-build-tools cargo-install-cargo-nextest
+test-container-daemon: ## Runs the unit tests that need a Docker daemon
+	@echo "[*] Running unit tests against the Docker daemon..."
+	cargo nextest run -p airlock --run-ignored ignored-only
+
 .PHONY: test-property
 test-property: check-rust-build-tools cargo-install-cargo-nextest
 test-property: ## Runs all property tests
