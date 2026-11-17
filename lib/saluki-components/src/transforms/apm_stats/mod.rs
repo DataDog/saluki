@@ -37,7 +37,7 @@ use tracing::{debug, error};
 use crate::common::datadog::get_tracer_hostname;
 use crate::common::datadog::version_data::ContainerVersionData;
 use crate::common::otlp::traces::normalize::normalized_tag_value;
-use crate::common::otlp::util::extract_container_tags_from_attributes_map;
+use crate::common::otlp::util::extract_trace_container_tags;
 use crate::config::AgentEnv;
 
 mod aggregation;
@@ -207,7 +207,7 @@ impl ApmStats {
             TagSet::default()
         } else {
             let mut tags = TagSet::default();
-            extract_container_tags_from_attributes_map(&trace.attributes, &mut tags);
+            extract_trace_container_tags(trace.payload.resolved_container_tags(), &trace.attributes, &mut tags);
             tags
         };
 
