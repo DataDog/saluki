@@ -31,7 +31,7 @@ Agent citations are at `281d921619d`. Value encodings for getter results are in 
   `null`, unless the field's text says `null` is meaningful.
 - Readers must reject a corpus whose header `format` they do not know, and must reject unknown
   members. The harness and the corpus change together; any format change bumps `format`.
-- Size: the corpus must be at most 512,000 bytes. Fields are optional where marked so that empty
+- Size: the corpus must be at most 560,000 bytes. Fields are optional where marked so that empty
   values cost nothing.
 
 ## 2. Header line

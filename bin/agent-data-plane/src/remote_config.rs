@@ -111,7 +111,7 @@ mod tests {
         sampling: bool,
         semantics: bool,
         otlp: bool,
-        otlp_proxy: bool,
+        otlp_proxy_metrics: bool,
         otlp_proxy_traces: bool,
         apm: bool,
         expected: RcProducts,
@@ -136,7 +136,7 @@ mod tests {
         sampling: true,
         semantics: true,
         otlp: true,
-        otlp_proxy: false,
+        otlp_proxy_metrics: false,
         otlp_proxy_traces: false,
         apm: false,
         expected: BOTH,
@@ -173,15 +173,13 @@ mod tests {
             },
             Case {
                 name: "otlp traces proxied: no traces pipeline",
-                otlp_proxy: true,
                 otlp_proxy_traces: true,
                 expected: RcProducts::NONE,
                 ..ON
             },
             Case {
                 name: "otlp proxy with traces kept: traces pipeline",
-                otlp_proxy: true,
-                otlp_proxy_traces: false,
+                otlp_proxy_metrics: true,
                 ..ON
             },
             Case {
@@ -193,7 +191,6 @@ mod tests {
             },
             Case {
                 name: "apm relay with otlp traces proxied: semantics only",
-                otlp_proxy: true,
                 otlp_proxy_traces: true,
                 apm: true,
                 expected: SEMANTICS,
@@ -222,7 +219,7 @@ mod tests {
             config.control.apm = case.apm;
             // OTLP needs at least one signal to run.
             config.domains.otlp.receiver.metrics_enabled = true;
-            config.domains.otlp.proxy.enabled = case.otlp_proxy;
+            config.domains.otlp.proxy.metrics_enabled = case.otlp_proxy_metrics;
             config.domains.otlp.proxy.traces_enabled = case.otlp_proxy_traces;
 
             let products = enabled_products(&config);

@@ -65,6 +65,12 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         default: DefaultValue::Json("\"\""),
     },
     ClassifierEntry {
+        yaml_path: "data_plane.experimental.otlp.proxy.agent_receiver_http_endpoint",
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+        default: DefaultValue::Json("\"127.0.0.1:4320\""),
+    },
+    ClassifierEntry {
         yaml_path: "data_plane.telemetry_enabled",
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::CrossCutting,
@@ -225,12 +231,6 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::Json("1"),
-    },
-    ClassifierEntry {
-        yaml_path: "dogstatsd_queue_size",
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-        default: DefaultValue::Json("1024"),
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_stats_buffer",
@@ -677,28 +677,16 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         default: DefaultValue::Missing,
     },
     ClassifierEntry {
+        yaml_path: "schema.enforce",
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+        default: DefaultValue::Json("false"),
+    },
+    ClassifierEntry {
         yaml_path: "serializer_experimental_use_v3_api.sketches.beta_route",
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::Json("\"/api/intake/metrics/v3beta/sketches\""),
-    },
-    ClassifierEntry {
-        yaml_path: "serializer_experimental_use_v3_api.sketches.max_compressed_payload_size",
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-        default: DefaultValue::Json("0"),
-    },
-    ClassifierEntry {
-        yaml_path: "serializer_experimental_use_v3_api.sketches.max_points_per_payload",
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-        default: DefaultValue::Json("0"),
-    },
-    ClassifierEntry {
-        yaml_path: "serializer_experimental_use_v3_api.sketches.max_uncompressed_payload_size",
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-        default: DefaultValue::Json("0"),
     },
     ClassifierEntry {
         yaml_path: "serializer_experimental_use_v3_api.sketches.shadow_sample_rate",

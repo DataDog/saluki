@@ -175,38 +175,10 @@ pub(super) struct Metrics {
     connections_active: Gauge,
     packet_receive_success: Counter,
     packet_receive_failure: Counter,
-    packets_forwarded: Counter,
-    bytes_forwarded: Counter,
-    packet_forwarding_errors: Counter,
     origin_metric_recorder: Option<OriginMetricRecorder>,
 }
 
 impl Metrics {
-    #[cfg(test)]
-    pub fn for_tests() -> Self {
-        Self {
-            metrics_received: Counter::noop(),
-            events_received: Counter::noop(),
-            service_checks_received: Counter::noop(),
-            bytes_received: Counter::noop(),
-            bytes_received_size: Histogram::noop(),
-            framing_errors: Counter::noop(),
-            metric_decoder_errors: Counter::noop(),
-            event_decoder_errors: Counter::noop(),
-            service_check_decoder_errors: Counter::noop(),
-            origin_detection_invalid_credentials_errors: Counter::noop(),
-            origin_detection_zero_pid_errors: Counter::noop(),
-            failed_context_resolve_total: Counter::noop(),
-            connections_active: Gauge::noop(),
-            packet_receive_success: Counter::noop(),
-            packet_receive_failure: Counter::noop(),
-            packets_forwarded: Counter::noop(),
-            bytes_forwarded: Counter::noop(),
-            packet_forwarding_errors: Counter::noop(),
-            origin_metric_recorder: None,
-        }
-    }
-
     pub(super) fn origin_telemetry_enabled(&self) -> bool {
         self.origin_metric_recorder.is_some()
     }
@@ -279,6 +251,36 @@ impl Metrics {
 
     pub(super) fn packet_receive_failure(&self) -> &Counter {
         &self.packet_receive_failure
+    }
+}
+
+/// Metrics for the packet forwarder, which forwards packets from every listener of the source.
+#[derive(Clone)]
+pub(super) struct ForwarderMetrics {
+    packets_forwarded: Counter,
+    bytes_forwarded: Counter,
+    packet_forwarding_errors: Counter,
+}
+
+impl ForwarderMetrics {
+    pub(super) fn new(component_context: &ComponentContext) -> Self {
+        let builder = MetricsBuilder::from_component_context(component_context);
+        Self {
+            packets_forwarded: builder
+                .register_counter_with_tags("component_packets_forwarded_total", [("state", "ok")]),
+            bytes_forwarded: builder.register_counter("component_bytes_forwarded_total"),
+            packet_forwarding_errors: builder
+                .register_counter_with_tags("component_packets_forwarded_total", [("state", "error")]),
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn for_tests() -> Self {
+        Self {
+            packets_forwarded: Counter::noop(),
+            bytes_forwarded: Counter::noop(),
+            packet_forwarding_errors: Counter::noop(),
+        }
     }
 
     pub(super) fn packets_forwarded(&self) -> &Counter {
@@ -359,16 +361,6 @@ pub(super) fn build_metrics(
         ),
         packet_receive_failure: builder.register_counter_with_tags(
             "component_packets_received_total",
-            [("listener_type", listener_type), ("state", "error")],
-        ),
-        packets_forwarded: builder.register_counter_with_tags(
-            "component_packets_forwarded_total",
-            [("listener_type", listener_type), ("state", "ok")],
-        ),
-        bytes_forwarded: builder
-            .register_counter_with_tags("component_bytes_forwarded_total", [("listener_type", listener_type)]),
-        packet_forwarding_errors: builder.register_counter_with_tags(
-            "component_packets_forwarded_total",
             [("listener_type", listener_type), ("state", "error")],
         ),
         failed_context_resolve_total: builder.register_counter("component_failed_context_resolve_total"),

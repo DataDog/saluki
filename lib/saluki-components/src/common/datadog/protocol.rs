@@ -77,13 +77,22 @@ impl MetricsPayloadInfo {
 }
 
 /// V3 API settings for a specific metric type (series or sketches).
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct V3ApiSettings {
     /// Endpoints that should receive V3 payloads for this metric type.
     ///
     /// Each entry should be a configured endpoint name, such as `https://app.datadoghq.com`.
     /// If empty, no V3 payloads are generated for this metric type.
     pub endpoints: Vec<String>,
+
+    /// Maximum compressed V3 sketch payload size in bytes, capped at 2.5 MiB.
+    pub max_compressed_payload_size: usize,
+
+    /// Maximum uncompressed V3 sketch payload size in bytes, capped at 4 MiB.
+    pub max_uncompressed_payload_size: usize,
+
+    /// Resolved maximum sketch points per payload; `usize::MAX` disables the cap.
+    pub max_points_per_payload: usize,
 }
 
 impl V3ApiSettings {
@@ -94,7 +103,7 @@ impl V3ApiSettings {
 }
 
 /// V3 API configuration for per-endpoint V3 support.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct V3ApiConfig {
     /// V3 settings for sketch metrics (histograms, distributions).
     pub sketches: V3ApiSettings,

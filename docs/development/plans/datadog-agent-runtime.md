@@ -65,16 +65,16 @@ to the pull request), or merged.
   - Moves `internal/env/**` and the tagger prefix fixture, and adds `WorkloadSettings` and
     `RemoteAgentEnvironmentProvider`.
   - Updates `.github/workflows/update-agent-tagger-prefixes.yml` for the new paths.
-- [ ] **4. Control plane workers.** Status: in review (pull request not opened yet).
+- [x] **4. Control plane workers.** Status: merged ([#2844](https://github.com/DataDog/saluki/pull/2844)).
   - Moves the runtime configuration and configuration updates workers, and moves the internal telemetry worker into
     `saluki-core`, next to the internal metrics types. ADP still builds `ctrl-pln` itself, from these workers.
   - Adds `RemoteAgentServicesWorker`, which publishes the status, flare, and telemetry services as a dynamic gRPC route
     on the privileged API endpoint.
-- [ ] **5. Facade.** Status: in review (pull request not opened yet).
+- [x] **5. Facade.** Status: merged ([#2853](https://github.com/DataDog/saluki/pull/2853)).
   - Adds the `facade` module and rewrites ADP's `run` command on top of it. ADP still builds `ctrl-pln`, and adds to it
     the `remote-agent` supervisor from `RemoteAgent::create_remote_agent_supervisor`, which holds the supervision tree route
     and the remote agent workers.
-- [ ] **6. Documentation and example.** Status: in review (pull request not opened yet).
+- [x] **6. Documentation and example.** Status: merged ([#2893](https://github.com/DataDog/saluki/pull/2893)).
   - Adds the crate documentation, `examples/minimal_remote_agent.rs`, and the entry in the agent guide (`docs/development/agents.md`).
 
 ## Invariants

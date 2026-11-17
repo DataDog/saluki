@@ -1,7 +1,7 @@
 use nom::{
     branch::alt,
     bytes::complete::{tag, take_while1},
-    combinator::{all_consuming, map},
+    combinator::all_consuming,
     error::{Error, ErrorKind},
     number::complete::double,
     sequence::{preceded, separated_pair, terminated},
@@ -131,9 +131,18 @@ pub fn parse_dogstatsd_metric<'a>(
                     maybe_tags = Some(tags);
                 }
                 // Local Data: client-provided data used for resolving the entity ID that this metric originated from.
+                //
+                // In permissive mode, a malformed value is ignored rather than rejecting the whole metric. The
+                // reference DogStatsD server doesn't validate this field and just fails to resolve an origin from it,
+                // so either way, the metric gets no origin tags from it.
                 b'c' if chunk.len() > 1 && chunk[1] == b':' && config.client_origin_detection => {
-                    let (_, local_data) = all_consuming(preceded(tag("c:"), local_data)).parse(chunk)?;
-                    maybe_local_data = Some(local_data);
+                    match all_consuming(preceded(tag("c:"), local_data)).parse(chunk) {
+                        Ok((_, local_data)) => maybe_local_data = Some(local_data),
+                        Err(_) if config.permissive => {
+                            debug!(metric_name, "Ignoring malformed Local Data field in DogStatsD metric.")
+                        }
+                        Err(e) => return Err(e),
+                    }
                 }
                 // Timestamp: client-provided timestamp for the metric, relative to the Unix epoch, in seconds.
                 //
@@ -148,9 +157,21 @@ pub fn parse_dogstatsd_metric<'a>(
                     maybe_timestamp = Some(timestamp);
                 }
                 // External Data: client-provided data used for resolving the entity ID that this metric originated from.
+                //
+                // In permissive mode, a malformed value is ignored rather than rejecting the whole metric. The
+                // reference DogStatsD server doesn't validate this field and just fails to resolve an origin from it,
+                // so either way, the metric gets no origin tags from it.
                 b'e' if chunk.len() > 1 && chunk[1] == b':' && config.client_origin_detection => {
-                    let (_, external_data) = all_consuming(preceded(tag("e:"), external_data)).parse(chunk)?;
-                    maybe_external_data = Some(external_data);
+                    match all_consuming(preceded(tag("e:"), external_data)).parse(chunk) {
+                        Ok((_, external_data)) => maybe_external_data = Some(external_data),
+                        Err(_) if config.permissive => {
+                            debug!(
+                                metric_name,
+                                "Ignoring malformed External Data field in DogStatsD metric."
+                            )
+                        }
+                        Err(e) => return Err(e),
+                    }
                 }
                 // Cardinality: client-provided cardinality for the metric.
                 b'c' if chunk.starts_with(CARDINALITY_PREFIX) && config.client_origin_detection => {
@@ -176,8 +197,7 @@ pub fn parse_dogstatsd_metric<'a>(
     };
 
     // Capture the unit from the metric type before it is erased into a MetricValues variant.
-    // Only timing metrics carry an implicit unit; all other types have no unit.
-    let maybe_unit = if matches!(metric_type, MetricType::Timer) {
+    let maybe_unit = if config.timing_unit && matches!(metric_type, MetricType::Timer) {
         Some("millisecond")
     } else {
         None
@@ -219,14 +239,14 @@ pub fn parse_dogstatsd_metric<'a>(
 
 #[inline]
 fn permissive_metric_name(input: &[u8]) -> IResult<&[u8], &str> {
-    // Essentially, any ASCII character that is printable and isn't `:` is allowed here.
-    let valid_char = |c: u8| c > 31 && c < 128 && c != b':';
-    map(take_while1(valid_char), |b| {
-        // SAFETY: We know the bytes in `b` can only be comprised of ASCII characters, which ensures that it's valid to
-        // interpret the bytes directly as UTF-8.
-        unsafe { std::str::from_utf8_unchecked(b) }
-    })
-    .parse(input)
+    // Like the reference DogStatsD server, we allow any characters in the metric name other than the `:` value
+    // delimiter and the `|` field delimiter. The name must still be valid UTF-8, since we can't safely handle it
+    // otherwise.
+    let (remaining, raw_name) = take_while1(|c: u8| c != b':' && c != b'|').parse(input)?;
+    match simdutf8::basic::from_utf8(raw_name) {
+        Ok(name) => Ok((remaining, name)),
+        Err(_) => Err(nom::Err::Error(Error::new(raw_name, ErrorKind::Verify))),
+    }
 }
 
 #[inline]
@@ -436,14 +456,36 @@ mod tests {
     }
 
     #[test]
-    fn metric_unit() {
+    fn metric_unit_absent_by_default() {
         let config = DogStatsDCodecConfiguration::default();
 
-        // Timing metrics must carry an implicit millisecond unit.
-        let (_, packet) = parse_dogstatsd_metric(b"my.timer:1.0|ms", &config).expect("should not fail to parse");
-        assert_eq!(packet.unit, Some("millisecond"));
+        for raw in [
+            "my.metric:1.0|c",
+            "my.metric:1.0|g",
+            "my.metric:1.0|ms",
+            "my.metric:1.0:2.0|ms",
+            "my.metric:1.0|h",
+            "my.metric:1.0|d",
+            "my.metric:1.0|s",
+        ] {
+            let (_, packet) = parse_dogstatsd_metric(raw.as_bytes(), &config).expect("should not fail to parse");
+            assert_eq!(packet.unit, None, "expected no unit for {raw:?}");
+        }
+    }
 
-        // All other metric types must have no unit.
+    #[test]
+    fn metric_unit_with_timing_unit() {
+        let config = DogStatsDCodecConfiguration::default().with_timing_unit(true);
+
+        for raw in ["my.timer:1.0|ms", "my.timer:1.0:2.0:3.0|ms|@0.5|#tag1"] {
+            let (_, packet) = parse_dogstatsd_metric(raw.as_bytes(), &config).expect("should not fail to parse");
+            assert_eq!(
+                packet.unit,
+                Some("millisecond"),
+                "expected millisecond unit for {raw:?}"
+            );
+        }
+
         for kind in &["c", "g", "h", "d", "s"] {
             let raw = format!("my.metric:1.0|{}", kind);
             let (_, packet) = parse_dogstatsd_metric(raw.as_bytes(), &config).expect("should not fail to parse");
@@ -846,6 +888,69 @@ mod tests {
         match parse_dsd_metric_with_conf(payload, &config) {
             Ok(result) => assert!(result.is_some(), "should not fail to materialize metric after decoding"),
             Err(e) => panic!("should not have errored: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn permissive_mode_accepts_utf8_metric_names() {
+        let permissive = DogStatsDCodecConfiguration::default().with_permissive_mode(true);
+        let strict = DogStatsDCodecConfiguration::default().with_permissive_mode(false);
+
+        for name in [
+            "métrique.utf8",
+            "metric/with/slashes",
+            "日本語.metric",
+            "metric with spaces!",
+        ] {
+            let raw = format!("{name}:1|c|#env:prod");
+            let expected = Metric::counter((name, &["env:prod"][..]), 1.0);
+            let actual = parse_dsd_metric_with_conf(raw.as_bytes(), &permissive)
+                .unwrap_or_else(|e| panic!("permissive mode should accept {raw:?}: {e:?}"));
+            check_basic_metric_eq(expected, actual);
+        }
+
+        // Strict mode still only accepts ASCII alphanumerics and separators.
+        assert!(parse_dogstatsd_metric("métrique.utf8:1|c".as_bytes(), &strict).is_err());
+    }
+
+    #[test]
+    fn permissive_mode_rejects_invalid_utf8_metric_names() {
+        let permissive = DogStatsDCodecConfiguration::default().with_permissive_mode(true);
+
+        let mut input = b"metric".to_vec();
+        input.extend_from_slice(&[0xff, 0xfe]);
+        input.extend_from_slice(b":1|c");
+        assert!(parse_dogstatsd_metric(&input, &permissive).is_err());
+    }
+
+    #[test]
+    fn permissive_mode_metric_name_stops_at_field_delimiter() {
+        // A `|` before the first `:` means there's no name/value pair in the first field, which the reference DogStatsD
+        // server rejects.
+        let permissive = DogStatsDCodecConfiguration::default().with_permissive_mode(true);
+        assert!(parse_dogstatsd_metric(b"metric|name:1|c", &permissive).is_err());
+    }
+
+    #[test]
+    fn permissive_mode_ignores_malformed_origin_fields() {
+        let permissive = DogStatsDCodecConfiguration::default()
+            .with_permissive_mode(true)
+            .with_client_origin_detection(true);
+        let strict = DogStatsDCodecConfiguration::default()
+            .with_permissive_mode(false)
+            .with_client_origin_detection(true);
+
+        for raw in ["my.counter:1|c|c:!!!|#env:prod", "my.counter:1|c|e:UPPER|#env:prod"] {
+            let (_, packet) = parse_dogstatsd_metric(raw.as_bytes(), &permissive)
+                .unwrap_or_else(|e| panic!("permissive mode should accept {raw:?}: {e:?}"));
+            assert_eq!(packet.local_data, None);
+            assert_eq!(packet.external_data, None);
+            assert_eq!(packet.tags.iter().collect::<Vec<_>>(), ["env:prod"]);
+
+            assert!(
+                parse_dogstatsd_metric(raw.as_bytes(), &strict).is_err(),
+                "strict mode should reject {raw:?}"
+            );
         }
     }
 

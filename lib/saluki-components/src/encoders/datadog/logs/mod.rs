@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
+use http::{uri::PathAndQuery, HeaderName, HeaderValue, Method, Uri};
 use saluki_common::iter::ReusableDeduplicator;
 use saluki_core::{
     accounting::{MemoryBounds, MemoryBoundsBuilder},
@@ -16,10 +16,12 @@ use saluki_core::{
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_io::compression::CompressionScheme;
 use saluki_metrics::MetricsBuilder;
+use stringtheory::MetaString;
 use tracing::{error, warn};
 
 use crate::common::datadog::{
     io::RB_BUFFER_CHUNK_SIZE,
+    middleware::formatted_app_name,
     request_builder::{EndpointEncoder, RequestBuilder},
     telemetry::ComponentTelemetry,
     DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT,
@@ -39,6 +41,13 @@ const DEFAULT_STATUS: &str = "info";
 
 static CONTENT_TYPE_JSON: HeaderValue = HeaderValue::from_static("application/json");
 
+static DD_PROTOCOL_HEADER: HeaderName = HeaderName::from_static("dd-protocol");
+static DD_EVP_ORIGIN_HEADER: HeaderName = HeaderName::from_static("dd-evp-origin");
+static DD_EVP_ORIGIN_VERSION_HEADER: HeaderName = HeaderName::from_static("dd-evp-origin-version");
+
+/// The `DD-PROTOCOL` value of the JSON envelope, under which the intake reads only the envelope fields.
+static AGENT_JSON_PROTOCOL: HeaderValue = HeaderValue::from_static("agent-json");
+
 /// Datadog Logs incremental encoder.
 #[derive(Debug)]
 pub struct DatadogLogsConfiguration {
@@ -50,18 +59,51 @@ pub struct DatadogLogsConfiguration {
     /// Ignored for algorithms other than `zstd`.
     zstd_level: i32,
 
+    /// Hostname for the envelope of a log that has none.
+    default_hostname: MetaString,
+
+    /// Name of the sender, for the `DD-EVP-ORIGIN` header.
+    origin: String,
+
+    /// Version of the sender, for the `DD-EVP-ORIGIN-VERSION` header.
+    ///
+    /// This is the bare version, such as `1.9.0`: the intake drops a value with characters such as `/` in it.
+    origin_version: String,
+
     /// Source of the current time, for the envelope `timestamp`.
     clock: fn() -> DateTime<Utc>,
 }
 
 impl DatadogLogsConfiguration {
     /// Creates a new `DatadogLogsConfiguration`.
+    ///
+    /// The `DD-EVP-ORIGIN` and `DD-EVP-ORIGIN-VERSION` headers name the application, from its registered details.
     pub fn new(compressor_kind: impl Into<String>, zstd_level: i32) -> Self {
+        let app_details = saluki_metadata::get_app_details();
         Self {
             compressor_kind: compressor_kind.into(),
             zstd_level,
+            default_hostname: MetaString::empty(),
+            origin: formatted_app_name(app_details),
+            origin_version: app_details.version().raw().to_string(),
             clock: Utc::now,
         }
+    }
+
+    /// Sets the values of the `DD-EVP-ORIGIN` and `DD-EVP-ORIGIN-VERSION` headers, so tests can pin them.
+    #[cfg(test)]
+    pub(crate) fn with_origin(mut self, origin: impl Into<String>, origin_version: impl Into<String>) -> Self {
+        self.origin = origin.into();
+        self.origin_version = origin_version.into();
+        self
+    }
+
+    /// Sets the hostname for the envelope of a log that has none.
+    ///
+    /// Only the envelope uses it: a log's rendered content is left as it is. Defaults to an empty hostname.
+    pub fn with_default_hostname(mut self, default_hostname: impl Into<MetaString>) -> Self {
+        self.default_hostname = default_hostname.into();
+        self
     }
 
     /// Sets the source of the current time, so tests can pin the envelope `timestamp`.
@@ -89,8 +131,18 @@ impl IncrementalEncoderBuilder for DatadogLogsConfiguration {
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
         let compression_scheme = CompressionScheme::new(&self.compressor_kind, self.zstd_level);
 
+        let origin =
+            HeaderValue::from_str(&self.origin).error_context("Invalid origin for the `DD-EVP-ORIGIN` header.")?;
+        let origin_version = HeaderValue::from_str(&self.origin_version)
+            .error_context("Invalid origin version for the `DD-EVP-ORIGIN-VERSION` header.")?;
+        let headers = vec![
+            (DD_PROTOCOL_HEADER.clone(), AGENT_JSON_PROTOCOL.clone()),
+            (DD_EVP_ORIGIN_HEADER.clone(), origin),
+            (DD_EVP_ORIGIN_VERSION_HEADER.clone(), origin_version),
+        ];
+
         let mut request_builder = RequestBuilder::new(
-            LogsEndpointEncoder::new(self.clock),
+            LogsEndpointEncoder::new(self.default_hostname.clone(), headers, self.clock),
             compression_scheme,
             RB_BUFFER_CHUNK_SIZE,
         )
@@ -181,14 +233,20 @@ impl IncrementalEncoder for DatadogLogs {
 struct LogsEndpointEncoder {
     tags_deduplicator: ReusableDeduplicator<Tag>,
     tags_buffer: String,
+    default_hostname: MetaString,
+    headers: Vec<(HeaderName, HeaderValue)>,
     clock: fn() -> DateTime<Utc>,
 }
 
 impl LogsEndpointEncoder {
-    fn new(clock: fn() -> DateTime<Utc>) -> Self {
+    fn new(
+        default_hostname: MetaString, headers: Vec<(HeaderName, HeaderValue)>, clock: fn() -> DateTime<Utc>,
+    ) -> Self {
         Self {
             tags_deduplicator: ReusableDeduplicator::new(),
             tags_buffer: String::new(),
+            default_hostname,
+            headers,
             clock,
         }
     }
@@ -197,9 +255,9 @@ impl LogsEndpointEncoder {
     ///
     /// The envelope has the same fields, in the same order, as the logs intake's JSON envelope: the message, the
     /// status, the time the log was encoded in milliseconds, the hostname, the service, the source, and the tags. Every
-    /// field is present, empty when the log has no value for it. The message is written as it is: a log's producer
-    /// renders whatever content the message should carry, such as a JSON object holding the log's properties, so the
-    /// log's additional properties aren't written.
+    /// field is present, empty when the log has no value for it, except that a log without a hostname gets the
+    /// default hostname. The message is written as it is: a log's producer renders whatever content the message should
+    /// carry, such as a JSON object holding the log's properties, so the log's additional properties aren't written.
     fn write_envelope(&mut self, log: &Log, buffer: &mut Vec<u8>) -> Result<(), serde_json::Error> {
         // A log without a status is sent as `info`.
         let status = if log.status().is_empty() {
@@ -216,7 +274,13 @@ impl LogsEndpointEncoder {
         buffer.extend_from_slice(b",\"timestamp\":");
         buffer.extend_from_slice(itoa::Buffer::new().format((self.clock)().timestamp_millis()).as_bytes());
         buffer.extend_from_slice(b",\"hostname\":");
-        serde_json::to_writer(&mut *buffer, log.hostname())?;
+        // A log without a hostname gets the default hostname, in the envelope only.
+        let hostname = if log.hostname().is_empty() {
+            &*self.default_hostname
+        } else {
+            log.hostname()
+        };
+        serde_json::to_writer(&mut *buffer, hostname)?;
         buffer.extend_from_slice(b",\"service\":");
         serde_json::to_writer(&mut *buffer, log.service())?;
         buffer.extend_from_slice(b",\"ddsource\":");
@@ -285,6 +349,10 @@ impl EndpointEncoder for LogsEndpointEncoder {
     fn content_type(&self) -> HeaderValue {
         CONTENT_TYPE_JSON.clone()
     }
+
+    fn additional_headers(&self) -> &[(HeaderName, HeaderValue)] {
+        &self.headers
+    }
 }
 
 #[cfg(test)]
@@ -315,7 +383,7 @@ mod tests {
     }
 
     fn envelope(log: &Log) -> String {
-        let mut encoder = LogsEndpointEncoder::new(fixed_clock);
+        let mut encoder = LogsEndpointEncoder::new(MetaString::empty(), Vec::new(), fixed_clock);
         let mut buffer = Vec::new();
         encoder
             .write_envelope(log, &mut buffer)
@@ -329,7 +397,7 @@ mod tests {
 
     #[test]
     fn releases_the_excess_of_an_oversized_tags_buffer() {
-        let mut encoder = LogsEndpointEncoder::new(fixed_clock);
+        let mut encoder = LogsEndpointEncoder::new(MetaString::empty(), Vec::new(), fixed_clock);
         let mut buffer = Vec::new();
 
         let ordinary = Log::new("m").with_tags(tag_set(["env:prod"]));
@@ -384,6 +452,27 @@ mod tests {
                 NOW_MS
             )
         );
+    }
+
+    #[test]
+    fn uses_the_default_hostname_only_when_the_log_has_none() {
+        let mut encoder = LogsEndpointEncoder::new(MetaString::from_static("default-host"), Vec::new(), fixed_clock);
+        let content = r#"{"message":"hi","status":""}"#;
+        let mut write = |log: &Log| {
+            let mut buffer = Vec::new();
+            encoder
+                .write_envelope(log, &mut buffer)
+                .expect("envelope should serialize");
+            serde_json::from_slice::<serde_json::Value>(&buffer).expect("envelope should be JSON")
+        };
+
+        // The default hostname goes only into the envelope: the rendered content is sent as it is.
+        let without_host = write(&Log::new(content));
+        assert_eq!(without_host["hostname"], json!("default-host"));
+        assert_eq!(without_host["message"], json!(content));
+
+        let with_host = write(&Log::new("hello").with_hostname(MetaString::from_static("log-host")));
+        assert_eq!(with_host["hostname"], json!("log-host"));
     }
 
     #[test]

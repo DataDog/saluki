@@ -14,7 +14,7 @@ otherwise keep hand-rolling the thing it replaces.
 
 ## Groups
 
-- [ ] **GROUP-000 — Docs groundwork** (`tobz/test-cleanup-docs-groundwork`, `docs(test)`)
+- [x] **GROUP-000 — Docs groundwork** (`tobz/test-cleanup-docs-groundwork`, `docs(test)`)
   Add `docs/development/testing-patterns.md` (new unit/property test style guide), add Loom/Miri/Antithesis sections
   plus a cross-link to `docs/development/testing.md`, and add the `property_test_` CI-load-bearing note plus an
   Antithesis-vs-unit-test disambiguation pointer to the agent guidance (now `docs/development/conventions.md`).

@@ -117,6 +117,7 @@ serde = { version = "1", default-features = false, features = [
   "std",
 ] }
 snafu = { version = "0.9", default-features = false, features = ["std"] }
+thingbuf = { version = "0.1", default-features = false }
 tinytemplate = { version = "1", default-features = false }
 tokio = { version = "1.52.2", default-features = false }
 tracing = { version = "0.1", default-features = false, features = ["std"] }

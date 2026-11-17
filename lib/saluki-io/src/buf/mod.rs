@@ -2,6 +2,9 @@ use std::collections::VecDeque;
 
 use bytes::{Buf, BufMut, Bytes};
 
+mod cursor;
+pub use self::cursor::ReadCursor;
+
 mod vec;
 pub use self::vec::{BytesBuffer, FixedSizeVec};
 

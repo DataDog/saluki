@@ -125,6 +125,9 @@ fn v3_api(v3_api: &shared::V3ApiEncoding) -> V3ApiConfig {
     V3ApiConfig {
         sketches: V3ApiSettings {
             endpoints: v3_api.sketches.endpoints.clone(),
+            max_compressed_payload_size: v3_api.sketches.max_compressed_payload_size,
+            max_uncompressed_payload_size: v3_api.sketches.max_uncompressed_payload_size,
+            max_points_per_payload: v3_api.sketches.max_points_per_payload,
         },
         compression_level: v3_api.compression_level,
     }
@@ -244,6 +247,9 @@ mod tests {
                 v3_api: V3ApiEncoding {
                     sketches: ModelV3ApiSettings {
                         endpoints: vec!["https://sketches.example.com".to_string()],
+                        max_compressed_payload_size: 49,
+                        max_uncompressed_payload_size: 50,
+                        max_points_per_payload: 51,
                     },
                     compression_level: 48,
                 },
@@ -281,6 +287,9 @@ mod tests {
         V3ApiConfig {
             sketches: V3ApiSettings {
                 endpoints: vec!["https://sketches.example.com".to_string()],
+                max_compressed_payload_size: 49,
+                max_uncompressed_payload_size: 50,
+                max_points_per_payload: 51,
             },
             compression_level: 48,
         }

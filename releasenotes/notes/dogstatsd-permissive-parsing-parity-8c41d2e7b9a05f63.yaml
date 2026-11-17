@@ -1,0 +1,9 @@
+fixes:
+  - |
+    DogStatsD permissive decoding (``dogstatsd_permissive_decoding``, enabled by
+    default) now accepts payloads that the Datadog Agent accepts but ADP rejected:
+    metric and service check names with non-ASCII UTF-8 or other characters such
+    as ``/``, events with empty text, and any UTF-8 in the event and service
+    check ``h:``, ``k:`` and ``s:`` fields. An invalid optional field on an event
+    or service check, or a malformed ``c:`` or ``e:`` field on a metric, is now
+    ignored instead of rejecting the whole payload.

@@ -295,7 +295,6 @@ mod tests {
     use std::path::Path;
 
     use tempfile::tempdir;
-    use tokio::io::AsyncWriteExt;
 
     use super::*;
 
@@ -358,8 +357,7 @@ mod tests {
             .await
             .unwrap_or_else(|_| panic!("Failed to read test file: {:?}", source_path));
 
-        let mut file = fs::File::create(&target_path).await.unwrap();
-        file.write_all(content.as_bytes()).await.unwrap();
+        fs::write(&target_path, content).await.unwrap();
 
         target_path
     }

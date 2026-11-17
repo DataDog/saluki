@@ -423,6 +423,32 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Bool,
     },
     EnvKey {
+        env_vars: &["DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_AGENT_RECEIVER_GRPC_ENDPOINT"],
+        path: &[
+            "data_plane",
+            "experimental",
+            "otlp",
+            "proxy",
+            "agent_receiver_grpc_endpoint",
+        ],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
+        env_vars: &["DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_LOGS"],
+        path: &["data_plane", "experimental", "otlp", "proxy", "logs"],
+        decode: EnvDecode::Bool,
+    },
+    EnvKey {
+        env_vars: &["DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_METRICS"],
+        path: &["data_plane", "experimental", "otlp", "proxy", "metrics"],
+        decode: EnvDecode::Bool,
+    },
+    EnvKey {
+        env_vars: &["DD_DATA_PLANE_EXPERIMENTAL_OTLP_PROXY_TRACES"],
+        path: &["data_plane", "experimental", "otlp", "proxy", "traces"],
+        decode: EnvDecode::Bool,
+    },
+    EnvKey {
         env_vars: &["DD_DATA_PLANE_LOG_FILE"],
         path: &["data_plane", "log_file"],
         decode: EnvDecode::RawString,
@@ -430,39 +456,6 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
     EnvKey {
         env_vars: &["DD_DATA_PLANE_OTLP_ENABLED"],
         path: &["data_plane", "otlp", "enabled"],
-        decode: EnvDecode::Bool,
-    },
-    EnvKey {
-        env_vars: &["DD_DATA_PLANE_OTLP_PROXY_ENABLED"],
-        path: &["data_plane", "otlp", "proxy", "enabled"],
-        decode: EnvDecode::Bool,
-    },
-    EnvKey {
-        env_vars: &["DD_DATA_PLANE_OTLP_PROXY_LOGS_ENABLED"],
-        path: &["data_plane", "otlp", "proxy", "logs", "enabled"],
-        decode: EnvDecode::Bool,
-    },
-    EnvKey {
-        env_vars: &["DD_DATA_PLANE_OTLP_PROXY_METRICS_ENABLED"],
-        path: &["data_plane", "otlp", "proxy", "metrics", "enabled"],
-        decode: EnvDecode::Bool,
-    },
-    EnvKey {
-        env_vars: &["DD_DATA_PLANE_OTLP_PROXY_RECEIVER_PROTOCOLS_GRPC_ENDPOINT"],
-        path: &[
-            "data_plane",
-            "otlp",
-            "proxy",
-            "receiver",
-            "protocols",
-            "grpc",
-            "endpoint",
-        ],
-        decode: EnvDecode::RawString,
-    },
-    EnvKey {
-        env_vars: &["DD_DATA_PLANE_OTLP_PROXY_TRACES_ENABLED"],
-        path: &["data_plane", "otlp", "proxy", "traces", "enabled"],
         decode: EnvDecode::Bool,
     },
     EnvKey {
@@ -616,8 +609,18 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Integer,
     },
     EnvKey {
+        env_vars: &["DD_DOGSTATSD_QUEUE_SIZE"],
+        path: &["dogstatsd_queue_size"],
+        decode: EnvDecode::Integer,
+    },
+    EnvKey {
         env_vars: &["DD_DOGSTATSD_REQUIRE_LISTENER"],
         path: &["dogstatsd_require_listener"],
+        decode: EnvDecode::Bool,
+    },
+    EnvKey {
+        env_vars: &["DD_DOGSTATSD_SET_TIMING_UNIT"],
+        path: &["dogstatsd_set_timing_unit"],
         decode: EnvDecode::Bool,
     },
     EnvKey {
@@ -1300,6 +1303,33 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         env_vars: &["DD_SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_ENDPOINTS"],
         path: &["serializer_experimental_use_v3_api", "sketches", "endpoints"],
         decode: EnvDecode::StringList,
+    },
+    EnvKey {
+        env_vars: &["DD_SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_MAX_COMPRESSED_PAYLOAD_SIZE"],
+        path: &[
+            "serializer_experimental_use_v3_api",
+            "sketches",
+            "max_compressed_payload_size",
+        ],
+        decode: EnvDecode::Integer,
+    },
+    EnvKey {
+        env_vars: &["DD_SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_MAX_POINTS_PER_PAYLOAD"],
+        path: &[
+            "serializer_experimental_use_v3_api",
+            "sketches",
+            "max_points_per_payload",
+        ],
+        decode: EnvDecode::Integer,
+    },
+    EnvKey {
+        env_vars: &["DD_SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_MAX_UNCOMPRESSED_PAYLOAD_SIZE"],
+        path: &[
+            "serializer_experimental_use_v3_api",
+            "sketches",
+            "max_uncompressed_payload_size",
+        ],
+        decode: EnvDecode::Integer,
     },
     EnvKey {
         env_vars: &["DD_SERIALIZER_MAX_PAYLOAD_SIZE"],

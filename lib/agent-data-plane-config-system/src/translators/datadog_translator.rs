@@ -78,8 +78,24 @@ impl<'a> DatadogTranslator<'a> {
         let datadog = self.datadog;
         let errors = drive(datadog, &mut self).err();
         self.apply_deprecated_max_tps_alias();
+        self.resolve_v3_sketch_payload_limits();
         self.drop_regex_tag_filters_shadowed_by_exact_ones();
         (self.config, errors)
+    }
+
+    // Resolve after the witness has supplied both generic limits and sketch overrides.
+    fn resolve_v3_sketch_payload_limits(&mut self) {
+        let metrics = &mut self.config.shared.metrics_encoding;
+        let sketches = &mut metrics.v3_api.sketches;
+        if sketches.max_compressed_payload_size == 0 {
+            sketches.max_compressed_payload_size = metrics.max_payload_size;
+        }
+        if sketches.max_uncompressed_payload_size == 0 {
+            sketches.max_uncompressed_payload_size = metrics.max_uncompressed_payload_size;
+        }
+        if sketches.max_points_per_payload == 0 {
+            sketches.max_points_per_payload = usize::MAX;
+        }
     }
 
     /// Applies the deprecated `max_traces_per_second` alias to the target rate.
@@ -904,6 +920,22 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.control.enabled = value;
     }
 
+    fn consume_data_plane_experimental_otlp_proxy_agent_receiver_grpc_endpoint(&mut self, value: String) {
+        self.config.domains.otlp.proxy.grpc_endpoint = value;
+    }
+
+    fn consume_data_plane_experimental_otlp_proxy_logs(&mut self, value: bool) {
+        self.config.domains.otlp.proxy.logs_enabled = value;
+    }
+
+    fn consume_data_plane_experimental_otlp_proxy_metrics(&mut self, value: bool) {
+        self.config.domains.otlp.proxy.metrics_enabled = value;
+    }
+
+    fn consume_data_plane_experimental_otlp_proxy_traces(&mut self, value: bool) {
+        self.config.domains.otlp.proxy.traces_enabled = value;
+    }
+
     fn consume_data_plane_log_file(&mut self, value: String) {
         let provenance = self.sources.provenance("data_plane.log_file");
         self.config.control.logging.file = ConfigValue::new(value, provenance);
@@ -911,26 +943,6 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
 
     fn consume_data_plane_otlp_enabled(&mut self, value: bool) {
         self.config.control.otlp = value;
-    }
-
-    fn consume_data_plane_otlp_proxy_enabled(&mut self, value: bool) {
-        self.config.domains.otlp.proxy.enabled = value;
-    }
-
-    fn consume_data_plane_otlp_proxy_logs_enabled(&mut self, value: bool) {
-        self.config.domains.otlp.proxy.logs_enabled = value;
-    }
-
-    fn consume_data_plane_otlp_proxy_metrics_enabled(&mut self, value: bool) {
-        self.config.domains.otlp.proxy.metrics_enabled = value;
-    }
-
-    fn consume_data_plane_otlp_proxy_receiver_protocols_grpc_endpoint(&mut self, value: String) {
-        self.config.domains.otlp.proxy.grpc_endpoint = value;
-    }
-
-    fn consume_data_plane_otlp_proxy_traces_enabled(&mut self, value: bool) {
-        self.config.domains.otlp.proxy.traces_enabled = value;
     }
 
     fn consume_data_plane_remote_agent_enabled(&mut self, value: bool) {
@@ -1119,6 +1131,20 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         if let Some(port) = self.parse_port("dogstatsd_port", value) {
             self.config.domains.dogstatsd.listeners.port = port;
         }
+    }
+
+    fn consume_dogstatsd_queue_size(&mut self, value: i64) {
+        match usize::try_from(value) {
+            Ok(queue_size) => self.config.domains.dogstatsd.listeners.queue_size = queue_size,
+            Err(_) => self.record_error(TranslateError::new_with_message(
+                "dogstatsd_queue_size",
+                "queue size must be greater than or equal to 0",
+            )),
+        }
+    }
+
+    fn consume_dogstatsd_set_timing_unit(&mut self, value: bool) {
+        self.config.domains.dogstatsd.listeners.set_timing_unit = value;
     }
 
     fn consume_dogstatsd_so_rcvbuf(&mut self, value: i64) {
@@ -1853,6 +1879,33 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.shared.metrics_encoding.v3_api.sketches.endpoints = value;
     }
 
+    fn consume_serializer_experimental_use_v3_api_sketches_max_compressed_payload_size(&mut self, value: i64) {
+        self.config
+            .shared
+            .metrics_encoding
+            .v3_api
+            .sketches
+            .max_compressed_payload_size = value.max(0) as usize;
+    }
+
+    fn consume_serializer_experimental_use_v3_api_sketches_max_points_per_payload(&mut self, value: i64) {
+        self.config
+            .shared
+            .metrics_encoding
+            .v3_api
+            .sketches
+            .max_points_per_payload = value.max(0) as usize;
+    }
+
+    fn consume_serializer_experimental_use_v3_api_sketches_max_uncompressed_payload_size(&mut self, value: i64) {
+        self.config
+            .shared
+            .metrics_encoding
+            .v3_api
+            .sketches
+            .max_uncompressed_payload_size = value.max(0) as usize;
+    }
+
     fn consume_serializer_max_payload_size(&mut self, value: i64) {
         self.config.shared.metrics_encoding.max_payload_size = value.max(0) as usize;
     }
@@ -2162,6 +2215,43 @@ mod tests {
     }
 
     #[test]
+    fn otlp_proxy_keys_translate() {
+        // Set one signal at a time to catch swapped translations.
+        for (logs, metrics, traces) in [(true, false, false), (false, true, false), (false, false, true)] {
+            let (config, errors) = translate_explicit(json!({
+                "data_plane": { "experimental": { "otlp": { "proxy": {
+                    "logs": logs,
+                    "metrics": metrics,
+                    "traces": traces,
+                    "agent_receiver_grpc_endpoint": "127.0.0.1:5000"
+                }}}}
+            }));
+            assert!(errors.is_none(), "translation should succeed: {errors:?}");
+
+            let proxy = &config.domains.otlp.proxy;
+            assert_eq!(
+                (proxy.logs_enabled, proxy.metrics_enabled, proxy.traces_enabled),
+                (logs, metrics, traces)
+            );
+            assert_eq!(proxy.grpc_endpoint, "127.0.0.1:5000");
+            assert!(proxy.enabled());
+        }
+    }
+
+    #[test]
+    fn otlp_proxy_keys_default_from_the_schema() {
+        let (config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none(), "translation should succeed: {errors:?}");
+
+        let proxy = &config.domains.otlp.proxy;
+        assert!(!proxy.logs_enabled);
+        assert!(!proxy.metrics_enabled);
+        assert!(!proxy.traces_enabled);
+        assert!(!proxy.enabled());
+        assert_eq!(proxy.grpc_endpoint, "127.0.0.1:4319");
+    }
+
+    #[test]
     fn apm_config_features_and_probabilistic_hash_seed_translate() {
         let (config, errors) = translate_explicit(json!({
             "apm_config": {
@@ -2435,6 +2525,26 @@ mod tests {
     }
 
     #[test]
+    fn dogstatsd_queue_size_defaults_to_the_schema_default_and_can_be_set() {
+        let (config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none());
+        assert_eq!(config.domains.dogstatsd.listeners.queue_size, 1024);
+
+        let (config, errors) = translate_explicit(json!({ "dogstatsd_queue_size": 4096 }));
+        assert!(errors.is_none());
+        assert_eq!(config.domains.dogstatsd.listeners.queue_size, 4096);
+    }
+
+    #[test]
+    fn negative_dogstatsd_queue_size_records_translation_error() {
+        let (_, errors) = translate_explicit(json!({ "dogstatsd_queue_size": -1 }));
+
+        let errors = errors.expect("a negative queue size should record a translation error");
+        assert!(errors.to_string().contains("dogstatsd_queue_size"));
+        assert!(errors.to_string().contains("greater than or equal to 0"));
+    }
+
+    #[test]
     fn negative_dogstatsd_so_rcvbuf_records_translation_error() {
         let (config, errors) = translate_explicit(json!({
             "dogstatsd_so_rcvbuf": -1,
@@ -2694,6 +2804,17 @@ mod tests {
         let expected =
             cfg!(any(target_os = "linux", target_os = "aix")).then(|| "/var/run/datadog/dsd.socket".to_string());
         assert_eq!(config.domains.dogstatsd.listeners.socket, expected);
+    }
+
+    #[test]
+    fn dogstatsd_set_timing_unit_translates() {
+        let (config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none());
+        assert!(!config.domains.dogstatsd.listeners.set_timing_unit);
+
+        let (config, errors) = translate_explicit(json!({ "dogstatsd_set_timing_unit": true }));
+        assert!(errors.is_none());
+        assert!(config.domains.dogstatsd.listeners.set_timing_unit);
     }
 
     #[test]
@@ -3080,6 +3201,48 @@ mod tests {
         assert!(errors.is_none());
         assert_defaulted(&config.shared.endpoints.site, "");
         assert_defaulted(&config.shared.endpoints.dd_url, "");
+    }
+
+    #[test]
+    fn v3_sketch_payload_limits_resolve_fallbacks_and_overrides() {
+        for (compressed, uncompressed, points, expected) in [
+            (0, 0, 0, (100_000, 300_000, usize::MAX)),
+            (-1, -2, -3, (100_000, 300_000, usize::MAX)),
+            (110_000, 330_000, 43, (110_000, 330_000, 43)),
+            (110_000, 0, 0, (110_000, 300_000, usize::MAX)),
+        ] {
+            let (config, errors) = translate_explicit(json!({
+                "serializer_max_payload_size": 100_000,
+                "serializer_max_uncompressed_payload_size": 300_000,
+                "serializer_experimental_use_v3_api": {"sketches": {
+                    "max_compressed_payload_size": compressed,
+                    "max_uncompressed_payload_size": uncompressed,
+                    "max_points_per_payload": points,
+                }},
+            }));
+            assert!(errors.is_none(), "{errors:?}");
+            let sketches = &config.shared.metrics_encoding.v3_api.sketches;
+            assert_eq!(
+                (
+                    sketches.max_compressed_payload_size,
+                    sketches.max_uncompressed_payload_size,
+                    sketches.max_points_per_payload
+                ),
+                expected
+            );
+        }
+
+        let (config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none(), "{errors:?}");
+        let sketches = &config.shared.metrics_encoding.v3_api.sketches;
+        assert_eq!(
+            (
+                sketches.max_compressed_payload_size,
+                sketches.max_uncompressed_payload_size,
+                sketches.max_points_per_payload
+            ),
+            (2_621_440, 4_194_304, usize::MAX)
+        );
     }
 
     // The Agent streams `serializer_zstd_compressor_level` at its schema default of 1 even when the

@@ -23,6 +23,7 @@ import (
 	delegatedauthnoopfx "github.com/DataDog/datadog-agent/comp/core/delegatedauth/fx-noop"
 	logdef "github.com/DataDog/datadog-agent/comp/core/log/def"
 	logimpl "github.com/DataDog/datadog-agent/comp/core/log/impl"
+	schemafx "github.com/DataDog/datadog-agent/comp/core/schema/fx"
 	secretsnoopfx "github.com/DataDog/datadog-agent/comp/core/secrets/fx-noop"
 	telemetrynoopfx "github.com/DataDog/datadog-agent/comp/core/telemetry/fx-noop"
 	pb "github.com/DataDog/datadog-agent/pkg/proto/pbgo/core"
@@ -160,6 +161,8 @@ func withFirstSnapshot(params config.Params, fn func(*session) error) error {
 		config.Module(),
 		secretsnoopfx.Module(),
 		delegatedauthnoopfx.Module(),
+		// Validate against the embedded schema, as `agent run` does (cmd/agent/subcommands/run/command.go:446).
+		schemafx.Module(),
 		telemetrynoopfx.Module(),
 		fx.Provide(func() logdef.Component { return logimpl.NewTemporaryLoggerWithoutInit() }),
 		configstreamfx.Module(),

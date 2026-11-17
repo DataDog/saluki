@@ -54,6 +54,7 @@ construction in a library builder.
 
 - The `standalone` mode of `agent-data-plane` is left over from earlier development and testing. It isn't for
   production use, and supporting it shouldn't block feature development.
-- `panoramic` and `stele` under `bin/correctness/` are our own black-box correctness and integration tools. They
-  don't replace unit tests for the branches inside a crate, and they aren't the Antithesis platform, which lives
-  separately under `test/antithesis/`. See [Testing](./testing.md).
+- `panoramic` under `bin/correctness/` is our black-box correctness and integration tool. `stele` is a library
+  of simplified telemetry data types shared by the correctness tools. Neither replaces unit tests for the branches
+  inside a crate, and neither is the Antithesis platform, which lives separately under `test/antithesis/`. See
+  [Testing](./testing.md).

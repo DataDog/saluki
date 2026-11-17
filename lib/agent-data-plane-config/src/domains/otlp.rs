@@ -532,12 +532,9 @@ impl Default for Traces {
     }
 }
 
-/// OTLP proxy gating: which signals the proxy forwards, and the proxy receiver endpoint.
+/// OTLP proxy gating: which signals the proxy forwards, and the Agent endpoint it forwards to.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Proxy {
-    /// Whether the OTLP proxy is enabled.
-    pub enabled: bool,
-
     /// Whether the proxy forwards logs.
     pub logs_enabled: bool,
 
@@ -547,8 +544,15 @@ pub struct Proxy {
     /// Whether the proxy forwards traces.
     pub traces_enabled: bool,
 
-    /// Address the proxy's gRPC receiver listens on.
+    /// Address of the Agent's relocated OTLP/gRPC listener, which the proxy forwards to.
     pub grpc_endpoint: String,
+}
+
+impl Proxy {
+    /// Returns `true` if the proxy forwards any signal to the Agent.
+    pub const fn enabled(&self) -> bool {
+        self.logs_enabled || self.metrics_enabled || self.traces_enabled
+    }
 }
 
 /// OTLP context cache sizing.
