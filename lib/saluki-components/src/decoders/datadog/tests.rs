@@ -900,7 +900,7 @@ fn references_that_resolve_to_too_many_bytes_are_rejected() {
         strings.get(0).unwrap();
     }
     let mut strings = StringTable::new(0);
-    let index = strings.add("x".repeat(read::MIN_RESOLVED_BYTES));
+    let index = strings.add(&"x".repeat(read::MIN_RESOLVED_BYTES));
     strings.get(index).unwrap();
     assert!(matches!(
         strings.get(index),
@@ -992,4 +992,31 @@ fn payload_fields_and_attributes_are_charged_once_per_trace() {
         decoded.payload_attributes.get("_dd.git.commit.sha"),
         Some(&AttributeValue::String(ms(sha)))
     );
+}
+
+#[test]
+fn every_reference_to_a_string_shares_it() {
+    // A long service name sent once, then referenced by a second span.
+    let service = "checkout-service-".repeat(8);
+    let mut buf = Vec::new();
+    encode::write_map_len(&mut buf, 1).unwrap();
+    encode::write_uint(&mut buf, 11).unwrap();
+    encode::write_array_len(&mut buf, 1).unwrap();
+    encode::write_map_len(&mut buf, 1).unwrap();
+    encode::write_uint(&mut buf, 4).unwrap();
+    encode::write_array_len(&mut buf, 2).unwrap();
+    for i in 0..2 {
+        encode::write_map_len(&mut buf, 1).unwrap();
+        encode::write_uint(&mut buf, 1).unwrap();
+        if i == 0 {
+            encode::write_str(&mut buf, &service).unwrap();
+        } else {
+            encode::write_uint(&mut buf, 1).unwrap();
+        }
+    }
+
+    let decoded = decode_v1_payload(&buf).unwrap();
+    let spans = decoded.traces[0].spans();
+    assert_eq!(spans[1].service(), service);
+    assert_eq!(spans[0].service().as_ptr(), spans[1].service().as_ptr());
 }
