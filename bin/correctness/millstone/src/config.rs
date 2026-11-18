@@ -393,7 +393,9 @@ mod tests {
 
         for path in configs {
             let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e:?}", path.display()));
-            // A config without references parses the same with every address.
+            // Best effort: a config passes when any one address validates. Which scheme a reference resolves to is the
+            // harness's to know, not this test's, so a reference filled with the wrong scheme still passes here. A
+            // config without references parses the same with every address.
             let errors: Vec<String> = ADDRESSES
                 .iter()
                 .map(|address| {
