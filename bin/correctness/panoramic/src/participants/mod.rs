@@ -6,6 +6,7 @@ mod agent;
 mod agent_adp;
 mod datadog_agent;
 mod datadog_intake;
+mod dogstatsd_cli;
 mod millstone;
 
 /// Registers every participant type.
