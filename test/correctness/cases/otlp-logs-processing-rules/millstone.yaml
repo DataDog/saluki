@@ -1,9 +1,0 @@
-seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
-target: "grpc://$GROUP:54317/opentelemetry.proto.collector.logs.v1.LogsService/Export"
-volume: 3
-corpus:
-  size: 1
-  payload:
-    # ExportLogsServiceRequest with logs for the processing rules, built by bin/correctness/otlp-fixtures.
-    # Regenerate it with `make generate-correctness-fixtures` rather than editing it here.
-    static_base64: "CuEFCkkKKgoMc2VydmljZS5uYW1lEhoKGGZpeHR1cmUtcHJvY2Vzc2luZy1ydWxlcwobCglob3N0Lm5hbWUSDgoMZml4dHVyZS1ob3N0EpMFCgASQAkAQBOvvvfiGBAJGgRJTkZPKhEKD2tlZXAtcGxhaW4gYm9keTIaCgpmaXh0dXJlX2lkEgwKCmtlZXAtcGxhaW4STglAgiKvvvfiGBAJGgRJTkZPKiAKHnBhaWQgd2l0aCBjYXJkPTEyMzQtNTY3OCB0b2RheTIZCgpmaXh0dXJlX2lkEgsKCWtlZXAtY2FyZBJQCYDEMa++9+IYEAkaBElORk8qIgogbG9naW4gYnkgdXNlcj1hbGljZSBmcm9tIHRoZSB3ZWIyGQoKZml4dHVyZV9pZBILCglrZWVwLXVzZXISWgnABkGvvvfiGBAJGgRJTkZPKhEKD2tlZXAtdG9rZW4gYm9keTIaCgpmaXh0dXJlX2lkEgwKCmtlZXAtdG9rZW4yGAoFdG9rZW4SDwoNc2VjcmV0LWFiYzEyMxJWCQBJUK++9+IYEAkaBElORk8qEwoRYXR0ci1pbmNsdWRlIGJvZHkyHAoKZml4dHVyZV9pZBIOCgxhdHRyLWluY2x1ZGUyEAoGbWFya2VyEgYKBGtlZXASRQlAi1+vvvfiGBAJGgRJTkZPKhAKDmhlYWx0aGNoZWNrIG9rMiAKCmZpeHR1cmVfaWQSEgoQa2VlcC1oZWFsdGhjaGVjaxJmCYDNbq++9+IYEAkaBElORk8qGAoWa2VlcC1hdHRyLWV4Y2x1ZGUgYm9keTIhCgpmaXh0dXJlX2lkEhMKEWtlZXAtYXR0ci1leGNsdWRlMhYKBXByb2JlEg0KC2hlYWx0aGNoZWNrEkgJwA9+r7734hgQCRoESU5GTyoVChNkcm9wLW5vLW1hcmtlciBib2R5Mh4KCmZpeHR1cmVfaWQSEAoOZHJvcC1uby1tYXJrZXI="

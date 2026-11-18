@@ -360,7 +360,7 @@ pub fn attributes_fixture() -> Vec<u8> {
     .encode_to_vec()
 }
 
-/// Severity, timestamps, and bodies.
+/// Severity, timestamps, bodies, and processing rules.
 pub fn severity_body_fixture() -> Vec<u8> {
     let mut records = Vec::new();
     let mut index = 0;
@@ -442,6 +442,13 @@ pub fn severity_body_fixture() -> Vec<u8> {
     let mut no_body = next("body-missing".to_string(), vec![]);
     no_body.body = None;
     records.push(no_body);
+
+    // Keep all severity, timestamp, and body cases through the include rule. The additional records exercise both
+    // filtering and masking without adding another correctness case and its container startup cost.
+    for record in &mut records {
+        record.attributes.push(kv("marker", string("keep")));
+    }
+    records.extend(processing_rule_records(index));
 
     request(
         vec![
@@ -700,14 +707,16 @@ pub fn resource_host_fixture() -> Vec<u8> {
 /// Logs for the processing rules in the case's `datadog.yaml`.
 ///
 /// The rules match the rendered content of each log, so they see its properties as well as its message. Every log
-/// whose `fixture_id` starts with `keep` matches the include rule through that property, and the others are dropped,
-/// unless a later rule drops them first. Only string values are used, so that no other gap changes the content.
-pub fn processing_rules_fixture() -> Vec<u8> {
+/// whose `fixture_id` starts with `keep` matches the include rule through that property, unless the exclude rule
+/// drops it first. The `attr-include` record matches through a separate property. Only string values are used, so
+/// that no other gap changes the content.
+fn processing_rule_records(start_index: u64) -> Vec<LogRecord> {
+    let record = |index: u64, id: &str, attributes: Vec<KeyValue>| record(start_index + index, id, attributes);
     let with_body = |index: u64, id: &str, body: &str, attributes: Vec<KeyValue>| LogRecord {
         body: Some(string(body)),
         ..record(index, id, attributes)
     };
-    let records = vec![
+    vec![
         // Kept by every rule, and left as it is.
         record(0, "keep-plain", vec![]),
         // Masked in the message, with and without a capture group in the placeholder.
@@ -722,14 +731,5 @@ pub fn processing_rules_fixture() -> Vec<u8> {
         record(6, "keep-attr-exclude", vec![kv("probe", string("healthcheck"))]),
         // Dropped by the include rule.
         record(7, "drop-no-marker", vec![]),
-    ];
-
-    request(
-        vec![
-            kv("service.name", string("fixture-processing-rules")),
-            kv("host.name", string("fixture-host")),
-        ],
-        InstrumentationScope::default(),
-        records,
-    )
+    ]
 }
