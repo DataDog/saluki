@@ -6,17 +6,18 @@
 //! Each signal has a `render_*` method that decides what to log for one export request, and a `log_*` method that
 //! writes it. Rendering is a pure function of the verbosity and the request, so tests can check it without capturing
 //! logs.
+//!
+//! The text of a request is written straight into one buffer, field by field. Nothing builds a line, or joins lines,
+//! before it reaches that buffer, so a request costs its output once and not once more per line and per join.
 
 use std::borrow::Cow;
-use std::fmt::{self, Write as _};
+use std::fmt::{self, Display, Write as _};
 
 use otlp_protos::opentelemetry::proto::collector::logs::v1::ExportLogsServiceRequest;
 use otlp_protos::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest;
 use otlp_protos::opentelemetry::proto::collector::trace::v1::ExportTraceServiceRequest;
 use otlp_protos::opentelemetry::proto::common::v1::{any_value::Value as AnyValueKind, AnyValue, KeyValue};
-use otlp_protos::opentelemetry::proto::logs::v1::LogRecord;
 use otlp_protos::opentelemetry::proto::metrics::v1::{metric::Data as MetricData, Metric};
-use otlp_protos::opentelemetry::proto::trace::v1::Span;
 use tracing::{enabled, info, Level};
 
 use super::logs::transform::derive_status;
@@ -97,8 +98,8 @@ impl OtlpDebugOutput {
     fn render_metrics(&self, request: &ExportMetricsServiceRequest) -> Option<String> {
         self.render_request(
             || summarize_metrics(request),
-            || normal_metrics(request),
-            || detailed(request),
+            |output| write_normal_metrics(output, request),
+            |output| write_detailed(output, request),
         )
     }
 
@@ -106,8 +107,8 @@ impl OtlpDebugOutput {
     fn render_logs(&self, request: &ExportLogsServiceRequest) -> Option<String> {
         self.render_request(
             || summarize_logs(request),
-            || normal_logs(request),
-            || detailed(request),
+            |output| write_normal_logs(output, request),
+            |output| write_detailed(output, request),
         )
     }
 
@@ -115,35 +116,33 @@ impl OtlpDebugOutput {
     fn render_traces(&self, request: &ExportTraceServiceRequest) -> Option<String> {
         self.render_request(
             || summarize_traces(request),
-            || normal_traces(request),
-            || detailed(request),
+            |output| write_normal_traces(output, request),
+            |output| write_detailed(output, request),
         )
     }
 
-    /// Combines a request's summary with the body its verbosity calls for.
+    /// Writes a request's summary, then the body its verbosity calls for, into one buffer.
     ///
     /// Each part is a closure that only runs at the verbosity that needs it, so a lower verbosity never pays to
     /// summarize or format what it won't log.
     fn render_request(
-        &self, summary: impl FnOnce() -> String, normal_body: impl FnOnce() -> String,
-        detailed_body: impl FnOnce() -> String,
+        &self, summary: impl FnOnce() -> String, normal_body: impl FnOnce(&mut String) -> fmt::Result,
+        detailed_body: impl FnOnce(&mut String) -> fmt::Result,
     ) -> Option<String> {
-        match self.verbosity {
-            OtlpDebugVerbosity::None => None,
-            OtlpDebugVerbosity::Basic => Some(summary()),
-            OtlpDebugVerbosity::Normal => Some(with_body(summary(), normal_body())),
-            OtlpDebugVerbosity::Detailed => Some(with_body(summary(), detailed_body())),
-        }
-    }
-}
+        let mut output = match self.verbosity {
+            OtlpDebugVerbosity::None => return None,
+            OtlpDebugVerbosity::Basic | OtlpDebugVerbosity::Normal | OtlpDebugVerbosity::Detailed => summary(),
+        };
 
-/// Appends a body to a summary on the lines below it. An empty body leaves the summary alone.
-fn with_body(mut summary: String, body: String) -> String {
-    if !body.is_empty() {
-        summary.push('\n');
-        summary.push_str(&body);
+        // Writing to a `String` can't fail, so the results carry nothing.
+        let _ = match self.verbosity {
+            OtlpDebugVerbosity::Normal => normal_body(&mut output),
+            OtlpDebugVerbosity::Detailed => detailed_body(&mut output),
+            OtlpDebugVerbosity::None | OtlpDebugVerbosity::Basic => Ok(()),
+        };
+
+        Some(output)
     }
-    summary
 }
 
 /// Summarizes a metrics export request: how many resources, metrics and data points it carries.
@@ -193,196 +192,158 @@ fn summarize_traces(request: &ExportTraceServiceRequest) -> String {
     )
 }
 
-/// Renders one line per metric: its name, type, unit and number of data points.
-fn normal_metrics(request: &ExportMetricsServiceRequest) -> String {
-    request
+/// Writes one line per metric: its name, type, unit and number of data points.
+fn write_normal_metrics(output: &mut String, request: &ExportMetricsServiceRequest) -> fmt::Result {
+    let metrics = request
         .resource_metrics
         .iter()
         .flat_map(|resource| &resource.scope_metrics)
-        .flat_map(|scope| &scope.metrics)
-        .map(normal_metric_line)
-        .collect::<Vec<_>>()
-        .join("\n")
+        .flat_map(|scope| &scope.metrics);
+
+    for metric in metrics {
+        write!(output, "\n{} ({}", Escaped(&metric.name), metric_kind(metric))?;
+        if !metric.unit.is_empty() {
+            write!(output, ", unit: {}", Escaped(&metric.unit))?;
+        }
+        write!(output, ") data points: {}", count_data_points(metric))?;
+    }
+    Ok(())
 }
 
-fn normal_metric_line(metric: &Metric) -> String {
-    let unit = if metric.unit.is_empty() {
-        String::new()
-    } else {
-        format!(", unit: {}", escape_control_chars(&metric.unit))
-    };
-
-    format!(
-        "{} ({}{unit}) data points: {}",
-        escape_control_chars(&metric.name),
-        metric_kind(metric),
-        count_data_points(metric)
-    )
-}
-
-/// Renders one line per log record: its severity, body and attributes.
-fn normal_logs(request: &ExportLogsServiceRequest) -> String {
-    request
+/// Writes one line per log record: its severity, body and attributes.
+fn write_normal_logs(output: &mut String, request: &ExportLogsServiceRequest) -> fmt::Result {
+    let records = request
         .resource_logs
         .iter()
         .flat_map(|resource| &resource.scope_logs)
-        .flat_map(|scope| &scope.log_records)
-        .map(normal_log_line)
-        .collect::<Vec<_>>()
-        .join("\n")
+        .flat_map(|scope| &scope.log_records);
+
+    for record in records {
+        // Falls back from the severity text to the name of the severity number's range, as the logs pipeline does.
+        let status = derive_status(None, &record.severity_text, record.severity_number);
+        let severity = if status.is_empty() { "UNSPECIFIED" } else { &*status };
+
+        let mut line = ItemLine::start(output)?;
+        line.text(severity)?;
+        line.text(&value_text(record.body.as_ref()))?;
+        line.attributes(&record.attributes)?;
+    }
+    Ok(())
 }
 
-fn normal_log_line(record: &LogRecord) -> String {
-    // Falls back from the severity text to the name of the severity number's range, as the logs pipeline does.
-    let status = derive_status(None, &record.severity_text, record.severity_number);
-    let severity = if status.is_empty() { "UNSPECIFIED" } else { &*status };
-    let body = record.body.as_ref().map(format_value).unwrap_or_default();
-
-    join_fields([
-        escape_control_chars(severity).into_owned(),
-        body,
-        format_attributes(&record.attributes),
-    ])
-}
-
-/// Renders one line per span: its name, trace and span IDs, and attributes.
-fn normal_traces(request: &ExportTraceServiceRequest) -> String {
-    request
+/// Writes one line per span: its name, trace and span IDs, and attributes.
+fn write_normal_traces(output: &mut String, request: &ExportTraceServiceRequest) -> fmt::Result {
+    let spans = request
         .resource_spans
         .iter()
         .flat_map(|resource| &resource.scope_spans)
-        .flat_map(|scope| &scope.spans)
-        .map(normal_span_line)
-        .collect::<Vec<_>>()
-        .join("\n")
-}
+        .flat_map(|scope| &scope.spans);
 
-fn normal_span_line(span: &Span) -> String {
-    join_fields([
-        escape_control_chars(&span.name).into_owned(),
-        bytes_to_hex_lowercase(&span.trace_id),
-        bytes_to_hex_lowercase(&span.span_id),
-        format_attributes(&span.attributes),
-    ])
-}
-
-/// The most bytes `detailed` output writes for one request.
-///
-/// Pretty-printing puts every byte of a byte field on a line of its own, so a request that fits the receiver's size
-/// limit can still dump to many times that size. Output past this limit is cut off and marked.
-const MAX_DETAILED_BYTES: usize = 1024 * 1024;
-
-/// Ends a `detailed` dump that was cut off at [`MAX_DETAILED_BYTES`].
-const TRUNCATION_MARKER: &str = "\n... (output truncated)";
-
-/// Renders every field of a received message, through its `Debug` implementation.
-///
-/// Byte fields such as trace and span IDs print as lists of numbers rather than hex. The dump is cut off at
-/// [`MAX_DETAILED_BYTES`].
-fn detailed(message: &impl fmt::Debug) -> String {
-    detailed_with_limit(message, MAX_DETAILED_BYTES)
-}
-
-fn detailed_with_limit(message: &impl fmt::Debug, limit: usize) -> String {
-    let mut dump = BoundedString::new(limit);
-    if write!(dump, "{message:#?}").is_err() {
-        dump.text.push_str(TRUNCATION_MARKER);
+    for span in spans {
+        let mut line = ItemLine::start(output)?;
+        line.text(&span.name)?;
+        line.hex(&span.trace_id)?;
+        line.hex(&span.span_id)?;
+        line.attributes(&span.attributes)?;
     }
-    dump.text
+    Ok(())
 }
 
-/// A string that stops accepting text once it reaches a size limit.
+/// Writes every field of a received request, through its `Debug` implementation.
 ///
-/// Writing past the limit fails, which also stops the formatting that was producing the text, so a dump that's too
-/// large costs no more than the limit to produce.
-struct BoundedString {
-    text: String,
-    limit: usize,
+/// Byte fields such as trace and span IDs print as lists of numbers rather than hex.
+fn write_detailed(output: &mut String, request: &impl fmt::Debug) -> fmt::Result {
+    write!(output, "\n{request:#?}")
 }
 
-impl BoundedString {
-    fn new(limit: usize) -> Self {
-        Self {
-            text: String::new(),
-            limit,
+/// One line of `normal` output, written field by field.
+///
+/// Fields are separated by single spaces, and empty fields are left out. Every field is escaped as it's written, so a
+/// sender can't split a line into several, and nothing is built up in memory before it reaches the output.
+struct ItemLine<'a> {
+    output: &'a mut String,
+    has_fields: bool,
+}
+
+impl<'a> ItemLine<'a> {
+    /// Starts a new line.
+    fn start(output: &'a mut String) -> Result<Self, fmt::Error> {
+        output.write_char('\n')?;
+        Ok(Self {
+            output,
+            has_fields: false,
+        })
+    }
+
+    /// Writes the space that separates a field from the one before it.
+    fn separate(&mut self) -> fmt::Result {
+        if self.has_fields {
+            self.output.write_char(' ')?;
         }
+        self.has_fields = true;
+        Ok(())
     }
-}
 
-impl fmt::Write for BoundedString {
-    fn write_str(&mut self, chunk: &str) -> fmt::Result {
-        let room = self.limit.saturating_sub(self.text.len());
-        if chunk.len() <= room {
-            self.text.push_str(chunk);
+    /// Writes a text field, unless it's empty.
+    fn text(&mut self, text: &str) -> fmt::Result {
+        if text.is_empty() {
             return Ok(());
         }
+        self.separate()?;
+        write!(self.output, "{}", Escaped(text))
+    }
 
-        // Keep as much of the chunk as fits, without splitting a character.
-        let mut end = room;
-        while !chunk.is_char_boundary(end) {
-            end -= 1;
+    /// Writes a byte field as lowercase hex, unless it's empty.
+    fn hex(&mut self, bytes: &[u8]) -> fmt::Result {
+        self.text(&bytes_to_hex_lowercase(bytes))
+    }
+
+    /// Writes each attribute as a `key=value` field.
+    fn attributes(&mut self, attributes: &[KeyValue]) -> fmt::Result {
+        for attribute in attributes {
+            self.separate()?;
+            write!(
+                self.output,
+                "{}={}",
+                Escaped(&attribute.key),
+                Escaped(&value_text(attribute.value.as_ref()))
+            )?;
         }
-        self.text.push_str(&chunk[..end]);
-        Err(fmt::Error)
+        Ok(())
     }
 }
 
-/// Joins the non-empty fields of a line with single spaces.
-fn join_fields(fields: impl IntoIterator<Item = String>) -> String {
-    fields
-        .into_iter()
-        .filter(|field| !field.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-/// Renders attributes as `key=value` pairs separated by spaces.
-fn format_attributes(attributes: &[KeyValue]) -> String {
-    attributes
-        .iter()
-        .map(|attribute| {
-            let value = attribute.value.as_ref().map(format_value).unwrap_or_default();
-            format!("{}={value}", escape_control_chars(&attribute.key))
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-/// Renders an attribute or body value as text on a single line. An absent value renders as nothing.
-fn format_value(value: &AnyValue) -> String {
-    let text = value
-        .value
-        .as_ref()
-        .and_then(|kind: &AnyValueKind| otlp_value_to_string(kind))
-        .unwrap_or_default();
-
-    match escape_control_chars(&text) {
-        Cow::Borrowed(_) => text,
-        Cow::Owned(escaped) => escaped,
+/// Returns the text of an attribute or body value. An absent value is empty. A string value isn't copied.
+fn value_text(value: Option<&AnyValue>) -> Cow<'_, str> {
+    match value.and_then(|value| value.value.as_ref()) {
+        Some(AnyValueKind::StringValue(text)) => Cow::Borrowed(text),
+        Some(other) => Cow::Owned(otlp_value_to_string(other).unwrap_or_default()),
+        None => Cow::Borrowed(""),
     }
 }
 
-/// Escapes control characters, so a line of `normal` output can't be split into several by the data it describes.
+/// Text with its control characters escaped, so a line of `normal` output can't be split into several by the data it
+/// describes.
 ///
 /// A sender controls the names and values that end up in a line. A newline in one would otherwise start what looks
-/// like a separate log entry. Text with nothing to escape is returned as it is, without copying it.
-fn escape_control_chars(text: &str) -> Cow<'_, str> {
-    // U+2028 and U+2029 aren't control characters, but some log viewers break lines on them.
-    let needs_escape = |c: char| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}');
+/// like a separate log entry. The text is escaped as it's written, so nothing is copied to escape it.
+struct Escaped<'a>(&'a str);
 
-    if !text.chars().any(needs_escape) {
-        return Cow::Borrowed(text);
-    }
+impl Display for Escaped<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // U+2028 and U+2029 aren't control characters, but some log viewers break lines on them.
+        let needs_escape = |c: char| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}');
 
-    let mut escaped = String::with_capacity(text.len() + 8);
-    for c in text.chars() {
-        if needs_escape(c) {
-            escaped.extend(c.escape_default());
-        } else {
-            escaped.push(c);
+        let mut clean_start = 0;
+        for (index, c) in self.0.char_indices() {
+            if needs_escape(c) {
+                formatter.write_str(&self.0[clean_start..index])?;
+                write!(formatter, "{}", c.escape_default())?;
+                clean_start = index + c.len_utf8();
+            }
         }
+        formatter.write_str(&self.0[clean_start..])
     }
-    Cow::Owned(escaped)
 }
 
 /// Names the type of a metric.
@@ -411,9 +372,9 @@ fn count_data_points(metric: &Metric) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use otlp_protos::opentelemetry::proto::logs::v1::{ResourceLogs, ScopeLogs};
+    use otlp_protos::opentelemetry::proto::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
     use otlp_protos::opentelemetry::proto::metrics::v1::{Gauge, NumberDataPoint, ResourceMetrics, ScopeMetrics, Sum};
-    use otlp_protos::opentelemetry::proto::trace::v1::{ResourceSpans, ScopeSpans};
+    use otlp_protos::opentelemetry::proto::trace::v1::{ResourceSpans, ScopeSpans, Span};
 
     use super::*;
 
@@ -676,140 +637,44 @@ mod tests {
     #[test]
     fn a_verbosity_renders_only_the_parts_it_logs() {
         let renders_nothing = || -> String { panic!("this part must not be rendered") };
+        let writes_nothing = |_: &mut String| -> fmt::Result { panic!("this part must not be rendered") };
+        let writes_ok = |_: &mut String| -> fmt::Result { Ok(()) };
 
-        output(OtlpDebugVerbosity::None).render_request(renders_nothing, renders_nothing, renders_nothing);
-        output(OtlpDebugVerbosity::Basic).render_request(String::new, renders_nothing, renders_nothing);
-        output(OtlpDebugVerbosity::Normal).render_request(String::new, String::new, renders_nothing);
-        output(OtlpDebugVerbosity::Detailed).render_request(String::new, renders_nothing, String::new);
+        output(OtlpDebugVerbosity::None).render_request(renders_nothing, writes_nothing, writes_nothing);
+        output(OtlpDebugVerbosity::Basic).render_request(String::new, writes_nothing, writes_nothing);
+        output(OtlpDebugVerbosity::Normal).render_request(String::new, writes_ok, writes_nothing);
+        output(OtlpDebugVerbosity::Detailed).render_request(String::new, writes_nothing, writes_ok);
     }
 
     #[test]
-    fn normal_keeps_each_item_on_one_line_when_the_data_has_control_characters() {
-        let record = LogRecord {
-            severity_text: "ERROR".to_string(),
-            body: Some(AnyValue {
-                value: Some(AnyValueKind::StringValue("first\nsecond\r\u{2028}third".to_string())),
-            }),
-            attributes: vec![string_attribute("k\ney", "v\talue")],
-            ..Default::default()
-        };
-        let request = ExportLogsServiceRequest {
-            resource_logs: vec![ResourceLogs {
-                scope_logs: vec![ScopeLogs {
-                    log_records: vec![record],
-                    ..Default::default()
-                }],
-                ..Default::default()
-            }],
-        };
+    fn escaping_leaves_clean_text_alone_and_escapes_the_rest() {
+        assert_eq!(Escaped("plain text, ünïcode ok").to_string(), "plain text, ünïcode ok");
+        assert_eq!(
+            Escaped("line\nbreak\u{2028}end").to_string(),
+            "line\\nbreak\\u{2028}end"
+        );
+        assert_eq!(Escaped("").to_string(), "");
+    }
 
+    #[test]
+    fn normal_output_is_never_truncated() {
+        // Debug output is opt-in, and it's used to see everything that arrived, so a large request is written whole.
         let rendered = output(OtlpDebugVerbosity::Normal)
-            .render_logs(&request)
-            .expect("normal verbosity logs every request");
+            .render_logs(&logs_request(&[10_000]))
+            .unwrap();
 
-        assert_eq!(
-            rendered,
-            "Logs: resource logs: 1, log records: 1\n\
-             ERROR first\\nsecond\\r\\u{2028}third k\\ney=v\\talue"
-        );
+        assert_eq!(rendered.lines().count(), 10_001);
     }
 
     #[test]
-    fn normal_escapes_control_characters_in_span_and_metric_names() {
-        let traces = ExportTraceServiceRequest {
-            resource_spans: vec![ResourceSpans {
-                scope_spans: vec![ScopeSpans {
-                    spans: vec![Span {
-                        name: "forged\nentry".to_string(),
-                        ..Default::default()
-                    }],
-                    ..Default::default()
-                }],
-                ..Default::default()
-            }],
-        };
-        let metrics = ExportMetricsServiceRequest {
-            resource_metrics: vec![ResourceMetrics {
-                scope_metrics: vec![ScopeMetrics {
-                    metrics: vec![Metric {
-                        name: "forged\nmetric".to_string(),
-                        unit: "u\nit".to_string(),
-                        ..Default::default()
-                    }],
-                    ..Default::default()
-                }],
-                ..Default::default()
-            }],
-        };
+    fn detailed_output_is_never_truncated() {
+        let mut request = traces_request(&[1]);
+        request.resource_spans[0].scope_spans[0].spans[0].trace_id = vec![7; 10_000];
 
-        let traces = output(OtlpDebugVerbosity::Normal).render_traces(&traces).unwrap();
-        let metrics = output(OtlpDebugVerbosity::Normal).render_metrics(&metrics).unwrap();
+        let rendered = output(OtlpDebugVerbosity::Detailed).render_traces(&request).unwrap();
 
-        assert_eq!(traces.lines().count(), 2);
-        assert!(traces.contains("forged\\nentry"));
-        assert_eq!(metrics.lines().count(), 2);
-        assert!(metrics.contains("forged\\nmetric (empty, unit: u\\nit)"));
-    }
-
-    #[test]
-    fn text_without_control_characters_is_not_copied_to_escape_it() {
-        assert!(matches!(
-            escape_control_chars("plain text, ünïcode ok"),
-            Cow::Borrowed(_)
-        ));
-        assert!(matches!(escape_control_chars("line\nbreak"), Cow::Owned(_)));
-    }
-
-    #[test]
-    fn normal_logs_name_the_severity_range_when_there_is_no_severity_text() {
-        let record = |severity_number: i32| LogRecord {
-            severity_number,
-            ..Default::default()
-        };
-        let request = ExportLogsServiceRequest {
-            resource_logs: vec![ResourceLogs {
-                scope_logs: vec![ScopeLogs {
-                    log_records: vec![record(9), record(17), record(21), record(0)],
-                    ..Default::default()
-                }],
-                ..Default::default()
-            }],
-        };
-
-        let rendered = output(OtlpDebugVerbosity::Normal).render_logs(&request).unwrap();
-
-        assert_eq!(
-            rendered,
-            "Logs: resource logs: 1, log records: 4\ninfo\nerror\nfatal\nUNSPECIFIED"
-        );
-    }
-
-    #[test]
-    fn a_detailed_dump_within_the_limit_is_written_whole() {
-        let message = vec![1u8, 2, 3];
-
-        assert_eq!(detailed_with_limit(&message, 1024), format!("{message:#?}"));
-    }
-
-    #[test]
-    fn a_detailed_dump_past_the_limit_is_cut_off_and_marked() {
-        // Pretty-printing writes a line for every byte, so this dumps to far more than the limit.
-        let message = vec![0u8; 10_000];
-
-        let dump = detailed_with_limit(&message, 100);
-
-        assert!(dump.ends_with(TRUNCATION_MARKER));
-        assert_eq!(dump.len(), 100 + TRUNCATION_MARKER.len());
-    }
-
-    #[test]
-    fn a_detailed_dump_is_cut_off_on_a_character_boundary() {
-        // The dump is an opening quote, then two-byte characters, and the limit falls in the middle of the fifth.
-        let message = "é".repeat(100);
-
-        let dump = detailed_with_limit(&message, 10);
-
-        assert!(dump.ends_with(TRUNCATION_MARKER));
-        assert_eq!(dump.len(), 9 + TRUNCATION_MARKER.len());
+        // Pretty-printing writes a line for each byte, and every one of them is there.
+        assert!(rendered.lines().filter(|line| line.trim() == "7,").count() >= 10_000);
+        assert!(rendered.ends_with('}'));
     }
 }
