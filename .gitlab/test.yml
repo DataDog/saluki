@@ -169,3 +169,12 @@ check-docs:
   stage: test
   script:
     - make check-docs
+
+# Every pipeline validates `.datadog-agent-version.json`. Branch rules need the pull request's destination, so the
+# Agent version GitHub workflow checks those.
+check-agent-version:
+  extends: .linux-arm64-test-job
+  stage: test
+  script:
+    - make test-agent-version
+    - make check-agent-version

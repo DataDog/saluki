@@ -119,10 +119,9 @@ const DD_NAMESPACED_TO_APM_CONVENTIONS: &[(&str, &str)] = &[
 // eliminated. Add further version-gated toggles here as the Agent's output evolves.
 
 // From 7.87 the Agent sends the links and events of an OTLP span as span links and span events. Before that it wrote
-// them as the `_dd.span_links` and `events` JSON tags, the legacy form. Regular CI builds ADP against the last Agent
-// release and nightly CI against the nightly Agent, so ADP follows whichever it is paired with.
-// TODO(#3069): remove this gate, the legacy tag path, and `marshal_links`/`marshal_events` once regular CI's
-// `PUBLIC_DD_AGENT_VERSION` reaches 7.87.
+// them as the `_dd.span_links` and `events` JSON tags, the legacy form. ADP follows the Agent version it was built
+// against.
+// TODO(#3069): remove this gate, the legacy tag path, and `marshal_links`/`marshal_events`.
 const LEGACY_TAG_LINKS_AND_EVENTS: bool = !datadog_agent_commons::agent_version::meets(7, 87, 0);
 
 /// How OTLP spans are converted, fixed for the life of a translator.

@@ -15,9 +15,6 @@ export ADP_APP_GIT_HASH := $(APP_GIT_HASH)
 export ADP_APP_VERSION_AUTO := $(shell cat bin/agent-data-plane/Cargo.toml | grep -E "^version = \"" | head -n 1 | cut -d '"' -f 2)
 export ADP_APP_VERSION := $(or $(ADP_APP_VERSION),$(ADP_APP_VERSION_AUTO))
 
-# Datadog Agent version used by the project-wide comparison image.
-export DATADOG_AGENT_VERSION := $(shell cat .datadog-agent-version)
-
 # SPDX license-list-data tag used by package-adp-host to harvest THIRD-PARTY-* license texts.
 # Pinned to match docker/Dockerfile.agent-data-plane so the host-built tarball ships the same
 # set of license texts as the linux Docker artifact; bump in lockstep with the Dockerfile.
@@ -36,10 +33,13 @@ endif
 # ADP-specific settings used when running.
 export ADP_STANDALONE_IPC_CERT_FILE := /tmp/adp-ipc-cert.pem
 
-# macOS integration-test settings.
-MACOS_TEST_AGENT_VERSION ?= 7.84.6
+# The Linux Agent image from `.datadog-agent-version.json`. It's expanded where it's used, so only the recipes that use
+# it read the file. It isn't exported, because make would then read the file for every recipe.
+DD_AGENT_IMAGE = $(or $(shell $(PYTHON) ci/tooling/agent_version.py get integration.linux.image), \
+	$(error could not read integration.linux.image from .datadog-agent-version.json))
+
+# macOS integration-test settings. The Agent package comes from `.datadog-agent-version.json`.
 MACOS_TEST_AGENT_DMG_DIR ?= /tmp/saluki-dda-dmg-cache
-MACOS_TEST_AGENT_DMG_URL ?= https://s3.amazonaws.com/dd-agent/datadog-agent-$(MACOS_TEST_AGENT_VERSION)-1.$(shell uname -m).dmg
 MACOS_TEST_AGENT_INSTALL_DIR ?= /tmp/saluki-dda/datadog-agent
 
 # General build settings used for tooling, etc.
@@ -209,10 +209,11 @@ build-adp-image-fips-release: ## Builds the ADP container image in release mode 
 .PHONY: build-datadog-agent-image
 build-datadog-agent-image: build-adp-image ## Builds the converged Datadog Agent/ADP container image (debug mode)
 	@echo "[*] Building converged Datadog Agent image... (debug mode)"
+	@echo "[*] Using the Agent image $(DD_AGENT_IMAGE) from .datadog-agent-version.json"
 	@docker build \
 		--tag saluki-images/datadog-agent:testing-devel \
 		--tag local.dev/saluki-images/datadog-agent:testing-devel \
-		--build-arg "DD_AGENT_VERSION=$(DATADOG_AGENT_VERSION)-full" \
+		--build-arg "DD_AGENT_IMAGE=$(DD_AGENT_IMAGE)" \
 		--build-arg ADP_IMAGE=saluki-images/agent-data-plane:testing-devel \
 		--file ./docker/Dockerfile.datadog-agent \
 		.
@@ -220,10 +221,11 @@ build-datadog-agent-image: build-adp-image ## Builds the converged Datadog Agent
 .PHONY: build-datadog-agent-image-release
 build-datadog-agent-image-release: build-adp-image-release ## Builds the converged Datadog Agent/ADP container image (release mode)
 	@echo "[*] Building converged Datadog Agent image... (release mode)"
+	@echo "[*] Using the Agent image $(DD_AGENT_IMAGE) from .datadog-agent-version.json"
 	@docker build \
 		--tag saluki-images/datadog-agent:testing-release \
 		--tag local.dev/saluki-images/datadog-agent:testing-release \
-		--build-arg "DD_AGENT_VERSION=$(DATADOG_AGENT_VERSION)-full" \
+		--build-arg "DD_AGENT_IMAGE=$(DD_AGENT_IMAGE)" \
 		--build-arg ADP_IMAGE=saluki-images/agent-data-plane:testing-release \
 		--file ./docker/Dockerfile.datadog-agent \
 		.
@@ -718,52 +720,13 @@ test-integration-macos-run: ## Runs the macOS host-process integration tests usi
 		$(if $(PANORAMIC_LOG_DIR),-l $(PANORAMIC_LOG_DIR))
 
 .PHONY: provision-macos-test-env
-provision-macos-test-env: ## Installs the pinned Datadog Agent ($(MACOS_TEST_AGENT_VERSION)) into $(MACOS_TEST_AGENT_INSTALL_DIR) (a sandbox under /tmp) and bootstraps the IPC cert. Idempotent: re-uses the install if it already matches the pinned version.
+provision-macos-test-env: ## Installs the macOS Datadog Agent named in .datadog-agent-version.json into $(MACOS_TEST_AGENT_INSTALL_DIR) (a sandbox under /tmp) and bootstraps the IPC cert. Idempotent: re-uses the install if its marker matches the file.
 	@echo "[*] Provisioning macOS test environment..."
 	@if [ "$(shell uname -s)" != "Darwin" ]; then \
 		echo "provision-macos-test-env only runs on macOS hosts" >&2; exit 1; \
 	fi
-	@if [ -x $(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent ] && \
-	   [ "$$($(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent version 2>/dev/null | awk '{print $$2}')" = "$(MACOS_TEST_AGENT_VERSION)" ]; then \
-		echo "[*] Datadog Agent $(MACOS_TEST_AGENT_VERSION) already extracted to $(MACOS_TEST_AGENT_INSTALL_DIR)"; \
-	else \
-		echo "[*] Installing Datadog Agent $(MACOS_TEST_AGENT_VERSION) into $(MACOS_TEST_AGENT_INSTALL_DIR)..."; \
-		mkdir -p $(MACOS_TEST_AGENT_DMG_DIR); \
-		DMG_PATH=$(MACOS_TEST_AGENT_DMG_DIR)/datadog-agent-$(MACOS_TEST_AGENT_VERSION).dmg; \
-		if [ ! -f "$$DMG_PATH" ]; then \
-			curl -fL "$(MACOS_TEST_AGENT_DMG_URL)" -o "$$DMG_PATH"; \
-		fi; \
-		MOUNT_DIR=$$(mktemp -d /tmp/saluki-dda-mount-XXXXXX); \
-		cleanup_mount() { bash "$(CURDIR)/ci/tooling/cleanup-macos-dda-mounts.sh" "$$MOUNT_DIR"; }; \
-		trap cleanup_mount EXIT; \
-		for attempt in 1 2 3; do \
-			if hdiutil attach "$$DMG_PATH" -mountpoint "$$MOUNT_DIR" -nobrowse >/dev/null; then \
-				break; \
-			fi; \
-			if [ "$$attempt" = "3" ]; then \
-				echo "ERROR: failed to attach $$DMG_PATH after $$attempt attempts" >&2; \
-				exit 1; \
-			fi; \
-			echo "[*] Failed to attach $$DMG_PATH on attempt $$attempt; retrying..." >&2; \
-			sleep $$((attempt * 2)); \
-		done; \
-		PKG=$$(find "$$MOUNT_DIR" -name '*.pkg' | head -1); \
-		EXPAND_DIR=$$(mktemp -d /tmp/saluki-dda-expand-XXXXXX) && rm -rf "$$EXPAND_DIR"; \
-		pkgutil --expand-full "$$PKG" "$$EXPAND_DIR" >/dev/null; \
-		cleanup_mount; \
-		trap - EXIT; \
-		PAYLOAD_DIR=$$(find "$$EXPAND_DIR" -type d -name Payload | head -1); \
-		if [ -z "$$PAYLOAD_DIR" ] || [ ! -x "$$PAYLOAD_DIR/bin/agent/agent" ]; then \
-			echo "ERROR: pkg payload did not contain bin/agent/agent. Expanded layout:" >&2; \
-			find "$$EXPAND_DIR" -maxdepth 3 -type d >&2; \
-			exit 1; \
-		fi; \
-		rm -rf $(MACOS_TEST_AGENT_INSTALL_DIR); \
-		mkdir -p $$(dirname $(MACOS_TEST_AGENT_INSTALL_DIR)); \
-		mv "$$PAYLOAD_DIR" $(MACOS_TEST_AGENT_INSTALL_DIR); \
-		rm -rf "$$EXPAND_DIR"; \
-		test -x $(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent; \
-	fi
+	@$(PYTHON) ci/tooling/install_macos_agent.py \
+		--install-dir "$(MACOS_TEST_AGENT_INSTALL_DIR)" --cache-dir "$(MACOS_TEST_AGENT_DMG_DIR)"
 	@if [ ! -f $(MACOS_TEST_AGENT_INSTALL_DIR)/etc/ipc_cert.pem ] || [ ! -f $(MACOS_TEST_AGENT_INSTALL_DIR)/etc/auth_token ]; then \
 		echo "[*] Bootstrapping IPC cert + auth_token by running the Agent briefly..."; \
 		mkdir -p $(MACOS_TEST_AGENT_INSTALL_DIR)/etc $(MACOS_TEST_AGENT_INSTALL_DIR)/run; \
@@ -836,27 +799,35 @@ ifeq ($(shell command -v snouty >/dev/null || echo not-found), not-found)
 	$(error "snouty must be present to validate the Antithesis harness, see https://github.com/antithesishq/snouty")
 endif
 
+# Compose builds the scenarios for linux/amd64, so they take the amd64 debug package from .datadog-agent-version.json. Every recipe
+# that interpolates the Compose files needs these.
+ANTITHESIS_AGENT_DEBUG_DEB_ENV = \
+	AGENT_DEBUG_DEB_URL=$$($(PYTHON) ci/tooling/agent_version.py get integration.antithesis_debug_debs.amd64.url) && \
+	AGENT_DEBUG_DEB_SHA256=$$($(PYTHON) ci/tooling/agent_version.py get integration.antithesis_debug_debs.amd64.sha256) && \
+	export AGENT_DEBUG_DEB_URL AGENT_DEBUG_DEB_SHA256 && \
+	echo "[*] Using the Agent debug package $$AGENT_DEBUG_DEB_URL"
+
 .PHONY: antithesis-build
 antithesis-build: build-datadog-agent-image-release ## Builds the Antithesis harness container images
 	@echo "[*] Building Antithesis harness images..."
-	@docker compose -f $(ANTITHESIS_COMPOSE_FILE) build
+	@$(ANTITHESIS_AGENT_DEBUG_DEB_ENV) && docker compose -f $(ANTITHESIS_COMPOSE_FILE) build
 
 .PHONY: antithesis-build-differential
 antithesis-build-differential: build-datadog-agent-image-release ## Builds the differential Antithesis harness images
 	@echo "[*] Building differential Antithesis harness images..."
-	@docker compose -f $(ANTITHESIS_DIFFERENTIAL_COMPOSE_FILE) build
+	@$(ANTITHESIS_AGENT_DEBUG_DEB_ENV) && docker compose -f $(ANTITHESIS_DIFFERENTIAL_COMPOSE_FILE) build
 
 .PHONY: antithesis-validate-general
 antithesis-validate-general: check-antithesis-tools antithesis-build
 antithesis-validate-general: ## Validates the general Antithesis harness: builds images, runs 'snouty validate'
 	@echo "[*] Validating general Antithesis harness with snouty..."
-	@snouty validate $(ANTITHESIS_CONFIG_DIR)
+	@$(ANTITHESIS_AGENT_DEBUG_DEB_ENV) && snouty validate $(ANTITHESIS_CONFIG_DIR)
 
 .PHONY: antithesis-validate-differential
 antithesis-validate-differential: check-antithesis-tools antithesis-build-differential
 antithesis-validate-differential: ## Validates the differential Antithesis harness
 	@echo "[*] Validating differential Antithesis harness with snouty..."
-	@snouty validate $(ANTITHESIS_DIFFERENTIAL_CONFIG_DIR)
+	@$(ANTITHESIS_AGENT_DEBUG_DEB_ENV) && snouty validate $(ANTITHESIS_DIFFERENTIAL_CONFIG_DIR)
 
 .PHONY: antithesis-validate
 antithesis-validate: antithesis-validate-general antithesis-validate-differential ## Validates both Antithesis harnesses (general + differential)
@@ -1000,6 +971,15 @@ check-release-notes: ## Validates committed Reno release-note files
 render-release-notes: ## Renders VERSION=X.Y.Z Reno notes as GitHub-flavored Markdown
 	@test -n "$(VERSION)" || { echo "Set VERSION=X.Y.Z" >&2; exit 2; }
 	@$(PYTHON) ci/tooling/release_notes.py render --version "$(VERSION)" --output -
+
+.PHONY: test-agent-version
+test-agent-version: ## Runs unit tests for the Agent version tooling
+	@$(PYTHON) -m unittest ci/tooling/test_agent_version.py ci/tooling/update-agent-version/test_discover_agent_version.py \
+		ci/tooling/update-agent-version/test_propose_agent_version.py ci/tooling/test_install_macos_agent.py
+
+.PHONY: check-agent-version
+check-agent-version: ## Validates .datadog-agent-version.json and .datadog-agent-release-lines.jsonl
+	@$(PYTHON) ci/tooling/agent_version.py validate
 
 .PHONY: ensure-python-venv
 ensure-python-venv: ## Creates the virtualenv that Python tooling prefers, or updates an existing one

@@ -164,6 +164,18 @@ Reno renders note prose as reStructuredText, not Markdown, and `make check-relea
 
 Validate notes locally with `make check-release-notes` and `.venv/bin/reno lint`.
 
+### Which release a note ships in
+
+A note ships in the first release whose tag contains it. Each release line is cut to its own `releases/X.Y.x` branch
+before its first tag, so a change that merges to `main` after that cut ships in the next minor release, not in `X.Y.0`.
+To ship it on an existing line, backport it: the note comes along with the cherry-pick. A fix made only on a release
+branch carries its note in the pull request to that branch.
+
+Because each line's first tag is on its release branch rather than `main`, Reno on its own would list the previous
+line's notes again under the next `X.Y.0`. The release tooling leaves them out. [Release notes for a new
+line](../agent-data-plane/releasing.md#release-notes-for-a-new-line) explains how Reno assigns notes and what the tooling
+corrects.
+
 ## Addressing review feedback
 
 The goals, in priority order, are:
@@ -220,6 +232,12 @@ The new PR is titled `<original title> (backport X.Y.x)`, and the original PR ge
 merge it like any other PR. A clean cherry-pick can still fail to compile on an older branch if the change depends on
 something that only exists on `main`, so wait for CI before you merge.
 
+A backport brings the code change, any version gate it needs, and its release note. It never brings an Agent version:
+each release line keeps its own `.datadog-agent-version.json` and `target` (see [Datadog Agent
+version](./agent-version.md)). The workflow refuses a PR that changes `.datadog-agent-version.json`, and its comment
+explains how to backport the change without it. A gate must select the behavior that the release line's target Agent
+expects. If a change needs a newer Agent minor than the line's target, it belongs on the release line for that minor.
+
 ### When the backport fails
 
 If the cherry-pick has conflicts, the workflow doesn't open a PR. Instead, it comments on the original PR with the
@@ -234,5 +252,14 @@ from the Actions tab with the original PR number and the release line, for examp
 
 ### Release lines
 
-The `backport/X.Y.x` label for a release line is created automatically when its `releases/X.Y.x` branch is cut. When
-a release line is no longer maintained, delete its label.
+Each `releases/X.Y.x` branch supports one Agent minor, its target, for its whole life. [Releasing
+ADP](../agent-data-plane/releasing.md) covers how a line is cut and how its Agent is updated.
+
+The `backport/X.Y.x` label for a release line is created automatically when its `X.Y.0` release is tagged. When a
+release line is no longer maintained, delete its label and remove it from `MAINTAINED_LINES` in
+`.github/workflows/update-agent-version.yml`.
+
+## Version gates
+
+A version gate switches ADP between old and new behavior based on the Agent version ADP was built with. Before you add
+or remove one, read [Version gates](./agent-version.md#version-gates).
