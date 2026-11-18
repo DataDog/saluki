@@ -5814,6 +5814,7 @@ dependencies = [
  "bytes",
  "bytesize",
  "chrono",
+ "criterion",
  "datadog-agent-apm",
  "datadog-agent-commons",
  "datadog-agent-metrics-v3",
