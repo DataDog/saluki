@@ -165,7 +165,6 @@ architecture is fundamentally different or the feature is platform-specific.
 | `logs_config.pipeline_failover.router_channel_size`                                      | Router channel size when failover is on            | See below                                                                                                                                                                                                                                                                 |
 | `logs_config.pipelines`                                                                  | Number of parallel logs pipelines                  | See below                                                                                                                                                                                                                                                                 |
 | `logs_config.stop_grace_period`                                                          | Seconds to wait for pipeline flush on stop         | See below                                                                                                                                                                                                                                                                 |
-| `otlp_config.debug.verbosity`                                                            | Verbosity of the OTLP debug exporter               | See below                                                                                                                                                                                                                                                                 |
 | `otlp_config.metrics.batch.flush_timeout`                                                | OTLP metrics batch flush timeout                   | See below                                                                                                                                                                                                                                                                 |
 | `otlp_config.metrics.batch.max_size`                                                     | Maximum OTLP metrics batch size                    | See below                                                                                                                                                                                                                                                                 |
 | `otlp_config.metrics.batch.min_size`                                                     | Minimum OTLP metrics batch size                    | See below                                                                                                                                                                                                                                                                 |
@@ -449,14 +448,6 @@ ADP ignores this key: its logs pipeline is part of its own topology, which this 
 configure. This only matters for the logs ADP handles itself: native OTLP logs and check logs. In
 proxy mode, the core Agent processes OTLP logs and applies this key.
 
-### `otlp_config.debug.verbosity`
-
-In the core Agent's OTLP logs path: when the `otlp_config.debug` section is declared and verbosity
-is a valid level other than none, a debug exporter is added to the logs (and other enabled)
-pipelines; invalid levels leave it detached.
-
-ADP ignores this key: it has no OTLP debug exporter.
-
 ### `otlp_config.metrics.batch.flush_timeout`
 
 The core Agent batches OTLP metric input before translation through its serializer exporter queue.
@@ -645,6 +636,7 @@ default values.
 | `logs_enabled`                                                  | Enable the logs agent                           |
 | `min_tls_version`                                               | Minimum TLS version for HTTPS connections       |
 | `multi_region_failover.enabled`                                 | Enable multi-region failover mode               |
+| `otlp_config.debug.verbosity`                                   | Verbosity of OTLP debug logging                 |
 | `otlp_config.logs.enabled`                                      | Enable OTLP logs ingestion                      |
 | `secret_backend_command`                                        | Path to the Agent secret-fetch executable       |
 | `secret_refresh_on_api_key_failure_interval`                    | Minutes between secret refreshes after a 403    |
@@ -1111,6 +1103,10 @@ is enabled.
 | `multi_region_failover.api_key`          | API key for the failover-region endpoint.                                  | unset   |
 | `multi_region_failover.site`             | Datadog site for the failover region, used as `https://app.mrf.<site>`.    | unset   |
 | `multi_region_failover.dd_url`           | Explicit failover intake URL. Takes precedence over `site` when set.       | unset   |
+
+### `otlp_config.debug.verbosity`
+
+ADP reads this key but doesn't log received OTLP data yet.
 
 ### `otlp_config.logs.enabled`
 

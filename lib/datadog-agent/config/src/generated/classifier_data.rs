@@ -731,12 +731,6 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         default: DefaultValue::Json("\"\""),
     },
     ClassifierEntry {
-        yaml_path: "otlp_config.debug.verbosity",
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
-        default: DefaultValue::Json("\"basic\""),
-    },
-    ClassifierEntry {
         yaml_path: "otlp_config.logs.batch.flush_timeout",
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Logs]),

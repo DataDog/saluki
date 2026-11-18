@@ -3109,17 +3109,11 @@ inventory:
     description: "Unified origin detection mode"
 
   otlp_config.debug.verbosity:
-    support: none
-    severity: low
-    planned: false
+    support: partial
     pipelines: [otlp]
-    description: "Verbosity of the OTLP debug exporter"
+    description: "Verbosity of OTLP debug logging"
     documentation: |-
-      In the core Agent's OTLP logs path: when the `otlp_config.debug` section is declared and verbosity
-      is a valid level other than none, a debug exporter is added to the logs (and other enabled)
-      pipelines; invalid levels leave it detached.
-
-      ADP ignores this key: it has no OTLP debug exporter.
+      ADP reads this key but doesn't log received OTLP data yet.
 
   otlp_config.logs.batch.flush_timeout:
     support: none
