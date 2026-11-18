@@ -17,7 +17,7 @@ use bollard::{container::LogOutput, errors::Error as DockerError};
 use futures::stream::{self, StreamExt as _};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tokio::pin;
-use tokio::sync::{mpsc, Semaphore};
+use tokio::sync::{mpsc, Semaphore, SemaphorePermit};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
@@ -213,6 +213,43 @@ pub(crate) struct Runner {
     settings: RunnerSettings,
 }
 
+/// What bounds how many tests run at once.
+struct Permits {
+    /// One for each test that runs.
+    general: Semaphore,
+    /// One for the test that runs host processes, whose fixed ports another such test would collide with.
+    host: Semaphore,
+}
+
+/// A test's hold on the runner's permits, released when it is dropped.
+struct Held<'a> {
+    _general: SemaphorePermit<'a>,
+    _host: Option<SemaphorePermit<'a>>,
+}
+
+impl Permits {
+    fn new(parallelism: usize) -> Self {
+        Self {
+            general: Semaphore::new(parallelism),
+            host: Semaphore::new(1),
+        }
+    }
+
+    /// Waits for what `test` needs. A test that runs host processes takes the host permit first, so it does not hold a
+    /// general permit while it waits for the host. The permits are held until the test has run and reclaimed.
+    async fn acquire(&self, test: &dyn Test) -> Held<'_> {
+        let host = if test.runs_host_processes() {
+            Some(self.host.acquire().await.unwrap())
+        } else {
+            None
+        };
+        Held {
+            _general: self.general.acquire().await.unwrap(),
+            _host: host,
+        }
+    }
+}
+
 impl Runner {
     pub(crate) fn new(log_base_dir: impl Into<PathBuf>, settings: RunnerSettings) -> Self {
         Self {
@@ -251,25 +288,25 @@ impl Runner {
         });
 
         let parallelism = parallelism.get();
-        let semaphore = Arc::new(Semaphore::new(parallelism));
+        let permits = Arc::new(Permits::new(parallelism));
 
         if fail_fast {
-            self.run_fail_fast(&tests, &semaphore, &event_sender, &cancel_all).await;
+            self.run_fail_fast(&tests, &permits, &event_sender, &cancel_all).await;
         } else {
-            self.run_parallel(&tests, parallelism, &semaphore, &event_sender, &cancel_all)
+            self.run_parallel(&tests, parallelism, &permits, &event_sender, &cancel_all)
                 .await;
         }
     }
 
     async fn run_fail_fast(
-        &self, tests: &[&dyn Test], semaphore: &Semaphore, event_sender: &EventSender, cancel_all: &CancellationToken,
+        &self, tests: &[&dyn Test], permits: &Permits, event_sender: &EventSender, cancel_all: &CancellationToken,
     ) {
         for test in tests {
             if cancel_all.is_cancelled() {
                 break;
             }
 
-            let _permit = semaphore.acquire().await.unwrap();
+            let _permits = permits.acquire(*test).await;
             let result = Self::run_one(
                 *test,
                 event_sender,
@@ -286,13 +323,13 @@ impl Runner {
     }
 
     async fn run_parallel(
-        &self, tests: &[&dyn Test], parallelism: usize, semaphore: &Arc<Semaphore>, event_sender: &EventSender,
+        &self, tests: &[&dyn Test], parallelism: usize, permits: &Arc<Permits>, event_sender: &EventSender,
         cancel_all: &CancellationToken,
     ) {
         let mut futures = stream::FuturesUnordered::new();
 
         for test in tests {
-            let semaphore = semaphore.clone();
+            let permits = permits.clone();
             let cancel = cancel_all.clone();
             let log_base_dir = self.log_base_dir.clone();
             let settings = self.settings.clone();
@@ -301,7 +338,7 @@ impl Runner {
                     return;
                 }
 
-                let _permit = semaphore.acquire().await.unwrap();
+                let _permits = permits.acquire(*test).await;
 
                 if cancel.is_cancelled() {
                     return;
