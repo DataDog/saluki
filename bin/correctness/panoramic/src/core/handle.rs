@@ -64,8 +64,6 @@ pub(crate) struct Handle<'a> {
     planned: &'a PlannedParticipant,
     realized: &'a dyn Realized,
     /// What fills the references of named commands when they run.
-    // TODO: remove the dead_code allowance once a step runs a command.
-    #[allow(dead_code)]
     values: &'a Values,
     observation: &'a Observation,
 }
@@ -236,8 +234,6 @@ impl<'a> Handle<'a> {
     ///
     /// Returns a harness error if the participant has no such command or a reference in it has no value yet, and the
     /// errors of [`Self::exec`].
-    // TODO: remove the dead_code allowance once a step runs a command.
-    #[allow(dead_code)]
     pub(crate) async fn command(
         &self, name: &str, args: &[String], env: &BTreeMap<String, String>, limit: Duration,
     ) -> Result<Exited, HandleError> {

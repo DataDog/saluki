@@ -109,8 +109,6 @@ pub(crate) trait Operation: fmt::Debug + Send + Sync {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Uses {
     /// One of the participant's named commands.
-    // TODO: remove the dead_code allowance once an operation runs a named command.
-    #[allow(dead_code)]
     Command(&'static str),
     /// A request to one of the participant's endpoints.
     Request(&'static str),
