@@ -1,10 +1,10 @@
 use std::{io::Write, path::PathBuf};
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 use saluki_common::collections::FastHashMap;
 use saluki_common::logging::RollingFileWriter;
 use saluki_common::sync::live::Live;
+use saluki_common::time::{Timestamp, TimestampFormat};
 use saluki_core::{
     accounting::{MemoryBounds, MemoryBoundsBuilder},
     components::{
@@ -213,8 +213,8 @@ fn format_tags(tags: &TagSet) -> String {
 fn format_timestamp(timestamp: u64) -> String {
     i64::try_from(timestamp)
         .ok()
-        .and_then(|ts| DateTime::<Utc>::from_timestamp(ts, 0))
-        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S +0000 UTC").to_string())
+        .and_then(Timestamp::from_unix_seconds)
+        .map(|ts| ts.format(TimestampFormat::GoUtc).to_string())
         .unwrap_or_else(|| timestamp.to_string())
 }
 
@@ -236,7 +236,7 @@ mod tests {
     };
     use tempfile::tempdir;
 
-    use super::{DogStatsDDebugLog, DogStatsDDebugLogConfiguration};
+    use super::{format_timestamp, DogStatsDDebugLog, DogStatsDDebugLogConfiguration};
 
     fn test_config(log_file: PathBuf, max_size: u64, max_rolls: usize) -> DogStatsDDebugLogConfiguration {
         DogStatsDDebugLogConfiguration {
@@ -271,6 +271,25 @@ mod tests {
     fn tagged_metric() -> Metric {
         let context = Context::from_static_parts("custom.metric", &["env:prod", "service:web"]);
         Metric::counter(context, 1.0)
+    }
+
+    #[test]
+    fn last_seen_timestamps_are_formatted_in_utc() {
+        let cases = [
+            (0, "1970-01-01 00:00:00 +0000 UTC"),
+            (1_700_499_303, "2023-11-20 16:55:03 +0000 UTC"),
+            (253_402_207_200, "9999-12-30 22:00:00 +0000 UTC"),
+            // Timestamps that can't be represented fall back to the raw number of seconds. `Timestamp` stops at
+            // 9999-12-30T22:00:00Z, while chrono, which earlier versions used, could represent dates up to the year
+            // 262142.
+            (253_402_207_201, "253402207201"),
+            (i64::MAX as u64, "9223372036854775807"),
+            (u64::MAX, "18446744073709551615"),
+        ];
+
+        for (timestamp, expected) in cases {
+            assert_eq!(format_timestamp(timestamp), expected, "timestamp {}", timestamp);
+        }
     }
 
     #[tokio::test]
