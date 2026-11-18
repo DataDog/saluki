@@ -17,11 +17,15 @@ mod file_contains;
 pub(crate) mod intake;
 mod intake_has_metric;
 mod log;
+mod port_listening;
 mod process_stable_for;
 mod send;
 
 /// How often a step that waits for something looks again.
 const POLL: Duration = Duration::from_millis(100);
+
+/// How long one attempt of a step that probes or requests an endpoint may take.
+const ATTEMPT: Duration = Duration::from_secs(5);
 
 /// Registers every step.
 pub(crate) fn register(registry: &mut Registry) {
@@ -30,6 +34,7 @@ pub(crate) fn register(registry: &mut Registry) {
     registry.add_step(Box::new(intake_has_metric::IntakeHasMetricFactory));
     registry.add_step(Box::new(log::LogContainsFactory));
     registry.add_step(Box::new(log::LogNotContainsFactory));
+    registry.add_step(Box::new(port_listening::PortListeningFactory));
     registry.add_step(Box::new(process_stable_for::ProcessStableForFactory));
     registry.add_step(Box::new(send::SendFactory));
 }
@@ -164,6 +169,7 @@ participants:
       - {name: job, exit: {record: job}, output: {file: job.log}}
     endpoints:
       statsd: {protocol: udp, port: 8125}
+      api: {protocol: tcp, port: 8080}
   peer:
     image: alpine:3.20
 procedure: []
