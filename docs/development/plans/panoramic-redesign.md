@@ -1464,7 +1464,7 @@ making it `errored`. On failure the step quotes the last 4 KiB of the command's 
 | `wait` | action | `duration` | nothing |
 | `config_key_equals` | assertion | `on`, `key`, `value`, `view: source \| runtime` (required), `timeout` | operation `config_dump` |
 | `config_set` | action | `on`, `key`, `value`, `timeout` | operation `config_set` |
-| `dogstatsd_replay` | action | `on`, `endpoint`, `payloads`, `capture_duration`, `stats_duration` (whole seconds), `expected_metrics`, `timeout` | operations `dogstatsd_capture`, `dogstatsd_replay` and `dogstatsd_stats`; the endpoint, to send |
+| `dogstatsd_replay` | action | `on`, `endpoint`, `payloads`, `payload_interval` (optional), `capture_duration`, `stats_duration` (whole seconds), `expected_metrics`, `timeout` | operations `dogstatsd_capture`, `dogstatsd_replay` and `dogstatsd_stats`; the endpoint, to send |
 | `intake_has_metric` | assertion | `on`, `name`, `metric_type`, `value`, `tags`, `tags_match`, `timeout` | operation `dump` |
 | `compare` | assertion | `telemetry`, `comparison`, `baseline`, and the options of each telemetry | operation `dump` on both participants |
 
@@ -2028,7 +2028,8 @@ Why this order:
 - **What was taken:**
   - The step sends `payloads` to an `endpoint`. It does not run a sender command, which would make
     Python a requirement of the host on macOS and of the image on Linux. The legacy sender's pause of
-    one second between its two datagrams is gone: it checked nothing.
+    one second between its two datagrams stays, as the optional `payload_interval`, so that the
+    capture is still checked to keep traffic that arrives late. The step's budget counts it.
   - `stats_duration` is whole seconds, and `build` rejects a fraction, because the CLI takes seconds.
   - The operations answer parsed values, and the step decides from them: `dogstatsd_capture` answers
     `{path}`, `dogstatsd_replay` answers `{}`, and `dogstatsd_stats` answers `{metrics}`. The
