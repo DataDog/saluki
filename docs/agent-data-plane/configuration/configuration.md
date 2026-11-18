@@ -489,6 +489,7 @@ default values.
 | `logs_enabled`                                                  | Enable the logs agent                           |
 | `min_tls_version`                                               | Minimum TLS version for HTTPS connections       |
 | `multi_region_failover.enabled`                                 | Enable multi-region failover mode               |
+| `otlp_config.debug.verbosity`                                   | Verbosity of OTLP debug logging                 |
 | `secret_backend_command`                                        | Path to the Agent secret-fetch executable       |
 | `secret_refresh_on_api_key_failure_interval`                    | Minutes between secret refreshes after a 403    |
 | `serializer_zstd_compressor_level`                              | Zstd compression level (Agent)                  |
@@ -933,6 +934,10 @@ is enabled.
 | `multi_region_failover.api_key`          | API key for the failover-region endpoint.                                  | unset   |
 | `multi_region_failover.site`             | Datadog site for the failover region, used as `https://app.mrf.<site>`.    | unset   |
 | `multi_region_failover.dd_url`           | Explicit failover intake URL. Takes precedence over `site` when set.       | unset   |
+
+### `otlp_config.debug.verbosity`
+
+ADP reads this key but doesn't log received OTLP data yet.
 
 ### `secret_backend_command`
 

@@ -2321,6 +2321,13 @@ inventory:
     pipelines: [dogstatsd]
     description: "Unified origin detection mode"
 
+  otlp_config.debug.verbosity:
+    support: partial
+    pipelines: [otlp]
+    description: "Verbosity of OTLP debug logging"
+    documentation: |-
+      ADP reads this key but doesn't log received OTLP data yet.
+
   otlp_config.logs.enabled:
     support: full
     pipelines: [otlp]
@@ -4915,7 +4922,6 @@ excluded:
   otelcollector.standalone.telemetry_resource_cluster_name: "2026-11-05: ADP does not currently run or configure the embedded OpenTelemetry Collector (DDOT)."
   otelcollector.standalone.use_kubelet_collector: "2026-11-05: ADP does not currently run or configure the embedded OpenTelemetry Collector (DDOT)."
   otelcollector.submit_dummy_metadata: "ignored in initial audit 2026-04-23"
-  otlp_config.debug.verbosity: "ignored in initial audit 2026-04-23"
   otlp_config.grpc_port: "ignored in initial audit 2026-04-23"
   otlp_config.http_port: "ignored in initial audit 2026-04-23"
   otlp_config.logs.batch.flush_timeout: "ignored in initial audit 2026-04-23"
