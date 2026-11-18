@@ -3,7 +3,7 @@
 //!
 //! It takes the Agent's default environment and the rules that withdraw it from [`super::datadog_agent`], without the
 //! entries only ADP reads, so both sides of a comparison set the same Agent keys. It keeps the Agent's own ports for
-//! DogStatsD and APM, because it runs only in a container of its own.
+//! DogStatsD and APM, because it runs only in a container or pod of its own.
 
 use std::collections::BTreeMap;
 
@@ -95,7 +95,10 @@ impl ParticipantType for Agent {
     }
 
     fn supports(&self) -> &'static [(Os, Enclosure)] {
-        &[(Os::Linux, Enclosure::LinuxContainer)]
+        &[
+            (Os::Linux, Enclosure::LinuxContainer),
+            (Os::Linux, Enclosure::KubernetesPod),
+        ]
     }
 
     fn spec(&self, cx: &SpecContext<'_>) -> Result<ParticipantSpec, String> {
