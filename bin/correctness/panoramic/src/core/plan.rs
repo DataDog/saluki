@@ -1212,6 +1212,16 @@ impl Planner<'_, '_, '_> {
                     ));
                 }
             }
+            // A program nobody reads from blocks once its pipes fill.
+            for program in program_names {
+                if !seen.contains(program) {
+                    self.at.push(format!(
+                        "on host processes, program '{}' has no process: its output is read through one, and unread \
+                         output can block the program",
+                        program
+                    ));
+                }
+            }
         } else {
             let through: Vec<&str> = processes
                 .iter()
