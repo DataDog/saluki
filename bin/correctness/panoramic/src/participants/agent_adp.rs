@@ -15,6 +15,7 @@ use super::datadog_agent::{
     self, ListenAt, Listener, With, DATADOG_YAML, DATADOG_YAML_PATH, DOGSTATSD_FORWARD, EVERY_OS, IMAGE, INTAKE,
     NOT_WINDOWS,
 };
+use super::dogstatsd_cli::{Capture, Replay, Stats};
 use crate::core::handle::{Handle, HandleError};
 use crate::core::participant::{Enclosure, Os, ParticipantType, SpecContext};
 use crate::core::spec::{CommandSpec, Evidence, FileSource, FileSpec, ParticipantSpec, Program, Protocol, Wiring};
@@ -135,6 +136,9 @@ const EMPTY_DATADOG_YAML: FileSource = FileSource::Bytes {
     bytes: b"",
 };
 
+/// What every realization of `agent-adp` offers.
+const OPERATIONS: [&dyn Operation; 4] = [&ConfigDump, &Capture, &Replay, &Stats];
+
 pub(crate) struct AgentAdp;
 
 impl ParticipantType for AgentAdp {
@@ -178,7 +182,7 @@ impl ParticipantType for AgentAdp {
                     env: BTreeMap::new(),
                 },
             )]),
-            operations: &[&ConfigDump],
+            operations: &OPERATIONS,
             ..ParticipantSpec::default()
         };
         add_endpoints(cx, &mut spec)?;
@@ -290,7 +294,7 @@ fn host_processes(cx: &SpecContext<'_>) -> Result<ParticipantSpec, String> {
                 env: BTreeMap::new(),
             },
         )]),
-        operations: &[&ConfigDump],
+        operations: &OPERATIONS,
         ..ParticipantSpec::default()
     };
     add_endpoints(cx, &mut spec)?;
