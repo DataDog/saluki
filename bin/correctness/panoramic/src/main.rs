@@ -258,42 +258,6 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         None => test_cases,
     };
 
-    // Once, before the first case and outside any case's timeout: what the selected participant cases need.
-    let plans: Vec<(String, &plan::CasePlan)> = test_cases
-        .iter()
-        .filter_map(|test| {
-            test.participant_case()?
-                .plan
-                .as_ref()
-                .ok()
-                .map(|plan| (test.name(), plan))
-        })
-        .collect();
-    let mut settings = settings;
-    // Created before the checks, so the display shows the progress of the kind setup they run.
-    let (tx, rx) = create_event_channel();
-    let kind = participant_case::KindSetup {
-        cluster: cmd.kind_cluster_name.clone(),
-        events: tx.clone(),
-    };
-    let mut kind_lifecycle = None;
-    settings.backends = match participant_case::check_before_the_first_case(&plans, kind, &mut kind_lifecycle).await {
-        Ok(backends) => backends,
-        Err(errors) => {
-            for e in errors {
-                if use_tui {
-                    eprintln!("{}", e);
-                } else {
-                    error!("{}", e);
-                }
-            }
-            if participant_case::uses_pods(plans.iter().map(|(_, plan)| *plan)) {
-                tear_down_unused_kind(kind_lifecycle, &cmd.kind_cluster_name, cmd.no_delete_kind_cluster).await;
-            }
-            return ExitCode::from(EXIT_HARNESS_ERROR);
-        }
-    };
-
     // Create log directory.
     let log_dir = match cmd
         .log_dir()
@@ -318,8 +282,64 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         return ExitCode::from(2);
     }
 
-    // Install interrupt handlers before starting background work.
+    // Install interrupt handlers before starting background work, which includes the kind setup of the checks.
     let mut interrupts = Interrupts::install();
+
+    // Once, before the first case and outside any case's timeout: what the selected participant cases need.
+    let plans: Vec<(String, &plan::CasePlan)> = test_cases
+        .iter()
+        .filter_map(|test| {
+            test.participant_case()?
+                .plan
+                .as_ref()
+                .ok()
+                .map(|plan| (test.name(), plan))
+        })
+        .collect();
+    let mut settings = settings;
+    // Created before the checks, so the display shows the progress of the kind setup they run.
+    let (tx, rx) = create_event_channel();
+    let kind = participant_case::KindSetup {
+        cluster: cmd.kind_cluster_name.clone(),
+        events: tx.clone(),
+    };
+    let mut kind_lifecycle = None;
+    let checked = tokio::select! {
+        biased;
+
+        Some(source) = interrupts.recv() => {
+            Err(vec![format!("Received {} during the checks before the first case.", source)])
+        }
+        checked = participant_case::check_before_the_first_case(&plans, kind, &mut kind_lifecycle) => checked,
+    };
+    settings.backends = match checked {
+        Ok(backends) => backends,
+        Err(errors) => {
+            for e in errors {
+                if use_tui {
+                    eprintln!("{}", e);
+                } else {
+                    error!("{}", e);
+                }
+            }
+            if participant_case::uses_pods(plans.iter().map(|(_, plan)| *plan)) {
+                let teardown =
+                    tear_down_unused_kind(kind_lifecycle, &cmd.kind_cluster_name, cmd.no_delete_kind_cluster);
+                tokio::select! {
+                    biased;
+
+                    Some(source) = interrupts.recv() => warn!(
+                        "Received {}; abandoned kind cluster teardown. If cluster '{}' is still running, delete it \
+                         with 'kind delete cluster --name {}'.",
+                        source, cmd.kind_cluster_name, cmd.kind_cluster_name
+                    ),
+                    () = teardown => {}
+                }
+            }
+            return ExitCode::from(EXIT_HARNESS_ERROR);
+        }
+    };
+
     let mut report = RunReport::new(
         cmd.test_dirs.clone(),
         integration_runtime.clone(),
