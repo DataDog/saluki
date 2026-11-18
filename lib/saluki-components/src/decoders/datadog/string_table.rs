@@ -47,13 +47,14 @@ impl StringTable {
     /// told apart by their bytes, as the reference holds them, though invalid UTF-8 is repaired (see
     /// [`repair_utf8`](super::read::repair_utf8)).
     pub fn add(&mut self, raw: &[u8]) -> u32 {
-        let existing = match simdutf8::basic::from_utf8(raw) {
-            Ok(s) => self.indexes.get(s),
-            Err(_) => self.repaired.get(raw),
+        let text = simdutf8::basic::from_utf8(raw).ok();
+        let existing = match text {
+            Some(text) => self.indexes.get(text),
+            None => self.repaired.get(raw),
         };
         match existing {
             Some(index) => *index,
-            None => self.add_unchecked(raw),
+            None => self.push(raw, text),
         }
     }
 
@@ -61,18 +62,23 @@ impl StringTable {
     ///
     /// As the reference's `StringTable.addUnchecked`, which the string table field goes through: a duplicate takes an
     /// index of its own, and a later [`add`](Self::add) of the same string returns the index added last.
+    pub fn add_unchecked(&mut self, raw: &[u8]) -> u32 {
+        self.push(raw, simdutf8::basic::from_utf8(raw).ok())
+    }
+
+    /// Appends `raw`, whose text is `text` if it's valid UTF-8, and indexes it.
     ///
     /// A string too long to inline gets one shared allocation, so that every reference to it shares it: cloning an
     /// owned [`MetaString`] copies it.
-    pub fn add_unchecked(&mut self, raw: &[u8]) -> u32 {
+    fn push(&mut self, raw: &[u8], text: Option<&str>) -> u32 {
         let index = self.strings.len() as u32;
-        let value = match simdutf8::basic::from_utf8(raw) {
-            Ok(s) => {
-                let value = shared(s);
+        let value = match text {
+            Some(text) => {
+                let value = shared(text);
                 self.indexes.insert(value.clone(), index);
                 value
             }
-            Err(_) => {
+            None => {
                 self.repaired.insert(raw.into(), index);
                 shared(&repair_utf8(raw))
             }
