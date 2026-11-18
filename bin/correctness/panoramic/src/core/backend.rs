@@ -38,6 +38,8 @@ pub(crate) const LOG_DIR_ENV: &str = "PANORAMIC_LOG_DIR";
 
 /// The realization option that puts a Linux container or a pod in the host's PID namespace.
 pub(crate) const HOST_PID: &str = "host_pid";
+/// The realization option that puts a Linux container in the host's cgroup namespace.
+pub(crate) const HOST_CGROUP_NAMESPACE: &str = "host_cgroup_namespace";
 /// The realization option that mounts the container runtime's socket of the kind node in a pod.
 pub(crate) const CRI_SOCKET: &str = "cri_socket";
 
@@ -62,7 +64,6 @@ pub(crate) struct Facts {
     /// Whether a participant may mount host paths.
     pub(crate) mounts: bool,
     /// The realization options a case may set.
-    // TODO: add `host_cgroup_namespace` on a Linux container with the case that first needs it.
     pub(crate) options: &'static [&'static str],
 }
 
@@ -117,8 +118,9 @@ const LINUX_CONTAINER: Facts = Facts {
     listens: ALL_BUT_PIPES,
     publishes: true,
     mounts: true,
-    // `host_pid`: the container shares the host's PID namespace.
-    options: &[HOST_PID],
+    // `host_pid`: the container shares the host's PID namespace. `host_cgroup_namespace`: it shares the host's cgroup
+    // namespace.
+    options: &[HOST_PID, HOST_CGROUP_NAMESPACE],
 };
 
 const WINDOWS_CONTAINER: Facts = Facts {
