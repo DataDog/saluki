@@ -390,6 +390,11 @@ impl Realized for RealizedHost {
         deadline: Instant,
     ) -> Result<i64, HandleError> {
         let harness = |e: String| HandleError::Harness(e);
+        if self.has_exited().await {
+            return Err(HandleError::Software(
+                "the participant has exited, so it cannot run a command".to_string(),
+            ));
+        }
         let Some((program, args)) = exec.argv.split_first() else {
             return Err(harness("a command needs a program".to_string()));
         };
