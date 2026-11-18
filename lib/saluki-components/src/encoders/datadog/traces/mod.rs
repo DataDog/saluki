@@ -980,11 +980,18 @@ fn resolve_container_tags_from_attrs(
         }
     }
 
-    let mut container_tags = TagSet::default();
-    extract_trace_container_tags(resolved_tags, attributes, &mut container_tags);
     let is_fargate_source = source.is_some_and(|src| src.kind == OtlpSourceKind::AwsEcsFargate);
-    for tag in container_tags {
-        append_tags(&mut flattened, tag.as_str());
+    if resolved_tags.is_empty() {
+        let mut container_tags = TagSet::default();
+        extract_trace_container_tags(resolved_tags, attributes, &mut container_tags);
+        for tag in container_tags {
+            append_tags(&mut flattened, tag.as_str());
+        }
+    } else {
+        // The resolved tags are already deduplicated, so append them instead of copying them into a tag set.
+        for tag in resolved_tags {
+            append_tags(&mut flattened, tag.as_ref());
+        }
     }
     if is_fargate_source {
         if let Some(src) = source {
