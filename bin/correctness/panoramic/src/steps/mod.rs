@@ -30,6 +30,10 @@ const POLL: Duration = Duration::from_millis(100);
 /// How long one attempt of a step that probes or requests an endpoint may take.
 const ATTEMPT: Duration = Duration::from_secs(5);
 
+/// How long past the step's deadline the participant is given to end a command, so that a command that outlives the
+/// step is reported by the step and not as a problem of the mechanism.
+const EXEC_SLACK: Duration = Duration::from_secs(5);
+
 /// Registers every step.
 pub(crate) fn register(registry: &mut Registry) {
     registry.add_step(Box::new(compare::CompareFactory));

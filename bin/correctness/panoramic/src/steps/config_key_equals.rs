@@ -5,9 +5,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tokio::time::{sleep_until, Instant};
+use tokio::time::{sleep_until, timeout_at, Instant};
 
-use super::{stopped, POLL};
+use super::{stopped, ATTEMPT, EXEC_SLACK, POLL};
 use crate::core::case::Timeout;
 use crate::core::handle::HandleError;
 use crate::core::record::StepStatus;
@@ -75,43 +75,50 @@ impl Step for ConfigKeyEquals {
     async fn run(&self, cx: &StepContext<'_>) -> StepReport {
         let looked = async {
             let handle = cx.handle(&self.on)?;
+            let mut last = None;
             let last = loop {
-                let limit = cx.deadline.saturating_duration_since(Instant::now());
-                let seen = match handle
-                    .op(CONFIG_DUMP, json!({ "view": self.view.as_str() }), limit)
-                    .await
-                {
-                    Ok(config) => match self.key.split('.').try_fold(&config, |node, part| node.get(part)) {
-                        Some(value) if *value == self.value => {
-                            let message = format!(
-                                "ADP config key '{}' ({} view) equals {}.",
-                                self.key,
-                                self.view.as_str(),
-                                self.value
-                            );
-                            return Ok(StepReport {
-                                status: StepStatus::Passed,
-                                message,
-                            });
-                        }
-                        Some(value) => value.to_string(),
-                        None => "<missing>".to_string(),
-                    },
-                    Err(HandleError::Software(message)) => message,
-                    Err(e) => return Err(e),
-                };
                 if Instant::now() >= cx.deadline {
-                    break seen;
+                    break last;
                 }
-                sleep_until((Instant::now() + POLL).min(cx.deadline)).await;
+                let started = Instant::now();
+                // The dump gets room past the step's time, so that the timeout here ends it and a dump that outlives
+                // the step is reported by the step and not as a problem of the mechanism.
+                let limit = cx.deadline.saturating_duration_since(started) + EXEC_SLACK;
+                let dump = handle.op(CONFIG_DUMP, json!({ "view": self.view.as_str() }), limit);
+                // An attempt that is cut short leaves `last` as it was.
+                if let Ok(dumped) = timeout_at((started + ATTEMPT).min(cx.deadline), dump).await {
+                    match dumped {
+                        Ok(config) => match self.key.split('.').try_fold(&config, |node, part| node.get(part)) {
+                            Some(value) if *value == self.value => {
+                                let message = format!(
+                                    "Config key '{}' of '{}' ({} view) equals {}.",
+                                    self.key,
+                                    self.on,
+                                    self.view.as_str(),
+                                    self.value
+                                );
+                                return Ok(StepReport {
+                                    status: StepStatus::Passed,
+                                    message,
+                                });
+                            }
+                            Some(value) => last = Some(value.to_string()),
+                            None => last = Some("<missing>".to_string()),
+                        },
+                        Err(HandleError::Software(message)) => last = Some(message),
+                        Err(e) => return Err(e),
+                    }
+                }
+                sleep_until((started + POLL).min(cx.deadline)).await;
             };
             let message = format!(
-                "ADP config key '{}' ({} view) did not equal {} within {}: last {}",
+                "Config key '{}' of '{}' ({} view) did not equal {} within {}: last {}",
                 self.key,
+                self.on,
                 self.view.as_str(),
                 self.value,
                 self.timeout.text,
-                last
+                last.as_deref().unwrap_or("<no answer>")
             );
             Ok::<_, HandleError>(StepReport {
                 status: StepStatus::Failed,
