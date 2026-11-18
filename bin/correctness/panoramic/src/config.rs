@@ -164,6 +164,9 @@ pub const LINUX_RUNTIME: &str = "linux";
 /// Runtime identifier for integration tests that run inside a Windows container.
 pub const WINDOWS_RUNTIME: &str = "windows";
 
+/// Runtime identifier for cases that run participants in pods, which need a kind cluster.
+pub const KIND_RUNTIME: &str = "kubernetes_in_docker";
+
 /// The runtime name of the subject OS `os`.
 pub(crate) fn runtime_of(os: Os) -> &'static str {
     match os {

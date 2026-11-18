@@ -9,7 +9,6 @@ use std::{io::IsTerminal, process::ExitCode};
 
 use clap::Parser as _;
 use saluki_common::logging::{filter_from_env, parse_filter_directives};
-use tokio::sync::{watch, Mutex};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt as _, util::SubscriberInitExt as _};
@@ -271,7 +270,17 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         })
         .collect();
     let mut settings = settings;
-    settings.backends = match participant_case::check_before_the_first_case(&plans).await {
+    // Created before the checks, so the display shows the progress of the kind setup they run.
+    let (tx, rx) = create_event_channel();
+    let kind_images = legacy_kind_images(&test_cases);
+    let kind_needed = !kind_images.is_empty() || participant_case::uses_pods(plans.iter().map(|(_, plan)| *plan));
+    let kind = participant_case::KindSetup {
+        cluster: cmd.kind_cluster_name.clone(),
+        extra_images: kind_images,
+        events: tx.clone(),
+    };
+    let mut kind_lifecycle = None;
+    settings.backends = match participant_case::check_before_the_first_case(&plans, kind, &mut kind_lifecycle).await {
         Ok(backends) => backends,
         Err(errors) => {
             for e in errors {
@@ -280,6 +289,9 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
                 } else {
                     error!("{}", e);
                 }
+            }
+            if kind_needed {
+                tear_down_unused_kind(kind_lifecycle, &cmd.kind_cluster_name, cmd.no_delete_kind_cluster).await;
             }
             return ExitCode::from(EXIT_HARNESS_ERROR);
         }
@@ -321,39 +333,8 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
     report.set = set;
     let mut collector = RunCollector::start(report, cmd.fail_fast);
 
-    // Create the event channel early so the kind setup task can emit status messages.
-    let (tx, rx) = create_event_channel();
-
-    // Spawn kind cluster setup in the background so non-kind tests start immediately.
-    // Kind tests will wait on `kind_rx` before doing any work.
-    let kind_images = collect_kind_images(&test_cases);
-    let kind_lifecycle_slot = std::sync::Arc::new(Mutex::new(None::<KindLifecycle>));
-    let kind_rx = if kind_images.is_empty() {
-        None
-    } else {
-        let (kind_tx, kind_rx) = watch::channel::<Option<Result<(), String>>>(None);
-        let slot = kind_lifecycle_slot.clone();
-        let cluster_name = cmd.kind_cluster_name.clone();
-        let event_tx = tx.clone();
-        tokio::spawn(async move {
-            match KindLifecycle::ensure(cluster_name, kind_images, event_tx).await {
-                Ok(lc) => {
-                    *slot.lock().await = Some(lc);
-                    let _ = kind_tx.send(Some(Ok(())));
-                }
-                Err(e) => {
-                    let _ = kind_tx.send(Some(Err(format!("{:?}", e))));
-                }
-            }
-        });
-        Some(kind_rx)
-    };
-
     // Inject runtime config and build the test registry.
     let mut registry = Runner::new(log_dir.clone(), settings);
-    if let Some(ref rx) = kind_rx {
-        registry = registry.with_kind_ready(rx.clone());
-    }
     for tc in test_cases {
         registry.register(tc).expect("failure to register test");
     }
@@ -398,7 +379,7 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
     }
 
     // Tear down the kind cluster unless the caller asked to keep it.
-    if kind_rx.is_some() {
+    if let Some(lifecycle) = kind_lifecycle {
         // The TUI has shut down by now, so its notices go to stderr directly.
         let notice = |message: String| {
             if use_tui {
@@ -415,30 +396,18 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
                  delete it with 'kind delete cluster --name {}'.",
                 cluster_name, cluster_name
             ));
-        } else {
-            let lifecycle: Option<KindLifecycle> = kind_lifecycle_slot.lock().await.take();
-            if let Some(lifecycle) = lifecycle {
-                if cmd.no_delete_kind_cluster {
-                    info!(
-                        "Skipping kind cluster teardown (--no-delete-kind-cluster). \
-                         Cluster '{}' is still running.",
-                        cluster_name
-                    );
-                } else if let Some(source) = run_teardown(lifecycle.teardown(), &mut collector, &mut interrupts).await {
-                    notice(format!(
-                        "Received {}; abandoned kind cluster teardown. A 'kind delete' already started may still \
-                         finish. If cluster '{}' is still running, delete it with 'kind delete cluster --name {}'.",
-                        source, cluster_name, cluster_name
-                    ));
-                }
-            } else {
-                // Failed or unfinished setup can leave a cluster behind.
-                notice(format!(
-                    "Kind cluster setup did not complete successfully. \
-                     A kind cluster named '{}' may still be running — run 'kind delete cluster --name {}' to clean it up.",
-                    cluster_name, cluster_name
-                ));
-            }
+        } else if cmd.no_delete_kind_cluster {
+            info!(
+                "Skipping kind cluster teardown (--no-delete-kind-cluster). \
+                 Cluster '{}' is still running.",
+                cluster_name
+            );
+        } else if let Some(source) = run_teardown(lifecycle.teardown(), &mut collector, &mut interrupts).await {
+            notice(format!(
+                "Received {}; abandoned kind cluster teardown. A 'kind delete' already started may still \
+                 finish. If cluster '{}' is still running, delete it with 'kind delete cluster --name {}'.",
+                source, cluster_name, cluster_name
+            ));
         }
     }
 
@@ -462,12 +431,29 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
     collector::exit_code(collector.report())
 }
 
-/// Collects the unique set of images required by all kind-runtime tests in the given list.
-fn collect_kind_images(tests: &[Box<dyn test::Test>]) -> Vec<String> {
+/// Removes the kind cluster of a run that stopped at the checks before its first case, as a finished run would, or says
+/// that setup may have left one.
+async fn tear_down_unused_kind(lifecycle: Option<KindLifecycle>, cluster_name: &str, keep: bool) {
+    match lifecycle {
+        Some(_) if keep => info!(
+            "Skipping kind cluster teardown (--no-delete-kind-cluster). Cluster '{}' is still running.",
+            cluster_name
+        ),
+        Some(lifecycle) => lifecycle.teardown().await,
+        None => warn!(
+            "Kind cluster setup did not complete successfully. A kind cluster named '{}' may still be running; run \
+             'kind delete cluster --name {}' to clean it up.",
+            cluster_name, cluster_name
+        ),
+    }
+}
+
+/// Collects the unique set of images required by all legacy kind-runtime tests in the given list.
+fn legacy_kind_images(tests: &[Box<dyn test::Test>]) -> Vec<String> {
     use std::collections::BTreeSet;
     let mut images = BTreeSet::new();
     for test in tests {
-        if test.runtime() == "kubernetes_in_docker" {
+        if test.participant_case().is_none() && test.runtime() == config::KIND_RUNTIME {
             for (_, image) in test.images() {
                 images.insert(image);
             }

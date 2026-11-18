@@ -186,7 +186,7 @@ without running anything.
 A case or a participant type names each image and host program by reference, and a run can replace
 any of them, which is how CI points cases at the images a pipeline built. Before any case starts,
 panoramic checks that each one exists and pulls an image the Docker daemon lacks. A selected case
-whose realization the host cannot provide, such as pods without a kind cluster (Kubernetes in
+whose realization the host cannot provide, such as pods without `kind` (Kubernetes in
 Docker), is a harness error that names the case, and the run stops with exit code 2 before any case
 starts.
 
@@ -1472,9 +1472,11 @@ covers it; the courier binary is built by `make build-courier`.
    the image and the cases that use it.
 3. Every host program exists and can be executed, and the courier binary for each participant OS in
    use exists.
-4. For pod cases, the kind cluster exists and holds the images. Images are loaded with
-   `kind load docker-image`, which needs a single-platform image. The host requirement for pod cases
-   is a single-node kind cluster.
+4. For pod cases, the kind cluster exists and holds the images. The harness creates a missing
+   cluster, as the legacy runner does, so `kind` on the `PATH` is the host requirement, and the
+   cluster must have a single node. Setup blocks the run here, outside every case's timeout, where
+   the legacy runner set the cluster up in the background. Images are loaded with
+   `kind load docker-image`, which needs a single-platform image.
 
 Pulling a missing image keeps "run a new container" a one-line change in a case, in CI as well as
 locally. It is also what the harness does today, and the comparison jobs depend on it.

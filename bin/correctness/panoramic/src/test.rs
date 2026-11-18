@@ -5,7 +5,6 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 use crate::assertions::LogBuffer;
@@ -16,13 +15,6 @@ use crate::core::record::CaseRecord;
 use crate::core::result::{PhaseTracker, TestResult};
 use crate::core::tasks::CaseTasks;
 use crate::participant_case::ParticipantCase;
-
-/// Signal used to notify kind-runtime tests when the cluster is ready.
-///
-/// The receiver holds `None` until setup completes, then `Some(Ok(()))` on success or
-/// `Some(Err(message))` on failure. `watch::Receiver` implements `Clone`, so each task
-/// gets its own independent receiver with its own "last seen" mark—no mutex needed.
-pub(crate) type KindReadyReceiver = watch::Receiver<Option<Result<(), String>>>;
 
 #[derive(Debug, Default, Clone, Copy, Eq, Ord, PartialOrd, PartialEq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -72,10 +64,6 @@ pub(crate) struct TestContext {
     /// Settings shared by every test in the run.
     pub(crate) settings: RunnerSettings,
 
-    /// For kind-runtime tests: a shared channel that fires when the cluster is ready (or has failed).
-    /// Non-kind tests leave this as `None` and proceed immediately.
-    pub(crate) kind_ready: Option<KindReadyReceiver>,
-
     /// Where a test marks the phase it is executing, so the runner can name it if a deadline fires.
     pub(crate) phases: PhaseTracker,
 
@@ -102,17 +90,11 @@ impl TestContext {
             deadline,
             log_dir,
             settings,
-            kind_ready: None,
             phases: PhaseTracker::default(),
             record: CaseRecord::default(),
             ledger: ResourceLedger::default(),
             host_logs: Arc::default(),
         }
-    }
-
-    pub(crate) fn with_kind_ready(mut self, rx: KindReadyReceiver) -> Self {
-        self.kind_ready = Some(rx);
-        self
     }
 
     pub(crate) fn test_cancel_token(&self) -> CancellationToken {

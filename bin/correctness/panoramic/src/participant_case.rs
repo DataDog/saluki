@@ -5,7 +5,8 @@
 //! that does not declare that OS is skipped, and the skip is recorded with its reason.
 //!
 //! Before the first case, the run checks once what the selected cases need: each realization they use, a Docker daemon
-//! for Linux containers, every image they run, pulled once if the daemon lacks it, and the courier the containers get.
+//! for containers and pods, every image they run, pulled once if the daemon lacks it, the courier they get, and, for
+//! pods, a kind cluster that holds the images.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
@@ -15,18 +16,22 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::Instant;
 use tracing::warn;
 
-use crate::config::runtime_of;
+use crate::config::{runtime_of, KIND_RUNTIME};
 use crate::core::backend::Backends;
 use crate::core::case::{self, CaseError};
 use crate::core::container::{ContainerBackend, LINUX};
 use crate::core::lifecycle::{self, CaseRun};
 use crate::core::participant::{Enclosure, Os};
 use crate::core::plan::{self, CasePlan, Launch};
+use crate::core::pod::PodBackend;
 use crate::core::registry::Registry;
 use crate::core::result::TestResult;
+use crate::events::TestEvent;
+use crate::kind::KindLifecycle;
 use crate::test::{Test, TestContext, TestSuite};
 
 /// The file in a case's log directory that holds its plan when it does not pass.
@@ -118,7 +123,10 @@ impl ParticipantCase {
             dir,
             description: case.info.description.clone(),
             timeout: case.info.timeout.duration,
-            runtime: runtime_of(subject_os),
+            runtime: match &plan {
+                Ok(plan) if uses_pods([plan]) => KIND_RUNTIME,
+                _ => runtime_of(subject_os),
+            },
             disabled: case.info.disabled,
             plan,
         };
@@ -218,36 +226,76 @@ fn write_plan(plan: &CasePlan, log_dir: &Path) {
     }
 }
 
+/// What the checks before the first case need to set up a kind cluster.
+pub(crate) struct KindSetup {
+    /// The cluster's name.
+    pub(crate) cluster: String,
+    /// Images that cases outside the participant case schema need in the cluster.
+    pub(crate) extra_images: Vec<String>,
+    /// Where setup reports its progress, for the run's display.
+    pub(crate) events: UnboundedSender<TestEvent>,
+}
+
+/// Whether any of `plans` runs a participant in a pod, which needs a kind cluster.
+pub(crate) fn uses_pods<'a>(plans: impl IntoIterator<Item = &'a CasePlan>) -> bool {
+    plans.into_iter().any(|plan| {
+        plan.participants
+            .values()
+            .any(|planned| planned.realization.enclosure == Enclosure::KubernetesPod)
+    })
+}
+
 /// Checks, once and before the first case, what the selected participant cases need: each realization their
-/// participants use, every image, pulled if the Docker daemon lacks it, and the courier. `plans` holds the plan of each
-/// case that runs, by name.
+/// participants use, every image, pulled if the Docker daemon lacks it, the courier, and, for pods, a kind cluster that
+/// holds the images. `plans` holds the plan of each case that runs, by name.
+///
+/// A kind cluster is made if it is missing, and a run with any pod, or with images in `kind.extra_images`, sets it up
+/// once here, outside every case's timeout. Setup puts the cluster in `lifecycle` as soon as it exists, so the caller
+/// can remove it even when a later check fails.
 ///
 /// Returns the backend of each realization the cases use.
 ///
 /// # Errors
 ///
 /// Returns every problem found: a realization the runner host cannot provide, an image that cannot be pulled, with the
-/// cases that use it, or a missing courier.
-pub(crate) async fn check_before_the_first_case(plans: &[(String, &CasePlan)]) -> Result<Backends, Vec<String>> {
+/// cases that use it, a missing courier, or a kind cluster that cannot be set up, with the cases that need it.
+pub(crate) async fn check_before_the_first_case(
+    plans: &[(String, &CasePlan)], kind: KindSetup, lifecycle: &mut Option<KindLifecycle>,
+) -> Result<Backends, Vec<String>> {
     let mut errors = Vec::new();
-    let mut images: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    let mut container_images: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    let mut pod_images: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    let mut pod_cases = Vec::new();
     let mut containers = false;
     for (name, plan) in plans {
         for (participant, planned) in &plan.participants {
-            match planned.realization.enclosure {
-                Enclosure::LinuxContainer => containers = true,
+            let images = match planned.realization.enclosure {
+                Enclosure::LinuxContainer => {
+                    containers = true;
+                    &mut container_images
+                }
+                Enclosure::KubernetesPod => {
+                    pod_cases.push(name.as_str());
+                    &mut pod_images
+                }
                 // TODO: check the other realizations with the backends that run them.
-                enclosure => errors.push(format!(
-                    "Case '{}' runs participant '{}' as a {}, and the runner host cannot: that backend is not built.",
-                    name, participant, enclosure
-                )),
-            }
+                enclosure => {
+                    errors.push(format!(
+                        "Case '{}' runs participant '{}' as a {}, and the runner host cannot: that backend is not built.",
+                        name, participant, enclosure
+                    ));
+                    continue;
+                }
+            };
             if let Launch::Image { image, .. } = &planned.launch {
                 images.entry(image.used()).or_default().push(name);
             }
         }
     }
-    if !containers || !errors.is_empty() {
+    pod_cases.dedup();
+    let pods = !pod_cases.is_empty();
+    let kind_needed = pods || !kind.extra_images.is_empty();
+    if !errors.is_empty() || !(containers || kind_needed) {
         return if errors.is_empty() {
             Ok(Backends::default())
         } else {
@@ -257,12 +305,12 @@ pub(crate) async fn check_before_the_first_case(plans: &[(String, &CasePlan)]) -
 
     let docker = match airlock::docker::connect() {
         Ok(docker) => docker,
-        Err(e) => return Err(vec![format!("Linux containers need a Docker daemon: {:#}", e)]),
+        Err(e) => return Err(vec![format!("Containers and pods need a Docker daemon: {:#}", e)]),
     };
     if let Err(e) = docker.ping().await {
-        return Err(vec![format!("Linux containers need a Docker daemon: {}", e)]);
+        return Err(vec![format!("Containers and pods need a Docker daemon: {}", e)]);
     }
-    for (image, mut cases) in images {
+    for (image, mut cases) in container_images {
         cases.dedup();
         if let Err(e) = airlock::image::ensure_image(&docker, image, Instant::now() + PULL_TIME).await {
             errors.push(format!(
@@ -274,27 +322,62 @@ pub(crate) async fn check_before_the_first_case(plans: &[(String, &CasePlan)]) -
         }
     }
     // The repository root is the directory panoramic runs in, as in every Make target and CI job.
-    let courier = LINUX.courier_binary();
-    let courier = match std::fs::read(&courier) {
-        Ok(courier) => Some(courier),
-        Err(e) => {
-            errors.push(format!(
-                "Linux containers need the courier at {}, relative to the directory panoramic runs in, which `make build-courier` builds: {}",
-                courier.display(),
+    let mut courier = Vec::new();
+    if containers || pods {
+        let path = LINUX.courier_binary();
+        match std::fs::read(&path) {
+            Ok(bytes) => courier = bytes,
+            Err(e) => errors.push(format!(
+                "Containers and pods need the courier at {}, relative to the directory panoramic runs in, which `make build-courier` builds: {}",
+                path.display(),
                 e
-            ));
-            None
+            )),
         }
-    };
-    match courier {
-        Some(courier) if errors.is_empty() => {
-            let mut backends = Backends::default();
-            backends.insert(
-                Enclosure::LinuxContainer,
-                Arc::new(ContainerBackend::new(docker, &LINUX, courier.into())),
-            );
-            Ok(backends)
-        }
-        _ => Err(errors),
     }
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+
+    let mut backends = Backends::default();
+    if containers {
+        let backend = ContainerBackend::new(docker.clone(), &LINUX, courier.clone().into());
+        backends.insert(Enclosure::LinuxContainer, Arc::new(backend));
+    }
+    if kind_needed {
+        let images = pod_images
+            .keys()
+            .map(|image| image.to_string())
+            .chain(kind.extra_images)
+            .collect();
+        let KindSetup { cluster, events, .. } = kind;
+        let named = |cases: &[&str]| match cases {
+            [] => "the cases that need it".to_string(),
+            cases => format!("cases {}", cases.join(", ")),
+        };
+        match KindLifecycle::ensure(cluster.clone(), images, events).await {
+            Ok(ready) => *lifecycle = Some(ready),
+            Err(e) => {
+                return Err(vec![format!(
+                    "Kind cluster '{}' cannot be set up for {}: {:#}",
+                    cluster,
+                    named(&pod_cases),
+                    e
+                )])
+            }
+        }
+        if pods {
+            match PodBackend::connect(&cluster, docker, courier.into()).await {
+                Ok(backend) => backends.insert(Enclosure::KubernetesPod, Arc::new(backend)),
+                Err(e) => {
+                    return Err(vec![format!(
+                        "Kind cluster '{}' cannot run cases {}: {:#}",
+                        cluster,
+                        pod_cases.join(", "),
+                        e
+                    )])
+                }
+            }
+        }
+    }
+    Ok(backends)
 }
