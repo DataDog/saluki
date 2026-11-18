@@ -77,12 +77,6 @@ files:
       - region: testing-patterns.md#review-checklist
         level: 3
         heading: Tests
-      - region: testing-patterns.md#process-wide-state
-        level: 4
-      - region: testing-patterns.md#ports
-        level: 4
-      - region: testing-patterns.md#timing
-        level: 4
       - region: style-guide.md#comments-and-docs
         level: 3
         heading: Comments and documentation
@@ -127,6 +121,8 @@ files:
     title: Components review checklist
     sections:
       - region: code-review.md#saluki-components
+      - region: code-review.md#component-loop
+        level: 3
 
   - path: lib/saluki-env/codereview_guideline.md
     title: Environment and workload review checklist
@@ -137,6 +133,8 @@ files:
     title: Agent Data Plane review checklist
     sections:
       - region: code-review.md#agent-data-plane
+      - region: code-review.md#component-loop
+        level: 3
 
   - path: bin/correctness/codereview_guideline.md
     title: Correctness tooling review checklist

@@ -292,7 +292,6 @@ Reviewers check changes to the test cases under `test/` against these rules:
 Apply these rules to files under `test/`: correctness cases, integration cases, and SMP experiments.
 
 - A correctness case must fail when ADP is wrong.
-- A correctness case tests only the settings that it sets. 
 - The Core Agent and ADP can both run some pipelines, such as DogStatsD and OTLP. If ADP doesn't receive the traffic,
   the Core Agent handles it, and the case compares the Agent with itself. When a case turns on such a pipeline in ADP,
   ask what shows that ADP received the traffic. Don't ask when the case or the description already shows it.

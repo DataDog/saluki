@@ -116,6 +116,7 @@ Apply these rules to files under `lib/saluki-components`.
 - Components should always prefer to acquire environment-based configuration from `EnvironmentProvider` instead of
   passing it through their configuration directly. For example, take the hostname of the current host from
   `HostProvider::get_hostname`, accessed through `EnvironmentProvider::host`.
+- Each metrics encoder drops non-finite points, and a new encoder does too. Histogram bucket bounds can be infinite.
 - For encoders that have payload size limits, ensure that they build their payloads incrementally, if possible, to
   minimize the chance of having the payload rejected. If payloads can be split, then this applies doubly so as
   incremental encoding provides a chance to opportunistically split payloads and avoid costly re-encoding.
@@ -130,11 +131,8 @@ Apply these rules to files under `lib/saluki-env`. This crate reads cgroups, pro
 metadata, and it converts autodiscovery configurations. Bugs here are often silent. The result is missing container
 tags, not an error.
 
-- Code in this crate SHOULD strive, as much as reasonably possible, to gracefully handle environmental differences
-  and incompatibilities, in a way that does not interrupt overall operation but does not go unnoticed. For example,
-  failing to query the tags for an entity for unexpected reasons can cause metrics correctness issues, and so we
-  should alert the operator but we should not degrade in such a way that other operations fail, since transient
-  errors are expected more often in this area.
+- Handle environmental differences and transient errors without stopping other work, and without hiding them: a
+  failed tag lookup is logged or counted for the operator, and the rest of the crate keeps running.
 - Unbounded growth of metadata can occur rapidly, so all metadata operations that store state should either be bounded
   in time (such as by using a cache with an expiration/TTL) or have matching/paired code paths that clean up the state
   at the earliest opportunity.
@@ -155,13 +153,27 @@ Apply these rules to files under `bin/agent-data-plane`.
 - Flag a stage that records state, such as a first-seen set, before a stage that can drop the event. Flag a filter that
   runs before the mapping or split that it depends on. A destination that measures input, such as `dsd_stats_out` on
   `dsd_in.metrics`, connects to the raw source output.
-- Ensure that identifying tags (such as `component_id` or `resolver_id`) in metric remapping rules are updated if and
-  when the corresponding component's ID changed as part of topology construction.
+- When the Datadog Agent expects another metric name, add a remap rule in `src/state/metrics/rules/`. The target doesn't
+  start with `datadog.agent.`, which the Core Agent adds, and it carries the Agent's help text.A metric, tag, or
+  component ID rename updates the rules that match it, including identifying tags such as `component_id` and
+  `resolver_id`.
 - Ensure that metric remap rules are arranged from highest to lowest specificity when there are multiple rules for the
   same "base" series: for example, a remap rule that matches `my_counter` directly coming before a rule that matched
   `my_counter` with a specific tag value would cause the second rule to never fire.
 - Ensure that metrics referenced in a remap rule or a status section are registered at `info` level, and not `debug`
   or `trace`, otherwise they won't be picked up by default.
+<!-- /review -->
+
+### Component run loops
+
+Components live in `lib/saluki-components` and `bin/agent-data-plane/src/components`, so both checklists include these
+rules:
+
+<!-- review:component-loop -->
+- Flag a component loop that isn't a `loop { select! { ... } }` with a `health.live()` arm, such as a `while let` loop
+  over input.
+- Flag a `select!` arm that awaits work whose duration grows with buffered state, such as a whole flush. (A slow flush
+  in one arm made `/live` fail on CPU-starved pods: #2726.)
 <!-- /review -->
 
 ### GitHub workflows

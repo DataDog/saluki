@@ -12,10 +12,19 @@ Apply these rules to files under `bin/agent-data-plane`.
 - Flag a stage that records state, such as a first-seen set, before a stage that can drop the event. Flag a filter that
   runs before the mapping or split that it depends on. A destination that measures input, such as `dsd_stats_out` on
   `dsd_in.metrics`, connects to the raw source output.
-- Ensure that identifying tags (such as `component_id` or `resolver_id`) in metric remapping rules are updated if and
-  when the corresponding component's ID changed as part of topology construction.
+- When the Datadog Agent expects another metric name, add a remap rule in `src/state/metrics/rules/`. The target doesn't
+  start with `datadog.agent.`, which the Core Agent adds, and it carries the Agent's help text.A metric, tag, or
+  component ID rename updates the rules that match it, including identifying tags such as `component_id` and
+  `resolver_id`.
 - Ensure that metric remap rules are arranged from highest to lowest specificity when there are multiple rules for the
   same "base" series: for example, a remap rule that matches `my_counter` directly coming before a rule that matched
   `my_counter` with a specific tag value would cause the second rule to never fire.
 - Ensure that metrics referenced in a remap rule or a status section are registered at `info` level, and not `debug`
   or `trace`, otherwise they won't be picked up by default.
+
+### Component run loops
+
+- Flag a component loop that isn't a `loop { select! { ... } }` with a `health.live()` arm, such as a `while let` loop
+  over input.
+- Flag a `select!` arm that awaits work whose duration grows with buffered state, such as a whole flush. (A slow flush
+  in one arm made `/live` fail on CPU-starved pods: #2726.)

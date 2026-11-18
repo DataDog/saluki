@@ -2,5 +2,5 @@
 
 ## Configuration translation review checklist
 
-A `/config-system` skill exists to help answer questions about the configuration system, including adding, updating,
-and removing settings, as well as explaining and defining how parts of the configuration system works.
+For changes to the configuration system, read `docs/development/configuration-system.md` and
+`.agents/skills/config-system/SKILL.md` as reference, and apply the "Review checklist" in that page.

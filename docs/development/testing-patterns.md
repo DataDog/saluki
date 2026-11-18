@@ -206,7 +206,6 @@ Saluki. A pull request number at the end of a rule points to the fix for a flaky
 
 ### Process-wide state
 
-<!-- review:process-wide-state -->
 Every test in a process sees the same environment variables and other process-wide state. `cargo test` runs the tests
 of one binary on threads of one process, so a change in one test reaches every test that runs at the same time.
 `make test` runs `cargo nextest`, which runs each test in its own process, so CI doesn't show the race.
@@ -223,22 +222,17 @@ of one binary on threads of one process, so a change in one test reaches every t
   `saluki_tls::initialize_default_crypto_provider()` whose error the test ignores. Each top-level file in a crate's
   `tests/` directory builds a separate binary, so a file that holds one test needs no lock either.
 - A test result doesn't depend on variables that the machine already sets. CI runners set their own, such as proxy
-  variables. (Configuration tests read the CI runner's proxy variables and failed on `main`: #2235.)
-<!-- /review -->
+  variables.
 
 ### Ports
 
-<!-- review:ports -->
 Don't reserve a port by binding port `0` and then releasing it for the code under test. Another test can take the port
 in the gap, and then the bind fails. Let the code under test bind port `0` itself and publish the address that it
 bound. For example, `HttpServer` asserts its `BoundListenAddress` in the dataspace when you set a server identifier with
-`with_server_id`, and the test reads the address through `TestSupervisor::dataspace`. (A relay test failed in CI
-because its server couldn't bind the port that the test released: #3142.)
-<!-- /review -->
+`with_server_id`, and the test reads the address through `TestSupervisor::dataspace`.
 
 ### Timing
 
-<!-- review:timing -->
 A test that sleeps for a fixed time and then expects background work to finish fails on a slow or busy machine. Wait
 for the effect under a deadline instead:
 
@@ -253,8 +247,7 @@ refill rate so low that nothing refills during the test.
 
 Don't assume that a fixed number of short sleeps takes a fixed time. Windows timers round up to about 15.6 ms, so 60
 sleeps of 5 ms take about 0.9 s, not 0.3 s. End the loop when the event count reaches its target, or when a deadline
-passes. (A supervisor test used up its restart budget this way on Windows: #2978.)
-<!-- /review -->
+passes.
 
 ## Regression tests and ported tests should name their source
 
@@ -279,7 +272,7 @@ You **SHOULD** write a proper benchmark, whether through an actual benchmarking 
 ## Review checklist
 
 Reviewers check the tests in a pull request, and the tests that its production changes need. The rules in
-[Flaky tests](#flaky-tests) also apply.
+The last three items check the [Flaky tests](#flaky-tests) rules.
 
 <!-- review:review-checklist -->
 - Flag a property test whose name doesn't start with `property_test_`. The Make targets select property tests by this
@@ -297,4 +290,11 @@ Reviewers check the tests in a pull request, and the tests that its production c
   hand-built context is fine for a branch that the driver can't reach, such as an output with no downstream component.
   For a supervised worker that isn't a whole component, flag a bare `Supervisor` where `TestSupervisor` works.
 - Flag setup or assertions copied from a neighboring test that don't apply to the behavior under test.
+- Flag a test that changes environment variables without holding `saluki_config::test_env_lock`, or that holds it
+  around `ConfigurationLoader::for_tests`, which takes the lock itself. A `static` mutex inside each test function
+  serializes nothing. `make test` runs each test in its own process, so CI doesn't show these races.
+- Flag a test that binds port `0`, releases it, and passes the port to the code under test. The code under test binds
+  port `0` itself and publishes the address.
+- Flag a test that sleeps for a fixed time, or counts a fixed number of sleeps, and then expects background work to be
+  done. Poll the condition under a deadline, or use Tokio's paused time when the code waits only on Tokio timers.
 <!-- /review -->

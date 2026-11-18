@@ -86,6 +86,10 @@ Keep each API small, and name each item for what it does:
 - Conversion methods follow the Rust API Guidelines: `as_` is a cheap borrow, `to_` is an expensive or owned
   conversion, and `into_` consumes `self`. To give callers owned access to the internals, add an `into_parts(self)`
   method.
+- A change can keep a public signature and still change the result, as when `EventD::hostname()` started to return
+  `Some("")`. Search the repository for each caller. Flag a caller that the new result breaks, such as one that
+  expects `Some` to hold a hostname that isn't empty. Put the comment on the changed item, and give the caller's path.
+  If the description doesn't mention the new result, ask whether the author intends it.
 - A setter named `set_foo` takes `&mut self`. A builder method named `with_foo` takes `self` and returns `Self`.
 - A name says what the item does. For example, a function that spawns a task is `spawn_*`, not `new_*`. Method names
   use full words, and variable names can use abbreviations.
@@ -99,8 +103,8 @@ Keep each API small, and name each item for what it does:
   - an `async fn` that never awaits, unless it implements a trait method that is `async`
   - an `Arc` or a `Mutex` around a value that nothing shares, or that's already safe to share
   - an `Option` parameter that the pull request adds when every caller passes `Some`
-  - in a library crate, a new `pub` item that nothing outside the crate uses, unless the pull request description
-    names the stacked pull request that uses it. A `pub` method on a `pub(crate)` type is fine.
+  - in a library crate, a new `pub` item that nothing outside the crate uses. A `pub` method on a `pub(crate)` type
+    is fine, and so is an item that a stacked pull request uses.
 - Prefer the standard library to a new crate, for example `std::sync::LazyLock` instead of `once_cell`. When the
   workspace already uses a major version of a dependency, use that version.
 <!-- /review -->
@@ -150,6 +154,8 @@ No formatter or lint checks these conventions, so reviewers point them out as ni
   `use self::foo::...` line is fine.
 - Put constants at the top of the file, below the imports.
 - Put the doc comment above the attributes of an item.
+- Write an `expect` message as what the code expects, such as `expect("should not fail to set item on dict")`, not as
+  the failure, such as `expect("Could not set name")`.
 - Derive `Copy` on small enums without fields. Return a `&'static str` from a method instead of allocating a `String`
   for a fixed name.
 - In the root `Cargo.toml`, set `default-features = false` on each dependency. Each crate enables the features that it
@@ -165,15 +171,12 @@ Operators read errors and logs to find out what went wrong, so we write both for
 Return an error instead of a panic, and keep the cause of each failure:
 
 <!-- review:error-handling -->
-These rules apply to production code, not to tests or to the harness code under `bin/correctness/` and `test/`. In that
-code, still flag an ignored error that lets a test pass when it should fail.
+In tests and harness code, flag only an ignored error that lets a test pass when it should fail.
 
 - Flag a new `unwrap()`, `expect()`, `panic!`, `unreachable!`, `assert!`, or panicking index when its assumption can
   break. Input, configuration, timing, or a wrong estimate can break it. Timing includes a late response and a lagging
   `broadcast` receiver. Where the code can skip the bad input and count it, it does that instead. (A size estimate
   that asked for a flush before the first write made the encoder panic: #1310.)
-- An `expect` message states what the code expects, such as `expect("should not fail to set item on dict")`. Flag a
-  message that only reports the failure, such as `expect("Could not set name")`.
 - Untyped errors use `saluki_error::GenericError`, with context from `error_context` or `with_error_context` in
   `saluki_error::ErrorContext`. Typed errors use `snafu`. Flag `anyhow` types used directly, `Box<dyn Error>` as a new
   error type, and `String` as an error type. A trait bound that needs `Box<dyn Error>` is fine.
@@ -604,15 +607,10 @@ Also check the wording of new and changed text against these rules:
 - No filler, such as "in order to," "basically," "simply," or "Note that."
 - No "i.e." or "e.g." in `//` comments. Vale already checks rustdoc and Markdown for these.
 
-Put all wording problems in one file into one "Nit:" comment. Give each rewrite as plain text, with its line numbers,
-because a suggestion block replaces exactly the lines that the comment is anchored to. Use a suggestion block only when
-the comment is anchored to every line of the text that the rewrite replaces. When several files have wording problems,
-write the comment for the file with the most problems, and list the other files in it. This comment is in addition to
-any other nits.
-
-A rewrite keeps every fact of the original: split a long sentence instead of cutting a clause. Don't report wording in
-text that the pull request didn't change or only moved. Don't rewrite text that follows these rules only to use words
-that you prefer.
+Report wording problems in one "Nit:" comment, for the file with the most problems, and list the other files in it.
+Give rewrites as plain text with line numbers, and use a suggestion block only when it covers every replaced line. A
+rewrite keeps every fact. Skip text that the pull request didn't change or only moved, and text that already follows
+these rules.
 
 Also:
 

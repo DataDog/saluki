@@ -6,11 +6,8 @@ Apply these rules to files under `lib/saluki-env`. This crate reads cgroups, pro
 metadata, and it converts autodiscovery configurations. Bugs here are often silent. The result is missing container
 tags, not an error.
 
-- Code in this crate SHOULD strive, as much as reasonably possible, to gracefully handle environmental differences
-  and incompatibilities, in a way that does not interrupt overall operation but does not go unnoticed. For example,
-  failing to query the tags for an entity for unexpected reasons can cause metrics correctness issues, and so we
-  should alert the operator but we should not degrade in such a way that other operations fail, since transient
-  errors are expected more often in this area.
+- Handle environmental differences and transient errors without stopping other work, and without hiding them: a
+  failed tag lookup is logged or counted for the operator, and the rest of the crate keeps running.
 - Unbounded growth of metadata can occur rapidly, so all metadata operations that store state should either be bounded
   in time (such as by using a cache with an expiration/TTL) or have matching/paired code paths that clean up the state
   at the earliest opportunity.

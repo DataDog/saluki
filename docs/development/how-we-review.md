@@ -6,26 +6,25 @@ comments. It applies to human and AI reviewers.
 ## What we look for
 
 <!-- review:preamble -->
-We rank problems by their effect on the people who run Agent Data Plane:
+You review pull requests for Saluki the way a maintainer does. Saluki is a Rust toolkit for building observability
+data planes. Its main binary, `bin/agent-data-plane` (ADP), runs next to the Datadog Agent.
 
-1. **Correctness and data loss.** Silent drops, lost data at shutdown, configuration that means something different
-   from what it says, missed notifications, and deadlocks.
-2. **Datadog Agent parity.** Agent Data Plane matches what users observe from the Datadog Agent: output, defaults,
-   accepted input, and behavior on bad input. We ask what the Agent does, and the answer comes from Agent source. We
-   don't copy Go mechanics or Agent internals that don't fit Tokio or Saluki.
-3. **Cost on per-event paths, and bounded memory.** No avoidable allocations, clones, or logs per event. No unbounded
-   channels, caches, or cardinality.
-4. **Fit with the architecture.** Reuse the mechanisms that we already have, keep the `lib/saluki-*` crates generic,
-   and follow the component model.
-5. **A small, honest API.** Remove what isn't needed: structs, `async`, `Arc` and `Mutex`, `pub` items, and
-   speculative code. Ask what a new mechanism adds over the one that exists.
-6. **Signals that operators can trust.** Metrics that count what their names say, logs at the right level that read
-   as sentences, and errors that name the configuration key and the fix.
-7. **Comments and docs that describe the present.** Plain wording, no narration of changes, and no restated code.
-8. **Tests that protect production behavior.** Fewer, better tests that fail when the behavior breaks.
-9. **Scope.** Large refactors and polish go to follow-up pull requests or to a `TODO` that says what is missing.
+We rank problems by their effect on the people who run ADP. Each item has a section in the checklist below:
 
-Security problems are treated the same as correctness problems.
+1. **Correctness and data loss.** Silent drops, lost data at shutdown, wrong configuration meaning, and deadlocks.
+   Security problems rank here too.
+2. **Datadog Agent parity** of what users observe.
+3. **Cost on per-event paths, and bounded memory.**
+4. **Fit with the architecture.** Reuse what exists, keep `lib/saluki-*` generic, and follow the component model.
+5. **A small, honest API** with nothing that it doesn't need.
+6. **Signals that operators can trust:** metrics, logs, and errors.
+7. **Comments and docs that describe the present.**
+8. **Tests that protect production behavior.**
+9. **Scope.** Large refactors go to follow-up pull requests.
+
+Write the review body as a short verdict of three sentences or fewer. Say "patch is correct" or "patch is incorrect,"
+give the number of blocking findings, and give the main reason. Don't describe how you reviewed the change, and don't
+list what you checked and found correct.
 <!-- /review -->
 
 ## How we write review comments

@@ -2,26 +2,25 @@
 
 ## Saluki review guidelines
 
-We rank problems by their effect on the people who run Agent Data Plane:
+You review pull requests for Saluki the way a maintainer does. Saluki is a Rust toolkit for building observability
+data planes. Its main binary, `bin/agent-data-plane` (ADP), runs next to the Datadog Agent.
 
-1. **Correctness and data loss.** Silent drops, lost data at shutdown, configuration that means something different
-   from what it says, missed notifications, and deadlocks.
-2. **Datadog Agent parity.** Agent Data Plane matches what users observe from the Datadog Agent: output, defaults,
-   accepted input, and behavior on bad input. We ask what the Agent does, and the answer comes from Agent source. We
-   don't copy Go mechanics or Agent internals that don't fit Tokio or Saluki.
-3. **Cost on per-event paths, and bounded memory.** No avoidable allocations, clones, or logs per event. No unbounded
-   channels, caches, or cardinality.
-4. **Fit with the architecture.** Reuse the mechanisms that we already have, keep the `lib/saluki-*` crates generic,
-   and follow the component model.
-5. **A small, honest API.** Remove what isn't needed: structs, `async`, `Arc` and `Mutex`, `pub` items, and
-   speculative code. Ask what a new mechanism adds over the one that exists.
-6. **Signals that operators can trust.** Metrics that count what their names say, logs at the right level that read
-   as sentences, and errors that name the configuration key and the fix.
-7. **Comments and docs that describe the present.** Plain wording, no narration of changes, and no restated code.
-8. **Tests that protect production behavior.** Fewer, better tests that fail when the behavior breaks.
-9. **Scope.** Large refactors and polish go to follow-up pull requests or to a `TODO` that says what is missing.
+We rank problems by their effect on the people who run ADP. Each item has a section in the checklist below:
 
-Security problems are treated the same as correctness problems.
+1. **Correctness and data loss.** Silent drops, lost data at shutdown, wrong configuration meaning, and deadlocks.
+   Security problems rank here too.
+2. **Datadog Agent parity** of what users observe.
+3. **Cost on per-event paths, and bounded memory.**
+4. **Fit with the architecture.** Reuse what exists, keep `lib/saluki-*` generic, and follow the component model.
+5. **A small, honest API** with nothing that it doesn't need.
+6. **Signals that operators can trust:** metrics, logs, and errors.
+7. **Comments and docs that describe the present.**
+8. **Tests that protect production behavior.**
+9. **Scope.** Large refactors go to follow-up pull requests.
+
+Write the review body as a short verdict of three sentences or fewer. Say "patch is correct" or "patch is incorrect,"
+give the number of blocking findings, and give the main reason. Don't describe how you reviewed the change, and don't
+list what you checked and found correct.
 
 ## How to write a finding
 
@@ -128,11 +127,9 @@ don't fit Tokio, unless the pull request says why. An example is a rendezvous ch
   it does neither, ask what the Agent does.
 - When a change fixes one path, check its sibling paths. Sibling paths include aggregated and timestamped metrics;
   series and sketches; each encoder version; each transport, including Windows named pipes; and each signal. Flag a
-  sibling that has the same defect and stays unfixed, or that inherits behavior meant for another path. (V2 series
-  ignored a point limit that V3 obeyed: #2055. V3 sketch payloads inherited the series limits: #3082.)
+  sibling that has the same defect and stays unfixed, or that inherits behavior meant for another path.
 - When the Agent logs a bad value and continues, ADP continues too. Flag a new startup error for such a value, and a
-  startup step that a short outage can make fatal. A startup error becomes a crash loop. (One invalid mapper entry
-  stopped DogStatsD from starting: #3114.)
+  startup step that a short outage can make fatal. A startup error becomes a crash loop.
 
 ### Reuse what exists
 
@@ -148,10 +145,8 @@ most often:
 
 ### API routes and control plane workers
 
-Publish internal API routes and gRPC services by asserting a `DynamicRoute` from a worker. Flag a new static handler
-added with `APIBuilder::with_handler` or `APIBuilder::with_grpc_service`. Shared crates provide workers, and each
-binary assembles its own control plane supervisor from them. Flag a library builder that assembles a binary's control
-plane from several workers. A server type's `into_supervisor` method is fine.
+Flag a new static handler added with `APIBuilder::with_handler` or `APIBuilder::with_grpc_service`: a worker asserts a
+`DynamicRoute` instead. Flag a library builder that assembles a binary's control plane from several workers.
 
 ### Hot paths and memory
 
@@ -172,9 +167,9 @@ Regressions that only affect tail latency (p95, p99) also count. In production c
   queue that something else bounds, such as a supervisor's queue of children to spawn, is fine.
 - a collection that grows for each connection, key, or context with no size limit, expiration, or removal on every
   exit path. Exit paths include disconnect, flush, capture stop, and delete. Also check an expiry setting of `0`,
-  which turns expiry off. (A UDS capture buffer grew without limit and stayed after capture stopped: #2823.)
+  which turns expiry off.
 - a per-connection or per-request value in a task name, metric tag, or component ID. Each value makes a new metric
-  series. (A stream index in task names leaked memory and CPU: #1899.)
+  series.
 
 ### Concurrency and lifecycle
 
@@ -182,44 +177,28 @@ Components run concurrently on Tokio, under supervisors, with explicit startup a
 
 - a blocking call in async code, such as `std::fs` I/O
 - a spawned task that nothing joins or cancels
-- a component loop that isn't a `loop { select! { ... } }` with a `health.live()` arm, such as a `while let` loop
-  over input
-- a `select!` arm that awaits work whose duration grows with buffered state, such as a whole flush. (A slow flush in
-  one arm made `/live` fail on CPU-starved pods: #2726.)
 - a final flush or shutdown path that reuses a steady-state condition, such as an idle timeout, and so leaves buffered
-  data unsent. A lifecycle change has a test that stops the component right after input and checks the output. (A
-  final flush that reused the idle check dropped recent metrics: #2820.)
+  data unsent. A lifecycle change has a test that stops the component right after input and checks the output.
 - a shutdown path that can hang, or that differs between `select!` arms
 - a notification sent before readers can see the new state, and a ready signal sent before the listener binds.
-  (Configuration update events went out before the configuration held the new values: #1914.)
 - `abort()` as the only way to stop `spawn_blocking` work or a thread. That work checks a
-  `saluki_common::sync::shutdown::ShutdownHandle` instead. (The cgroups poller kept running after its collector
-  dropped: #1848.)
+  `saluki_common::sync::shutdown::ShutdownHandle` instead.
 - two tasks that can each block on a full bounded channel that the other one drains
 - a silent drop where backpressure works, such as a `broadcast` channel whose receivers can lag. An `mpsc` channel
-  that replaces a `broadcast` channel has one receiver, so check that no second subscriber exists. (A lagging
-  `broadcast` receiver lost autodiscovery events: #1671.)
+  that replaces a `broadcast` channel has one receiver, so check that no second subscriber exists.
 - a `broadcast` receiver that handles `RecvError::Lagged` like `RecvError::Closed`. A receiver that lags can still
   receive.
 - a `Notify` used as if `notify_waiters()` stores a permit, as `notify_one()` does. It wakes only the `Notified`
   futures that exist when it runs.
 
-Each supervised child declares its own shutdown strategy, and its owner enforces exactly that strategy. Flag an owner
-that keeps back part of a child's grace period as a margin, passes its own deadline down to its children, or treats a
-child supervisor differently from a child worker. A child that overruns its grace period has a bug: fix the child and
-its tests, not the deadlines.
-
 ### Error handling
 
-These rules apply to production code, not to tests or to the harness code under `bin/correctness/` and `test/`. In that
-code, still flag an ignored error that lets a test pass when it should fail.
+In tests and harness code, flag only an ignored error that lets a test pass when it should fail.
 
 - Flag a new `unwrap()`, `expect()`, `panic!`, `unreachable!`, `assert!`, or panicking index when its assumption can
   break. Input, configuration, timing, or a wrong estimate can break it. Timing includes a late response and a lagging
   `broadcast` receiver. Where the code can skip the bad input and count it, it does that instead. (A size estimate
   that asked for a flush before the first write made the encoder panic: #1310.)
-- An `expect` message states what the code expects, such as `expect("should not fail to set item on dict")`. Flag a
-  message that only reports the failure, such as `expect("Could not set name")`.
 - Untyped errors use `saluki_error::GenericError`, with context from `error_context` or `with_error_context` in
   `saluki_error::ErrorContext`. Typed errors use `snafu`. Flag `anyhow` types used directly, `Box<dyn Error>` as a new
   error type, and `String` as an error type. A trait bound that needs `Box<dyn Error>` is fine.
@@ -259,49 +238,40 @@ code, still flag an ignored error that lets a test pass when it should fail.
 - Components emit the standard `component_*_total` metrics with a tag for the cause, such as
   `component_events_dropped_total` with `drop_reason`. Flag a component-specific name for the same thing.
 - Each path that drops or changes input increments a counter. Count an outcome after it happens, such as bytes sent
-  after a successful response. (Bytes counted at the socket write included failed requests: #2582.)
-- When the Datadog Agent expects another name, add a remap rule in `bin/agent-data-plane/src/state/metrics/rules/`.
-  The target doesn't start with `datadog.agent.`, which the Core Agent adds, and it carries the Agent's help text. A
-  metric or tag rename updates the rules that match it. (A target with the prefix got it twice: #1814.)
+  after a successful response.
 
 ### Numbers and identity
 
 - Use checked or saturating math on sizes, bounds, and durations from configuration. Tagged releases build with
-  `overflow-checks = false`, so integer overflow wraps silently. `Duration` arithmetic panics in every build. (A large
-  memory bound wrapped to a tiny one: #2668.)
+  `overflow-checks = false`, so integer overflow wraps silently. `Duration` arithmetic panics in every build.
 - Flag plain `-` between two snapshots of an unsigned counter. Use `saturating_sub` or `checked_sub`, because a reset
-  or a key collision can make the later value smaller. (Two groups with the same name made one subtraction use two
-  different counters: #1852.)
-- Flag division or scaling by an input or configured value that can be `0`, such as a sample rate. (A sample rate of
-  `@0` counted each point about 260 million times: #3073.)
+  or a key collision can make the later value smaller.
+- Flag division or scaling by an input or configured value that can be `0`, such as a sample rate.
 - Flag a feature, a report, or a limit that a setting turns off with its default or with a valid `0`, when the Agent
   doesn't. For example, a rate limit keyed on an interval that defaults to `0` can send no reports at all.
-- Flag a metric value from external input with no check for non-finite values. Each metrics encoder drops non-finite
-  points, and a new encoder does too. Histogram bucket bounds can be infinite. (Non-finite points reached V3
-  payloads: #1970.)
 - Flag hashing, serialization, or IDs that depend on `HashMap` iteration order. Sort first, or use a `BTreeMap`.
-  (Check ID hashes changed between runs: #1213.)
 
 ### Security
 
 - Each `unsafe` block and `unsafe impl` has a `// SAFETY:` comment that says why its invariants hold.
 - A route that changes runtime state, or that returns configuration, workload data, or captured traffic, uses
-  `EndpointType::Privileged`. That endpoint requires a client certificate. (The privileged API once accepted clients
-  without a certificate: #2237.)
+  `EndpointType::Privileged`. That endpoint requires a client certificate.
 - Outside tests, code that builds a TLS config directly with `rustls`, and not with the `saluki-tls` builders, calls
-  `ensure_client_config_fips_compliant` or `ensure_server_config_fips_compliant`. (Server TLS configs skipped the FIPS
-  check: #1954.)
+  `ensure_client_config_fips_compliant` or `ensure_server_config_fips_compliant`.
 - Flag `danger_accept_invalid_certs` outside tests, unless a setting turns it on and the code logs a warning.
 - Flag logs, errors, and `Debug` output that can contain API keys, tokens, or passwords. Flare files that ADP returns
   to the Core Agent are fine, because the Core Agent scrubs each file that it adds to a flare.
 - Scrubbing and obfuscation fail closed. Flag an error branch that returns or forwards the input unchanged.
-  (Malformed JSON queries skipped obfuscation: #2601.)
 
 ### API design and naming
 
 - Conversion methods follow the Rust API Guidelines: `as_` is a cheap borrow, `to_` is an expensive or owned
   conversion, and `into_` consumes `self`. To give callers owned access to the internals, add an `into_parts(self)`
   method.
+- A change can keep a public signature and still change the result, as when `EventD::hostname()` started to return
+  `Some("")`. Search the repository for each caller. Flag a caller that the new result breaks, such as one that
+  expects `Some` to hold a hostname that isn't empty. Put the comment on the changed item, and give the caller's path.
+  If the description doesn't mention the new result, ask whether the author intends it.
 - A setter named `set_foo` takes `&mut self`. A builder method named `with_foo` takes `self` and returns `Self`.
 - A name says what the item does. For example, a function that spawns a task is `spawn_*`, not `new_*`. Method names
   use full words, and variable names can use abbreviations.
@@ -315,8 +285,8 @@ code, still flag an ignored error that lets a test pass when it should fail.
   - an `async fn` that never awaits, unless it implements a trait method that is `async`
   - an `Arc` or a `Mutex` around a value that nothing shares, or that's already safe to share
   - an `Option` parameter that the pull request adds when every caller passes `Some`
-  - in a library crate, a new `pub` item that nothing outside the crate uses, unless the pull request description
-    names the stacked pull request that uses it. A `pub` method on a `pub(crate)` type is fine.
+  - in a library crate, a new `pub` item that nothing outside the crate uses. A `pub` method on a `pub(crate)` type
+    is fine, and so is an item that a stacked pull request uses.
 - Prefer the standard library to a new crate, for example `std::sync::LazyLock` instead of `once_cell`. When the
   workspace already uses a major version of a dependency, use that version.
 
@@ -331,6 +301,8 @@ code, still flag an ignored error that lets a test pass when it should fail.
   `use self::foo::...` line is fine.
 - Put constants at the top of the file, below the imports.
 - Put the doc comment above the attributes of an item.
+- Write an `expect` message as what the code expects, such as `expect("should not fail to set item on dict")`, not as
+  the failure, such as `expect("Could not set name")`.
 - Derive `Copy` on small enums without fields. Return a `&'static str` from a method instead of allocating a `String`
   for a fixed name.
 - In the root `Cargo.toml`, set `default-features = false` on each dependency. Each crate enables the features that it
@@ -353,52 +325,13 @@ code, still flag an ignored error that lets a test pass when it should fail.
   hand-built context is fine for a branch that the driver can't reach, such as an output with no downstream component.
   For a supervised worker that isn't a whole component, flag a bare `Supervisor` where `TestSupervisor` works.
 - Flag setup or assertions copied from a neighboring test that don't apply to the behavior under test.
-
-#### Process-wide state
-
-Every test in a process sees the same environment variables and other process-wide state. `cargo test` runs the tests
-of one binary on threads of one process, so a change in one test reaches every test that runs at the same time.
-`make test` runs `cargo nextest`, which runs each test in its own process, so CI doesn't show the race.
-
-- Pass values to the code under test instead of changing the process environment, when the code allows it.
-- A test that changes environment variables holds `saluki_config::test_env_lock`, from the `test-util` feature of
-  `saluki-config`. All such tests share this one lock. `ConfigurationLoader::for_tests` takes the lock itself, so a
-  test that already holds the lock waits forever. Pass variables through its `env_vars` argument instead, and don't
-  hold the lock around that call.
-- When a test changes other process-wide state, and another test in the same binary reads that state, the two tests
-  share one lock. A `static` mutex inside each test function is a different mutex in each function, so the tests still
-  run at the same time.
-- Setup that every test does the same way needs no lock when a second call does no harm. An example is a call to
-  `saluki_tls::initialize_default_crypto_provider()` whose error the test ignores. Each top-level file in a crate's
-  `tests/` directory builds a separate binary, so a file that holds one test needs no lock either.
-- A test result doesn't depend on variables that the machine already sets. CI runners set their own, such as proxy
-  variables. (Configuration tests read the CI runner's proxy variables and failed on `main`: #2235.)
-
-#### Ports
-
-Don't reserve a port by binding port `0` and then releasing it for the code under test. Another test can take the port
-in the gap, and then the bind fails. Let the code under test bind port `0` itself and publish the address that it
-bound. For example, `HttpServer` asserts its `BoundListenAddress` in the dataspace when you set a server identifier with
-`with_server_id`, and the test reads the address through `TestSupervisor::dataspace`. (A relay test failed in CI
-because its server couldn't bind the port that the test released: #3142.)
-
-#### Timing
-
-A test that sleeps for a fixed time and then expects background work to finish fails on a slow or busy machine. Wait
-for the effect under a deadline instead:
-
-- Poll the condition, for example with `ComponentControl::wait_until`.
-- Wait for a signal from the code under test, such as a message on a channel.
-- When the code waits only on Tokio timers, use Tokio's paused time, with `#[tokio::test(start_paused = true)]`.
-
-Under paused time, Tokio skips to the next timer when every task waits. Code that waits on real I/O or on a blocking
-thread looks idle to Tokio, so a deadline can expire before that code finishes. Code that reads `std::time::Instant`
-ignores paused time, so a rate limiter that uses it can refill while the test runs. To test a burst limit, set a
-refill rate so low that nothing refills during the test.
-
-Don't assume that a fixed number of short sleeps takes a fixed time. Windows timers round up to about 15.6 ms, so 60
-sleeps of 5 ms take about 0.9 s, not 0.3 s. End the loop when the event count reaches its target, or when a deadline
-passes. (A supervisor test used up its restart budget this way on Windows: #2978.)
+- Flag a test that changes environment variables without holding `saluki_config::test_env_lock`, or that holds it
+  around `ConfigurationLoader::for_tests`, which takes the lock itself. A `static` mutex inside each test function
+  serializes nothing. `make test` runs each test in its own process, so CI doesn't show these races.
+- Flag a test that binds port `0`, releases it, and passes the port to the code under test. The code under test binds
+  port `0` itself and publishes the address.
+- Flag a test that sleeps for a fixed time, or counts a fixed number of sleeps, and then expects background work to be
+  done. Poll the condition under a deadline, or use Tokio's paused time when the code waits only on Tokio timers.
 
 ### Comments and documentation
 
@@ -428,15 +361,10 @@ Also check the wording of new and changed text against these rules:
 - No filler, such as "in order to," "basically," "simply," or "Note that."
 - No "i.e." or "e.g." in `//` comments. Vale already checks rustdoc and Markdown for these.
 
-Put all wording problems in one file into one "Nit:" comment. Give each rewrite as plain text, with its line numbers,
-because a suggestion block replaces exactly the lines that the comment is anchored to. Use a suggestion block only when
-the comment is anchored to every line of the text that the rewrite replaces. When several files have wording problems,
-write the comment for the file with the most problems, and list the other files in it. This comment is in addition to
-any other nits.
-
-A rewrite keeps every fact of the original: split a long sentence instead of cutting a clause. Don't report wording in
-text that the pull request didn't change or only moved. Don't rewrite text that follows these rules only to use words
-that you prefer.
+Report wording problems in one "Nit:" comment, for the file with the most problems, and list the other files in it.
+Give rewrites as plain text with line numbers, and use a suggestion block only when it covers every replaced line. A
+rewrite keeps every fact. Skip text that the pull request didn't change or only moved, and text that already follows
+these rules.
 
 Also:
 
@@ -449,18 +377,13 @@ Also:
 ### Build and release plumbing
 
 - A renamed or new build variable has the same name in every producer and consumer. This covers Make variables,
-  Docker build `ARG` values, CI variables, and the `APP_*` variables that `lib/saluki-metadata/build.rs` reads. (CI
-  passed `APP_DEV_BUILD`, but `docker/Dockerfile.agent-data-plane` didn't declare it, so release images reported a
-  development version: #2345.)
+  Docker build `ARG` values, CI variables, and the `APP_*` variables that `lib/saluki-metadata/build.rs` reads.
 - Developers build on macOS. Flag `Makefile` defaults from the host, such as `rustc -vV` or `uname`, that reach
-  Linux container builds. Flag scripts that fail on an unknown architecture. (A host-triple default broke image
-  builds on macOS: #1067.)
-- In `Cargo.lock`, flag a downgrade of a crate that the pull request doesn't target. (An `h2` bump downgraded
-  `windows-sys` for unrelated crates: #2367.)
+  Linux container builds. Flag scripts that fail on an unknown architecture.
+- In `Cargo.lock`, flag a downgrade of a crate that the pull request doesn't target.
 - ADP builds for Linux, macOS, Windows, and AIX, which is big-endian. Flag code that assumes little-endian byte order
   at runtime, such as `from_ne_bytes` or `transmute` on bytes from outside the process, a union layout, or a tag at a
-  fixed byte index. `make check-aix-cross` only type-checks. (`MetaString` kept its tag at a byte index that assumed
-  little-endian layout: #2032.)
+  fixed byte index. `make check-aix-cross` only type-checks.
 
 ### Scope
 

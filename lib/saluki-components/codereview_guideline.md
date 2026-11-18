@@ -15,6 +15,14 @@ Apply these rules to files under `lib/saluki-components`.
 - Components should always prefer to acquire environment-based configuration from `EnvironmentProvider` instead of
   passing it through their configuration directly. For example, take the hostname of the current host from
   `HostProvider::get_hostname`, accessed through `EnvironmentProvider::host`.
+- Each metrics encoder drops non-finite points, and a new encoder does too. Histogram bucket bounds can be infinite.
 - For encoders that have payload size limits, ensure that they build their payloads incrementally, if possible, to
   minimize the chance of having the payload rejected. If payloads can be split, then this applies doubly so as
   incremental encoding provides a chance to opportunistically split payloads and avoid costly re-encoding.
+
+### Component run loops
+
+- Flag a component loop that isn't a `loop { select! { ... } }` with a `health.live()` arm, such as a `while let` loop
+  over input.
+- Flag a `select!` arm that awaits work whose duration grows with buffered state, such as a whole flush. (A slow flush
+  in one arm made `/live` fail on CPU-starved pods: #2726.)
