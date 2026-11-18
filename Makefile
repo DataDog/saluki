@@ -33,6 +33,11 @@ endif
 # ADP-specific settings used when running.
 export ADP_STANDALONE_IPC_CERT_FILE := /tmp/adp-ipc-cert.pem
 
+# The Linux Agent image from `.datadog-agent-version.json`. It's expanded where it's used, so only the recipes that use
+# it read the file. It isn't exported, because make would then read the file for every recipe.
+DD_AGENT_IMAGE = $(or $(shell $(PYTHON) ci/tooling/agent_version.py get integration.linux.image), \
+	$(error could not read integration.linux.image from .datadog-agent-version.json))
+
 # macOS integration-test settings. The Agent package comes from `.datadog-agent-version.json`.
 MACOS_TEST_AGENT_DMG_DIR ?= /tmp/saluki-dda-dmg-cache
 MACOS_TEST_AGENT_INSTALL_DIR ?= /tmp/saluki-dda/datadog-agent
@@ -204,12 +209,11 @@ build-adp-image-fips-release: ## Builds the ADP container image in release mode 
 .PHONY: build-datadog-agent-image
 build-datadog-agent-image: build-adp-image ## Builds the converged Datadog Agent/ADP container image (debug mode)
 	@echo "[*] Building converged Datadog Agent image... (debug mode)"
-	@DD_AGENT_IMAGE=$$($(PYTHON) ci/tooling/agent_version.py get integration.linux.image) && \
-	echo "[*] Using the Agent image $$DD_AGENT_IMAGE from .datadog-agent-version.json" && \
-	docker build \
+	@echo "[*] Using the Agent image $(DD_AGENT_IMAGE) from .datadog-agent-version.json"
+	@docker build \
 		--tag saluki-images/datadog-agent:testing-devel \
 		--tag local.dev/saluki-images/datadog-agent:testing-devel \
-		--build-arg "DD_AGENT_IMAGE=$$DD_AGENT_IMAGE" \
+		--build-arg "DD_AGENT_IMAGE=$(DD_AGENT_IMAGE)" \
 		--build-arg ADP_IMAGE=saluki-images/agent-data-plane:testing-devel \
 		--file ./docker/Dockerfile.datadog-agent \
 		.
@@ -217,12 +221,11 @@ build-datadog-agent-image: build-adp-image ## Builds the converged Datadog Agent
 .PHONY: build-datadog-agent-image-release
 build-datadog-agent-image-release: build-adp-image-release ## Builds the converged Datadog Agent/ADP container image (release mode)
 	@echo "[*] Building converged Datadog Agent image... (release mode)"
-	@DD_AGENT_IMAGE=$$($(PYTHON) ci/tooling/agent_version.py get integration.linux.image) && \
-	echo "[*] Using the Agent image $$DD_AGENT_IMAGE from .datadog-agent-version.json" && \
-	docker build \
+	@echo "[*] Using the Agent image $(DD_AGENT_IMAGE) from .datadog-agent-version.json"
+	@docker build \
 		--tag saluki-images/datadog-agent:testing-release \
 		--tag local.dev/saluki-images/datadog-agent:testing-release \
-		--build-arg "DD_AGENT_IMAGE=$$DD_AGENT_IMAGE" \
+		--build-arg "DD_AGENT_IMAGE=$(DD_AGENT_IMAGE)" \
 		--build-arg ADP_IMAGE=saluki-images/agent-data-plane:testing-release \
 		--file ./docker/Dockerfile.datadog-agent \
 		.
