@@ -104,16 +104,22 @@ impl HostBackend {
 #[async_trait]
 impl Backend for HostBackend {
     async fn prepare(&self, cx: &Preparing<'_>) -> Result<Box<dyn Scope>, GenericError> {
-        if self.root.exists() {
-            return Err(generic_error!(
-                "The state directory '{}' exists. Remove it if no other panoramic run is using it.",
-                self.root.display()
-            ));
+        // Creating the directory is the only step that can tell whether another run owns it.
+        match tokio::fs::create_dir(&self.root).await {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Err(generic_error!(
+                    "The state directory '{}' exists. Remove it if no other panoramic run is using it.",
+                    self.root.display()
+                ));
+            }
+            Err(e) => {
+                return Err(GenericError::from(e)
+                    .context(format!("Failed to create the state directory '{}'.", self.root.display())));
+            }
         }
+        // Only a directory this run created is this run's to remove.
         cx.ledger.directory(self.root.clone());
-        tokio::fs::create_dir_all(&self.root)
-            .await
-            .with_error_context(|| format!("Failed to create the state directory '{}'.", self.root.display()))?;
         Ok(Box::new(HostScope {
             root: self.root.clone(),
             ledger: cx.ledger.clone(),
