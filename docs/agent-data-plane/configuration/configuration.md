@@ -1310,7 +1310,20 @@ This ADP-only key is independent from `metric_tag_filterlist`. Remote Config upd
 
 Whole-tag filtering runs first. If `metric_tag_filterlist` uses `action: include`, add the value-filtered tag key to its `tags` list or the whole-tag rule removes it before value filtering. Value rules do not operate on bare tags such as `customer_id`, because they have no value. An empty string in a key/value tag such as `customer_id:` is a value and is subject to the allow-list; include `""` in `values` to retain it. An empty `values` list treats every key/value tag as a mismatch.
 
-Distinct metric prefixes must not overlap, even when the rules target different tags. Multiple rules may use the same prefix when they target different tags. ADP rejects overlapping rules at startup so each metric matches at most one prefix. ADP also rejects empty metric prefixes and tag names, duplicate prefix and tag pairs, and tag names containing `:`. As with `metric_tag_filterlist`, ADP does not trim configured strings: prefixes, tag names, values, and replacements preserve whitespace and match exactly. Configure a replacement that cannot collide with a real tag value.
+Like `metric_tag_filterlist`, ADP compares `tag_name` with tag keys as Datadog stores them, normalizing both, so `tag_name: Customer ID` applies to `customer_id:top-1` and `CUSTOMER_ID:top-1`. Values are still matched exactly, so `customer_id:Top-1` does not match a configured `top-1`. A replacement tag uses the normalized tag name, such as `customer_id:other`. See [Metric tag normalization](../../reference/tag-normalization.md) for the rules.
+
+Multiple rules may use the same prefix when they target different tags. Metric prefixes are compared exactly, without normalization. ADP rejects the configuration at startup when:
+
+- distinct metric prefixes overlap, even when the rules target different tags, so that each metric matches at most one prefix
+- a metric prefix or tag name is empty
+- a tag name contains `:`
+
+ADP ignores, with a warning:
+
+- a rule whose tag name is 200 bytes or more once normalized, since Datadog never stores such a tag with a value
+- a rule whose tag name normalizes to the same key as an earlier rule for the same prefix, such as `Customer ID` after `customer_id`
+
+ADP does not trim configured strings: prefixes, values, and replacements preserve whitespace and match exactly. Whitespace in a tag name is normalized like any other character, so a trailing space becomes `_`. Configure a replacement that cannot collide with a real tag value.
 
 ### `dogstatsd_permissive_decoding`
 
@@ -1796,6 +1809,20 @@ metric.
 
 The empty `prefix` matches every stored metric name. The empty `except_prefix` keeps every
 stored metric name, making the rule a no-op.
+
+### `metric_tag_filterlist`
+
+ADP matches `metric_tag_filterlist` rules against metric names and tag keys as Datadog stores
+them, which is what you see in Datadog. Both the configured strings and incoming metrics are
+normalized for comparison, so a rule for `my-service.requests` with the tag key `Env` applies to
+the metric `my_service.requests` and removes tags such as `env:prod` and `ENV:Prod`. Rules whose
+metric names normalize to the same name are merged; if they configure both `include` and
+`exclude`, ADP keeps only the `exclude` rules and logs a warning. ADP ignores, with a warning,
+a rule whose metric name Datadog never stores, such as `123`. It also ignores any tag key
+containing `:`, since tag keys can't contain one: list the key only, such as `env`.
+Whitespace in a tag key is normalized like any other character, so `"env "` becomes `env_`
+and no longer matches `env`. Tags that are kept are sent unchanged. See
+[Metric tag normalization](../../reference/tag-normalization.md) for the rules.
 
 ### `otlp_config.metrics.delta_ttl`
 

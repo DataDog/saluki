@@ -10,12 +10,22 @@
 //! Both forms of filtering exist to merge samples that differ only in a filtered tag into a single aggregated
 //! context, so they only apply to metrics that are aggregated. The `dogstatsd_no_agg_split` transform routes
 //! timestamped metrics around this transform, leaving their tags untouched.
+//!
+//! # Normalization
+//!
+//! The intake normalizes metric names and tags on ingest, and users write rules against the normalized form they see
+//! in Datadog. Rules therefore match normalized names: a whole-tag rule's metric name is compared after metric-name
+//! normalization, and the tag keys of both kinds of rule are compared after tag-key normalization (see
+//! `docs/reference/tag-normalization.md`). Configured strings are normalized once, when the rules are compiled, and
+//! incoming names are normalized only for comparison. Tags that are kept are still sent verbatim, and tag values are
+//! still matched exactly.
 
 mod telemetry;
 
 use std::{collections::hash_map::Entry, num::NonZeroUsize, time::Duration};
 
 use async_trait::async_trait;
+use datadog_agent_tag_normalization::{can_have_value, rule_key, tag_key, TagBuf};
 use saluki_common::collections::{FastHashMap, FastHashSet};
 use saluki_common::sync::live::Live;
 use saluki_core::{
@@ -41,18 +51,21 @@ use saluki_core::{
 use saluki_error::GenericError;
 use saluki_metrics::MetricsBuilder;
 use tokio::select;
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
+
+use super::metric_name::{self, NameBuf};
 
 /// One whole-tag filter entry.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MetricTagFilterEntry {
-    /// Metric name the entry applies to. An entry with an empty name is ignored.
+    /// Metric name the entry applies to, compared after metric-name normalization. An entry with an empty name is
+    /// ignored.
     pub metric_name: String,
 
     /// Whether the listed tags are kept or removed.
     pub action: FilterAction,
 
-    /// Tag keys the action applies to.
+    /// Tag keys the action applies to, compared after tag-key normalization.
     pub tags: Vec<String>,
 }
 
@@ -68,13 +81,15 @@ pub enum FilterAction {
 
 /// One tag value allow-list entry.
 ///
-/// Matching is exact and case-sensitive, including any whitespace.
+/// The tag name is compared after tag-key normalization. Value matching is exact and case-sensitive, including any
+/// whitespace.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MetricTagValueAllowlistEntry {
     /// Metric-name prefix the entry applies to.
     pub metric_prefix: String,
 
-    /// Tag key whose values are constrained. Bare tags have no value and are not changed.
+    /// Tag key whose values are constrained, compared after tag-key normalization. Bare tags have no value and are not
+    /// changed.
     pub tag_name: String,
 
     /// Tag values retained unchanged. An empty list treats every key/value tag as a mismatch.
@@ -83,7 +98,8 @@ pub struct MetricTagValueAllowlistEntry {
     /// Action applied when a tag value is absent from `values`.
     pub on_miss: TagValueMismatchAction,
 
-    /// Replacement value used when `on_miss` is [`Replace`][TagValueMismatchAction::Replace], emitted as configured.
+    /// Replacement value used when `on_miss` is [`Replace`][TagValueMismatchAction::Replace], emitted as configured
+    /// after the normalized tag name.
     pub replacement: String,
 }
 
@@ -162,6 +178,25 @@ impl CompiledFilters {
     fn rule_count(&self) -> usize {
         self.key_filters.len() + self.value_prefix_filters.rule_count()
     }
+
+    /// Returns the whole-tag rule for `metric_name`, compared in the form Datadog stores metric names in.
+    fn key_filter(&self, metric_name: &str) -> Option<&CompiledKeyFilter> {
+        if self.key_filters.is_empty() {
+            return None;
+        }
+        if metric_name::is_normalized(metric_name) {
+            return self.key_filters.get(metric_name);
+        }
+
+        let mut buf = NameBuf::new();
+        self.key_filters.get(normalize_metric_name(&mut buf, metric_name)?)
+    }
+}
+
+/// Normalizes `name` into `buf`, returning `None` if the intake never stores it. See [`metric_name::normalize_into`].
+fn normalize_metric_name<'buf>(buf: &'buf mut NameBuf, name: &str) -> Option<&'buf str> {
+    let normalized = metric_name::normalize_into(buf, name)?;
+    Some(simdutf8::basic::from_utf8(normalized).expect("normalized metric names are ASCII"))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -180,23 +215,55 @@ pub enum FilterMetricTagsOutcome {
 
 /// Compile a slice of filter entries into an O(1)-lookup table.
 ///
-/// Merge rules:
+/// Metric names and tag keys are normalized first. An entry whose metric name the intake never stores, and a tag key
+/// no stored tag can have, can't match anything, so each is dropped with a warning.
+///
+/// Merge rules, applied to entries whose normalized metric names are equal:
 /// - Same metric name + same action → union of tag key sets.
-/// - Same metric name + conflicting actions → `exclude` wins.
+/// - Same metric name + conflicting actions → `exclude` wins, with a warning.
 pub fn compile_filters(entries: &[MetricTagFilterEntry]) -> CompiledFilters {
     let mut filters = CompiledFilters::default();
+    let mut name_buf = NameBuf::new();
+    // For each normalized metric name, the first configured name and whether any entry listed tags. Only used for
+    // warnings.
+    let mut sources: FastHashMap<String, (String, bool)> = FastHashMap::default();
 
     for entry in entries {
         if entry.metric_name.is_empty() {
             continue;
         }
 
+        let Some(metric_name) = normalize_metric_name(&mut name_buf, &entry.metric_name) else {
+            warn!(
+                metric_name = %entry.metric_name,
+                "metric_tag_filterlist: dropping entry whose metric name cannot match any metric name stored by Datadog"
+            );
+            continue;
+        };
+        let metric_name = metric_name.to_string();
+
         let is_exclude = entry.action == FilterAction::Exclude;
         let mut tag_set = FastHashSet::default();
         tag_set.reserve(entry.tags.len());
-        tag_set.extend(entry.tags.iter().cloned());
+        for tag in &entry.tags {
+            match rule_key(tag) {
+                Some(key) => {
+                    tag_set.insert(key);
+                }
+                None => warn!(
+                    metric_name = %entry.metric_name,
+                    tag = %tag,
+                    "metric_tag_filterlist: ignoring tag key containing ':'; list the tag key only, without a value"
+                ),
+            }
+        }
 
-        match filters.key_filters.entry(entry.metric_name.clone()) {
+        let source = sources
+            .entry(metric_name.clone())
+            .or_insert_with(|| (entry.metric_name.clone(), false));
+        source.1 |= !entry.tags.is_empty();
+
+        match filters.key_filters.entry(metric_name) {
             Entry::Vacant(vacant) => {
                 vacant.insert(CompiledKeyFilter {
                     is_exclude,
@@ -204,14 +271,33 @@ pub fn compile_filters(entries: &[MetricTagFilterEntry]) -> CompiledFilters {
                 });
             }
             Entry::Occupied(mut occupied) => {
-                let existing = occupied.get_mut();
-                if existing.is_exclude == is_exclude {
-                    existing.tag_names.extend(tag_set);
-                } else if is_exclude {
-                    existing.is_exclude = true;
-                    existing.tag_names = tag_set;
+                if occupied.get().is_exclude == is_exclude {
+                    occupied.get_mut().tag_names.extend(tag_set);
+                    continue;
+                }
+                warn!(
+                    metric_name = %occupied.key(),
+                    first_entry = %source.0,
+                    conflicting_entry = %entry.metric_name,
+                    "metric_tag_filterlist: entries for the same metric configure both include and exclude; keeping \
+                     only the exclude entries"
+                );
+                if is_exclude {
+                    *occupied.get_mut() = CompiledKeyFilter {
+                        is_exclude,
+                        tag_names: tag_set,
+                    };
                 }
             }
+        }
+    }
+
+    for (metric_name, filter) in &filters.key_filters {
+        if !filter.is_exclude && filter.tag_names.is_empty() && sources[metric_name].1 {
+            warn!(
+                metric_name = %sources[metric_name].0,
+                "metric_tag_filterlist: include rule has no usable tag keys left, so it removes every tag"
+            );
         }
     }
 
@@ -220,14 +306,31 @@ pub fn compile_filters(entries: &[MetricTagFilterEntry]) -> CompiledFilters {
 
 /// Adds value allow-list entries to a compiled filter table.
 ///
-/// Distinct metric prefixes must not overlap, ensuring that each metric matches at most one prefix. Multiple rules may
-/// use the same prefix when they target different tags. The configuration boundary validates entries; this does not.
+/// Rules are keyed by the normalized form of their tag names. The configuration boundary validates the configured
+/// strings, so each metric matches at most one prefix. A rule whose tag name no stored tag with a value can have, or
+/// whose tag name normalizes to the same key as an earlier rule for the same prefix, is dropped with a warning, as
+/// `metric_tag_filterlist` does with entries that can't match.
+///
+/// Unlike whole-tag rule names, metric prefixes are not normalized: they are compared exactly with the metric name as
+/// ADP sees it. This keeps prefix matching and its overlap validation simple for this experimental setting.
 pub fn add_value_allowlists(filters: &mut CompiledFilters, entries: &[MetricTagValueAllowlistEntry]) {
     for entry in entries {
+        let tag_key = rule_key(&entry.tag_name)
+            .expect("the configuration boundary rejects value allow-list tag names containing ':'");
+        if !can_have_value(&tag_key) {
+            warn!(
+                metric_prefix = %entry.metric_prefix,
+                tag_name = %entry.tag_name,
+                "metric_tag_value_allowlist: ignoring rule whose tag name is too long for Datadog to store a tag with \
+                 that name and a value"
+            );
+            continue;
+        }
+
         let on_miss = match entry.on_miss {
             TagValueMismatchAction::Remove => CompiledMismatchAction::Remove,
             TagValueMismatchAction::Replace => {
-                CompiledMismatchAction::Replace(Tag::from(format!("{}:{}", entry.tag_name, entry.replacement)))
+                CompiledMismatchAction::Replace(Tag::from(format!("{}:{}", tag_key, entry.replacement)))
             }
         };
 
@@ -245,10 +348,21 @@ pub fn add_value_allowlists(filters: &mut CompiledFilters, entries: &[MetricTagV
             .iter_mut()
             .find(|filter| filter.metric_prefix == entry.metric_prefix)
         {
-            filter.value_allowlists.insert(entry.tag_name.clone(), allowlist);
+            match filter.value_allowlists.entry(tag_key) {
+                Entry::Vacant(vacant) => {
+                    vacant.insert(allowlist);
+                }
+                Entry::Occupied(occupied) => warn!(
+                    metric_prefix = %entry.metric_prefix,
+                    tag_name = %entry.tag_name,
+                    normalized_tag_name = %occupied.key(),
+                    "metric_tag_value_allowlist: ignoring rule whose tag name normalizes to the same tag key as an \
+                     earlier rule for this prefix"
+                ),
+            }
         } else {
             let mut value_allowlists = FastHashMap::default();
-            value_allowlists.insert(entry.tag_name.clone(), allowlist);
+            value_allowlists.insert(tag_key, allowlist);
             filters.value_prefix_filters.0.push(CompiledValuePrefixFilter {
                 metric_prefix: entry.metric_prefix.clone(),
                 value_allowlists,
@@ -446,27 +560,28 @@ impl Transform for TagFilterlist {
 }
 
 #[inline]
-fn should_keep_tag(tag: &Tag, is_exclude: bool, names: &FastHashSet<String>) -> bool {
-    is_exclude != names.contains(tag.as_borrowed().name())
-}
-
-#[inline]
 fn filter_tag(
     tag: &Tag, key_filter: Option<&CompiledKeyFilter>, value_filter: Option<&CompiledValuePrefixFilter>,
-    replacements: &mut Vec<Tag>,
+    key_buf: &mut TagBuf, replacements: &mut Vec<Tag>,
 ) -> bool {
+    let key = tag_key(tag.as_str(), key_buf);
+
     if let Some(key_filter) = key_filter {
-        if !should_keep_tag(tag, key_filter.is_exclude, &key_filter.tag_names) {
+        if key_filter.is_exclude == key_filter.tag_names.contains(key.key) {
             return false;
         }
     }
 
-    let tag = tag.as_borrowed();
-
-    let Some(value) = tag.value() else {
+    // A raw tag whose `:` falls past the intake's length limit is stored as a bare tag, so it has no value here either.
+    if !key.has_value {
+        return true;
+    }
+    let Some(allowlist) = value_filter.and_then(|filter| filter.value_allowlists.get(key.key)) else {
         return true;
     };
-    let Some(allowlist) = value_filter.and_then(|filter| filter.value_allowlists.get(tag.name())) else {
+
+    let tag = tag.as_borrowed();
+    let Some(value) = tag.value() else {
         return true;
     };
     if allowlist.allowed_values.contains(value) {
@@ -485,10 +600,12 @@ fn filter_tag(
 
 /// Filters the tags of a metric according to the compiled filter table.
 ///
-/// Both instrumented tags and origin tags are filtered using the same key and value rules. Whole-tag filtering runs
-/// first, so an `include` rule must include a value-filtered tag key for its allow-list to apply. Configuration
-/// validation ensures that a metric and tag match at most one value rule. Value rules leave bare tags unchanged;
-/// empty-string values are processed and can be retained by including `""` in the configured values.
+/// Both instrumented tags and origin tags are filtered using the same key and value rules, matching normalized metric
+/// names and tag keys. Whole-tag filtering runs first, so an `include` rule must include a value-filtered tag key for
+/// its allow-list to apply. A metric and tag match at most one value rule: configuration validation rejects overlapping
+/// prefixes and duplicate rules, and compilation drops rules whose tag names normalize to the same key. Value rules
+/// leave bare tags unchanged; empty-string values are processed and can be retained by including `""` in the configured
+/// values.
 ///
 /// The caller applies this function only to counters and sketch-backed metrics. If the metric name doesn't have an
 /// exact whole-tag rule or a matching value-rule prefix, the metric is unchanged. If filtering would not change any
@@ -498,17 +615,26 @@ pub fn filter_metric_tags(
     metric: &mut Metric, state: &mut TagSetMutViewState, filters: &CompiledFilters,
 ) -> FilterMetricTagsOutcome {
     let metric_name = metric.context().name().clone();
-    let key_filter = filters.key_filters.get(metric_name.as_ref());
+    let key_filter = filters.key_filter(metric_name.as_ref());
     let value_filter = filters.value_prefix_filters.get(metric_name.as_ref());
     if key_filter.is_none() && value_filter.is_none() {
         return FilterMetricTagsOutcome::RuleMiss;
     }
 
+    let mut key_buf = TagBuf::new();
     let mut tag_replacements = Vec::new();
     let mut origin_tag_replacements = Vec::new();
     let mut tag_set_view = metric.context_mut().tags_mut_view(state);
-    tag_set_view.retain_tags(|tag| filter_tag(tag, key_filter, value_filter, &mut tag_replacements));
-    tag_set_view.retain_origin_tags(|tag| filter_tag(tag, key_filter, value_filter, &mut origin_tag_replacements));
+    tag_set_view.retain_tags(|tag| filter_tag(tag, key_filter, value_filter, &mut key_buf, &mut tag_replacements));
+    tag_set_view.retain_origin_tags(|tag| {
+        filter_tag(
+            tag,
+            key_filter,
+            value_filter,
+            &mut key_buf,
+            &mut origin_tag_replacements,
+        )
+    });
     let total_removed = tag_set_view.finish();
 
     if !tag_replacements.is_empty() || !origin_tag_replacements.is_empty() {
@@ -835,7 +961,9 @@ mod tests {
     }
 
     #[test]
-    fn value_allowlist_preserves_whitespace_in_configured_strings() {
+    fn value_allowlist_preserves_whitespace_in_values_and_replacements() {
+        // The tag name is normalized like any tag key, so its trailing space becomes the `_` of the stored key
+        // `customer_id_`. Values and the replacement are matched and emitted exactly as configured.
         let filters = compile_all_filters(
             &[],
             &[value_allowlist(
@@ -860,7 +988,7 @@ mod tests {
             filter_metric_tags(&mut replaced, &mut state, &filters),
             FilterMetricTagsOutcome::Modified { removed_tags: 1 }
         );
-        assert_eq!(tag_names(&replaced), vec!["customer_id : other "]);
+        assert_eq!(tag_names(&replaced), vec!["customer_id_: other "]);
     }
 
     #[test]
@@ -1030,6 +1158,259 @@ mod tests {
 
         assert!(!filters.key_filters.contains_key(""));
         assert!(filters.key_filters.contains_key("my.dist"));
+    }
+
+    fn key_entry(metric_name: &str, action: FilterAction, tags: &[&str]) -> MetricTagFilterEntry {
+        MetricTagFilterEntry {
+            metric_name: metric_name.to_string(),
+            action,
+            tags: tags.iter().map(|tag| tag.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn whole_tag_rules_match_normalized_tag_keys() {
+        // Each case is a rule key and an input tag, and whether the tag's stored key matches the rule.
+        let cases: &[(&str, &str, bool)] = &[
+            ("env", "Env:Prod", true),
+            ("Env", "env:prod", true),
+            ("my tag", "My Tag:x", true),
+            ("my tag", "my_tag", true),
+            ("env", "1env:prod", true),
+            ("caf\u{e9}", "CAF\u{c9}:x", true),
+            // A trailing `_` is part of a stored key only when a value follows it.
+            ("foo_", "foo_:x", true),
+            ("foo_", "foo__:x", true),
+            ("foo_", "foo_", false),
+            ("foo", "foo_", true),
+            ("foo", "foo_:x", false),
+            // Values are not part of the key.
+            ("env", "envx:prod", false),
+        ];
+
+        for &(rule, tag, matches) in cases {
+            let filters = compile_filters(&[key_entry("my.dist", FilterAction::Exclude, &[rule])]);
+            let mut metric = distribution_metric_with_origin_tags("my.dist", &[tag, "service:web"], &[tag]);
+            filter_metric_tags(&mut metric, &mut TagSetMutViewState::default(), &filters);
+
+            let expected: Vec<String> = if matches {
+                vec!["service:web".to_string()]
+            } else {
+                let mut expected = vec![tag.to_string(), "service:web".to_string()];
+                expected.sort();
+                expected
+            };
+            assert_eq!(tag_names(&metric), expected, "rule {rule:?}, tag {tag:?}");
+            assert_eq!(
+                origin_tag_names(&metric).is_empty(),
+                matches,
+                "rule {rule:?}, origin tag {tag:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn include_rules_keep_tags_by_normalized_key_and_send_them_verbatim() {
+        let filters = compile_filters(&[key_entry("my.dist", FilterAction::Include, &["Env", "Kube Namespace"])]);
+        let mut metric = distribution_metric("my.dist", &["ENV:Prod", "kube_namespace:Default", "service:web"]);
+        filter_metric_tags(&mut metric, &mut TagSetMutViewState::default(), &filters);
+
+        assert_eq!(tag_names(&metric), vec!["ENV:Prod", "kube_namespace:Default"]);
+    }
+
+    #[test]
+    fn rule_keys_with_a_colon_are_dropped_and_the_empty_key_is_kept() {
+        let filters = compile_filters(&[key_entry(
+            "my.dist",
+            FilterAction::Include,
+            &["123", "a:b", "", "_", "env"],
+        )]);
+
+        // `123`, `` and `_` all normalize to the empty key, which the intake stores for `:x` and `123:x`.
+        let key_filter = filters.key_filters.get("my.dist").expect("rule should compile");
+        assert_eq!(
+            key_filter.tag_names,
+            FastHashSet::from_iter(["env".to_string(), String::new()])
+        );
+
+        let mut metric = distribution_metric("my.dist", &["env:prod", "123:x", ":x", "a:b"]);
+        filter_metric_tags(&mut metric, &mut TagSetMutViewState::default(), &filters);
+        assert_eq!(tag_names(&metric), vec!["123:x", ":x", "env:prod"]);
+    }
+
+    #[test]
+    fn whole_tag_rules_match_normalized_metric_names() {
+        let filters = compile_filters(&[
+            key_entry("my-service.requests", FilterAction::Exclude, &["env"]),
+            key_entry("123", FilterAction::Exclude, &["env"]),
+        ]);
+        assert_eq!(
+            filters.key_filters.len(),
+            1,
+            "a name the intake never stores is dropped"
+        );
+
+        for (name, matches) in [
+            ("my_service.requests", true),
+            ("my-service.requests", true),
+            ("my service.requests", true),
+            ("1my_service.requests", true),
+            ("My_service.requests", false),
+            ("my_service.requests.count", false),
+        ] {
+            let mut metric = counter_metric(name, &["env:prod", "service:web"]);
+            let outcome = filter_metric_tags(&mut metric, &mut TagSetMutViewState::default(), &filters);
+            if matches {
+                assert_eq!(
+                    outcome,
+                    FilterMetricTagsOutcome::Modified { removed_tags: 1 },
+                    "name: {name:?}"
+                );
+            } else {
+                assert_eq!(outcome, FilterMetricTagsOutcome::RuleMiss, "name: {name:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn rules_merge_after_normalization() {
+        let filters = compile_filters(&[
+            key_entry("my.metric", FilterAction::Exclude, &["Env"]),
+            key_entry("1my.metric", FilterAction::Exclude, &["host"]),
+            key_entry("other.metric", FilterAction::Include, &["host"]),
+            key_entry("_other.metric", FilterAction::Exclude, &["Env"]),
+        ]);
+        assert_eq!(filters.key_filters.len(), 2);
+
+        let union = filters.key_filters.get("my.metric").expect("merged rule");
+        assert!(union.is_exclude);
+        assert_eq!(
+            union.tag_names,
+            FastHashSet::from_iter(["env".to_string(), "host".to_string()])
+        );
+
+        let exclude_wins = filters.key_filters.get("other.metric").expect("merged rule");
+        assert!(exclude_wins.is_exclude);
+        assert_eq!(exclude_wins.tag_names, FastHashSet::from_iter(["env".to_string()]));
+    }
+
+    #[test]
+    fn value_allowlist_matches_normalized_tag_names_and_exact_values() {
+        let filters = compile_all_filters(
+            &[],
+            &[value_allowlist(
+                "my.",
+                "Customer ID",
+                &["top-1"],
+                TagValueMismatchAction::Replace,
+                "other",
+            )],
+        );
+        let mut state = TagSetMutViewState::default();
+
+        let mut allowed = counter_metric("my.metric", &["Customer_ID:top-1"]);
+        assert_eq!(
+            filter_metric_tags(&mut allowed, &mut state, &filters),
+            FilterMetricTagsOutcome::NoChange
+        );
+        assert_eq!(tag_names(&allowed), vec!["Customer_ID:top-1"]);
+
+        // Values are still compared exactly, and the replacement uses the normalized tag name.
+        for tag in ["customer_id:TOP-1", "CUSTOMER ID:long-tail"] {
+            let mut replaced = counter_metric("my.metric", &[tag]);
+            assert_eq!(
+                filter_metric_tags(&mut replaced, &mut state, &filters),
+                FilterMetricTagsOutcome::Modified { removed_tags: 1 },
+                "tag: {tag:?}"
+            );
+            assert_eq!(tag_names(&replaced), vec!["customer_id:other"], "tag: {tag:?}");
+        }
+
+        let mut already_replaced = counter_metric("my.metric", &["customer_id:other"]);
+        assert_eq!(
+            filter_metric_tags(&mut already_replaced, &mut state, &filters),
+            FilterMetricTagsOutcome::NoChange
+        );
+    }
+
+    #[test]
+    fn value_allowlist_ignores_tags_stored_without_a_value() {
+        // The intake stops reading a tag at input offset 400, so a `:` past that is never stored and the tag is bare:
+        // this one is stored as just `a`.
+        let filters = compile_all_filters(
+            &[],
+            &[value_allowlist("my.", "a", &[], TagValueMismatchAction::Remove, "")],
+        );
+        let tag: &'static str = format!("a{}:value", "!".repeat(500)).leak();
+
+        let mut metric = counter_metric("my.metric", &[tag]);
+        assert_eq!(
+            filter_metric_tags(&mut metric, &mut TagSetMutViewState::default(), &filters),
+            FilterMetricTagsOutcome::NoChange
+        );
+    }
+
+    #[test]
+    fn value_allowlist_drops_rules_that_cannot_have_a_value_or_collide() {
+        let filters = compile_all_filters(
+            &[],
+            &[
+                // A key of 200 bytes or more is never stored with a value.
+                value_allowlist("my.", &"a".repeat(200), &[], TagValueMismatchAction::Remove, ""),
+                value_allowlist("my.", "customer_id", &["top-1"], TagValueMismatchAction::Remove, ""),
+                // Normalizes to the same key as the rule above, so it is dropped and the first rule is kept.
+                value_allowlist("my.", "Customer ID", &[], TagValueMismatchAction::Remove, ""),
+                value_allowlist("other.", "customer_id", &[], TagValueMismatchAction::Remove, ""),
+            ],
+        );
+        assert_eq!(filters.rule_count(), 2);
+
+        let mut metric = counter_metric("my.metric", &["customer_id:top-1", "env:x"]);
+        assert_eq!(
+            filter_metric_tags(&mut metric, &mut TagSetMutViewState::default(), &filters),
+            FilterMetricTagsOutcome::NoChange
+        );
+    }
+
+    #[test]
+    fn include_rule_and_value_rule_match_the_same_normalized_key() {
+        let filters = compile_all_filters(
+            &[key_entry("my.metric", FilterAction::Include, &["Customer ID"])],
+            &[value_allowlist(
+                "my.",
+                "customer_id",
+                &["top-1"],
+                TagValueMismatchAction::Replace,
+                "other",
+            )],
+        );
+        let mut metric = counter_metric("my.metric", &["CUSTOMER_ID:top-1", "service:web"]);
+        filter_metric_tags(&mut metric, &mut TagSetMutViewState::default(), &filters);
+        assert_eq!(tag_names(&metric), vec!["CUSTOMER_ID:top-1"]);
+
+        let mut metric = counter_metric("my.metric", &["Customer_Id:long-tail", "service:web"]);
+        filter_metric_tags(&mut metric, &mut TagSetMutViewState::default(), &filters);
+        assert_eq!(tag_names(&metric), vec!["customer_id:other"]);
+    }
+
+    #[test]
+    fn replacements_for_different_spellings_of_a_key_collapse_into_one_tag() {
+        let filters = compile_all_filters(
+            &[],
+            &[value_allowlist(
+                "my.",
+                "env",
+                &[],
+                TagValueMismatchAction::Replace,
+                "other",
+            )],
+        );
+        let mut metric = counter_metric("my.metric", &["Env:a", "ENV:b", "env:c"]);
+        assert_eq!(
+            filter_metric_tags(&mut metric, &mut TagSetMutViewState::default(), &filters),
+            FilterMetricTagsOutcome::Modified { removed_tags: 3 }
+        );
+        assert_eq!(tag_names(&metric), vec!["env:other"]);
     }
 
     #[test]
