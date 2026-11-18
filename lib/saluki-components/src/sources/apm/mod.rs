@@ -1,7 +1,11 @@
-//! APM relay.
+//! APM source.
 //!
-//! Listens on TCP and/or a Unix domain socket where the trace-agent normally listens. Requests for endpoints the relay
-//! does not handle itself are forwarded to the relocated trace-agent.
+//! Listens on TCP and/or a Unix domain socket where the trace-agent normally listens. Requests for endpoints the source
+//! does not handle itself are forwarded to the relocated trace-agent, so the documentation, metrics, and logs still call
+//! it the relay.
+//!
+//! The source declares a `traces` output for the traces it will decode from the trace intake endpoints, but emits
+//! nothing on it yet: every trace payload is still forwarded to the trace-agent.
 //!
 //! The relay serves `/info` itself, and so owns `Datadog-Agent-State`, the hash of the `/info` body that every
 //! response carries: it replaces the trace-agent's on the responses it forwards.
@@ -25,9 +29,9 @@ use metrics::Counter;
 use saluki_api::APIHandler;
 use saluki_common::sync::live::Live;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_core::components::relays::{Relay, RelayBuilder, RelayContext};
+use saluki_core::components::sources::{Source, SourceBuilder, SourceContext};
 use saluki_core::components::BuildContext;
-use saluki_core::data_model::payload::PayloadType;
+use saluki_core::data_model::event::EventType;
 use saluki_core::runtime;
 use saluki_core::topology::OutputDefinition;
 use saluki_env::workload::{CaptureEntityResolver, EntityId};
@@ -78,7 +82,7 @@ const AGENT_VERSION_MIN_RETRY_DELAY: Duration = Duration::from_secs(1);
 /// Longest delay between retries of the Agent version fetch.
 const AGENT_VERSION_MAX_RETRY_DELAY: Duration = Duration::from_secs(60);
 
-/// Configuration for the APM relay.
+/// Configuration for the APM source.
 ///
 /// Holds plain values, populated by the binary that assembles the topology, plus an optional resolver for the
 /// container of a tracer connected over the Unix domain socket.
@@ -86,7 +90,7 @@ const AGENT_VERSION_MAX_RETRY_DELAY: Duration = Duration::from_secs(60);
 /// `receiver_socket` is an empty `String` rather than an `Option<String>`, so that "disabled" has a single
 /// representation.
 #[derive(Clone)]
-pub struct ApmRelayConfiguration {
+pub struct ApmConfiguration {
     /// Unix domain socket path the relay listens on.
     ///
     /// Empty disables the Unix domain socket listener.
@@ -156,7 +160,7 @@ struct Metrics {
     requests_served_locally_total: Counter,
 }
 
-impl ApmRelayConfiguration {
+impl ApmConfiguration {
     async fn tcp_listen_address(&self) -> Result<Option<ListenAddress>, GenericError> {
         if self.receiver_port == 0 {
             return Ok(None);
@@ -240,24 +244,24 @@ fn tcp_reaches(destination: SocketAddr, listener: SocketAddr) -> bool {
                 && is_local(listener_ip)))
 }
 
-impl MemoryBounds for ApmRelayConfiguration {
+impl MemoryBounds for ApmConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         builder
             .minimum()
-            .with_single_value::<ApmRelay>("component struct")
-            .with_single_value::<RelayState>("component struct");
+            .with_single_value::<Apm>("component struct")
+            .with_single_value::<ApmState>("component struct");
     }
 }
 
 #[async_trait]
-impl RelayBuilder for ApmRelayConfiguration {
-    fn outputs(&self) -> &[OutputDefinition<PayloadType>] {
-        static OUTPUTS: LazyLock<Vec<OutputDefinition<PayloadType>>> =
-            LazyLock::new(|| vec![OutputDefinition::named_output("traces", PayloadType::Http)]);
+impl SourceBuilder for ApmConfiguration {
+    fn outputs(&self) -> &[OutputDefinition<EventType>] {
+        static OUTPUTS: LazyLock<Vec<OutputDefinition<EventType>>> =
+            LazyLock::new(|| vec![OutputDefinition::named_output("traces", EventType::Trace)]);
         &OUTPUTS
     }
 
-    async fn build(&self, context: BuildContext) -> Result<Box<dyn Relay + Send>, GenericError> {
+    async fn build(&self, context: BuildContext) -> Result<Box<dyn Source + Send>, GenericError> {
         let tcp_endpoint = self.tcp_listen_address().await?;
         let uds_endpoint = self.uds_listen_address()?;
 
@@ -288,7 +292,7 @@ impl RelayBuilder for ApmRelayConfiguration {
         let semantic_registry_updates = self.semantic_registry.clone();
         let info = Info::new(self.info.clone(), self.semantic_registry.clone());
 
-        Ok(Box::new(ApmRelay {
+        Ok(Box::new(Apm {
             tcp_endpoint,
             uds_endpoint,
             proxy,
@@ -308,10 +312,10 @@ impl RelayBuilder for ApmRelayConfiguration {
     }
 }
 
-/// APM relay.
+/// APM source.
 ///
 /// Receives requests via HTTP, on TCP and/or a Unix domain socket, and proxies them to the trace-agent.
-pub struct ApmRelay {
+pub struct Apm {
     tcp_endpoint: Option<ListenAddress>,
     uds_endpoint: Option<ListenAddress>,
     proxy: TraceAgentProxy,
@@ -327,8 +331,8 @@ pub struct ApmRelay {
 }
 
 #[async_trait]
-impl Relay for ApmRelay {
-    async fn run(self: Box<Self>, mut context: RelayContext) -> Result<(), GenericError> {
+impl Source for Apm {
+    async fn run(self: Box<Self>, mut context: SourceContext) -> Result<(), GenericError> {
         let Self {
             tcp_endpoint,
             uds_endpoint,
@@ -349,7 +353,7 @@ impl Relay for ApmRelay {
 
         let mut health = context.take_health_handle();
         let worker_pool = context.topology_context().global_thread_pool().clone();
-        let api_handler = ApmRelayAPIHandler::new(RelayState {
+        let api_handler = ApmAPIHandler::new(ApmState {
             metrics,
             proxy,
             tracer_flare: tracer_flare.clone(),
@@ -453,7 +457,7 @@ async fn fetch_agent_version_with_retry(
 
 /// Shared HTTP handler state.
 #[derive(Clone)]
-struct RelayState {
+struct ApmState {
     proxy: TraceAgentProxy,
     tracer_flare: TracerFlareProxy,
     info: Info,
@@ -462,23 +466,23 @@ struct RelayState {
     metrics: Metrics,
 }
 
-struct ApmRelayAPIHandler {
-    state: RelayState,
+struct ApmAPIHandler {
+    state: ApmState,
 }
 
-impl ApmRelayAPIHandler {
-    fn new(state: RelayState) -> Self {
+impl ApmAPIHandler {
+    fn new(state: ApmState) -> Self {
         Self { state }
     }
 
     async fn proxy_request(
-        State(RelayState {
+        State(ApmState {
             proxy,
             info,
             capture_entity_resolver,
             metrics,
             ..
-        }): State<RelayState>,
+        }): State<ApmState>,
         mut request: AxumRequest,
     ) -> Response {
         if let Some(resolver) = capture_entity_resolver.as_deref() {
@@ -497,7 +501,7 @@ impl ApmRelayAPIHandler {
         }
     }
 
-    async fn handle_info(State(RelayState { info, .. }): State<RelayState>) -> Response {
+    async fn handle_info(State(ApmState { info, .. }): State<ApmState>) -> Response {
         info.response()
     }
 
@@ -506,14 +510,14 @@ impl ApmRelayAPIHandler {
     }
 
     async fn handle_tracer_flare(
-        State(RelayState { tracer_flare, .. }): State<RelayState>, request: AxumRequest,
+        State(ApmState { tracer_flare, .. }): State<ApmState>, request: AxumRequest,
     ) -> Response {
         tracer_flare.forward(request).await.into_response()
     }
 
     /// Counts a request for an endpoint the relay serves itself.
     async fn count_served_locally(
-        State(RelayState { metrics, .. }): State<RelayState>, request: AxumRequest, next: Next,
+        State(ApmState { metrics, .. }): State<ApmState>, request: AxumRequest, next: Next,
     ) -> Response {
         metrics.requests_served_locally_total().increment(1);
         next.run(request).await
@@ -521,7 +525,7 @@ impl ApmRelayAPIHandler {
 
     /// Sets `Datadog-Agent-State` and `Datadog-Agent-Version` on a response the relay served itself.
     async fn set_agent_headers(
-        State(RelayState { info, .. }): State<RelayState>, request: AxumRequest, next: Next,
+        State(ApmState { info, .. }): State<ApmState>, request: AxumRequest, next: Next,
     ) -> Response {
         let mut response = next.run(request).await;
         info.set_headers(response.headers_mut());
@@ -530,7 +534,7 @@ impl ApmRelayAPIHandler {
 
     /// Sets `Datadog-Container-Tags-Hash` to the hash of the tags of the container of the tracer that sent `request`.
     async fn add_container_tags_hash(
-        State(RelayState { container_tags, .. }): State<RelayState>, request: AxumRequest, next: Next,
+        State(ApmState { container_tags, .. }): State<ApmState>, request: AxumRequest, next: Next,
     ) -> Response {
         let hash = container_tags.header_value(
             request.headers(),
@@ -574,8 +578,8 @@ fn add_peer_container_id(request: &mut AxumRequest, resolver: &(dyn CaptureEntit
     }
 }
 
-impl APIHandler for ApmRelayAPIHandler {
-    type State = RelayState;
+impl APIHandler for ApmAPIHandler {
+    type State = ApmState;
 
     fn generate_initial_state(&self) -> Self::State {
         self.state.clone()
@@ -637,8 +641,8 @@ mod tests {
         TraceAgentProxy::from_destination("http://127.0.0.1:1").expect("destination should parse")
     }
 
-    fn build_router(state: RelayState) -> Router {
-        let api_handler = ApmRelayAPIHandler::new(state);
+    fn build_router(state: ApmState) -> Router {
+        let api_handler = ApmAPIHandler::new(state);
         api_handler
             .generate_routes()
             .with_state(api_handler.generate_initial_state())
@@ -654,13 +658,13 @@ mod tests {
     }
 
     fn test_router() -> Router {
-        build_router(RelayState {
+        build_router(ApmState {
             proxy: unreachable_proxy(),
             tracer_flare: unreachable_tracer_flare(),
             info: test_info(),
             container_tags: ContainerTagsHasher::default(),
             capture_entity_resolver: None,
-            metrics: Metrics::new("dd_traces_relay", "relays"),
+            metrics: Metrics::new("dd_traces_relay", "sources"),
         })
     }
 
@@ -744,7 +748,7 @@ mod tests {
                 name,
                 vec![
                     metrics::Label::new("component_id", "dd_traces_relay"),
-                    metrics::Label::new("component_type", "relays"),
+                    metrics::Label::new("component_type", "sources"),
                 ],
             )
         };
@@ -793,7 +797,7 @@ mod tests {
                 name,
                 vec![
                     metrics::Label::new("component_id", "dd_traces_relay"),
-                    metrics::Label::new("component_type", "relays"),
+                    metrics::Label::new("component_type", "sources"),
                 ],
             )
         };
@@ -868,13 +872,13 @@ mod tests {
         let recorder = saluki_metrics::test::TestRecorder::default();
         let _recorder_guard = metrics::set_default_local_recorder(&recorder);
         let info = test_info();
-        let router = build_router(RelayState {
+        let router = build_router(ApmState {
             proxy: spawn_trace_agent_with_state().await,
             tracer_flare: unreachable_tracer_flare(),
             info: info.clone(),
             container_tags: ContainerTagsHasher::default(),
             capture_entity_resolver: None,
-            metrics: Metrics::new("dd_traces_relay", "relays"),
+            metrics: Metrics::new("dd_traces_relay", "sources"),
         });
 
         // `/info` answers any method, without the state header, as in the trace-agent.
@@ -931,7 +935,7 @@ mod tests {
                 name,
                 vec![
                     metrics::Label::new("component_id", "dd_traces_relay"),
-                    metrics::Label::new("component_type", "relays"),
+                    metrics::Label::new("component_type", "sources"),
                 ],
             )
         };
@@ -971,7 +975,7 @@ mod tests {
                 name,
                 vec![
                     metrics::Label::new("component_id", "dd_traces_relay"),
-                    metrics::Label::new("component_type", "relays"),
+                    metrics::Label::new("component_type", "sources"),
                 ],
             )
         };
@@ -1086,14 +1090,14 @@ mod tests {
         };
 
         relay_router
-            .set(build_router(RelayState {
+            .set(build_router(ApmState {
                 proxy: TraceAgentProxy::from_destination(&format!("http://{bound_addr}"))
                     .expect("destination should parse"),
                 tracer_flare: unreachable_tracer_flare(),
                 info: test_info(),
                 container_tags: ContainerTagsHasher::default(),
                 capture_entity_resolver: None,
-                metrics: Metrics::new("dd_traces_relay", "relays"),
+                metrics: Metrics::new("dd_traces_relay", "sources"),
             }))
             .expect("the relay router should be set only once");
 
@@ -1181,9 +1185,9 @@ mod tests {
         );
     }
 
-    fn test_config(bind_host: Option<&str>, non_local_traffic: bool, receiver_port: u16) -> ApmRelayConfiguration {
+    fn test_config(bind_host: Option<&str>, non_local_traffic: bool, receiver_port: u16) -> ApmConfiguration {
         init_tls();
-        ApmRelayConfiguration {
+        ApmConfiguration {
             receiver_socket: String::new(),
             proxy_destination: "http://127.0.0.1:8127".to_string(),
             capture_entity_resolver: None,
@@ -1209,7 +1213,7 @@ mod tests {
         let occupied = std::net::TcpListener::bind("127.0.0.1:0").expect("should bind an ephemeral port");
         let port = occupied.local_addr().expect("should have a local address").port();
 
-        let (control, _outputs) = TestComponentDriver::relay(test_config(None, false, port))
+        let (control, _outputs) = TestComponentDriver::source(test_config(None, false, port))
             .await
             .expect("the relay should build");
 
@@ -1217,8 +1221,8 @@ mod tests {
         assert!(result.is_err(), "the relay should fail when its listener can't bind");
     }
 
-    async fn build_error(config: ApmRelayConfiguration) -> GenericError {
-        match config.build(BuildContext::test_relay("apm_relay_build_error")).await {
+    async fn build_error(config: ApmConfiguration) -> GenericError {
+        match config.build(BuildContext::test_source("apm_relay_build_error")).await {
             Ok(_) => panic!("build should fail"),
             Err(error) => error,
         }
@@ -1269,7 +1273,7 @@ mod tests {
         // Listening nowhere is a configuration error, not a silent no-op: `build` must reject it.
         let config = test_config(None, false, 0);
 
-        let error = match config.build(BuildContext::test_relay("apm_relay_no_endpoints")).await {
+        let error = match config.build(BuildContext::test_source("apm_relay_no_endpoints")).await {
             Ok(_) => panic!("build should fail when no endpoint is configured"),
             Err(error) => error,
         };
@@ -1281,7 +1285,7 @@ mod tests {
         let config = test_config(None, true, 8126);
 
         assert!(config
-            .build(BuildContext::test_relay("apm_relay_tcp_only"))
+            .build(BuildContext::test_source("apm_relay_tcp_only"))
             .await
             .is_ok());
     }
@@ -1292,7 +1296,7 @@ mod tests {
         config.proxy_destination = "ftp://127.0.0.1:8127".to_string();
 
         assert!(config
-            .build(BuildContext::test_relay("apm_relay_bad_destination"))
+            .build(BuildContext::test_source("apm_relay_bad_destination"))
             .await
             .is_err());
     }
@@ -1302,7 +1306,7 @@ mod tests {
         let config = test_config(Some("not a valid host"), false, 8126);
 
         let error = match config
-            .build(BuildContext::test_relay("apm_relay_unresolvable_bind_host"))
+            .build(BuildContext::test_source("apm_relay_unresolvable_bind_host"))
             .await
         {
             Ok(_) => panic!("build should fail for an unresolvable bind host"),
