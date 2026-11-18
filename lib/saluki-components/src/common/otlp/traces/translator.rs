@@ -381,10 +381,10 @@ impl OtlpTracesTranslator {
         let trace_count_hint = resource_spans.scope_spans.len();
         traces_by_id.reserve(trace_count_hint);
 
-        let spans_received = metrics.spans_received().for_client(
-            get_string_attribute(&resource.attributes, TELEMETRY_SDK_LANGUAGE).unwrap_or_default(),
-            get_string_attribute(&resource.attributes, TELEMETRY_SDK_VERSION).unwrap_or_default(),
-        );
+        // The sender's SDK identity, from before enrichment could replace those attributes with its own tags.
+        let spans_received = metrics
+            .spans_received()
+            .for_client(&resource_meta.language_name, &resource_meta.tracer_version);
 
         for scope_spans in resource_spans.scope_spans {
             let scope = scope_spans.scope;
@@ -1473,6 +1473,60 @@ mod tests {
             ],
         );
         assert_eq!(received, Some(2));
+    }
+
+    /// Infrastructure enrichment can write a tag under the same key as an SDK attribute, replacing the sender's value
+    /// on the resource. The counter must still name the sender.
+    #[test]
+    fn translate_spans_tags_received_spans_with_the_sender_sdk_when_enrichment_uses_the_same_keys() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+
+        let provider = TestWorkloadProvider::with_entity(
+            EntityId::Container(MetaString::from("abc123")),
+            &["telemetry.sdk.language:enriched", "telemetry.sdk.version:9.9.9"],
+        );
+        let mut translator = OtlpTracesTranslator::new(
+            OtlpTracesSettings {
+                infra_attributes_enabled: true,
+                container_tag_promotion: ContainerTagPromotion::Off,
+                ..translator_config()
+            },
+            MAX_RESOURCE_LEN,
+            SemanticRegistryProvider::default(),
+            OtlpOriginTagResolver::new(Arc::new(provider)),
+        );
+        let metrics = build_metrics(&ComponentContext::test_source("otlp_test"));
+
+        let trace = [0xBBu8; 16];
+        let rs = build_resource_spans(
+            vec![
+                string_kv("container.id", "abc123"),
+                string_kv("telemetry.sdk.language", "go"),
+                string_kv("telemetry.sdk.version", "1.2.3"),
+            ],
+            vec![span(trace, [1u8; 8], vec![]), span(trace, [2u8; 8], vec![])],
+        );
+        let _ = translator.translate_spans(rs, &metrics).count();
+
+        let sender: &[(&str, &str)] = &[
+            ("component_id", "otlp_test"),
+            ("component_type", "source"),
+            ("message_type", "otlp_spans"),
+            ("lang", "go"),
+            ("tracer_version", "otlp-1.2.3"),
+            ("endpoint_version", "opentelemetry_grpc_v1"),
+        ];
+        let enriched: &[(&str, &str)] = &[
+            ("component_id", "otlp_test"),
+            ("component_type", "source"),
+            ("message_type", "otlp_spans"),
+            ("lang", "enriched"),
+            ("tracer_version", "otlp-9.9.9"),
+            ("endpoint_version", "opentelemetry_grpc_v1"),
+        ];
+        assert_eq!(recorder.counter(("component_events_received_total", sender)), Some(2));
+        assert_eq!(recorder.counter(("component_events_received_total", enriched)), None);
     }
 
     /// Without `telemetry.sdk.language` the `lang` tag is left off.
