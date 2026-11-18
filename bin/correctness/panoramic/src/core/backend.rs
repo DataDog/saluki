@@ -284,10 +284,10 @@ pub(crate) trait Running: Realized {
     fn identities(&self) -> Identities;
 
     /// Waits until the participant exits, and returns its exit code, or why none can be had.
-    async fn wait(&self, deadline: Instant) -> Result<i64, String>;
+    async fn wait(&self, deadline: Instant) -> Result<i64, GenericError>;
 
     /// The participant's exit code if it has exited, or `None` while it runs, or why that cannot be told.
-    async fn exit_now(&self, deadline: Instant) -> Result<Option<i64>, String>;
+    async fn exit_now(&self, deadline: Instant) -> Result<Option<i64>, GenericError>;
 
     /// Captures the output of `process` of `participant` into `sink`, for `limit` or until `finish` fires.
     async fn capture(

@@ -430,12 +430,12 @@ impl Running for RealizedContainer {
         }
     }
 
-    async fn wait(&self, deadline: Instant) -> Result<i64, String> {
-        self.container.wait(deadline).await.map_err(|e| format!("{:#}", e))
+    async fn wait(&self, deadline: Instant) -> Result<i64, GenericError> {
+        self.container.wait(deadline).await
     }
 
-    async fn exit_now(&self, deadline: Instant) -> Result<Option<i64>, String> {
-        let status = self.container.status(deadline).await.map_err(|e| format!("{:#}", e))?;
+    async fn exit_now(&self, deadline: Instant) -> Result<Option<i64>, GenericError> {
+        let status = self.container.status(deadline).await?;
         if status.running {
             return Ok(None);
         }
