@@ -275,8 +275,9 @@ realization: {enclosure: kubernetes-pod, options: {host_pid: true, cri_socket: t
 # enclosures: linux-container, windows-container, kubernetes-pod, host-process-group
 # options: host_pid and host_cgroup_namespace on a Linux container; host_pid and cri_socket on a pod
 
-with: {host_view: true}       # agent-adp, agent: mount the host's /proc, cgroup tree and container
-                              # runtime socket, and point the Agent at them. This is the host view.
+with: {host_view: true}       # agent-adp, agent: mount the host's /proc and cgroup tree, and point the
+                              # Agent at them. This is the host view. A container also gets the Docker
+                              # socket. A pod gets the container runtime's socket from the cri_socket option.
 with: {own_ip: {env: [DD_BIND_HOST], hosts: [foo.local]}}
                               # agent-adp: set these variables to the container's address on the case's network, and
                               # map these host names to it, before the software starts
@@ -1248,7 +1249,8 @@ The table leaves out five points.
   Following it with `sh` and `tail` from the image would make both a hidden requirement on any image
   a case names, so Linux containers use the courier's `follow`, as Windows containers do. A pod's
   log file is followed by the courier on the node. A pod's files are read through the node, and
-  only under `/airlock`.
+  only under `/airlock`, so `millstone` collects nothing in a pod: its capture directory is outside
+  it.
 - **A pod is submitted in the start phase.** Create writes its files and its Service; start submits
   the pod and waits for it to run. A pod's command is wrapped in a shell loop that waits for late
   files only when the participant has a template file holding a value known after start. Among

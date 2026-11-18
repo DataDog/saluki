@@ -25,7 +25,7 @@ use std::collections::BTreeMap;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::core::participant::{Os, SpecContext};
+use crate::core::participant::{Enclosure, Os, SpecContext};
 use crate::core::spec::{
     Address, Consumed, EndpointSpec, ExitChannel, FileSource, FileSpec, HostMount, OutputChannel, ParticipantSpec,
     ProcessSpec, Protocol, Wiring,
@@ -102,13 +102,11 @@ const SECONDARY_NAMES: &[(&str, &str)] = &[
     ("DD_PROCESS_CONFIG_CMD_PORT", "DD_PROCESS_AGENT_CMD_PORT"),
 ];
 
-/// The host view: the host's `/proc`, cgroup tree and Docker socket, mounted read-only, and the environment that points
-/// the software at them.
-const HOST_VIEW_MOUNTS: [(&str, &str); 3] = [
-    ("/proc", "/host/proc"),
-    ("/sys/fs/cgroup", "/host/sys/fs/cgroup"),
-    ("/var/run/docker.sock", "/var/run/docker.sock"),
-];
+/// The host view: the host's `/proc` and cgroup tree, mounted read-only, and the environment that points the software
+/// at them. A container also gets the Docker socket, which a kind node has none of: a pod gets the runtime's socket
+/// with the realization option `cri_socket`.
+const HOST_VIEW_MOUNTS: [(&str, &str); 2] = [("/proc", "/host/proc"), ("/sys/fs/cgroup", "/host/sys/fs/cgroup")];
+const DOCKER_SOCKET_MOUNT: (&str, &str) = ("/var/run/docker.sock", "/var/run/docker.sock");
 const HOST_VIEW_ENV: &[DefaultEnv] = &[
     env("DD_CONTAINER_PROC_ROOT", "container_proc_root", "/host/proc"),
     env(
@@ -216,7 +214,8 @@ pub(super) const DOGSTATSD_FORWARD: Consumed = Consumed {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct With {
-    /// Mounts the host's `/proc`, cgroup tree and Docker socket, and points the software at them.
+    /// Mounts the host's `/proc` and cgroup tree, and the Docker socket where there is one, and points the software at
+    /// them.
     #[serde(default)]
     host_view: bool,
 }
@@ -293,9 +292,11 @@ pub(super) fn set_defaults(cx: &SpecContext<'_>, data_plane: bool, spec: &mut Pa
         .collect();
     if with.host_view {
         defaults.extend(HOST_VIEW_ENV);
+        let docker_socket = (cx.realization.enclosure != Enclosure::KubernetesPod).then_some(DOCKER_SOCKET_MOUNT);
         spec.mounts = Some(
             HOST_VIEW_MOUNTS
                 .iter()
+                .chain(&docker_socket)
                 .map(|(host, path)| HostMount {
                     host: host.to_string(),
                     path: path.to_string(),

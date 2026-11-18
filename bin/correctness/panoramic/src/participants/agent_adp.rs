@@ -119,7 +119,10 @@ impl ParticipantType for AgentAdp {
     }
 
     fn supports(&self) -> &'static [(Os, Enclosure)] {
-        &[(Os::Linux, Enclosure::LinuxContainer)]
+        &[
+            (Os::Linux, Enclosure::LinuxContainer),
+            (Os::Linux, Enclosure::KubernetesPod),
+        ]
     }
 
     fn spec(&self, cx: &SpecContext<'_>) -> Result<ParticipantSpec, String> {
