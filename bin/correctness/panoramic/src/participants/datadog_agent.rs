@@ -217,7 +217,7 @@ pub(super) struct With {
     /// Mounts the host's `/proc` and cgroup tree, and the Docker socket where there is one, and points the software at
     /// them.
     #[serde(default)]
-    host_view: bool,
+    pub(super) host_view: bool,
 }
 
 /// The files of the s6 services under `/etc/services.d/<service>/`, for each of `services`.
