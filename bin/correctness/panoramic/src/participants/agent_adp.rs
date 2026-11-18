@@ -142,6 +142,16 @@ impl ParticipantType for AgentAdp {
             ..ParticipantSpec::default()
         };
         datadog_agent::add_endpoints(cx, LISTENERS, &mut spec)?;
+        // A case that gives the HTTP receiver a certificate makes it serve TLS.
+        if datadog_agent::case_sets(
+            cx,
+            "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CERT_FILE",
+            "otlp_config.receiver.protocols.http.tls.cert_file",
+        )? {
+            if let Some(endpoint) = spec.endpoints.get_mut("otlp_http") {
+                endpoint.tls = true;
+            }
+        }
         datadog_agent::set_defaults(cx, true, &mut spec)?;
         let enabled = |key| cx.case.env.get(key).is_some_and(|value| value.text() == "true");
         if enabled("DD_DATA_PLANE_ENABLED") && enabled("DD_DATA_PLANE_OTLP_ENABLED") {

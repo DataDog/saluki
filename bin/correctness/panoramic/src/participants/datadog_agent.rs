@@ -311,12 +311,7 @@ pub(super) fn set_defaults(cx: &SpecContext<'_>, data_plane: bool, spec: &mut Pa
 /// Sets the default environment from `defaults`, withdrawing each entry the case sets itself, and records how a case
 /// wires each endpoint a withdrawn entry wired.
 fn withdraw_defaults(cx: &SpecContext<'_>, defaults: &[&DefaultEnv], spec: &mut ParticipantSpec) -> Result<(), String> {
-    // The file is parsed as the case wrote it, so a reference in it sits inside a quoted scalar.
-    let file: Value = match cx.file_text(DATADOG_YAML)? {
-        Some(text) => saluki_config::yaml::from_str(text)
-            .map_err(|e| format!("{} does not parse as YAML: {}", DATADOG_YAML, e))?,
-        None => Value::Null,
-    };
+    let file = case_datadog_yaml(cx)?;
     for entry in defaults {
         let value = Template::parse(entry.value)?;
         let mut env_names = std::iter::once(format!("ADP_{}", entry.key)).chain(
@@ -355,6 +350,28 @@ fn withdraw_defaults(cx: &SpecContext<'_>, defaults: &[&DefaultEnv], spec: &mut 
         }
     }
     Ok(())
+}
+
+/// The case's `datadog.yaml`, or null if it supplies none. The file is parsed as the case wrote it, so a reference in
+/// it sits inside a quoted scalar.
+fn case_datadog_yaml(cx: &SpecContext<'_>) -> Result<Value, String> {
+    match cx.file_text(DATADOG_YAML)? {
+        Some(text) => {
+            saluki_config::yaml::from_str(text).map_err(|e| format!("{} does not parse as YAML: {}", DATADOG_YAML, e))
+        }
+        None => Ok(Value::Null),
+    }
+}
+
+/// Whether the case sets a setting: its `env` holds `env_key` or the `ADP_` form of it, or its `datadog.yaml` sets
+/// `file_key` as [`sets`] reads it.
+pub(super) fn case_sets(cx: &SpecContext<'_>, env_key: &str, file_key: &str) -> Result<bool, String> {
+    let in_env = cx.case.env.contains_key(env_key) || cx.case.env.contains_key(&format!("ADP_{}", env_key));
+    if in_env {
+        return Ok(true);
+    }
+    let path: Vec<&str> = file_key.split('.').collect();
+    Ok(sets(&case_datadog_yaml(cx)?, &path))
 }
 
 /// Whether the YAML mapping `node` sets the setting at `path`, read as the Agent and ADP read `datadog.yaml`: each key
