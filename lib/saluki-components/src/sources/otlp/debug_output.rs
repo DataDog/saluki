@@ -13,7 +13,7 @@ use otlp_protos::opentelemetry::proto::common::v1::{any_value::Value as AnyValue
 use otlp_protos::opentelemetry::proto::logs::v1::LogRecord;
 use otlp_protos::opentelemetry::proto::metrics::v1::{metric::Data as MetricData, Metric};
 use otlp_protos::opentelemetry::proto::trace::v1::Span;
-use tracing::info;
+use tracing::{enabled, info, Level};
 
 use crate::common::otlp::traces::transform::{bytes_to_hex_lowercase, otlp_value_to_string};
 
@@ -48,6 +48,10 @@ impl OtlpDebugOutput {
 
     /// Logs a received metrics export request.
     pub fn log_metrics(&self, request: &ExportMetricsServiceRequest) {
+        if !self.is_logging() {
+            return;
+        }
+
         if let Some(message) = self.render_metrics(request) {
             info!("{message}");
         }
@@ -55,6 +59,10 @@ impl OtlpDebugOutput {
 
     /// Logs a received logs export request.
     pub fn log_logs(&self, request: &ExportLogsServiceRequest) {
+        if !self.is_logging() {
+            return;
+        }
+
         if let Some(message) = self.render_logs(request) {
             info!("{message}");
         }
@@ -62,15 +70,27 @@ impl OtlpDebugOutput {
 
     /// Logs a received traces export request.
     pub fn log_traces(&self, request: &ExportTraceServiceRequest) {
+        if !self.is_logging() {
+            return;
+        }
+
         if let Some(message) = self.render_traces(request) {
             info!("{message}");
         }
     }
 
+    /// Returns whether anything would be logged right now.
+    ///
+    /// Checked before a request is rendered, so a deployment that leaves the output off, or whose log level hides it,
+    /// doesn't pay to render requests that nobody will see.
+    fn is_logging(&self) -> bool {
+        self.verbosity != OtlpDebugVerbosity::None && enabled!(Level::INFO)
+    }
+
     /// Returns what to log for a metrics export request, or `None` when nothing should be logged.
     fn render_metrics(&self, request: &ExportMetricsServiceRequest) -> Option<String> {
         self.render_batch(
-            summarize_metrics(request),
+            || summarize_metrics(request),
             || normal_metrics(request),
             || detailed(request),
         )
@@ -78,37 +98,46 @@ impl OtlpDebugOutput {
 
     /// Returns what to log for a logs export request, or `None` when nothing should be logged.
     fn render_logs(&self, request: &ExportLogsServiceRequest) -> Option<String> {
-        self.render_batch(summarize_logs(request), || normal_logs(request), || detailed(request))
+        self.render_batch(
+            || summarize_logs(request),
+            || normal_logs(request),
+            || detailed(request),
+        )
     }
 
     /// Returns what to log for a traces export request, or `None` when nothing should be logged.
     fn render_traces(&self, request: &ExportTraceServiceRequest) -> Option<String> {
         self.render_batch(
-            summarize_traces(request),
+            || summarize_traces(request),
             || normal_traces(request),
             || detailed(request),
         )
     }
 
-    /// Combines a batch's summary with the body its verbosity calls for.
+    /// Combines a request's summary with the body its verbosity calls for.
     ///
-    /// The body closures only run at the verbosity that needs them, so a lower verbosity never pays to format records
-    /// it won't log.
+    /// Each part is a closure that only runs at the verbosity that needs it, so a lower verbosity never pays to
+    /// summarize or format what it won't log.
     fn render_batch(
-        &self, summary: String, normal_body: impl FnOnce() -> String, detailed_body: impl FnOnce() -> String,
+        &self, summary: impl FnOnce() -> String, normal_body: impl FnOnce() -> String,
+        detailed_body: impl FnOnce() -> String,
     ) -> Option<String> {
-        let body = match self.verbosity {
-            OtlpDebugVerbosity::None => return None,
-            OtlpDebugVerbosity::Basic => return Some(summary),
-            OtlpDebugVerbosity::Normal => normal_body(),
-            OtlpDebugVerbosity::Detailed => detailed_body(),
-        };
-
-        if body.is_empty() {
-            return Some(summary);
+        match self.verbosity {
+            OtlpDebugVerbosity::None => None,
+            OtlpDebugVerbosity::Basic => Some(summary()),
+            OtlpDebugVerbosity::Normal => Some(with_body(summary(), normal_body())),
+            OtlpDebugVerbosity::Detailed => Some(with_body(summary(), detailed_body())),
         }
-        Some(format!("{summary}\n{body}"))
     }
+}
+
+/// Appends a body to a summary on the lines below it. An empty body leaves the summary alone.
+fn with_body(mut summary: String, body: String) -> String {
+    if !body.is_empty() {
+        summary.push('\n');
+        summary.push_str(&body);
+    }
+    summary
 }
 
 /// Summarizes a metrics export request: how many resources, metrics and data points it carries.
@@ -555,13 +584,12 @@ mod tests {
     }
 
     #[test]
-    fn a_verbosity_formats_only_the_body_it_logs() {
-        let formats_nothing = || -> String { panic!("this body must not be formatted") };
+    fn a_verbosity_renders_only_the_parts_it_logs() {
+        let renders_nothing = || -> String { panic!("this part must not be rendered") };
 
-        for verbosity in [OtlpDebugVerbosity::None, OtlpDebugVerbosity::Basic] {
-            output(verbosity).render_batch("summary".to_string(), formats_nothing, formats_nothing);
-        }
-        output(OtlpDebugVerbosity::Normal).render_batch("summary".to_string(), String::new, formats_nothing);
-        output(OtlpDebugVerbosity::Detailed).render_batch("summary".to_string(), formats_nothing, String::new);
+        output(OtlpDebugVerbosity::None).render_batch(renders_nothing, renders_nothing, renders_nothing);
+        output(OtlpDebugVerbosity::Basic).render_batch(String::new, renders_nothing, renders_nothing);
+        output(OtlpDebugVerbosity::Normal).render_batch(String::new, String::new, renders_nothing);
+        output(OtlpDebugVerbosity::Detailed).render_batch(String::new, renders_nothing, String::new);
     }
 }
