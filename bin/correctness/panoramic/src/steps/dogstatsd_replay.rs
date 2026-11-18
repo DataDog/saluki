@@ -236,4 +236,30 @@ mod tests {
         assert_eq!(report.status, StepStatus::Failed, "{}", report.message);
         assert!(report.message.contains('b'), "{}", report.message);
     }
+
+    #[test]
+    fn a_statistics_harness_error_after_a_replay_keeps_the_step_failed() {
+        // A harness error used to override an earlier replay's missing metrics and turn the step `errored`.
+        let step: DogstatsdReplay = serde_saphyr::from_str(
+            "{on: app, endpoint: statsd, payloads: ['b:1|c'], capture_duration: 1s, stats_duration: 1s, \
+             expected_metrics: [replay.requests], timeout: 5s}",
+        )
+        .unwrap();
+        let harness_error = || HandleError::Harness("Docker API failed.".to_string());
+
+        let after_replay = step.stats_failed(harness_error(), true, &["replay.requests".to_string()]);
+        assert_eq!(after_replay.status, StepStatus::Failed, "{}", after_replay.message);
+        assert_eq!(
+            after_replay.message,
+            "Failed to collect DogStatsD replay statistics: Docker API failed.\n\
+             An earlier replay's statistics did not contain expected metric(s): replay.requests"
+        );
+
+        let before_replay = step.stats_failed(harness_error(), false, &[]);
+        assert_eq!(before_replay.status, StepStatus::Errored, "{}", before_replay.message);
+        assert_eq!(
+            before_replay.message,
+            "Failed to collect DogStatsD replay statistics: Docker API failed."
+        );
+    }
 }
