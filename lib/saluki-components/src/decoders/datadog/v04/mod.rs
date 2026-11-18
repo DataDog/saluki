@@ -170,31 +170,53 @@ impl<'a> Strings<'a> {
     }
 }
 
+/// A string field promoted to a chunk or payload, which is taken only when set, as the reference takes a non-zero
+/// string reference.
+///
+/// The v0.4 decoder promotes strings, which are set when non-empty, as every empty string is the reference's string
+/// reference 0. The v0.5 decoder promotes its dictionary references themselves, since a dictionary may hold the empty
+/// string at a non-zero reference.
+pub(super) trait Promoted: Default {
+    fn is_set(&self) -> bool;
+}
+
+impl Promoted for MetaString {
+    fn is_set(&self) -> bool {
+        !self.is_empty()
+    }
+}
+
+impl Promoted for u32 {
+    fn is_set(&self) -> bool {
+        *self != 0
+    }
+}
+
 /// Fields promoted from a chunk's spans to the chunk, the reference's `SpanConvertedFields`.
-pub(super) struct ChunkPromoted {
+pub(super) struct ChunkPromoted<S = MetaString> {
     pub(super) trace_id_low: u64,
     pub(super) trace_id_high: u64,
-    pub(super) env: MetaString,
-    pub(super) app_version: MetaString,
-    pub(super) git_commit_sha: MetaString,
-    pub(super) hostname: MetaString,
-    pub(super) origin: MetaString,
-    pub(super) apm_mode: MetaString,
+    pub(super) env: S,
+    pub(super) app_version: S,
+    pub(super) git_commit_sha: S,
+    pub(super) hostname: S,
+    pub(super) origin: S,
+    pub(super) apm_mode: S,
     pub(super) sampling_mechanism: u32,
     pub(super) sampling_priority: i32,
 }
 
-impl Default for ChunkPromoted {
+impl<S: Default> Default for ChunkPromoted<S> {
     fn default() -> Self {
         Self {
             trace_id_low: 0,
             trace_id_high: 0,
-            env: MetaString::empty(),
-            app_version: MetaString::empty(),
-            git_commit_sha: MetaString::empty(),
-            hostname: MetaString::empty(),
-            origin: MetaString::empty(),
-            apm_mode: MetaString::empty(),
+            env: S::default(),
+            app_version: S::default(),
+            git_commit_sha: S::default(),
+            hostname: S::default(),
+            origin: S::default(),
+            apm_mode: S::default(),
             sampling_mechanism: 0,
             sampling_priority: PRIORITY_NONE,
         }
@@ -203,17 +225,17 @@ impl Default for ChunkPromoted {
 
 /// Fields promoted from the chunks to the payload, the reference's `ChunkConvertedFields`.
 #[derive(Default)]
-pub(super) struct PayloadPromoted {
-    pub(super) env: MetaString,
-    pub(super) app_version: MetaString,
-    pub(super) git_commit_sha: MetaString,
-    pub(super) hostname: MetaString,
-    pub(super) apm_mode: MetaString,
+pub(super) struct PayloadPromoted<S = MetaString> {
+    pub(super) env: S,
+    pub(super) app_version: S,
+    pub(super) git_commit_sha: S,
+    pub(super) hostname: S,
+    pub(super) apm_mode: S,
 }
 
-impl PayloadPromoted {
-    /// Takes every non-empty field of a decoded chunk, mirroring `InternalTraceChunk.ApplyPromotedFields`.
-    pub(super) fn apply(&mut self, chunk: &mut ChunkPromoted) {
+impl<S: Promoted> PayloadPromoted<S> {
+    /// Takes every set field of a decoded chunk, mirroring `InternalTraceChunk.ApplyPromotedFields`.
+    pub(super) fn apply(&mut self, chunk: &mut ChunkPromoted<S>) {
         for (to, from) in [
             (&mut self.env, &mut chunk.env),
             (&mut self.app_version, &mut chunk.app_version),
@@ -221,7 +243,7 @@ impl PayloadPromoted {
             (&mut self.hostname, &mut chunk.hostname),
             (&mut self.apm_mode, &mut chunk.apm_mode),
         ] {
-            if !from.is_empty() {
+            if from.is_set() {
                 *to = std::mem::take(from);
             }
         }
@@ -235,7 +257,7 @@ pub(super) struct RootPriority {
 }
 
 impl RootPriority {
-    pub(super) fn reconcile(&mut self, promoted: &mut ChunkPromoted, parent_id: u64) {
+    pub(super) fn reconcile<S>(&mut self, promoted: &mut ChunkPromoted<S>, parent_id: u64) {
         if parent_id == 0 && promoted.sampling_priority != PRIORITY_NONE {
             self.priority = Some(promoted.sampling_priority);
         } else if let Some(priority) = self.priority {
@@ -674,7 +696,7 @@ pub(super) fn span_kind(value: &[u8]) -> u32 {
 }
 
 /// Parses an unsigned 64-bit integer as Go's `strconv.ParseUint(s, radix, 64)` does, which rejects a sign.
-fn parse_unsigned(value: &[u8], radix: u32) -> Option<u64> {
+pub(super) fn parse_unsigned(value: &[u8], radix: u32) -> Option<u64> {
     let value = simdutf8::basic::from_utf8(value).ok()?;
     if value.starts_with('+') {
         return None;

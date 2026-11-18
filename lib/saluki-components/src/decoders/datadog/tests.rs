@@ -327,7 +327,7 @@ fn check_case(case: &Case) {
 #[test]
 fn streaming_string_literal_then_reference() {
     // A literal string is added to the table; a later uint32 index resolves to the same value.
-    let mut strings = StringTable::new();
+    let mut strings = StringTable::new(0);
 
     let mut buf = Vec::new();
     encode::write_str(&mut buf, "abc").unwrap();
@@ -349,7 +349,7 @@ fn streaming_string_literal_then_reference() {
 
 #[test]
 fn streaming_string_unseen_index_rejected() {
-    let mut strings = StringTable::new();
+    let mut strings = StringTable::new(0);
     let mut buf = Vec::new();
     encode::write_uint(&mut buf, 5).unwrap();
     let mut r = buf.as_slice();
@@ -359,7 +359,7 @@ fn streaming_string_unseen_index_rejected() {
 
 #[test]
 fn attributes_array_not_multiple_of_three_rejected() {
-    let mut strings = StringTable::new();
+    let mut strings = StringTable::new(0);
     let mut buf = Vec::new();
     encode::write_array_len(&mut buf, 2).unwrap();
     encode::write_nil(&mut buf).unwrap();
@@ -371,7 +371,7 @@ fn attributes_array_not_multiple_of_three_rejected() {
 
 #[test]
 fn any_value_array_not_multiple_of_two_rejected() {
-    let mut strings = StringTable::new();
+    let mut strings = StringTable::new(0);
     let mut buf = Vec::new();
     encode::write_uint(&mut buf, 6).unwrap(); // array type
     encode::write_array_len(&mut buf, 3).unwrap();
@@ -385,7 +385,7 @@ fn any_value_array_not_multiple_of_two_rejected() {
 
 #[test]
 fn any_value_unknown_type_rejected() {
-    let mut strings = StringTable::new();
+    let mut strings = StringTable::new(0);
     let mut buf = Vec::new();
     encode::write_uint(&mut buf, 99).unwrap();
     let mut r = buf.as_slice();
@@ -406,7 +406,7 @@ fn unknown_field_number_is_skipped() {
     encode::write_uint(&mut buf, 2).unwrap(); // name
     encode::write_str(&mut buf, "op").unwrap();
 
-    let mut strings = StringTable::new();
+    let mut strings = StringTable::new(0);
     let mut r = buf.as_slice();
     let span = decode_span(&mut r, &mut strings).unwrap();
     assert_eq!(span.service(), "svc");
@@ -425,7 +425,7 @@ fn unknown_field_inline_string_is_harvested() {
     encode::write_uint(&mut buf, 1).unwrap(); // service
     encode::write_uint(&mut buf, 1).unwrap(); // ...by reference to index 1
 
-    let mut strings = StringTable::new();
+    let mut strings = StringTable::new(0);
     let mut r = buf.as_slice();
     let span = decode_span(&mut r, &mut strings).unwrap();
     assert_eq!(
@@ -454,7 +454,7 @@ fn unknown_field_nested_strings_are_harvested() {
     encode::write_uint(&mut buf, 2).unwrap(); // name
     encode::write_uint(&mut buf, 3).unwrap(); // ...-> "three"
 
-    let mut strings = StringTable::new();
+    let mut strings = StringTable::new(0);
     let mut r = buf.as_slice();
     let span = decode_span(&mut r, &mut strings).unwrap();
     assert_eq!(strings.len(), 4, "three nested strings should have been harvested");
@@ -473,7 +473,7 @@ fn unknown_field_depth_cap_enforced() {
     }
     encode::write_uint(&mut buf, 0).unwrap();
 
-    let mut strings = StringTable::new();
+    let mut strings = StringTable::new(0);
     let mut r = buf.as_slice();
     let err = decode_span(&mut r, &mut strings).unwrap_err();
     assert!(matches!(err, DecodeError::DepthExceeded { max: 64 }));
@@ -567,7 +567,7 @@ fn any_value_depth_cap_enforced() {
     encode::write_uint(&mut buf, 4).unwrap(); // innermost: int
     encode::write_sint(&mut buf, 0).unwrap();
 
-    let mut strings = StringTable::new();
+    let mut strings = StringTable::new(0);
     let mut r = buf.as_slice();
     let err = value::read_any_value(&mut r, &mut strings).unwrap_err();
     assert!(matches!(err, DecodeError::DepthExceeded { max: 64 }));
@@ -729,7 +729,7 @@ fn overlong_trace_id_in_span_link_uses_final_16_bytes() {
     encode::write_uint(&mut buf, 1).unwrap(); // traceID
     encode::write_bin(&mut buf, &id).unwrap();
 
-    let mut strings = StringTable::new();
+    let mut strings = StringTable::new(0);
     let mut r = buf.as_slice();
     let span = decode_span(&mut r, &mut strings).unwrap();
     let (expected_high, expected_low) = split_trace_id(&id[1..]);
@@ -852,6 +852,60 @@ fn sdk_otlp_export_resolves_payload_then_first_span() {
     let mut bool_attr = FastHashMap::default();
     bool_attr.insert(ms("_dd.sdk.otlp_export"), AttributeValue::Bool(true));
     assert_eq!(resolve_sdk_otlp_export(&bool_attr, None), "true");
+}
+
+#[test]
+fn references_that_resolve_to_too_many_bytes_are_rejected() {
+    // One chunk of 100,000 spans whose string fields all reference one 256 KiB string, sent once: 3 MB whose
+    // references would resolve to 100 GB.
+    let large = "x".repeat(256 << 10);
+    let mut buf = Vec::new();
+    encode::write_map_len(&mut buf, 1).unwrap();
+    encode::write_uint(&mut buf, 11).unwrap();
+    encode::write_array_len(&mut buf, 1).unwrap();
+    encode::write_map_len(&mut buf, 1).unwrap();
+    encode::write_uint(&mut buf, 4).unwrap();
+    encode::write_array_len(&mut buf, 100_000).unwrap();
+    for i in 0..100_000u64 {
+        encode::write_map_len(&mut buf, 6).unwrap();
+        encode::write_uint(&mut buf, 1).unwrap();
+        if i == 0 {
+            encode::write_str(&mut buf, &large).unwrap();
+        } else {
+            encode::write_uint(&mut buf, 1).unwrap();
+        }
+        for field in [2, 3, 10] {
+            encode::write_uint(&mut buf, field).unwrap();
+            encode::write_uint(&mut buf, 1).unwrap();
+        }
+        encode::write_uint(&mut buf, 4).unwrap();
+        encode::write_u64(&mut buf, i).unwrap();
+        encode::write_uint(&mut buf, 5).unwrap();
+        encode::write_u64(&mut buf, i).unwrap();
+    }
+
+    let start = std::time::Instant::now();
+    let error = decode_v1_payload(&buf).unwrap_err();
+    let elapsed = start.elapsed();
+    let budget = buf.len() * read::RESOLVED_BYTES_PER_PAYLOAD_BYTE;
+    assert!(
+        matches!(error, DecodeError::ResolvedStringsTooLarge { limit } if limit == budget),
+        "{error:?}"
+    );
+    assert!(elapsed < std::time::Duration::from_secs(5), "took {elapsed:?}");
+
+    // A small table resolves at least `MIN_RESOLVED_BYTES`, however small the payload.
+    let strings = StringTable::new(0);
+    for _ in 0..read::MIN_RESOLVED_BYTES {
+        strings.get(0).unwrap();
+    }
+    let mut strings = StringTable::new(0);
+    let index = strings.add("x".repeat(read::MIN_RESOLVED_BYTES));
+    strings.get(index).unwrap();
+    assert!(matches!(
+        strings.get(index),
+        Err(DecodeError::ResolvedStringsTooLarge { .. })
+    ));
 }
 
 proptest! {

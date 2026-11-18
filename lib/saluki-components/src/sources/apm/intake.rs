@@ -21,13 +21,14 @@
 //! | Accepted | 200 | `replyOK` |
 //!
 //! Accepted payloads, and those refused for want of a decoder, are answered as `replyOK` answers them: `OK` on
-//! `/v0.1/spans`, `/spans`, `/v0.2/traces` and `/v0.3/traces`, and the [sampling rates by service](crate::common::datadog::traces::rates) the
-//! priority sampler publishes on the other endpoints.
+//! `/v0.1/spans`, `/spans`, `/v0.2/traces` and `/v0.3/traces`, and the [sampling rates by
+//! service](crate::common::datadog::traces::rates) the priority sampler publishes on the other endpoints.
 //!
 //! # Media types
 //!
-//! `/v1.0/traces` decodes any body as v1.0, and `/v0.1/spans` and `/spans` any body but MessagePack as a JSON span list,
-//! grouped into traces by trace ID (`traceChunksFromSpans`). The other v0.x endpoints decode a body by its [format](super::media_type), as
+//! `/v1.0/traces` decodes any body as v1.0, `/v0.5/traces` any body as a v0.5 dictionary payload, and `/v0.1/spans`
+//! and `/spans` any body but MessagePack as a JSON span list, grouped into traces by trace ID
+//! (`traceChunksFromSpans`). The other v0.x endpoints decode a body by its [format](super::media_type), as
 //! `decodeConvertedTracerPayload` does:
 //!
 //! | `Content-Type` | Decoded as | Go |
@@ -63,8 +64,8 @@ use super::media_type::{payload_format, PayloadFormat};
 use super::receiver_telemetry::{DropReason, ReceiverTags, ReceiverTelemetry};
 use crate::common::datadog::traces::normalize::{truncate_utf8_str, MAX_SERVICE_LEN};
 use crate::decoders::datadog::{
-    decode_v01_json, decode_v04_any, decode_v04_json, decode_v04_payload, decode_v1_payload, first_span,
-    resolve_process_tags, resolve_sdk_otlp_export, DecodeError,
+    decode_v01_json, decode_v04_any, decode_v04_json, decode_v04_payload, decode_v05_payload, decode_v1_payload,
+    first_span, resolve_process_tags, resolve_sdk_otlp_export, DecodeError,
 };
 use crate::transforms::{HistogramConfiguration, ServiceRates};
 
@@ -128,6 +129,8 @@ pub(super) enum EndpointVersion {
     V03,
     /// `/v0.4/traces`.
     V04,
+    /// `/v0.5/traces`.
+    V05,
     /// `/v1.0/traces`.
     V10,
 }
@@ -139,6 +142,7 @@ impl EndpointVersion {
             Self::V02 => "v0.2",
             Self::V03 => "v0.3",
             Self::V04 => "v0.4",
+            Self::V05 => "v0.5",
             Self::V10 => "v1.0",
         }
     }
@@ -250,6 +254,8 @@ impl TraceIntake {
             (EndpointVersion::V10, _) => decode_v1_payload(&body),
             // As `decodeConvertedTracerPayload`'s `v01` case, which decodes JSON whatever the media type.
             (EndpointVersion::V01, _) => decode_v01_json(&body),
+            // As `decodeConvertedTracerPayload`'s `v05` case, which decodes a v0.5 payload whatever the media type.
+            (EndpointVersion::V05, _) => decode_v05_payload(&body),
             // `/v0.2/traces` never gets here with MessagePack: it is rejected above.
             (_, PayloadFormat::MessagePack) => decode_v04_payload(&body),
             (_, PayloadFormat::Json) => decode_v04_json(&body),
@@ -728,7 +734,76 @@ mod tests {
         buf
     }
 
+    /// Builds a v0.5 payload of `chunks` chunks of one root span each, from service `web` in env `prod`.
+    fn v05_payload(chunks: u32) -> Vec<u8> {
+        let mut buf = Vec::new();
+        encode::write_array_len(&mut buf, 2).unwrap();
+        encode::write_array_len(&mut buf, 5).unwrap();
+        for string in ["", "web", "http.request", "env", "prod"] {
+            encode::write_str(&mut buf, string).unwrap();
+        }
+        encode::write_array_len(&mut buf, chunks).unwrap();
+        for chunk in 0..chunks {
+            encode::write_array_len(&mut buf, 1).unwrap();
+            encode::write_array_len(&mut buf, 12).unwrap();
+            // Service, name, resource, then the trace, span and parent IDs, start, duration and error.
+            for value in [1, 2, 2, u64::from(chunk) + 1, 1, 0, 0, 0, 0] {
+                encode::write_uint(&mut buf, value).unwrap();
+            }
+            encode::write_map_len(&mut buf, 1).unwrap();
+            encode::write_uint(&mut buf, 3).unwrap();
+            encode::write_uint(&mut buf, 4).unwrap();
+            encode::write_map_len(&mut buf, 0).unwrap();
+            encode::write_uint(&mut buf, 0).unwrap();
+        }
+        buf
+    }
+
     const MSGPACK: (&str, &str) = ("Content-Type", "application/msgpack");
+
+    // `decodeConvertedTracerPayload`'s `v05` case, which reads no media type, and `replyOK`, which answers v0.5 with
+    // the rates.
+    #[tokio::test]
+    async fn a_v05_payload_is_decoded_whatever_its_media_type() {
+        for content_type in [
+            Some("application/msgpack"),
+            Some("application/json"),
+            Some("text/plain"),
+            None,
+        ] {
+            let (intake, mut traces) = intake(config());
+            let mut headers = vec![
+                ("Datadog-Meta-Lang", "python"),
+                ("Datadog-Meta-Lang-Version", "3.12"),
+                ("Datadog-Meta-Tracer-Version", "2.0.0"),
+            ];
+            headers.extend(content_type.map(|value| ("Content-Type", value)));
+            let (status, _, body) =
+                send_to(&intake, EndpointVersion::V05, sized_request(&headers, v05_payload(2))).await;
+            assert_eq!(status, StatusCode::OK, "{content_type:?}");
+            assert_eq!(body, "{\"rate_by_service\":{}}\n", "{content_type:?}");
+
+            let traces = traces.try_recv().unwrap();
+            assert_eq!(traces.len(), 2);
+            for (index, trace) in traces.iter().enumerate() {
+                assert_eq!(trace.trace_id_low, index as u64 + 1);
+                assert_eq!(trace.spans()[0].service(), "web");
+                assert_eq!(trace.payload.language_name, "python");
+                assert_eq!(trace.payload.language_version, "3.12");
+                assert_eq!(trace.payload.tracer_version, "2.0.0");
+                assert_eq!(trace.payload.env, "prod");
+            }
+            let receiver = traces[0].payload.receiver();
+            assert_eq!(receiver.endpoint_version, "v0.5");
+            assert_eq!(receiver.service, "web");
+        }
+
+        // A JSON body isn't a v0.5 payload.
+        let (intake, _traces) = intake(config());
+        let headers = [("Content-Type", "application/json")];
+        let (status, _, _) = send_to(&intake, EndpointVersion::V05, sized_request(&headers, b"[[]]".to_vec())).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
 
     /// `testutil.GetTestTraces(1, 1, false)` as `json.Marshal` writes it.
     const GO_TEST_TRACES_JSON: &str = r#"[[{"service":"fennel_IS amazing!","name":"something &&<@# that should be a metric!","resource":"NOT touched because it is going to be hashed","trace_id":42,"span_id":52,"parent_id":42,"start":9223372036854775807,"duration":9223372036854775807,"error":0,"meta":{"http.host":"192.168.0.1"},"metrics":{"http.monitor":41.99},"type":"web","span_links":[{"trace_id":42,"trace_id_high":32,"span_id":52,"attributes":{"a1":"v1","a2":"v2"},"tracestate":"dd=s:2;o:rum,congo=baz123","flags":2147483649}]}]]"#;
@@ -1018,6 +1093,7 @@ mod tests {
     async fn a_payload_that_ends_early_is_counted_as_msgp_short_bytes() {
         for (version, payload) in [
             (EndpointVersion::V04, v04_payload(2)),
+            (EndpointVersion::V05, v05_payload(2)),
             (EndpointVersion::V10, v1_payload(None, 2)),
         ] {
             let (intake, _traces) = intake(config());

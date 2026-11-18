@@ -153,6 +153,8 @@ func TestOracle(t *testing.T) {
 			v = v02
 		case "v0.3":
 			v = v03
+		case "v0.5":
+			v = v05
 		}
 		res := map[string]any{"name": c.Name, "media_type": getMediaType(req)}
 		tp, err := r.decodeConvertedTracerPayload(v, req, stubCID{}, "", "", "")
@@ -163,6 +165,11 @@ func TestOracle(t *testing.T) {
 		}
 		results = append(results, res)
 	}
-	out, _ := json.MarshalIndent(results, "", "  ")
-	os.WriteFile(os.Getenv("ORACLE_OUT"), out, 0o644)
+	out, err := json.MarshalIndent(results, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(os.Getenv("ORACLE_OUT"), out, 0o644); err != nil {
+		t.Fatal(err)
+	}
 }

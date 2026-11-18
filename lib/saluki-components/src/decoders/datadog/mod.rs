@@ -1,11 +1,12 @@
 //! Decoders for the Datadog APM trace wire formats.
 //!
-//! [`decode_v04_payload`](datadog::decode_v04_payload) decodes the v0.4 MessagePack `[][]Span` format, and
-//! [`decode_v04_json`](datadog::decode_v04_json) the same format in JSON, and [`decode_v01_json`](datadog::decode_v01_json)
-//! the v0.1 JSON `[]Span` format, into the same output as the v1.0 decoder;
-//! see their modules for how they mirror the reference. [`convert_tracer_payload`](datadog::convert_tracer_payload)
-//! converts the classic tracer payload model the same way. The rest of this page covers the v1.0 format (also called
-//! the `idx`/`etp` format).
+//! [`decode_v04_payload`](datadog::decode_v04_payload) decodes the v0.4 MessagePack `[][]Span` format,
+//! [`decode_v05_payload`](datadog::decode_v05_payload) the v0.5 MessagePack dictionary format, and
+//! [`decode_v04_json`](datadog::decode_v04_json) the v0.4 format in JSON, and
+//! [`decode_v01_json`](datadog::decode_v01_json) the v0.1 JSON `[]Span` format, into the same output as the v1.0
+//! decoder; see their modules for how they mirror the reference.
+//! [`convert_tracer_payload`](datadog::convert_tracer_payload) converts the classic tracer payload model the same way.
+//! The rest of this page covers the v1.0 format (also called the `idx`/`etp` format).
 //!
 //! The v1.0 trace API (`Content-Type: application/msgpack`, endpoint `v1.0`) sends a tracer payload
 //! in a custom MessagePack layout rather than protobuf-over-msgpack. Its defining traits:
@@ -15,6 +16,13 @@
 //! - **Structs are maps keyed by field number** (`uint32`), not by name.
 //! - **Attribute maps are flat arrays** with three slots per entry (`key`, `type`, `value`).
 //! - **`AnyValue`** is a `uint32` type discriminant followed by the value.
+//!
+//! A reference costs a few bytes but may stand for a string of any length, and each resolved string is hashed into
+//! an attribute map, here and again downstream. So that a payload's cost follows its size, the strings its references
+//! resolve to are bounded at 512 times its length, and at least 1 MiB
+//! ([`DecodeError::ResolvedStringsTooLarge`](datadog::DecodeError::ResolvedStringsTooLarge)). The reference decoder
+//! keeps its references as indexes and has no such bound: this is a deliberate deviation, which only payloads built
+//! to amplify meet. The v0.5 decoder applies the same bound.
 //!
 //! [`decode_v1_payload`](datadog::decode_v1_payload) decodes one tracer payload into the unified
 //! `Trace` model, producing one `Trace` per trace chunk. String references are resolved to owned
@@ -34,6 +42,7 @@ mod json;
 mod read;
 mod string_table;
 mod v04;
+mod v05;
 mod value;
 
 #[cfg(test)]
@@ -44,6 +53,7 @@ pub use self::error::DecodeError;
 pub use self::json::{decode_v01_json, decode_v04_any, decode_v04_json};
 use self::string_table::StringTable;
 pub use self::v04::decode_v04_payload;
+pub use self::v05::decode_v05_payload;
 use crate::common::datadog::traces::attribute_as_string;
 
 /// Plausible minimum average wire size of a trace chunk containing a span list and 16-byte trace ID.
@@ -206,7 +216,7 @@ fn split_trace_id(id: &[u8]) -> (u64, u64) {
 
 /// Decodes the top-level `TracerPayload` map.
 fn decode_tracer_payload(r: &mut &[u8]) -> Result<DecodedPayload, DecodeError> {
-    let mut strings = StringTable::new();
+    let mut strings = StringTable::new(r.len());
     let mut payload = DecodedPayload {
         container_id: MetaString::empty(),
         language_name: MetaString::empty(),
