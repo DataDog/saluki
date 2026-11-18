@@ -75,10 +75,10 @@ architecture is fundamentally different or the feature is platform-specific.
 | `aggregator_flush_metrics_and_serialize_in_parallel_chan_size`                           | Parallel flush: channel size                       | See below                                                                                                                                                                                                                                                                 |
 | `aggregator_use_tags_store`                                                              | Enable shared tag deduplication store              | See below                                                                                                                                                                                                                                                                 |
 | `apm_config.max_sender_retries`                                                          | Failed sends before a payload is dropped           | See below                                                                                                                                                                                                                                                                 |
-| `apm_config.stats_writer.connection_limit`                                               | Concurrent stats requests                          | ADP sends traces and APM stats from one forwarder, so a writer can't have its own connection limit. Almost no deployments set this key, so ADP doesn't implement it.                                                                                                      |
-| `apm_config.stats_writer.queue_size`                                                     | Pending stats payloads                             | ADP sends traces and APM stats from one forwarder with a byte-bounded retry queue, so a writer can't have its own queue size. Almost no deployments set this key, so ADP doesn't implement it.                                                                            |
+| `apm_config.stats_writer.connection_limit`                                               | Concurrent stats requests                          | ADP sends traces and APM stats from one forwarder, so a writer can't have its own connection limit. Nothing uses this key in practice, so ADP doesn't implement it.                                                                                                       |
+| `apm_config.stats_writer.queue_size`                                                     | Pending stats payloads                             | ADP sends traces and APM stats from one forwarder with a byte-bounded retry queue, so a writer can't have its own queue size. Nothing uses this key in practice, so ADP doesn't implement it.                                                                             |
 | `apm_config.sync_flushing`                                                               | Flush payloads on request, not on a timer          | See below                                                                                                                                                                                                                                                                 |
-| `apm_config.trace_writer.connection_limit`                                               | Concurrent trace requests                          | ADP sends traces and APM stats from one forwarder, so a writer can't have its own connection limit. Almost no deployments set this key, so ADP doesn't implement it.                                                                                                      |
+| `apm_config.trace_writer.connection_limit`                                               | Concurrent trace requests                          | ADP sends traces and APM stats from one forwarder, so a writer can't have its own connection limit. Nothing uses this key in practice, so ADP doesn't implement it.                                                                                                       |
 | `apm_config.trace_writer.queue_size`                                                     | Pending trace payloads                             | See below                                                                                                                                                                                                                                                                 |
 | `config_id`                                                                              | Fleet Automation config ID tag                     | Core Agent uses this only on Agent HA telemetry metrics.                                                                                                                                                                                                                  |
 | `data_plane.experimental.otlp.proxy.agent_receiver_http_endpoint`                        | Relocated Agent OTLP/HTTP listener                 | See below                                                                                                                                                                                                                                                                 |
@@ -222,17 +222,17 @@ Related ADP-specific tuning is exposed through context/tag-set resolver settings
 ### `apm_config.max_sender_retries`
 
 The trace-agent drops a trace or stats payload after this many failed sends, 4 by default. ADP follows its forwarder: it
-retries with backoff, up to `forwarder_backoff_max`, until the byte-bounded retry queue evicts the payload. Almost no deployments set this key, so ADP doesn't implement it.
+retries with backoff, up to `forwarder_backoff_max`, until the byte-bounded retry queue evicts the payload. Nothing uses this key in practice, so ADP doesn't implement it.
 
 ### `apm_config.sync_flushing`
 
 The trace-agent flushes its writers only when the host asks, which serverless deployments use. ADP's encoders flush on
-timers and ADP has no host flush, so ADP doesn't support this mode. Almost no deployments set this key, so ADP doesn't implement it.
+timers and ADP has no host flush, so ADP doesn't support this mode. Nothing uses this key in practice, so ADP doesn't implement it.
 
 ### `apm_config.trace_writer.queue_size`
 
 The trace-agent deprecates this key and always queues one payload. ADP sends traces from a forwarder with a byte-bounded
-retry queue and doesn't read it. Almost no deployments set this key, so ADP doesn't implement it.
+retry queue and doesn't read it. Nothing uses this key in practice, so ADP doesn't implement it.
 
 ### `data_plane.experimental.otlp.proxy.agent_receiver_http_endpoint`
 
