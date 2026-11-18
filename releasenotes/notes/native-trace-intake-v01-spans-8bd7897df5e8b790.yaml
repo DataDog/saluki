@@ -1,0 +1,8 @@
+features:
+  - |
+    The experimental native trace intake, enabled with ``data_plane.experimental.apm.native_trace_intake``, now serves
+    the deprecated ``/v0.1/spans`` and ``/spans`` endpoints itself, rather than forwarding them to the trace-agent. As
+    the trace-agent does, it decodes their body as a JSON list of spans whatever its ``Content-Type``, groups the spans
+    into one trace per trace ID, answers ``OK``, and rejects a MessagePack body with ``415 Unsupported Media Type``.
+    Their receiver telemetry is tagged ``v0.1``, and ``/info`` still doesn't list them. The traces of a payload come in
+    the order their trace IDs first appear in it, where the trace-agent's order varies from one payload to the next.

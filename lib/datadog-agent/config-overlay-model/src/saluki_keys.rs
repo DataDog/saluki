@@ -53,9 +53,10 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
         default: "false",
         documentation: Some(
             "ADP serves `/v1.0/traces`, `/v0.4/traces`, `/v0.3/traces` and `/v0.2/traces` itself, in JSON and \
-             MessagePack, and picks the decoder from `Content-Type` as the trace-agent does. As the trace-agent \
-             does, `/v0.2/traces` rejects MessagePack with `415 Unsupported Media Type`. ADP still forwards the \
-             other trace endpoints to the trace-agent behind the APM relay.",
+             MessagePack, and picks the decoder from `Content-Type` as the trace-agent does. It also serves the \
+             deprecated `/v0.1/spans` and `/spans`, in JSON. As the trace-agent does, `/v0.2/traces`, `/v0.1/spans` \
+             and `/spans` reject MessagePack with `415 Unsupported Media Type`. ADP still forwards the other trace \
+             endpoints to the trace-agent behind the APM relay.",
         ),
     },
     SalukiKey {

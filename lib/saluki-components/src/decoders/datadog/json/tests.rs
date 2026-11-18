@@ -1,6 +1,6 @@
-//! Tests for the v0.4 JSON decoder.
+//! Tests for the v0.4 and v0.1 JSON decoders.
 //!
-//! The primary test is a table-driven run over `testdata/v04_json_cases.json`. Each case's expected value is what the
+//! The primary tests are table-driven runs over `testdata/v04_json_cases.json` and `testdata/v01_json_cases.json`. Each case's expected value is what the
 //! trace-agent's receiver decodes from the same body: the fixtures were produced by running its
 //! `decodeConvertedTracerPayload` (Go 1.26.11, the toolchain the Agent pins) on each body, and dumping the resulting
 //! tracer payload or classifying the error as `httpDecodingError` does. The remaining tests cover the syntax pass, the
@@ -15,10 +15,11 @@ use serde_json::{json, Map, Value};
 use stringtheory::MetaString;
 
 use super::scan::{decoder_read, scan, Outcome};
-use super::{decode_v04_any, decode_v04_json, DecodeError, DecodedV1};
+use super::{decode_v01_json, decode_v04_any, decode_v04_json, DecodeError, DecodedV1};
 use crate::decoders::datadog::v04::tests::alloc_tracking;
 
 const FIXTURE_CASES_JSON: &str = include_str!("../testdata/v04_json_cases.json");
+const V01_FIXTURE_CASES_JSON: &str = include_str!("../testdata/v01_json_cases.json");
 
 #[derive(Deserialize)]
 struct Fixture {
@@ -167,23 +168,23 @@ fn case_body(case: &Case) -> Vec<u8> {
     }
 }
 
-#[test]
-fn fixture_cases_decode_as_the_reference_decodes_them() {
-    let fixture: Fixture = serde_json::from_str(FIXTURE_CASES_JSON).unwrap();
-    assert!(fixture.cases.len() > 100);
+/// Checks that each fixture case decodes, with `decode`, as the reference decoded it. With `any_chunk_order`, the chunks
+/// are compared in any order, as the reference's own order is random.
+fn check_fixture(fixture: &str, decode: impl Fn(&str, &[u8]) -> Result<DecodedV1, DecodeError>, any_chunk_order: bool) {
+    let fixture: Fixture = serde_json::from_str(fixture).unwrap();
+    assert!(fixture.cases.len() > 30);
     for case in &fixture.cases {
         let _ = &case.description;
         let body = case_body(case);
-        let decoded = match case.format.as_str() {
-            "json" => decode_v04_json(&body),
-            "any" => decode_v04_any(&body),
-            format => panic!("{}: unknown format {format}", case.name),
-        };
-        match (&case.expected, decoded) {
+        match (&case.expected, decode(&case.format, &body)) {
             (Expected::Payload(expected), Ok(decoded)) => {
                 let mut expected = expected.clone();
                 parse_doubles(&mut expected);
-                let actual = dump(&decoded);
+                let mut actual = dump(&decoded);
+                if any_chunk_order {
+                    sort_chunks(&mut expected);
+                    sort_chunks(&mut actual);
+                }
                 assert_eq!(
                     actual,
                     expected,
@@ -207,6 +208,64 @@ fn fixture_cases_decode_as_the_reference_decodes_them() {
             }
         }
     }
+}
+
+/// Sorts a dumped payload's chunks by their rendering.
+fn sort_chunks(payload: &mut Value) {
+    if let Some(Value::Array(chunks)) = payload.get_mut("chunks") {
+        chunks.sort_by_cached_key(|chunk| chunk.to_string());
+    }
+}
+
+#[test]
+fn fixture_cases_decode_as_the_reference_decodes_them() {
+    let decode = |format: &str, body: &[u8]| match format {
+        "json" => decode_v04_json(body),
+        "any" => decode_v04_any(body),
+        format => panic!("unknown format {format}"),
+    };
+    check_fixture(FIXTURE_CASES_JSON, decode, false);
+}
+
+#[test]
+fn v01_fixture_cases_decode_as_the_reference_decodes_them() {
+    // The reference decodes a v0.1 body as JSON whatever its media type.
+    check_fixture(V01_FIXTURE_CASES_JSON, |_, body| decode_v01_json(body), true);
+}
+
+#[test]
+fn v01_traces_come_in_the_order_their_ids_first_appear() {
+    let body = br#"[{"trace_id":3,"span_id":1},null,{"trace_id":1,"span_id":2},{"trace_id":3,"span_id":3},{"trace_id":2,"span_id":4},{"trace_id":1,"span_id":5}]"#;
+    let decoded = decode_v01_json(body).unwrap();
+    let traces: Vec<(u64, Vec<u64>)> = decoded
+        .traces
+        .iter()
+        .map(|trace| (trace.trace_id_low, trace.spans().iter().map(Span::span_id).collect()))
+        .collect();
+    assert_eq!(traces, [(3, vec![1, 3]), (1, vec![2, 5]), (2, vec![4])]);
+}
+
+#[test]
+fn v01_payloads_of_distinct_trace_ids_allocate_in_proportion_to_their_size() {
+    // Each span is its own trace, so grouping makes one chunk and one map entry per span.
+    let count = 20_000;
+    let body = format!(
+        "[{}]",
+        (0..count)
+            .map(|id| format!(r#"{{"trace_id":{id}}}"#))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    let (decoded, peak) = alloc_tracking::peak_during(|| decode_v01_json(body.as_bytes()).unwrap());
+    assert_eq!(decoded.traces.len(), count);
+    // A classic span, the chunk holding it and its map entry, then a unified span and the trace holding it.
+    let per_span = std::mem::size_of::<datadog_protos::traces::Span>()
+        + std::mem::size_of::<datadog_protos::traces::TraceChunk>()
+        + std::mem::size_of::<Span>()
+        + std::mem::size_of::<saluki_core::data_model::event::trace::Trace>()
+        + 128;
+    let bound = 2 * count * per_span;
+    assert!(peak <= bound, "peak {peak} bytes (bound {bound})");
 }
 
 #[test]
