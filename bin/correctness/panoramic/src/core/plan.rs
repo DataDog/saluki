@@ -171,7 +171,7 @@ impl Serialize for Replaceable {
 pub(crate) struct PlannedStep {
     pub(crate) name: String,
     pub(crate) fields: StepFields,
-    /// Everything of the case the step uses.
+    /// Everything the case step uses.
     pub(crate) needs: Vec<Need>,
     /// How the runner reaches each endpoint the step uses, itself or through an operation, keyed by
     /// `<participant>.<endpoint>`.
