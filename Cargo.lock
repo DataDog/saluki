@@ -4623,6 +4623,7 @@ dependencies = [
  "futures",
  "k8s-openapi",
  "kube",
+ "panoramic-courier",
  "rand 0.10.3",
  "regex",
  "reqwest",

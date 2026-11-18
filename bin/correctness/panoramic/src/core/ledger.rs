@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use airlock::container::Container;
 use airlock::driver::{Driver, DriverDetails};
+use airlock::host::HostProcess;
 use airlock::scope::CaseScope;
 use airlock::unix::UnixProcess;
 use futures::future::join_all;
@@ -23,6 +24,9 @@ use crate::core::result::{Issue, IssueKind, ReclaimEntry, ReclaimResult};
 
 /// Shared budget for stopping a case's tracked tasks and removing its resources.
 pub(crate) const RECLAIM_TIME: Duration = Duration::from_secs(30);
+
+/// How long a stopped host process has to exit after SIGTERM before it is sent SIGKILL.
+const STOP_GRACE: Duration = Duration::from_secs(2);
 
 /// Kills every process of the node that runs a program from directory `$1`, waits until none is left, and removes the
 /// directory. Nothing else stops such a process: it runs in the node, outside every namespace.
@@ -77,6 +81,8 @@ enum Resource {
     CaseScope(CaseScope),
     /// A host process and its process group.
     Process(UnixProcess),
+    /// A host program and its process group.
+    HostProcess(HostProcess),
     /// A Kubernetes namespace, removed through the client that created it.
     Namespace { name: String, client: Client },
     /// A host directory whose removal depends on earlier results in the reclaim walk.
@@ -114,6 +120,7 @@ impl Resource {
             Self::IsolationGroup(id) => Driver::clean_related_resources(id).await.map(|()| None),
             Self::CaseScope(scope) => scope.reclaim(deadline).await.map(|()| None),
             Self::Process(process) => process.cleanup().await.map(|()| None),
+            Self::HostProcess(process) => process.stop(STOP_GRACE).await.map(|()| None),
             Self::Namespace { name, client } => {
                 let api = Api::<Namespace>::all(client);
                 match api.delete(&name, &DeleteParams::default()).await {
@@ -158,6 +165,7 @@ impl fmt::Debug for Resource {
             Self::IsolationGroup(id) => f.debug_tuple("IsolationGroup").field(id).finish(),
             Self::CaseScope(scope) => f.debug_tuple("CaseScope").field(&scope.resource_name()).finish(),
             Self::Process(process) => f.debug_tuple("Process").field(process).finish(),
+            Self::HostProcess(process) => f.debug_tuple("HostProcess").field(process).finish(),
             Self::Namespace { name, .. } => f.debug_struct("Namespace").field("name", name).finish_non_exhaustive(),
             Self::Directory(path) => f.debug_tuple("Directory").field(path).finish(),
             Self::NodeDirectory { node, path } => f
@@ -176,6 +184,7 @@ impl fmt::Display for Resource {
             Self::IsolationGroup(id) => write!(f, "isolation_group:{}", id),
             Self::CaseScope(scope) => write!(f, "case_scope:{}", scope.resource_name()),
             Self::Process(process) => write!(f, "process:{}", process.name()),
+            Self::HostProcess(process) => write!(f, "host_process:{}", process.name()),
             Self::Namespace { name, .. } => write!(f, "namespace:{}", name),
             Self::Directory(path) => write!(f, "directory:{}", path.display()),
             Self::NodeDirectory { path, .. } => write!(f, "node_directory:{}", path),
@@ -249,6 +258,11 @@ impl ResourceLedger {
         self.register(Resource::Process(process));
     }
 
+    /// Takes ownership of a started host program. Call it as soon as the program starts.
+    pub(crate) fn host_process(&self, process: HostProcess) {
+        self.register(Resource::HostProcess(process));
+    }
+
     /// Registers a namespace, which reclaim deletes through `client`. Call it before creating the namespace.
     pub(crate) fn namespace(&self, client: Client, name: String) {
         self.register(Resource::Namespace { name, client });
@@ -273,7 +287,7 @@ impl ResourceLedger {
                 Resource::CaseScope(scope) => scope.resource_name() == name,
                 Resource::Namespace { name: namespace, .. } => namespace == name,
                 Resource::NodeDirectory { path, .. } => path == name,
-                Resource::Process(_) | Resource::Directory(_) => false,
+                Resource::Process(_) | Resource::HostProcess(_) | Resource::Directory(_) => false,
             };
             if named {
                 entry.unsettled = true;

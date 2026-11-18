@@ -3,7 +3,8 @@
 //! Every method works the same on every realization and says whose problem a failure is, with [`HandleError`]. Named
 //! commands and operations are the plan's data, so nothing looks up a participant type. An endpoint is reached by the
 //! route the plan's rule gives for what is done, the endpoint's protocol and the participant's realization: through the
-//! courier inside the participant, or from the runner through a published port, with the runner's own HTTP client.
+//! courier inside the participant, from the runner through a published port, with the runner's own HTTP client, or, for
+//! host processes, from the runner on the endpoint's own port.
 //! A process's exit and output come from what the lifecycle observes of the participant, through the process's own
 //! channels.
 
@@ -21,7 +22,7 @@ use tokio::time::{timeout_at, Instant};
 use super::backend::{Exec, Realized};
 use super::courier::{Courier, HttpResponse};
 use super::observe::{first_exit, ExitStatus, Observation, ProcessExit, CONTAINER_OUTPUT};
-use super::plan::PlannedParticipant;
+use super::plan::{Launch, PlannedParticipant, PlannedProgram};
 use super::reference::Values;
 use super::spec::{ExitChannel, ProcessSpec};
 use super::step::EndpointOperation;
@@ -259,21 +260,24 @@ impl<'a> Handle<'a> {
             self.planned.commands.get(name).ok_or_else(|| {
                 HandleError::Harness(format!("participant '{}' has no command '{}'", self.name, name))
             })?;
-        if let Some(program) = &command.program {
-            // TODO: run a host program's command with the host process backend.
-            return Err(HandleError::Harness(format!(
-                "command '{}' runs program '{}' of host processes, which are not built",
-                name, program
-            )));
-        }
         let fill = |template| {
             self.values
                 .fill(self.name, template)
                 .map_err(|e| HandleError::Harness(format!("participant '{}' command '{}': {}", self.name, name, e)))
         };
-        let mut argv = command.argv.iter().map(fill).collect::<Result<Vec<_>, _>>()?;
-        argv.extend(args.iter().cloned());
+        let mut argv = Vec::new();
         let mut filled = BTreeMap::new();
+        if let Some(program) = &command.program {
+            let program = self.program(program)?;
+            argv.push(program.path.used().to_string());
+            for (key, value) in &program.env {
+                filled.insert(key.clone(), fill(value)?);
+            }
+        }
+        for template in &command.argv {
+            argv.push(fill(template)?);
+        }
+        argv.extend(args.iter().cloned());
         for (key, value) in &command.env {
             filled.insert(key.clone(), fill(value)?);
         }
@@ -306,7 +310,13 @@ impl<'a> Handle<'a> {
                 let address = planned.courier_address(self.name, EndpointOperation::Probe);
                 self.courier()?.probe(&address, limit).await
             }
-            route => Err(not_built(route)),
+            Reach::InRunner => {
+                let address = self.in_runner(planned, EndpointOperation::Probe)?;
+                panoramic_courier::probe(&address, limit)
+                    .await
+                    .map_err(HandleError::from)
+            }
+            route => Err(no_route(route)),
         }
     }
 
@@ -323,7 +333,13 @@ impl<'a> Handle<'a> {
                 let address = planned.courier_address(self.name, EndpointOperation::Send);
                 self.courier()?.send(&address, payload, limit).await
             }
-            route => Err(not_built(route)),
+            Reach::InRunner => {
+                let address = self.in_runner(planned, EndpointOperation::Send)?;
+                panoramic_courier::send(&address, &payload, limit)
+                    .await
+                    .map_err(HandleError::from)
+            }
+            route => Err(no_route(route)),
         }
     }
 
@@ -349,7 +365,7 @@ impl<'a> Handle<'a> {
             )));
         }
         match route {
-            Reach::PublishedPort | Reach::ForwardedPort => {
+            Reach::PublishedPort | Reach::ForwardedPort | Reach::InRunner => {
                 self.published_get(endpoint, planned.tls, path, skip_verify, read_body, limit)
                     .await
             }
@@ -362,7 +378,6 @@ impl<'a> Handle<'a> {
                 let address = planned.courier_address(self.name, EndpointOperation::Request);
                 self.courier()?.http_get(&address, path, limit).await
             }
-            route => Err(not_built(route)),
         }
     }
 
@@ -388,6 +403,18 @@ impl<'a> Handle<'a> {
         Ok((endpoint, route))
     }
 
+    /// The participant's program `name`.
+    fn program(&self, name: &str) -> Result<&'a PlannedProgram, HandleError> {
+        let programs: &[PlannedProgram] = match &self.planned.launch {
+            Launch::Programs(programs) => programs,
+            Launch::Image { .. } => &[],
+        };
+        programs
+            .iter()
+            .find(|program| program.name == name)
+            .ok_or_else(|| HandleError::Harness(format!("participant '{}' has no program '{}'", self.name, name)))
+    }
+
     fn process(&self, process: &str) -> Result<&'a ProcessSpec, HandleError> {
         self.planned
             .processes
@@ -398,6 +425,20 @@ impl<'a> Handle<'a> {
 
     fn no_process(&self, process: &str) -> HandleError {
         HandleError::Harness(format!("participant '{}' has no process '{}'", self.name, process))
+    }
+
+    /// The address of `endpoint` as the courier library, which runs in the harness, reaches it: on the loopback
+    /// address of the runner host, where host processes listen.
+    fn in_runner(
+        &self, endpoint: &PlannedEndpoint, operation: EndpointOperation,
+    ) -> Result<panoramic_courier::Address, HandleError> {
+        let address = endpoint.courier_address("127.0.0.1", operation);
+        address.parse().map_err(|e| {
+            HandleError::Harness(format!(
+                "the address '{}' is not one the courier reaches: {}",
+                address, e
+            ))
+        })
     }
 
     fn courier(&self) -> Result<Courier<'a>, HandleError> {
@@ -465,18 +506,19 @@ fn harness(error: impl Into<GenericError>) -> HandleError {
     HandleError::Harness(format!("{:#}", error.into()))
 }
 
-fn not_built(route: Reach) -> HandleError {
-    // TODO: reach host processes from the runner with the host process backend.
-    let through = match route {
-        Reach::CourierInServer => "the courier in the participant",
-        Reach::PublishedPort => "a published port",
-        Reach::ForwardedPort => "a forwarded port",
-        Reach::InRunner => "the runner",
-    };
-    HandleError::Harness(format!(
-        "reaching an endpoint through {} is not built for this",
-        through
-    ))
+/// The error for a route that [`reach`] never gives for a probe or a send.
+fn no_route(route: Reach) -> HandleError {
+    HandleError::Harness(format!("no probe or send is routed through {:?}", route))
+}
+
+impl From<panoramic_courier::Error> for HandleError {
+    /// Blames who the courier library says is to blame.
+    fn from(error: panoramic_courier::Error) -> Self {
+        match error.fault() {
+            panoramic_courier::Fault::Software => Self::Software(error.to_string()),
+            panoramic_courier::Fault::Harness => Self::Harness(error.to_string()),
+        }
+    }
 }
 
 #[cfg(test)]

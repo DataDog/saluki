@@ -195,17 +195,17 @@ impl PlannedEndpoint {
         })
     }
 
-    /// The address the courier reaches the endpoint at from inside `participant`, the endpoint's own participant, to do
-    /// `operation`: by the participant's name, as a peer would, and without TLS, which the courier does not speak. A
-    /// send writes raw bytes, so it reaches an `http` or `grpc` port as `tcp`.
-    pub(crate) fn courier_address(&self, participant: &str, operation: EndpointOperation) -> String {
+    /// The address the courier reaches the endpoint at, at `host`, to do `operation`: by the participant's name from
+    /// inside the participant, as a peer would, or on the loopback address from the runner. It is without TLS, which
+    /// the courier does not speak. A send writes raw bytes, so it reaches an `http` or `grpc` port as `tcp`.
+    pub(crate) fn courier_address(&self, host: &str, operation: EndpointOperation) -> String {
         let protocol = match (operation, self.protocol) {
             (EndpointOperation::Send, Protocol::Http | Protocol::Grpc) => Protocol::Tcp,
             (_, protocol) => protocol,
         };
         let scheme = protocol.scheme(false);
         match &self.address {
-            PlannedAddress::Port(port) => format!("{}://{}:{}", scheme, participant, port),
+            PlannedAddress::Port(port) => format!("{}://{}:{}", scheme, host, port),
             PlannedAddress::Path(path) => format!("{}://{}", scheme, path),
             PlannedAddress::Pipe(name) => format!("{}://{}", scheme, name),
         }
