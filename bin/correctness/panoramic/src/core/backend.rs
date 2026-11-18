@@ -7,8 +7,8 @@
 //! Planning happens before any backend runs, so the fixed answers of every backend are kept here as data, one
 //! [`Facts`] row per enclosure, such as where a participant's own directory is and which protocols it can listen on.
 //! At run time, a backend prepares the scope of a case, creates each participant in it from its plan, and starts it.
-//! A started participant is a [`Running`]: it reports its exit and output to the lifecycle, and, as a [`Realized`],
-//! runs commands in the participant and reads its files for steps.
+//! A started participant is [`Running`]: it reports its exit and output to the lifecycle, and, as [`Realized`], runs
+//! commands in the participant and reads its files for steps.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -208,7 +208,8 @@ pub(crate) trait Realized: fmt::Debug + Send + Sync {
     fn host_port(&self, endpoint: &str) -> Option<u16>;
 }
 
-/// What a backend knows of a participant's identity, as far as it has been created or started.
+/// The runtime identities a backend learns of a participant: some when it creates the participant, the rest when it
+/// starts it.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Identities {
     pub(crate) container_id: Option<String>,
