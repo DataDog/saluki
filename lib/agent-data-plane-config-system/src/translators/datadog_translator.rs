@@ -526,6 +526,16 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
             };
     }
 
+    fn consume_apm_config_decoder_timeout(&mut self, value: i64) {
+        self.config.domains.apm.decoder_timeout = non_positive_as_zero("apm_config.decoder_timeout", value);
+    }
+
+    fn consume_apm_config_decoders(&mut self, value: i64) {
+        // The trace-agent panics on a negative count, but only when it builds the receiver: a translation error here
+        // would stop every pipeline, so a negative count reads as `0`, the automatic size, instead.
+        self.config.domains.apm.decoders = non_positive_as_zero("apm_config.decoders", value);
+    }
+
     fn consume_apm_config_enable_rare_sampler(&mut self, value: bool) {
         self.config.domains.traces.enable_rare_sampler = value;
     }
@@ -2623,6 +2633,8 @@ mod tests {
         assert_eq!(apm.connection_limit, 0);
         assert_eq!(apm.receiver_timeout, 0);
         assert_eq!(apm.max_payload_size, 25 * 1024 * 1024);
+        assert_eq!(apm.decoders, 0);
+        assert_eq!(apm.decoder_timeout, 1000);
         assert_defaulted(&apm.max_memory, 5e8);
         assert_defaulted(&apm.max_cpu_percent, 50.0);
         assert!(apm.telemetry_enabled);
@@ -2645,6 +2657,8 @@ mod tests {
                 "connection_limit": 100,
                 "receiver_timeout": 7,
                 "max_payload_size": 1024,
+                "decoders": 3,
+                "decoder_timeout": 250,
                 "max_memory": 1e9,
                 "max_cpu_percent": 200,
                 "telemetry": { "enabled": false },
@@ -2663,6 +2677,8 @@ mod tests {
         assert_eq!(apm.connection_limit, 100);
         assert_eq!(apm.receiver_timeout, 7);
         assert_eq!(apm.max_payload_size, 1024);
+        assert_eq!(apm.decoders, 3);
+        assert_eq!(apm.decoder_timeout, 250);
         assert_explicit(&apm.max_memory, 1e9);
         assert_explicit(&apm.max_cpu_percent, 200.0);
         assert!(!apm.telemetry_enabled);
@@ -2683,11 +2699,15 @@ mod tests {
     fn negative_trace_agent_limits_recover_as_the_trace_agent_does() {
         // The trace-agent applies no connection limit and its default timeout for any value up to 0.
         let (config, errors) = translate_explicit(json!({
-            "apm_config": { "connection_limit": -1, "receiver_timeout": -5 },
+            "apm_config": { "connection_limit": -1, "receiver_timeout": -5, "decoders": -1, "decoder_timeout": -1 },
         }));
         assert!(errors.is_none());
         assert_eq!(config.domains.apm.connection_limit, 0);
         assert_eq!(config.domains.apm.receiver_timeout, 0);
+        // A wait of up to 0 rejects a payload at once, whenever no decoder is free.
+        assert_eq!(config.domains.apm.decoder_timeout, 0);
+        // The trace-agent panics on a negative decoder count; ADP sizes the pool automatically instead.
+        assert_eq!(config.domains.apm.decoders, 0);
 
         // A negative payload size has no recovery: the trace-agent would reject every request.
         let (_, errors) = translate_explicit(json!({ "apm_config": { "max_payload_size": -1 } }));
