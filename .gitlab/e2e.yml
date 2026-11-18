@@ -176,7 +176,7 @@ test-integration:
     - bash ci/tooling/cleanup-macos-dda-mounts.sh || true
     - sudo pkill -9 -f /target/release/agent-data-plane || true
     - sudo pkill -9 -f /target/optimized-release/agent-data-plane || true
-    - rm -rf /tmp/panoramic || true
+    - sudo rm -rf /tmp/panoramic
   script:
     - make test-integration-macos-ci
   after_script:
