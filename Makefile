@@ -975,7 +975,7 @@ test-agent-version: ## Runs unit tests for the Agent version tooling
 		ci/tooling/update-agent-version/test_propose_agent_version.py ci/tooling/test_install_macos_agent.py
 
 .PHONY: check-agent-version
-check-agent-version: ## Validates .datadog-agent-version.json
+check-agent-version: ## Validates .datadog-agent-version.json and .datadog-agent-release-lines.jsonl
 	@$(PYTHON) ci/tooling/agent_version.py validate
 
 .PHONY: ensure-python-venv

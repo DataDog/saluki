@@ -2,9 +2,9 @@
 """Validate and read `.datadog-agent-version.json`, the Datadog Agent that Saluki builds with and tests against.
 
 The file holds the Integration version: one Agent build's Linux, Windows, macOS and debug-package artifacts. On a
-release branch it also holds `target`, the Agent minor the ADP line supports. This module only reads local files and
-Git objects. Discovery, which reads registries and hashes packages, is
-`update-agent-version/discover_agent_version.py`.
+release branch it also holds `target`, the Agent minor the ADP line supports, which must match the line's entry in
+`.datadog-agent-release-lines.jsonl`. This module only reads local files and Git objects. Discovery, which reads
+registries and hashes packages, is `update-agent-version/discover_agent_version.py`.
 """
 
 import argparse
@@ -17,6 +17,7 @@ from pathlib import Path
 
 
 VERSION_FILE = ".datadog-agent-version.json"
+RELEASE_LINES_FILE = ".datadog-agent-release-lines.jsonl"
 SCHEMA_VERSION = 1
 ADP_CARGO_TOML = "bin/agent-data-plane/Cargo.toml"
 
@@ -63,9 +64,69 @@ def version_minor(version):
     return f"{parsed[1]}.{parsed[2]}" if parsed else None
 
 
-def target_for_adp_line(adp_major, adp_minor):
-    """Map an ADP line to its Agent target minor: ADP X.Y supports Agent (X + 6).(Y + 78)."""
-    return f"{adp_major + 6}.{adp_minor + 78}"
+def minor_key(minor):
+    """Return a `major.minor` string as a tuple of integers, so that 1.10 sorts after 1.9."""
+    major, minor = minor.split(".")
+    return int(major), int(minor)
+
+
+def release_line_text(adp_line, agent):
+    """Return the one canonical line for a release-lines entry."""
+    return json.dumps({"agent_data_plane": adp_line, "agent": agent})
+
+
+def parse_release_lines(text, source=RELEASE_LINES_FILE):
+    """Return `(lines, errors)` for release-lines JSONL text, where `lines` maps each ADP line to its Agent minor.
+
+    Each line must be the canonical form that `release_line_text` writes, and entries must be sorted by ADP line with
+    strictly increasing Agent minors, so that a conflict between two additions is easy to see and resolve.
+    """
+    lines, errors = {}, []
+    if text and not text.endswith("\n"):
+        errors.append(f"{source} must end with a newline")
+    previous = None
+    for number, raw in enumerate(text.splitlines(), start=1):
+        where = f"{source}:{number}"
+        try:
+            entry = json.loads(raw)
+        except json.JSONDecodeError:
+            entry = None
+        if not isinstance(entry, dict) or set(entry) != {"agent_data_plane", "agent"}:
+            errors.append(f'{where} must be {{"agent_data_plane": "X.Y", "agent": "X.Y"}}, not {raw!r}')
+            continue
+        adp_line, agent = entry["agent_data_plane"], entry["agent"]
+        if not all(isinstance(value, str) and TARGET_RE.fullmatch(value) for value in (adp_line, agent)):
+            errors.append(f"{where} values must be major.minor versions such as 1.9 and 7.87, not {raw!r}")
+            continue
+        if raw != release_line_text(adp_line, agent):
+            errors.append(f"{where} must be written exactly as {release_line_text(adp_line, agent)}")
+        if previous is not None:
+            if minor_key(adp_line) <= minor_key(previous[0]):
+                errors.append(f"{where} ADP line {adp_line} must come after {previous[0]}; sort entries by ADP line")
+            elif minor_key(agent) <= minor_key(previous[1]):
+                errors.append(f"{where} Agent {agent} for ADP {adp_line} must be newer than {previous[1]}")
+        lines[adp_line] = agent
+        previous = (adp_line, agent)
+    return lines, errors
+
+
+def load_release_lines(path):
+    """Read and validate a release-lines file."""
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except FileNotFoundError as error:
+        raise VersionFileError(f"{path} does not exist") from error
+    lines, errors = parse_release_lines(text, str(path))
+    if errors:
+        raise VersionFileError("\n".join(errors))
+    return lines
+
+
+def next_release_line(lines, adp_line):
+    """Return the default entry text for a new ADP line: the newest Agent minor plus one."""
+    newest = max(lines.values(), key=minor_key)
+    major, minor = minor_key(newest)
+    return release_line_text(adp_line, f"{major}.{minor + 1}")
 
 
 def macos_package_url(kind, version, arch):
@@ -285,14 +346,17 @@ def load_version_file(path):
     return version_file
 
 
-def check_change(destination, version_file, established):
-    """Return errors for a proposed version file against its destination branch.
+def check_change(destination, version_file, established, release_lines, established_lines, adp_version):
+    """Return errors for a proposed version file and release-lines file against their destination branch.
 
-    `version_file` is the proposed file and `established` is the file on the destination branch's tip; either is `None`
-    when the file is absent. Rules come from the destination, so a change cannot exempt itself by deleting the file or
-    `target`.
+    `version_file` and `release_lines` are the proposed files, `established` and `established_lines` are the files on
+    the destination branch's tip, and `adp_version` is the proposed ADP crate version. Each file is `None` when it is
+    absent, and release-lines files are `(lines, errors)` from `parse_release_lines`. Rules come from the destination,
+    so a change cannot exempt itself by deleting a file or `target`.
     """
     errors = validate_version_file(version_file) if version_file is not None else []
+    lines, line_errors = release_lines if release_lines is not None else ({}, [])
+    errors.extend(line_errors)
     proposed_target = version_file.get("target") if isinstance(version_file, dict) else None
     established_target = established.get("target") if isinstance(established, dict) else None
     line = RELEASE_BRANCH_RE.fullmatch(destination)
@@ -306,30 +370,46 @@ def check_change(destination, version_file, established):
             integration = version_file.get("integration")
             if isinstance(integration, dict) and integration.get("kind") != "nightly":
                 errors.append("main must use a nightly")
+        if release_lines is None:
+            errors.append(f"main requires {RELEASE_LINES_FILE}")
+        for adp_line, agent in (established_lines[0] if established_lines is not None else {}).items():
+            if lines.get(adp_line) != agent:
+                errors.append(f"{RELEASE_LINES_FILE} must keep ADP {adp_line} mapped to Agent {agent}")
+        adp_match = ADP_TAG_RE.fullmatch(adp_version or "")
+        adp_line = f"{adp_match.group(1)}.{adp_match.group(2)}" if adp_match else None
+        if release_lines is not None and adp_line is not None and adp_line not in lines:
+            errors.append(f"{RELEASE_LINES_FILE} has no entry for ADP {adp_line}, the version in {ADP_CARGO_TOML}")
     elif line:
         # A line adopts the file once its branch has one. Older lines keep their process until a migration adds it.
         if established is None and version_file is None:
             return errors
         if version_file is None:
             errors.append(f"{destination} has adopted {VERSION_FILE}; it cannot be removed")
-        expected_target = target_for_adp_line(int(line.group(1)), int(line.group(2)))
+        adp_line = f"{line.group(1)}.{line.group(2)}"
+        expected_target = lines.get(adp_line)
+        if expected_target is None:
+            errors.append(f"{RELEASE_LINES_FILE} has no entry for ADP {adp_line}; add it on main and to {destination}")
         if established_target is not None and proposed_target != established_target:
             errors.append(f"target is immutable on {destination}: it must stay {established_target!r}")
-        elif version_file is not None and proposed_target is None:
+        elif version_file is not None and proposed_target is None and expected_target is not None:
             errors.append(f"{destination} requires target {expected_target!r}")
-        if proposed_target is not None and proposed_target != expected_target:
-            errors.append(f"target {proposed_target!r} does not match {destination}; it must be {expected_target!r}")
+        if proposed_target is not None and expected_target is not None and proposed_target != expected_target:
+            errors.append(
+                f"target {proposed_target!r} does not match ADP {adp_line} in {RELEASE_LINES_FILE}; "
+                f"it must be {expected_target!r}"
+            )
     elif proposed_target != established_target:
         errors.append(f"target must not change on a pull request into {destination}")
     return errors
 
 
-def check_release_tag(tag, version_file, adp_version, established, on_branch):
+def check_release_tag(tag, version_file, adp_version, established, on_branch, release_lines):
     """Return `(adopted, errors)` for publishing ADP release `tag`.
 
-    `version_file` and `adp_version` come from the tagged commit, `established` from the tip of the line's release
-    branch, and `on_branch` says whether that branch contains the tag. Lines with no file in either place have not
-    adopted it.
+    `version_file`, `adp_version` and `release_lines` come from the tagged commit, `established` from the tip of the
+    line's release branch, and `on_branch` says whether that branch contains the tag. `release_lines` is
+    `(lines, errors)` from `parse_release_lines`, or `None` when the file is absent. Lines with no version file in
+    either place have not adopted it.
     """
     match = ADP_TAG_RE.fullmatch(tag)
     if not match:
@@ -347,9 +427,14 @@ def check_release_tag(tag, version_file, adp_version, established, on_branch):
         errors.append(f"tag {tag} has no {VERSION_FILE}, but {branch} has adopted it")
     else:
         errors.extend(validate_version_file(version_file))
-        expected_target = target_for_adp_line(int(match.group(1)), int(match.group(2)))
+        adp_line = f"{match.group(1)}.{match.group(2)}"
+        lines, line_errors = release_lines if release_lines is not None else ({}, [])
+        errors.extend(line_errors)
+        expected_target = lines.get(adp_line)
         target = version_file.get("target") if isinstance(version_file, dict) else None
-        if target != expected_target:
+        if expected_target is None:
+            errors.append(f"tag {tag} has no entry for ADP {adp_line} in {RELEASE_LINES_FILE}")
+        elif target != expected_target:
             errors.append(f"tag {tag} must declare target {expected_target!r}, not {target!r}")
     return True, errors
 
@@ -359,16 +444,28 @@ def git(repository, *arguments):
     return subprocess.run(["git", "-C", str(repository), *arguments], capture_output=True, text=True)
 
 
-def read_git_version_file(repository, ref):
-    """Return the version file at a Git ref, or `None` when the ref has none."""
+def read_git_file(repository, ref, path):
+    """Return a file's text at a Git ref, or `None` when the ref has no such file."""
     if git(repository, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}").returncode != 0:
         raise VersionFileError(f"Git ref {ref} does not exist; fetch it before checking")
-    if git(repository, "cat-file", "-e", f"{ref}:{VERSION_FILE}").returncode != 0:
+    if git(repository, "cat-file", "-e", f"{ref}:{path}").returncode != 0:
         return None
-    shown = git(repository, "show", f"{ref}:{VERSION_FILE}")
+    shown = git(repository, "show", f"{ref}:{path}")
     if shown.returncode != 0:
-        raise VersionFileError(f"could not read {VERSION_FILE} at {ref}: {shown.stderr.strip()}")
-    return parse_version_file_text(shown.stdout, f"{ref}:{VERSION_FILE}")
+        raise VersionFileError(f"could not read {path} at {ref}: {shown.stderr.strip()}")
+    return shown.stdout
+
+
+def read_git_version_file(repository, ref):
+    """Return the version file at a Git ref, or `None` when the ref has none."""
+    text = read_git_file(repository, ref, VERSION_FILE)
+    return None if text is None else parse_version_file_text(text, f"{ref}:{VERSION_FILE}")
+
+
+def read_git_release_lines(repository, ref):
+    """Return `(lines, errors)` for the release-lines file at a Git ref, or `None` when the ref has none."""
+    text = read_git_file(repository, ref, RELEASE_LINES_FILE)
+    return None if text is None else parse_release_lines(text, f"{ref}:{RELEASE_LINES_FILE}")
 
 
 def read_adp_version(repository):
@@ -388,6 +485,14 @@ def read_working_version_file(repository):
     return parse_version_file_text(path.read_text(encoding="utf-8"), str(path))
 
 
+def read_working_release_lines(repository):
+    """Return `(lines, errors)` for the working tree's release-lines file, or `None` when it is absent."""
+    path = Path(repository) / RELEASE_LINES_FILE
+    if not path.exists():
+        return None
+    return parse_release_lines(path.read_text(encoding="utf-8"), RELEASE_LINES_FILE)
+
+
 def report(errors):
     """Print errors and return a process exit code."""
     if errors:
@@ -399,6 +504,29 @@ def report(errors):
 def validate_command(arguments):
     load_version_file(arguments.file)
     print(f"{arguments.file} is valid")
+    load_release_lines(arguments.release_lines)
+    print(f"{arguments.release_lines} is valid")
+    return 0
+
+
+def add_release_line_command(arguments):
+    """Append the default entry for the line of `--adp-version` unless the file already has one."""
+    match = ADP_TAG_RE.fullmatch(arguments.adp_version)
+    if not match:
+        raise VersionFileError(f"ADP version {arguments.adp_version!r} must use the X.Y.Z format")
+    adp_line = f"{match.group(1)}.{match.group(2)}"
+    path = Path(arguments.release_lines)
+    lines = load_release_lines(path)
+    if adp_line in lines:
+        print(f"{path} already maps ADP {adp_line} to Agent {lines[adp_line]}")
+        return 0
+    entry = next_release_line(lines, adp_line)
+    text = path.read_text(encoding="utf-8") + entry + "\n"
+    _, errors = parse_release_lines(text, str(path))
+    if errors:
+        raise VersionFileError("\n".join(errors))
+    path.write_text(text, encoding="utf-8")
+    print(f"Added {entry} to {path}")
     return 0
 
 
@@ -423,10 +551,15 @@ def age_command(arguments):
 
 def check_change_command(arguments):
     repository = Path(arguments.repository)
-    established = read_git_version_file(repository, arguments.established_ref) if arguments.established_ref else None
-    errors = check_change(arguments.destination, read_working_version_file(repository), established)
+    ref = arguments.established_ref
+    established = read_git_version_file(repository, ref) if ref else None
+    established_lines = read_git_release_lines(repository, ref) if ref else None
+    errors = check_change(
+        arguments.destination, read_working_version_file(repository), established,
+        read_working_release_lines(repository), established_lines, read_adp_version(repository),
+    )
     if not errors:
-        print(f"{VERSION_FILE} satisfies the rules for {arguments.destination}")
+        print(f"{VERSION_FILE} and {RELEASE_LINES_FILE} satisfy the rules for {arguments.destination}")
     return report(errors)
 
 
@@ -451,7 +584,8 @@ def check_tag_command(arguments):
     established = read_git_version_file(repository, ref) if branch_exists else None
     on_branch = branch_exists and git(repository, "merge-base", "--is-ancestor", "HEAD", ref).returncode == 0
     adopted, errors = check_release_tag(
-        arguments.tag, read_working_version_file(repository), read_adp_version(repository), established, on_branch
+        arguments.tag, read_working_version_file(repository), read_adp_version(repository), established, on_branch,
+        read_working_release_lines(repository),
     )
     if not adopted:
         if arguments.require_adopted:
@@ -459,7 +593,7 @@ def check_tag_command(arguments):
         print(f"{branch} has not adopted {VERSION_FILE}; skipping the Agent version checks for {arguments.tag}")
         return 0
     if not errors:
-        print(f"{arguments.tag} is on {branch} and declares the mapped target")
+        print(f"{arguments.tag} is on {branch} and declares its target from {RELEASE_LINES_FILE}")
     return report(errors)
 
 
@@ -473,18 +607,27 @@ def parse_arguments(argv=None):
         return subparser
 
     for name, handler, help_text in (
-        ("validate", validate_command, "Validate the version file's shape and values"),
+        ("validate", validate_command, "Validate the version file and the release-lines file"),
         ("declared-version", declared_version_command, "Print the DD_AGENT_VERSION for the Linux ADP build"),
         ("age", age_command, "Print the Integration version's age, measured from built_at"),
     ):
         subparser = add(name, handler, help_text)
         subparser.add_argument("--file", default=VERSION_FILE)
+        if name == "validate":
+            subparser.add_argument("--release-lines", default=RELEASE_LINES_FILE)
         if name == "age":
             subparser.add_argument("--now", help="Measure age at this UTC time instead of now")
 
     get_parser = add("get", get_command, "Print one field, such as integration.linux.image")
     get_parser.add_argument("field")
     get_parser.add_argument("--file", default=VERSION_FILE)
+
+    line_parser = add(
+        "add-release-line", add_release_line_command,
+        "Append the default release-lines entry for an ADP version's line: the newest Agent minor plus one",
+    )
+    line_parser.add_argument("--adp-version", required=True, help="ADP version, such as 1.10.0")
+    line_parser.add_argument("--release-lines", default=RELEASE_LINES_FILE)
 
     change_parser = add(
         "check-change", check_change_command, "Check the working tree's version file against a destination"

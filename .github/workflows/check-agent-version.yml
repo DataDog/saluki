@@ -1,9 +1,10 @@
 name: Agent version
 
-# Checks `.datadog-agent-version.json` against the pull request's destination branch: `main` takes a nightly without
-# `target`, and a release branch that has adopted the file keeps it and keeps its `target`. The destination's tip is
-# read separately from the proposed tree, so a pull request cannot exempt itself by deleting the file or `target`.
-# Backport pull requests get the same check.
+# Checks `.datadog-agent-version.json` and `.datadog-agent-release-lines.jsonl` against the pull request's destination
+# branch: `main` takes a nightly without `target`, keeps every release-lines entry, and maps its own ADP line. A release
+# branch that has adopted the version file keeps it and keeps its `target`, which must match its release-lines entry.
+# The destination's tip is read separately from the proposed tree, so a pull request cannot exempt itself by deleting a
+# file or `target`. Backport pull requests get the same check.
 
 on:
   pull_request:

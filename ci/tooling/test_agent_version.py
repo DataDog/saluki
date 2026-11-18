@@ -22,6 +22,10 @@ REVISION = "0123456789abcdef0123456789abcdef01234567"
 NIGHTLY_VERSION = "7.87.0-devel+git.42.0123456.pipeline.98765"
 
 
+RELEASE_LINES_TEXT = '{"agent_data_plane": "1.8", "agent": "7.86"}\n{"agent_data_plane": "1.9", "agent": "7.87"}\n'
+RELEASE_LINES = subject.parse_release_lines(RELEASE_LINES_TEXT)
+
+
 def digest(character):
     return "sha256:" + character * 64
 
@@ -92,9 +96,80 @@ class PackageUrlTest(unittest.TestCase):
             "https://apt.datadoghq.com/pool/d/da/datadog-agent-dbg_7.87.1-1_amd64.deb",
         )
 
-    def test_adp_lines_map_to_agent_minors(self):
-        self.assertEqual(subject.target_for_adp_line(1, 8), "7.86")
-        self.assertEqual(subject.target_for_adp_line(1, 9), "7.87")
+
+
+class ReleaseLinesTest(unittest.TestCase):
+    def errors(self, *lines):
+        return subject.parse_release_lines("".join(line + "\n" for line in lines))[1]
+
+    def assert_rejected(self, message, *lines):
+        errors = self.errors(*lines)
+        self.assertTrue(any(message in error for error in errors), f"{message!r} not in {errors}")
+
+    def test_reads_each_line_in_order(self):
+        text = (
+            '{"agent_data_plane": "1.9", "agent": "7.87"}\n{"agent_data_plane": "1.10", "agent": "7.88"}\n'
+            '{"agent_data_plane": "2.0", "agent": "7.89"}\n{"agent_data_plane": "2.1", "agent": "8.0"}\n'
+        )
+        lines, errors = subject.parse_release_lines(text)
+        self.assertEqual(errors, [])
+        self.assertEqual(lines, {"1.9": "7.87", "1.10": "7.88", "2.0": "7.89", "2.1": "8.0"})
+
+    def test_the_committed_file_is_valid(self):
+        path = MODULE_PATH.parents[2] / subject.RELEASE_LINES_FILE
+        self.assertEqual(subject.parse_release_lines(path.read_text(encoding="utf-8"))[1], [])
+
+    def test_requires_the_canonical_form(self):
+        for line in (
+            '{"agent": "7.87", "agent_data_plane": "1.9"}',
+            '{"agent_data_plane":"1.9","agent":"7.87"}',
+            '{"agent_data_plane": "1.9",  "agent": "7.87"}',
+            ' {"agent_data_plane": "1.9", "agent": "7.87"}',
+        ):
+            with self.subTest(line=line):
+                self.assert_rejected('must be written exactly as {"agent_data_plane": "1.9", "agent": "7.87"}', line)
+
+    def test_rejects_unknown_keys_values_and_blank_lines(self):
+        self.assert_rejected("must be {", '{"agent-data-plane": "1.9", "agent": "7.87"}')
+        self.assert_rejected("must be {", '{"agent_data_plane": "1.9", "agent": "7.87", "note": "x"}')
+        self.assert_rejected("must be {", '{"agent_data_plane": "1.9", "agent": "7.87"}', "")
+        self.assert_rejected("major.minor", '{"agent_data_plane": "1.9.0", "agent": "7.87"}')
+        self.assert_rejected("major.minor", '{"agent_data_plane": "1.9", "agent": 7.87}')
+
+    def test_requires_a_final_newline(self):
+        _, errors = subject.parse_release_lines('{"agent_data_plane": "1.9", "agent": "7.87"}')
+        self.assertIn("must end with a newline", errors[0])
+
+    def test_sorts_numerically_by_adp_line(self):
+        self.assertEqual(
+            self.errors(
+                '{"agent_data_plane": "1.9", "agent": "7.87"}', '{"agent_data_plane": "1.10", "agent": "7.88"}'
+            ),
+            [],
+        )
+        self.assert_rejected(
+            "ADP line 1.9 must come after 1.10",
+            '{"agent_data_plane": "1.10", "agent": "7.88"}', '{"agent_data_plane": "1.9", "agent": "7.87"}',
+        )
+        self.assert_rejected(
+            "ADP line 1.9 must come after 1.9",
+            '{"agent_data_plane": "1.9", "agent": "7.87"}', '{"agent_data_plane": "1.9", "agent": "7.88"}',
+        )
+
+    def test_agent_minors_strictly_increase(self):
+        self.assert_rejected(
+            "Agent 7.87 for ADP 1.10 must be newer than 7.87",
+            '{"agent_data_plane": "1.9", "agent": "7.87"}', '{"agent_data_plane": "1.10", "agent": "7.87"}',
+        )
+        self.assertEqual(
+            self.errors('{"agent_data_plane": "2.0", "agent": "7.89"}', '{"agent_data_plane": "2.1", "agent": "8.0"}'),
+            [],
+        )
+
+    def test_the_default_next_entry_is_the_newest_agent_minor_plus_one(self):
+        self.assertEqual(
+            subject.next_release_line({"1.9": "7.87"}, "1.10"), '{"agent_data_plane": "1.10", "agent": "7.88"}'
+        )
 
 
 class ValidateVersionFileTest(unittest.TestCase):
@@ -234,8 +309,9 @@ class CiDeclaredVersionTest(unittest.TestCase):
 
 
 class CheckChangeTest(unittest.TestCase):
-    def assert_errors(self, destination, version_file, established, *messages):
-        errors = subject.check_change(destination, version_file, established)
+    def assert_errors(self, destination, version_file, established, *messages, lines=RELEASE_LINES,
+                      established_lines=RELEASE_LINES, adp_version="1.9.0"):
+        errors = subject.check_change(destination, version_file, established, lines, established_lines, adp_version)
         if not messages:
             self.assertEqual(errors, [])
         for message in messages:
@@ -249,11 +325,36 @@ class CheckChangeTest(unittest.TestCase):
         self.assert_errors("main", make_version_file("release", "7.87.0"), established, "main must use a nightly")
         self.assert_errors("main", None, make_version_file(), "main requires .datadog-agent-version.json")
 
+    def test_main_keeps_every_release_line_and_maps_its_own(self):
+        established = make_version_file()
+        self.assert_errors("main", established, established, "main requires .datadog-agent-release-lines.jsonl",
+                           lines=None)
+        self.assert_errors("main", established, established, established_lines=None)
+        only_1_9 = subject.parse_release_lines('{"agent_data_plane": "1.9", "agent": "7.87"}\n')
+        self.assert_errors("main", established, established, "must keep ADP 1.8 mapped to Agent 7.86", lines=only_1_9)
+        changed = subject.parse_release_lines(
+            '{"agent_data_plane": "1.8", "agent": "7.86"}\n{"agent_data_plane": "1.9", "agent": "7.88"}\n'
+        )
+        self.assert_errors("main", established, established, "must keep ADP 1.9 mapped to Agent 7.87", lines=changed)
+        self.assert_errors("main", established, established, "has no entry for ADP 1.10", adp_version="1.10.0")
+        unsorted = subject.parse_release_lines(
+            '{"agent_data_plane": "1.9", "agent": "7.87"}\n{"agent_data_plane": "1.8", "agent": "7.86"}\n'
+        )
+        self.assert_errors("main", established, established, "must come after 1.9", lines=unsorted)
+
     def test_release_cut_adds_the_mapped_target(self):
         self.assert_errors("releases/1.9.x", make_version_file(target="7.87"), make_version_file())
         self.assert_errors("releases/1.9.x", make_version_file("rc", "7.87.0-rc.1", target="7.87"), make_version_file())
         self.assert_errors("releases/1.9.x", make_version_file(target="7.86"), make_version_file(), "it must be '7.87'")
         self.assert_errors("releases/1.9.x", make_version_file(), make_version_file(), "requires target '7.87'")
+
+    def test_release_branches_fail_without_an_entry_for_their_line(self):
+        for lines in (None, subject.parse_release_lines('{"agent_data_plane": "1.8", "agent": "7.86"}\n')):
+            with self.subTest(lines=lines):
+                self.assert_errors(
+                    "releases/1.9.x", make_version_file(target="7.87"), make_version_file(target="7.87"),
+                    "has no entry for ADP 1.9; add it on main and to releases/1.9.x", lines=lines,
+                )
 
     def test_release_pull_requests_cannot_edit_target(self):
         established = make_version_file(target="7.87")
@@ -272,6 +373,7 @@ class CheckChangeTest(unittest.TestCase):
     def test_a_copied_main_version_file_cannot_start_an_old_line(self):
         self.assert_errors("releases/1.8.x", make_version_file(), None, "requires target '7.86'")
         self.assert_errors("releases/1.8.x", make_version_file(target="7.87"), None, "it must be '7.86'")
+        self.assert_errors("releases/1.7.x", make_version_file(), None, "has no entry for ADP 1.7")
 
     def test_other_destinations_keep_target(self):
         self.assert_errors("feature/stack-base", make_version_file(), make_version_file())
@@ -281,8 +383,9 @@ class CheckChangeTest(unittest.TestCase):
 
 
 class CheckReleaseTagTest(unittest.TestCase):
-    def check(self, tag="1.9.0", version_file=None, adp_version="1.9.0", established=None, on_branch=True):
-        return subject.check_release_tag(tag, version_file, adp_version, established, on_branch)
+    def check(self, tag="1.9.0", version_file=None, adp_version="1.9.0", established=None, on_branch=True,
+              lines=RELEASE_LINES):
+        return subject.check_release_tag(tag, version_file, adp_version, established, on_branch, lines)
 
     def test_accepts_a_tag_on_its_release_branch(self):
         version_file = make_version_file(target="7.87")
@@ -299,6 +402,13 @@ class CheckReleaseTagTest(unittest.TestCase):
         version_file = make_version_file("release", "7.86.3", target="7.86")
         _, errors = self.check(version_file=version_file, established=version_file)
         self.assertTrue(any("must declare target '7.87'" in error for error in errors), errors)
+
+    def test_rejects_a_line_without_a_release_lines_entry(self):
+        version_file = make_version_file(target="7.87")
+        for lines in (None, subject.parse_release_lines('{"agent_data_plane": "1.8", "agent": "7.86"}\n')):
+            with self.subTest(lines=lines):
+                _, errors = self.check(version_file=version_file, established=version_file, lines=lines)
+                self.assertTrue(any("has no entry for ADP 1.9" in error for error in errors), errors)
 
     def test_rejects_an_adp_version_that_disagrees_with_the_tag(self):
         version_file = make_version_file(target="7.87")
@@ -330,6 +440,28 @@ class CommandTest(unittest.TestCase):
     def write_version_file(self, version_file):
         text = json.dumps(version_file, indent=2) + "\n"
         (self.root / ".datadog-agent-version.json").write_text(text, encoding="utf-8")
+
+    def write_release_lines(self, text=RELEASE_LINES_TEXT):
+        (self.root / ".datadog-agent-release-lines.jsonl").write_text(text, encoding="utf-8")
+
+    def test_validate_checks_both_files(self):
+        self.write_version_file(make_version_file())
+        self.write_release_lines()
+        version = str(self.root / ".datadog-agent-version.json")
+        lines = str(self.root / ".datadog-agent-release-lines.jsonl")
+        self.assertEqual(self.run_main("validate", "--file", version, "--release-lines", lines)[0], 0)
+        self.write_release_lines('{"agent_data_plane":"1.9","agent":"7.87"}\n')
+        code, _, stderr = self.run_main("validate", "--file", version, "--release-lines", lines)
+        self.assertEqual(code, 1)
+        self.assertIn("must be written exactly as", stderr)
+
+    def test_add_release_line_appends_the_next_entry_once(self):
+        self.write_release_lines()
+        path = str(self.root / ".datadog-agent-release-lines.jsonl")
+        self.assertEqual(self.run_main("add-release-line", "--adp-version", "1.10.0", "--release-lines", path)[0], 0)
+        self.assertEqual(self.run_main("add-release-line", "--adp-version", "1.10.0", "--release-lines", path)[0], 0)
+        expected = RELEASE_LINES_TEXT + '{"agent_data_plane": "1.10", "agent": "7.88"}\n'
+        self.assertEqual(Path(path).read_text(encoding="utf-8"), expected)
 
     def test_get_and_declared_version_read_a_valid_version_file(self):
         self.write_version_file(make_version_file(target="7.87"))
@@ -378,7 +510,17 @@ class CommandTest(unittest.TestCase):
         (self.root / "bin/agent-data-plane").mkdir(parents=True)
         (self.root / "bin/agent-data-plane/Cargo.toml").write_text('[package]\nversion = "1.9.0"\n', encoding="utf-8")
         self.write_version_file(make_version_file())
+        self.write_release_lines()
         self.commit("main")
+
+    def test_check_change_reads_the_destination_release_lines_from_git(self):
+        self.init_repository()
+        self.write_release_lines('{"agent_data_plane": "1.9", "agent": "7.87"}\n')
+        code, _, stderr = self.run_main(
+            "check-change", "--destination", "main", "--established-ref", "main", "--repository", str(self.root)
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("must keep ADP 1.8 mapped to Agent 7.86", stderr)
 
     def test_check_change_reads_the_destination_branch_from_git(self):
         self.init_repository()

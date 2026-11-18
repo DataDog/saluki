@@ -15,7 +15,7 @@ keeps testing against floating Agent images, and the SMP benchmark (`.gitlab/ben
 |---|---|
 | Integration version | The Agent that CI builds with and tests against: Linux and Windows images, macOS packages, and debug packages from one Agent commit. The file's `integration` section. |
 | Declared version | The `DD_AGENT_VERSION` compiled into the Linux ADP build, which drives version gates. On `main` it's the Integration version. On a release branch it's the target minor's patch zero, such as `7.87.0`, whatever the Integration version is. |
-| Target minor | The Agent minor that an ADP release line supports, in the file's `target` field. Only release branches have it. See [Releasing ADP](../agent-data-plane/releasing.md). |
+| Target minor | The Agent minor that an ADP release line supports, in the file's `target` field. Only release branches have it, and it must match the line's entry in `.datadog-agent-release-lines.jsonl`. See [Releasing ADP](../agent-data-plane/releasing.md#release-lines-and-their-target). |
 
 Only the jobs that compile the Linux ADP image, and the release tarballs built from it, set `DD_AGENT_VERSION`. Unit
 test and lint jobs don't, and Make doesn't export it. Native macOS and Windows ADP builds don't set it either, so their
@@ -32,7 +32,7 @@ behaves differently with it:
 | Version gates | The newest behavior: a development version passes every gate | The behavior of Agent 7.87 |
 | Allowed Integration version | A nightly | A nightly, RC, or stable release, but only from 7.87 |
 | Updated by | **Update Agent Nightly**, to newer nightlies | **Update Agent Release Version**, to newer 7.87 RCs, then stable releases |
-| Pull request check | Rejects `target` and anything but a nightly | Requires `target` to match the line, and rejects any change to it or removal of the file |
+| Pull request check | Rejects `target` and anything but a nightly | Requires `target` to match the line's release-lines entry, and rejects any change to it or removal of the file |
 | Release tag check | None | The tag must be on the branch and declare the line's target |
 
 In code, `declared_version`, `check_change`, and `check_release_tag` in `ci/tooling/agent_version.py` make these
@@ -200,7 +200,7 @@ that target 7.87 or later write them as native span links and events.
 
 | Check | Where | What it enforces |
 |---|---|---|
-| **Agent version** workflow | Every pull request | The file is valid. `main` takes a nightly without `target`. A release branch that has the file keeps it and keeps its `target`, which must map to the line. |
+| **Agent version** workflow | Every pull request | The file and `.datadog-agent-release-lines.jsonl` are valid. `main` takes a nightly without `target` and maps its ADP line. A release branch that has the file keeps it and keeps its `target`, which must match the line's release-lines entry. |
 | `check-agent-version` GitLab job | Every pipeline | The committed file is valid, and the tests for the tooling pass. |
 | **Backport** workflow | Backports | A backport doesn't change `.datadog-agent-version.json`. |
 | **Bump ADP Version** workflow | `X.Y.0` tags | The tag is on `releases/X.Y.x` and declares the line's target. |

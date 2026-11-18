@@ -21,16 +21,38 @@ Datadog Agent minor, its **target**, for its whole life. The release process rou
 
 ## Release lines and their target
 
-ADP major.minor is (Agent major - 6).(Agent minor - 78). For example, Agent 7.86 uses ADP 1.8, and Agent 7.87 uses ADP
-1.9.
+`.datadog-agent-release-lines.jsonl` maps each ADP line to its target, one entry per line:
 
-The target lives in the release branch's `.datadog-agent-version.json`, as `"target": "7.87"`. `main` has no target.
+```json
+{"agent_data_plane": "1.9", "agent": "7.87"}
+{"agent_data_plane": "1.10", "agent": "7.88"}
+```
+
+The checks require each line in exactly this form, sorted by ADP line. `main` must have an entry for the ADP version in
+`bin/agent-data-plane/Cargo.toml`. When **Bump ADP Version** moves `main` to a new minor, it appends that line's entry
+with the newest Agent minor plus one. Edit the entry in that pull request if the line targets another Agent, such as a
+new major.
+
+The release branch's `.datadog-agent-version.json` holds the target, as `"target": "7.87"`, and it must match the
+line's entry. `main` has no target.
 The Linux ADP build on a release branch compiles with the target's patch zero, such as `DD_AGENT_VERSION=7.87.0`, so
 version gates select the target's behavior even when CI tests a later RC or patch. [Datadog Agent
 version](../development/agent-version.md#what-target-changes) lists everything else the target changes.
 
 The target is set once, by the release-cut commit. After the cut, no pull request may add, remove, or change it. Adding
 it is allowed only when the release branch doesn't have it yet: at the cut, or in a reviewed migration of an older line.
+
+## Release line lifecycle
+
+1. ADP `main` is at 1.9.0, tests Agent 7.87 nightlies, and `.datadog-agent-release-lines.jsonl` maps 1.9 to 7.87.
+2. Cut `releases/1.9.x` from `main`, before the Agent cuts its 7.87 release branch.
+3. Tag 1.9.0 on `releases/1.9.x` and publish. Bump ADP Version moves `releases/1.9.x` to 1.9.1, and moves `main` to
+   1.10.0 with a new 1.10 → 7.88 entry for the next cut.
+4. A PR in datadog-agent adopts ADP 1.9.0 when its release artifacts are available.
+5. The Agent cuts 7.87.x with ADP 1.9. Agent `main` moves to 7.88, and ADP `main` follows its nightlies.
+6. Update Agent Release Version moves `releases/1.9.x` through 7.87 RCs, then stable releases. Fixes ship as 1.9.x
+   patches.
+7. To stop supporting 1.9, remove `1.9.x` from `MAINTAINED_LINES` in `.github/workflows/update-agent-version.yml`.
 
 ## Cutting a new release line
 
@@ -41,10 +63,10 @@ Cut the line before the Agent cuts its release branch for the target minor, so t
 Until the next cut, Agent `main` uses this line, one minor behind its own version. The rule of one Agent minor per ADP
 line applies to Agent release branches, RCs and stable releases.
 
-1. Determine the target Agent minor, normally the current milestone on datadog-agent `main`. Check that it maps to the
-   ADP version on `main`, in `bin/agent-data-plane/Cargo.toml`: ADP 1.9.0 needs target 7.87.
-2. Create `releases/1.9.x` from the chosen `main` commit. The branch inherits `main`'s `.datadog-agent-version.json`,
-   which holds a nightly and no target.
+1. Find the target in `.datadog-agent-release-lines.jsonl` on `main`, from the entry for the ADP version in
+   `bin/agent-data-plane/Cargo.toml`: ADP 1.9.0 needs target 7.87.
+2. Create `releases/1.9.x` from the chosen `main` commit. The branch inherits `main`'s release-lines file and its
+   `.datadog-agent-version.json`, which holds a nightly and no target.
 3. Open a pull request into `releases/1.9.x` that selects the line's Agent. This is the release-cut commit. It adds
    `"target": "7.87"` to `.datadog-agent-version.json`, and it sets the Integration version to an Agent build from
    7.87:
@@ -120,10 +142,10 @@ These checks guard a release. A tag-triggered workflow can't undo a tag, so bran
 bad tag, and the GitLab check prevents a bad tag from shipping:
 
 - the **Agent version** pull request check keeps each release branch's file valid and its target unchanged
-- the **Bump ADP Version** workflow checks that an `X.Y.0` tag is on `releases/X.Y.x` and declares the mapped target,
+- the **Bump ADP Version** workflow checks that an `X.Y.0` tag is on `releases/X.Y.x` and declares its line's target,
   before it opens the version bumps and creates the backport label
 - the `check-release-agent-version` job in the tag pipeline checks that the tag is on its release branch, that the ADP
-  version matches the tag, and that the file declares the mapped target with an Integration version inside it. Every
+  version matches the tag, and that the file declares its line's target with an Integration version inside it. Every
   publish job depends on it.
 - the **Release notes** workflow checks that an `X.Y.0` tag is on its release branch before it renders the notes
 
@@ -157,8 +179,8 @@ to `1.9.x` isn't in `B`, so its note appears in both `1.9.x` and `1.10.0`.
 
 Release lines cut before `.datadog-agent-version.json` existed keep their existing process until someone migrates them:
 their checks skip lines without the file, and published tags are never rewritten. Migrating a line means auditing its
-intended Agent minor and its version gates, then adding the file with its `target` in a reviewed pull request. Once a
-line has the file, removing the file or `target` doesn't exempt it from the checks.
+intended Agent minor and its version gates, then adding its release-lines entry and the file with its `target` in
+reviewed pull requests. Once a line has the file, removing the file or `target` doesn't exempt it from the checks.
 
 ## Quick steps
 
