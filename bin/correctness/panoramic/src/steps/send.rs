@@ -70,6 +70,12 @@ impl Step for SendBytes {
             let payload = Bytes::from(self.payload.clone());
             for _ in 0..self.repeat.get() {
                 let limit = cx.deadline.saturating_duration_since(Instant::now());
+                if limit.is_zero() {
+                    return Err(HandleError::Harness(format!(
+                        "Sending to endpoint '{}' of '{}' took longer than {}.",
+                        self.endpoint, self.on, self.timeout.text
+                    )));
+                }
                 handle.send(&self.endpoint, payload.clone(), limit).await?;
             }
             let message = format!(
