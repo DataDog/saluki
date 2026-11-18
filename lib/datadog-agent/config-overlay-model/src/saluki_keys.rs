@@ -51,7 +51,12 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
         yaml_path: "data_plane.experimental.apm.native_trace_intake",
         description: "Serve the trace intake endpoints in ADP",
         default: "false",
-        documentation: None,
+        documentation: Some(
+            "ADP serves `/v1.0/traces`, and MessagePack payloads on `/v0.4/traces`, `/v0.3/traces` and \
+             `/v0.2/traces`, itself. As the trace-agent does, `/v0.2/traces` rejects MessagePack with `415 \
+             Unsupported Media Type`. ADP still forwards JSON payloads, and the other trace endpoints, to the \
+             trace-agent behind the APM relay.",
+        ),
     },
     SalukiKey {
         yaml_path: "data_plane.otlp.receiver_grpc_endpoint_temporary",

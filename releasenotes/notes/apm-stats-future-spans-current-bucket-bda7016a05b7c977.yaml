@@ -1,0 +1,5 @@
+fixes:
+  - |
+    APM stats now count a span that ends in the future in the current 10-second bucket, as the trace-agent does.
+    Before, such a span, from a tracer with a skewed clock for example, went into a bucket that was only sent once the
+    clock reached it, and held memory until then.

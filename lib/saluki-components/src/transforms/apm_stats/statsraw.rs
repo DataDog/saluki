@@ -169,9 +169,11 @@ impl RawBucket {
             gs.errors += weight;
         }
 
-        gs.duration += (span.duration as f64) * weight;
+        // The trace-agent's stat spans hold an `int64` duration, so a duration past `i64::MAX` counts as negative.
+        let duration = span.duration as i64;
+        gs.duration += (duration as f64) * weight;
 
-        let trunc_dur = ns_timestamp_to_float(span.duration);
+        let trunc_dur = ns_timestamp_to_float(duration);
         if span.error != 0 {
             gs.err_distribution
                 .get_or_insert_with(|| Box::new(ApmDDSketch::default()))
@@ -248,7 +250,7 @@ pub(super) fn new_aggregation_from_span(
     }
 }
 // Convert a nanosec timestamp into a float nanosecond timestamp truncated to a fixed precision.
-fn ns_timestamp_to_float(ns: u64) -> f64 {
+fn ns_timestamp_to_float(ns: i64) -> f64 {
     let f = ns as f64;
     let bits = f.to_bits();
     // IEEE-754
@@ -261,6 +263,14 @@ fn ns_timestamp_to_float(ns: u64) -> f64 {
 }
 
 fn round(f: f64) -> u64 {
+    // As the trace-agent's `round`, out-of-range values are clamped: a sum of huge durations reaches 2^64, where
+    // rounding up would overflow.
+    if f.is_nan() || f <= 0.0 {
+        return 0;
+    }
+    if f >= u64::MAX as f64 {
+        return u64::MAX;
+    }
     let i = f as u64;
     let frac = f - (i as f64);
     if rand::rng().random::<f64>() < frac {
@@ -287,16 +297,19 @@ mod tests {
 
     #[test]
     fn test_ns_timestamp_to_float() {
-        let ns: u64 = 1_000_000_000;
+        let ns: i64 = 1_000_000_000;
         let truncated = ns_timestamp_to_float(ns);
         let relative_error = ((truncated - ns as f64) / (ns as f64)).abs();
         assert!(relative_error < 0.001, "relative error too large: {}", relative_error);
 
         assert_eq!(ns_timestamp_to_float(0), 0.0);
 
-        let small: u64 = 1000;
+        let small: i64 = 1000;
         let truncated_small = ns_timestamp_to_float(small);
         assert!(truncated_small > 0.0);
+
+        // A duration past `i64::MAX` is negative to the trace-agent, as `int64` stat span durations are.
+        assert!(ns_timestamp_to_float(u64::MAX as i64) < 0.0);
     }
 
     #[test]
@@ -304,6 +317,14 @@ mod tests {
         assert_eq!(round(0.0), 0);
         assert_eq!(round(1.0), 1);
         assert_eq!(round(100.0), 100);
+    }
+
+    #[test]
+    fn test_round_clamps_out_of_range_values() {
+        assert_eq!(round(-1.5), 0);
+        assert_eq!(round(f64::NAN), 0);
+        assert_eq!(round(2.0 * u64::MAX as f64), u64::MAX);
+        assert_eq!(round(f64::INFINITY), u64::MAX);
     }
 
     #[test]
