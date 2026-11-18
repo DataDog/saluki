@@ -1,10 +1,10 @@
 //! The run-time half of the host process backend: the state directory of the runner host, and the programs of each
 //! participant.
 //!
-//! Per run, the backend prepares one state directory, which is the same path for every case and every runner host.
-//! Preparing refuses a directory that exists, so it never removes the directory of a run that is still using it. Per
-//! participant, it makes the participant's own directory under it, places the participant's files there, and fills in
-//! the environment and arguments of each program. At start it runs each program in the participant's directory as a
+//! For each case, the backend prepares the state directory, which is the same path for every case and every runner
+//! host. Preparing refuses a directory that exists, so it never removes the directory of a run that is still using it.
+//! Per participant, it makes the participant's own directory under it, places the participant's files there, and fills
+//! in the environment and arguments of each program. At start it runs each program in the participant's directory as a
 //! process group, with a cleared environment and only a few variables of the runner's. Every process is entered in the
 //! ledger as soon as it starts, and the ledger stops it, then removes the directory.
 //!
