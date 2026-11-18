@@ -60,10 +60,12 @@ pub(crate) fn locate(path: &str, own_dir: &Path) -> Result<PathBuf, String> {
         own_dir.join(rest)
     } else if !path.contains('/') {
         let search = std::env::var_os("PATH").unwrap_or_default();
-        return std::env::split_paths(&search)
+        let found = std::env::split_paths(&search)
             .map(|directory| directory.join(path))
             .find(|candidate| executable(candidate).is_ok())
-            .ok_or_else(|| format!("'{}' is not an executable file in any directory of PATH", path));
+            .ok_or_else(|| format!("'{}' is not an executable file in any directory of PATH", path))?;
+        // A relative entry of `PATH` is relative to the runner, and the program runs in another directory.
+        return std::path::absolute(&found).map_err(|e| format!("'{}' cannot be made an absolute path: {}", path, e));
     } else {
         std::path::absolute(path).map_err(|e| format!("'{}' cannot be made an absolute path: {}", path, e))?
     };
