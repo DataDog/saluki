@@ -6,7 +6,9 @@
 //!
 //! Before the first case, the run checks once what the selected cases need: each realization they use, a Docker daemon
 //! for containers and pods, every image they run, pulled once if the daemon lacks it, the courier they get, and, for
-//! pods, a kind cluster that holds the images.
+//! pods, a kind cluster that holds the images. For host processes it checks that the runner host runs the OS the case
+//! declares and that every host program outside the participant's own directory can be run. Host processes need no
+//! Docker daemon.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
@@ -25,6 +27,7 @@ use crate::config::{runtime_of, KIND_RUNTIME};
 use crate::core::backend::Backends;
 use crate::core::case::{self, CaseError};
 use crate::core::container::{ContainerBackend, LINUX};
+use crate::core::host::{locate, HostBackend};
 use crate::core::lifecycle::{self, CaseRun};
 use crate::core::participant::{Enclosure, Os};
 use crate::core::plan::{self, CasePlan, Launch};
@@ -263,7 +266,9 @@ pub(crate) fn uses_pods<'a>(plans: impl IntoIterator<Item = &'a CasePlan>) -> bo
 
 /// Checks, once and before the first case, what the selected participant cases need: each realization their
 /// participants use, every image, pulled if the Docker daemon lacks it, the courier, and, for pods, a kind cluster that
-/// holds the images. `plans` holds the plan of each case that runs, by name.
+/// holds the images. For host processes, the runner host must run the OS the participant declares, and every program
+/// that is not under the participant's own directory must be found. `plans` holds the plan of each case that runs, by
+/// name.
 ///
 /// A kind cluster is made if it is missing, and a run with any pod sets it up once here, outside every case's timeout.
 /// `kind_state` records how far setup got: `Ready` holds the cluster once setup succeeds, so the caller can remove it
@@ -275,7 +280,8 @@ pub(crate) fn uses_pods<'a>(plans: impl IntoIterator<Item = &'a CasePlan>) -> bo
 /// # Errors
 ///
 /// Returns every problem found: a realization the runner host cannot provide, an image that cannot be pulled, with the
-/// cases that use it, a missing courier, or a kind cluster that cannot be set up, with the cases that need it.
+/// cases that use it, a host program that cannot be found, with the cases that use it, a missing courier, or a kind
+/// cluster that cannot be set up, with the cases that need it.
 pub(crate) async fn check_before_the_first_case(
     plans: &[(String, &CasePlan)], kind: KindSetup, kind_state: &mut KindState,
 ) -> Result<Backends, Vec<String>> {
@@ -284,6 +290,8 @@ pub(crate) async fn check_before_the_first_case(
     let mut pod_images: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     let mut pod_cases = Vec::new();
     let mut containers = false;
+    let mut hosts = false;
+    let mut host_programs: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (name, plan) in plans {
         for (participant, planned) in &plan.participants {
             let images = match planned.realization.enclosure {
@@ -294,6 +302,24 @@ pub(crate) async fn check_before_the_first_case(
                 Enclosure::KubernetesPod => {
                     pod_cases.push(name.as_str());
                     &mut pod_images
+                }
+                Enclosure::HostProcessGroup => {
+                    hosts = true;
+                    let host = Os::host();
+                    if planned.realization.os != host {
+                        errors.push(format!(
+                            "Case '{}' runs participant '{}' as host processes on {}, and the runner host runs {}.",
+                            name, participant, planned.realization.os, host
+                        ));
+                    } else if let Launch::Programs(programs) = &planned.launch {
+                        for program in programs.iter().filter(|program| !program.path.used().starts_with("./")) {
+                            host_programs
+                                .entry(program.path.used().to_string())
+                                .or_default()
+                                .push(format!("{} (participant '{}')", name, participant));
+                        }
+                    }
+                    continue;
                 }
                 // TODO: check the other realizations with the backends that run them.
                 enclosure => {
@@ -311,12 +337,30 @@ pub(crate) async fn check_before_the_first_case(
     }
     pod_cases.dedup();
     let pods = !pod_cases.is_empty();
-    if !errors.is_empty() || !(containers || pods) {
-        return if errors.is_empty() {
-            Ok(Backends::default())
-        } else {
-            Err(errors)
-        };
+    for (path, cases) in host_programs {
+        if let Err(why) = locate(&path, Path::new("")) {
+            errors.push(format!(
+                "A host program cannot be run, and {} use it: {}",
+                cases.join(", "),
+                why
+            ));
+        }
+    }
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    let mut backends = Backends::default();
+    if hosts {
+        match Enclosure::HostProcessGroup.facts().root {
+            Some(root) => backends.insert(
+                Enclosure::HostProcessGroup,
+                Arc::new(HostBackend::new(PathBuf::from(root))),
+            ),
+            None => return Err(vec!["Host processes have no state directory.".to_string()]),
+        }
+    }
+    if !(containers || pods) {
+        return Ok(backends);
     }
 
     let docker = match airlock::docker::connect() {
@@ -354,7 +398,6 @@ pub(crate) async fn check_before_the_first_case(
         return Err(errors);
     }
 
-    let mut backends = Backends::default();
     if containers {
         let backend = ContainerBackend::new(docker.clone(), &LINUX, courier.clone().into());
         backends.insert(Enclosure::LinuxContainer, Arc::new(backend));
