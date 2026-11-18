@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["ExecOutput"]};
+window.SIDEBAR_ITEMS = {"struct":["ExecOutput","ExecRequest"]};

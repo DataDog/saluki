@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["Output"],"struct":["Container","ContainerSpec"],"type":["OutputStream"]};
+window.SIDEBAR_ITEMS = {"constant":["LINUX_EPHEMERAL_PORT_RANGE"],"enum":["Output"],"struct":["Container","ContainerSpec","Status"],"type":["OutputStream"]};
