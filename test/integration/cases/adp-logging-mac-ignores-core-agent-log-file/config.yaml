@@ -23,3 +23,5 @@ procedure:
     path: "{{ adp.dir }}/adp-mac-ignores-core-agent-log-file.log"
     pattern: DATAPLANE
     timeout: 30s
+  # The log files outlive ADP, so check that it has not exited, as before the files were read.
+  - {step: process_stable_for, on: adp, process: adp, duration: 1s}
