@@ -27,6 +27,52 @@ pub struct Domain {
 
     /// OTLP context cache sizing.
     pub contexts: Contexts,
+
+    /// Debug logging of the OTLP data ADP receives.
+    pub debug: DebugOutput,
+}
+
+/// Debug logging of received OTLP data.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct DebugOutput {
+    /// How much detail is logged for each received export request.
+    ///
+    /// Stays [`DebugVerbosity::None`] unless `otlp_config.debug.verbosity` is configured explicitly. A schema default
+    /// of `basic` doesn't turn the output on.
+    pub verbosity: DebugVerbosity,
+}
+
+/// How much detail is logged for each received OTLP export request.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub enum DebugVerbosity {
+    /// Log nothing.
+    #[default]
+    None,
+
+    /// Log one summary line per request, with the number of items received.
+    Basic,
+
+    /// Log the summary line, then about one line for each item received.
+    Normal,
+
+    /// Log the summary line, then every field of every item received.
+    Detailed,
+}
+
+impl FromStr for DebugVerbosity {
+    type Err = Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "none" => Ok(Self::None),
+            "basic" => Ok(Self::Basic),
+            "normal" => Ok(Self::Normal),
+            "detailed" => Ok(Self::Detailed),
+            other => Err(Error::new_without_source(format!(
+                "unknown debug verbosity `{other}`; expected `none`, `basic`, `normal`, or `detailed`"
+            ))),
+        }
+    }
 }
 
 /// Default TTL for cached prior points used when converting cumulative sums to deltas.

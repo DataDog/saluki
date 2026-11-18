@@ -1002,6 +1002,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Bool,
     },
     EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_DEBUG_VERBOSITY"],
+        path: &["otlp_config", "debug", "verbosity"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
         env_vars: &["DD_OTLP_CONFIG_LOGS_ENABLED"],
         path: &["otlp_config", "logs", "enabled"],
         decode: EnvDecode::Bool,

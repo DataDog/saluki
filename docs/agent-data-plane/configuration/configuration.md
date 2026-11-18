@@ -489,6 +489,7 @@ default values.
 | `logs_enabled`                                                  | Enable the logs agent                           |
 | `min_tls_version`                                               | Minimum TLS version for HTTPS connections       |
 | `multi_region_failover.enabled`                                 | Enable multi-region failover mode               |
+| `otlp_config.debug.verbosity`                                   | Verbosity of OTLP debug logging                 |
 | `secret_backend_command`                                        | Path to the Agent secret-fetch executable       |
 | `secret_refresh_on_api_key_failure_interval`                    | Minutes between secret refreshes after a 403    |
 | `serializer_zstd_compressor_level`                              | Zstd compression level (Agent)                  |
@@ -933,6 +934,22 @@ is enabled.
 | `multi_region_failover.api_key`          | API key for the failover-region endpoint.                                  | unset   |
 | `multi_region_failover.site`             | Datadog site for the failover region, used as `https://app.mrf.<site>`.    | unset   |
 | `multi_region_failover.dd_url`           | Explicit failover intake URL. Takes precedence over `site` when set.       | unset   |
+
+### `otlp_config.debug.verbosity`
+
+ADP logs the OTLP metrics, logs, and traces it receives natively, at the level this key sets:
+
+- `none`: nothing is logged.
+- `basic`: one summary line per received export request, with the number of items it carries.
+- `normal`: the summary line, then about one line per item.
+- `detailed`: the summary line, then every field of every item.
+
+The output stays off unless you set the key. A configured `otlp_config.debug` section with no `verbosity`
+doesn't turn it on in ADP. ADP writes the output to its log at the `info` level, so a higher log level hides it.
+The format of the lines is ADP's own. `detailed` prints trace and span IDs as lists of numbers. Support is
+partial because of this format, and because ADP doesn't read the section's other settings, such as log sampling.
+In OTLP proxy mode, ADP doesn't honor this key, including for the traces it decodes itself when `proxy_traces` is
+false. Issue #3281 tracks this.
 
 ### `secret_backend_command`
 

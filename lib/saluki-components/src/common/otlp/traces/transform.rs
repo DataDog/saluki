@@ -2329,7 +2329,7 @@ fn otlp_value_to_json_value(value: &OtlpValue) -> Option<JsonValue> {
     }
 }
 
-pub(super) fn otlp_value_to_string(value: &OtlpValue) -> Option<String> {
+pub(crate) fn otlp_value_to_string(value: &OtlpValue) -> Option<String> {
     match value {
         OtlpValue::StringValue(v) => Some(v.clone()),
         OtlpValue::BoolValue(v) => Some(if *v { "true" } else { "false" }.to_string()),
@@ -2727,7 +2727,7 @@ fn grpc_status_code_name_from_str(s: &str) -> &'static str {
     grpc_code_to_canonical_name(code)
 }
 
-pub(super) fn bytes_to_hex_lowercase(bytes: &[u8]) -> String {
+pub(crate) fn bytes_to_hex_lowercase(bytes: &[u8]) -> String {
     if bytes.is_empty() {
         return String::new();
     }

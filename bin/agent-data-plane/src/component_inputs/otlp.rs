@@ -3,8 +3,8 @@
 use agent_data_plane_config::domains::{otlp, traces::ApmFeature};
 use saluki_components::sources::{
     ContainerTagPromotion, CorsConfiguration, CumulativeMonotonicMode, GrpcTransport, HistogramMode,
-    InitialCumulativeMonotonicValue, OtlpContextSettings, OtlpGrpcReceiver, OtlpHttpReceiver, OtlpKeepalive,
-    OtlpMetricsSettings, OtlpReceiver, OtlpReceiverTls, OtlpTracesSettings, SummaryMode,
+    InitialCumulativeMonotonicValue, OtlpContextSettings, OtlpDebugVerbosity, OtlpGrpcReceiver, OtlpHttpReceiver,
+    OtlpKeepalive, OtlpMetricsSettings, OtlpReceiver, OtlpReceiverTls, OtlpTracesSettings, SummaryMode,
 };
 
 use super::origin_tag_cardinality;
@@ -107,6 +107,16 @@ pub(crate) fn otlp_context_settings(contexts: &otlp::Contexts) -> OtlpContextSet
         cached_contexts_limit: contexts.cached_contexts_limit,
         cached_tagsets_limit: contexts.cached_tagsets_limit,
         string_interner_size: contexts.string_interner_size,
+    }
+}
+
+/// Builds the verbosity of the OTLP debug logging.
+pub(crate) fn otlp_debug_verbosity(debug: &otlp::DebugOutput) -> OtlpDebugVerbosity {
+    match debug.verbosity {
+        otlp::DebugVerbosity::None => OtlpDebugVerbosity::None,
+        otlp::DebugVerbosity::Basic => OtlpDebugVerbosity::Basic,
+        otlp::DebugVerbosity::Normal => OtlpDebugVerbosity::Normal,
+        otlp::DebugVerbosity::Detailed => OtlpDebugVerbosity::Detailed,
     }
 }
 
@@ -401,5 +411,19 @@ mod tests {
             },
             otlp_context_settings(&contexts)
         );
+    }
+
+    #[test]
+    fn otlp_debug_verbosity_comes_from_resolved_configuration() {
+        for (configured, expected) in [
+            (otlp::DebugVerbosity::None, OtlpDebugVerbosity::None),
+            (otlp::DebugVerbosity::Basic, OtlpDebugVerbosity::Basic),
+            (otlp::DebugVerbosity::Normal, OtlpDebugVerbosity::Normal),
+            (otlp::DebugVerbosity::Detailed, OtlpDebugVerbosity::Detailed),
+        ] {
+            let debug = otlp::DebugOutput { verbosity: configured };
+
+            assert_eq!(otlp_debug_verbosity(&debug), expected);
+        }
     }
 }
