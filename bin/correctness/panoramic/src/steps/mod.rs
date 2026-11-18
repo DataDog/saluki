@@ -13,6 +13,7 @@ use crate::core::step::StepReport;
 
 pub(crate) mod analysis;
 mod compare;
+mod config_key_equals;
 mod exec;
 mod file_contains;
 mod http_check;
@@ -32,6 +33,7 @@ const ATTEMPT: Duration = Duration::from_secs(5);
 /// Registers every step.
 pub(crate) fn register(registry: &mut Registry) {
     registry.add_step(Box::new(compare::CompareFactory));
+    registry.add_step(Box::new(config_key_equals::ConfigKeyEqualsFactory));
     registry.add_step(Box::new(exec::ExecFactory));
     registry.add_step(Box::new(file_contains::FileContainsFactory));
     registry.add_step(Box::new(http_check::HttpCheckFactory));
@@ -68,7 +70,8 @@ fn described(on: &str, process: Option<&str>) -> String {
 
 /// One participant, `app`, for the steps' failing-check tests: a process `main` observed through its container, a
 /// supervised process `job` with an exit record, a UDP endpoint `statsd`, and an operation `dump` that answers with
-/// what [`DUMP_FILE`] holds. A second participant, `peer`, offers the same `dump`, for steps that read two.
+/// what [`DUMP_FILE`] holds, and an operation `config_dump` that answers with what [`CONFIG_FILE`] holds. A second
+/// participant, `peer`, offers the same operations, for steps that read two.
 #[cfg(test)]
 mod scripted {
     use std::collections::BTreeMap;
@@ -91,6 +94,9 @@ mod scripted {
 
     /// The file whose contents `app`'s `dump` answers with.
     pub(super) const DUMP_FILE: &str = "/scripted/dump.json";
+
+    /// The file whose contents `app`'s `config_dump` answers with.
+    pub(super) const CONFIG_FILE: &str = "/scripted/config.json";
 
     /// What the participant's files read as, by path, and how every command run in it exits, with what it writes to
     /// standard error. A path not here holds no file; with no exit, a command cannot run.
@@ -146,6 +152,26 @@ mod scripted {
         }
     }
 
+    /// `app`'s `config_dump`: the JSON in [`CONFIG_FILE`], or the error reading it.
+    #[derive(Debug)]
+    struct ConfigDump;
+
+    #[async_trait]
+    impl Operation for ConfigDump {
+        fn name(&self) -> &'static str {
+            "config_dump"
+        }
+
+        fn uses(&self) -> &'static [Uses] {
+            &[]
+        }
+
+        async fn run(&self, on: &Handle<'_>, _args: Value, limit: Duration) -> Result<Value, HandleError> {
+            let answer = on.read_file(CONFIG_FILE, limit).await?.unwrap_or_default();
+            serde_json::from_slice(&answer).map_err(|e| HandleError::Software(e.to_string()))
+        }
+    }
+
     /// Builds the step `factory` makes from `fields`, written as YAML, and runs it against `app`, scripted by
     /// `realized` and `observation`, within the step's own budget.
     pub(super) async fn run(
@@ -182,9 +208,10 @@ procedure: []
         let registry = Registry::default();
         let case = case::load(&dir, &registry).unwrap();
         let mut plan = plan::plan(&case, Os::Linux, &registry, &BTreeMap::new()).unwrap();
-        // A participant with no participant type offers no operation, so the test gives each one.
+        // A participant with no participant type offers no operation, so the test gives each its operations.
         for planned in plan.participants.values_mut() {
             planned.operations.insert("dump", &Dump);
+            planned.operations.insert("config_dump", &ConfigDump);
         }
         let values = Values::of_plan(&plan.participants);
         let handles = BTreeMap::from([
