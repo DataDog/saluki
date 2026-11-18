@@ -171,8 +171,8 @@ honored on any of them is an error on any host. The rejected case files under
 `panoramic list` and `panoramic run` read participant cases beside legacy ones, telling them apart by the top-level
 `type:` key. A run selects one subject OS with `--subject-os`, or `--runtime`, which names the same OS (`mac` is
 `macos`); both default to the host's, and a `--runtime` that names no OS is an error. A participant case that doesn't declare that OS is reported as `skipped`, with
-its reason. `--set <name>=<image>`, or `PANORAMIC_SET` as a comma-separated list, runs `<image>` wherever a case
-names `<name>`; `plan` takes it too and shows both. Before the first case, the run checks once that the selected
+its reason. `--set <name>=<reference>`, or `PANORAMIC_SET` as a comma-separated list, runs `<reference>` wherever a
+case names the image or host program `<name>`; `plan` takes it too and shows both. Before the first case, the run checks once that the selected
 participant cases can run: a Docker daemon for their Linux containers, every image they run, which it pulls if the
 daemon lacks it, and the courier, which `make build-courier` builds. A participant case that doesn't pass writes its
 plan as `plan.json` in its log directory.
