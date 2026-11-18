@@ -4,10 +4,10 @@ Saluki builds with and tests against one Datadog Agent build, recorded in `.data
 repository root. This page covers that file, the CI jobs and local commands that use it, how it's updated, and the
 version gates that switch ADP behavior by Agent version.
 
-The file is the only committed Agent version for builds and tests. CI jobs, Make targets, and Dockerfile build
-arguments all derive their Agent inputs from it. Two settings stay outside it: the scheduled `AGENT_NIGHTLY` pipeline
-keeps testing against floating Agent images, and the SMP benchmark (`.gitlab/benchmark.yml`) keeps its own
-`PUBLIC_DD_AGENT_VERSION`.
+The file is the only committed Agent version for builds, tests and benchmarks. CI jobs, Make targets, and Dockerfile
+build arguments all derive their Agent inputs from it. Only the scheduled `AGENT_NIGHTLY` pipeline stays outside it,
+and keeps testing against floating Agent images. The SMP benchmark (`.gitlab/benchmark.yml`) runs its baseline and
+comparison with the Agent in the file at the pipeline's commit, so the comparison measures only the ADP change.
 
 ## Versions
 
