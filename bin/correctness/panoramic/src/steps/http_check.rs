@@ -124,7 +124,13 @@ impl Step for HttpCheck {
             let last = loop {
                 let limit = ATTEMPT.min(cx.deadline.saturating_duration_since(Instant::now()));
                 let seen = match handle
-                    .http_get(&self.endpoint, &self.path, self.insecure_skip_verify, limit)
+                    .http_get(
+                        &self.endpoint,
+                        &self.path,
+                        self.insecure_skip_verify,
+                        self.body.is_some(),
+                        limit,
+                    )
                     .await
                 {
                     Ok(response) => {

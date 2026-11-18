@@ -320,7 +320,7 @@ impl Case<'_> {
                 Ok(match &gate.evidence {
                     Evidence::None => Ok(()),
                     Evidence::Accepts | Evidence::Exists => handle.probe(endpoint, GATE_ATTEMPT).await,
-                    Evidence::Http { path } => match handle.http_get(endpoint, path, false, GATE_ATTEMPT).await {
+                    Evidence::Http { path } => match handle.http_get(endpoint, path, false, true, GATE_ATTEMPT).await {
                         Ok(response) if response.status == 200 => Ok(()),
                         Ok(response) => Err(HandleError::Software(format!("it answered {}", response.status))),
                         Err(e) => Err(e),

@@ -312,12 +312,16 @@ impl<'a> Handle<'a> {
     /// Makes one HTTP `GET` request for `path` at the endpoint, over TLS if the endpoint serves it, and without
     /// checking the server's certificate if `skip_verify` is set. Any status is a response.
     ///
+    /// With `read_body` unset, a request through a published or forwarded port returns once the response head
+    /// arrives, with an empty body, so a body that is slow or never ends does not matter. The courier always reads
+    /// the whole body.
+    ///
     /// # Errors
     ///
     /// Returns a software error if no response arrives within `limit`, and a harness error if the endpoint cannot be
     /// requested.
     pub(crate) async fn http_get(
-        &self, endpoint: &str, path: &str, skip_verify: bool, limit: Duration,
+        &self, endpoint: &str, path: &str, skip_verify: bool, read_body: bool, limit: Duration,
     ) -> Result<HttpResponse, HandleError> {
         let (planned, route) = self.route(endpoint, EndpointOperation::Request)?;
         if !path.starts_with('/') {
@@ -328,7 +332,7 @@ impl<'a> Handle<'a> {
         }
         match route {
             Reach::PublishedPort | Reach::ForwardedPort => {
-                self.published_get(endpoint, planned.tls, path, skip_verify, limit)
+                self.published_get(endpoint, planned.tls, path, skip_verify, read_body, limit)
                     .await
             }
             // The plan refuses a request to a TLS endpoint through the courier, which does not speak TLS.
@@ -390,7 +394,7 @@ impl<'a> Handle<'a> {
     /// Requests `path` from the runner, through the port published or forwarded for `endpoint` on the runner's
     /// loopback address, over HTTPS if `tls`. A redirect is a response, as through the courier.
     async fn published_get(
-        &self, endpoint: &str, tls: bool, path: &str, skip_verify: bool, limit: Duration,
+        &self, endpoint: &str, tls: bool, path: &str, skip_verify: bool, read_body: bool, limit: Duration,
     ) -> Result<HttpResponse, HandleError> {
         let port = self.realized.host_port(endpoint).ok_or_else(|| {
             HandleError::Software(format!(
@@ -430,7 +434,11 @@ impl<'a> Handle<'a> {
             .await
             .map_err(failed)?;
         let status = response.status().as_u16();
-        let body = response.bytes().await.map_err(failed)?.to_vec();
+        let body = if read_body {
+            response.bytes().await.map_err(failed)?.to_vec()
+        } else {
+            Vec::new()
+        };
         Ok(HttpResponse { status, body })
     }
 }
