@@ -247,9 +247,10 @@ mod tests {
         let classifier = ConfigClassifier::new();
 
         for system in [from_file, from_stream] {
-            let classified = system.sources().flattened_keys().into_iter().any(|(key, value, _)| {
-                key == "logs_config.tag_filters" && classifier.classify(&key, value).is_some()
-            });
+            let classified =
+                system.sources().flattened_keys().into_iter().any(|(key, value, _)| {
+                    key == "logs_config.tag_filters" && classifier.classify(&key, value).is_some()
+                });
             assert!(classified);
         }
     }
