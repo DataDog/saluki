@@ -34,13 +34,11 @@
 //!
 //! # Missing
 //!
-//! - Avoid breaking apart `TransactionForwarder` only to work around `#[allow(clippy::too_many_arguments)]`.
 //! - Avoid initializing the process-wide crypto provider from tests.
 
 use std::{
     collections::VecDeque,
     error::Error as _,
-    marker::PhantomData,
     path::PathBuf,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
@@ -81,7 +79,7 @@ use super::{
     config::ForwarderConfiguration,
     endpoints::{EndpointRoute, EndpointV3Settings, ResolvedEndpoint, RoutableEndpoint, V3EndpointConfig},
     middleware::{for_resolved_endpoint, with_allow_arbitrary_tags, with_version_info},
-    retry::{SecretsGate, SecretsGateRefresher},
+    retry::{RetryConfiguration, SecretsGate, SecretsGateRefresher, SecretsHttpRetryPolicy},
     retry_capacity::{TrafficRateWindow, RETRY_QUEUE_CAPACITY_BUCKET_DURATION_SECS},
     routing::RoutingTargetId,
     telemetry::{
@@ -337,21 +335,26 @@ impl Default for LiveForwarderConfiguration {
 
 /// Transaction forwarder for Datadog endpoints.
 pub struct TransactionForwarder<B> {
-    context: ComponentContext,
     config: ForwarderConfiguration,
     min_tls_version: TlsMinimumVersion,
-    retry_storage_path: PathBuf,
     api_key_validation_interval: Duration,
     live: LiveForwarderConfiguration,
-    telemetry: ComponentTelemetry,
     metrics_builder: MetricsBuilder,
-    client: HttpClient,
-    endpoint_name: Arc<EndpointNameFn>,
     endpoints: Vec<RoutableEndpoint>,
     api_key_refresher: Option<ApiKeyRefresher>,
+    io: ForwarderIo<B>,
+}
+
+/// The forwarder-wide resources that the I/O loops share.
+#[derive(Clone)]
+struct ForwarderIo<B> {
+    context: ComponentContext,
+    retry_storage_path: PathBuf,
+    client: HttpClient,
+    telemetry: ComponentTelemetry,
+    endpoint_name: Arc<EndpointNameFn>,
     endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
     emitter: DiagnosticsEmitter,
-    _marker: PhantomData<B>,
 }
 
 /// Builds request mappers for resolved endpoints.
@@ -534,21 +537,22 @@ where
             .error_context("Failed to create diagnostics emitter for transaction forwarder.")?;
 
         Ok(Self {
-            context,
             config,
             min_tls_version,
-            retry_storage_path,
             api_key_validation_interval,
             live,
-            telemetry,
             metrics_builder,
-            client,
-            endpoint_name,
             endpoints,
             api_key_refresher,
-            endpoint_request_mapper_factory,
-            emitter,
-            _marker: PhantomData,
+            io: ForwarderIo {
+                context,
+                retry_storage_path,
+                client,
+                telemetry,
+                endpoint_name,
+                endpoint_request_mapper_factory,
+                emitter,
+            },
         })
     }
 
@@ -567,23 +571,15 @@ where
     pub fn spawn(self) -> Handle<B> {
         let (transactions_tx, transactions_rx) = mpsc::channel(8);
 
-        // TODO: do not destructure self as a way to fix the #[allow(clippy::too_many_arguments)] annotations
         let Self {
-            context,
             config,
             min_tls_version: _,
-            retry_storage_path,
             api_key_validation_interval: _,
             live,
-            telemetry,
             metrics_builder,
-            client,
-            endpoint_name,
             endpoints,
             api_key_refresher,
-            endpoint_request_mapper_factory,
-            emitter,
-            _marker,
+            io,
         } = self;
 
         // The endpoints already hold the keys configuration reports, stored when the refresher was
@@ -599,20 +595,7 @@ where
 
         runtime::worker(
             "io_loop",
-            run_io_loop(
-                transactions_rx,
-                context,
-                config,
-                retry_storage_path,
-                secrets,
-                client,
-                telemetry,
-                metrics_builder,
-                endpoint_name,
-                endpoints,
-                endpoint_request_mapper_factory,
-                emitter,
-            ),
+            run_io_loop(transactions_rx, io, secrets, config, metrics_builder, endpoints),
         )
         // The main I/O loop finishes only after its endpoint loops drain. See the module documentation.
         .with_shutdown_timeout(Duration::MAX)
@@ -636,7 +619,7 @@ where
             &self.config,
             self.min_tls_version,
             self.metrics_builder.clone(),
-            Arc::clone(&self.endpoint_name),
+            Arc::clone(&self.io.endpoint_name),
         )?
         .build()?;
 
@@ -645,17 +628,14 @@ where
             client,
             self.api_key_refresher.as_ref().map(ApiKeyRefresher::changes),
             self.api_key_validation_interval,
-            self.emitter.clone(),
+            self.io.emitter.clone(),
         ))
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn run_io_loop<B>(
-    mut transactions_rx: mpsc::Receiver<Transaction<B>>, context: ComponentContext, config: ForwarderConfiguration,
-    retry_storage_path: PathBuf, secrets: SecretsGate, service: HttpClient, telemetry: ComponentTelemetry,
-    metrics_builder: MetricsBuilder, endpoint_name: Arc<EndpointNameFn>, resolved_endpoints: Vec<RoutableEndpoint>,
-    endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>, emitter: DiagnosticsEmitter,
+    mut transactions_rx: mpsc::Receiver<Transaction<B>>, io: ForwarderIo<B>, secrets: SecretsGate,
+    config: ForwarderConfiguration, metrics_builder: MetricsBuilder, resolved_endpoints: Vec<RoutableEndpoint>,
 ) where
     B: Body + Buf + Clone + Send + Sync + 'static,
     B::Data: Send,
@@ -680,30 +660,20 @@ async fn run_io_loop<B>(
                                      worker_metrics: &MetricsBuilder,
                                      queue_telemetry: &SharedTransactionQueueTelemetry,
                                      task_name: String| {
-            let txnq_telemetry =
-                TransactionQueueTelemetry::from_builder(worker_metrics, &endpoint_url, queue_telemetry.clone());
-            let retry_telemetry = TransactionRetryTelemetry::from_builder(worker_metrics, &endpoint_domain);
-            let retry_cause_telemetry = RetryCauseTelemetry::from_builder(worker_metrics, &endpoint_domain);
+            let endpoint_telemetry =
+                EndpointTelemetry::from_builder(worker_metrics, &endpoint_url, &endpoint_domain, queue_telemetry);
             let (endpoint_tx, endpoint_rx) = mpsc::channel(ENDPOINT_CHANNEL_CAPACITY);
 
             runtime::worker(
                 task_name,
                 run_endpoint_io_loop(
                     endpoint_rx,
-                    context.clone(),
-                    worker_config.clone(),
-                    retry_storage_path.clone(),
+                    io.clone(),
                     secrets.clone(),
-                    service.clone(),
-                    telemetry.clone(),
-                    txnq_telemetry,
-                    retry_telemetry,
-                    retry_cause_telemetry,
-                    Arc::clone(&endpoint_name),
+                    worker_config.clone(),
+                    endpoint_telemetry,
                     route,
                     resolved_endpoint.clone(),
-                    endpoint_request_mapper_factory.clone(),
-                    emitter.clone(),
                 ),
             )
             // The drain of an endpoint can take longer than the default timeout. See the module documentation.
@@ -761,7 +731,7 @@ async fn run_io_loop<B>(
             }
 
             if endpoint_sender.send(transaction.clone()).await.is_err() {
-                telemetry.track_permanently_failed_transaction(
+                io.telemetry.track_permanently_failed_transaction(
                     transaction.metadata(),
                     None,
                     &endpoint_sender.endpoint_domain,
@@ -915,20 +885,36 @@ fn endpoint_io_loop_task_name(endpoint: &ResolvedEndpoint) -> String {
     format!("endpoint_io_loop_{}", get_sanitized_name(&host))
 }
 
-#[allow(clippy::too_many_arguments)]
+/// The telemetry of one endpoint I/O loop.
+struct EndpointTelemetry {
+    queue: TransactionQueueTelemetry,
+    retry: TransactionRetryTelemetry,
+    retry_cause: RetryCauseTelemetry,
+}
+
+impl EndpointTelemetry {
+    fn from_builder(
+        builder: &MetricsBuilder, endpoint_url: &str, endpoint_domain: &str,
+        shared_queue_telemetry: &SharedTransactionQueueTelemetry,
+    ) -> Self {
+        Self {
+            queue: TransactionQueueTelemetry::from_builder(builder, endpoint_url, shared_queue_telemetry.clone()),
+            retry: TransactionRetryTelemetry::from_builder(builder, endpoint_domain),
+            retry_cause: RetryCauseTelemetry::from_builder(builder, endpoint_domain),
+        }
+    }
+}
+
 async fn run_endpoint_io_loop<B>(
-    mut txns_rx: mpsc::Receiver<Transaction<B>>, context: ComponentContext, config: ForwarderConfiguration,
-    retry_storage_path: PathBuf, secrets: SecretsGate, service: HttpClient, telemetry: ComponentTelemetry,
-    txnq_telemetry: TransactionQueueTelemetry, mut retry_telemetry: TransactionRetryTelemetry,
-    retry_cause_telemetry: RetryCauseTelemetry, endpoint_name: Arc<EndpointNameFn>, route: EndpointRoute,
-    endpoint: ResolvedEndpoint, endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
-    emitter: DiagnosticsEmitter,
+    mut txns_rx: mpsc::Receiver<Transaction<B>>, io: ForwarderIo<B>, secrets: SecretsGate,
+    config: ForwarderConfiguration, mut endpoint_telemetry: EndpointTelemetry, route: EndpointRoute,
+    endpoint: ResolvedEndpoint,
 ) where
     B: Body + Buf + Clone + Send + Sync + 'static,
     B::Data: Send,
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
-    let queue_id = generate_retry_queue_id(context, &endpoint);
+    let queue_id = generate_retry_queue_id(io.context, &endpoint);
     let endpoint_url = endpoint.endpoint().to_string();
     let configured_endpoint = endpoint.configured_endpoint().to_string();
     let endpoint_domain = endpoint.endpoint().origin().ascii_serialization();
@@ -955,73 +941,32 @@ async fn run_endpoint_io_loop<B>(
         ?endpoint_v3_settings,
         "Starting endpoint I/O task."
     );
-    let endpoint_request_mapper = (endpoint_request_mapper_factory)(endpoint);
+    let endpoint_request_mapper = (io.endpoint_request_mapper_factory)(endpoint);
 
-    // Build our endpoint service.
-    //
-    // This is where we'll modify the incoming transaction for our our specific endpoint, such as setting the host portion
-    // of the URI, adding the API key as a header, and so on.
-    //
-    // The body type conversion from `TransactionBody<B>` to `ClientBody` happens as the innermost layer,
-    // after the retry circuit breaker. This ensures that retry, open, and cancelled errors return the original
-    // `Request<TransactionBody<B>>` so we can reassemble it into a `Transaction<B>` for re-enqueuing.
-    //
     // Unless in-flight requests are to be waited for on shutdown, the retry circuit breaker abandons them as soon as
     // `in_flight_shutdown` is cancelled. See the module documentation.
-    //
-    // The invalid API key inspection layer sits *below* the retry circuit breaker so that it observes the raw response
-    // from the client. When secrets management is enabled, a 403 is classified as retriable and the circuit breaker
-    // converts it into a `RetryCircuitBreakerError::Retry` error that only re-enqueues the transaction — it never
-    // surfaces the response to the loop below — so this layer is the only place that reliably sees the rejection.
     let in_flight_shutdown = CancellationToken::new();
-    let mut retry_circuit_breaker = RetryCircuitBreakerLayer::new(
-        config
-            .retry
-            .to_default_http_retry_policy(secrets, retry_cause_telemetry),
+    let retry_policy = config
+        .retry
+        .to_default_http_retry_policy(secrets, endpoint_telemetry.retry_cause);
+    let mut service = build_endpoint_service(
+        io.client,
+        &config,
+        retry_policy,
+        endpoint_request_mapper,
+        io.emitter,
+        endpoint_url.clone(),
+        &in_flight_shutdown,
     );
-    if !config.stop_wait_for_inflight {
-        retry_circuit_breaker = retry_circuit_breaker.with_cancellation(in_flight_shutdown.clone());
-    }
-    let mut service = ServiceBuilder::new()
-        // Set the request's URI and endpoint-specific headers.
-        .map_request(move |request| endpoint_request_mapper(request))
-        // Signal backend support for arbitrary tag values when configured.
-        .map_request(with_allow_arbitrary_tags(config.allow_arbitrary_tags))
-        // Set the User-Agent and DD-Agent-Version headers indicating the version of the data plane sending the request.
-        .map_request(with_version_info())
-        .concurrency_limit(config.effective_endpoint_concurrency())
-        .layer(retry_circuit_breaker)
-        .layer(build_diagnostics_layer(emitter, endpoint_url.clone()))
-        .map_request(|req: Request<TransactionBody<B>>| req.map(into_client_body))
-        .service(service);
 
     let retry = &config.retry;
-    let mut retry_queue = RetryQueue::new(queue_id.clone(), retry.queue_max_size_bytes)
-        .with_flush_to_disk_mem_ratio(retry.flush_to_disk_mem_ratio);
-
-    // If the storage size is set, enable disk persistence for the retry queue.
-    if retry.storage_max_size_bytes > 0 {
-        retry_queue = retry_queue
-            .with_disk_persistence(PersistedQueueArgs {
-                root_path: retry_storage_path.clone(),
-                max_on_disk_bytes: retry.storage_max_size_bytes,
-                storage_max_disk_ratio: retry.storage_max_disk_ratio,
-                disk_usage_retriever: Arc::new(DiskUsageRetrieverImpl::new(retry_storage_path)),
-                max_age_days: retry.outdated_file_in_days,
-            })
-            .await
-            .unwrap_or_else(|e| {
-                error!(endpoint_url, error = %e, "Failed to initialize disk persistence for retry queue. Transactions will not be persisted.");
-                RetryQueue::new(queue_id, retry.queue_max_size_bytes)
-                    .with_flush_to_disk_mem_ratio(retry.flush_to_disk_mem_ratio)
-            });
-    }
+    let retry_queue = build_retry_queue(retry, queue_id, io.retry_storage_path, &endpoint_url).await;
     let queue_domain = MetaString::from(endpoint_domain.as_str());
-    let in_flight_telemetry = txnq_telemetry.clone();
+    let in_flight_telemetry = endpoint_telemetry.queue.clone();
     let mut pending_txns = PendingTransactions::new(
         config.endpoint_buffer_size,
         retry_queue,
-        txnq_telemetry,
+        endpoint_telemetry.queue,
         queue_domain.clone(),
         retry.effective_capacity_time_interval_secs(),
     );
@@ -1040,18 +985,18 @@ async fn run_endpoint_io_loop<B>(
                     let Some(txn) = prepare_metrics_transaction(txn, &configured_endpoint, &endpoint_v3_settings,
                         config.compressor_disables_metrics_v3()) else { continue; };
                     let transaction_size = txn.size_bytes();
-                    let resolved = endpoint_name(txn.request_uri());
+                    let resolved = (io.endpoint_name)(txn.request_uri());
                     let logical = resolved.as_deref().unwrap_or_else(|| txn.request_uri().path());
                     track_transaction_input_for_endpoint(
                         &mut transaction_input_telemetry_by_endpoint,
-                        &telemetry,
+                        &io.telemetry,
                         &endpoint_domain,
                         logical,
                         transaction_size,
                     );
 
                     match pending_txns.push_high_priority(txn).await {
-                        Ok(push_result) => track_queue_drops(&telemetry, &endpoint_domain, push_result),
+                        Ok(push_result) => track_queue_drops(&io.telemetry, &endpoint_domain, push_result),
                         Err(e) => error!(endpoint_url, error = %e, "Failed to enqueue transaction. Events may be permanently lost."),
                     }
                 },
@@ -1078,7 +1023,7 @@ async fn run_endpoint_io_loop<B>(
                         handle_in_flight_transaction_result(
                             task_result,
                             &mut pending_txns,
-                            &telemetry,
+                            &io.telemetry,
                             &endpoint_url,
                             &endpoint_domain,
                         ).await;
@@ -1087,8 +1032,8 @@ async fn run_endpoint_io_loop<B>(
                     if let Some(pending_txn) = pending_txn {
                         let (metadata, request, retry_counters) = prepare_transaction_for_dispatch(
                             pending_txn,
-                            &mut retry_telemetry,
-                            endpoint_name.as_ref(),
+                            &mut endpoint_telemetry.retry,
+                            io.endpoint_name.as_ref(),
                         );
                         let body_size = request.body().remaining() as u64;
                         in_flight.spawn(svc.call(request).map(move |result| InFlightTransaction {
@@ -1104,7 +1049,7 @@ async fn run_endpoint_io_loop<B>(
                 },
                 Err(e) => match e {
                     RetryCircuitBreakerError::Service(e) => {
-                        telemetry.track_sent_request_error();
+                        io.telemetry.track_sent_request_error();
                         error!(endpoint_url, error = %e, error_source = ?e.source(), "Unexpected error when querying service for readiness.");
                         break;
                     },
@@ -1123,7 +1068,7 @@ async fn run_endpoint_io_loop<B>(
                 handle_in_flight_transaction_result(
                     task_result,
                     &mut pending_txns,
-                    &telemetry,
+                    &io.telemetry,
                     &endpoint_url,
                     &endpoint_domain,
                 ).await;
@@ -1143,7 +1088,7 @@ async fn run_endpoint_io_loop<B>(
                 events_dropped = flush_result.events_dropped,
                 "Flushed pending transactions prior to shutdown."
             );
-            track_queue_drops(&telemetry, &endpoint_domain, flush_result);
+            track_queue_drops(&io.telemetry, &endpoint_domain, flush_result);
         }
         Err(e) => {
             error!(endpoint_url, error = %e, "Failed to flush pending transactions. Events may be permanently lost.")
@@ -1154,6 +1099,81 @@ async fn run_endpoint_io_loop<B>(
     in_flight_telemetry.record_in_flight_requests(&queue_domain, 0);
 
     debug!(endpoint_url, "Endpoint I/O task stopped.");
+}
+
+/// Builds the service stack that sends the requests of one endpoint.
+///
+/// This is where we'll modify the incoming transaction for our specific endpoint, such as setting the host portion of
+/// the URI, adding the API key as a header, and so on.
+///
+/// The body type conversion from `TransactionBody<B>` to `ClientBody` happens as the innermost layer, after the retry
+/// circuit breaker. This ensures that retry, open, and cancelled errors return the original `Request<TransactionBody<B>>`
+/// so we can reassemble it into a `Transaction<B>` for re-enqueuing.
+///
+/// The invalid API key inspection layer sits *below* the retry circuit breaker so that it observes the raw response from
+/// the client. When secrets management is enabled, a 403 is classified as retriable and the circuit breaker converts it
+/// into a `RetryCircuitBreakerError::Retry` error that only re-enqueues the transaction — it never surfaces the response
+/// to the endpoint I/O loop — so this layer is the only place that reliably sees the rejection.
+fn build_endpoint_service<B>(
+    client: HttpClient, config: &ForwarderConfiguration, retry_policy: SecretsHttpRetryPolicy<Incoming>,
+    endpoint_request_mapper: EndpointRequestMapper<B>, emitter: DiagnosticsEmitter, endpoint_url: String,
+    in_flight_shutdown: &CancellationToken,
+) -> impl Service<
+    Request<TransactionBody<B>>,
+    Response = Response<Incoming>,
+    Error = RetryCircuitBreakerError<BoxError, Request<TransactionBody<B>>>,
+    Future: Send + 'static,
+>
+where
+    B: Body + Buf + Clone + Send + Sync + 'static,
+    B::Data: Send,
+    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
+    let mut retry_circuit_breaker = RetryCircuitBreakerLayer::new(retry_policy);
+    if !config.stop_wait_for_inflight {
+        retry_circuit_breaker = retry_circuit_breaker.with_cancellation(in_flight_shutdown.clone());
+    }
+
+    ServiceBuilder::new()
+        // Set the request's URI and endpoint-specific headers.
+        .map_request(move |request| endpoint_request_mapper(request))
+        // Signal backend support for arbitrary tag values when configured.
+        .map_request(with_allow_arbitrary_tags(config.allow_arbitrary_tags))
+        // Set the User-Agent and DD-Agent-Version headers indicating the version of the data plane sending the request.
+        .map_request(with_version_info())
+        .concurrency_limit(config.effective_endpoint_concurrency())
+        .layer(retry_circuit_breaker)
+        .layer(build_diagnostics_layer(emitter, endpoint_url))
+        .map_request(|req: Request<TransactionBody<B>>| req.map(into_client_body))
+        .service(client)
+}
+
+/// Builds the retry queue of one endpoint, persisting it to disk when retry storage is enabled.
+///
+/// If disk persistence can't be initialized, the queue falls back to memory only.
+async fn build_retry_queue<T: Retryable>(
+    retry: &RetryConfiguration, queue_id: String, retry_storage_path: PathBuf, endpoint_url: &str,
+) -> RetryQueue<T> {
+    let retry_queue = RetryQueue::new(queue_id.clone(), retry.queue_max_size_bytes)
+        .with_flush_to_disk_mem_ratio(retry.flush_to_disk_mem_ratio);
+    if retry.storage_max_size_bytes == 0 {
+        return retry_queue;
+    }
+
+    retry_queue
+        .with_disk_persistence(PersistedQueueArgs {
+            root_path: retry_storage_path.clone(),
+            max_on_disk_bytes: retry.storage_max_size_bytes,
+            storage_max_disk_ratio: retry.storage_max_disk_ratio,
+            disk_usage_retriever: Arc::new(DiskUsageRetrieverImpl::new(retry_storage_path)),
+            max_age_days: retry.outdated_file_in_days,
+        })
+        .await
+        .unwrap_or_else(|e| {
+            error!(endpoint_url, error = %e, "Failed to initialize disk persistence for retry queue. Transactions will not be persisted.");
+            RetryQueue::new(queue_id, retry.queue_max_size_bytes)
+                .with_flush_to_disk_mem_ratio(retry.flush_to_disk_mem_ratio)
+        })
 }
 
 fn generate_retry_queue_id(context: ComponentContext, endpoint: &ResolvedEndpoint) -> String {
@@ -3136,7 +3156,7 @@ mod tests {
         let [endpoint] = forwarder.endpoints.as_slice() else {
             panic!("the forwarder should have a single endpoint");
         };
-        let queue_id = generate_retry_queue_id(forwarder.context.clone(), endpoint.endpoint());
+        let queue_id = generate_retry_queue_id(forwarder.io.context.clone(), endpoint.endpoint());
 
         let supervisor = TestSupervisor::start_with_worker_timeout("test_forwarder", Duration::from_secs(30)).await;
         supervisor.spawn_worker("forwarder", move |shutdown| async move {
