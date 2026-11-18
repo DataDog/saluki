@@ -1436,7 +1436,7 @@ pub(crate) mod test_support {
             adp_binary_path: PathBuf::new(),
             core_agent_binary_path: PathBuf::new(),
             alpine_image: airlock::driver::DEFAULT_ALPINE_IMAGE.to_string(),
-            containers: None,
+            backends: crate::core::backend::Backends::default(),
         }
     }
 }
