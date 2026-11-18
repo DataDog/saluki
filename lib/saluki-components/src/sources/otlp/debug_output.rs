@@ -6,11 +6,13 @@
 //! Each signal has a `render_*` method that decides what to log for one received batch, and a `log_*` method that
 //! writes it. Rendering is a pure function of the verbosity and the batch, so tests can check it without capturing logs.
 
+use otlp_protos::opentelemetry::proto::collector::logs::v1::ExportLogsServiceRequest;
 use otlp_protos::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest;
+use otlp_protos::opentelemetry::proto::collector::trace::v1::ExportTraceServiceRequest;
 use otlp_protos::opentelemetry::proto::common::v1::{any_value::Value as AnyValueKind, AnyValue, KeyValue};
-use otlp_protos::opentelemetry::proto::logs::v1::{LogRecord, ResourceLogs};
+use otlp_protos::opentelemetry::proto::logs::v1::LogRecord;
 use otlp_protos::opentelemetry::proto::metrics::v1::{metric::Data as MetricData, Metric};
-use otlp_protos::opentelemetry::proto::trace::v1::{ResourceSpans, Span};
+use otlp_protos::opentelemetry::proto::trace::v1::Span;
 use tracing::info;
 
 use crate::common::otlp::traces::transform::bytes_to_hex_lowercase;
@@ -52,16 +54,16 @@ impl OtlpDebugOutput {
         }
     }
 
-    /// Logs a received batch of resource logs.
-    pub fn log_logs(&self, resource_logs: &ResourceLogs) {
-        if let Some(message) = self.render_logs(resource_logs) {
+    /// Logs a received logs export request.
+    pub fn log_logs(&self, request: &ExportLogsServiceRequest) {
+        if let Some(message) = self.render_logs(request) {
             info!("{message}");
         }
     }
 
-    /// Logs a received batch of resource spans.
-    pub fn log_traces(&self, resource_spans: &ResourceSpans) {
-        if let Some(message) = self.render_traces(resource_spans) {
+    /// Logs a received traces export request.
+    pub fn log_traces(&self, request: &ExportTraceServiceRequest) {
+        if let Some(message) = self.render_traces(request) {
             info!("{message}");
         }
     }
@@ -75,21 +77,17 @@ impl OtlpDebugOutput {
         )
     }
 
-    /// Returns what to log for a batch of resource logs, or `None` when nothing should be logged.
-    fn render_logs(&self, resource_logs: &ResourceLogs) -> Option<String> {
-        self.render_batch(
-            summarize_logs(resource_logs),
-            || normal_logs(resource_logs),
-            || detailed(resource_logs),
-        )
+    /// Returns what to log for a logs export request, or `None` when nothing should be logged.
+    fn render_logs(&self, request: &ExportLogsServiceRequest) -> Option<String> {
+        self.render_batch(summarize_logs(request), || normal_logs(request), || detailed(request))
     }
 
-    /// Returns what to log for a batch of resource spans, or `None` when nothing should be logged.
-    fn render_traces(&self, resource_spans: &ResourceSpans) -> Option<String> {
+    /// Returns what to log for a traces export request, or `None` when nothing should be logged.
+    fn render_traces(&self, request: &ExportTraceServiceRequest) -> Option<String> {
         self.render_batch(
-            summarize_traces(resource_spans),
-            || normal_traces(resource_spans),
-            || detailed(resource_spans),
+            summarize_traces(request),
+            || normal_traces(request),
+            || detailed(request),
         )
     }
 
@@ -131,22 +129,34 @@ fn summarize_metrics(request: &ExportMetricsServiceRequest) -> String {
     )
 }
 
-/// Summarizes a batch of resource logs: how many log records it carries.
-fn summarize_logs(resource_logs: &ResourceLogs) -> String {
-    let log_record_count: usize = resource_logs
-        .scope_logs
+/// Summarizes a logs export request: how many resources and log records it carries.
+fn summarize_logs(request: &ExportLogsServiceRequest) -> String {
+    let log_record_count: usize = request
+        .resource_logs
         .iter()
+        .flat_map(|resource| &resource.scope_logs)
         .map(|scope| scope.log_records.len())
         .sum();
 
-    format!("Logs: resource logs: 1, log records: {log_record_count}")
+    format!(
+        "Logs: resource logs: {}, log records: {log_record_count}",
+        request.resource_logs.len()
+    )
 }
 
-/// Summarizes a batch of resource spans: how many spans it carries.
-fn summarize_traces(resource_spans: &ResourceSpans) -> String {
-    let span_count: usize = resource_spans.scope_spans.iter().map(|scope| scope.spans.len()).sum();
+/// Summarizes a traces export request: how many resources and spans it carries.
+fn summarize_traces(request: &ExportTraceServiceRequest) -> String {
+    let span_count: usize = request
+        .resource_spans
+        .iter()
+        .flat_map(|resource| &resource.scope_spans)
+        .map(|scope| scope.spans.len())
+        .sum();
 
-    format!("Traces: resource spans: 1, spans: {span_count}")
+    format!(
+        "Traces: resource spans: {}, spans: {span_count}",
+        request.resource_spans.len()
+    )
 }
 
 /// Renders one line per metric: its name, type, unit and number of data points.
@@ -177,10 +187,11 @@ fn normal_metric_line(metric: &Metric) -> String {
 }
 
 /// Renders one line per log record: its severity, body and attributes.
-fn normal_logs(resource_logs: &ResourceLogs) -> String {
-    resource_logs
-        .scope_logs
+fn normal_logs(request: &ExportLogsServiceRequest) -> String {
+    request
+        .resource_logs
         .iter()
+        .flat_map(|resource| &resource.scope_logs)
         .flat_map(|scope| &scope.log_records)
         .map(normal_log_line)
         .collect::<Vec<_>>()
@@ -199,10 +210,11 @@ fn normal_log_line(record: &LogRecord) -> String {
 }
 
 /// Renders one line per span: its name, trace and span IDs, and attributes.
-fn normal_traces(resource_spans: &ResourceSpans) -> String {
-    resource_spans
-        .scope_spans
+fn normal_traces(request: &ExportTraceServiceRequest) -> String {
+    request
+        .resource_spans
         .iter()
+        .flat_map(|resource| &resource.scope_spans)
         .flat_map(|scope| &scope.spans)
         .map(normal_span_line)
         .collect::<Vec<_>>()
@@ -281,9 +293,9 @@ fn count_data_points(metric: &Metric) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use otlp_protos::opentelemetry::proto::logs::v1::{LogRecord, ScopeLogs};
+    use otlp_protos::opentelemetry::proto::logs::v1::{ResourceLogs, ScopeLogs};
     use otlp_protos::opentelemetry::proto::metrics::v1::{Gauge, NumberDataPoint, ResourceMetrics, ScopeMetrics, Sum};
-    use otlp_protos::opentelemetry::proto::trace::v1::{ScopeSpans, Span};
+    use otlp_protos::opentelemetry::proto::trace::v1::{ResourceSpans, ScopeSpans};
 
     use super::*;
 
@@ -291,29 +303,35 @@ mod tests {
         OtlpDebugOutput::new(verbosity)
     }
 
-    fn resource_spans(spans_per_scope: &[usize]) -> ResourceSpans {
-        ResourceSpans {
-            scope_spans: spans_per_scope
+    /// Builds a traces request with one resource for each entry, carrying that many spans.
+    fn traces_request(spans_per_resource: &[usize]) -> ExportTraceServiceRequest {
+        ExportTraceServiceRequest {
+            resource_spans: spans_per_resource
                 .iter()
-                .map(|&count| ScopeSpans {
-                    spans: vec![Span::default(); count],
+                .map(|&count| ResourceSpans {
+                    scope_spans: vec![ScopeSpans {
+                        spans: vec![Span::default(); count],
+                        ..Default::default()
+                    }],
                     ..Default::default()
                 })
                 .collect(),
-            ..Default::default()
         }
     }
 
-    fn resource_logs(records_per_scope: &[usize]) -> ResourceLogs {
-        ResourceLogs {
-            scope_logs: records_per_scope
+    /// Builds a logs request with one resource for each entry, carrying that many log records.
+    fn logs_request(records_per_resource: &[usize]) -> ExportLogsServiceRequest {
+        ExportLogsServiceRequest {
+            resource_logs: records_per_resource
                 .iter()
-                .map(|&count| ScopeLogs {
-                    log_records: vec![LogRecord::default(); count],
+                .map(|&count| ResourceLogs {
+                    scope_logs: vec![ScopeLogs {
+                        log_records: vec![LogRecord::default(); count],
+                        ..Default::default()
+                    }],
                     ..Default::default()
                 })
                 .collect(),
-            ..Default::default()
         }
     }
 
@@ -364,22 +382,22 @@ mod tests {
         let output = output(OtlpDebugVerbosity::None);
 
         assert_eq!(output.render_metrics(&metrics_request()), None);
-        assert_eq!(output.render_logs(&resource_logs(&[1])), None);
-        assert_eq!(output.render_traces(&resource_spans(&[1])), None);
+        assert_eq!(output.render_logs(&logs_request(&[1])), None);
+        assert_eq!(output.render_traces(&traces_request(&[1])), None);
     }
 
     #[test]
-    fn traces_summary_counts_the_spans_of_every_scope() {
-        let rendered = output(OtlpDebugVerbosity::Basic).render_traces(&resource_spans(&[2, 3]));
+    fn traces_summary_counts_the_resources_and_spans_of_the_request() {
+        let rendered = output(OtlpDebugVerbosity::Basic).render_traces(&traces_request(&[2, 3]));
 
-        assert_eq!(rendered.as_deref(), Some("Traces: resource spans: 1, spans: 5"));
+        assert_eq!(rendered.as_deref(), Some("Traces: resource spans: 2, spans: 5"));
     }
 
     #[test]
-    fn logs_summary_counts_the_log_records_of_every_scope() {
-        let rendered = output(OtlpDebugVerbosity::Basic).render_logs(&resource_logs(&[1, 4]));
+    fn logs_summary_counts_the_resources_and_log_records_of_the_request() {
+        let rendered = output(OtlpDebugVerbosity::Basic).render_logs(&logs_request(&[1, 4]));
 
-        assert_eq!(rendered.as_deref(), Some("Logs: resource logs: 1, log records: 5"));
+        assert_eq!(rendered.as_deref(), Some("Logs: resource logs: 2, log records: 5"));
     }
 
     #[test]
@@ -393,10 +411,10 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_batch_still_renders_a_summary() {
-        let rendered = output(OtlpDebugVerbosity::Basic).render_traces(&ResourceSpans::default());
+    fn an_empty_request_still_renders_a_summary() {
+        let rendered = output(OtlpDebugVerbosity::Basic).render_traces(&ExportTraceServiceRequest::default());
 
-        assert_eq!(rendered.as_deref(), Some("Traces: resource spans: 1, spans: 0"));
+        assert_eq!(rendered.as_deref(), Some("Traces: resource spans: 0, spans: 0"));
     }
 
     fn string_attribute(key: &str, value: &str) -> KeyValue {
@@ -417,15 +435,17 @@ mod tests {
             attributes: vec![string_attribute("peer.service", "db")],
             ..Default::default()
         };
-        let resource_spans = ResourceSpans {
-            scope_spans: vec![ScopeSpans {
-                spans: vec![span("query", 1), span("fetch", 2)],
+        let request = ExportTraceServiceRequest {
+            resource_spans: vec![ResourceSpans {
+                scope_spans: vec![ScopeSpans {
+                    spans: vec![span("query", 1), span("fetch", 2)],
+                    ..Default::default()
+                }],
                 ..Default::default()
             }],
-            ..Default::default()
         };
 
-        let rendered = output(OtlpDebugVerbosity::Normal).render_traces(&resource_spans);
+        let rendered = output(OtlpDebugVerbosity::Normal).render_traces(&request);
 
         assert_eq!(
             rendered.as_deref(),
@@ -447,15 +467,17 @@ mod tests {
             attributes: vec![string_attribute("host", "a")],
             ..Default::default()
         };
-        let resource_logs = ResourceLogs {
-            scope_logs: vec![ScopeLogs {
-                log_records: vec![record, LogRecord::default()],
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    log_records: vec![record, LogRecord::default()],
+                    ..Default::default()
+                }],
                 ..Default::default()
             }],
-            ..Default::default()
         };
 
-        let rendered = output(OtlpDebugVerbosity::Normal).render_logs(&resource_logs);
+        let rendered = output(OtlpDebugVerbosity::Normal).render_logs(&request);
 
         assert_eq!(
             rendered.as_deref(),
@@ -479,35 +501,37 @@ mod tests {
     }
 
     #[test]
-    fn normal_omits_the_body_for_a_batch_with_no_records() {
-        let rendered = output(OtlpDebugVerbosity::Normal).render_traces(&ResourceSpans::default());
+    fn normal_omits_the_body_for_a_request_with_no_records() {
+        let rendered = output(OtlpDebugVerbosity::Normal).render_traces(&ExportTraceServiceRequest::default());
 
-        assert_eq!(rendered.as_deref(), Some("Traces: resource spans: 1, spans: 0"));
+        assert_eq!(rendered.as_deref(), Some("Traces: resource spans: 0, spans: 0"));
     }
 
     #[test]
     fn basic_does_not_log_individual_records() {
-        let rendered = output(OtlpDebugVerbosity::Basic).render_traces(&resource_spans(&[2]));
+        let rendered = output(OtlpDebugVerbosity::Basic).render_traces(&traces_request(&[2]));
 
         assert_eq!(rendered.as_deref(), Some("Traces: resource spans: 1, spans: 2"));
     }
 
     #[test]
     fn detailed_traces_log_every_field_of_the_batch_after_the_summary() {
-        let resource_spans = ResourceSpans {
-            scope_spans: vec![ScopeSpans {
-                spans: vec![Span {
-                    name: "query".to_string(),
-                    attributes: vec![string_attribute("peer.service", "db")],
+        let request = ExportTraceServiceRequest {
+            resource_spans: vec![ResourceSpans {
+                scope_spans: vec![ScopeSpans {
+                    spans: vec![Span {
+                        name: "query".to_string(),
+                        attributes: vec![string_attribute("peer.service", "db")],
+                        ..Default::default()
+                    }],
                     ..Default::default()
                 }],
                 ..Default::default()
             }],
-            ..Default::default()
         };
 
         let rendered = output(OtlpDebugVerbosity::Detailed)
-            .render_traces(&resource_spans)
+            .render_traces(&request)
             .expect("detailed verbosity logs every batch");
 
         assert!(rendered.starts_with("Traces: resource spans: 1, spans: 1\n"));
@@ -519,7 +543,7 @@ mod tests {
     #[test]
     fn detailed_logs_and_metrics_log_every_field_after_the_summary() {
         let logs = output(OtlpDebugVerbosity::Detailed)
-            .render_logs(&resource_logs(&[1]))
+            .render_logs(&logs_request(&[1]))
             .expect("detailed verbosity logs every batch");
         let metrics = output(OtlpDebugVerbosity::Detailed)
             .render_metrics(&metrics_request())
