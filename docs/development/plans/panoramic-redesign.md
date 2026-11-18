@@ -1232,15 +1232,15 @@ realizations, because one container backend covers Linux and Windows containers.
 
 |  | Linux container | Windows container | Kubernetes pod | Host process group |
 | --- | --- | --- | --- | --- |
-| Per case | one bridge network, one volume | one `nat` network | one namespace, one directory on the kind node | one state directory under `/tmp` |
+| Per case | one bridge network, one volume | one `nat` network | one namespace, one directory on the kind node | the state directory `/tmp/panoramic`, the same path for every case |
 | Launch | image, with the spec's command and args or the image's own | the same | one pod with one container, and a headless Service | each program started so that it and its children can be signalled together, in the participant's directory, with a cleared environment plus `PATH`, `HOME`, `TMPDIR` |
 | Files | one archive placed between create and start | the same, under `C:\` | written on the node before the pod exists, each mounted at its destination, except a file that holds a value only the started pod has, which the pod's command copies into place from `/panoramic/late` | written under the participant's directory |
-| `{{ self.dir }}` | `/airlock/<p>/shared` on the case's volume, mounted in every container of the case | `C:\airlock\<p>\shared`, inside the container only | `/airlock/<p>/shared` on the node directory every pod of the case mounts | `<state directory>/<p>/shared` |
+| `{{ self.dir }}` | `/airlock/<p>/shared` on the case's volume, mounted in every container of the case | `C:\airlock\<p>\shared`, inside the container only | `/airlock/<p>/shared` on the node directory every pod of the case mounts | `/tmp/panoramic/<p>/shared` |
 | Reserved paths | `/panoramic/courier`, `/airlock/<p>/exit`, `/airlock/<p>/log` | `C:\panoramic\courier.exe`, `C:\airlock\<p>\exit`, `C:\airlock\<p>\log` | as a Linux container, and `/panoramic/late` | none |
 | Courier | copied in with the files | copied in with the files | mounted read-only from the node | the library, inside the harness |
 | Exit of a process | the container's exit, or a record file | the same | the container's terminated state, or a record file read through the node | the wait result of the child |
 | Output of a process | the container log, or a log file followed by the courier | the same | the container log, or a log file read through the node | the child's pipes |
-| Stop and remove | stop with a grace, force-remove; then containers by label, volume, network | the same, no volume | delete pod and Service; then the namespace and the node directory | SIGTERM each program and its children, SIGKILL after the grace; remove the state directory |
+| Stop and remove | stop with a grace, force-remove; then containers by label, volume, network | the same, no volume | delete pod and Service; then the namespace and the node directory | SIGTERM each program and its children, SIGKILL after 2 s; remove the state directory |
 
 The table leaves out five points.
 
@@ -1262,9 +1262,18 @@ The table leaves out five points.
   is submitted. Such a pod's image needs a shell, and that is a stated requirement of the pod
   realization for a participant with a late-written template file. Every other pod runs its image
   unwrapped and needs no shell.
+- **The state directory is one fixed path.** `/tmp/panoramic` is the same for every case and every
+  runner host, so a socket path under it is short enough for macOS, which the system's temporary
+  directory is not. Preparing refuses a directory that exists, so it never removes the directory of
+  a run that is still using it. A run killed with SIGKILL leaves it behind, and the next run says so.
+  A host process group has no supervisor, so it has no exit or log directory, and its processes get
+  no `PANORAMIC_EXIT_DIR` or `PANORAMIC_LOG_DIR`.
 - **Host-process cases run one at a time.** The scheduler holds one extra permit that a case takes
-  when its layout has a host process group. Two invocations on one host can still collide, which
-  stays a host rule.
+  when its layout has a host process group. A legacy case on the `mac` runtime takes it too, so the
+  two paths never overlap in one job. Two invocations on one host can still collide, which stays a
+  host rule.
+- **The environment is cleared.** A host program gets `PATH`, `HOME` and `TMPDIR` of the runner when
+  it has them, then the participant's `env`, then the program's.
 - **Not built:** pods with more than one container, and routes between different realizations.
 
 ### Observation and results
@@ -1287,8 +1296,13 @@ Every process a participant declares has one exit channel and one output channel
   can grow. A line counts once its newline is written. The first line is final, so a restart never
   returns a process to running. A case can declare supervised processes of its own, so this format
   is a contract and the user guide documents it.
+- **Per-process exits.** The realization may report the exit of each process apart from the
+  participant's (`Realized::reported_exit`), and `Handle::exit` asks it first. A host process group
+  does, for each program. Its own exit is "every program has exited", with the first program's code,
+  and is read only for messages. Containers and pods report one exit, the participant's.
 - **Signals.** A container reports death by signal as code 128 + n, while a record and a waited
-  child carry the signal separately. `exits_with` asserts a code, and no case asserts on death by
+  child carry the signal separately. A host program killed by signal n is code 256 with the signal,
+  as a record reports it. `exits_with` asserts a code, and no case asserts on death by
   signal today. Matching a signal the same way on every realization is added with the first case
   that needs it.
 - **Output.** Output is written under `<log dir>/<participant>/` as it arrives, and each line keeps
@@ -1445,6 +1459,9 @@ making it `errored`. On failure the step quotes the last 4 KiB of the command's 
 | `intake_has_metric` | assertion | `on`, `name`, `metric_type`, `value`, `tags`, `tags_match`, `timeout` | operation `dump` |
 | `compare` | assertion | `telemetry`, `comparison`, `baseline`, and the options of each telemetry | operation `dump` on both participants |
 
+`exits_with` matches the code only. A death by signal is code 256, so it fails any other `code`, and
+the message names the signal.
+
 `timeout` is required wherever it is listed and has no default. `compare` has none: its budget is
 what remains of the case's timeout. Where `process` is optional, leaving
 it out means every process of the participant. `http_check` passes when the status matches and, if
@@ -1487,7 +1504,9 @@ covers it; the courier binary is built by `make build-courier`.
    once, outside any case's timeout. An image that cannot be pulled is a harness error that names
    the image and the cases that use it.
 3. Every host program exists and can be executed, and the courier binary for each participant OS in
-   use exists.
+   use exists. A program written `./x` is the participant's own file, so it is found when the
+   participant is created. A bare name is found on the runner's `PATH`, and any other path is
+   relative to the directory panoramic runs in.
 4. For pod cases, the kind cluster exists and holds the images. The harness creates a missing
    cluster, as the legacy runner does, so `kind` on the `PATH` is the host requirement, and the
    cluster must have a single node. Setup blocks the run here, outside every case's timeout, where
@@ -1526,7 +1545,7 @@ The PRs add about 6k lines of harness tests, beside the tests on `main` that sta
 
 ## Proposed PR Plan
 
-The work lands as 16 PRs in six stages. The first two are independent and touch nothing a case uses.
+The work lands as 17 PRs in six stages, `hostproc` being two of them. The first two are independent and touch nothing a case uses.
 The next six are one stack that ends with real cases running on the new path, among them the intake
 cases, which exercise harness-owned addresses end to end. After that stack, every PR is justified by
 the cases it turns over.
@@ -1619,13 +1638,15 @@ apart. The last column names what the migration rule sends to each PR.
 | 10 | `cmprest` | Migrate the remaining comparison cases | 9 | 0.9k / 0.25k | The other DogStatsD comparison cases, OTLP metrics, traces and logs; disabled cases with their family |
 | 11 | `pod` | Pod backend; migrate the origin detection matrix | 9 | 1.6k / 0.3k | Cases that run in pods: the origin detection matrix |
 | 12 | `linuxrest` | Probe, exec and config steps; finish the Linux-only cases | 8 | 0.7k / 0.1k | Linux-only cases that probe, request, exec or check configuration |
-| 13 | `hostproc` | Host process backend; migrate macOS and Unix cases | 12 | 1.1k / 0.5k | Cases on macOS, alone or with Linux |
-| 14 | `windows` | Windows containers; migrate the Windows and three-OS cases | 12, 13 | 1.0k / 0.4k | Cases on Windows, alone or with Linux; cases on all three OSes |
+| 13 | `hostproc` | Host process backend; migrate the macOS and Unix cases that need nothing more | 12 | 1.35k / 0.22k as built | Cases on macOS, alone or with Linux, that need no step beyond the backend's |
+| 13b | `replay` | `dogstatsd_replay`; migrate `dogstatsd-replay-unix` | 13 | 0.35k / 0.05k | Cases on macOS that replay DogStatsD |
+| 14 | `windows` | Windows containers; migrate the Windows and three-OS cases | 12, 13, 13b | 1.0k / 0.4k | Cases on Windows, alone or with Linux; cases on all three OSes |
 | 15 | `rmlegacy` | Delete the legacy runners; rewrite the testing guide | all above | deletions, docs | none |
 | 16 | `followups` | The os overlay, the intake on macOS and Windows, a case-supplied helper | 15 | 0.55k / 0.1k | Cases that differ only by OS merge; the intake cases gain macOS and Windows; one new case |
 
 The stages are foundations (1–2), the Linux slice (3–8), comparison cases (9–11), Linux-only cases
-(12), other platforms and the deletion (13–15), and after the migration (16). The comparison stage
+(12), other platforms and the deletion (13–15, 13b being the second half of 13), and after the migration
+(16). The comparison stage
 needs only the slice, and so does `linuxrest`, so two people can work them side by side. The Windows
 job is the slowest CI loop, so `windows` should start early as a draft.
 
@@ -1946,14 +1967,48 @@ Why this order:
 **13. `hostproc`: the host process backend**
 
 - **Builds:** the host process backend, `agent-adp` as two programs on macOS, host programs as
-  references that `--set` replaces, `exits_with` and `dogstatsd_replay`, and the rule that
-  host-process cases run one at a time. Migrates the cases that run on macOS, alone or with Linux.
+  references that `--set` replaces, `exits_with`, and the rule that host-process cases run one at a
+  time. Migrates the cases that run on macOS, alone or with Linux, and need nothing more:
+  `adp-logging-mac-ignores-core-agent-log-file`, `adp-logging-respects-data-plane-log-file` and the
+  three `dogstatsd-*listener*` cases. `dogstatsd_replay` and `dogstatsd-replay-unix` are the next PR,
+  `replay` (13b). The cases that run on all three OSes stay legacy, because a case file is legacy or
+  new for every OS it runs on. They migrate in `windows`, and the legacy macOS runner keeps running
+  them in the same job until then.
+- **What was taken:**
+  - The state directory is the one path `/tmp/panoramic`, for every case and runner host. `prepare`
+    refuses a directory that exists, and the macOS job's sweep removes it. A host process group has no
+    exit or log directory.
+  - A host participant's processes are its programs, observed through their pipes and exits. A
+    process with a record or an output file, or one that names no program, is a plan error. A command's
+    `program` names one of the participant's programs, and only host processes have programs. A
+    program at `./x` must be a file the participant places with an execute bit.
+  - The realization reports each program's exit apart, behind `Handle::exit`. A host process group's
+    own exit is "every program has exited", with the first program's code. A program killed by
+    signal n is code 256 with the signal.
+  - Requests to host processes go from the runner to the endpoint's own port, so TLS requests work.
+    Probes and sends call the courier's library in the harness. A command and an `exec` of a host
+    participant run with the participant's environment and directory, and a signal death reads as
+    code 128 + n, as in a container.
+  - The process group primitive is a new `airlock::host`, beside the legacy `airlock::unix`, which
+    `rmlegacy` deletes. Stop is SIGTERM to the group and SIGKILL after 2 s.
+  - Host programs run with a cleared environment plus `PATH`, `HOME` and `TMPDIR` of the runner. The
+    legacy runner passed everything.
+  - `agent-adp` on macOS runs the Agent (`run -c <dir>`) and ADP (`-c <dir>/datadog.yaml run`) with
+    absolute paths. It places an empty `./datadog.yaml`, declares no `datadog.yaml` name, and has no
+    `consumes`. It rejects `host_view` and `ADP_DD_` keys, and has no OTLP rule, because the image's
+    init script does that. ADP does not wait for the Agent's IPC credentials.
+  - `agent` is not moved off its ports for host processes: no case runs it there yet.
+  - `exits_with` takes `{on, process, code, timeout}` and matches the code only.
+  - The legacy macOS cases take the host permit with the participant cases, through
+    `Test::runs_host_processes`.
+  - The logging cases write their log files under `{{ self.dir }}` on both OSes, not `/tmp`.
 - **Watch out:** addresses are fixed, so two host cases cannot overlap. The harness enforces it and
   does not rely on `-p 1`. Legacy waits for the Agent's token and certificate before it starts
   ADP. Here both programs start together and ADP's IPC client retries, which must
   be verified on the macOS runners. Those runners persist between jobs, so the job's sweep of stale
-  processes stays. Cleanup tests here are unit tests and must not bind the fixed ports.
-  `dogstatsd-skip-failed-listener` loses a UDP probe.
+  processes stays and gains `/tmp/panoramic`. Cleanup tests here are unit tests and must not bind the
+  fixed ports or use `/tmp/panoramic`. `dogstatsd-skip-failed-listener` loses a UDP probe.
+  `process_stable_for` watches ADP in these cases.
 
 **14. `windows`: Windows containers and the three-OS cases**
 
@@ -1966,7 +2021,7 @@ Why this order:
     that use endpoints and commands need `config_set` and `exec` of a command the participant type
     names, which replaces the legacy CLI actions.
 - **Watch out:** this job is the slowest CI loop. Start the first part early as a draft; it does not
-  need `hostproc`. The three-OS cases are their own commits and wait for `hostproc`.
+  need `hostproc`. The three-OS cases are their own commits and wait for `hostproc` and `replay`.
   - The cases shared with Linux bind to the container's own address, some through a custom
     hostname, and both mechanisms are needed on Linux too.
   - The CI image bakes in the legacy entrypoint script; a spec's own command must override it, and
@@ -2059,6 +2114,9 @@ host-process subject with containerized helpers.
 - `panoramic`'s mounts directory, whose init script resolves the legacy dynamic variables, is not
   mounted into participant containers. A value known only at run time is a reference.
 - `exec` quotes a command's output on failure, which the legacy CLI actions did not.
+- Host programs on macOS run with a cleared environment, and ADP no longer waits for the Agent's IPC
+  credentials. The second is unverified until the macOS jobs run.
+- A case's log files move from `/tmp` into the participant's directory, as `{{ self.dir }}`.
 - A load error exits 2 with no `run.json`, and a run where every case is skipped exits 3.
 - The merged traffic manifest goes. A participant case writes none: its collected files, with their
   retention, are listed in `result.json`.
