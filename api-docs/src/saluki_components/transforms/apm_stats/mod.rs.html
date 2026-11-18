@@ -37,7 +37,7 @@
 <a href=#37 id=37 data-nosnippet>37</a><span class="kw">use </span><span class="kw">crate</span>::common::datadog::get_tracer_hostname;
 <a href=#38 id=38 data-nosnippet>38</a><span class="kw">use </span><span class="kw">crate</span>::common::datadog::version_data::ContainerVersionData;
 <a href=#39 id=39 data-nosnippet>39</a><span class="kw">use </span><span class="kw">crate</span>::common::otlp::traces::normalize::normalized_tag_value;
-<a href=#40 id=40 data-nosnippet>40</a><span class="kw">use </span><span class="kw">crate</span>::common::otlp::util::extract_container_tags_from_attributes_map;
+<a href=#40 id=40 data-nosnippet>40</a><span class="kw">use </span><span class="kw">crate</span>::common::otlp::util::extract_trace_container_tags;
 <a href=#41 id=41 data-nosnippet>41</a><span class="kw">use </span><span class="kw">crate</span>::config::AgentEnv;
 <a href=#42 id=42 data-nosnippet>42</a>
 <a href=#43 id=43 data-nosnippet>43</a><span class="kw">mod </span>aggregation;
@@ -207,7 +207,7 @@
 <a href=#207 id=207 data-nosnippet>207</a>            TagSet::default()
 <a href=#208 id=208 data-nosnippet>208</a>        } <span class="kw">else </span>{
 <a href=#209 id=209 data-nosnippet>209</a>            <span class="kw">let </span><span class="kw-2">mut </span>tags = TagSet::default();
-<a href=#210 id=210 data-nosnippet>210</a>            extract_container_tags_from_attributes_map(<span class="kw-2">&amp;</span>trace.attributes, <span class="kw-2">&amp;mut </span>tags);
+<a href=#210 id=210 data-nosnippet>210</a>            extract_trace_container_tags(trace.payload.resolved_container_tags(), <span class="kw-2">&amp;</span>trace.attributes, <span class="kw-2">&amp;mut </span>tags);
 <a href=#211 id=211 data-nosnippet>211</a>            tags
 <a href=#212 id=212 data-nosnippet>212</a>        };
 <a href=#213 id=213 data-nosnippet>213</a>

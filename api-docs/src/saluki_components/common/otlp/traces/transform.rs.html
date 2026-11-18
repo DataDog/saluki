@@ -2328,7 +2328,7 @@
 <a href=#2328 id=2328 data-nosnippet>2328</a>    }
 <a href=#2329 id=2329 data-nosnippet>2329</a>}
 <a href=#2330 id=2330 data-nosnippet>2330</a>
-<a href=#2331 id=2331 data-nosnippet>2331</a><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>otlp_value_to_string(value: <span class="kw-2">&amp;</span>OtlpValue) -&gt; <span class="prelude-ty">Option</span>&lt;String&gt; {
+<a href=#2331 id=2331 data-nosnippet>2331</a><span class="kw">pub</span>(<span class="kw">in </span><span class="kw">crate</span>::common::otlp) <span class="kw">fn </span>otlp_value_to_string(value: <span class="kw-2">&amp;</span>OtlpValue) -&gt; <span class="prelude-ty">Option</span>&lt;String&gt; {
 <a href=#2332 id=2332 data-nosnippet>2332</a>    <span class="kw">match </span>value {
 <a href=#2333 id=2333 data-nosnippet>2333</a>        OtlpValue::StringValue(v) =&gt; <span class="prelude-val">Some</span>(v.clone()),
 <a href=#2334 id=2334 data-nosnippet>2334</a>        OtlpValue::BoolValue(v) =&gt; <span class="prelude-val">Some</span>(<span class="kw">if </span><span class="kw-2">*</span>v { <span class="string">"true" </span>} <span class="kw">else </span>{ <span class="string">"false" </span>}.to_string()),
