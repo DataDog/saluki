@@ -85,7 +85,7 @@ impl Tui {
         io::stdout().execute(cursor::Hide)?;
 
         tui.add_line("Panoramic starting...");
-        tui.add_line(format!("Container logs will be written to '{}'.", log_dir.display()));
+        tui.add_line(format!("Logs will be written to '{}'.", log_dir.display()));
 
         Ok(tui)
     }
