@@ -65,7 +65,8 @@ struct ExpectedPayload {
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct ExpectedChunk {
-    priority: Option<i32>,
+    /// Zero when the fixture omits it, as the reference's chunk keeps its zero value.
+    priority: i32,
     origin: String,
     dropped_trace: bool,
     sampling_mechanism: u32,
@@ -269,7 +270,7 @@ fn check_case(case: &Case) {
 
         check!(ctx, trace.ingest_info(), TraceIngestInfo::Datadog);
         check!(ctx, trace.origin.as_ref(), chunk.origin);
-        check!(ctx, trace.priority, chunk.priority);
+        check!(ctx, trace.priority, Some(chunk.priority));
         check!(ctx, trace.dropped_trace, chunk.dropped_trace);
         check!(ctx, trace.sampling_mechanism, chunk.sampling_mechanism);
 
@@ -576,15 +577,37 @@ fn any_value_depth_cap_enforced() {
 #[test]
 fn oversize_array_header_rejected() {
     let mut buf = Vec::new();
-    encode::write_array_len(&mut buf, read::MAX_SIZE + 1).unwrap();
+    encode::write_array_len(&mut buf, read::MAX_COLLECTION_SIZE + 1).unwrap();
     let mut r = buf.as_slice();
     let err = read::read_array_len(&mut r, "test").unwrap_err();
     assert!(matches!(err, DecodeError::OversizeHeader { .. }));
 }
 
 #[test]
+fn collections_are_limited_as_the_reference_limits_them() {
+    // Found by the parity fuzzer: the reference checks a count against its limit before the bytes that remain, at
+    // 500,000 for every collection but the string table, which allows 25,000,000 strings. Over the limit is a
+    // decoding error, under it but past the bytes that remain is short input.
+    let over = read::MAX_COLLECTION_SIZE + 1;
+    let mut map = Vec::new();
+    encode::write_map_len(&mut map, over).unwrap();
+    let err = read::read_map_len(&mut map.as_slice(), "test").unwrap_err();
+    assert!(matches!(err, DecodeError::OversizeHeader { .. }), "{err:?}");
+    let mut array = Vec::new();
+    encode::write_array_len(&mut array, over).unwrap();
+    let err = read::read_array_len(&mut array.as_slice(), "test").unwrap_err();
+    assert!(matches!(err, DecodeError::OversizeHeader { .. }), "{err:?}");
+
+    // A string table of more strings than that, in a payload too short for them.
+    let mut payload = vec![0x81, 0x01];
+    payload.extend(array);
+    let err = decode_v1_payload(&payload).unwrap_err();
+    assert!(matches!(err, DecodeError::ShortBytes { .. }), "{err:?}");
+}
+
+#[test]
 fn array_count_beyond_remaining_bytes_is_short_input() {
-    // Under MAX_SIZE, but more elements than bytes remain: the reference returns `msgp.ErrShortBytes`.
+    // Under MAX_COLLECTION_SIZE, but more elements than bytes remain: the reference returns `msgp.ErrShortBytes`.
     let mut buf = Vec::new();
     encode::write_array_len(&mut buf, 1000).unwrap();
     encode::write_uint(&mut buf, 0).unwrap();
@@ -653,8 +676,9 @@ fn implausibly_small_spans_rejected() {
 }
 
 #[test]
-fn implausible_map_count_rejected() {
-    // More entries than bytes remain is short input; fewer, but under two bytes per entry, is implausible.
+fn map_counts_are_checked_against_the_remaining_bytes_only() {
+    // As the reference's `readBoundedHeaderBytes`, more entries than bytes remain is short input, and fewer is left
+    // to the entries themselves to fail.
     let mut buf = Vec::new();
     encode::write_map_len(&mut buf, 1000).unwrap();
     encode::write_uint(&mut buf, 0).unwrap();
@@ -664,11 +688,15 @@ fn implausible_map_count_rejected() {
     let mut buf = Vec::new();
     encode::write_map_len(&mut buf, 2).unwrap();
     buf.extend_from_slice(&[0; 3]);
-    let err = read::read_map_len(&mut buf.as_slice(), "test").unwrap_err();
-    assert!(
-        matches!(err, DecodeError::ImplausibleHeaderCount { len: 2, .. }),
-        "{err:?}"
-    );
+    assert_eq!(read::read_map_len(&mut buf.as_slice(), "test").unwrap(), 2);
+}
+
+#[test]
+fn a_payload_cut_short_after_a_field_is_short_input() {
+    // Found by the parity fuzzer: four fields declared, the container ID given, then nothing. The reference reads the
+    // fields until the bytes run out, and reports `msgp.ErrShortBytes`.
+    let err = decode_v1_payload(&[0x84, 0x03, 0xa2, b'g', b'o']).unwrap_err();
+    assert!(matches!(err, DecodeError::ShortBytes { .. }), "{err:?}");
 }
 
 #[test]
@@ -738,23 +766,18 @@ fn overlong_trace_id_in_span_link_uses_final_16_bytes() {
 }
 
 #[test]
-fn trailing_bytes_after_payload_rejected_reserved_marker() {
-    let mut buf = Vec::new();
-    encode::write_map_len(&mut buf, 0).unwrap(); // empty, otherwise-valid tracer payload
-    buf.push(0xc1); // reserved MessagePack marker
+fn bytes_after_the_payload_are_ignored() {
+    // Found by the parity fuzzer: the reference decodes the tracer payload and ignores what follows it.
+    for trailing in [&[0xc1][..], &[0x2a], &[0x91, 0x01]] {
+        let mut buf = Vec::new();
+        encode::write_map_len(&mut buf, 1).unwrap();
+        encode::write_uint(&mut buf, 2).unwrap(); // container ID
+        encode::write_str(&mut buf, "abc").unwrap();
+        buf.extend_from_slice(trailing);
 
-    let err = decode_v1_payload(&buf).unwrap_err();
-    assert!(matches!(err, DecodeError::TrailingBytes { len: 1 }));
-}
-
-#[test]
-fn trailing_bytes_after_payload_rejected_valid_value() {
-    let mut buf = Vec::new();
-    encode::write_map_len(&mut buf, 0).unwrap(); // empty, otherwise-valid tracer payload
-    encode::write_uint(&mut buf, 42).unwrap(); // an otherwise-valid MessagePack value
-
-    let err = decode_v1_payload(&buf).unwrap_err();
-    assert!(matches!(err, DecodeError::TrailingBytes { len: 1 }));
+        let decoded = decode_v1_payload(&buf).unwrap();
+        assert!(decoded.traces.is_empty(), "{trailing:?}");
+    }
 }
 
 fn attrs(key: &str, value: &str) -> FastHashMap<MetaString, AttributeValue> {
@@ -900,7 +923,7 @@ fn references_that_resolve_to_too_many_bytes_are_rejected() {
         strings.get(0).unwrap();
     }
     let mut strings = StringTable::new(0);
-    let index = strings.add(&"x".repeat(read::MIN_RESOLVED_BYTES));
+    let index = strings.add("x".repeat(read::MIN_RESOLVED_BYTES).as_bytes());
     strings.get(index).unwrap();
     assert!(matches!(
         strings.get(index),
@@ -1019,4 +1042,196 @@ fn every_reference_to_a_string_shares_it() {
     let spans = decoded.traces[0].spans();
     assert_eq!(spans[1].service(), service);
     assert_eq!(spans[0].service().as_ptr(), spans[1].service().as_ptr());
+}
+
+#[test]
+fn a_chunk_without_a_priority_has_priority_zero() {
+    // Found by the parity fuzzer: the reference's chunk keeps its zero value when the payload omits the field.
+    let mut buf = Vec::new();
+    encode::write_map_len(&mut buf, 1).unwrap(); // tracer payload
+    encode::write_uint(&mut buf, 11).unwrap(); // chunks
+    encode::write_array_len(&mut buf, 1).unwrap();
+    encode::write_map_len(&mut buf, 2).unwrap(); // trace chunk
+    encode::write_uint(&mut buf, 6).unwrap(); // traceID
+    encode::write_bin(&mut buf, &[1; 16]).unwrap();
+    encode::write_uint(&mut buf, 2).unwrap(); // origin
+    encode::write_str(&mut buf, "synthetics").unwrap();
+
+    let decoded = decode_v1_payload(&buf).unwrap();
+    assert_eq!(decoded.traces[0].priority, Some(0));
+}
+
+#[test]
+fn invalid_utf8_strings_are_repaired_rather_than_rejected() {
+    // Found by the parity fuzzer: the reference reads strings without validating them, so it accepts the payload
+    // and keeps the bytes. Each invalid byte becomes U+FFFD, as for the v0.7 format's strings.
+    for (field, value) in [(1u64, &b"\xe3heckout"[..]), (2, &b"op\xff\xfe"[..])] {
+        let mut buf = Vec::new();
+        encode::write_map_len(&mut buf, 1).unwrap(); // tracer payload
+        encode::write_uint(&mut buf, 11).unwrap(); // chunks
+        encode::write_array_len(&mut buf, 1).unwrap();
+        encode::write_map_len(&mut buf, 2).unwrap(); // trace chunk
+        encode::write_uint(&mut buf, 6).unwrap(); // traceID
+        encode::write_bin(&mut buf, &[1; 16]).unwrap();
+        encode::write_uint(&mut buf, 4).unwrap(); // spans
+        encode::write_array_len(&mut buf, 1).unwrap();
+        encode::write_map_len(&mut buf, 3).unwrap(); // span
+        encode::write_uint(&mut buf, 4).unwrap(); // spanID
+        encode::write_u64(&mut buf, 7).unwrap();
+        encode::write_uint(&mut buf, 3).unwrap(); // resource
+        encode::write_str(&mut buf, "GET /checkout").unwrap();
+        encode::write_uint(&mut buf, field).unwrap(); // service or name
+        encode::write_str_len(&mut buf, value.len() as u32).unwrap();
+        buf.extend_from_slice(value);
+
+        let decoded = decode_v1_payload(&buf).unwrap();
+        let span = &decoded.traces[0].spans()[0];
+        let actual = if field == 1 { span.service() } else { span.name() };
+        assert_eq!(actual, read::repair_utf8(value), "{value:?}");
+    }
+}
+
+#[test]
+fn a_payload_that_ends_where_a_string_is_expected_is_a_decoding_error() {
+    // Found by the parity fuzzer: the reference's `UnmarshalStreamingString` reports its own error, not
+    // `msgp.ErrShortBytes`, when no byte is left, so the payload is dropped as `decoding_error`. A string cut short is
+    // still short input.
+    let err = decode_v1_payload(&[0x81, 0x07]).unwrap_err();
+    assert!(matches!(err, DecodeError::Msgpack { context: "env", .. }), "{err:?}");
+
+    let err = decode_v1_payload(&[0x81, 0x07, 0xa5, b'p', b'r']).unwrap_err();
+    assert!(matches!(err, DecodeError::ShortBytes { .. }), "{err:?}");
+}
+
+#[test]
+fn attribute_doubles_are_read_as_the_reference_reads_them() {
+    // Found by the parity fuzzer: `msgp.ReadFloat64Bytes` checks the length before the marker, so a double cut short
+    // is short input whatever its marker, and it also takes a `float32`.
+    let attribute = |value: &[u8]| {
+        let mut buf = Vec::new();
+        encode::write_array_len(&mut buf, 3).unwrap();
+        encode::write_str(&mut buf, "k").unwrap();
+        encode::write_uint(&mut buf, 3).unwrap(); // double
+        buf.extend_from_slice(value);
+        value::read_attributes_map(&mut buf.as_slice(), &mut StringTable::new(64), "test")
+    };
+    let err = attribute(&[0xc9]).unwrap_err();
+    assert!(matches!(err, DecodeError::ShortBytes { .. }), "{err:?}");
+    let attributes = attribute(&[0xca, 0x40, 0x20, 0x00, 0x00]).unwrap();
+    assert_eq!(attributes.get("k"), Some(&AttributeValue::Float(2.5)));
+}
+
+#[test]
+fn repeated_literals_take_no_new_index() {
+    // Found by the parity fuzzer: the reference's string table adds a literal it already holds, the empty string
+    // included, at its existing index, so a repeated literal doesn't shift the indexes after it.
+    let mut buf = Vec::new();
+    encode::write_map_len(&mut buf, 1).unwrap(); // tracer payload
+    encode::write_uint(&mut buf, 11).unwrap(); // chunks
+    encode::write_array_len(&mut buf, 1).unwrap();
+    encode::write_map_len(&mut buf, 2).unwrap(); // trace chunk
+    encode::write_uint(&mut buf, 6).unwrap(); // traceID
+    encode::write_bin(&mut buf, &[1; 16]).unwrap();
+    encode::write_uint(&mut buf, 4).unwrap(); // spans
+    encode::write_array_len(&mut buf, 1).unwrap();
+    encode::write_map_len(&mut buf, 6).unwrap(); // span
+    encode::write_uint(&mut buf, 1).unwrap(); // service: index 1
+    encode::write_str(&mut buf, "checkout").unwrap();
+    encode::write_uint(&mut buf, 2).unwrap(); // name: the same literal again
+    encode::write_str(&mut buf, "checkout").unwrap();
+    encode::write_uint(&mut buf, 10).unwrap(); // type: the empty literal
+    encode::write_str(&mut buf, "").unwrap();
+    encode::write_uint(&mut buf, 3).unwrap(); // resource: index 2
+    encode::write_str(&mut buf, "GET /cart").unwrap();
+    encode::write_uint(&mut buf, 13).unwrap(); // env: index 2
+    encode::write_uint(&mut buf, 2).unwrap();
+    encode::write_uint(&mut buf, 4).unwrap(); // spanID
+    encode::write_u64(&mut buf, 7).unwrap();
+
+    let decoded = decode_v1_payload(&buf).unwrap();
+    let span = &decoded.traces[0].spans()[0];
+    assert_eq!(
+        (span.service(), span.name(), span.span_type()),
+        ("checkout", "checkout", "")
+    );
+    assert_eq!(span.env.as_ref(), "GET /cart");
+}
+
+/// Encodes a v1.0 payload of `table` as its string table, then one chunk of `priority` and one span whose service and
+/// name are references `service` and `name`.
+fn table_payload(table: &[&str], priority: i64, service: u32, name: u32) -> Vec<u8> {
+    let mut buf = Vec::new();
+    encode::write_map_len(&mut buf, 2).unwrap(); // tracer payload
+    encode::write_uint(&mut buf, 1).unwrap(); // string table
+    encode::write_array_len(&mut buf, table.len() as u32).unwrap();
+    for s in table {
+        encode::write_str(&mut buf, s).unwrap();
+    }
+    encode::write_uint(&mut buf, 11).unwrap(); // chunks
+    encode::write_array_len(&mut buf, 1).unwrap();
+    encode::write_map_len(&mut buf, 3).unwrap(); // trace chunk
+    encode::write_uint(&mut buf, 1).unwrap(); // priority
+    encode::write_sint(&mut buf, priority).unwrap();
+    encode::write_uint(&mut buf, 6).unwrap(); // traceID
+    encode::write_bin(&mut buf, &[1; 16]).unwrap();
+    encode::write_uint(&mut buf, 4).unwrap(); // spans
+    encode::write_array_len(&mut buf, 1).unwrap();
+    encode::write_map_len(&mut buf, 4).unwrap(); // span
+    encode::write_uint(&mut buf, 1).unwrap(); // service
+    encode::write_uint(&mut buf, u64::from(service)).unwrap();
+    encode::write_uint(&mut buf, 2).unwrap(); // name
+    encode::write_uint(&mut buf, u64::from(name)).unwrap();
+    encode::write_uint(&mut buf, 3).unwrap(); // resource
+    encode::write_str(&mut buf, "GET /checkout/cart").unwrap();
+    encode::write_uint(&mut buf, 4).unwrap(); // spanID
+    encode::write_u64(&mut buf, 7).unwrap();
+    buf
+}
+
+#[test]
+fn string_table_entries_each_take_an_index() {
+    // As the reference's `unmarshalStringTable`, which adds with `addUnchecked`: a duplicate entry takes its own index,
+    // and the empty string none.
+    let decoded = decode_v1_payload(&table_payload(&["a", "", "a", "b"], 1, 3, 2)).unwrap();
+    let span = &decoded.traces[0].spans()[0];
+    assert_eq!((span.service(), span.name()), ("b", "a"));
+
+    // A literal sent after them takes the index of the entry added last.
+    let mut strings = StringTable::new(0);
+    assert_eq!(strings.add_unchecked(b"a"), 1);
+    assert_eq!(strings.add_unchecked(b"a"), 2);
+    assert_eq!(strings.add_unchecked(b"b"), 3);
+    assert_eq!(strings.add(b"a"), 2);
+    assert_eq!(strings.add(b"c"), 4);
+}
+
+#[test]
+fn repaired_literals_are_told_apart_by_their_bytes() {
+    // As the reference's table, which holds the bytes sent: two literals that repair to the same text are distinct.
+    let mut strings = StringTable::new(0);
+    assert_eq!(strings.add(b"a\xff"), 1);
+    assert_eq!(strings.add(b"a\xfe"), 2);
+    assert_eq!(strings.add(b"a\xff"), 1);
+    assert_eq!(strings.add("a\u{FFFD}".as_bytes()), 3);
+    assert_eq!(strings.get(2).unwrap(), "a\u{FFFD}");
+}
+
+#[test]
+fn a_chunk_of_priority_none_has_no_priority() {
+    // As the reference's `GetSamplingPriorityV1`, which reads -128 as no priority.
+    let decoded = decode_v1_payload(&table_payload(&["svc"], -128, 1, 1)).unwrap();
+    assert_eq!(decoded.traces[0].priority, None);
+    let decoded = decode_v1_payload(&table_payload(&["svc"], 2, 1, 1)).unwrap();
+    assert_eq!(decoded.traces[0].priority, Some(2));
+}
+
+#[test]
+fn oracle_cases_decode_as_the_reference_decodes_them() {
+    // `testdata/v1_cases.json` holds what the trace-agent's own decoder made of each body (see
+    // `test/trace-agent-oracle/`), where `testdata/v1_decoder_cases.json` holds payloads of the reference encoder.
+    crate::decoders::datadog::json::tests::check_fixture(
+        include_str!("testdata/v1_cases.json"),
+        |_, body| decode_v1_payload(body),
+        false,
+    );
 }

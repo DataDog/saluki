@@ -19,14 +19,18 @@ use rmp::decode::{bytes::BytesReadError, DecodeStringError, NumValueReadError, V
 
 use super::error::DecodeError;
 
-/// Maximum element count permitted in any array or map header.
-///
-/// Protects the decoder from payloads that declare an enormous collection size to force large
-/// allocations. Matches the reference decoder's `maxSize` (25,000,000). This alone doesn't stop a
-/// tiny payload from claiming a count near this ceiling; [`read_array_len`] and [`read_map_len`]
-/// additionally reject counts that couldn't possibly be backed by the remaining input, via
-/// [`check_slab_count`].
+/// Maximum string count of a string table: the v1.0 tracer payload's, and the v0.5 dictionary's. Matches the
+/// reference decoder's `maxStringTableSize` (25,000,000).
 pub const MAX_SIZE: u32 = 25_000_000;
+
+/// Maximum element count of any other array or map header of the v1.0 format. Matches the reference decoder's
+/// `maxCollectionSize` (500,000).
+///
+/// Protects the decoder from payloads that declare an enormous collection size to force large allocations. This alone
+/// doesn't stop a tiny payload from claiming a count near this ceiling: [`read_array_len`] additionally rejects counts
+/// that couldn't possibly be backed by the remaining input, via [`check_slab_count`], and [`read_map_len`] counts
+/// larger than the remaining input, as the reference does.
+pub const MAX_COLLECTION_SIZE: u32 = 500_000;
 
 /// Maximum number of elements pre-allocated from a wire count.
 ///
@@ -171,6 +175,12 @@ fn mp<E: ReadError>(context: &'static str) -> impl FnOnce(E) -> DecodeError {
     }
 }
 
+/// The error of the reference's `UnmarshalStreamingString` for a payload that ends where a string is expected:
+/// "Expected streaming string but EOF", a decoding error rather than `msgp.ErrShortBytes`.
+pub fn missing_streaming_string(context: &'static str) -> DecodeError {
+    invalid(context, "expected a streaming string but found the end of the payload")
+}
+
 /// Builds a [`DecodeError::Msgpack`] for a value of the wrong type or out of range.
 fn invalid(context: &'static str, detail: impl Into<String>) -> DecodeError {
     DecodeError::Msgpack {
@@ -184,7 +194,7 @@ fn invalid(context: &'static str, detail: impl Into<String>) -> DecodeError {
 ///
 /// Without this, a small malicious payload could set an array or map header to millions of
 /// entries and force a large allocation before decoding ever reaches the missing bytes and fails
-/// naturally. This is a much tighter bound than [`MAX_SIZE`] for small inputs, since it scales
+/// naturally. This is a much tighter bound than [`MAX_COLLECTION_SIZE`] for small inputs, since it scales
 /// with the actual data available rather than a fixed ceiling.
 ///
 /// # Errors
@@ -213,7 +223,7 @@ fn check_slab_count(
 /// # Errors
 ///
 /// Returns an error if the next value is not an array header, if the declared length exceeds
-/// [`MAX_SIZE`], or if the declared length couldn't possibly be backed by the remaining input (see
+/// [`MAX_COLLECTION_SIZE`], or if the declared length couldn't possibly be backed by the remaining input (see
 /// [`check_slab_count`]).
 pub fn read_array_len(r: &mut &[u8], context: &'static str) -> Result<u32, DecodeError> {
     read_array_len_with_minimum(r, MIN_BYTES_PER_ARRAY_ELEMENT, context)
@@ -228,16 +238,16 @@ pub fn read_array_len(r: &mut &[u8], context: &'static str) -> Result<u32, Decod
 /// # Errors
 ///
 /// Returns an error if the next value is not an array header, if the declared length exceeds
-/// [`MAX_SIZE`], or if the declared elements would require more bytes than remain on the cursor.
+/// [`MAX_COLLECTION_SIZE`], or if the declared elements would require more bytes than remain on the cursor.
 pub fn read_array_len_with_minimum(
     r: &mut &[u8], min_bytes_per_element: u32, context: &'static str,
 ) -> Result<u32, DecodeError> {
     let len = rmp::decode::read_array_len(r).map_err(mp(context))?;
-    if len > MAX_SIZE {
+    if len > MAX_COLLECTION_SIZE {
         return Err(DecodeError::OversizeHeader {
             context,
             len,
-            max: MAX_SIZE,
+            max: MAX_COLLECTION_SIZE,
         });
     }
     check_slab_count(len, min_bytes_per_element, r, context)?;
@@ -249,18 +259,22 @@ pub fn read_array_len_with_minimum(
 /// # Errors
 ///
 /// Returns an error if the next value is not a map header, if the declared length exceeds
-/// [`MAX_SIZE`], or if the declared length couldn't possibly be backed by the remaining input (see
-/// [`check_slab_count`]).
+/// [`MAX_COLLECTION_SIZE`], or [`DecodeError::ShortBytes`] if it exceeds the number of bytes remaining, as the reference's
+/// `readBoundedHeaderBytes` does.
 pub fn read_map_len(r: &mut &[u8], context: &'static str) -> Result<u32, DecodeError> {
     let len = rmp::decode::read_map_len(r).map_err(mp(context))?;
-    if len > MAX_SIZE {
+    if len > MAX_COLLECTION_SIZE {
         return Err(DecodeError::OversizeHeader {
             context,
             len,
-            max: MAX_SIZE,
+            max: MAX_COLLECTION_SIZE,
         });
     }
-    check_slab_count(len, MIN_BYTES_PER_MAP_ENTRY, r, context)?;
+    // Unlike arrays, a map's count sizes no allocation, so it takes no tighter bound than the reference's: a map of
+    // fewer entries than bytes remain reads its entries until they fail, with the reference's error.
+    if u64::from(len) > r.len() as u64 {
+        return Err(DecodeError::ShortBytes { context });
+    }
     Ok(len)
 }
 
@@ -289,16 +303,13 @@ pub fn read_bool(r: &mut &[u8], context: &'static str) -> Result<bool, DecodeErr
     rmp::decode::read_bool(r).map_err(mp(context))
 }
 
-/// Reads a double-precision float.
-pub fn read_f64(r: &mut &[u8], context: &'static str) -> Result<f64, DecodeError> {
-    rmp::decode::read_f64(r).map_err(mp(context))
-}
-
-/// Reads a UTF-8 string, borrowing from the input for the lifetime of the underlying buffer.
-pub fn read_str<'a>(r: &mut &'a [u8], context: &'static str) -> Result<&'a str, DecodeError> {
-    let (s, tail) = rmp::decode::read_str_from_slice(*r).map_err(mp(context))?;
-    *r = tail;
-    Ok(s)
+/// Reads a string's bytes, borrowing from the input for the lifetime of the underlying buffer.
+///
+/// As the reference's `msgp.ReadStringBytes`, the bytes aren't validated as UTF-8: the
+/// [string table](super::string_table::StringTable) repairs invalid ones rather than failing the payload.
+pub fn read_str_bytes<'a>(r: &mut &'a [u8], context: &'static str) -> Result<&'a [u8], DecodeError> {
+    let len = rmp::decode::read_str_len(r).map_err(mp(context))?;
+    take(r, len as usize, context)
 }
 
 /// Reads a binary blob, copying it into an owned `Vec<u8>`.
@@ -477,8 +488,9 @@ pub fn v0_read_array_len(r: &mut &[u8], context: &'static str) -> Result<u32, De
     v0_check_header_len(len, V0_MAX_COLLECTION_SIZE, r, context)
 }
 
-/// Reads the v0.5 dictionary's array header as the reference's `safeReadDictionaryHeaderBytes` does: as
-/// [`v0_read_array_len`], but with the string table's larger limit, [`MAX_SIZE`] (`maxStringTableSize`).
+/// Reads a string table's array header, the v0.5 dictionary's or the v1.0 tracer payload's, as the reference's
+/// `safeReadDictionaryHeaderBytes` and `limitedReadStringTableHeaderBytes` do: as [`v0_read_array_len`], but with the
+/// string table's larger limit, [`MAX_SIZE`] (`maxStringTableSize`).
 pub fn v0_read_dictionary_len(r: &mut &[u8], context: &'static str) -> Result<u32, DecodeError> {
     let len = rmp::decode::read_array_len(r).map_err(mp(context))?;
     v0_check_header_len(len, MAX_SIZE, r, context)

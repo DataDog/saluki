@@ -49,6 +49,8 @@ mod v07;
 mod value;
 
 #[cfg(test)]
+mod parity;
+#[cfg(test)]
 mod tests;
 
 pub use self::convert::convert_tracer_payload;
@@ -90,11 +92,8 @@ pub struct DecodedV1 {
 /// Returns a [`DecodeError`] if the input is not a well-formed v1.0 tracer payload (truncated,
 /// malformed MessagePack, oversized headers, out-of-range string references, and so on).
 pub fn decode_v1_payload(bytes: &[u8]) -> Result<DecodedV1, DecodeError> {
-    let mut reader = bytes;
-    let payload = decode_tracer_payload(&mut reader)?;
-    if !reader.is_empty() {
-        return Err(DecodeError::TrailingBytes { len: reader.len() });
-    }
+    // As the reference's `UnmarshalMsg`, whose leftover bytes the receiver ignores, what follows the payload is ignored.
+    let payload = decode_tracer_payload(&mut &bytes[..])?;
 
     let payload_fields = PayloadFields {
         container_id: payload.container_id,
@@ -116,7 +115,8 @@ pub fn decode_v1_payload(bytes: &[u8]) -> Result<DecodedV1, DecodeError> {
         trace.origin = chunk.origin;
         trace.payload = payload_fields.clone();
         trace.attributes = Arc::new(chunk.attributes);
-        trace.priority = chunk.priority;
+        // As the reference's `GetSamplingPriorityV1`, which reads `PriorityNone` as no priority.
+        trace.priority = (chunk.priority != v04::PRIORITY_NONE).then_some(chunk.priority);
         trace.dropped_trace = chunk.dropped_trace;
         trace.sampling_mechanism = chunk.sampling_mechanism;
         traces.push(trace);
@@ -194,7 +194,8 @@ struct DecodedPayload {
 
 /// Intermediate representation of a decoded trace chunk.
 struct DecodedChunk {
-    priority: Option<i32>,
+    /// Zero when the payload omits it, as the reference's chunk keeps its zero value.
+    priority: i32,
     origin: MetaString,
     attributes: FastHashMap<MetaString, AttributeValue>,
     spans: Vec<Span>,
@@ -310,16 +311,15 @@ pub fn attribute_string_bytes(value: &AttributeValue) -> usize {
 
 /// Decodes the string table array (field 1 of the tracer payload).
 ///
-/// Empty strings are skipped: index 0 is always the pre-seeded empty string, matching the reference
-/// encoder which never emits duplicate or additional empty strings.
+/// As the reference's `unmarshalStringTable`, each entry takes an index of its own, duplicates included, but the empty
+/// string, which index 0 already holds.
 fn decode_string_table(r: &mut &[u8], strings: &mut StringTable) -> Result<(), DecodeError> {
-    let num_strings = read::read_array_len(r, "string table")?;
+    let num_strings = read::v0_read_dictionary_len(r, "string table")?;
     for _ in 0..num_strings {
-        let s = read::read_str(r, "string table entry")?;
-        if s.is_empty() {
-            continue;
+        let raw = read::read_str_bytes(r, "string table entry")?;
+        if !raw.is_empty() {
+            strings.add_unchecked(raw);
         }
-        strings.add(s);
     }
     Ok(())
 }
@@ -336,7 +336,7 @@ fn decode_chunk_list(r: &mut &[u8], strings: &mut StringTable) -> Result<Vec<Dec
 
 /// Decodes a single `TraceChunk` map.
 fn decode_chunk(r: &mut &[u8], strings: &mut StringTable) -> Result<DecodedChunk, DecodeError> {
-    let mut priority = None;
+    let mut priority = 0;
     let mut origin = MetaString::empty();
     let mut attributes = FastHashMap::default();
     let mut spans = Vec::new();
@@ -349,7 +349,7 @@ fn decode_chunk(r: &mut &[u8], strings: &mut StringTable) -> Result<DecodedChunk
     for _ in 0..num_fields {
         let field = read::read_u32(r, "trace chunk field")?;
         match field {
-            1 => priority = Some(read::read_i32(r, "trace chunk priority")?),
+            1 => priority = read::read_i32(r, "trace chunk priority")?,
             2 => origin = value::read_streaming_string(r, strings, "trace chunk origin")?,
             3 => attributes = value::read_attributes_map(r, strings, "trace chunk attributes")?,
             4 => spans = decode_span_list(r, strings)?,

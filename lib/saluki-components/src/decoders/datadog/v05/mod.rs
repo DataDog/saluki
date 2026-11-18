@@ -97,7 +97,7 @@ use super::v04::{
 use super::{charge_per_trace, DecodedV1};
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;
 
 /// The number of fields of a span, the reference's `spanPropertyCount`.
 const SPAN_PROPERTY_COUNT: u32 = 12;

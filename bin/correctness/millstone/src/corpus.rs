@@ -11,7 +11,8 @@ use rand::{rngs::StdRng, SeedableRng as _};
 use saluki_error::{generic_error, GenericError};
 use tracing::info;
 
-use crate::config::{Config, CorpusBlueprint, Payload, TargetAddress};
+use crate::config::{Config, CorpusBlueprint, DatadogTraces, Payload, TargetAddress};
+use crate::transcode::transcode_v04;
 
 /// Maximum size of a single Datadog traces payload.
 ///
@@ -106,7 +107,10 @@ fn generate_payloads(mut rng: StdRng, blueprint: CorpusBlueprint) -> Result<(Vec
             let mut generator = OpentelemetryLogs::new(config, usize::MAX, &mut rng)?;
             generate_payloads_inner(&mut generator, rng, &mut payloads, blueprint.size, 8192)?
         }
-        Payload::DatadogTraces(lading_payload::trace_agent::Config::V04(config)) => {
+        Payload::DatadogTraces(DatadogTraces {
+            generator: lading_payload::trace_agent::Config::V04(config),
+            transcode_to,
+        }) => {
             let mut generator = V04::with_config(config, &mut rng)?;
             generate_payloads_inner(
                 &mut generator,
@@ -114,9 +118,17 @@ fn generate_payloads(mut rng: StdRng, blueprint: CorpusBlueprint) -> Result<(Vec
                 &mut payloads,
                 blueprint.size,
                 DATADOG_TRACES_MAX_PAYLOAD_BYTES,
-            )?
+            )?;
+            if let Some(encoding) = transcode_to {
+                for payload in &mut payloads {
+                    *payload = transcode_v04(payload, encoding)?;
+                }
+            }
         }
-        Payload::DatadogTraces(lading_payload::trace_agent::Config::V1(config)) => {
+        Payload::DatadogTraces(DatadogTraces {
+            generator: lading_payload::trace_agent::Config::V1(config),
+            ..
+        }) => {
             let mut generator = V1::with_config(config, &mut rng)?;
             generate_payloads_inner(
                 &mut generator,
@@ -260,6 +272,60 @@ corpus:
         assert!(first.iter().all(|payload| !payload.is_empty() && payload.len() <= 8192));
         assert_eq!(first, second.into_payloads());
         assert_ne!(first, other_seed.into_payloads());
+    }
+
+    fn datadog_traces_config(transcode_to: Option<&str>) -> Config {
+        let transcode_to = transcode_to
+            .map(|encoding| format!("transcode_to: {encoding}\n      "))
+            .unwrap_or_default();
+        serde_saphyr::from_str(&format!(
+            r#"
+seed: [3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+target: "http://baseline:8126/v0.4/traces"
+volume: 5
+corpus:
+  size: 5
+  payload:
+    datadog_traces:
+      {transcode_to}v0.4:
+        tags_per_span:
+          inclusive: {{ min: 2, max: 5 }}
+        metrics_per_span:
+          inclusive: {{ min: 1, max: 3 }}
+        priority_weights: {{ 1: 1 }}
+"#
+        ))
+        .expect("config should parse")
+    }
+
+    #[test]
+    fn transcoded_datadog_traces_carry_the_generated_spans() {
+        // Transcoding decodes what lading generates, so this fails if lading's spans gain a field we don't carry.
+        let v04 = Corpus::from_config(&datadog_traces_config(None))
+            .unwrap()
+            .into_payloads();
+        let spans = |payloads: &[Bytes]| -> Vec<serde_json::Value> {
+            payloads
+                .iter()
+                .flat_map(|payload| serde_json::from_slice::<Vec<serde_json::Value>>(payload).unwrap())
+                .collect()
+        };
+        let json = Corpus::from_config(&datadog_traces_config(Some("json")))
+            .unwrap()
+            .into_payloads();
+        let flat = Corpus::from_config(&datadog_traces_config(Some("spans_json")))
+            .unwrap()
+            .into_payloads();
+        let span_count: usize = spans(&json).iter().map(|trace| trace.as_array().unwrap().len()).sum();
+        assert!(span_count > 0);
+        assert_eq!(spans(&flat).len(), span_count);
+        for encoding in ["v0.5", "v0.7"] {
+            let payloads = Corpus::from_config(&datadog_traces_config(Some(encoding)))
+                .unwrap()
+                .into_payloads();
+            assert_eq!(payloads.len(), v04.len());
+            assert!(payloads.iter().all(|payload| !payload.is_empty()), "{encoding}");
+        }
     }
 
     #[test]

@@ -56,23 +56,24 @@ than with our reading of its code. `test/trace-agent-oracle/` generates those fi
 - `v04_json_cases.py` holds the cases of `lib/saluki-components/src/decoders/datadog/testdata/v04_json_cases.json`,
   the v0.4 JSON decoder's fixtures, and turns the oracle's output into that file. `v01_json_cases.py` does the same for
   `v01_json_cases.json`, the fixtures of the v0.1 JSON decoder that serves `/v0.1/spans` and `/spans`,
-  `v05_cases.py` for `v05_cases.json`, the fixtures of the v0.5 MessagePack decoder that serves `/v0.5/traces`, and
-  `v07_cases.py` for `v07_cases.json`, the fixtures of the v0.7 MessagePack decoder that serves `/v0.7/traces`.
+  `v05_cases.py` for `v05_cases.json`, the fixtures of the v0.5 MessagePack decoder that serves `/v0.5/traces`,
+  `v07_cases.py` for `v07_cases.json`, the fixtures of the v0.7 MessagePack decoder that serves `/v0.7/traces`, and
+  `v1_cases.py` for `v1_cases.json`, fixtures of the v1.0 decoder that serves `/v1.0/traces`.
 - `regenerate.sh` runs them all, with the Go toolchain that the checkout pins in `.go-version`.
 
 To add a case, add it to the cases script of its format and regenerate, then run the decoder tests:
 
 ```shell
 test/trace-agent-oracle/regenerate.sh ~/dd/datadog-agent
-cargo nextest run -p saluki-components -E 'test(/decoders::datadog::(json|v05|v07)/)'
+cargo nextest run -p saluki-components -E 'test(/decoders::datadog::/)'
 ```
 
 Don't edit the fixtures by hand. To cover another endpoint, add its version to the `version` switch in
 `oracle_test.go`, write a cases script for it beside the others that sets each case's `version`, as
 `v01_json_cases.py` does, and add it to the loop in `regenerate.sh`. The trace-agent groups v0.1 spans into chunks
 through a map, so their order is random: `v01_json_cases.py` sorts them so that the fixture is stable, and the test
-compares them in any order. The v1.0 decoder's fixtures, `testdata/v1_decoder_cases.json`, were produced by the
-reference Go encoder when that decoder was added, with a generator that isn't in the repository.
+compares them in any order. The v1.0 decoder's other fixtures, `testdata/v1_decoder_cases.json`, were produced by
+the reference Go encoder when that decoder was added, with a generator that isn't in the repository.
 
 ## Correctness tests (panoramic)
 
@@ -285,6 +286,33 @@ development, lean on CI.
 
 We aren't doing a lot with fuzzing right now, but what we've uses `cargo-fuzz` and
 operates at the function-level. More fuzzing coverage will likely come in the future.
+
+### Go/Rust parity fuzzing of the trace decoders
+
+The `decoders::datadog::parity` tests in `saluki-components` fuzz each trace decoder (v1.0, v0.4 MessagePack and JSON,
+v0.1, v0.5 and v0.7) against the trace-agent's own receiver code. Each test generates payloads from the decoder's
+[reference fixtures](#trace-agent-reference-fixtures) and property-test strategies, as they are or with bytes flipped,
+overwritten, inserted, removed or cut off, decodes each with the decoder and with the trace-agent's
+`decodeConvertedTracerPayload`, and fails on the first payload whose results differ, shrunk to a minimal one. The
+trace-agent side is `test/trace-agent-oracle/oracle_test.go`, built as a Go test binary and driven over its standard
+input and output. The tests are ignored, as they need that binary: `fuzz.sh` builds it and runs them.
+
+```shell
+# 1,000 payloads per decoder, from the checkout at ~/dd/datadog-agent:
+test/trace-agent-oracle/fuzz.sh
+# 50,000 payloads for the v0.5 decoder only:
+test/trace-agent-oracle/fuzz.sh ~/dd/datadog-agent 50000 parity_v05
+# Compare one body that a failure printed again:
+PARITY_BODY=<base64> test/trace-agent-oracle/fuzz.sh ~/dd/datadog-agent 1 parity_v1
+# Repeat a run, from the seed it printed:
+PARITY_SEED=<seed> test/trace-agent-oracle/fuzz.sh ~/dd/datadog-agent 50000 parity_v1
+```
+
+Each run draws new payloads from a random seed, which each test prints as `PARITY_SEED=<seed>`, and a failure repeats.
+With the same seed and the same `datadog-agent` checkout, a run draws the same payloads. Shrinking a failure is
+bounded at two minutes, and `fuzz.sh` ends a test that runs past 15, so a stalled run still reports its seed. To fix a difference, add the shrunk payload as a unit test of the decoder that fails, then
+fix the decoder. The tests accept the deliberate deviations that `parity.rs` documents, such as the bound on the
+strings that references resolve to, and the trace-agent's random order of v0.1 chunks.
 
 ## Loom and Miri testing
 

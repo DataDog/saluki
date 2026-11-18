@@ -19,6 +19,8 @@ hyper-util = { workspace = true, features = ["client-legacy", "http1", "tokio"] 
 lading-payload = { workspace = true }
 prost = { workspace = true }
 rand = { workspace = true, features = ["std_rng"] }
+rmp = { workspace = true }
+rmp-serde = { workspace = true }
 saluki-common = { workspace = true }
 saluki-error = { workspace = true }
 serde = { workspace = true }
@@ -40,4 +42,5 @@ tracing-subscriber = { workspace = true, features = [
 zstd = { workspace = true }
 
 [dev-dependencies]
+rmpv = { workspace = true }
 tempfile = { workspace = true }

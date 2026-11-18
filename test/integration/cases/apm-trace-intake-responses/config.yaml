@@ -1,0 +1,61 @@
+# ADP's native trace intake must answer a tracer as the trace-agent's receiver does (`handleWithVersion`,
+# `handleTracesV1` and `responses.go` in `pkg/trace/api`). `compare_responses.py` sends the same requests to ADP and
+# to the trace-agent running beside it, with the same configuration, and compares status, headers and body: accepted
+# payloads on every endpoint, 415 (MessagePack below v0.3), 403 (`Sec-Fetch-Site: cross-site`), 413 (`Content-Length`
+# over the limit, and a chunked body that reaches it), 400 (`unexpected-eof`, `msgp_short_bytes`, decoding errors),
+# and the answers to a payload refused for want of a decoder (200, or 429 with `Datadog-Send-Real-Http-Status`).
+type: integration
+name: "apm-trace-intake-responses"
+description: "Verifies ADP native trace intake answers error and overload paths as the trace-agent does"
+timeout: 300s
+runtimes: [linux]
+
+env:
+  DD_API_KEY: "00000000000000000000000000000000"
+  DD_HOSTNAME: "integration-test-trace-intake"
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "true"
+  DD_DATA_PLANE_DOGSTATSD_ENABLED: "false"
+  DD_DATA_PLANE_EXPERIMENTAL_APM_ENABLED: "true"
+  DD_DATA_PLANE_EXPERIMENTAL_APM_PROXY_DESTINATION: "http://127.0.0.1:8127"
+  DD_DATA_PLANE_EXPERIMENTAL_APM_NATIVE_TRACE_INTAKE: "true"
+  # Plain `DD_APM_*` variables reach both ADP and the trace-agent, so both receivers run with the same limits: a small
+  # body limit for the 413 cases, and one decoder, given up on after 100 ms, so that a request whose body never
+  # finishes arriving makes the next one be refused.
+  DD_APM_MAX_PAYLOAD_SIZE: "4096"
+  DD_APM_DECODERS: "1"
+  DD_APM_DECODER_TIMEOUT: "100"
+  # ADP takes over the trace-agent's receiver, so the trace-agent moves to the proxy destination, where the script
+  # sends it the same requests. `ADP_DD_*` variables only reach ADP (see `docker/cont-init.d/99-agent-data-plane.sh`).
+  # ADP gets a distinct socket path rather than an empty one, which `s6-envdir` would unset.
+  #
+  # TODO: Drop these once the Core Agent moves the trace-agent's receiver itself when the APM proxy is enabled.
+  DD_APM_RECEIVER_PORT: "8127"
+  ADP_DD_APM_RECEIVER_PORT: "8126"
+  ADP_DD_APM_RECEIVER_SOCKET: "/var/run/datadog/adp-apm.socket"
+
+container:
+  files:
+    - "compare_responses.py:/apm-trace-intake-responses/compare_responses.py"
+
+procedure:
+  - assertion: log_contains
+    pattern: "Agent Data Plane running."
+    timeout: 90s
+  - action: target_exec
+    command:
+      - "/opt/datadog-agent/embedded/bin/python3"
+      - "/apm-trace-intake-responses/compare_responses.py"
+      - "default"
+    timeout: 240s
+  - assertion: file_contains
+    path: "/tmp/apm-trace-intake-responses-result"
+    pattern: "passed"
+    timeout: 10s
+  - parallel:
+      - assertion: process_stable_for
+        duration: 10s
+      - assertion: log_not_contains
+        pattern: "panic|PANIC"
+        regex: true
+        during: 10s
