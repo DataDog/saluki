@@ -48,7 +48,8 @@ impl StepFactory for DogstatsdReplayFactory {
     }
 }
 
-/// Starts a capture on `on`, sends each payload to its endpoint `endpoint` while the capture runs, and then, until
+/// Starts a capture on `on`, sends each payload to its endpoint `endpoint` while the capture runs, waiting
+/// `payload_interval` between payloads if it is set, and then, until
 /// `timeout`, replays the capture and collects statistics together. Passes once the statistics hold every one of
 /// `expected_metrics`. The capture lasts `capture_duration`, and the statistics take `stats_duration`.
 #[derive(Debug, Deserialize)]
@@ -57,6 +58,7 @@ struct DogstatsdReplay {
     on: String,
     endpoint: String,
     payloads: Vec<String>,
+    payload_interval: Option<Timeout>,
     capture_duration: Timeout,
     stats_duration: Timeout,
     expected_metrics: Vec<String>,
@@ -124,10 +126,19 @@ impl Step for DogstatsdReplay {
     }
 
     /// One timeout for the capture, one for each payload's send, and two for the replay and statistics rounds, because
-    /// the last round can start just before the deadline. Then the capture's duration and the pause between rounds.
+    /// the last round can start just before the deadline. Then the capture's duration, the waits between payloads and
+    /// the pause between rounds.
     fn budget(&self) -> Duration {
         let sends = u32::try_from(self.payloads.len()).unwrap_or(u32::MAX);
-        self.timeout.duration.saturating_mul(sends.saturating_add(3)) + self.capture_duration.duration + ROUND_PAUSE
+        let waits = sends.saturating_sub(1);
+        let interval = self
+            .payload_interval
+            .as_ref()
+            .map_or(Duration::ZERO, |interval| interval.duration);
+        self.timeout.duration.saturating_mul(sends.saturating_add(3))
+            + interval.saturating_mul(waits)
+            + self.capture_duration.duration
+            + ROUND_PAUSE
     }
 
     async fn run(&self, cx: &StepContext<'_>) -> StepReport {
@@ -144,7 +155,10 @@ impl Step for DogstatsdReplay {
                 .and_then(Value::as_str)
                 .ok_or_else(|| HandleError::Harness(format!("{} answered without a path", CAPTURE)))?;
 
-            for payload in &self.payloads {
+            for (index, payload) in self.payloads.iter().enumerate() {
+                if let (Some(interval), true) = (&self.payload_interval, index > 0) {
+                    sleep(interval.duration).await;
+                }
                 handle
                     .send(&self.endpoint, Bytes::from(payload.clone()), limit)
                     .await
