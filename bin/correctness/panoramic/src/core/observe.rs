@@ -21,9 +21,10 @@
 //! Output is captured line by line as it arrives: kept per process for steps, and written to
 //! `<log dir>/<participant>/<process>.log`. Text after the last newline is not a line yet. It is kept apart as the
 //! process's unterminated output, until a newline completes it or the capture ends. A participant whose processes are
-//! all supervised also gets its container log, which holds what the supervisor itself writes, as [`CONTAINER_LOG`]. A
-//! capture that stops while its participant runs is an observation error: a step that relies on having seen all of a
-//! process's output errors.
+//! all supervised also gets its container log, which holds what the supervisor itself writes, as [`CONTAINER_LOG`]. It
+//! is observed too, under the name [`CONTAINER_OUTPUT`], so a step that searches every process of the participant
+//! searches it. A capture that stops while its participant runs is an observation error: a step that relies on having
+//! seen all of a process's output errors.
 //! Files to collect are copied to `<log dir>/<participant>/collected/<name>` after the procedure. A step may write a
 //! file about a participant to the same place while it runs, through [`Kept`]. Each carries its own retention, which
 //! [`retain`] applies to the outcome.
@@ -50,6 +51,10 @@ use super::spec::{CollectFile, Keep};
 /// The file, in a participant's log directory, of the container log of a participant whose processes are all
 /// supervised. A process name starts with a letter, so no process's log takes this name.
 pub(crate) const CONTAINER_LOG: &str = "_container.log";
+
+/// The name under which the container log is observed: the name of its file without `.log`. It is not a process, and
+/// no process can take it.
+pub(crate) const CONTAINER_OUTPUT: &str = "_container";
 
 /// The directory, in a participant's log directory, of the files collected from it.
 const COLLECTED_DIR: &str = "collected";
@@ -141,7 +146,7 @@ pub(crate) fn first_exit(record: &[u8]) -> Result<Option<ExitStatus>, String> {
 }
 
 /// What is observed of one started participant: its exit as its realization reports it, and the output of each of its
-/// processes. Clones share it.
+/// processes and, if it has one, of its container log. Clones share it.
 #[derive(Clone, Debug)]
 pub(crate) struct Observation(Arc<Observed>);
 
@@ -160,7 +165,8 @@ struct Observed {
 }
 
 impl Observation {
-    /// Observes a running participant with these processes, which have written nothing yet.
+    /// Observes a running participant with these processes, which have written nothing yet. Pass [`CONTAINER_OUTPUT`]
+    /// too to observe the container log.
     pub(crate) fn new<'a>(processes: impl IntoIterator<Item = &'a str>) -> Self {
         let output = processes
             .into_iter()

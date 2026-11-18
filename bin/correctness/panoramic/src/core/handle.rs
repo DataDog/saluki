@@ -20,7 +20,7 @@ use tokio::time::{timeout_at, Instant};
 
 use super::backend::{Exec, Realized};
 use super::courier::{Courier, HttpResponse};
-use super::observe::{first_exit, ExitStatus, Observation, ProcessExit};
+use super::observe::{first_exit, ExitStatus, Observation, ProcessExit, CONTAINER_OUTPUT};
 use super::plan::PlannedParticipant;
 use super::reference::Values;
 use super::spec::{ExitChannel, ProcessSpec};
@@ -100,6 +100,20 @@ impl<'a> Handle<'a> {
             )));
         }
         Ok(processes)
+    }
+
+    /// The outputs a log step searches: those of [`Self::watched`], and the container log too when `process` is `None`
+    /// and the participant's container log is observed.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`Self::watched`].
+    pub(crate) fn logged(&self, process: Option<&'a str>) -> Result<Vec<&'a str>, HandleError> {
+        let mut logged = self.watched(process)?;
+        if process.is_none() && self.observation.output(CONTAINER_OUTPUT).is_some() {
+            logged.push(CONTAINER_OUTPUT);
+        }
+        Ok(logged)
     }
 
     /// The output `process` has written so far, line by line, which grows as more is captured.
