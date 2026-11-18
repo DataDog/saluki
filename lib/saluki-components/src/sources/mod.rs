@@ -19,6 +19,7 @@ pub use self::otlp::{
     OtlpMetricsSettings, SummaryMode,
 };
 pub use crate::common::otlp::{
+    debug_output::OtlpDebugVerbosity,
     receiver::{GrpcTransport, OtlpGrpcReceiver, OtlpHttpReceiver, OtlpKeepalive, OtlpReceiver, OtlpReceiverTls},
     traces::translator::{ContainerTagPromotion, OtlpTracesSettings},
     CorsConfiguration,

@@ -54,6 +54,7 @@ pub use self::metrics::config::{
 use self::metrics::translator::OtlpMetricsTranslator;
 use self::resolver::build_context_resolver;
 pub use self::resolver::OtlpContextSettings;
+use crate::common::otlp::debug_output::OtlpDebugVerbosity;
 use crate::common::otlp::origin::OtlpOriginTagResolver;
 use crate::common::otlp::traces::translator::OtlpTracesTranslator;
 
@@ -97,6 +98,9 @@ pub struct OtlpConfiguration {
 
     /// Context resolver settings.
     pub contexts: OtlpContextSettings,
+
+    /// How much detail to log about each batch of OTLP data received.
+    pub debug_verbosity: OtlpDebugVerbosity,
 
     /// Maximum length of a span's resource name, in bytes.
     ///
@@ -572,6 +576,7 @@ mod tests {
         HistogramMode, InitialCumulativeMonotonicValue, OtlpConfiguration, OtlpContextSettings, OtlpMetricsSettings,
         SummaryMode,
     };
+    use crate::common::otlp::debug_output::OtlpDebugVerbosity;
     use crate::common::otlp::origin::OtlpOriginTagResolver;
     use crate::common::otlp::receiver::receiver;
     use crate::common::otlp::traces::translator::{
@@ -609,6 +614,7 @@ mod tests {
                 cached_tagsets_limit: 500_000,
                 string_interner_size: 2 * 1024 * 1024,
             },
+            debug_verbosity: OtlpDebugVerbosity::None,
             max_resource_len: usize::MAX,
             semantic_registry: SemanticRegistryProvider::default(),
             workload_provider: Arc::new(saluki_env::workload::providers::NoopWorkloadProvider),

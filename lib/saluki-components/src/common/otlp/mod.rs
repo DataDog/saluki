@@ -4,6 +4,7 @@
 
 pub mod attributes;
 pub mod client_spans;
+pub mod debug_output;
 pub mod origin;
 pub mod receiver;
 pub mod semantics;
