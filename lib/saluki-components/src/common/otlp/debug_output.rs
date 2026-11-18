@@ -67,28 +67,43 @@ impl OtlpDebugOutput {
 
     /// Returns what to log for a metrics export request, or `None` when nothing should be logged.
     fn render_metrics(&self, request: &ExportMetricsServiceRequest) -> Option<String> {
-        self.render_batch(summarize_metrics(request), || normal_metrics(request))
+        self.render_batch(
+            summarize_metrics(request),
+            || normal_metrics(request),
+            || detailed(request),
+        )
     }
 
     /// Returns what to log for a batch of resource logs, or `None` when nothing should be logged.
     fn render_logs(&self, resource_logs: &ResourceLogs) -> Option<String> {
-        self.render_batch(summarize_logs(resource_logs), || normal_logs(resource_logs))
+        self.render_batch(
+            summarize_logs(resource_logs),
+            || normal_logs(resource_logs),
+            || detailed(resource_logs),
+        )
     }
 
     /// Returns what to log for a batch of resource spans, or `None` when nothing should be logged.
     fn render_traces(&self, resource_spans: &ResourceSpans) -> Option<String> {
-        self.render_batch(summarize_traces(resource_spans), || normal_traces(resource_spans))
+        self.render_batch(
+            summarize_traces(resource_spans),
+            || normal_traces(resource_spans),
+            || detailed(resource_spans),
+        )
     }
 
     /// Combines a batch's summary with the body its verbosity calls for.
     ///
     /// The body closures only run at the verbosity that needs them, so a lower verbosity never pays to format records
     /// it won't log.
-    fn render_batch(&self, summary: String, normal_body: impl FnOnce() -> String) -> Option<String> {
+    fn render_batch(
+        &self, summary: String, normal_body: impl FnOnce() -> String, detailed_body: impl FnOnce() -> String,
+    ) -> Option<String> {
         let body = match self.verbosity {
             OtlpDebugVerbosity::None => return None,
-            OtlpDebugVerbosity::Basic | OtlpDebugVerbosity::Detailed => return Some(summary),
+            OtlpDebugVerbosity::Basic => return Some(summary),
             OtlpDebugVerbosity::Normal => normal_body(),
+            OtlpDebugVerbosity::Detailed => detailed_body(),
         };
 
         if body.is_empty() {
@@ -200,6 +215,13 @@ fn normal_span_line(span: &Span) -> String {
         bytes_to_hex_lowercase(&span.span_id),
         format_attributes(&span.attributes),
     ])
+}
+
+/// Renders every field of a received message, through its `Debug` implementation.
+///
+/// Byte fields such as trace and span IDs print as lists of numbers rather than hex.
+fn detailed(message: &impl std::fmt::Debug) -> String {
+    format!("{message:#?}")
 }
 
 /// Joins the non-empty fields of a line with single spaces.
@@ -467,5 +489,55 @@ mod tests {
         let rendered = output(OtlpDebugVerbosity::Basic).render_traces(&resource_spans(&[2]));
 
         assert_eq!(rendered.as_deref(), Some("Traces: resource spans: 1, spans: 2"));
+    }
+
+    #[test]
+    fn detailed_traces_log_every_field_of_the_batch_after_the_summary() {
+        let resource_spans = ResourceSpans {
+            scope_spans: vec![ScopeSpans {
+                spans: vec![Span {
+                    name: "query".to_string(),
+                    attributes: vec![string_attribute("peer.service", "db")],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let rendered = output(OtlpDebugVerbosity::Detailed)
+            .render_traces(&resource_spans)
+            .expect("detailed verbosity logs every batch");
+
+        assert!(rendered.starts_with("Traces: resource spans: 1, spans: 1\n"));
+        assert!(rendered.contains("name: \"query\""));
+        assert!(rendered.contains("peer.service"));
+        assert!(rendered.contains("trace_id"));
+    }
+
+    #[test]
+    fn detailed_logs_and_metrics_log_every_field_after_the_summary() {
+        let logs = output(OtlpDebugVerbosity::Detailed)
+            .render_logs(&resource_logs(&[1]))
+            .expect("detailed verbosity logs every batch");
+        let metrics = output(OtlpDebugVerbosity::Detailed)
+            .render_metrics(&metrics_request())
+            .expect("detailed verbosity logs every batch");
+
+        assert!(logs.starts_with("Logs: resource logs: 1, log records: 1\n"));
+        assert!(logs.contains("severity_number"));
+        assert!(metrics.starts_with("Metrics: resource metrics: 2, metrics: 3, data points: 5\n"));
+        assert!(metrics.contains("name: \"cpu.usage\""));
+    }
+
+    #[test]
+    fn a_verbosity_formats_only_the_body_it_logs() {
+        let formats_nothing = || -> String { panic!("this body must not be formatted") };
+
+        for verbosity in [OtlpDebugVerbosity::None, OtlpDebugVerbosity::Basic] {
+            output(verbosity).render_batch("summary".to_string(), formats_nothing, formats_nothing);
+        }
+        output(OtlpDebugVerbosity::Normal).render_batch("summary".to_string(), String::new, formats_nothing);
+        output(OtlpDebugVerbosity::Detailed).render_batch("summary".to_string(), formats_nothing, String::new);
     }
 }
