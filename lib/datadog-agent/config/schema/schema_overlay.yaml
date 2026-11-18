@@ -3220,6 +3220,10 @@ inventory:
       as it arrives. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
       processes the logs and applies this key.
 
+      The startup check warns about this key whenever ADP runs its logs pipeline, so it also warns when
+      ADP runs only checks and the core Agent handles OTLP logs. Narrowing the warning to native OTLP
+      logs is revisited with OTLP signal gating (#2969).
+
   otlp_config.logs.batch.max_size:
     support: none
     severity: low
@@ -3235,6 +3239,10 @@ inventory:
       as it arrives. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
       processes the logs and applies this key.
 
+      The startup check warns about this key whenever ADP runs its logs pipeline, so it also warns when
+      ADP runs only checks and the core Agent handles OTLP logs. Narrowing the warning to native OTLP
+      logs is revisited with OTLP signal gating (#2969).
+
   otlp_config.logs.batch.min_size:
     support: none
     severity: low
@@ -3249,6 +3257,10 @@ inventory:
       ADP ignores this key: it has no pre-translation batcher for OTLP logs, and translates each request
       as it arrives. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
       processes the logs and applies this key.
+
+      The startup check warns about this key whenever ADP runs its logs pipeline, so it also warns when
+      ADP runs only checks and the core Agent handles OTLP logs. Narrowing the warning to native OTLP
+      logs is revisited with OTLP signal gating (#2969).
 
   otlp_config.logs.enabled:
     support: partial
@@ -3278,6 +3290,10 @@ inventory:
 
       ADP ignores this key. This only matters when ADP handles OTLP logs itself: in proxy mode, the core
       Agent processes the logs and applies this key.
+
+      The startup check warns about this key whenever ADP runs its logs pipeline, so it also warns when
+      ADP runs only checks and the core Agent handles OTLP logs. Narrowing the warning to native OTLP
+      logs is revisited with OTLP signal gating (#2969).
 
   otlp_config.metrics.batch.flush_timeout:
     support: none

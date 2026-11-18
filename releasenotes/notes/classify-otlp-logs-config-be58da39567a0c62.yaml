@@ -5,3 +5,5 @@ enhancements:
     affect OTLP logs, such as ``logs_config.logs_dd_url`` and ``logs_config.processing_rules``.
     When Agent Data Plane handles logs itself, native OTLP logs or check logs, it logs a warning at
     startup for the ones it doesn't support.
+    ``otlp_config.logs.batch.*`` and ``otlp_config.logs.infra_attributes.tags_as_ddtags`` only matter
+    for native OTLP logs, but Agent Data Plane also warns about them when it runs only checks.
