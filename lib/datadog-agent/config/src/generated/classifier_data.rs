@@ -23,12 +23,6 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         default: DefaultValue::Json("\"tlsv1.2\""),
     },
     ClassifierEntry {
-        yaml_path: "otlp_config.logs.enabled",
-        support_level: SupportLevel::Partial,
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
-        default: DefaultValue::Json("false"),
-    },
-    ClassifierEntry {
         yaml_path: "aggregator_buffer_size",
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),

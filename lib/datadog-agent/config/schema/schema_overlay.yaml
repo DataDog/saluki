@@ -3251,7 +3251,6 @@ inventory:
 
   otlp_config.logs.enabled:
     support: partial
-    warn: true
     pipelines: [otlp]
     description: "Enable OTLP logs ingestion"
     documentation: |-

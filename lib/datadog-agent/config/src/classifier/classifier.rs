@@ -143,13 +143,9 @@ mod tests {
             PipelineAffinity::Pipelines(&[Pipeline::Logs])
         );
 
-        // A key that gates the OTLP receiver matters in proxy mode too.
-        let logs_enabled = c.classify("otlp_config.logs.enabled", &Value::Bool(true)).unwrap();
-        assert_eq!(logs_enabled.support_level, SupportLevel::Partial);
-        assert_eq!(
-            logs_enabled.pipeline_affinity,
-            PipelineAffinity::Pipelines(&[Pipeline::Otlp])
-        );
+        // A gating key whose gap is documented without a warning has no entry: no single value
+        // marks the divergence, so a warning would fire for operators whose setup behaves as in the Agent.
+        assert!(c.classify("otlp_config.logs.enabled", &Value::Bool(true)).is_none());
 
         // A shared key whose logs difference is documented without a warning has no entry.
         assert!(c
