@@ -286,10 +286,17 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
     };
 
     // Create log directory.
-    let log_dir = match std::path::absolute(cmd.log_dir()) {
+    let log_dir = match cmd
+        .log_dir()
+        .and_then(|log_dir| std::path::absolute(log_dir).map_err(|e| e.to_string()))
+    {
         Ok(path) => path,
         Err(e) => {
-            error!("Failed to resolve log directory: {}", e);
+            if use_tui {
+                eprintln!("Failed to resolve log directory: {}", e);
+            } else {
+                error!("Failed to resolve log directory: {}", e);
+            }
             return ExitCode::from(2);
         }
     };
