@@ -331,3 +331,23 @@ fn non_ascii_trace_id_high_bits_read_as_zero() {
         assert_eq!((trace.trace_id_high, trace.trace_id_low), (0, 123), "{key}: {value}");
     }
 }
+
+#[test]
+fn payload_fields_are_shared_by_every_trace() {
+    // Long enough not to inline, from the payload and promoted from a span.
+    let hostname = "host-".repeat(20);
+    let env = "env-".repeat(20);
+    let mut tracer_payload = payload(vec![chunk(vec![span(&[("env", &env)])]), chunk(vec![span(&[])])]);
+    tracer_payload.hostname = hostname.clone();
+
+    let decoded = convert_tracer_payload(tracer_payload, "");
+    let [first, second] = &decoded.traces[..] else {
+        panic!("two traces");
+    };
+    assert_eq!(
+        (first.payload.hostname.as_ref(), first.payload.env.as_ref()),
+        (hostname.as_str(), env.as_str())
+    );
+    assert_eq!(first.payload.hostname.as_ptr(), second.payload.hostname.as_ptr());
+    assert_eq!(first.payload.env.as_ptr(), second.payload.env.as_ptr());
+}

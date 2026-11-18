@@ -12,3 +12,9 @@ security:
     counted as a decoding error. Both formats send a string once and refer to it by index, so a small payload that
     references one large string from many spans could otherwise cost work out of all proportion to its size. The
     trace-agent has no such limit; legitimate payloads stay well below it.
+  - |
+    On every endpoint it serves, the experimental native trace intake applies the same bound to the strings that
+    every trace of a payload carries, counted once per trace: the payload's hostname, env, version and attributes,
+    its process tags and SDK export mode, the container ID and its tags, and the tracer fields of the
+    ``Datadog-Meta-*`` headers. One large string sent once could otherwise be written out again for each of many
+    small traces. Such a payload is rejected with ``400 Bad Request`` and counted as a decoding error.

@@ -1,5 +1,7 @@
 //! Decode-time string table for the v1.0 APM trace wire format.
 
+use std::sync::Arc;
+
 use stringtheory::MetaString;
 
 use super::error::DecodeError;
@@ -32,8 +34,12 @@ impl StringTable {
     ///
     /// Unlike the general-purpose reference table, this performs no deduplication: on the read path
     /// each literal is known to be new (repeated strings arrive as indices, not literals).
-    pub fn add(&mut self, s: impl Into<MetaString>) -> u32 {
-        self.strings.push(s.into());
+    ///
+    /// A string too long to inline gets one shared allocation, so that every reference to it shares it: cloning an
+    /// owned [`MetaString`] copies it.
+    pub fn add(&mut self, s: &str) -> u32 {
+        self.strings
+            .push(MetaString::try_inline(s).unwrap_or_else(|| MetaString::from(Arc::<str>::from(s))));
         (self.strings.len() - 1) as u32
     }
 
@@ -50,6 +56,11 @@ impl StringTable {
         })?;
         self.resolved.charge(value.len())?;
         Ok(value.clone())
+    }
+
+    /// Returns the payload's resolved-bytes budget.
+    pub fn resolved(&self) -> &ResolvedBytes {
+        &self.resolved
     }
 
     /// Returns the number of strings currently in the table.

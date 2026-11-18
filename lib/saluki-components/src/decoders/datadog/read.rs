@@ -43,9 +43,12 @@ pub fn preallocation(count: u32) -> usize {
 /// How many bytes of strings a payload's string references may resolve to, per byte of the payload.
 ///
 /// The v0.5 and v1.0 formats send each string once and then refer to it by index, so a few bytes can stand for a
-/// string of any length. Memory is not the issue, as every reference shares the one copy, but each resolved string is
-/// hashed into an attribute map, and again downstream (the encoder interns every span's strings), so the work a
-/// payload costs follows the bytes its references resolve to, not its own size. The reference receiver keeps the
+/// string of any length. The decoders share one copy of a string between its references, but the sharing doesn't
+/// survive the pipeline: each resolved string is hashed into an attribute map, the encoder interns every span's
+/// strings, and transforms such as SQL obfuscation turn one shared input into a separate output per span. So both the
+/// work and the downstream memory a payload costs follow the bytes its references resolve to, not its own size. The
+/// bound caps them at a multiple of the payload's size. It doesn't bound the cost of strings the payload spells out,
+/// which already grows with its size, nor the per-span cost of what isn't a string. The reference receiver keeps the
 /// references as indexes end to end and has no such limit: this one is a deliberate deviation, which only payloads
 /// built to amplify meet.
 ///
@@ -68,12 +71,18 @@ pub struct ResolvedBytes {
     limit: usize,
 }
 
+/// Returns the bound on the strings a payload of `payload_len` bytes may resolve to: 512 times its length, and at least
+/// 1 MiB.
+pub fn resolved_limit(payload_len: usize) -> usize {
+    payload_len
+        .saturating_mul(RESOLVED_BYTES_PER_PAYLOAD_BYTE)
+        .max(MIN_RESOLVED_BYTES)
+}
+
 impl ResolvedBytes {
     /// Creates the budget of a payload of `payload_len` bytes.
     pub fn for_payload(payload_len: usize) -> Self {
-        let limit = payload_len
-            .saturating_mul(RESOLVED_BYTES_PER_PAYLOAD_BYTE)
-            .max(MIN_RESOLVED_BYTES);
+        let limit = resolved_limit(payload_len);
         Self {
             remaining: Cell::new(limit),
             limit,
@@ -721,4 +730,73 @@ pub fn repair_utf8(mut bytes: &[u8]) -> String {
             }
         }
     }
+}
+
+/// Element-count limit of the reference's generated `msgp` decoders for the classic tracer payload model
+/// (`za0d4ccedlimitArrays`, `za0d4ccedlimitMaps`).
+pub const MSGP_MAX_COLLECTION_SIZE: u32 = 500_000;
+
+/// Reads an array header as a generated `msgp` decoder does: `msgp.ReadArrayHeaderBytes`, then `ErrLimitExceeded`
+/// over `max`. `nil` is a type error. The count isn't checked against the remaining bytes: the elements run out.
+pub fn msgp_read_array_len(r: &mut &[u8], max: u32, context: &'static str) -> Result<u32, DecodeError> {
+    let len = rmp::decode::read_array_len(r).map_err(mp(context))?;
+    if len > max {
+        return Err(DecodeError::OversizeHeader { context, len, max });
+    }
+    Ok(len)
+}
+
+/// Reads a map header as a generated `msgp` decoder does: `msgp.ReadMapHeaderBytes`, then `ErrLimitExceeded` over
+/// `max`. `nil` is a type error.
+pub fn msgp_read_map_len(r: &mut &[u8], max: u32, context: &'static str) -> Result<u32, DecodeError> {
+    let len = rmp::decode::read_map_len(r).map_err(mp(context))?;
+    if len > max {
+        return Err(DecodeError::OversizeHeader { context, len, max });
+    }
+    Ok(len)
+}
+
+/// Reads a string's raw bytes as `msgp.ReadStringBytes`: only a `str` value, not `nil` or `bin`. The bytes may not be
+/// valid UTF-8.
+pub fn msgp_read_str_bytes<'a>(r: &mut &'a [u8], context: &'static str) -> Result<&'a [u8], DecodeError> {
+    let width = match r.first() {
+        None => return Err(DecodeError::ShortBytes { context }),
+        Some(&b) if is_fixstr(b) => {
+            *r = &r[1..];
+            return take(r, usize::from(b & 0x1f), context);
+        }
+        Some(0xd9) => 1,
+        Some(0xda) => 2,
+        Some(0xdb) => 4,
+        Some(&b) => return Err(invalid(context, format!("expected a str, found marker {b:#04x}"))),
+    };
+    *r = &r[1..];
+    let len = read_len(r, width, context)?;
+    take(r, len, context)
+}
+
+/// Reads a `bin` value's raw bytes as `msgp.ReadBytesHeader` and then the bytes, with `ErrLimitExceeded` over `max`.
+pub fn msgp_read_bin_bytes<'a>(r: &mut &'a [u8], max: u32, context: &'static str) -> Result<&'a [u8], DecodeError> {
+    let width = match r.first() {
+        None => return Err(DecodeError::ShortBytes { context }),
+        Some(0xc4) => 1,
+        Some(0xc5) => 2,
+        Some(0xc6) => 4,
+        Some(&b) => return Err(invalid(context, format!("expected a bin, found marker {b:#04x}"))),
+    };
+    *r = &r[1..];
+    let len = read_len(r, width, context)?;
+    if len > max as usize {
+        return Err(DecodeError::OversizeHeader {
+            context,
+            len: len as u32,
+            max,
+        });
+    }
+    take(r, len, context)
+}
+
+/// Reads an `int32` as `msgp.ReadInt32Bytes`: an integer of any width in the `int32` range.
+pub fn v0_read_i32(r: &mut &[u8], context: &'static str) -> Result<i32, DecodeError> {
+    i32::try_from(v0_read_i64(r, context)?).map_err(|_| invalid(context, "integer overflows int32"))
 }
