@@ -223,9 +223,19 @@ impl<'a> DataPlaneConfiguration<'a> {
     /// This indicates that the "baseline" traces pipeline (encoding, forwarding) is required by higher-level data
     /// pipelines, such as OTLP.
     pub const fn traces_pipeline_required(&self) -> bool {
-        // We consider the traces pipeline to be enabled if:
-        // - OTLP is enabled and not in proxy mode or proxy mode is enabled and proxy traces are disabled
-        self.otlp_enabled() && (!self.otlp_proxy_enabled() || !self.otlp_proxy_traces_enabled())
+        // We consider the traces pipeline to be enabled if OTLP is enabled and:
+        // - proxy mode is enabled and proxy traces are disabled: the relay decodes the traces itself, whatever
+        //   `otlp_config.traces.enabled` says, or
+        // - proxy mode is disabled and OTLP traces are enabled.
+        //
+        // With nothing to deliver traces, the pipeline would never receive one, so it isn't built, and neither is the
+        // traces forwarder.
+        self.otlp_enabled()
+            && if self.otlp_proxy_enabled() {
+                !self.otlp_proxy_traces_enabled()
+            } else {
+                self.config.domains.otlp.traces.enabled
+            }
     }
 
     /// Returns `true` if the traces forwarder is required.
@@ -473,8 +483,28 @@ mod tests {
     }
 
     #[test]
-    fn otlp_without_proxy_requires_metrics_logs_and_traces_pipelines() {
+    fn otlp_metrics_only_does_not_require_the_traces_pipeline_or_forwarder() {
+        // Without OTLP traces, the traces pipeline would never receive a trace, so neither it nor its forwarder is built.
         let config = pipeline_configuration(false, false, true, Proxy::default());
+        let dp = DataPlaneConfiguration::from_configuration(&config);
+
+        assert!(dp.metrics_pipeline_required());
+        assert!(dp.logs_pipeline_required());
+        assert!(!dp.traces_pipeline_required());
+        assert!(!dp.traces_forwarder_required());
+
+        // The APM relay still needs the forwarder, without the traces pipeline.
+        let mut config = config;
+        config.control.apm = true;
+        let dp = DataPlaneConfiguration::from_configuration(&config);
+        assert!(!dp.traces_pipeline_required());
+        assert!(dp.traces_forwarder_required());
+    }
+
+    #[test]
+    fn otlp_without_proxy_requires_metrics_logs_and_traces_pipelines() {
+        let mut config = pipeline_configuration(false, false, true, Proxy::default());
+        config.domains.otlp.traces.enabled = true;
         let dp = DataPlaneConfiguration::from_configuration(&config);
 
         assert!(dp.data_pipelines_enabled());
@@ -532,7 +562,8 @@ mod tests {
 
     #[test]
     fn otlp_proxy_is_disabled_when_no_signal_is_proxied() {
-        let config = pipeline_configuration(false, false, true, proxy(false, false, false));
+        let mut config = pipeline_configuration(false, false, true, proxy(false, false, false));
+        config.domains.otlp.traces.enabled = true;
         let dp = DataPlaneConfiguration::from_configuration(&config);
 
         assert!(!dp.otlp_proxy_enabled());

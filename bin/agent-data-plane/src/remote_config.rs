@@ -113,6 +113,7 @@ mod tests {
         otlp: bool,
         otlp_proxy_metrics: bool,
         otlp_proxy_traces: bool,
+        otlp_traces: bool,
         apm: bool,
         expected: RcProducts,
     }
@@ -138,6 +139,7 @@ mod tests {
         otlp: true,
         otlp_proxy_metrics: false,
         otlp_proxy_traces: false,
+        otlp_traces: true,
         apm: false,
         expected: BOTH,
     };
@@ -168,6 +170,12 @@ mod tests {
             Case {
                 name: "otlp off: no traces pipeline",
                 otlp: false,
+                expected: RcProducts::NONE,
+                ..ON
+            },
+            Case {
+                name: "otlp traces off: no traces pipeline",
+                otlp_traces: false,
                 expected: RcProducts::NONE,
                 ..ON
             },
@@ -221,6 +229,7 @@ mod tests {
             config.domains.otlp.receiver.metrics_enabled = true;
             config.domains.otlp.proxy.metrics_enabled = case.otlp_proxy_metrics;
             config.domains.otlp.proxy.traces_enabled = case.otlp_proxy_traces;
+            config.domains.otlp.traces.enabled = case.otlp_traces;
 
             let products = enabled_products(&config);
             assert_eq!(products, case.expected, "{}", case.name);
