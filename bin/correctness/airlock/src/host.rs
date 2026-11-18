@@ -5,8 +5,9 @@
 //!
 //! A [`HostProcess`] leads a process group, so it and its descendants can be signalled together. Its output is an
 //! [`OutputStream`] of what the program writes to its standard output and error, and its exit is a watch that holds
-//! how the program exited once it has. Stopping sends SIGTERM to the group, then SIGKILL after a grace. Dropping a
-//! process sends SIGKILL to its group.
+//! how the program exited once it has. The pipes stay read until they close, even when the stream is dropped, so a
+//! program is never blocked or signalled by its observer going away. Stopping sends SIGTERM to the group, then SIGKILL
+//! after a grace. Dropping a process sends SIGKILL to its group.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -18,7 +19,7 @@ use futures::stream::{self, StreamExt as _};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tokio::io::{AsyncRead, AsyncWriteExt as _};
 use tokio::process::Command;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 use tokio_util::io::ReaderStream;
 
 use crate::container::{Output, OutputStream};
@@ -26,6 +27,9 @@ use crate::container::{Output, OutputStream};
 /// How long [`HostProcess::stop`] waits for the exit after SIGKILL.
 #[cfg(unix)]
 const KILL_WAIT: Duration = Duration::from_secs(2);
+
+/// How many chunks of output wait for whoever reads them, before the program's pipes fill.
+const OUTPUT_BUFFER: usize = 64;
 
 /// A program to run.
 #[derive(Clone, Debug)]
@@ -126,7 +130,7 @@ impl HostProcess {
 
         let stdout = output_of(stdout, &name, "output", Output::Stdout);
         let stderr = output_of(stderr, &name, "error", Output::Stderr);
-        let output = stream::select(stdout, stderr).boxed();
+        let output = keep_draining(stream::select(stdout, stderr).boxed());
 
         let (sender, exit) = watch::channel(None);
         let waited = name.clone();
@@ -228,6 +232,26 @@ where
             )),
         })
         .boxed()
+}
+
+/// Passes on the chunks of `output`, and goes on reading it after the returned stream is dropped.
+///
+/// The stream owns the pipes only through the task, so whoever stops observing a program does not close its pipes,
+/// which would make the program's next write fail while it is still running.
+fn keep_draining(mut output: OutputStream) -> OutputStream {
+    let (sender, receiver) = mpsc::channel(OUTPUT_BUFFER);
+    tokio::spawn(async move {
+        let mut observed = true;
+        while let Some(chunk) = output.next().await {
+            if observed && sender.send(chunk).await.is_err() {
+                observed = false;
+            }
+        }
+    });
+    stream::unfold(receiver, |mut receiver| async move {
+        receiver.recv().await.map(|chunk| (chunk, receiver))
+    })
+    .boxed()
 }
 
 #[cfg(unix)]
