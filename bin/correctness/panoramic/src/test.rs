@@ -140,6 +140,12 @@ pub(crate) trait Test: Send + Sync {
         "docker".to_string()
     }
 
+    /// Whether the test runs host processes. Their ports are fixed, so the runner runs one such test at a time, however
+    /// many tests run in parallel.
+    fn runs_host_processes(&self) -> bool {
+        false
+    }
+
     /// The test as a participant case, which the run treats apart in three ways: the checks before the first case
     /// read its plan, `list` leaves it out on a subject OS it skips, and the runner applies no traffic retention to it.
     fn participant_case(&self) -> Option<&ParticipantCase> {

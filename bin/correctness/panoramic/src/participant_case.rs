@@ -191,6 +191,14 @@ impl Test for ParticipantCase {
         self.runtime.to_string()
     }
 
+    fn runs_host_processes(&self) -> bool {
+        self.plan.as_ref().is_ok_and(|plan| {
+            plan.participants
+                .values()
+                .any(|planned| planned.realization.enclosure == Enclosure::HostProcessGroup)
+        })
+    }
+
     fn participant_case(&self) -> Option<&ParticipantCase> {
         Some(self)
     }
