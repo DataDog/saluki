@@ -33,7 +33,7 @@ use super::backend::{Backends, Created, Preparing, Running, Scope};
 use super::deadline::{Budget, Deadline};
 use super::handle::{Handle, HandleError};
 use super::ledger::ResourceLedger;
-use super::observe::{self, Collected, Kept, Observation, ProcessExit, Sink, CONTAINER_LOG};
+use super::observe::{self, Collected, Kept, Observation, ProcessExit, Sink, CONTAINER_LOG, CONTAINER_OUTPUT};
 use super::participant::Enclosure;
 use super::plan::{CasePlan, PlannedStep};
 use super::record::{CaseRecord, RunningStep, StepResult, StepStatus, Verdict};
@@ -404,7 +404,17 @@ impl Case<'_> {
         let plan = self.plan;
         let planned = &plan.participants[name];
         self.values.identify(name, &running.identities());
-        let observation = Observation::new(planned.processes.iter().map(ProcessSpec::name));
+        let through_container = planned
+            .processes
+            .iter()
+            .any(|process| matches!(process.output(), OutputChannel::Container));
+        let observation = Observation::new(
+            planned
+                .processes
+                .iter()
+                .map(ProcessSpec::name)
+                .chain((!through_container).then_some(CONTAINER_OUTPUT)),
+        );
         let (watching, watched) = (running.clone(), observation.clone());
         self.run.tasks.spawn(async move {
             let exit = watching.wait(Instant::now() + EXIT_WATCH_TIME).await;
@@ -422,7 +432,7 @@ impl Case<'_> {
     }
 
     /// Captures the output of each process of `name` under its log directory, and the participant's own log when no
-    /// process is observed through it.
+    /// process is observed through it. That log is observed as [`CONTAINER_OUTPUT`].
     async fn capture(&self, name: &str, started: &mut Started) -> Result<(), String> {
         let planned = &self.plan.participants[name];
         let dir = self.run.log_dir.join(name);
@@ -431,7 +441,6 @@ impl Case<'_> {
             .map_err(|e| format!("Failed to create '{}': {}", dir.display(), e))?;
         let limit = self.run.deadline.at.saturating_duration_since(Instant::now());
         let tasks = self.run.tasks;
-        let mut through_container = false;
         for process in &planned.processes {
             started
                 .realized
@@ -444,7 +453,6 @@ impl Case<'_> {
             )
             .await?;
             started.outputs.insert(process.name().to_string(), output);
-            through_container |= matches!(process.output(), OutputChannel::Container);
             let (running, finish) = (started.realized.clone(), self.finish_capture.clone());
             let (participant, process) = (name.to_string(), process.clone());
             let task = tasks.spawn_cooperative(async move {
@@ -452,8 +460,12 @@ impl Case<'_> {
             });
             started.capture.push(task);
         }
-        if !through_container {
-            let sink = Sink::create(dir.join(CONTAINER_LOG), None).await?;
+        if started.observation.output(CONTAINER_OUTPUT).is_some() {
+            let sink = Sink::create(
+                dir.join(CONTAINER_LOG),
+                Some((started.observation.clone(), CONTAINER_OUTPUT.to_string())),
+            )
+            .await?;
             let (running, finish) = (started.realized.clone(), self.finish_capture.clone());
             let task = tasks.spawn_cooperative(async move { running.capture_log(sink, finish).await });
             started.capture.push(task);

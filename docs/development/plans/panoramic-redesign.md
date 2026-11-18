@@ -1293,7 +1293,10 @@ Every process a participant declares has one exit channel and one output channel
   that needs it.
 - **Output.** Output is written under `<log dir>/<participant>/` as it arrives, and each line keeps
   the name of its process. A participant whose processes are all supervised also gets its container
-  log, which holds what the supervisor writes, as `_container.log`, a name no process log takes.
+  log, which holds what the supervisor writes, as `_container.log`, a name no process log takes. It
+  is observed under the name `_container`, which no process can take, so `log_contains` and
+  `log_not_contains` with no `process` search it along with every process. A step that names a
+  process does not.
 - **Reports.** `run.json` and `result.json` keep today's shape and gain fields: the subject OS, the
   skipped outcome with its reason, each participant's realization, per-process exits and output
   paths, reclaim entries and collected files. Exit codes are 0 passed, 1 failed, 2 harness error,
