@@ -276,10 +276,18 @@ fn fuzz(target: Target, bodies: BoxedStrategy<Vec<u8>>) {
             || RandomState::new().build_hasher().finish(),
             |seed| seed.parse().expect("PARITY_SEED is a u64"),
         );
-    println!("{}: PARITY_SEED={seed}", target.version);
+    println!(
+        "{} {}: PARITY_SEED={seed}",
+        target.version,
+        target.content_type.unwrap_or("")
+    );
+    // Each shrink step decodes with the oracle, so shrinking is bounded: by default it isn't, and a failure found late
+    // in a long run could shrink for hours. The failure is then reported as far as it shrank.
     let config = Config {
         cases,
         failure_persistence: None,
+        max_shrink_time: 120_000,
+        max_shrink_iters: 10_000,
         ..Config::default()
     };
     let rng = TestRng::from_seed(RngAlgorithm::ChaCha, &seed.to_le_bytes().repeat(4));
