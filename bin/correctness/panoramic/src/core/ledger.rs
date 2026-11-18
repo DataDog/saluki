@@ -24,6 +24,22 @@ use crate::core::result::{Issue, IssueKind, ReclaimEntry, ReclaimResult};
 /// Shared budget for stopping a case's tracked tasks and removing its resources.
 pub(crate) const RECLAIM_TIME: Duration = Duration::from_secs(30);
 
+/// Kills every process of the node that runs a program from directory `$1`, waits until none is left, and removes the
+/// directory. Nothing else stops such a process: it runs in the node, outside every namespace.
+const REMOVE_NODE_DIRECTORY: &str = r#"
+while :; do
+    left=
+    for proc in /proc/[0-9]*; do
+        case "$(readlink "$proc/exe" 2>/dev/null)" in
+            "$1"/*) kill -9 "${proc#/proc/}" 2>/dev/null && left=1 ;;
+        esac
+    done
+    [ -z "$left" ] && break
+    sleep 0.1
+done
+rm -rf "$1"
+"#;
+
 /// How often reclaim checks whether a deleted namespace is gone.
 const NAMESPACE_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
@@ -66,7 +82,8 @@ enum Resource {
     /// A host directory whose removal depends on earlier results in the reclaim walk.
     Directory(PathBuf),
     /// A directory on a kind node, removed through the node's container once every namespace of the walk is gone, so a
-    /// pod still running cannot lose the files it mounts.
+    /// pod still running cannot lose the files it mounts. The processes the node runs from the directory, such as a
+    /// courier following a pod's log file, are killed first.
     NodeDirectory { node: Container, path: String },
 }
 
@@ -112,13 +129,16 @@ impl Resource {
                     .with_error_context(|| format!("Failed to remove '{}'", path.display())),
             },
             Self::NodeDirectory { node, path } => {
+                let argv = ["sh", "-c", REMOVE_NODE_DIRECTORY, "sh", &path]
+                    .map(str::to_string)
+                    .to_vec();
                 let removed = node
-                    .exec(vec!["rm".to_string(), "-rf".to_string(), path.clone()], None, deadline)
+                    .exec(argv, None, deadline)
                     .await
                     .with_error_context(|| format!("Failed to remove '{}' on node '{}'", path, node.name()))?;
                 if removed.exit_code != 0 {
                     return Err(generic_error!(
-                        "Failed to remove '{}' on node '{}': rm exited with {}: {}",
+                        "Failed to remove '{}' on node '{}': the removal exited with {}: {}",
                         path,
                         node.name(),
                         removed.exit_code,
