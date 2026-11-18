@@ -33,7 +33,8 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use super::backend::{
-    Backend, Created, Exec, Facts, Identities, Preparing, Realized, Running, Scope, EXIT_DIR_ENV, HOST_PID, LOG_DIR_ENV,
+    Backend, Created, Exec, Facts, Identities, Preparing, Realized, Running, Scope, EXIT_DIR_ENV,
+    HOST_CGROUP_NAMESPACE, HOST_PID, LOG_DIR_ENV,
 };
 use super::handle::HandleError;
 use super::ledger::{random_id, ResourceLedger};
@@ -217,6 +218,9 @@ impl CaseContainers {
         }
         if planned.options.get(HOST_PID) == Some(&true) {
             spec = spec.with_host_pid();
+        }
+        if planned.options.get(HOST_CGROUP_NAMESPACE) == Some(&true) {
+            spec = spec.with_host_cgroup_namespace();
         }
         Ok((spec, published))
     }
