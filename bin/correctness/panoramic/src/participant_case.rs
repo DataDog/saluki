@@ -314,7 +314,14 @@ pub(crate) async fn check_before_the_first_case(
                 Enclosure::HostProcessGroup => {
                     hosts = true;
                     let host = Os::host();
-                    if planned.realization.os != host {
+                    // TODO: stop host processes where there are no process groups, with the Windows backend.
+                    if !cfg!(unix) {
+                        errors.push(format!(
+                            "Case '{}' runs participant '{}' as host processes, and the runner host {} cannot stop them: \
+                             that backend is not built.",
+                            name, participant, host
+                        ));
+                    } else if planned.realization.os != host {
                         errors.push(format!(
                             "Case '{}' runs participant '{}' as host processes on {}, and the runner host runs {}.",
                             name, participant, planned.realization.os, host
