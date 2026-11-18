@@ -360,6 +360,10 @@ def check_change(destination, version_file, established, release_lines, establis
     proposed_target = version_file.get("target") if isinstance(version_file, dict) else None
     established_target = established.get("target") if isinstance(established, dict) else None
     line = RELEASE_BRANCH_RE.fullmatch(destination)
+    # Every branch keeps the entries it has, so a release branch can't remap the line it inherited from `main`.
+    for adp_line, agent in (established_lines[0] if established_lines is not None else {}).items():
+        if lines.get(adp_line) != agent:
+            errors.append(f"{RELEASE_LINES_FILE} must keep ADP {adp_line} mapped to Agent {agent}")
 
     if destination == "main":
         if version_file is None:
@@ -372,9 +376,6 @@ def check_change(destination, version_file, established, release_lines, establis
                 errors.append("main must use a nightly")
         if release_lines is None:
             errors.append(f"main requires {RELEASE_LINES_FILE}")
-        for adp_line, agent in (established_lines[0] if established_lines is not None else {}).items():
-            if lines.get(adp_line) != agent:
-                errors.append(f"{RELEASE_LINES_FILE} must keep ADP {adp_line} mapped to Agent {agent}")
         adp_match = ADP_TAG_RE.fullmatch(adp_version or "")
         adp_line = f"{adp_match.group(1)}.{adp_match.group(2)}" if adp_match else None
         if release_lines is not None and adp_line is not None and adp_line not in lines:

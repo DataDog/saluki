@@ -348,6 +348,15 @@ class CheckChangeTest(unittest.TestCase):
         self.assert_errors("releases/1.9.x", make_version_file(target="7.86"), make_version_file(), "it must be '7.87'")
         self.assert_errors("releases/1.9.x", make_version_file(), make_version_file(), "requires target '7.87'")
 
+    def test_a_release_cut_cannot_remap_the_inherited_line(self):
+        remapped = subject.parse_release_lines(
+            '{"agent_data_plane": "1.8", "agent": "7.86"}\n{"agent_data_plane": "1.9", "agent": "7.88"}\n'
+        )
+        self.assert_errors(
+            "releases/1.9.x", make_version_file("rc", "7.88.0-rc.1", target="7.88"), make_version_file(),
+            "must keep ADP 1.9 mapped to Agent 7.87", lines=remapped,
+        )
+
     def test_release_branches_fail_without_an_entry_for_their_line(self):
         for lines in (None, subject.parse_release_lines('{"agent_data_plane": "1.8", "agent": "7.86"}\n')):
             with self.subTest(lines=lines):
