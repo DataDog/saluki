@@ -16,10 +16,9 @@ pub use self::heartbeat::HeartbeatConfiguration;
 mod otlp;
 pub use self::otlp::{
     CumulativeMonotonicMode, HistogramMode, InitialCumulativeMonotonicValue, OtlpConfiguration, OtlpContextSettings,
-    OtlpMetricsSettings, SummaryMode,
+    OtlpDebugVerbosity, OtlpMetricsSettings, SummaryMode,
 };
 pub use crate::common::otlp::{
-    debug_output::OtlpDebugVerbosity,
     receiver::{GrpcTransport, OtlpGrpcReceiver, OtlpHttpReceiver, OtlpKeepalive, OtlpReceiver, OtlpReceiverTls},
     traces::translator::{ContainerTagPromotion, OtlpTracesSettings},
     CorsConfiguration,

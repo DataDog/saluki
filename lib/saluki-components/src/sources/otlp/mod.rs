@@ -41,11 +41,14 @@ use crate::common::otlp::{
     OtlpHandler, OtlpServerConfiguration, OtlpTlsConfiguration,
 };
 
+mod debug_output;
 mod logs;
 mod metrics;
 mod resolver;
 use datadog_agent_apm::semantics::SemanticRegistryProvider;
 
+use self::debug_output::OtlpDebugOutput;
+pub use self::debug_output::OtlpDebugVerbosity;
 use self::logs::render::{CONTENT_BUFFER_RETENTION_LIMIT_BYTES, CONTENT_FIELDS_RETENTION_LIMIT_BYTES};
 use self::logs::translator::OtlpLogsTranslator;
 pub use self::metrics::config::{
@@ -54,7 +57,6 @@ pub use self::metrics::config::{
 use self::metrics::translator::OtlpMetricsTranslator;
 use self::resolver::build_context_resolver;
 pub use self::resolver::OtlpContextSettings;
-use crate::common::otlp::debug_output::{OtlpDebugOutput, OtlpDebugVerbosity};
 use crate::common::otlp::origin::OtlpOriginTagResolver;
 use crate::common::otlp::traces::translator::OtlpTracesTranslator;
 
@@ -581,10 +583,9 @@ mod tests {
 
     use super::{
         apply_static_metric_tags, parse_configured_metric_tags, CumulativeMonotonicMode, ExportLogsServiceRequest,
-        HistogramMode, InitialCumulativeMonotonicValue, OtlpConfiguration, OtlpContextSettings, OtlpMetricsSettings,
-        SummaryMode,
+        HistogramMode, InitialCumulativeMonotonicValue, OtlpConfiguration, OtlpContextSettings, OtlpDebugVerbosity,
+        OtlpMetricsSettings, SummaryMode,
     };
-    use crate::common::otlp::debug_output::OtlpDebugVerbosity;
     use crate::common::otlp::origin::OtlpOriginTagResolver;
     use crate::common::otlp::receiver::receiver;
     use crate::common::otlp::traces::translator::{
