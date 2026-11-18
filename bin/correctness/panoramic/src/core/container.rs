@@ -85,6 +85,12 @@ pub(crate) const LINUX: ContainerOs = ContainerOs {
 };
 
 impl ContainerOs {
+    /// The courier and the log directory of `participant`, which follow the output of a process written to a file.
+    fn file_capture(&self, participant: &str) -> Option<(&'static str, String)> {
+        let facts = self.facts();
+        Some((facts.courier?, facts.log_dir(participant)?))
+    }
+
     fn facts(&self) -> &'static Facts {
         self.enclosure.facts()
     }
@@ -442,18 +448,30 @@ impl Running for RealizedContainer {
         self.wait(deadline).await.map(Some)
     }
 
+    fn check_capture(&self, participant: &str, process: &ProcessSpec) -> Result<(), GenericError> {
+        match process.output() {
+            OutputChannel::Container => Ok(()),
+            OutputChannel::File { .. } => self.os.file_capture(participant).map(|_| ()).ok_or_else(|| {
+                generic_error!(
+                    "Participant '{}' is a {}, which has no courier or log directory.",
+                    participant,
+                    self.os.enclosure
+                )
+            }),
+        }
+    }
+
     async fn capture(
         &self, participant: &str, process: &ProcessSpec, sink: Sink, limit: Duration, finish: CancellationToken,
     ) {
         match process.output() {
             OutputChannel::Container => sink.capture(self.container.logs(), finish).await,
             OutputChannel::File { file } => {
-                let facts = self.os.facts();
-                let (Some(courier), Some(log_dir)) = (facts.courier, facts.log_dir(participant)) else {
+                let Some((courier, log_dir)) = self.os.file_capture(participant) else {
                     sink.failed(format!("a {} has no courier or log directory", self.os.enclosure));
                     return;
                 };
-                let path = format!("{}{}{}", log_dir, facts.separator, file);
+                let path = format!("{}{}{}", log_dir, self.os.facts().separator, file);
                 sink.follow(self, courier, &path, limit, finish).await;
             }
         }
