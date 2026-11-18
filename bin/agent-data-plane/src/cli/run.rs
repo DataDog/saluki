@@ -1119,13 +1119,18 @@ async fn add_otlp_pipeline_to_blueprint(
         blueprint
             // Components.
             .add_source("otlp_in", otlp_config)?
-            // Metrics, logs, and traces.
+            // Metrics and logs.
             //
             // We send OTLP metrics directly to the enrichment stage of the metrics pipeline, skipping aggregation,
             // to avoid transforming counters into rates.
             .connect_components("otlp_in.metrics", "metrics_enrich")?
-            .connect_components("otlp_in.logs", "dd_logs_encode")?
-            .connect_components("otlp_in.traces", "traces_enrich")?;
+            .connect_components("otlp_in.logs", "dd_logs_encode")?;
+
+        // Traces go to the traces pipeline, which only exists when OTLP traces are enabled. The source still declares
+        // its traces output, and leaving it unconnected is fine because it never emits a trace without them.
+        if dp.traces_pipeline_required() {
+            blueprint.connect_components("otlp_in.traces", "traces_enrich")?;
+        }
     }
     Ok(())
 }
