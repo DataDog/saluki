@@ -258,6 +258,26 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         None => test_cases,
     };
 
+    // Create log directory.
+    let log_dir = match std::path::absolute(cmd.log_dir()) {
+        Ok(path) => path,
+        Err(e) => {
+            error!("Failed to resolve log directory: {}", e);
+            return ExitCode::from(2);
+        }
+    };
+    if let Err(e) = std::fs::create_dir_all(&log_dir) {
+        if use_tui {
+            eprintln!("Failed to create log directory: {}", e);
+        } else {
+            error!("Failed to create log directory: {}", e);
+        }
+        return ExitCode::from(2);
+    }
+
+    // Install interrupt handlers before starting background work, which includes the kind setup of the checks.
+    let mut interrupts = Interrupts::install();
+
     // Once, before the first case and outside any case's timeout: what the selected participant cases need.
     let plans: Vec<(String, &plan::CasePlan)> = test_cases
         .iter()
@@ -277,7 +297,15 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         events: tx.clone(),
     };
     let mut kind_lifecycle = None;
-    settings.backends = match participant_case::check_before_the_first_case(&plans, kind, &mut kind_lifecycle).await {
+    let checked = tokio::select! {
+        biased;
+
+        Some(source) = interrupts.recv() => {
+            Err(vec![format!("Received {} during the checks before the first case.", source)])
+        }
+        checked = participant_case::check_before_the_first_case(&plans, kind, &mut kind_lifecycle) => checked,
+    };
+    settings.backends = match checked {
         Ok(backends) => backends,
         Err(errors) => {
             for e in errors {
@@ -288,31 +316,23 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
                 }
             }
             if participant_case::uses_pods(plans.iter().map(|(_, plan)| *plan)) {
-                tear_down_unused_kind(kind_lifecycle, &cmd.kind_cluster_name, cmd.no_delete_kind_cluster).await;
+                let teardown =
+                    tear_down_unused_kind(kind_lifecycle, &cmd.kind_cluster_name, cmd.no_delete_kind_cluster);
+                tokio::select! {
+                    biased;
+
+                    Some(source) = interrupts.recv() => warn!(
+                        "Received {}; abandoned kind cluster teardown. If cluster '{}' is still running, delete it \
+                         with 'kind delete cluster --name {}'.",
+                        source, cmd.kind_cluster_name, cmd.kind_cluster_name
+                    ),
+                    () = teardown => {}
+                }
             }
             return ExitCode::from(EXIT_HARNESS_ERROR);
         }
     };
 
-    // Create log directory.
-    let log_dir = match std::path::absolute(cmd.log_dir()) {
-        Ok(path) => path,
-        Err(e) => {
-            error!("Failed to resolve log directory: {}", e);
-            return ExitCode::from(2);
-        }
-    };
-    if let Err(e) = std::fs::create_dir_all(&log_dir) {
-        if use_tui {
-            eprintln!("Failed to create log directory: {}", e);
-        } else {
-            error!("Failed to create log directory: {}", e);
-        }
-        return ExitCode::from(2);
-    }
-
-    // Install interrupt handlers before starting background work.
-    let mut interrupts = Interrupts::install();
     let mut report = RunReport::new(
         cmd.test_dirs.clone(),
         integration_runtime.clone(),
