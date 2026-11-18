@@ -23,3 +23,5 @@ procedure:
     path: "{{ adp.dir }}/adp-custom.log"
     pattern: DATAPLANE
     timeout: 30s
+  # The log file outlives ADP, so check that it has not exited, as before the file was read.
+  - {step: process_stable_for, on: adp, process: adp, duration: 1s}
