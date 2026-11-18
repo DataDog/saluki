@@ -45,42 +45,42 @@ const PULL_TIME: Duration = Duration::from_secs(15 * 60);
 /// them.
 const KIND_SETUP_TIME: Duration = Duration::from_secs(30 * 60);
 
-/// One `--set NAME=IMAGE`: the image a case names as `NAME` runs as `IMAGE`.
+/// One `--set NAME=REFERENCE`: the image or host program a case names as `NAME` runs as `REFERENCE`.
 #[derive(Clone, Debug)]
 pub(crate) struct Replacement {
     pub(crate) name: String,
-    pub(crate) image: String,
+    pub(crate) reference: String,
 }
 
 impl FromStr for Replacement {
     type Err = String;
 
-    /// Parses `name=image`, splitting at the first `=`.
+    /// Parses `name=reference`, splitting at the first `=`.
     ///
     /// # Errors
     ///
     /// Returns an error when there is no `=`, or when either side of it is empty.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.split_once('=') {
-            Some((name, image)) if !name.is_empty() && !image.is_empty() => Ok(Self {
+            Some((name, reference)) if !name.is_empty() && !reference.is_empty() => Ok(Self {
                 name: name.to_string(),
-                image: image.to_string(),
+                reference: reference.to_string(),
             }),
-            _ => Err(format!("expected <name>=<image>, got '{}'", s)),
+            _ => Err(format!("expected <name>=<reference>, got '{}'", s)),
         }
     }
 }
 
-/// The run's replacements, by the image each replaces.
+/// The run's replacements, by the reference each replaces.
 ///
 /// # Errors
 ///
-/// Returns an error if one image is replaced twice.
+/// Returns an error if one reference is replaced twice.
 pub(crate) fn replacements(entries: &[Replacement]) -> Result<BTreeMap<String, String>, String> {
     let mut set = BTreeMap::new();
     for entry in entries {
-        if set.insert(entry.name.clone(), entry.image.clone()).is_some() {
-            return Err(format!("--set names image '{}' twice.", entry.name));
+        if set.insert(entry.name.clone(), entry.reference.clone()).is_some() {
+            return Err(format!("--set names '{}' twice.", entry.name));
         }
     }
     Ok(set)
@@ -102,7 +102,8 @@ pub(crate) struct ParticipantCase {
 
 impl ParticipantCase {
     /// Loads the case in `dir` and plans it for every OS it declares, with the run's replacements `set`, then keeps the
-    /// plan for `subject_os`. Returns the case with every image its plans name, as written.
+    /// plan for `subject_os`. Returns the case with every reference its plans name, as written: images and host program
+    /// paths.
     ///
     /// # Errors
     ///
@@ -112,7 +113,7 @@ impl ParticipantCase {
     ) -> Result<(Self, BTreeSet<String>), Vec<CaseError>> {
         let case = case::load(dir, registry)?;
         let mut plans = plan::plan_all(&case, registry, set)?;
-        let images = images(plans.values());
+        let references = references(plans.values());
         let plan = plans.remove(&subject_os).ok_or_else(|| {
             let declared: Vec<String> = case.subject_os.iter().map(ToString::to_string).collect();
             format!(
@@ -135,18 +136,18 @@ impl ParticipantCase {
             disabled: case.info.disabled,
             plan,
         };
-        Ok((participant_case, images))
+        Ok((participant_case, references))
     }
 }
 
-/// Every image `plans` name, as written.
-pub(crate) fn images<'a>(plans: impl IntoIterator<Item = &'a CasePlan>) -> BTreeSet<String> {
+/// Every image and host program path `plans` name, as written: what `--set` may replace.
+pub(crate) fn references<'a>(plans: impl IntoIterator<Item = &'a CasePlan>) -> BTreeSet<String> {
     plans
         .into_iter()
         .flat_map(|plan| plan.participants.values())
-        .filter_map(|participant| match &participant.launch {
-            Launch::Image { image, .. } => Some(image.written.clone()),
-            Launch::Programs(_) => None,
+        .flat_map(|participant| match &participant.launch {
+            Launch::Image { image, .. } => vec![image.written.clone()],
+            Launch::Programs(programs) => programs.iter().map(|program| program.path.written.clone()).collect(),
         })
         .collect()
 }
