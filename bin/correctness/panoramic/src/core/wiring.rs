@@ -26,7 +26,9 @@ use super::template::{IdentityPart, Reference, Template};
 #[derive(Debug, Serialize)]
 pub(crate) struct PlannedEndpoint {
     pub(crate) protocol: Protocol,
+    #[serde(flatten)]
     pub(crate) address: PlannedAddress,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub(crate) tls: bool,
     /// What a consumer waits for before it starts.
     pub(crate) evidence: Evidence,
@@ -44,6 +46,7 @@ pub(crate) struct PlannedEndpoint {
 pub(crate) enum PlannedAddress {
     Port(u16),
     Path(String),
+    #[serde(rename = "name")]
     Pipe(String),
 }
 

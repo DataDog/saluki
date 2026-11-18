@@ -1,10 +1,12 @@
 use std::{collections::BTreeMap, fmt};
 
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use serde::Deserialize;
 use stele::{Metric, MetricValue};
 
 /// The type of a metric value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum MetricType {
     Count,
     Rate,
@@ -30,7 +32,7 @@ impl fmt::Display for MetricType {
 /// - Tags are sorted and deduplicated in a case-sensitive fashion.
 /// - The host appears as a `host:<value>` tag (the stele parsers fold it in from each wire format's host field),
 ///   so it participates in identity comparisons like any other tag.
-#[derive(Clone, Eq, Hash, PartialEq, Ord, PartialOrd)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd)]
 pub struct NormalizedMetricContext {
     name: String,
     tags: Vec<String>,

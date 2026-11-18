@@ -31,7 +31,7 @@ use crate::{
         config::TargetConfig,
         runner::make_error_result,
     },
-    intake::{CollectedData, IntakeClient},
+    intake::IntakeClient,
     test::TestContext,
     traffic::{self, Side},
 };
@@ -298,10 +298,7 @@ pub async fn run_k8s_correctness_test(case: CorrectnessTestCase, tctx: TestConte
             let phase = phases.enter("collect_data");
             let (baseline_client, comparison_client) =
                 (IntakeClient::new(baseline_port), IntakeClient::new(comparison_port));
-            let collected = tokio::join!(
-                CollectedData::collect(&baseline_client),
-                CollectedData::collect(&comparison_client),
-            );
+            let collected = tokio::join!(baseline_client.collect(), comparison_client.collect());
             phase.finish();
 
             match collected {

@@ -2,7 +2,7 @@ use saluki_error::GenericError;
 use serde::Deserialize;
 
 pub use self::logs::LogsAnalysisOptions;
-use crate::intake::CollectedData;
+use crate::steps::intake::CollectedData;
 
 mod dogstatsd_forwarding;
 mod events;
