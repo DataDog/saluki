@@ -24,6 +24,7 @@ crossterm = { workspace = true, features = ["events", "windows"] }
 futures = { workspace = true }
 k8s-openapi = { workspace = true }
 kube = { workspace = true, features = ["client", "http-proxy", "rustls-tls", "ws"] }
+panoramic-courier = { path = "../courier" }
 rand = { workspace = true, features = ["std", "std_rng", "thread_rng"] }
 regex = { workspace = true, features = ["std"] }
 reqwest = { workspace = true, features = ["json", "zstd", "rustls-no-provider", "query"] }
