@@ -289,6 +289,13 @@ pub(crate) trait Running: Realized {
     /// The participant's exit code if it has exited, or `None` while it runs, or why that cannot be told.
     async fn exit_now(&self, deadline: Instant) -> Result<Option<i64>, GenericError>;
 
+    /// Whether the output of `process` of `participant` can be captured, and if not, why.
+    ///
+    /// # Errors
+    ///
+    /// When the participant's enclosure has no way to capture the output of `process`.
+    fn check_capture(&self, participant: &str, process: &ProcessSpec) -> Result<(), GenericError>;
+
     /// Captures the output of `process` of `participant` into `sink`, for `limit` or until `finish` fires.
     async fn capture(
         &self, participant: &str, process: &ProcessSpec, sink: Sink, limit: Duration, finish: CancellationToken,
