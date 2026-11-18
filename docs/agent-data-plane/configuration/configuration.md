@@ -373,18 +373,18 @@ In the core Agent's OTLP logs path: when non-empty, LoadDatadog registers a dele
 instance for `logs_config.api_key`, which fetches the key from the cloud provider and writes it back
 to the config; the logs endpoint then picks it up through the key-rotation callback.
 
-ADP ignores this key: it sends native OTLP logs through its shared forwarder, to the logs intake
-derived from `site` or `dd_url`. This only matters when ADP handles OTLP logs itself: in proxy
-mode, the core Agent processes the logs and applies this key.
+ADP ignores this key: it sends logs through its shared forwarder, to the logs intake derived from
+`site` or `dd_url`. This only matters for the logs ADP handles itself: native OTLP logs and check
+logs. In proxy mode, the core Agent processes OTLP logs and applies this key.
 
 ### `logs_config.delegated_auth.refresh_interval_mins`
 
 In the core Agent's OTLP logs path: refresh interval of the delegated-auth instance registered for
 `logs_config.api_key`; only meaningful when `logs_config.delegated_auth.org_uuid` is set.
 
-ADP ignores this key: it sends native OTLP logs through its shared forwarder, to the logs intake
-derived from `site` or `dd_url`. This only matters when ADP handles OTLP logs itself: in proxy
-mode, the core Agent processes the logs and applies this key.
+ADP ignores this key: it sends logs through its shared forwarder, to the logs intake derived from
+`site` or `dd_url`. This only matters for the logs ADP handles itself: native OTLP logs and check
+logs. In proxy mode, the core Agent processes OTLP logs and applies this key.
 
 ### `logs_config.disable_distributed_senders`
 
@@ -393,8 +393,8 @@ per pipeline, and per-sender concurrency from `batch_max_concurrent_send`, inste
 distributed sender.
 
 ADP ignores this key: its logs pipeline is part of its own topology, which this key doesn't
-configure. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
-processes the logs and applies this key.
+configure. This only matters for the logs ADP handles itself: native OTLP logs and check logs. In
+proxy mode, the core Agent processes OTLP logs and applies this key.
 
 ### `logs_config.fingerprint_config.count`
 
@@ -404,8 +404,9 @@ start with `Invalid fingerprint_config setting`. Must be > 0 when strategy is no
 (defaulted per strategy if not configured); a non-integer value fails parsing.
 
 ADP doesn't validate this key, so a value that stops the core Agent's logs agent, and with it the
-Agent's whole OTLP receiver, doesn't stop ADP. This only matters when ADP handles OTLP logs
-itself: in proxy mode, the core Agent processes the logs and applies this key.
+Agent's whole OTLP receiver, doesn't stop ADP. This only matters for the logs ADP handles itself:
+native OTLP logs and check logs. In proxy mode, the core Agent processes OTLP logs and applies
+this key.
 
 ### `logs_config.fingerprint_config.count_to_skip`
 
@@ -415,8 +416,9 @@ start with `Invalid fingerprint_config setting`. Must be >= 0 when strategy is n
 non-integer value fails parsing.
 
 ADP doesn't validate this key, so a value that stops the core Agent's logs agent, and with it the
-Agent's whole OTLP receiver, doesn't stop ADP. This only matters when ADP handles OTLP logs
-itself: in proxy mode, the core Agent processes the logs and applies this key.
+Agent's whole OTLP receiver, doesn't stop ADP. This only matters for the logs ADP handles itself:
+native OTLP logs and check logs. In proxy mode, the core Agent processes OTLP logs and applies
+this key.
 
 ### `logs_config.fingerprint_config.fingerprint_strategy`
 
@@ -426,8 +428,9 @@ start with `Invalid fingerprint_config setting`. An unknown value (not `line_che
 `byte_checksum` or disabled) fails validation. Default disabled skips all other fingerprint checks.
 
 ADP doesn't validate this key, so a value that stops the core Agent's logs agent, and with it the
-Agent's whole OTLP receiver, doesn't stop ADP. This only matters when ADP handles OTLP logs
-itself: in proxy mode, the core Agent processes the logs and applies this key.
+Agent's whole OTLP receiver, doesn't stop ADP. This only matters for the logs ADP handles itself:
+native OTLP logs and check logs. In proxy mode, the core Agent processes OTLP logs and applies
+this key.
 
 ### `logs_config.fingerprint_config.max_bytes`
 
@@ -437,8 +440,9 @@ start with `Invalid fingerprint_config setting`. Must be > 0 when strategy is `l
 non-integer value fails parsing.
 
 ADP doesn't validate this key, so a value that stops the core Agent's logs agent, and with it the
-Agent's whole OTLP receiver, doesn't stop ADP. This only matters when ADP handles OTLP logs
-itself: in proxy mode, the core Agent processes the logs and applies this key.
+Agent's whole OTLP receiver, doesn't stop ADP. This only matters for the logs ADP handles itself:
+native OTLP logs and check logs. In proxy mode, the core Agent processes OTLP logs and applies
+this key.
 
 ### `logs_config.message_channel_size`
 
@@ -446,8 +450,8 @@ In the core Agent's OTLP logs path: buffer size of the pipeline input channel (p
 and the strategy input channel.
 
 ADP ignores this key: its logs pipeline is part of its own topology, which this key doesn't
-configure. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
-processes the logs and applies this key.
+configure. This only matters for the logs ADP handles itself: native OTLP logs and check logs. In
+proxy mode, the core Agent processes OTLP logs and applies this key.
 
 ### `logs_config.payload_channel_size`
 
@@ -455,8 +459,8 @@ In the core Agent's OTLP logs path: buffer size of the channel of payloads betwe
 strategy and the sender workers.
 
 ADP ignores this key: its logs pipeline is part of its own topology, which this key doesn't
-configure. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
-processes the logs and applies this key.
+configure. This only matters for the logs ADP handles itself: native OTLP logs and check logs. In
+proxy mode, the core Agent processes OTLP logs and applies this key.
 
 ### `logs_config.pipeline_failover.enabled`
 
@@ -466,8 +470,8 @@ OTLP exporter requests only one channel at startup, this is what makes OTLP logs
 pipeline.
 
 ADP ignores this key: its logs pipeline is part of its own topology, which this key doesn't
-configure. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
-processes the logs and applies this key.
+configure. This only matters for the logs ADP handles itself: native OTLP logs and check logs. In
+proxy mode, the core Agent processes OTLP logs and applies this key.
 
 ### `logs_config.pipeline_failover.router_channel_size`
 
@@ -475,8 +479,8 @@ In the core Agent's OTLP logs path: buffer size of each failover router channel;
 `pipeline_failover.enabled` is true.
 
 ADP ignores this key: its logs pipeline is part of its own topology, which this key doesn't
-configure. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
-processes the logs and applies this key.
+configure. This only matters for the logs ADP handles itself: native OTLP logs and check logs. In
+proxy mode, the core Agent processes OTLP logs and applies this key.
 
 ### `logs_config.pipelines`
 
@@ -484,8 +488,8 @@ In the core Agent's OTLP logs path: number of processor/strategy pipelines built
 it also scales default HTTP sender concurrency (pipelines * 10) and the sync sender concurrency.
 
 ADP ignores this key: its logs pipeline is part of its own topology, which this key doesn't
-configure. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
-processes the logs and applies this key.
+configure. This only matters for the logs ADP handles itself: native OTLP logs and check logs. In
+proxy mode, the core Agent processes OTLP logs and applies this key.
 
 ### `logs_config.stop_grace_period`
 
@@ -494,8 +498,8 @@ seconds destinations are forced to flush without sending and a further 5 seconds
 before force close.
 
 ADP ignores this key: its logs pipeline is part of its own topology, which this key doesn't
-configure. This only matters when ADP handles OTLP logs itself: in proxy mode, the core Agent
-processes the logs and applies this key.
+configure. This only matters for the logs ADP handles itself: native OTLP logs and check logs. In
+proxy mode, the core Agent processes OTLP logs and applies this key.
 
 ### `logs_config.tag_filters`
 
@@ -503,8 +507,9 @@ In the core Agent's OTLP logs path: compiled once at start. Malformed patterns o
 block start). The processor lazily resolves the filter on the exporter's log source and the JSON
 encoder emits `Origin.TransportTags()`, so `ddtags` of OTLP logs are filtered.
 
-ADP ignores this key and filters no tags on native OTLP logs. This only matters when ADP handles
-OTLP logs itself: in proxy mode, the core Agent processes the logs and applies this key.
+ADP ignores this key and filters no tags on logs. This only matters for the logs ADP handles
+itself: native OTLP logs and check logs. In proxy mode, the core Agent processes OTLP logs and
+applies this key.
 
 ### `logs_config.unreliable_mount.enabled`
 
@@ -514,8 +519,9 @@ true GlobalFingerprintConfig changes defaults (strategy `line_checksum` unless c
 `fingerprint_config` values.
 
 ADP doesn't validate this key, so a value that stops the core Agent's logs agent, and with it the
-Agent's whole OTLP receiver, doesn't stop ADP. This only matters when ADP handles OTLP logs
-itself: in proxy mode, the core Agent processes the logs and applies this key.
+Agent's whole OTLP receiver, doesn't stop ADP. This only matters for the logs ADP handles itself:
+native OTLP logs and check logs. In proxy mode, the core Agent processes OTLP logs and applies
+this key.
 
 ### `otlp_config.debug.verbosity`
 
@@ -726,11 +732,11 @@ default values.
 ADP dual-ships metrics, events, and service checks to `additional_endpoints` as the core Agent
 does.
 
-ADP also sends native OTLP logs to these endpoints, which the core Agent never does: the Agent
-sends logs only to the endpoints configured under `logs_config`, including
-`logs_config.additional_endpoints`. Logs are only affected when ADP handles OTLP logs itself
-rather than relaying them to the core Agent. ADP sends native traces to these endpoints
-too, where the core Agent uses `apm_config.additional_endpoints`.
+ADP also sends logs to these endpoints, which the core Agent never does: the Agent sends logs only
+to the endpoints configured under `logs_config`, including `logs_config.additional_endpoints`.
+Only the logs ADP handles itself are affected: native OTLP logs, when it doesn't relay them to the
+core Agent, and check logs. ADP sends native traces to these endpoints too, where the core Agent
+uses `apm_config.additional_endpoints`.
 
 ### `aggregator_stop_timeout`
 
@@ -901,11 +907,11 @@ exactly.
 
 ADP sends metrics, events, and service checks to `dd_url` as the core Agent does.
 
-ADP also derives where native OTLP logs go from `dd_url`, which the core Agent never does: the
-Agent resolves the logs intake from `site` and the `logs_config` endpoint settings. With a
-Datadog `dd_url`, ADP sends logs to the matching logs intake host; with any other `dd_url`, it
-sends logs to that host. Logs are only affected when ADP handles OTLP logs itself rather than
-relaying them to the core Agent.
+ADP also derives where logs go from `dd_url`, which the core Agent never does: the Agent resolves
+the logs intake from `site` and the `logs_config` endpoint settings. With a Datadog `dd_url`, ADP
+sends logs to the matching logs intake host; with any other `dd_url`, it sends logs to that host.
+Only the logs ADP handles itself are affected: native OTLP logs, when it doesn't relay them to the
+core Agent, and check logs.
 
 ### `dogstatsd_mapper_cache_size`
 

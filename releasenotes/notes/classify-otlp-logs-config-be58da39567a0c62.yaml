@@ -3,6 +3,6 @@ enhancements:
   - |
     The compatibility documentation and startup check now cover the Datadog Agent settings that
     affect OTLP logs, such as ``logs_config.logs_dd_url`` and ``logs_config.processing_rules``.
-    When Agent Data Plane handles OTLP logs itself, it logs a warning at startup for the ones it
-    doesn't support. Setting ``otlp_config.logs.enabled`` now also logs a warning, because Agent
+    When Agent Data Plane handles logs itself, native OTLP logs or check logs, it logs a warning at
+    startup for the ones it doesn't support. Setting ``otlp_config.logs.enabled`` now also logs a warning, because Agent
     Data Plane doesn't honor it yet.
